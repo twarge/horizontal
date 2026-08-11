@@ -18,7 +18,14 @@
 set -eu
 
 SRCROOT_DIR="${SRCROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-DEST="${BUILT_PRODUCTS_DIR:-.}/${UNLOCALIZED_RESOURCES_FOLDER_PATH:-Resources}/ThirdPartyLicenses"
+# TARGET_BUILD_DIR, not BUILT_PRODUCTS_DIR: in an archive (DEPLOYMENT_LOCATION=YES)
+# the app is assembled under DSTROOT and BUILT_PRODUCTS_DIR only holds a SYMLINK
+# to it. Writing through that symlink lands on a path the script sandbox never
+# granted — it matches resolved paths — so every archive died here with
+# "Sandbox: cp deny file-write-create". The two are the same directory in an
+# ordinary build. The build phase declares its outputs against TARGET_BUILD_DIR
+# too, so the sandbox allow-list and this destination stay the same path.
+DEST="${TARGET_BUILD_DIR:-${BUILT_PRODUCTS_DIR:-.}}/${UNLOCALIZED_RESOURCES_FOLDER_PATH:-Resources}/ThirdPartyLicenses"
 CONFIG="${CONFIGURATION:-Debug}"
 
 missing=0
