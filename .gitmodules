@@ -1,0 +1,12 @@
+[submodule "Vendor/OCCT"]
+	path = Vendor/OCCT
+	url = https://github.com/Open-Cascade-SAS/OCCT
+[submodule "Vendor/RapidJSON"]
+	path = Vendor/RapidJSON
+	url = https://github.com/Tencent/rapidjson.git
+[submodule "Vendor/poly2tri"]
+	path = Vendor/poly2tri
+	url = https://github.com/jhasse/poly2tri
+[submodule "Vendor/js-dxf"]
+	path = Vendor/js-dxf
+	url = https://github.com/tarikjabiri/js-dxf

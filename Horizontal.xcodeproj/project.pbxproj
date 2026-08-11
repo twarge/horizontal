@@ -1,0 +1,782 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1A0000000000000000000020 /* App/Resources/Horizontal.icns in Resources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000010 /* App/Resources/Horizontal.icns */; };
+		1A0000000000000000000021 /* HorizontalProjectIO in Frameworks */ = {isa = PBXBuildFile; productRef = 1A0000000000000000000060 /* HorizontalProjectIO */; };
+		1A0000000000000000000022 /* HorizontalStepImporter in Frameworks */ = {isa = PBXBuildFile; productRef = 1A0000000000000000000061 /* HorizontalStepImporter */; };
+		1A0000000000000000000023 /* HorizontalPlaneClipper in Frameworks */ = {isa = PBXBuildFile; productRef = 1A0000000000000000000062 /* HorizontalPlaneClipper */; };
+		1A0000000000000000000024 /* HorizontalQuickLookPreview.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000012 /* HorizontalQuickLookPreview.appex */; platformFilters = (macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		1A0000000000000000000025 /* HorizontalQuickLookThumbnail.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000013 /* HorizontalQuickLookThumbnail.appex */; platformFilters = (macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		1A0000000000000000000026 /* HorizontalProjectIO in Frameworks */ = {isa = PBXBuildFile; productRef = 1A0000000000000000000063 /* HorizontalProjectIO */; };
+		1A0000000000000000000027 /* HorizontalStepImporter in Frameworks */ = {isa = PBXBuildFile; productRef = 1A0000000000000000000064 /* HorizontalStepImporter */; };
+		1A0000000000000000000028 /* HorizontalPlaneClipper in Frameworks */ = {isa = PBXBuildFile; productRef = 1A0000000000000000000065 /* HorizontalPlaneClipper */; };
+		1A0000000000000000000029 /* HorizontalProjectIO in Frameworks */ = {isa = PBXBuildFile; productRef = 1A0000000000000000000066 /* HorizontalProjectIO */; };
+		1A000000000000000000002A /* HorizontalStepImporter in Frameworks */ = {isa = PBXBuildFile; productRef = 1A0000000000000000000067 /* HorizontalStepImporter */; };
+		1A000000000000000000002B /* HorizontalPlaneClipper in Frameworks */ = {isa = PBXBuildFile; productRef = 1A0000000000000000000068 /* HorizontalPlaneClipper */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		1A0000000000000000000130 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1A0000000000000000000210;
+			remoteInfo = HorizontalQuickLookPreview;
+		};
+		1A0000000000000000000132 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1A0000000000000000000220;
+			remoteInfo = HorizontalQuickLookThumbnail;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		1A0000000000000000000104 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				1A0000000000000000000024 /* HorizontalQuickLookPreview.appex in Embed Foundation Extensions */,
+				1A0000000000000000000025 /* HorizontalQuickLookThumbnail.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		1A0000000000000000000010 /* App/Resources/Horizontal.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = App/Resources/Horizontal.icns; sourceTree = "<group>"; };
+		1A0000000000000000000011 /* Horizontal.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Horizontal.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1A0000000000000000000012 /* HorizontalQuickLookPreview.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = HorizontalQuickLookPreview.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		1A0000000000000000000013 /* HorizontalQuickLookThumbnail.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = HorizontalQuickLookThumbnail.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000001 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		A00000000000000000000002 /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Package.swift; sourceTree = "<group>"; };
+		A00000000000000000000003 /* Sources */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Sources; sourceTree = "<group>"; };
+		A00000000000000000000004 /* App */ = {isa = PBXFileReference; lastKnownFileType = folder; path = App; sourceTree = "<group>"; };
+		A00000000000000000000005 /* Vendor */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Vendor; sourceTree = "<group>"; };
+		A00000000000000000000006 /* scripts */ = {isa = PBXFileReference; lastKnownFileType = folder; path = scripts; sourceTree = "<group>"; };
+		A00000000000000000000007 /* Tests */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Tests; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		1A0000000000000000000002 /* Exceptions for "Sources/HorizontalNative" folder in "HorizontalQuickLookPreview" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				HorizontalNativeApp.swift,
+				HorizontalNativeAppDelegate.swift,
+			);
+			target = 1A0000000000000000000210 /* HorizontalQuickLookPreview */;
+		};
+		1A0000000000000000000003 /* Exceptions for "Sources/HorizontalNative" folder in "HorizontalQuickLookThumbnail" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				HorizontalNativeApp.swift,
+				HorizontalNativeAppDelegate.swift,
+			);
+			target = 1A0000000000000000000220 /* HorizontalQuickLookThumbnail */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		1A0000000000000000000001 /* Sources/HorizontalNative */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				1A0000000000000000000002 /* Exceptions for "Sources/HorizontalNative" folder in "HorizontalQuickLookPreview" target */,
+				1A0000000000000000000003 /* Exceptions for "Sources/HorizontalNative" folder in "HorizontalQuickLookThumbnail" target */,
+			);
+			path = Sources/HorizontalNative;
+			sourceTree = "<group>";
+		};
+		1A0000000000000000000004 /* Sources/HorizontalQuickLookPreview */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Sources/HorizontalQuickLookPreview;
+			sourceTree = "<group>";
+		};
+		1A0000000000000000000005 /* Sources/HorizontalQuickLookThumbnail */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Sources/HorizontalQuickLookThumbnail;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1A0000000000000000000102 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1A0000000000000000000021 /* HorizontalProjectIO in Frameworks */,
+				1A0000000000000000000022 /* HorizontalStepImporter in Frameworks */,
+				1A0000000000000000000023 /* HorizontalPlaneClipper in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1A0000000000000000000112 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1A0000000000000000000026 /* HorizontalProjectIO in Frameworks */,
+				1A0000000000000000000027 /* HorizontalStepImporter in Frameworks */,
+				1A0000000000000000000028 /* HorizontalPlaneClipper in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1A0000000000000000000122 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1A0000000000000000000029 /* HorizontalProjectIO in Frameworks */,
+				1A000000000000000000002A /* HorizontalStepImporter in Frameworks */,
+				1A000000000000000000002B /* HorizontalPlaneClipper in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		900000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000001 /* README.md */,
+				A00000000000000000000002 /* Package.swift */,
+				A00000000000000000000003 /* Sources */,
+				1A0000000000000000000001 /* Sources/HorizontalNative */,
+				1A0000000000000000000004 /* Sources/HorizontalQuickLookPreview */,
+				1A0000000000000000000005 /* Sources/HorizontalQuickLookThumbnail */,
+				1A0000000000000000000010 /* App/Resources/Horizontal.icns */,
+				A00000000000000000000004 /* App */,
+				A00000000000000000000007 /* Tests */,
+				A00000000000000000000005 /* Vendor */,
+				A00000000000000000000006 /* scripts */,
+				900000000000000000000002 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		900000000000000000000002 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				1A0000000000000000000011 /* Horizontal.app */,
+				1A0000000000000000000012 /* HorizontalQuickLookPreview.appex */,
+				1A0000000000000000000013 /* HorizontalQuickLookThumbnail.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		1A0000000000000000000200 /* Horizontal */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1A0000000000000000000300 /* Build configuration list for PBXNativeTarget "Horizontal" */;
+			buildPhases = (
+				1A0000000000000000000101 /* Sources */,
+				1A0000000000000000000102 /* Frameworks */,
+				1A0000000000000000000103 /* Resources */,
+				1A0000000000000000000104 /* Embed Foundation Extensions */,
+				1A0000000000000000000105 /* Copy Third-Party Licenses */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1A0000000000000000000131 /* PBXTargetDependency */,
+				1A0000000000000000000133 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				1A0000000000000000000001 /* Sources/HorizontalNative */,
+			);
+			name = Horizontal;
+			packageProductDependencies = (
+				1A0000000000000000000060 /* HorizontalProjectIO */,
+				1A0000000000000000000061 /* HorizontalStepImporter */,
+				1A0000000000000000000062 /* HorizontalPlaneClipper */,
+			);
+			productName = Horizontal;
+			productReference = 1A0000000000000000000011 /* Horizontal.app */;
+			productType = "com.apple.product-type.application";
+		};
+		1A0000000000000000000210 /* HorizontalQuickLookPreview */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1A0000000000000000000310 /* Build configuration list for PBXNativeTarget "HorizontalQuickLookPreview" */;
+			buildPhases = (
+				1A0000000000000000000111 /* Sources */,
+				1A0000000000000000000112 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				1A0000000000000000000001 /* Sources/HorizontalNative */,
+				1A0000000000000000000004 /* Sources/HorizontalQuickLookPreview */,
+			);
+			name = HorizontalQuickLookPreview;
+			packageProductDependencies = (
+				1A0000000000000000000063 /* HorizontalProjectIO */,
+				1A0000000000000000000064 /* HorizontalStepImporter */,
+				1A0000000000000000000065 /* HorizontalPlaneClipper */,
+			);
+			productName = HorizontalQuickLookPreview;
+			productReference = 1A0000000000000000000012 /* HorizontalQuickLookPreview.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		1A0000000000000000000220 /* HorizontalQuickLookThumbnail */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1A0000000000000000000320 /* Build configuration list for PBXNativeTarget "HorizontalQuickLookThumbnail" */;
+			buildPhases = (
+				1A0000000000000000000121 /* Sources */,
+				1A0000000000000000000122 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				1A0000000000000000000001 /* Sources/HorizontalNative */,
+				1A0000000000000000000005 /* Sources/HorizontalQuickLookThumbnail */,
+			);
+			name = HorizontalQuickLookThumbnail;
+			packageProductDependencies = (
+				1A0000000000000000000066 /* HorizontalProjectIO */,
+				1A0000000000000000000067 /* HorizontalStepImporter */,
+				1A0000000000000000000068 /* HorizontalPlaneClipper */,
+			);
+			productName = HorizontalQuickLookThumbnail;
+			productReference = 1A0000000000000000000013 /* HorizontalQuickLookThumbnail.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E00000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 2700;
+			};
+			buildConfigurationList = E00000000000000000000003 /* Build configuration list for PBXProject "Horizontal" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 900000000000000000000001;
+			packageReferences = (
+				1A0000000000000000000050 /* XCLocalSwiftPackageReference "." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 900000000000000000000002 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				1A0000000000000000000200 /* Horizontal */,
+				1A0000000000000000000210 /* HorizontalQuickLookPreview */,
+				1A0000000000000000000220 /* HorizontalQuickLookThumbnail */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		1A0000000000000000000103 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1A0000000000000000000020 /* App/Resources/Horizontal.icns in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		1A0000000000000000000105 /* Copy Third-Party Licenses */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Scripts/copy-third-party-licenses.sh",
+				"$(SRCROOT)/Vendor/OpenCascadeStatic/macos-arm64/share/doc/opencascade/LICENSE_LGPL_21.txt",
+				"$(SRCROOT)/Vendor/OpenCascadeStatic/macos-arm64/share/doc/opencascade/OCCT_LGPL_EXCEPTION.txt",
+				"$(SRCROOT)/Vendor/RapidJSON/license.txt",
+				"$(SRCROOT)/Vendor/Clipper/License.txt",
+				"$(SRCROOT)/Vendor/earcut/LICENSE",
+				"$(SRCROOT)/Vendor/Hersheyish/LICENSE",
+			);
+			name = "Copy Third-Party Licenses";
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdPartyLicenses/OpenCascade/LICENSE_LGPL_21.txt",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdPartyLicenses/OpenCascade/OCCT_LGPL_EXCEPTION.txt",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdPartyLicenses/RapidJSON/license.txt",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdPartyLicenses/Clipper/License.txt",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdPartyLicenses/earcut/LICENSE",
+				"$(BUILT_PRODUCTS_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdPartyLicenses/Hershey/LICENSE",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$SRCROOT/Scripts/copy-third-party-licenses.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1A0000000000000000000101 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1A0000000000000000000111 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1A0000000000000000000121 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		1A0000000000000000000131 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilters = (
+				macos,
+			);
+			target = 1A0000000000000000000210 /* HorizontalQuickLookPreview */;
+			targetProxy = 1A0000000000000000000130 /* PBXContainerItemProxy */;
+		};
+		1A0000000000000000000133 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilters = (
+				macos,
+			);
+			target = 1A0000000000000000000220 /* HorizontalQuickLookThumbnail */;
+			targetProxy = 1A0000000000000000000132 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		1A0000000000000000000301 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = App/Horizontal.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = App/InfoXcode.plist;
+				"INFOPLIST_FILE[sdk=iphoneos*]" = App/iOSInfo.plist;
+				"INFOPLIST_FILE[sdk=iphonesimulator*]" = App/iOSInfo.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Horizontal;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.twarge.app.horizontal;
+				PRODUCT_NAME = Horizontal;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Debug;
+		};
+		1A0000000000000000000302 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = App/Horizontal.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = App/InfoXcode.plist;
+				"INFOPLIST_FILE[sdk=iphoneos*]" = App/iOSInfo.plist;
+				"INFOPLIST_FILE[sdk=iphonesimulator*]" = App/iOSInfo.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Horizontal;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.twarge.app.horizontal;
+				PRODUCT_NAME = Horizontal;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Release;
+		};
+		1A0000000000000000000311 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_ENTITLEMENTS = App/QuickLookExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = App/QuickLookPreview/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Horizontal Preview";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.twarge.app.horizontal.quicklook-preview";
+				PRODUCT_NAME = HorizontalQuickLookPreview;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		1A0000000000000000000312 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_ENTITLEMENTS = App/QuickLookExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = App/QuickLookPreview/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Horizontal Preview";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.twarge.app.horizontal.quicklook-preview";
+				PRODUCT_NAME = HorizontalQuickLookPreview;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		1A0000000000000000000321 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_ENTITLEMENTS = App/QuickLookExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = App/QuickLookThumbnail/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Horizontal Thumbnail";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.twarge.app.horizontal.quicklook-thumbnail";
+				PRODUCT_NAME = HorizontalQuickLookThumbnail;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		1A0000000000000000000322 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_ENTITLEMENTS = App/QuickLookExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = App/QuickLookThumbnail/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Horizontal Thumbnail";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.twarge.app.horizontal.quicklook-thumbnail";
+				PRODUCT_NAME = HorizontalQuickLookThumbnail;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		E00000000000000000000021 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ALWAYS_USE_SEPARATE_HEADERMAPS = YES;
+				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 257KW9ZJFP;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+			};
+			name = Debug;
+		};
+		E00000000000000000000022 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ALWAYS_USE_SEPARATE_HEADERMAPS = YES;
+				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 257KW9ZJFP;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1A0000000000000000000300 /* Build configuration list for PBXNativeTarget "Horizontal" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1A0000000000000000000301 /* Debug */,
+				1A0000000000000000000302 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		1A0000000000000000000310 /* Build configuration list for PBXNativeTarget "HorizontalQuickLookPreview" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1A0000000000000000000311 /* Debug */,
+				1A0000000000000000000312 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		1A0000000000000000000320 /* Build configuration list for PBXNativeTarget "HorizontalQuickLookThumbnail" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1A0000000000000000000321 /* Debug */,
+				1A0000000000000000000322 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		E00000000000000000000003 /* Build configuration list for PBXProject "Horizontal" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E00000000000000000000021 /* Debug */,
+				E00000000000000000000022 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		1A0000000000000000000050 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		1A0000000000000000000060 /* HorizontalProjectIO */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = HorizontalProjectIO;
+		};
+		1A0000000000000000000061 /* HorizontalStepImporter */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = HorizontalStepImporter;
+		};
+		1A0000000000000000000062 /* HorizontalPlaneClipper */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = HorizontalPlaneClipper;
+		};
+		1A0000000000000000000063 /* HorizontalProjectIO */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = HorizontalProjectIO;
+		};
+		1A0000000000000000000064 /* HorizontalStepImporter */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = HorizontalStepImporter;
+		};
+		1A0000000000000000000065 /* HorizontalPlaneClipper */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = HorizontalPlaneClipper;
+		};
+		1A0000000000000000000066 /* HorizontalProjectIO */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = HorizontalProjectIO;
+		};
+		1A0000000000000000000067 /* HorizontalStepImporter */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = HorizontalStepImporter;
+		};
+		1A0000000000000000000068 /* HorizontalPlaneClipper */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = HorizontalPlaneClipper;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = E00000000000000000000001 /* Project object */;
+}

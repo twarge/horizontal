@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Export options for App Store Connect, shared by the macOS and iOS
+	     archives. `destination: upload` makes xcodebuild -exportArchive perform
+	     the upload itself, so no altool/Transporter step is needed. -->
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>destination</key>
+	<string>upload</string>
+	<!-- Let Xcode create/refresh the distribution certificate and App Store
+	     provisioning profiles from the App Store Connect API key, so no .p12 or
+	     profile files have to be stored as secrets. Requires
+	     -allowProvisioningUpdates, which the Makefile passes. -->
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<!-- Preserve the explicit CURRENT_PROJECT_VERSION supplied by CI. -->
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+	<!-- Symbols go to App Store Connect for crash symbolication. -->
+	<key>uploadSymbols</key>
+	<true/>
+	<!-- Explicit because the project pins DEVELOPMENT_TEAM; keeps the export
+	     unambiguous if the API key ever covers more than one team. -->
+	<key>teamID</key>
+	<string>257KW9ZJFP</string>
+</dict>
+</plist>
