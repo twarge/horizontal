@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build & test (macOS arm64)
+    # Package.swift requires swift-tools 6.3 / macOS 26 SDK, i.e. an Xcode 26
+    # toolchain — pin the runner image accordingly.
+    runs-on: macos-26
+    # First run on a fresh OCCT cache compiles OpenCascade from source
+    # (Vendor/OCCT submodule); subsequent runs restore it from the cache.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Select newest Xcode 26 toolchain
+        run: |
+          if compgen -G "/Applications/Xcode_26*.app" > /dev/null; then
+            sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)/Contents/Developer"
+          fi
+          swift --version
+          xcodebuild -version
+
+      # Vendor/OpenCascadeStatic is deliberately gitignored: it is built from
+      # the Vendor/OCCT submodule by scripts/build-occt.sh. Cache the built
+      # static xcframework keyed on the submodule revision and build scripts.
+      - name: Compute OCCT cache key
+        id: occt-key
+        run: echo "sha=$(git ls-tree HEAD Vendor/OCCT --object-only)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache OpenCascade static libraries
+        id: occt-cache
+        uses: actions/cache@v6
+        with:
+          path: Vendor/OpenCascadeStatic
+          key: occt-macos-arm64-${{ steps.occt-key.outputs.sha }}-${{ hashFiles('scripts/build-occt.sh', 'scripts/build-occt-xcframework.sh') }}
+
+      - name: Build OpenCascade from source (cache miss)
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        run: |
+          brew install ninja
+          scripts/build-occt.sh
+          # macOS-only CI: skip the iOS slices of the xcframework.
+          OCCT_IOS_SIMULATOR_INSTALL_DIR="" OCCT_IOS_DEVICE_INSTALL_DIR="" \
+            scripts/build-occt-xcframework.sh
+
+      - name: Cache SwiftPM build directory
+        uses: actions/cache@v6
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.swift') }}-${{ github.sha }}
+          restore-keys: |
+            spm-${{ runner.os }}-${{ hashFiles('Package.swift') }}-
+
+      # Build through the Makefile so CI verifies the same xcodebuild product
+      # that ships, rather than a SwiftPM build that no longer assembles the
+      # app. Signing is off: the runner has no Developer ID, and this step is
+      # a compile/link check.
+      - name: Build
+        run: make build XCODE_FLAGS=CODE_SIGNING_ALLOWED=NO
+
+      # The suite lives in the Swift package; the Horizontal scheme has no
+      # testables yet, so this stays on SwiftPM's runner (see the Makefile).
+      - name: Test
+        run: make test
