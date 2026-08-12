@@ -154,30 +154,15 @@ jobs:
           ASC_KEY_PATH=~/private_keys/AuthKey_"$ASC_KEY_ID".p8 \
             swift scripts/check-appstore-version.swift
 
-      # Vendor/OpenCascadeStatic is gitignored and built from the Vendor/OCCT
-      # submodule. Unlike ci.yml this needs the iOS slices too, so the cache
-      # key is distinct — a macOS-only entry must not satisfy it.
-      - name: Compute OCCT cache key
-        id: occt-key
-        run: echo "sha=$(git ls-tree HEAD Vendor/OCCT --object-only)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache OpenCascade static libraries
-        id: occt-cache
-        uses: actions/cache@v6
-        with:
-          path: Vendor/OpenCascadeStatic
-          key: >-
-            occt-macos-ios-${{ steps.occt-key.outputs.sha }}-${{ hashFiles(
-              'scripts/build-occt.sh',
-              'scripts/build-occt-ios.sh',
-              'scripts/build-occt-xcframework.sh'
-            ) }}
-
-      - name: Build OpenCascade from source (cache miss)
-        if: steps.occt-cache.outputs.cache-hit != 'true'
-        run: |
-          brew install ninja
-          make deps
+      # This needs the iOS slices as well as macOS, so it uses a key of its own
+      # that a macOS-only entry (ci.yml) must not satisfy. The action saves the
+      # tree as soon as it is built, because the archive and upload below can
+      # fail and the cache's own post step would then never run.
+      #
+      # Tags cannot read each other's caches, so a cold run here is expected
+      # unless occt-cache.yml has warmed the entry on the default branch.
+      - name: Restore or build OpenCascade static libraries
+        uses: ./.github/actions/occt-static
 
       - name: Write export options
         run: |

@@ -39,14 +39,15 @@ jobs:
         id: occt-key
         run: echo "sha=$(git ls-tree HEAD Vendor/OCCT --object-only)" >> "$GITHUB_OUTPUT"
 
-      - name: Cache OpenCascade static libraries
+      - name: Restore OpenCascade static libraries
         id: occt-cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: Vendor/OpenCascadeStatic
           key: occt-macos-arm64-${{ steps.occt-key.outputs.sha }}-${{ hashFiles('scripts/build-occt.sh', 'scripts/build-occt-xcframework.sh') }}
 
       - name: Build OpenCascade from source (cache miss)
+        id: occt-build
         if: steps.occt-cache.outputs.cache-hit != 'true'
         run: |
           brew install ninja
@@ -54,6 +55,17 @@ jobs:
           # macOS-only CI: skip the iOS slices of the xcframework.
           OCCT_IOS_SIMULATOR_INSTALL_DIR="" OCCT_IOS_DEVICE_INSTALL_DIR="" \
             scripts/build-occt-xcframework.sh
+
+      # Saved here rather than by the combined actions/cache action, whose post
+      # step is skipped when the job fails — a failing build or test would
+      # otherwise discard the OpenCascade build and leave the next run cold.
+      # Gated on the build's own outcome so a half-built tree is never cached.
+      - name: Save OpenCascade static libraries
+        if: steps.occt-build.outcome == 'success'
+        uses: actions/cache/save@v6
+        with:
+          path: Vendor/OpenCascadeStatic
+          key: occt-macos-arm64-${{ steps.occt-key.outputs.sha }}-${{ hashFiles('scripts/build-occt.sh', 'scripts/build-occt-xcframework.sh') }}
 
       - name: Cache SwiftPM build directory
         uses: actions/cache@v6
