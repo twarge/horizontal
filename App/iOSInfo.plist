@@ -45,6 +45,12 @@
 	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
+	<!-- App Store Connect rejects an iOS upload without this key (error 90713).
+	     actool merges the asset catalog's CFBundleIcons dictionaries into the
+	     built plist but does not write the top-level key the validator reads,
+	     so state it here rather than depend on that. -->
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>

@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		1A0000000000000000000020 /* App/Resources/Horizontal.icns in Resources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000010 /* App/Resources/Horizontal.icns */; };
+		1A000000000000000000002C /* App/Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000014 /* App/Resources/Assets.xcassets */; };
 		1A0000000000000000000021 /* HorizontalProjectIO in Frameworks */ = {isa = PBXBuildFile; productRef = 1A0000000000000000000060 /* HorizontalProjectIO */; };
 		1A0000000000000000000022 /* HorizontalStepImporter in Frameworks */ = {isa = PBXBuildFile; productRef = 1A0000000000000000000061 /* HorizontalStepImporter */; };
 		1A0000000000000000000023 /* HorizontalPlaneClipper in Frameworks */ = {isa = PBXBuildFile; productRef = 1A0000000000000000000062 /* HorizontalPlaneClipper */; };
@@ -55,6 +56,7 @@
 
 /* Begin PBXFileReference section */
 		1A0000000000000000000010 /* App/Resources/Horizontal.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = App/Resources/Horizontal.icns; sourceTree = "<group>"; };
+		1A0000000000000000000014 /* App/Resources/Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = App/Resources/Assets.xcassets; sourceTree = "<group>"; };
 		1A0000000000000000000011 /* Horizontal.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Horizontal.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A0000000000000000000012 /* HorizontalQuickLookPreview.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = HorizontalQuickLookPreview.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A0000000000000000000013 /* HorizontalQuickLookThumbnail.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = HorizontalQuickLookThumbnail.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -152,6 +154,7 @@
 				1A0000000000000000000004 /* Sources/HorizontalQuickLookPreview */,
 				1A0000000000000000000005 /* Sources/HorizontalQuickLookThumbnail */,
 				1A0000000000000000000010 /* App/Resources/Horizontal.icns */,
+				1A0000000000000000000014 /* App/Resources/Assets.xcassets */,
 				A00000000000000000000004 /* App */,
 				A00000000000000000000007 /* Tests */,
 				A00000000000000000000005 /* Vendor */,
@@ -290,6 +293,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1A0000000000000000000020 /* App/Resources/Horizontal.icns in Resources */,
+				1A000000000000000000002C /* App/Resources/Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -374,6 +378,9 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				/* macOS keeps its .icns; iOS has required an asset-catalog icon since iOS 11, and App Store Connect rejects an upload without one (errors 90713 and 90023). */
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator*]" = AppIcon;
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = App/Horizontal.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
@@ -423,6 +430,9 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				/* macOS keeps its .icns; iOS has required an asset-catalog icon since iOS 11, and App Store Connect rejects an upload without one (errors 90713 and 90023). */
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator*]" = AppIcon;
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = App/Horizontal.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
