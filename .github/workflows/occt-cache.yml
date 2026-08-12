@@ -1,0 +1,56 @@
+name: OCCT cache
+
+# Warms the OpenCascade cache on the default branch.
+#
+# A cache is scoped to the ref that saved it, and appstore.yml runs only on
+# tags — so an entry saved by v1.0.2 is invisible to v1.0.3, and every release
+# rebuilt OpenCascade from source for roughly ninety minutes. Entries saved on
+# the default branch are the exception: any ref can restore those. Saving one
+# here is what lets a tag run start warm.
+#
+# The key is derived from the OCCT submodule commit and the build scripts, so
+# the tree only needs rebuilding when one of those changes — hence the paths
+# filter. Run it by hand (Actions -> OCCT cache -> Run workflow) to populate
+# the cache the first time, or after a cache eviction.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Vendor/OCCT
+      - .gitmodules
+      - scripts/build-occt.sh
+      - scripts/build-occt-ios.sh
+      - scripts/build-occt-xcframework.sh
+      - .github/actions/occt-static/action.yml
+      - .github/workflows/occt-cache.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: occt-cache
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    name: Warm the OCCT cache
+    # Same image as appstore.yml — this tree is what that workflow links.
+    runs-on: macos-26
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      # Same selection as ci.yml and appstore.yml.
+      - name: Select newest Xcode 26 toolchain
+        run: |
+          if compgen -G "/Applications/Xcode_26*.app" > /dev/null; then
+            sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)/Contents/Developer"
+          fi
+          xcodebuild -version
+
+      - name: Restore, build if missing, and save
+        uses: ./.github/actions/occt-static

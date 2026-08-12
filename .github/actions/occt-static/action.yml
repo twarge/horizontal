@@ -1,0 +1,57 @@
+name: OpenCascade static libraries
+description: >-
+  Restores Vendor/OpenCascadeStatic (macOS + both iOS slices) from the Actions
+  cache, builds it from the Vendor/OCCT submodule on a miss, and saves it
+  immediately.
+
+# Shared by appstore.yml and occt-cache.yml so the cache KEY is written once.
+# Two workflows that build the same tree under keys that drift apart would miss
+# forever without ever failing, which is the bug this exists to prevent.
+
+outputs:
+  cache-hit:
+    description: true when the tree was restored rather than built
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    # Vendor/OpenCascadeStatic is gitignored and built from the Vendor/OCCT
+    # submodule. This key covers all three slices — a macOS-only entry (ci.yml)
+    # must not satisfy it.
+    - name: Compute OCCT cache key
+      id: key
+      shell: bash
+      run: |
+        occt="$(git ls-tree HEAD Vendor/OCCT --object-only)"
+        scripts="${{ hashFiles('scripts/build-occt.sh', 'scripts/build-occt-ios.sh', 'scripts/build-occt-xcframework.sh') }}"
+        echo "value=occt-macos-ios-${occt}-${scripts}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore OpenCascade static libraries
+      id: restore
+      uses: actions/cache/restore@v6
+      with:
+        path: Vendor/OpenCascadeStatic
+        key: ${{ steps.key.outputs.value }}
+
+    - name: Build OpenCascade from source (cache miss)
+      id: build
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        brew install ninja
+        make deps
+
+    # Saved here rather than by the combined actions/cache action, whose post
+    # step is skipped when the job fails. In appstore.yml this build is
+    # followed by an archive and an upload, so every failure up to v1.0.2 threw
+    # away a ~90-minute build and the next run started cold again.
+    #
+    # Gated on the build's own outcome, never always(): caching a half-built
+    # tree would poison every later run, which is worse than rebuilding.
+    - name: Save OpenCascade static libraries
+      if: steps.build.outcome == 'success'
+      uses: actions/cache/save@v6
+      with:
+        path: Vendor/OpenCascadeStatic
+        key: ${{ steps.key.outputs.value }}
