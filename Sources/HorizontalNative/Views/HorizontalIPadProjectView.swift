@@ -7,7 +7,15 @@ struct HorizontalIPadProjectView: View {
     private var fileURL: URL?
 
     @State private var project: HorizontalProject?
-    @State private var activePane: HorizontalPane = .schematic
+    /// Which panes are on screen, side by side (the same model the macOS workspace
+    /// uses). A compact width class — iPhone, or a narrow multitasking slice — keeps
+    /// this to exactly one pane, so the split layout below collapses to a single view
+    /// without needing a second code path.
+    @State private var visiblePanes: Set<HorizontalPane> = [.schematic]
+    /// The pane the inspector and the keyboard-focus badge follow: whichever canvas
+    /// most recently reported a selection.
+    @State private var focusedPane: HorizontalPane = .schematic
+    @State private var paneSizeFractions: [HorizontalPane: CGFloat] = [:]
     @State private var schematicViewport = CanvasViewport()
     @State private var boardViewport = CanvasViewport()
     @StateObject private var boardToolSettings = HorizontalBoardToolSettings()
@@ -36,15 +44,18 @@ struct HorizontalIPadProjectView: View {
     // The right-side slide-over (the iPad analogue of the macOS workspace's right
     // sidebar) shows one pane at a time — the selection inspector or the export panel.
     @State private var rightPane: HorizontalIPadRightPane?
-    // Selection details reported up from the active canvas + the property-edit command
-    // sent back down (drive the inspector pane).
-    @State private var selectionDetails = HorizontalSelectionDetailState.empty
-    @State private var selectionPropertyChangeCommand: HorizontalSelectionPropertyChangeCommand?
+    // Selection details reported up from each canvas + the property-edit command sent
+    // back down (drive the inspector pane). Both are keyed by pane: with two canvases
+    // on screen a shared command would be applied by BOTH of them, so a schematic edit
+    // would also land on whatever the board had selected.
+    @State private var selectionDetailsByPane = [HorizontalPane: HorizontalSelectionDetailState]()
+    @State private var selectionPropertyChangeCommands = [HorizontalPane: HorizontalSelectionPropertyChangeCommand]()
     // Part placement: the part browser sets a request, which the schematic canvas
     // picks up (via its onAppear/onChange) to start the place-on-canvas interaction.
     @State private var placePartRequest: HorizontalPartPlacementRequest?
 
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     init(document: Binding<HorizontalProjectDocument>, fileURL: URL?) {
         self._document = document
@@ -59,7 +70,7 @@ struct HorizontalIPadProjectView: View {
         HorizontalInspectorSlideOver(isPresented: rightPane != nil) {
             VStack(spacing: 0) {
                 if let project {
-                    paneContent(for: project)
+                    paneSplit(for: project)
                 } else {
                     statusView
                 }
@@ -67,6 +78,13 @@ struct HorizontalIPadProjectView: View {
         } inspector: {
             rightPaneContent
         }
+        // DocumentGroup supplies the navigation bar but leaves its title menu empty
+        // unless the content names the document, which is why the bar showed a bare
+        // chevron. `navigationDocument` also gives the menu the file's icon and the
+        // usual Rename/Move/Share entries.
+        .navigationTitle(documentTitle)
+        .navigationBarTitleDisplayMode(.inline)
+        .modifier(NavigationDocumentModifier(url: fileURL))
         .toolbar {
             if let project, project.board != nil || project.schematic != nil {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -106,19 +124,42 @@ struct HorizontalIPadProjectView: View {
                 boardRulesCover(for: project)
             }
         }
-        .onChange(of: activePane) { _, newPane in
-            // Switching panes re-instantiates the schematic canvas, whose
+        .onChange(of: visiblePanes) { _, panes in
+            // Hiding a pane re-instantiates its canvas on return, and the schematic's
             // "already-handled" guard (`handledPlacePartRequestID`) is per-instance and
-            // resets — so a still-set request would restart placement on return. Clear
-            // it when leaving the schematic. (macOS keeps one persistent canvas, so it
-            // doesn't need this.)
-            if newPane != .schematic {
+            // resets — so a still-set request would restart placement. Clear it when the
+            // schematic goes away. (macOS keeps one persistent canvas, so it doesn't
+            // need this.)
+            if !panes.contains(.schematic) {
                 placePartRequest = nil
+            }
+            if !panes.contains(focusedPane) {
+                focusedPane = orderedVisiblePanes.first ?? focusedPane
+            }
+        }
+        .onChange(of: horizontalSizeClass) { _, sizeClass in
+            // A compact width (iPhone, or a narrow Split View slice) has no room for
+            // two canvases: fall back to the focused one.
+            if sizeClass == .compact, visiblePanes.count > 1 {
+                visiblePanes = [focusedPane]
             }
         }
         .task(id: loadIdentity) {
             loadProject()
         }
+    }
+
+    /// Name shown in the DocumentGroup navigation bar. The file on disk wins; a
+    /// document opened from an in-memory archive falls back to its suggested filename,
+    /// then to the project's own name.
+    private var documentTitle: String {
+        if let fileURL {
+            return fileURL.deletingPathExtension().lastPathComponent
+        }
+        if let suggested = document.archive.suggestedFilename {
+            return (suggested as NSString).deletingPathExtension
+        }
+        return project?.name ?? "Horizontal"
     }
 
     /// The active right-slide-over pane — the selection inspector or the export panel
@@ -165,15 +206,16 @@ struct HorizontalIPadProjectView: View {
             .padding(.horizontal)
             .padding(.vertical, 12)
             Divider()
-            if selectionDetails.hasSelection {
+            if let inspectedPane, let details = selectionDetailsByPane[inspectedPane] {
                 ScrollView {
                     HorizontalSelectionPopoverView(
-                        state: selectionDetails,
+                        state: details,
                         foregroundColor: .primary,
                         backgroundColor: .clear,
                         chrome: .sidebar,
                         onChange: { change in
-                            selectionPropertyChangeCommand = HorizontalSelectionPropertyChangeCommand(change: change)
+                            selectionPropertyChangeCommands[inspectedPane] =
+                                HorizontalSelectionPropertyChangeCommand(change: change)
                         }
                     )
                     .padding(.horizontal)
@@ -188,6 +230,26 @@ struct HorizontalIPadProjectView: View {
                 )
                 Spacer()
             }
+        }
+    }
+
+    /// The pane whose selection the inspector is editing: the focused one if it has a
+    /// selection, otherwise any other visible pane that does.
+    private var inspectedPane: HorizontalPane? {
+        if selectionDetailsByPane[focusedPane]?.hasSelection == true {
+            return focusedPane
+        }
+        return orderedVisiblePanes.first { selectionDetailsByPane[$0]?.hasSelection == true }
+    }
+
+    /// Records a canvas's selection and, when it actually selected something, moves the
+    /// focus (and so the inspector) to that pane. Mirrors the macOS workspace.
+    private func setSelectionDetails(_ details: HorizontalSelectionDetailState, for pane: HorizontalPane) {
+        if details.hasSelection {
+            selectionDetailsByPane[pane] = details
+            focusedPane = pane
+        } else {
+            selectionDetailsByPane.removeValue(forKey: pane)
         }
     }
 
@@ -223,95 +285,207 @@ struct HorizontalIPadProjectView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Pane chooser. A regular width class (iPad) toggles panes independently so the
+    /// schematic and the board can sit side by side; a compact one (iPhone) keeps the
+    /// old exclusive segmented control, since there is no room for two.
+    @ViewBuilder
     private func panePicker(for project: HorizontalProject) -> some View {
-        Picker("View", selection: $activePane) {
-            ForEach(availablePanes(for: project)) { pane in
-                Label(pane.title, systemImage: pane.symbolName)
-                    .tag(pane)
+        let panes = availablePanes(for: project)
+        if isCompact {
+            Picker("View", selection: exclusivePaneSelection(among: panes)) {
+                ForEach(panes) { pane in
+                    Label(pane.title, systemImage: pane.symbolName)
+                        .tag(pane)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelStyle(.iconOnly)
+            .fixedSize()
+        } else {
+            ControlGroup {
+                ForEach(panes) { pane in
+                    Toggle(isOn: paneVisibilityBinding(for: pane, among: panes)) {
+                        Label(pane.title, systemImage: pane.symbolName)
+                    }
+                    .toggleStyle(.button)
+                    .accessibilityLabel("Show \(pane.title)")
+                }
+            }
+            .labelStyle(.iconOnly)
+        }
+    }
+
+    private var isCompact: Bool {
+        horizontalSizeClass == .compact
+    }
+
+    /// Visible panes in `HorizontalPane`'s own order, which is also their left-to-right
+    /// order on screen.
+    private var orderedVisiblePanes: [HorizontalPane] {
+        HorizontalPane.allCases.filter { visiblePanes.contains($0) }
+    }
+
+    private func exclusivePaneSelection(among panes: [HorizontalPane]) -> Binding<HorizontalPane> {
+        Binding {
+            orderedVisiblePanes.first ?? panes.first ?? .schematic
+        } set: { pane in
+            visiblePanes = [pane]
+            focusedPane = pane
+        }
+    }
+
+    private func paneVisibilityBinding(for pane: HorizontalPane, among panes: [HorizontalPane]) -> Binding<Bool> {
+        Binding {
+            visiblePanes.contains(pane)
+        } set: { isVisible in
+            withAnimation(.snappy(duration: 0.2)) {
+                if isVisible {
+                    visiblePanes.insert(pane)
+                    focusedPane = pane
+                } else if visiblePanes.intersection(panes).count > 1 {
+                    // Never hide the last pane — that would leave an empty window.
+                    visiblePanes.remove(pane)
+                }
             }
         }
-        .pickerStyle(.segmented)
-        .labelStyle(.iconOnly)
-        .fixedSize()
+    }
+
+    /// The side-by-side pane layout. `ignoresSafeArea` is what lets the canvases run
+    /// edge to edge under the navigation bar and the home indicator; the insets the
+    /// panes would otherwise have been given are handed to them instead, so the tool
+    /// rails and the fit-to-window margins still clear the chrome.
+    ///
+    /// The modifier goes on the split view, NOT on the GeometryReader: a
+    /// GeometryReader that ignores the safe area itself reports `safeAreaInsets` of
+    /// zero, which put the rails back under the toolbar. (Same shape as the macOS
+    /// workspace's `workspaceDetail`.)
+    private func paneSplit(for project: HorizontalProject) -> some View {
+        GeometryReader { proxy in
+            let panes = orderedVisiblePanes.filter { availablePanes(for: project).contains($0) }
+            let shownPanes = panes.isEmpty ? [defaultPane(for: project)] : panes
+
+            ResizablePaneSplitView(
+                panes: shownPanes,
+                sizeFractions: $paneSizeFractions,
+                minimumPaneWidth: 300,
+                handleWidth: 16
+            ) { pane, isLeadingPane in
+                paneContent(
+                    pane,
+                    for: project,
+                    safeAreaInsets: paneSafeAreaInsets(
+                        proxy.safeAreaInsets,
+                        isLeadingPane: isLeadingPane,
+                        isTrailingPane: shownPanes.last == pane
+                    )
+                )
+            }
+            .ignoresSafeArea(.container, edges: .all)
+        }
+    }
+
+    /// Splits the window's safe-area insets across the panes: every pane clears the top
+    /// bar and the bottom indicator, but only the outermost panes own the side insets.
+    private func paneSafeAreaInsets(
+        _ insets: EdgeInsets,
+        isLeadingPane: Bool,
+        isTrailingPane: Bool
+    ) -> EdgeInsets {
+        EdgeInsets(
+            top: insets.top,
+            leading: isLeadingPane ? insets.leading : 0,
+            bottom: insets.bottom,
+            trailing: isTrailingPane ? insets.trailing : 0
+        )
     }
 
     @ViewBuilder
-    private func paneContent(for project: HorizontalProject) -> some View {
-        switch activePane {
+    private func paneContent(
+        _ pane: HorizontalPane,
+        for project: HorizontalProject,
+        safeAreaInsets: EdgeInsets
+    ) -> some View {
+        switch pane {
         case .parts:
-            partsBrowser(for: project)
+            partsBrowser(for: project, safeAreaInsets: safeAreaInsets)
         case .schematic:
-            schematicView(for: project)
+            schematicView(for: project, safeAreaInsets: safeAreaInsets)
         case .board:
-            boardView(for: project)
+            boardView(for: project, safeAreaInsets: safeAreaInsets)
         case .threeD:
             threeDView(for: project)
         }
     }
 
-    private func partsBrowser(for project: HorizontalProject) -> some View {
+    private func partsBrowser(for project: HorizontalProject, safeAreaInsets: EdgeInsets) -> some View {
         // The same cross-platform browser the macOS workspace uses: scoped search,
         // a sortable Table, and Place (double-tap a row / the Place button). Placing
         // starts the schematic place-on-canvas interaction via `placePartRequest`.
         HorizontalPartBrowserView(
             parts: project.poolParts,
             poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
+            safeAreaInsets: safeAreaInsets,
             isReadOnly: project.schematic == nil,
             onPlacePart: { part in
                 guard project.schematic != nil else { return }
                 placePartRequest = HorizontalPartPlacementRequest(part: part)
-                activePane = .schematic
+                if isCompact {
+                    visiblePanes = [.schematic]
+                } else {
+                    visiblePanes.insert(.schematic)
+                }
+                focusedPane = .schematic
             }
         )
     }
 
     @ViewBuilder
-    private func schematicView(for project: HorizontalProject) -> some View {
+    private func schematicView(for project: HorizontalProject, safeAreaInsets: EdgeInsets) -> some View {
         if let schematic = project.schematic,
            let sheet = schematic.sheets.first {
-            GeometryReader { proxy in
-                PaneOverlayContainer(
-                    pane: .schematic,
-                    safeAreaInsets: proxy.safeAreaInsets,
-                    showsInfoButton: false,
-                    isKeyboardFocused: true
-                ) {
-                    SchematicCanvasView(
-                        sheet: sheet,
-                        allSheets: schematic.sheets,
-                        viewport: $schematicViewport,
-                        displayOptions: schematicDisplayOptions,
-                        fitSafeAreaInsets: proxy.safeAreaInsets,
-                        highlightedNetIDs: highlightedNetIDs,
-                        selectionToolSettings: selectionToolSettings,
-                        onSelectedNetChange: { selectedNetIDs = $0 },
-                        onHighlightNetCommand: { highlightedNetIDs = $0 },
-                        onSelectionDetailsChange: { selectionDetails = $0 },
-                        onCanvasCommandActionsChange: { schematicCanvasActions = $0 },
-                        selectionPropertyChangeCommand: selectionPropertyChangeCommand,
-                        drawingToolCommand: schematicDrawingToolCommand,
-                        drawNetLineCommand: schematicDrawNetLineCommand,
-                        placePartRequest: placePartRequest,
-                        poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }
-                    )
-                    .overlay(alignment: .bottom) { toolControlBar(for: schematicCanvasActions) }
-                } info: {
-                    EmptyView()
-                } layers: {
-                    SchematicLayerControls(displayOptions: $schematicDisplayOptions)
-                } grid: {
-                    GridControlsPanel(title: "Schematic Grid", grid: .constant(sheet.grid), isEditable: false)
-                } tools: {
-                    SelectionToolButton(settings: $selectionToolSettings)
-                    DrawingToolButtonGroup { primitive in
-                        schematicDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
-                    }
-                    DrawNetLineToolButton {
-                        schematicDrawNetLineCommand = HorizontalDrawNetLineCommand()
-                    }
-                    AddTextToolButton {
-                        schematicCanvasActions?.dispatch(.addText)
-                    }
+            PaneOverlayContainer(
+                pane: .schematic,
+                safeAreaInsets: safeAreaInsets,
+                showsInfoButton: false,
+                isKeyboardFocused: focusedPane == .schematic
+            ) {
+                SchematicCanvasView(
+                    sheet: sheet,
+                    allSheets: schematic.sheets,
+                    viewport: $schematicViewport,
+                    displayOptions: schematicDisplayOptions,
+                    fitSafeAreaInsets: safeAreaInsets,
+                    highlightedNetIDs: highlightedNetIDs,
+                    selectionToolSettings: selectionToolSettings,
+                    onSelectedNetChange: { selectedNetIDs = $0 },
+                    onHighlightNetCommand: { highlightedNetIDs = $0 },
+                    onSelectionDetailsChange: { setSelectionDetails($0, for: .schematic) },
+                    onCanvasCommandActionsChange: { schematicCanvasActions = $0 },
+                    selectionPropertyChangeCommand: selectionPropertyChangeCommands[.schematic],
+                    drawingToolCommand: schematicDrawingToolCommand,
+                    drawNetLineCommand: schematicDrawNetLineCommand,
+                    placePartRequest: placePartRequest,
+                    poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }
+                )
+                .overlay(alignment: .bottom) {
+                    toolControlBar(for: schematicCanvasActions, safeAreaInsets: safeAreaInsets)
+                }
+            } info: {
+                EmptyView()
+            } layers: {
+                SchematicLayerControls(displayOptions: $schematicDisplayOptions)
+            } grid: {
+                GridControlsPanel(title: "Schematic Grid", grid: .constant(sheet.grid), isEditable: false)
+            } tools: {
+                SelectionToolButton(settings: $selectionToolSettings)
+                DrawingToolButtonGroup { primitive in
+                    schematicDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
+                }
+                DrawNetLineToolButton {
+                    schematicDrawNetLineCommand = HorizontalDrawNetLineCommand()
+                }
+                AddTextToolButton {
+                    schematicCanvasActions?.dispatch(.addText)
                 }
             }
         } else {
@@ -320,66 +494,66 @@ struct HorizontalIPadProjectView: View {
     }
 
     @ViewBuilder
-    private func boardView(for project: HorizontalProject) -> some View {
+    private func boardView(for project: HorizontalProject, safeAreaInsets: EdgeInsets) -> some View {
         if let board = project.board {
-            GeometryReader { proxy in
-                PaneOverlayContainer(
-                    pane: .board,
-                    safeAreaInsets: proxy.safeAreaInsets,
-                    showsInfoButton: false,
-                    isKeyboardFocused: true
-                ) {
-                    BoardCanvasView(
-                        board: board,
-                        netClasses: project.schematic?.netClasses ?? [],
-                        viewport: $boardViewport,
-                        displayOptions: boardDisplayOptions,
-                        fitSafeAreaInsets: proxy.safeAreaInsets,
-                        highlightedNetIDs: highlightedNetIDs,
-                        selectionToolSettings: selectionToolSettings,
-                        onSelectedNetChange: { selectedNetIDs = $0 },
-                        onHighlightNetCommand: { highlightedNetIDs = $0 },
-                        onBoardChange: { applyEditedBoard($0) },
-                        onSelectionDetailsChange: { selectionDetails = $0 },
-                        onCanvasCommandActionsChange: { boardCanvasActions = $0 },
-                        selectionPropertyChangeCommand: selectionPropertyChangeCommand,
-                        drawingToolCommand: boardDrawingToolCommand,
-                        drawTrackCommand: boardDrawTrackCommand,
-                        onShowToolSettings: { boardToolSettingsPresented = true },
-                        toolSettings: boardToolSettings,
-                        drawingLayer: boardDrawingLayer
-                    )
-                    .overlay(alignment: .bottom) { toolControlBar(for: boardCanvasActions) }
-                } info: {
-                    EmptyView()
-                } layers: {
-                    BoardLayerControls(
-                        board: board,
-                        displayOptions: $boardDisplayOptions,
-                        selectedLayer: $boardDrawingLayer,
-                        includesThreeDControls: false
-                    )
-                } grid: {
-                    GridControlsPanel(title: "Board Grid", grid: boardGridBinding())
-                } tools: {
-                    SelectionToolButton(settings: $selectionToolSettings)
-                    DrawTrackToolButton {
-                        boardDrawTrackCommand = HorizontalDrawTrackCommand()
+            PaneOverlayContainer(
+                pane: .board,
+                safeAreaInsets: safeAreaInsets,
+                showsInfoButton: false,
+                isKeyboardFocused: focusedPane == .board
+            ) {
+                BoardCanvasView(
+                    board: board,
+                    netClasses: project.schematic?.netClasses ?? [],
+                    viewport: $boardViewport,
+                    displayOptions: boardDisplayOptions,
+                    fitSafeAreaInsets: safeAreaInsets,
+                    highlightedNetIDs: highlightedNetIDs,
+                    selectionToolSettings: selectionToolSettings,
+                    onSelectedNetChange: { selectedNetIDs = $0 },
+                    onHighlightNetCommand: { highlightedNetIDs = $0 },
+                    onBoardChange: { applyEditedBoard($0) },
+                    onSelectionDetailsChange: { setSelectionDetails($0, for: .board) },
+                    onCanvasCommandActionsChange: { boardCanvasActions = $0 },
+                    selectionPropertyChangeCommand: selectionPropertyChangeCommands[.board],
+                    drawingToolCommand: boardDrawingToolCommand,
+                    drawTrackCommand: boardDrawTrackCommand,
+                    onShowToolSettings: { boardToolSettingsPresented = true },
+                    toolSettings: boardToolSettings,
+                    drawingLayer: boardDrawingLayer
+                )
+                .overlay(alignment: .bottom) {
+                    toolControlBar(for: boardCanvasActions, safeAreaInsets: safeAreaInsets)
+                }
+            } info: {
+                EmptyView()
+            } layers: {
+                BoardLayerControls(
+                    board: board,
+                    displayOptions: $boardDisplayOptions,
+                    selectedLayer: $boardDrawingLayer,
+                    includesThreeDControls: false
+                )
+            } grid: {
+                GridControlsPanel(title: "Board Grid", grid: boardGridBinding())
+            } tools: {
+                SelectionToolButton(settings: $selectionToolSettings)
+                DrawTrackToolButton {
+                    boardDrawTrackCommand = HorizontalDrawTrackCommand()
+                }
+                TrackSettingsToolButton(presented: $boardToolSettingsPresented)
+                    .popover(isPresented: $boardToolSettingsPresented, arrowEdge: .bottom) {
+                        HorizontalBoardToolSettingsView(settings: boardToolSettings, viaTemplate: board.viaTemplate)
+                            .frame(minWidth: 320, minHeight: 320)
                     }
-                    TrackSettingsToolButton(presented: $boardToolSettingsPresented)
-                        .popover(isPresented: $boardToolSettingsPresented, arrowEdge: .bottom) {
-                            HorizontalBoardToolSettingsView(settings: boardToolSettings, viaTemplate: board.viaTemplate)
-                                .frame(minWidth: 320, minHeight: 320)
-                        }
-                    DrawingToolButtonGroup { primitive in
-                        boardDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
-                    }
-                    DrawPlaneToolButton {
-                        boardCanvasActions?.dispatch(.drawPlane)
-                    }
-                    AddTextToolButton {
-                        boardCanvasActions?.dispatch(.addText)
-                    }
+                DrawingToolButtonGroup { primitive in
+                    boardDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
+                }
+                DrawPlaneToolButton {
+                    boardCanvasActions?.dispatch(.drawPlane)
+                }
+                AddTextToolButton {
+                    boardCanvasActions?.dispatch(.addText)
                 }
             }
         } else {
@@ -403,7 +577,10 @@ struct HorizontalIPadProjectView: View {
     /// stand-in for the macOS keyboard: finish/cancel/via/flip/back). Pencil
     /// hover drives the live preview; tap places points.
     @ViewBuilder
-    private func toolControlBar(for actions: HorizontalCanvasCommandActions?) -> some View {
+    private func toolControlBar(
+        for actions: HorizontalCanvasCommandActions?,
+        safeAreaInsets: EdgeInsets
+    ) -> some View {
         if let actions, actions.canCancelInteraction {
             HStack(spacing: 16) {
                 routeControl("Finish", "checkmark.circle.fill", enabled: actions.canCommitInteraction) {
@@ -434,7 +611,8 @@ struct HorizontalIPadProjectView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
             .background(.regularMaterial, in: Capsule())
-            .padding(.bottom, 20)
+            // The canvas runs under the home indicator now, so lift the bar clear of it.
+            .padding(.bottom, safeAreaInsets.bottom + 20)
         }
     }
 
@@ -509,7 +687,6 @@ struct HorizontalIPadProjectView: View {
                 materialColors: appearanceSettings.boardSceneMaterialColors,
                 cameraState: $threeDCameraState
             )
-            .ignoresSafeArea(edges: .bottom)
         } else {
             ContentUnavailableView("No Board", systemImage: "cube")
         }
@@ -524,12 +701,15 @@ struct HorizontalIPadProjectView: View {
             let url = try projectURLForLoading()
             let loadedProject = try HorizontalProject.load(from: url)
             project = loadedProject
-            activePane = defaultPane(for: loadedProject)
+            visiblePanes = defaultVisiblePanes(for: loadedProject)
+            focusedPane = orderedVisiblePanes.first ?? defaultPane(for: loadedProject)
+            paneSizeFractions.removeAll()
             schematicViewport.fit()
             boardViewport.fit()
             threeDCameraState = nil
             selectedNetIDs.removeAll()
             highlightedNetIDs.removeAll()
+            selectionDetailsByPane.removeAll()
         } catch {
             loadError = error.localizedDescription
         }
@@ -575,6 +755,31 @@ struct HorizontalIPadProjectView: View {
             return .schematic
         }
         return panes.first ?? .schematic
+    }
+
+    /// Opens the schematic and the board side by side where there is room for both —
+    /// the macOS workspace's default — and a single pane on a compact width.
+    private func defaultVisiblePanes(for project: HorizontalProject) -> Set<HorizontalPane> {
+        let panes = availablePanes(for: project)
+        guard !isCompact, panes.contains(.schematic), panes.contains(.board) else {
+            return [defaultPane(for: project)]
+        }
+        return [.schematic, .board]
+    }
+}
+
+/// `navigationDocument(_:)` takes a non-optional URL, and an in-memory document has
+/// none — this applies it only when there is a file behind the document.
+private struct NavigationDocumentModifier: ViewModifier {
+    var url: URL?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let url {
+            content.navigationDocument(url)
+        } else {
+            content
+        }
     }
 }
 
