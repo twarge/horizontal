@@ -1519,6 +1519,7 @@ struct BoardCanvasView: View {
             return [
                 readOnlyProperty("name", "Net", netDisplayName(via.netID)),
                 editableNetClassProperty(for: via.netID),
+                readOnlyProperty("span", "Span", viaSpanName(via)),
                 editableLengthProperty("diameter", "Diameter", via.size),
                 editableLengthProperty("positionX", "Position X", via.position.x),
                 editableLengthProperty("positionY", "Position Y", via.position.y),
@@ -1780,7 +1781,7 @@ struct BoardCanvasView: View {
         HorizontalSelectionProperty(
             id: id,
             label: label,
-            editor: .layer(layerOptions(copperOnly: copperOnly)),
+            editor: .layer(layerOptions(copperOnly: copperOnly, currentLayer: value)),
             value: .layer(value)
         )
     }
@@ -1815,6 +1816,22 @@ struct BoardCanvasView: View {
         return editableChoiceProperty("netClass", "Net class", value: value, options: options)
     }
 
+    /// Copper span of a via, e.g. "Top Copper – Bottom Copper" (a blind or
+    /// buried via spans fewer layers). The parse resolves the span into the
+    /// ordered copper layers it touches; an empty list means it recorded no
+    /// explicit span, which Horizon treats as through — all copper.
+    private func viaSpanName(_ via: HorizontalMarker) -> String? {
+        guard let first = via.connectedLayers.first, let last = via.connectedLayers.last else {
+            return "All copper"
+        }
+        if first == last {
+            return layerName(for: first)
+        }
+        return [layerName(for: first), layerName(for: last)]
+            .compactMap { $0 }
+            .joined(separator: " – ")
+    }
+
     private func netClassOptions() -> [HorizontalSelectionPropertyOption] {
         netClasses.map { netClass in
             HorizontalSelectionPropertyOption(
@@ -1824,14 +1841,40 @@ struct BoardCanvasView: View {
         }
     }
 
-    private func layerOptions(copperOnly: Bool) -> [HorizontalSelectionPropertyOption] {
-        let layers = HorizontalBoardLayers.all.filter { !copperOnly || HorizontalBoardLayers.isCopper($0) }
-        return [HorizontalSelectionPropertyOption(id: "none", title: "None")] + layers.map { layer in
+    /// Layers offered by an inspector layer picker: only copper layers the
+    /// board's stackup actually has (a 2-layer board must not offer "Inner 5")
+    /// and only user layers the board defines, by their user-given names. The
+    /// current value is always listed even when it fails those filters, so the
+    /// picker never shows an empty selection; "None" appears only when the
+    /// object's layer is unset (it is a parse artifact, not a settable choice).
+    private func layerOptions(copperOnly: Bool, currentLayer: Int?) -> [HorizontalSelectionPropertyOption] {
+        let stackupCopper = Set(board.stackupLayers.map(\.layer).filter(HorizontalBoardLayers.isCopper))
+        let definedUserLayers = Set(board.userLayers.map(\.id))
+        let layers = HorizontalBoardLayers.all.filter { layer in
+            if layer == currentLayer {
+                return true
+            }
+            if copperOnly && !HorizontalBoardLayers.isCopper(layer) {
+                return false
+            }
+            if HorizontalBoardLayers.isCopper(layer), !stackupCopper.isEmpty, !stackupCopper.contains(layer) {
+                return false
+            }
+            if HorizontalBoardLayers.isUser(layer), !definedUserLayers.contains(layer) {
+                return false
+            }
+            return true
+        }
+        let options = layers.map { layer in
             HorizontalSelectionPropertyOption(
                 id: String(layer),
                 title: layerName(for: layer) ?? "Layer \(layer)"
             )
         }
+        guard currentLayer != nil else {
+            return [HorizontalSelectionPropertyOption(id: "none", title: "None")] + options
+        }
+        return options
     }
 
     private func dispatchCanvasCommand(_ command: HorizontalCanvasCommand) {
@@ -12528,10 +12571,17 @@ struct BoardInlineTextEditorField: View {
     var onSubmit: () -> Void
     @FocusState private var focused: Bool
 
+    /// The popover grows with the content: wide enough for the longest line up
+    /// to a cap, past which the field wraps onto further lines (Option-Return
+    /// inserts a newline; plain Return still submits).
+    private static let minWidth: CGFloat = 200
+    private static let maxWidth: CGFloat = 460
+
     var body: some View {
-        TextField("Text", text: $text)
+        TextField("Text", text: $text, axis: .vertical)
             .textFieldStyle(.roundedBorder)
-            .frame(width: 200)
+            .lineLimit(1...10)
+            .frame(width: fieldWidth)
             .focused($focused)
             .onSubmit(onSubmit)
             .padding(10)
@@ -12545,6 +12595,16 @@ struct BoardInlineTextEditorField: View {
                     }
                 }
             }
+    }
+
+    private var fieldWidth: CGFloat {
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let widestLine = text.components(separatedBy: .newlines)
+            .map { ($0 as NSString).size(withAttributes: [.font: font]).width }
+            .max() ?? 0
+        // ~28pt covers the rounded-border field's text insets plus caret slack,
+        // so the line about to hit the cap doesn't wrap a character early.
+        return min(max(widestLine + 28, Self.minWidth), Self.maxWidth)
     }
 }
 #endif
