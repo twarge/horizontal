@@ -55,6 +55,12 @@ struct HorizontalIPadProjectView: View {
     @State private var placePartRequest: HorizontalPartPlacementRequest?
     // App settings sheet (the iPad stand-in for the macOS Settings window).
     @State private var settingsSheetPresented = false
+    // Per-file view-state persistence (the same store the macOS workspace
+    // uses): which panes are open, the split-separator positions, and the
+    // right slide-over. Restored in loadProject; the flag keeps the save
+    // hooks from clobbering the store with defaults before that happens.
+    @State private var didRestoreViewState = false
+    @State private var viewStateSaveTask: Task<Void, Never>?
 
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -120,6 +126,18 @@ struct HorizontalIPadProjectView: View {
             if !panes.contains(focusedPane) {
                 focusedPane = orderedVisiblePanes.first ?? focusedPane
             }
+            scheduleViewStateSave()
+        }
+        .onChange(of: paneSizeFractions) { _, _ in
+            scheduleViewStateSave()
+        }
+        .onChange(of: rightPane) { _, _ in
+            scheduleViewStateSave()
+        }
+        .onDisappear {
+            viewStateSaveTask?.cancel()
+            viewStateSaveTask = nil
+            saveViewState()
         }
         .onChange(of: horizontalSizeClass) { _, sizeClass in
             // A compact width (iPhone, or a narrow Split View slice) has no room for
@@ -269,47 +287,57 @@ struct HorizontalIPadProjectView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// All the top-bar controls in one view, separated by hairline dividers, so the
-    /// single ToolbarItem hosting it renders them as one shared glass island.
+    /// All the top-bar controls in one view, so the single ToolbarItem hosting
+    /// it renders them as one shared glass island — spacing alone separates the
+    /// controls.
     private func toolbarIsland(for project: HorizontalProject) -> some View {
         HStack(spacing: 14) {
+            readOnlyLockButton
             Button {
                 settingsSheetPresented = true
             } label: {
                 Label("Settings", systemImage: "gear")
             }
-            islandDivider
             Button {
                 rightPane = rightPane == .inspector ? nil : .inspector
             } label: {
                 Label("Inspector", systemImage: "sidebar.trailing")
             }
             if project.board != nil {
-                islandDivider
                 Button {
                     rulesSheetPresented = true
                 } label: {
                     Label("Board Rules", systemImage: "checklist")
                 }
             }
-            islandDivider
             Button {
                 rightPane = rightPane == .export ? nil : .export
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
             }
             if availablePanes(for: project).count > 1 {
-                islandDivider
                 panePicker(for: project)
             }
         }
         .labelStyle(.iconOnly)
     }
 
-    /// A vertical rule between island controls. Left to itself a `Divider` fills the
-    /// toolbar's height and touches the capsule edges; the fixed height keeps it inset.
-    private var islandDivider: some View {
-        Divider().frame(height: 20)
+    /// The read-only lock: shows the document's effective read-only state and
+    /// toggles the preference (the same one Settings offers). Release builds
+    /// force read-only with no preference to flip, so there the lock is a
+    /// disabled indicator rather than a control.
+    private var readOnlyLockButton: some View {
+        let isReadOnly = appearanceSettings.isReadOnlyOperationEnabled
+        return Button {
+            appearanceSettings.readOnlyOperationBinding().wrappedValue = !isReadOnly
+        } label: {
+            Label(
+                isReadOnly ? "Read-Only" : "Editable",
+                systemImage: isReadOnly ? "lock.fill" : "lock.open"
+            )
+        }
+        .disabled(HorizontalOperationDefaults.isReadOnlyOperationForced)
+        .accessibilityLabel(isReadOnly ? "Read-only. Tap to allow editing." : "Editable. Tap to make read-only.")
     }
 
     /// The shared settings form (the same one the macOS Settings window hosts),
@@ -500,6 +528,7 @@ struct HorizontalIPadProjectView: View {
                     selectionToolSettings: selectionToolSettings,
                     onSelectedNetChange: { selectedNetIDs = $0 },
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
+                    onSheetChange: { applyEditedSchematicSheet($0) },
                     onSelectionDetailsChange: { setSelectionDetails($0, for: .schematic) },
                     onCanvasCommandActionsChange: { schematicCanvasActions = $0 },
                     selectionPropertyChangeCommand: selectionPropertyChangeCommands[.schematic],
@@ -668,6 +697,37 @@ struct HorizontalIPadProjectView: View {
         .buttonStyle(.plain)
     }
 
+    /// Applies an edited schematic sheet to the in-memory project and the
+    /// document archive (DocumentGroup persists the binding). Mirrors the macOS
+    /// workspace — without this, sheet edits rendered but never reached the
+    /// document, so drawing on a schematic silently didn't save.
+    private func applyEditedSchematicSheet(_ sheet: HorizontalSchematicSheet) {
+        guard var updated = project, var schematic = updated.schematic else { return }
+        for index in schematic.sheets.indices {
+            schematic.sheets[index].grid = sheet.grid
+        }
+        if let index = schematic.sheets.firstIndex(where: { $0.id == sheet.id }) {
+            schematic.sheets[index] = sheet
+        }
+        updated.schematic = schematic
+        let standardizedURL = schematic.url.standardizedFileURL
+        for index in updated.schematics.indices
+            where updated.schematics[index].schematic.url.standardizedFileURL == standardizedURL {
+            updated.schematics[index].schematic = schematic
+        }
+        project = updated
+        do {
+            try HorizontalProjectJSONApplicator.apply(
+                schematicSheet: sheet,
+                schematicURL: schematic.url,
+                in: updated,
+                to: &document.archive
+            )
+        } catch {
+            loadError = "Couldn't save schematic changes: \(error.localizedDescription)"
+        }
+    }
+
     /// Applies a routed/edited board to the in-memory project and the document
     /// archive (DocumentGroup persists the binding). Mirrors the macOS path.
     private func applyEditedBoard(_ board: HorizontalBoard) {
@@ -751,11 +811,83 @@ struct HorizontalIPadProjectView: View {
             selectedNetIDs.removeAll()
             highlightedNetIDs.removeAll()
             selectionDetailsByPane.removeAll()
+            restoreViewState(for: loadedProject)
         } catch {
             loadError = error.localizedDescription
         }
 
         isLoading = false
+    }
+
+    /// Restores the per-file view state (open panes, separator positions, the
+    /// right slide-over) the last close saved. Runs after the defaults above so
+    /// a file with no stored state keeps them; panes the stored state names
+    /// but this project no longer offers are dropped.
+    private func restoreViewState(for project: HorizontalProject) {
+        didRestoreViewState = false
+        guard let fileURL else {
+            // An unsaved document has no identity to store under; enable the
+            // save hooks anyway so they cheaply no-op instead of never running.
+            didRestoreViewState = true
+            return
+        }
+
+        if let stored = HorizontalFileViewStateStore.shared.load(for: fileURL) {
+            var panes = stored.visiblePanes.intersection(availablePanes(for: project))
+            if isCompact, panes.count > 1, let first = panes.sorted(by: { $0.rawValue < $1.rawValue }).first {
+                panes = [first]
+            }
+            if !panes.isEmpty {
+                visiblePanes = panes
+                focusedPane = orderedVisiblePanes.first ?? focusedPane
+            }
+            paneSizeFractions = stored.paneSizeFractions.mapValues { CGFloat($0) }
+            switch stored.rightSidebarPane {
+            case .selection:
+                rightPane = .inspector
+            case .export:
+                rightPane = .export
+            case .rulesResults, nil:
+                rightPane = nil
+            }
+        }
+        didRestoreViewState = true
+    }
+
+    private func scheduleViewStateSave() {
+        guard didRestoreViewState, fileURL != nil else {
+            return
+        }
+        viewStateSaveTask?.cancel()
+        viewStateSaveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+            saveViewState()
+            viewStateSaveTask = nil
+        }
+    }
+
+    private func saveViewState() {
+        guard didRestoreViewState, let fileURL else {
+            return
+        }
+        // Start from the stored state so the fields this view doesn't manage
+        // (viewports, display options, window size) survive the round trip.
+        var state = HorizontalFileViewStateStore.shared.load(for: fileURL) ?? .default
+        state.visiblePanes = visiblePanes
+        state.paneSizeFractions = paneSizeFractions.mapValues(Double.init)
+        switch rightPane {
+        case .inspector:
+            state.rightSidebarPane = .selection
+        case .export:
+            state.rightSidebarPane = .export
+        case nil:
+            state.rightSidebarPane = nil
+        }
+        state.showsSelectionSidebar = rightPane == .inspector
+        HorizontalFileViewStateStore.shared.save(state, for: fileURL)
     }
 
     private func projectURLForLoading() throws -> URL {

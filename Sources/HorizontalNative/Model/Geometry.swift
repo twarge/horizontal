@@ -194,6 +194,14 @@ struct HorizontalRect: Equatable {
 
     static let empty = HorizontalRect(minX: 0, minY: 0, maxX: 0, maxY: 0)
 
+    /// The region a canvas frames when a document has no content yet: a 100 mm
+    /// square around the origin (canvas units are nanometers). Fitting the raw
+    /// `.empty` rect instead renders at one nanometer per pixel — no grid point
+    /// within a million pixels — and the canvas input transforms, which all
+    /// bail on empty bounds, map every click to the origin, so a brand-new
+    /// document looked frozen.
+    static let emptyContentCanvasRegion = HorizontalRect(center: .zero, size: 100_000_000)
+
     var width: Double { maxX - minX }
     var height: Double { maxY - minY }
     var center: HorizontalPoint { HorizontalPoint(x: (minX + maxX) / 2, y: (minY + maxY) / 2) }
@@ -220,6 +228,13 @@ struct HorizontalRect: Equatable {
         minY = min(minY, point.y)
         maxX = max(maxX, point.x)
         maxY = max(maxY, point.y)
+    }
+
+    /// This rect, or the empty-content canvas region when there is nothing to
+    /// frame — see `emptyContentCanvasRegion` for why empty bounds must never
+    /// reach a canvas.
+    func orEmptyContentCanvasRegion() -> HorizontalRect {
+        isEmpty ? .emptyContentCanvasRegion : self
     }
 
     func padded(_ fraction: Double = 0.08) -> HorizontalRect {

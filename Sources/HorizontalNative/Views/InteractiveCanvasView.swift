@@ -408,6 +408,12 @@ struct InteractiveCanvasView: View {
     var onUnplacedObjectSelection: (HorizontalUnplacedObject) -> Void = { _ in }
     var onSelectionPropertyChange: (HorizontalSelectionPropertyChange) -> Void = { _ in }
     var onCommand: (HorizontalCanvasCommand) -> Void = { _ in }
+    /// Whether a press at this world point (with this hit-test slop, world units
+    /// per screen point) lands on an already-selected object. When it does, the
+    /// primary drag MOVES the selection instead of starting a rubber-band
+    /// selection. Mode views implement it — returning false during any active
+    /// interaction (draw, paste, move) — and the default keeps drags selecting.
+    var hitsSelection: (HorizontalPoint, Double) -> Bool = { _, _ in false }
     /// Reports the exact world→view transform the canvas is rendering with
     /// (built from `effectiveViewport` — what's on screen — not the `viewport`
     /// binding, which can lag behind by a gesture-settle). Hosts that overlay
@@ -438,6 +444,16 @@ struct InteractiveCanvasView: View {
     /// this ~500-line body. (@State holds the reference but does NOT observe it.)
     @State private var cursorInput = HorizontalCursorInput()
     @State private var selectionDragPreview: HorizontalSelectionDragPreview?
+    /// Move-vs-select intent of the primary drag in flight, decided on the
+    /// drag's first event from whether the press landed on the selection.
+    /// `.moveCandidate` becomes `.moving` (and starts the move interaction)
+    /// once the drag travels the activation threshold in any direction.
+    private enum PrimaryDragIntent: Equatable {
+        case selection
+        case moveCandidate(origin: CGPoint)
+        case moving
+    }
+    @State private var primaryDragIntent: PrimaryDragIntent?
     @State private var gridDivisor = 1
     @State private var pointerInsideSelectionPopover = false
     /// Current keyboard modifiers, published by the macOS NSEvent flags monitor so
@@ -719,44 +735,13 @@ struct InteractiveCanvasView: View {
                         selectionModifierAction: selectionToolSettings.modifierAction,
                         currentModifiers: { currentInputModifiers },
                         onPrimaryClick: { location, size, clickAction, clickCount in
-                            let transform = currentTransform(size: size, fitInsets: fitInsets)
-                            let worldPoint = snappedCursor(at: location, transform: transform).point
-                            let unitsPerPoint = worldUnitsPerScreenPoint(transform: transform, size: size)
-                            if allowsContextMenu, clickAction == .replace, clickCount == 1 {
-                                let selectableTargets = targetMenuItems(worldPoint, unitsPerPoint).filter { $0.ref != nil }
-                                if selectableTargets.count > 1 {
-                                    showSelectionTargetMenu(targets: selectableTargets)
-                                    return
-                                }
-                            }
-                            onPrimaryClick(worldPoint, unitsPerPoint, clickAction, clickCount)
+                            handleResolvedPrimaryClick(location: location, size: size, fitInsets: fitInsets, action: clickAction, clickCount: clickCount)
                         },
                         onPrimaryDragChanged: { start, current, points, size, _, isActive in
-                            if isActive {
-                                selectionDragPreview = HorizontalSelectionDragPreview(
-                                    tool: selectionToolSettings.tool,
-                                    start: start,
-                                    current: current,
-                                    points: points
-                                )
-                            }
-                            cursorInput.location = current
-                            reportCursorWorldPoint(current, size: size, fitInsets: fitInsets)
+                            handlePrimaryDragChanged(start: start, current: current, points: points, size: size, fitInsets: fitInsets, isActive: isActive)
                         },
                         onPrimaryDragEnded: { start, current, points, size, clickAction, isActive in
-                            defer {
-                                selectionDragPreview = nil
-                            }
-                            guard isActive else {
-                                return
-                            }
-                            let preview = HorizontalSelectionDragPreview(
-                                tool: selectionToolSettings.tool,
-                                start: start,
-                                current: current,
-                                points: points
-                            )
-                            selectDragRegion(preview, size: size, fitInsets: fitInsets, action: clickAction)
+                            handlePrimaryDragEnded(start: start, current: current, points: points, size: size, fitInsets: fitInsets, action: clickAction, isActive: isActive)
                         },
                         onMagnify: { magnification, anchor, size in
                             cursorInput.suppressForViewportGesture()
@@ -799,24 +784,7 @@ struct InteractiveCanvasView: View {
                         selectionTool: selectionToolSettings.tool,
                         selectionModifierAction: selectionToolSettings.modifierAction,
                         onPrimaryClick: { location, size, viewLocation, view, clickAction, clickCount in
-                            let transform = currentTransform(size: size, fitInsets: fitInsets)
-                            let worldPoint = snappedCursor(at: location, transform: transform).point
-                            let unitsPerPoint = worldUnitsPerScreenPoint(transform: transform, size: size)
-                            if allowsContextMenu,
-                               clickAction == .replace,
-                               clickCount == 1 {
-                                let selectableTargets = targetMenuItems(worldPoint, unitsPerPoint).filter { $0.ref != nil }
-                                if selectableTargets.count > 1 {
-                                    showSelectionTargetMenu(targets: selectableTargets)
-                                    return
-                                }
-                            }
-                            onPrimaryClick(
-                                worldPoint,
-                                unitsPerPoint,
-                                clickAction,
-                                clickCount
-                            )
+                            handleResolvedPrimaryClick(location: location, size: size, fitInsets: fitInsets, action: clickAction, clickCount: clickCount)
                         },
                         onPrimaryDragChanged: { start, current, points, size, clickAction, isActive in
                             if isActive {
@@ -888,17 +856,11 @@ struct InteractiveCanvasView: View {
                     #else
                     HorizontalMultitouchView(
                         onTap: { location, size, modifiers, clickCount in
-                            let transform = currentTransform(size: size, fitInsets: fitInsets)
                             let action = HorizontalCanvasInputCore.clickAction(
                                 modifiers: modifiers,
                                 modifierAction: selectionToolSettings.modifierAction
                             )
-                            onPrimaryClick(
-                                snappedCursor(at: location, transform: transform).point,
-                                worldUnitsPerScreenPoint(transform: transform, size: size),
-                                action,
-                                clickCount
-                            )
+                            handleResolvedPrimaryClick(location: location, size: size, fitInsets: fitInsets, action: action, clickCount: clickCount)
                         },
                         contextMenuTargets: { location in
                             guard allowsContextMenu else {
@@ -972,6 +934,14 @@ struct InteractiveCanvasView: View {
                                 return true
                             }
                             return false
+                        },
+                        selectionTool: selectionToolSettings.tool,
+                        selectionModifierAction: selectionToolSettings.modifierAction,
+                        onPrimaryDragChanged: { start, current, points, size, _, isActive in
+                            handlePrimaryDragChanged(start: start, current: current, points: points, size: size, fitInsets: fitInsets, isActive: isActive)
+                        },
+                        onPrimaryDragEnded: { start, current, points, size, action, isActive in
+                            handlePrimaryDragEnded(start: start, current: current, points: points, size: size, fitInsets: fitInsets, action: action, isActive: isActive)
                         }
                     )
                     #endif
@@ -1510,6 +1480,123 @@ struct InteractiveCanvasView: View {
 
     private func worldUnitsPerScreenPoint(transform: HorizontalCanvasTransform, size: CGSize) -> Double {
         transform.visibleBounds.width / max(Double(size.width), 1)
+    }
+
+    /// Shared primary-drag handler (macOS SwiftUI gesture, iOS pointer drag).
+    /// Decides move-vs-select on the drag's first event: a press on the
+    /// selection drags it (via the existing move interaction), anywhere else
+    /// rubber-bands.
+    private func handlePrimaryDragChanged(
+        start: CGPoint,
+        current: CGPoint,
+        points: [CGPoint],
+        size: CGSize,
+        fitInsets: HorizontalCanvasInsets,
+        isActive: Bool
+    ) {
+        if primaryDragIntent == nil {
+            let transform = currentTransform(size: size, fitInsets: fitInsets)
+            let unitsPerPoint = worldUnitsPerScreenPoint(transform: transform, size: size)
+            primaryDragIntent = hitsSelection(transform.worldPoint(start), unitsPerPoint)
+                ? .moveCandidate(origin: start)
+                : .selection
+        }
+
+        switch primaryDragIntent {
+        case .moveCandidate(let origin):
+            let traveled = max(abs(current.x - origin.x), abs(current.y - origin.y))
+            if traveled > HorizontalPrimaryDragState.activationThreshold {
+                // Anchor the move at the press point, then start it — the move
+                // interaction anchors at the last reported cursor position.
+                reportCursorWorldPoint(origin, size: size, fitInsets: fitInsets)
+                onCommand(.moveSelection)
+                primaryDragIntent = .moving
+            }
+        case .moving, .selection, nil:
+            break
+        }
+
+        if case .selection = primaryDragIntent, isActive {
+            selectionDragPreview = HorizontalSelectionDragPreview(
+                tool: selectionToolSettings.tool,
+                start: start,
+                current: current,
+                points: points
+            )
+        }
+        cursorInput.location = current
+        reportCursorWorldPoint(current, size: size, fitInsets: fitInsets)
+    }
+
+    private func handlePrimaryDragEnded(
+        start: CGPoint,
+        current: CGPoint,
+        points: [CGPoint],
+        size: CGSize,
+        fitInsets: HorizontalCanvasInsets,
+        action: HorizontalSelectionClickAction,
+        isActive: Bool
+    ) {
+        defer {
+            selectionDragPreview = nil
+            primaryDragIntent = nil
+        }
+        switch primaryDragIntent {
+        case .moving:
+            reportCursorWorldPoint(current, size: size, fitInsets: fitInsets)
+            onCommand(.commitInteraction)
+        case .moveCandidate:
+            // Never traveled far enough to start the move; the drag machine
+            // resolves these as clicks, which arrive via the click path.
+            break
+        case .selection, nil:
+            guard isActive else {
+                return
+            }
+            let preview = HorizontalSelectionDragPreview(
+                tool: selectionToolSettings.tool,
+                start: start,
+                current: current,
+                points: points
+            )
+            selectDragRegion(preview, size: size, fitInsets: fitInsets, action: action)
+        }
+    }
+
+    /// Shared resolved-click handler (macOS input view + trackpad monitor, iOS
+    /// tap and pointer-drag click fallback). A click that ends a move-intent
+    /// drag commits the move instead of selecting; the box drag machine's
+    /// activation needs both axes, so a straight-line drag-move resolves as a
+    /// "click" here.
+    private func handleResolvedPrimaryClick(
+        location: CGPoint,
+        size: CGSize,
+        fitInsets: HorizontalCanvasInsets,
+        action: HorizontalSelectionClickAction,
+        clickCount: Int
+    ) {
+        if let intent = primaryDragIntent {
+            primaryDragIntent = nil
+            if intent == .moving {
+                onCommand(.commitInteraction)
+                return
+            }
+        }
+        let transform = currentTransform(size: size, fitInsets: fitInsets)
+        let worldPoint = snappedCursor(at: location, transform: transform).point
+        let unitsPerPoint = worldUnitsPerScreenPoint(transform: transform, size: size)
+        // The click-time disambiguation popup is macOS-only (NSMenu); on iOS
+        // overlapping candidates are disambiguated by the long-press menu.
+        #if canImport(AppKit)
+        if allowsContextMenu, action == .replace, clickCount == 1 {
+            let selectableTargets = targetMenuItems(worldPoint, unitsPerPoint).filter { $0.ref != nil }
+            if selectableTargets.count > 1 {
+                showSelectionTargetMenu(targets: selectableTargets)
+                return
+            }
+        }
+        #endif
+        onPrimaryClick(worldPoint, unitsPerPoint, action, clickCount)
     }
 
     private func selectDragRegion(
@@ -2283,6 +2370,12 @@ struct HorizontalMultitouchView: UIViewRepresentable {
     /// Hardware-keyboard key (iPad). Returns true if the canvas consumed it; false
     /// lets the press propagate up the responder chain.
     var onKeyEvent: (HorizontalCanvasKeyEvent) -> Bool = { _ in false }
+    /// Trackpad/mouse pointer click-drag, in `HorizontalCanvasInputView`'s
+    /// primary-drag shape: (start, current, points, size, action, isActive).
+    var selectionTool: HorizontalSelectionTool = .box
+    var selectionModifierAction: HorizontalSelectionModifierAction = .toggle
+    var onPrimaryDragChanged: (CGPoint, CGPoint, [CGPoint], CGSize, HorizontalSelectionClickAction, Bool) -> Void = { _, _, _, _, _, _ in }
+    var onPrimaryDragEnded: (CGPoint, CGPoint, [CGPoint], CGSize, HorizontalSelectionClickAction, Bool) -> Void = { _, _, _, _, _, _ in }
 
     /// Everything except the Pencil. The pan/pinch recognizers take these so a
     /// finger (or trackpad) still moves the board while the Pencil is reserved
@@ -2346,6 +2439,19 @@ struct HorizontalMultitouchView: UIViewRepresentable {
         pan.allowedTouchTypes = Self.nonPencilTouchTypes
         pan.delegate = coordinator
         view.addGestureRecognizer(pan)
+        // The delegate refuses this recognizer pointer TOUCHES (a trackpad
+        // click-drag rubber-bands via the recognizer below); two-finger scroll
+        // arrives as UIScrollEvents through allowedScrollTypesMask, which the
+        // touch refusal doesn't affect, so trackpad panning survives.
+        coordinator.canvasPanRecognizer = pan
+
+        let pointerDrag = UIPanGestureRecognizer(target: coordinator, action: #selector(Coordinator.handlePointerDrag(_:)))
+        pointerDrag.minimumNumberOfTouches = 1
+        pointerDrag.maximumNumberOfTouches = 1
+        pointerDrag.allowedScrollTypesMask = []
+        pointerDrag.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        pointerDrag.delegate = coordinator
+        view.addGestureRecognizer(pointerDrag)
 
         let pinch = UIPinchGestureRecognizer(target: coordinator, action: #selector(Coordinator.handlePinch(_:)))
         pinch.delegate = coordinator
@@ -2366,6 +2472,10 @@ struct HorizontalMultitouchView: UIViewRepresentable {
         coordinator.onPan = onPan
         coordinator.onPinch = onPinch
         coordinator.onGestureEnd = onGestureEnd
+        coordinator.selectionTool = selectionTool
+        coordinator.selectionModifierAction = selectionModifierAction
+        coordinator.onPrimaryDragChanged = onPrimaryDragChanged
+        coordinator.onPrimaryDragEnded = onPrimaryDragEnded
     }
 
     /// A first-responder UIView that turns hardware-keyboard presses into canvas
@@ -2548,6 +2658,15 @@ struct HorizontalMultitouchView: UIViewRepresentable {
         var onPan: (CGSize) -> Void
         var onPinch: (CGFloat, CGPoint, CGSize, CGSize) -> Void
         var onGestureEnd: () -> Void
+        // Pointer (trackpad/mouse) click-drag: the shared primary-drag shape.
+        var selectionTool: HorizontalSelectionTool = .box
+        var selectionModifierAction: HorizontalSelectionModifierAction = .toggle
+        var onPrimaryDragChanged: (CGPoint, CGPoint, [CGPoint], CGSize, HorizontalSelectionClickAction, Bool) -> Void = { _, _, _, _, _, _ in }
+        var onPrimaryDragEnded: (CGPoint, CGPoint, [CGPoint], CGSize, HorizontalSelectionClickAction, Bool) -> Void = { _, _, _, _, _, _ in }
+        /// The canvas pan recognizer, so the delegate can refuse it pointer
+        /// touches (which the pointer-drag recognizer owns instead).
+        weak var canvasPanRecognizer: UIPanGestureRecognizer?
+        private var pointerDragState: HorizontalPrimaryDragState?
 
         private var isPinching = false
         private var isPanning = false
@@ -2799,6 +2918,21 @@ struct HorizontalMultitouchView: UIViewRepresentable {
             guard let view = recognizer.view else { return }
             // Tracked before the pinch guard so it always clears at gesture end.
             isPanning = recognizer.state == .began || recognizer.state == .changed
+            // Settle the viewport at gesture end BEFORE the suppression guard
+            // below. A pan that ended while `isMultiTouchSequenceActive` was
+            // still set (the view holds it until the LAST finger lifts, and the
+            // recognizer's .ended arrives before the view's touchesEnded) used
+            // to skip `onGestureEnd`, leaving viewport-derived chrome —
+            // highlights, selection boxes — offset from the settled canvas
+            // until the 600 ms debounce caught up.
+            if recognizer.state == .ended || recognizer.state == .cancelled || recognizer.state == .failed {
+                lastPanTranslation = .zero
+                // Mirror handlePinch: settle the viewport into the @Binding at
+                // gesture end so viewport-derived chrome repositions immediately
+                // rather than after the 600 ms debounce.
+                onGestureEnd()
+                return
+            }
             // `isMultiTouchSequenceActive` catches the window `isPinching` can't:
             // a second finger re-bases this recognizer's translation onto the
             // two-finger centroid immediately, whereas the pinch's `.began` (and
@@ -2823,12 +2957,60 @@ struct HorizontalMultitouchView: UIViewRepresentable {
                 onPan(delta)
             default:
                 lastPanTranslation = .zero
-                // Mirror handlePinch: settle the viewport into the @Binding at
-                // gesture end so viewport-derived chrome repositions immediately
-                // rather than after the 600 ms debounce.
-                if recognizer.state == .ended || recognizer.state == .cancelled {
-                    onGestureEnd()
+            }
+        }
+
+        /// Trackpad/mouse pointer click-drag: drives the shared primary-drag
+        /// state machine (rubber-band selection, or drag-to-move when the press
+        /// lands on the selection) instead of panning the canvas. Two-finger
+        /// trackpad scroll still pans — it reaches the canvas pan recognizer as
+        /// UIScrollEvents, which the pointer-touch refusal below doesn't block.
+        @objc func handlePointerDrag(_ recognizer: UIPanGestureRecognizer) {
+            guard let view = recognizer.view else { return }
+            let size = view.bounds.size
+            let location = recognizer.location(in: view)
+            switch recognizer.state {
+            case .began:
+                // The recognizer begins only after its movement hysteresis;
+                // reconstruct the press point so the drag (and any drag-to-move
+                // anchor) starts where the button actually went down.
+                let translation = recognizer.translation(in: view)
+                let origin = CGPoint(x: location.x - translation.x, y: location.y - translation.y)
+                var state = HorizontalPrimaryDragState(
+                    start: origin,
+                    current: origin,
+                    points: [origin],
+                    action: HorizontalCanvasInputCore.clickAction(
+                        modifiers: modifiers(from: recognizer.modifierFlags),
+                        modifierAction: selectionModifierAction
+                    ),
+                    clickCount: 1
+                )
+                state.extend(to: location, tool: selectionTool)
+                pointerDragState = state
+                onPrimaryDragChanged(state.start, state.current, state.points, size, state.action, state.isActive)
+            case .changed:
+                guard pointerDragState != nil else { return }
+                pointerDragState?.extend(to: location, tool: selectionTool)
+                if let state = pointerDragState {
+                    onPrimaryDragChanged(state.start, state.current, state.points, size, state.action, state.isActive)
                 }
+            case .ended:
+                guard var state = pointerDragState else { return }
+                pointerDragState = nil
+                switch state.resolve(at: location) {
+                case let .drag(start, current, points, action):
+                    onPrimaryDragEnded(start, current, points, size, action, true)
+                case let .click(point, clickCount, _):
+                    onTap(point, size, modifiers(from: recognizer.modifierFlags), clickCount)
+                }
+            case .cancelled, .failed:
+                if let state = pointerDragState {
+                    onPrimaryDragEnded(state.start, state.current, state.points, size, state.action, false)
+                }
+                pointerDragState = nil
+            default:
+                break
             }
         }
 
@@ -2894,6 +3076,20 @@ struct HorizontalMultitouchView: UIViewRepresentable {
             shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
         ) -> Bool {
             true
+        }
+
+        // A trackpad/mouse pointer click-drag rubber-bands (its own recognizer)
+        // instead of panning. Refusing the pointer TOUCH here leaves two-finger
+        // trackpad scrolling intact: scroll arrives as UIScrollEvents through
+        // `allowedScrollTypesMask`, not through this touch path.
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldReceive touch: UITouch
+        ) -> Bool {
+            if gestureRecognizer === canvasPanRecognizer, touch.type == .indirectPointer {
+                return false
+            }
+            return true
         }
     }
 }

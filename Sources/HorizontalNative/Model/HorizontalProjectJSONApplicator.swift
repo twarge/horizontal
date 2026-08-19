@@ -270,6 +270,52 @@ enum HorizontalProjectJSONApplicator {
     }
 
     static func apply(
+        sheetName name: String,
+        forSheetID sheetID: String,
+        schematicURL: URL,
+        in project: HorizontalProject,
+        to archive: inout HorizontalProjectArchive
+    ) throws {
+        let path = try archivePath(for: schematicURL, project: project, archive: archive)
+        var json = try loadJSON(relativePath: path, fallbackURL: schematicURL, from: archive)
+        guard var sheets = json["sheets"] as? JSONDictionary,
+              let sheetKey = matchingKey(sheetID, in: sheets),
+              var sheetJSON = sheets[sheetKey] as? JSONDictionary else {
+            throw HorizontalProjectJSONApplyError.invalidJSON(path)
+        }
+        sheetJSON["name"] = name
+        sheets[sheetKey] = sheetJSON
+        json["sheets"] = sheets
+        try saveJSON(json, relativePath: path, to: &archive)
+    }
+
+    /// Rewrites every listed sheet's `index` to its position in
+    /// `orderedSheetIDs` (1-based, Horizon's numbering). Sheets not listed keep
+    /// their stored index.
+    static func apply(
+        sheetOrder orderedSheetIDs: [String],
+        schematicURL: URL,
+        in project: HorizontalProject,
+        to archive: inout HorizontalProjectArchive
+    ) throws {
+        let path = try archivePath(for: schematicURL, project: project, archive: archive)
+        var json = try loadJSON(relativePath: path, fallbackURL: schematicURL, from: archive)
+        guard var sheets = json["sheets"] as? JSONDictionary else {
+            throw HorizontalProjectJSONApplyError.invalidJSON(path)
+        }
+        for (position, sheetID) in orderedSheetIDs.enumerated() {
+            guard let sheetKey = matchingKey(sheetID, in: sheets),
+                  var sheetJSON = sheets[sheetKey] as? JSONDictionary else {
+                continue
+            }
+            sheetJSON["index"] = position + 1
+            sheets[sheetKey] = sheetJSON
+        }
+        json["sheets"] = sheets
+        try saveJSON(json, relativePath: path, to: &archive)
+    }
+
+    static func apply(
         symbolPinNames pins: [HorizontalSymbolPinName],
         forComponentID componentID: String,
         blockURL: URL,

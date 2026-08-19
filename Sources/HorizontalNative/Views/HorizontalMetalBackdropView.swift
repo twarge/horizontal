@@ -94,7 +94,11 @@ struct HorizontalMetalBackdropView {
 
     @MainActor
     fileprivate func makeBackdropView(coordinator: Renderer) -> MTKView {
+        #if os(iOS)
+        let view = ResizeRedrawingMTKView(frame: .zero, device: coordinator.device)
+        #else
         let view = MTKView(frame: .zero, device: coordinator.device)
+        #endif
         view.delegate = coordinator
         view.framebufferOnly = true
         view.isPaused = true
@@ -128,7 +132,12 @@ struct HorizontalMetalBackdropView {
         let profileStart = BoardLoadTimer.timingStart()
         coordinator.update(
             bounds: bounds,
-            viewport: viewport,
+            // The driver's viewport is the freshest (the SwiftUI `viewport`
+            // here is the throttled chrome value, up to a gesture-frame stale);
+            // never write a stale pan/zoom into the uniforms, even though the
+            // `register` call below re-syncs — that call being load-bearing for
+            // correctness is exactly the trap this avoids.
+            viewport: viewportDriver?.viewport ?? viewport,
             fitInsets: fitInsets,
             grid: grid,
             backgroundColor: backgroundColor,
@@ -162,6 +171,9 @@ struct HorizontalMetalBackdropView {
                 id: loadProfileID
             )
         }
+        // Load-bearing: registration re-pushes the driver's live viewport into
+        // this renderer's uniforms, keeping every stacked canvas layer on the
+        // same pan/zoom even if a stale value slipped in above.
         viewportDriver?.register(renderer: coordinator, view: view)
         #if os(macOS)
         view.needsDisplay = true
@@ -174,6 +186,22 @@ struct HorizontalMetalBackdropView {
             view.draw()
         }
     }
+
+    #if os(iOS)
+    /// An MTKView (paused, needs-display driven) that requests a draw after
+    /// every layout pass. AppKit invalidates a resized NSView on its own, but
+    /// UIKit does not — so on iOS a resized canvas kept presenting the old
+    /// stretched frame until the next pan or pinch happened to request a draw.
+    /// `setNeedsDisplay` here defers the draw to the display phase, keeping the
+    /// actual redraw out of the resize's own layout pass (the trade documented
+    /// in `drawableSizeWillChange`).
+    private final class ResizeRedrawingMTKView: MTKView {
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            setNeedsDisplay()
+        }
+    }
+    #endif
 
     final class Renderer: NSObject, MTKViewDelegate {
         var loadProfileID: String?
@@ -421,13 +449,28 @@ struct HorizontalMetalBackdropView {
             let presentsInTransaction = false
             view.presentsWithTransaction = presentsInTransaction
 
+            // Every early return below re-arms the draw. The view is paused and
+            // needs-display driven, so a skipped draw otherwise keeps PRESENTING
+            // the previous frame indefinitely — with several stacked canvas
+            // layers contending for drawables during a pan, one layer (e.g. the
+            // highlight overlay) could stay at a stale pan offset from the
+            // others until an unrelated event happened to dirty it.
+            func rearmSkippedDraw() {
+                #if os(macOS)
+                view.setNeedsDisplay(view.bounds)
+                #else
+                view.setNeedsDisplay()
+                #endif
+            }
             guard let drawable = view.currentDrawable else {
                 recordLoadProfileDrawSkip("no drawable", since: drawTickStart)
+                rearmSkippedDraw()
                 return
             }
             guard let commandBuffer = commandQueue?.makeCommandBuffer(),
                   let backdropPipelineState else {
                 recordLoadProfileDrawSkip("missing pipeline", since: drawTickStart)
+                rearmSkippedDraw()
                 return
             }
 
@@ -455,6 +498,7 @@ struct HorizontalMetalBackdropView {
             guard let descriptor = view.currentRenderPassDescriptor,
                   let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
                 recordLoadProfileDrawSkip("missing render pass", since: drawTickStart)
+                rearmSkippedDraw()
                 return
             }
             if marksLoadProfileFirstDraw {

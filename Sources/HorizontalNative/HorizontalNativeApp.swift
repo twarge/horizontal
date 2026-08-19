@@ -18,13 +18,12 @@ struct HorizontalNativeApp: App {
 
     var body: some Scene {
         #if os(macOS)
-        DocumentGroup(newDocument: HorizontalProjectDocument()) { configuration in
+        DocumentGroup(newDocument: HorizontalProjectDocument.newProject()) { configuration in
             ProjectDocumentView(configuration: configuration, document: configuration.$document)
                 .environmentObject(appearanceSettings)
                 .preferredColorScheme(appearanceSettings.preferredColorScheme)
         }
         .commands {
-            CommandGroup(replacing: .newItem) { }
             HorizontalAboutCommands()
             HorizontalViewCommands()
         }
@@ -35,7 +34,7 @@ struct HorizontalNativeApp: App {
                 .preferredColorScheme(appearanceSettings.preferredColorScheme)
         }
         #else
-        DocumentGroup(newDocument: HorizontalProjectDocument()) { configuration in
+        DocumentGroup(newDocument: HorizontalProjectDocument.newProject()) { configuration in
             HorizontalIPadProjectView(
                 document: configuration.$document,
                 fileURL: configuration.fileURL
@@ -43,9 +42,37 @@ struct HorizontalNativeApp: App {
             .environmentObject(appearanceSettings)
             .preferredColorScheme(appearanceSettings.preferredColorScheme)
         }
+
+        // The opening screen: title, Create Document, and the document browser
+        // for existing projects, replacing the bare Files browser as the launch
+        // experience.
+        DocumentGroupLaunchScene("Horizontal") {
+            NewDocumentButton("Create Document")
+        } background: {
+            HorizontalLaunchBackground()
+        }
         #endif
     }
 }
+
+#if os(iOS)
+/// Backdrop for the launch scene: the dark copper-on-substrate palette of the
+/// board canvas, so the opening screen reads as this app rather than a stock
+/// document browser.
+private struct HorizontalLaunchBackground: View {
+    var body: some View {
+        LinearGradient(
+            colors: [
+                Color(red: 0.09, green: 0.24, blue: 0.20),
+                Color(red: 0.03, green: 0.08, blue: 0.10)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        .ignoresSafeArea()
+    }
+}
+#endif
 
 #if DEBUG && os(macOS)
 private final class HorizontalDebugConsoleFilter: @unchecked Sendable {
