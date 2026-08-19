@@ -39,6 +39,17 @@ struct HorizontalSettingsView: View {
                 )
             }
 
+            #if os(iOS)
+            // The glass island behind the top-bar buttons; macOS has no equivalent
+            // toolbar, so the section would be dead weight there.
+            Section("Toolbar") {
+                Toggle("Transparent Toolbar", isOn: appearanceSettings.transparentToolbarBinding())
+                Text("Hides the glass background behind the toolbar buttons so more of the canvas shows through.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            #endif
+
             Section("3D View Colors") {
                 threeDViewColorRow("Background", selection: appearanceSettings.boardSceneBackgroundColorBinding())
                 threeDViewColorRow("Substrate", selection: appearanceSettings.boardSceneSubstrateColorBinding())
@@ -115,8 +126,12 @@ struct HorizontalSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        // The fixed size shapes the macOS Settings window; on iPad the form is
+        // presented in a sheet and should fill whatever size the sheet provides.
+        #if os(macOS)
         .frame(width: 680)
         .frame(minHeight: 640)
+        #endif
     }
 
     private var canvasColorRoles: [HorizontalColorRole] {

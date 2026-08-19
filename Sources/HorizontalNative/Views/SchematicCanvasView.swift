@@ -3,7 +3,7 @@ import SwiftUI
 struct SchematicCanvasView: View {
     // The in-canvas selection popover stays off on both platforms: macOS uses its
     // right inspector sidebar and iOS uses the right-side slide-over inspector
-    // (HorizontalInspectorSlideOver) instead.
+    // (HorizontalInspectorSidebar) instead.
     static let showsInCanvasSelectionInspector = false
     private static let junctionDotRadiusWorld = 375_000.0
     private static let terminalCrossHalfSizeWorld = 250_000.0
