@@ -37,7 +37,7 @@ private struct PastePlacementState {
 struct BoardCanvasView: View {
     // The in-canvas selection popover stays off on both platforms: macOS uses its
     // right inspector sidebar and iOS uses the right-side slide-over inspector
-    // (HorizontalInspectorSlideOver) instead.
+    // (HorizontalInspectorSidebar) instead.
     static let showsInCanvasSelectionInspector = false
     private static let quarterTurnAngle = -16_384
     private static let noNetClassChoiceID = "none"

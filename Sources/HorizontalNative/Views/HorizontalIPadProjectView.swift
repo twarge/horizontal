@@ -53,6 +53,8 @@ struct HorizontalIPadProjectView: View {
     // Part placement: the part browser sets a request, which the schematic canvas
     // picks up (via its onAppear/onChange) to start the place-on-canvas interaction.
     @State private var placePartRequest: HorizontalPartPlacementRequest?
+    // App settings sheet (the iPad stand-in for the macOS Settings window).
+    @State private var settingsSheetPresented = false
 
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -67,7 +69,9 @@ struct HorizontalIPadProjectView: View {
         // navigation bar (filename + back-to-Files + the document menu). Wrapping
         // the content in another NavigationStack stacked a second, redundant bar
         // (the duplicate document title) beneath it.
-        HorizontalInspectorSlideOver(isPresented: rightPane != nil) {
+        // The sidebar pushes the canvases aside on iPad so it never covers the board;
+        // compact widths keep the overlay, where a 340pt column would crush the canvas.
+        HorizontalInspectorSidebar(isPresented: rightPane != nil, pushesContent: !isCompact) {
             VStack(spacing: 0) {
                 if let project {
                     paneSplit(for: project)
@@ -86,38 +90,18 @@ struct HorizontalIPadProjectView: View {
         .navigationBarTitleDisplayMode(.inline)
         .modifier(NavigationDocumentModifier(url: fileURL))
         .toolbar {
+            // One ToolbarItem so everything shares a single glass island — separate
+            // items each get their own capsule. (The pane picker never appears without
+            // a schematic or board, so this one condition covers every control.)
             if let project, project.board != nil || project.schematic != nil {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        rightPane = rightPane == .inspector ? nil : .inspector
-                    } label: {
-                        Label("Inspector", systemImage: "sidebar.trailing")
-                    }
+                    toolbarIsland(for: project)
                 }
+                .sharedBackgroundVisibility(appearanceSettings.isToolbarTransparent ? .hidden : .automatic)
             }
-            if let project, project.board != nil {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        rulesSheetPresented = true
-                    } label: {
-                        Label("Board Rules", systemImage: "checklist")
-                    }
-                }
-            }
-            if let project, project.board != nil || project.schematic != nil {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        rightPane = rightPane == .export ? nil : .export
-                    } label: {
-                        Label("Export", systemImage: "square.and.arrow.up")
-                    }
-                }
-            }
-            if let project, availablePanes(for: project).count > 1 {
-                ToolbarItem(placement: .topBarTrailing) {
-                    panePicker(for: project)
-                }
-            }
+        }
+        .sheet(isPresented: $settingsSheetPresented) {
+            settingsSheet
         }
         .fullScreenCover(isPresented: $rulesSheetPresented) {
             if let project {
@@ -285,9 +269,69 @@ struct HorizontalIPadProjectView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// All the top-bar controls in one view, separated by hairline dividers, so the
+    /// single ToolbarItem hosting it renders them as one shared glass island.
+    private func toolbarIsland(for project: HorizontalProject) -> some View {
+        HStack(spacing: 14) {
+            Button {
+                settingsSheetPresented = true
+            } label: {
+                Label("Settings", systemImage: "gear")
+            }
+            islandDivider
+            Button {
+                rightPane = rightPane == .inspector ? nil : .inspector
+            } label: {
+                Label("Inspector", systemImage: "sidebar.trailing")
+            }
+            if project.board != nil {
+                islandDivider
+                Button {
+                    rulesSheetPresented = true
+                } label: {
+                    Label("Board Rules", systemImage: "checklist")
+                }
+            }
+            islandDivider
+            Button {
+                rightPane = rightPane == .export ? nil : .export
+            } label: {
+                Label("Export", systemImage: "square.and.arrow.up")
+            }
+            if availablePanes(for: project).count > 1 {
+                islandDivider
+                panePicker(for: project)
+            }
+        }
+        .labelStyle(.iconOnly)
+    }
+
+    /// A vertical rule between island controls. Left to itself a `Divider` fills the
+    /// toolbar's height and touches the capsule edges; the fixed height keeps it inset.
+    private var islandDivider: some View {
+        Divider().frame(height: 20)
+    }
+
+    /// The shared settings form (the same one the macOS Settings window hosts),
+    /// presented as a sheet since iOS has no Settings scene.
+    private var settingsSheet: some View {
+        NavigationStack {
+            HorizontalSettingsView()
+                .navigationTitle("Settings")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { settingsSheetPresented = false }
+                    }
+                }
+        }
+    }
+
     /// Pane chooser. A regular width class (iPad) toggles panes independently so the
     /// schematic and the board can sit side by side; a compact one (iPhone) keeps the
-    /// old exclusive segmented control, since there is no room for two.
+    /// old exclusive segmented control, since there is no room for two. Both live
+    /// inside the toolbar island, so neither draws its own grouped chrome (no
+    /// ControlGroup — that would nest a second bordered capsule in the island).
     @ViewBuilder
     private func panePicker(for project: HorizontalProject) -> some View {
         let panes = availablePanes(for: project)
@@ -302,16 +346,13 @@ struct HorizontalIPadProjectView: View {
             .labelStyle(.iconOnly)
             .fixedSize()
         } else {
-            ControlGroup {
-                ForEach(panes) { pane in
-                    Toggle(isOn: paneVisibilityBinding(for: pane, among: panes)) {
-                        Label(pane.title, systemImage: pane.symbolName)
-                    }
-                    .toggleStyle(.button)
-                    .accessibilityLabel("Show \(pane.title)")
+            ForEach(panes) { pane in
+                Toggle(isOn: paneVisibilityBinding(for: pane, among: panes)) {
+                    Label(pane.title, systemImage: pane.symbolName)
                 }
+                .toggleStyle(.button)
+                .accessibilityLabel("Show \(pane.title)")
             }
-            .labelStyle(.iconOnly)
         }
     }
 

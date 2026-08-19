@@ -390,6 +390,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
     @Published private var showsHoverPopover: Bool
     @Published private var fillsNetLabelBackground: Bool
     @Published private var swapsViewControlsAndUnplacedReferences: Bool
+    @Published private var transparentToolbar: Bool
     @Published private var readOnlyOperation: Bool
     @Published private var boardSceneBackgroundColor: Color
     @Published private var boardSceneSubstrateColor: Color
@@ -411,6 +412,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
         showsHoverPopover = Self.loadShowsHoverPopover(defaults: defaults)
         fillsNetLabelBackground = Self.loadFillsNetLabelBackground(defaults: defaults)
         swapsViewControlsAndUnplacedReferences = Self.loadSwapsViewControlsAndUnplacedReferences(defaults: defaults)
+        transparentToolbar = Self.loadTransparentToolbar(defaults: defaults)
         readOnlyOperation = HorizontalOperationDefaults.readOnlyOperation(defaults: defaults)
         boardSceneBackgroundColor = Self.loadBoardSceneBackgroundColor(defaults: defaults)
         boardSceneSubstrateColor = Self.loadBoardSceneSubstrateColor(defaults: defaults)
@@ -449,6 +451,10 @@ final class HorizontalAppearanceSettings: ObservableObject {
 
     var shouldSwapViewControlsAndUnplacedReferences: Bool {
         swapsViewControlsAndUnplacedReferences
+    }
+
+    var isToolbarTransparent: Bool {
+        transparentToolbar
     }
 
     /// Belt-and-braces: a Release build reports read-only regardless of what is
@@ -556,6 +562,14 @@ final class HorizontalAppearanceSettings: ObservableObject {
             self.swapsViewControlsAndUnplacedReferences
         } set: { swaps in
             self.setSwapsViewControlsAndUnplacedReferences(swaps)
+        }
+    }
+
+    func transparentToolbarBinding() -> Binding<Bool> {
+        Binding {
+            self.transparentToolbar
+        } set: { isTransparent in
+            self.setTransparentToolbar(isTransparent)
         }
     }
 
@@ -741,6 +755,12 @@ final class HorizontalAppearanceSettings: ObservableObject {
         defaults.set(newValue, forKey: Self.swapViewControlsAndUnplacedReferencesDefaultsKey)
     }
 
+    private func setTransparentToolbar(_ newValue: Bool) {
+        objectWillChange.send()
+        transparentToolbar = newValue
+        defaults.set(newValue, forKey: Self.transparentToolbarDefaultsKey)
+    }
+
     private func setReadOnlyOperation(_ newValue: Bool) {
         objectWillChange.send()
         readOnlyOperation = newValue
@@ -844,6 +864,13 @@ final class HorizontalAppearanceSettings: ObservableObject {
         return defaults.bool(forKey: hoverPopoverDefaultsKey)
     }
 
+    private static func loadTransparentToolbar(defaults: UserDefaults) -> Bool {
+        guard defaults.object(forKey: transparentToolbarDefaultsKey) != nil else {
+            return false
+        }
+        return defaults.bool(forKey: transparentToolbarDefaultsKey)
+    }
+
     private static func loadFillsNetLabelBackground(defaults: UserDefaults) -> Bool {
         guard defaults.object(forKey: netLabelBackgroundDefaultsKey) != nil else {
             return false
@@ -910,6 +937,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
     private static let hoverPopoverDefaultsKey = "appearance.showsHoverPopover"
     private static let netLabelBackgroundDefaultsKey = "appearance.fillNetLabelBackground"
     private static let swapViewControlsAndUnplacedReferencesDefaultsKey = "appearance.swapViewControlsAndUnplacedReferences"
+    private static let transparentToolbarDefaultsKey = "appearance.transparentToolbar"
     private static let boardSceneBackgroundColorDefaultsKey = "appearance.boardScene.backgroundColor"
     private static let boardSceneSubstrateColorDefaultsKey = "appearance.boardScene.substrateColor"
     private static let boardSceneSolderMaskColorDefaultsKey = "appearance.boardScene.solderMaskColor"
