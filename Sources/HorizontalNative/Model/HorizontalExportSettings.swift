@@ -423,6 +423,7 @@ struct HorizontalExportSettings: Hashable {
 
     private static func gerberLayerIDs(for board: HorizontalBoard?) -> [Int] {
         let fixedLayers = [
+            HorizontalBoardLayers.outlineNotes,
             HorizontalBoardLayers.outline,
             HorizontalBoardLayers.topPaste,
             HorizontalBoardLayers.topSilkscreen,
