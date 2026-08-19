@@ -41,6 +41,15 @@ struct ProjectDocumentView: View {
             .task(id: configuration.fileURL) {
                 await loadProject()
             }
+            // Unlocking mid-session (the toolbar lock or the Settings toggle):
+            // a project opened read-only skipped completing its writable
+            // archive, so reload to build it. The workspace keeps its own state
+            // (same view identity) — only `document.archive` refreshes.
+            .onChange(of: appearanceSettings.isReadOnlyOperationEnabled) { wasReadOnly, isReadOnly in
+                if wasReadOnly, !isReadOnly {
+                    Task { await loadProject() }
+                }
+            }
             .focusedSceneValue(\.horizonVisiblePanes, $visiblePanes)
             .focusedSceneValue(\.horizonHighlightNetAction, highlightSelectedNet)
     }
@@ -86,7 +95,7 @@ struct ProjectDocumentView: View {
 
     private func loadProject() async {
         guard let url = configuration.fileURL else {
-            state = .failed("The document URL was not available.")
+            await loadUntitledProject()
             return
         }
 
@@ -130,6 +139,30 @@ struct ProjectDocumentView: View {
                document.archive != archive {
                 document.archive = archive
             }
+            state = .loaded(project)
+        } catch {
+            state = .failed(error.localizedDescription)
+        }
+    }
+
+    /// File > New: the document has no URL until its first save, so materialize
+    /// the in-memory template archive in a temporary folder and load from there
+    /// (the iPad view does the same for URL-less documents). The archive is
+    /// already a complete package, so there is no folder-access or
+    /// `completeProject` step; the first save writes it wherever the user
+    /// chooses and the `.task(id: configuration.fileURL)` reload takes over.
+    private func loadUntitledProject() async {
+        state = .loading
+        do {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("HorizontalUntitled", isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent(document.archive.suggestedFilename ?? "Untitled.horizontal")
+            try document.archive.write(to: url)
+            let project = try await Task.detached(priority: .userInitiated) {
+                try HorizontalProject.load(from: url)
+            }.value
             state = .loaded(project)
         } catch {
             state = .failed(error.localizedDescription)
@@ -484,13 +517,14 @@ struct ProjectWorkspaceView: View {
         _highlightedNetIDs = highlightedNetIDs
         _selectedComponentIDs = selectedComponentIDs
         _highlightedComponentIDs = highlightedComponentIDs
-        _columnVisibility = State(initialValue: fileViewState?.showsNavigatorSidebar == false ? .detailOnly : .all)
+        _columnVisibility = State(initialValue: Self.initialColumnVisibility(fileViewState: fileViewState, project: project))
         _schematicDisplayOptions = State(initialValue: fileViewState?.schematicDisplayOptions ?? SchematicDisplayOptions())
         _boardDisplayOptions = State(initialValue: fileViewState?.boardDisplayOptions ?? BoardDisplayOptions())
         _windowSize = State(initialValue: fileViewState?.windowSize)
         _schematicViewport = State(initialValue: fileViewState?.schematicViewport ?? CanvasViewport())
         _boardViewport = State(initialValue: fileViewState?.boardViewport ?? CanvasViewport())
         _threeDCameraState = State(initialValue: fileViewState?.threeDCameraState)
+        _paneSizeFractions = State(initialValue: (fileViewState?.paneSizeFractions ?? [:]).mapValues { CGFloat($0) })
         // Falls back to the shared default (closed) rather than a literal, so
         // the "no stored view state" case can't drift from
         // HorizontalFileViewState.default.
@@ -501,6 +535,20 @@ struct ProjectWorkspaceView: View {
                     : nil)
         )
         _exportSettings = State(initialValue: HorizontalExportSettings(project: project))
+    }
+
+    /// First-open sidebar state: a remembered choice wins; otherwise the
+    /// navigator only earns its column when there is more than one sheet to
+    /// navigate — a fresh single-sheet project opens on the canvases alone.
+    private static func initialColumnVisibility(
+        fileViewState: HorizontalFileViewState?,
+        project: HorizontalProject
+    ) -> NavigationSplitViewVisibility {
+        if let fileViewState {
+            return fileViewState.showsNavigatorSidebar ? .all : .detailOnly
+        }
+        let sheetCount = project.schematics.reduce(0) { $0 + $1.schematic.sheets.count }
+        return sheetCount > 1 ? .all : .detailOnly
     }
 
     private var activeHighlightedNetIDs: Set<String> {
@@ -599,6 +647,9 @@ struct ProjectWorkspaceView: View {
             .onChange(of: threeDCameraState) { _, _ in
                 scheduleFileViewStateSave()
             }
+            .onChange(of: paneSizeFractions) { _, _ in
+                scheduleFileViewStateSave()
+            }
             .onDisappear {
                 fileViewStateSaveTask?.cancel()
                 fileViewStateSaveTask = nil
@@ -611,14 +662,21 @@ struct ProjectWorkspaceView: View {
             ProjectNavigatorView(
                 project: project,
                 selection: $navigatorSelection,
-                searchText: $navigatorSearchText
+                searchText: $navigatorSearchText,
+                allowsSheetEditing: !isReadOnly,
+                onRenameSheet: { schematicURL, sheetID, name in
+                    renameSheet(sheetID: sheetID, to: name, schematicURL: schematicURL)
+                },
+                onReorderSheets: { schematicURL, orderedIDs in
+                    reorderSheets(orderedIDs, schematicURL: schematicURL)
+                }
             )
             // Without an explicit column width the sidebar is compressible to
             // nothing: the detail column below demanded the window's entire
             // minimum width, so at small sizes AppKit squeezed the sidebar
             // narrower than its rows and clipped their text at BOTH edges
             // ("Schematic" rendering as "ematic").
-            .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 420)
+            .navigationSplitViewColumnWidth(min: 110, ideal: 130, max: 420)
         } detail: {
             workspaceDetail
         }
@@ -630,27 +688,35 @@ struct ProjectWorkspaceView: View {
 
     private var workspaceDetail: some View {
         GeometryReader { proxy in
-            ZStack(alignment: .trailing) {
+            // The right sidebar is a real column: opening it pushes the pane
+            // split narrower so the rightmost canvas stays fully visible,
+            // rather than sliding over and obscuring it.
+            HStack(spacing: 0) {
                 splitContent(safeAreaInsets: proxy.safeAreaInsets)
                     .ignoresSafeArea(.container, edges: [.top, .leading])
+                    .frame(maxWidth: .infinity)
 
                 if let rightSidebarPane {
                     rightSidebarView(rightSidebarPane, safeAreaInsets: proxy.safeAreaInsets)
                         .frame(width: 340)
                         .ignoresSafeArea(.container, edges: [.top, .bottom, .trailing])
                         .transition(.move(edge: .trailing).combined(with: .opacity))
-                        // The sidebar overlays the canvas; tell the canvas to pass
-                        // mouse events through to the sidebar's controls instead of
-                        // treating them as empty-space canvas clicks (which deselect).
+                        // Tell the canvas to pass mouse events through to the
+                        // sidebar's controls instead of treating them as
+                        // empty-space canvas clicks (which deselect) — still
+                        // needed mid-transition, while the sidebar slides
+                        // across the canvas.
                         .onHover { pointerInsideRightSidebar = $0 }
                 }
             }
             .animation(.snappy(duration: 0.18), value: rightSidebarPane)
         }
-        // Must leave room for the sidebar inside the window minimum (980).
-        // This was also 980, so the detail alone claimed the whole window and
-        // the sidebar got whatever was left — nothing. The right-hand pane is a
-        // ZStack overlay, not another column, so it doesn't add to this.
+        // Must leave room for the navigator sidebar inside the window minimum
+        // (980). This was also 980, so the detail alone claimed the whole
+        // window and the navigator got whatever was left — nothing. The right
+        // sidebar IS part of this: with it open the pane split compresses to
+        // what remains, and the split view divides evenly once panes go below
+        // their preferred minimum.
         .frame(minWidth: 660)
     }
 
@@ -690,18 +756,21 @@ struct ProjectWorkspaceView: View {
 
     @ToolbarContentBuilder
     private var workspaceToolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            paneSelector
-        }
+        // One ToolbarItem so every control shares a single glass island, the
+        // way the iPad toolbar does — separate items (and ControlGroups) each
+        // rendered their own capsule, which read as scattered buttons.
+        ToolbarItem(placement: .primaryAction) {
+            HStack(spacing: 14) {
+                readOnlyLockButton
 
-        ToolbarItemGroup(placement: .primaryAction) {
-            ToolbarFindControl(
-                text: $navigatorSearchText,
-                isPresented: $findIsPresented,
-                activationID: findActivationID
-            )
+                paneSelector
 
-            ControlGroup {
+                ToolbarFindControl(
+                    text: $navigatorSearchText,
+                    isPresented: $findIsPresented,
+                    activationID: findActivationID
+                )
+
                 Button {
                     toggleRightSidebar(.selection)
                 } label: {
@@ -731,23 +800,43 @@ struct ProjectWorkspaceView: View {
         }
     }
 
+    /// The read-only lock: shows the document's effective read-only state and
+    /// toggles the preference (the same one Settings offers). Release builds
+    /// force read-only with no preference to flip, so there the lock is a
+    /// disabled indicator rather than a control. Unlocking re-runs the outer
+    /// view's project load (via its isReadOnlyOperationEnabled onChange) so a
+    /// document opened read-only gains the writable archive it skipped.
+    private var readOnlyLockButton: some View {
+        Button {
+            appearanceSettings.readOnlyOperationBinding().wrappedValue = !isReadOnly
+        } label: {
+            Label(
+                isReadOnly ? "Read-Only" : "Editable",
+                systemImage: isReadOnly ? "lock.fill" : "lock.open"
+            )
+        }
+        .disabled(HorizontalOperationDefaults.isReadOnlyOperationForced)
+        .help(
+            HorizontalOperationDefaults.isReadOnlyOperationForced
+                ? "This build of Horizontal cannot modify project files."
+                : (isReadOnly ? "Read-only — click to allow editing" : "Editable — click to make read-only")
+        )
+        .accessibilityLabel(isReadOnly ? "Read-only. Click to allow editing." : "Editable. Click to make read-only.")
+    }
+
     @ViewBuilder
     private var paneSelector: some View {
-        ControlGroup {
-            ForEach(HorizontalPane.allCases) { pane in
-                Toggle(isOn: paneVisibilityBinding(for: pane)) {
-                    Label(pane.title, systemImage: pane.symbolName)
-                }
-                .toggleStyle(.button)
-                .labelStyle(.iconOnly)
-                .imageScale(.large)
-                .controlSize(.large)
-                .disabled(visiblePanes.count == 1 && visiblePanes.contains(pane))
-                .help(pane.title)
+        ForEach(HorizontalPane.allCases) { pane in
+            Toggle(isOn: paneVisibilityBinding(for: pane)) {
+                Label(pane.title, systemImage: pane.symbolName)
             }
+            .toggleStyle(.button)
+            .labelStyle(.iconOnly)
+            .imageScale(.large)
+            .controlSize(.large)
+            .disabled(visiblePanes.count == 1 && visiblePanes.contains(pane))
+            .help(pane.title)
         }
-        .controlSize(.large)
-        .help("Show or hide document panes")
     }
 
     private func paneVisibilityBinding(for pane: HorizontalPane) -> Binding<Bool> {
@@ -856,7 +945,8 @@ struct ProjectWorkspaceView: View {
             boardViewport: boardViewport,
             threeDCameraState: threeDCameraState,
             schematicDisplayOptions: schematicDisplayOptions,
-            boardDisplayOptions: boardDisplayOptions
+            boardDisplayOptions: boardDisplayOptions,
+            paneSizeFractions: paneSizeFractions.mapValues(Double.init)
         )
         HorizontalFileViewStateStore.shared.save(state, for: project.url)
     }
@@ -2053,6 +2143,68 @@ struct ProjectWorkspaceView: View {
         }
     }
 
+    private func renameSheet(sheetID: String, to name: String, schematicURL: URL) {
+        guard !isReadOnly else {
+            return
+        }
+        updateSchematics(at: schematicURL) { schematic in
+            guard let index = schematic.sheets.firstIndex(where: { $0.id == sheetID }) else {
+                return
+            }
+            schematic.sheets[index].name = name
+        }
+        do {
+            try HorizontalProjectJSONApplicator.apply(
+                sheetName: name,
+                forSheetID: sheetID,
+                schematicURL: schematicURL,
+                in: project,
+                to: &document.archive
+            )
+        } catch {
+            recordArchiveApplyFailure(error)
+        }
+    }
+
+    private func reorderSheets(_ orderedSheetIDs: [String], schematicURL: URL) {
+        guard !isReadOnly else {
+            return
+        }
+        updateSchematics(at: schematicURL) { schematic in
+            schematic.sheets.sort { lhs, rhs in
+                (orderedSheetIDs.firstIndex(of: lhs.id) ?? .max)
+                    < (orderedSheetIDs.firstIndex(of: rhs.id) ?? .max)
+            }
+            for index in schematic.sheets.indices {
+                schematic.sheets[index].index = index + 1
+            }
+        }
+        do {
+            try HorizontalProjectJSONApplicator.apply(
+                sheetOrder: orderedSheetIDs,
+                schematicURL: schematicURL,
+                in: project,
+                to: &document.archive
+            )
+        } catch {
+            recordArchiveApplyFailure(error)
+        }
+    }
+
+    /// Applies one mutation to every in-memory copy of the schematic at `url`:
+    /// the per-block schematics list and the top-schematic mirror.
+    private func updateSchematics(at url: URL, _ mutate: (inout HorizontalSchematic) -> Void) {
+        let standardizedURL = url.standardizedFileURL
+        for index in project.schematics.indices
+            where project.schematics[index].schematic.url.standardizedFileURL == standardizedURL {
+            mutate(&project.schematics[index].schematic)
+        }
+        if var schematic = project.schematic, schematic.url.standardizedFileURL == standardizedURL {
+            mutate(&schematic)
+            project.schematic = schematic
+        }
+    }
+
     private func replace(_ sheet: HorizontalSchematicSheet, in schematic: inout HorizontalSchematic) {
         for index in schematic.sheets.indices {
             schematic.sheets[index].grid = sheet.grid
@@ -2686,6 +2838,21 @@ struct ProjectNavigatorView: View {
     var project: HorizontalProject
     @Binding var selection: ProjectNavigatorSelection?
     @Binding var searchText: String
+    var allowsSheetEditing = false
+    /// (schematic URL, sheet ID, new name)
+    var onRenameSheet: (URL, String, String) -> Void = { _, _, _ in }
+    /// (schematic URL, sheet IDs in their new order)
+    var onReorderSheets: (URL, [String]) -> Void = { _, _ in }
+
+    @State private var renameTarget: SheetRenameTarget?
+    @State private var renameDraft = ""
+
+    private struct SheetRenameTarget: Identifiable {
+        var schematicURL: URL
+        var sheetID: String
+        var currentName: String
+        var id: String { sheetID }
+    }
 
     var body: some View {
         List(selection: $selection) {
@@ -2712,8 +2879,12 @@ struct ProjectNavigatorView: View {
                                 )
                                 .padding(.leading, 18)
                                 .tag(ProjectNavigatorSelection.sheet(blockID: schematic.block.uuid, sheetID: sheet.id))
+                                .contextMenu {
+                                    sheetContextMenu(for: sheet, schematicURL: schematic.schematic.url)
+                                }
                             }
                         }
+                        .onMove(perform: sheetMoveHandler(orderedIDs: schematic.schematic.sheets.map(\.id), schematicURL: schematic.schematic.url))
                     }
                 }
             }
@@ -2733,7 +2904,11 @@ struct ProjectNavigatorView: View {
                             title: sheet.name
                         )
                         .tag(ProjectNavigatorSelection.standaloneSheet(sheet.id))
+                        .contextMenu {
+                            sheetContextMenu(for: sheet, schematicURL: schematic.url)
+                        }
                     }
+                    .onMove(perform: sheetMoveHandler(orderedIDs: schematic.sheets.map(\.id), schematicURL: schematic.url))
                 }
             }
 
@@ -2764,6 +2939,64 @@ struct ProjectNavigatorView: View {
                 }
             }
         }
+        .alert("Rename Sheet", isPresented: renameAlertPresented) {
+            TextField("Name", text: $renameDraft)
+            Button("Rename") { commitRename() }
+            Button("Cancel", role: .cancel) { renameTarget = nil }
+        }
+    }
+
+    @ViewBuilder
+    private func sheetContextMenu(for sheet: HorizontalSchematicSheet, schematicURL: URL) -> some View {
+        if allowsSheetEditing {
+            Button("Rename…") {
+                renameDraft = sheet.name
+                renameTarget = SheetRenameTarget(
+                    schematicURL: schematicURL,
+                    sheetID: sheet.id,
+                    currentName: sheet.name
+                )
+            }
+        }
+    }
+
+    /// Drag-reordering for a sheets ForEach. `nil` (disabling the drag) while a
+    /// search filters the rows — the visible indices wouldn't map onto the real
+    /// sheet order — or when the project is read-only.
+    private func sheetMoveHandler(orderedIDs: [String], schematicURL: URL) -> ((IndexSet, Int) -> Void)? {
+        guard allowsSheetEditing, !isSearching, orderedIDs.count > 1 else {
+            return nil
+        }
+        return { source, destination in
+            var reordered = orderedIDs
+            reordered.move(fromOffsets: source, toOffset: destination)
+            guard reordered != orderedIDs else {
+                return
+            }
+            onReorderSheets(schematicURL, reordered)
+        }
+    }
+
+    private var renameAlertPresented: Binding<Bool> {
+        Binding {
+            renameTarget != nil
+        } set: { presented in
+            if !presented {
+                renameTarget = nil
+            }
+        }
+    }
+
+    private func commitRename() {
+        guard let target = renameTarget else {
+            return
+        }
+        renameTarget = nil
+        let name = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != target.currentName else {
+            return
+        }
+        onRenameSheet(target.schematicURL, target.sheetID, name)
     }
 
     private var isSearching: Bool {

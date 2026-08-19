@@ -683,6 +683,9 @@ struct SchematicCanvasView: View {
             },
             onSelectionPropertyChange: applySelectionPropertyChange,
             onCommand: dispatchCanvasCommand,
+            hitsSelection: { worldPoint, worldUnitsPerPoint in
+                pressLandsOnSelection(at: worldPoint, worldUnitsPerPoint: worldUnitsPerPoint)
+            },
             onCanvasDisplayTransformChange: { transform in
                 #if os(macOS)
                 // Only store while editing (no gesturing then, so it stays
@@ -6971,6 +6974,22 @@ struct SchematicCanvasView: View {
 
     private func hitSelectable(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> HorizontalSelectableRef? {
         schematicSelectableScene().hitSelectable(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+    }
+
+    /// Whether a primary-drag press lands on the current selection — the drag
+    /// then moves the selection instead of rubber-banding. Never during another
+    /// interaction or read-only: those own the pointer already.
+    private func pressLandsOnSelection(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> Bool {
+        guard !isReadOnly,
+              moveState == nil,
+              placePartState == nil,
+              drawNetLineState == nil,
+              drawGraphicsState == nil,
+              !selectedObjects.isEmpty else {
+            return false
+        }
+        let refs = schematicSelectableScene().targetRefs(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+        return !Set(selectedObjects).isDisjoint(with: refs)
     }
 
     private func targetMenuItems(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> [HorizontalSelectionTargetItem] {

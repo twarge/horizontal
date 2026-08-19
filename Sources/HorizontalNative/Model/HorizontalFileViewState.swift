@@ -41,6 +41,10 @@ struct HorizontalFileViewState: Codable, Equatable {
     var threeDCameraState: HorizontalSceneCameraState?
     var schematicDisplayOptions: SchematicDisplayOptions
     var boardDisplayOptions: BoardDisplayOptions
+    /// Where the user dragged the pane-split separators: each visible pane's
+    /// share of the split width (the `ResizablePaneSplitView` model). Empty
+    /// means even splits.
+    var paneSizeFractions: [HorizontalPane: Double]
 
     init(
         visiblePanes: Set<HorizontalPane>,
@@ -52,7 +56,8 @@ struct HorizontalFileViewState: Codable, Equatable {
         boardViewport: CanvasViewport = CanvasViewport(),
         threeDCameraState: HorizontalSceneCameraState? = nil,
         schematicDisplayOptions: SchematicDisplayOptions,
-        boardDisplayOptions: BoardDisplayOptions
+        boardDisplayOptions: BoardDisplayOptions,
+        paneSizeFractions: [HorizontalPane: Double] = [:]
     ) {
         self.visiblePanes = visiblePanes
         self.showsNavigatorSidebar = showsNavigatorSidebar
@@ -64,6 +69,7 @@ struct HorizontalFileViewState: Codable, Equatable {
         self.threeDCameraState = threeDCameraState
         self.schematicDisplayOptions = schematicDisplayOptions
         self.boardDisplayOptions = boardDisplayOptions
+        self.paneSizeFractions = paneSizeFractions
     }
 
     init(from decoder: Decoder) throws {
@@ -79,6 +85,7 @@ struct HorizontalFileViewState: Codable, Equatable {
         threeDCameraState = try container.decodeIfPresent(HorizontalSceneCameraState.self, forKey: .threeDCameraState)
         schematicDisplayOptions = try container.decodeIfPresent(SchematicDisplayOptions.self, forKey: .schematicDisplayOptions) ?? Self.default.schematicDisplayOptions
         boardDisplayOptions = try container.decodeIfPresent(BoardDisplayOptions.self, forKey: .boardDisplayOptions) ?? Self.default.boardDisplayOptions
+        paneSizeFractions = try container.decodeIfPresent([HorizontalPane: Double].self, forKey: .paneSizeFractions) ?? [:]
     }
 
     static let `default` = HorizontalFileViewState(

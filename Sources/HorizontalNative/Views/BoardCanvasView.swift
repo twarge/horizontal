@@ -746,6 +746,9 @@ struct BoardCanvasView: View {
             },
             onSelectionPropertyChange: applySelectionPropertyChange,
             onCommand: dispatchCanvasCommand,
+            hitsSelection: { worldPoint, worldUnitsPerPoint in
+                pressLandsOnSelection(at: worldPoint, worldUnitsPerPoint: worldUnitsPerPoint)
+            },
             onCanvasDisplayTransformChange: { transform in
                 #if os(macOS)
                 // Only store while editing (the user isn't gesturing then, so it
@@ -2031,6 +2034,22 @@ struct BoardCanvasView: View {
 
     private func hitSelectable(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> HorizontalSelectableRef? {
         boardSelectableScene().hitSelectable(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+    }
+
+    /// Whether a primary-drag press lands on the current selection — the drag
+    /// then moves the selection instead of rubber-banding. Never during another
+    /// interaction or read-only: those own the pointer already.
+    private func pressLandsOnSelection(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> Bool {
+        guard !isReadOnly,
+              moveState == nil,
+              drawTrackState == nil,
+              drawGraphicsState == nil,
+              pastePlacementState == nil,
+              !selectedObjects.isEmpty else {
+            return false
+        }
+        let refs = boardSelectableScene().targetRefs(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+        return !Set(selectedObjects).isDisjoint(with: refs)
     }
 
     private func targetMenuItems(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> [HorizontalSelectionTargetItem] {

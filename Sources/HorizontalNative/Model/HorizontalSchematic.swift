@@ -918,7 +918,7 @@ struct HorizontalSchematic {
                 unplacedObjects: [],
                 addedComponents: [],
                 componentInfo: blockInfo.components,
-                bounds: HorizontalRect(points: points).padded()
+                bounds: HorizontalRect(points: points).padded().orEmptyContentCanvasRegion()
             )
         }
         .sorted { lhs, rhs in

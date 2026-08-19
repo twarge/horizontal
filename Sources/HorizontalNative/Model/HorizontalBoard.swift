@@ -778,7 +778,7 @@ struct HorizontalBoard {
                 placedPackages: packages
             ),
             physicalBounds: physicalBounds,
-            bounds: HorizontalRect(points: points).padded()
+            bounds: HorizontalRect(points: points).padded().orEmptyContentCanvasRegion()
         )
     }
 

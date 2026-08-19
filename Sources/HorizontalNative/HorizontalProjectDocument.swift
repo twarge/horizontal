@@ -24,6 +24,16 @@ struct HorizontalProjectDocument: FileDocument {
         archive = HorizontalProjectArchive(regularFileData: rawProjectData)
     }
 
+    /// The document `DocumentGroup` hands out for File > New (macOS) and Create
+    /// Document (iPadOS): a complete empty project rather than an empty file,
+    /// which nothing could load. Package-shaped, so a brand-new document saves
+    /// as a `.horizontal` bundle without needing an in-place `.hprj` manifest.
+    static func newProject() -> HorizontalProjectDocument {
+        var document = HorizontalProjectDocument()
+        document.archive = .newProject()
+        return document
+    }
+
     init(configuration: ReadConfiguration) throws {
         archive = try BoardLoadTimer.measureStandalone("FileDocument read configuration") {
             try HorizontalProjectArchive(fileWrapper: configuration.file)
@@ -31,7 +41,14 @@ struct HorizontalProjectDocument: FileDocument {
     }
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        guard !HorizontalOperationDefaults.readOnlyOperation() else {
+        // Read-only operation protects the user's EXISTING projects from this
+        // app's still-maturing editors. Writing a file that does not exist yet —
+        // Create Document on iPadOS, File > New's first save, Save As to a new
+        // location — can't touch any of them, so it stays allowed even when the
+        // build is locked; otherwise the opening screen's Create Document could
+        // only ever fail in a shipping build.
+        let creatingNewFile = configuration.existingFile == nil
+        guard creatingNewFile || !HorizontalOperationDefaults.readOnlyOperation() else {
             throw HorizontalProjectDocumentError.readOnlyOperation
         }
 
@@ -49,7 +66,21 @@ struct HorizontalProjectDocument: FileDocument {
         // declared content type says, never hand a directory to a URL that is
         // currently a regular file.
         let replacingRegularFile = configuration.existingFile?.isRegularFile ?? false
-        guard configuration.contentType.conforms(to: .package), !replacingRegularFile else {
+        // iOS document creation can hand this write an unresolved dynamic type
+        // for the `.horizontal` extension instead of the declared package type.
+        // A brand-new document's archive — directory-rooted with no manifest
+        // mapping files back to disk — has no single-file representation at
+        // all, so for a dynamic type the archive's own shape decides. Only for
+        // a dynamic type: a RESOLVED non-package type is the user explicitly
+        // saving as `.hprj`, which must keep refusing (missingManifest's
+        // save-as-package message) rather than write a folder named `.hprj`.
+        var isNewPackageArchive = false
+        if case .directory = archive.root, archive.manifest == nil {
+            isNewPackageArchive = true
+        }
+        let writingPackage = configuration.contentType.conforms(to: .package)
+            || (configuration.contentType.isDynamic && isNewPackageArchive)
+        guard writingPackage, !replacingRegularFile else {
             return try archive.projectFileWrapper()
         }
         return try archive.fileWrapper()

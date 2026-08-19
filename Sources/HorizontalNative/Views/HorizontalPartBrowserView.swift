@@ -32,6 +32,7 @@ struct HorizontalPartBrowserView: View {
     @State private var searchScope: HorizontalPartSearchScope = .all
     @State private var searchText = ""
     @State private var selectedPartID: HorizontalPoolPart.ID?
+    @State private var sortOrder = [KeyPathComparator(\HorizontalPoolPart.mpn)]
     @SceneStorage("Horizontal.partBrowser.columnCustomization")
     private var columnCustomization = TableColumnCustomization<HorizontalPoolPart>()
 
@@ -39,14 +40,14 @@ struct HorizontalPartBrowserView: View {
         let terms = searchText
             .split(whereSeparator: \.isWhitespace)
             .map { String($0).lowercased() }
-        guard !terms.isEmpty else {
-            return parts
-        }
-        return parts.filter { part in
-            terms.allSatisfy { term in
-                searchableText(for: part).contains(term)
+        let filtered = terms.isEmpty
+            ? parts
+            : parts.filter { part in
+                terms.allSatisfy { term in
+                    searchableText(for: part).contains(term)
+                }
             }
-        }
+        return filtered.sorted(using: sortOrder)
     }
 
     private var selectedPart: HorizontalPoolPart? {
@@ -103,44 +104,70 @@ struct HorizontalPartBrowserView: View {
         .padding(.vertical, 10)
     }
 
+    /// The sum of the columns' minimum widths (plus row insets): the least
+    /// width at which every column is still legible.
+    private static let minimumTableWidth: CGFloat = 850
+
     private var partTable: some View {
-        Table(filteredParts, selection: $selectedPartID, columnCustomization: $columnCustomization) {
-            TableColumn("MPN") { part in
+        // Table has no horizontal scrolling of its own — when the pane is
+        // narrower than the columns it just clips them — so it rides in a
+        // horizontal ScrollView pinned to no less than the columns' minimum
+        // width. Vertical scrolling stays the table's own.
+        GeometryReader { proxy in
+            ScrollView(.horizontal) {
+                sortableTable
+                    .frame(
+                        width: max(proxy.size.width, Self.minimumTableWidth),
+                        height: proxy.size.height
+                    )
+            }
+            .scrollBounceBehavior(.basedOnSize, axes: [.horizontal])
+        }
+    }
+
+    private var sortableTable: some View {
+        Table(
+            filteredParts,
+            selection: $selectedPartID,
+            sortOrder: $sortOrder,
+            columnCustomization: $columnCustomization
+        ) {
+            TableColumn("MPN", value: \.mpn) { part in
                 tableText(part.mpn, part: part)
             }
             .width(min: 130, ideal: 180)
             .customizationID("mpn")
             .disabledCustomizationBehavior(.visibility)
 
-            TableColumn("Value") { part in
+            TableColumn("Value", value: \.value) { part in
                 tableText(part.value, part: part)
             }
             .width(min: 90, ideal: 120)
             .customizationID("value")
             .disabledCustomizationBehavior(.visibility)
 
-            TableColumn("Manufacturer") { part in
+            TableColumn("Manufacturer", value: \.manufacturer) { part in
                 tableText(part.manufacturer, part: part)
             }
             .width(min: 120, ideal: 150)
             .customizationID("manufacturer")
             .disabledCustomizationBehavior(.visibility)
 
-            TableColumn("Description") { part in
+            TableColumn("Description", value: \.partDescription) { part in
                 tableText(part.partDescription, part: part)
             }
             .width(min: 220, ideal: 360)
             .customizationID("description")
             .disabledCustomizationBehavior(.visibility)
 
-            TableColumn("Package") { part in
+            TableColumn("Package", value: \.packageName) { part in
                 tableText(part.packageName, part: part)
             }
             .width(min: 110, ideal: 140)
             .customizationID("package")
             .disabledCustomizationBehavior(.visibility)
 
-            TableColumn("Tags") { part in
+            TableColumn("Tags", value: \.tagList) { part in
                 tableText(part.tagList, part: part)
             }
             .width(min: 140, ideal: 220)
