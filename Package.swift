@@ -9,7 +9,8 @@ let occtMacOSLibrary = "\(occtMacOSRoot)/libOpenCascadeStairs-macos-arm64.a"
 let package = Package(
     name: "HorizontalNative",
     platforms: [
-        .macOS(.v26)
+        .macOS(.v26),
+        .iOS(.v26)
     ],
     products: [
         .library(name: "HorizontalProjectIO", targets: ["HorizontalProjectIO"]),
