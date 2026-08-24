@@ -39,16 +39,15 @@ struct HorizontalSettingsView: View {
                 )
             }
 
-            #if os(iOS)
-            // The glass island behind the top-bar buttons; macOS has no equivalent
-            // toolbar, so the section would be dead weight there.
+            // Off is the standard chrome on both platforms: the system toolbar
+            // background on macOS, the glass island behind the top-bar buttons
+            // on iPad. On, the canvas runs up underneath it.
             Section("Toolbar") {
                 Toggle("Transparent Toolbar", isOn: appearanceSettings.transparentToolbarBinding())
-                Text("Hides the glass background behind the toolbar buttons so more of the canvas shows through.")
+                Text(transparentToolbarDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            #endif
 
             Section("3D View Colors") {
                 threeDViewColorRow("Background", selection: appearanceSettings.boardSceneBackgroundColorBinding())
@@ -131,6 +130,14 @@ struct HorizontalSettingsView: View {
         #if os(macOS)
         .frame(width: 680)
         .frame(minHeight: 640)
+        #endif
+    }
+
+    private var transparentToolbarDescription: String {
+        #if os(macOS)
+        return "Hides the toolbar background and blends the title bar into the window, so the canvas shows through behind the toolbar buttons."
+        #else
+        return "Hides the glass background behind the toolbar buttons so more of the canvas shows through."
         #endif
     }
 
