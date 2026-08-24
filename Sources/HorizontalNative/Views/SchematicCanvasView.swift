@@ -2154,9 +2154,14 @@ struct SchematicCanvasView: View {
         let connectionMovePlan = selectedSchematicConnectionMovePlan(in: originalSheet)
         let fixedConnectionPointKeys = schematicFixedConnectionPointKeys(in: originalSheet)
         let snappedStart = snapSchematicPointToGrid(start)
+        let initialPoints = HorizontalCanvasModeSupport.moveInitialPoints(
+            startPoint: start,
+            snappedCursorPoint: snappedStart,
+            tracksCursor: tracksCursor
+        )
         moveState = MoveState(
-            startPoint: snappedStart,
-            lastPoint: snappedStart,
+            startPoint: initialPoints.startPoint,
+            lastPoint: initialPoints.lastPoint,
             originalSheet: originalSheet,
             undoSheet: originalSheet,
             editedSheetBeforeMove: editedSheet,
@@ -8998,17 +9003,7 @@ struct SchematicCanvasView: View {
             }
 
             func symbolIDPrefix(for geometryID: String) -> String? {
-                let separators: Set<String> = [
-                    "arc", "line", "pin", "pin-connector", "pin-connector-text",
-                    "pin-decoration", "pin-direction", "pin-name", "pin-pad",
-                    "polygon", "text"
-                ]
-                let components = geometryID.lowercased().split(separator: "/").map(String.init)
-                guard let separatorIndex = components.firstIndex(where: { separators.contains($0) }),
-                      separatorIndex > components.startIndex else {
-                    return nil
-                }
-                return components[..<separatorIndex].joined(separator: "/")
+                schematicMetalSymbolID(forGeometryID: geometryID)
             }
 
             func belongsToSymbol(_ geometryID: String, symbolID: String) -> Bool {
@@ -10324,10 +10319,7 @@ struct SchematicCanvasView: View {
     }
 
     private func symbolID(forGeometryID geometryID: String) -> String? {
-        objectIDPrefix(
-            in: geometryID,
-            separators: ["arc", "line", "pin", "pin-connector", "pin-connector-text", "pin-decoration", "pin-direction", "pin-name", "pin-pad", "polygon", "text"]
-        )
+        schematicMetalSymbolID(forGeometryID: geometryID)
     }
 
     private func pinID(forSymbolPinGeometryID geometryID: String) -> String? {
