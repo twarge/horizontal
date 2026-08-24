@@ -79,4 +79,32 @@ final class GridSnappingTests: XCTestCase {
         let fine = snap(400_123, 0, spacing: 1_000, divisor: 100_000)
         XCTAssertEqual(fine.x, 400_123)
     }
+
+    func testCursorTrackedMoveHoistsGrabbedPointOntoGrid() {
+        let grabbedVertex = HorizontalPoint(x: 400_000, y: 600_000)
+        let snappedCursor = snap(grabbedVertex.x, grabbedVertex.y)
+
+        let initial = HorizontalCanvasModeSupport.moveInitialPoints(
+            startPoint: grabbedVertex,
+            snappedCursorPoint: snappedCursor,
+            tracksCursor: true
+        )
+
+        XCTAssertEqual(initial.startPoint, grabbedVertex)
+        XCTAssertEqual(initial.lastPoint, HorizontalPoint(x: 0, y: 1_000_000))
+        XCTAssertEqual(initial.lastPoint - initial.startPoint, HorizontalPoint(x: -400_000, y: 400_000))
+    }
+
+    func testKeyboardMoveStartsWithoutAnImplicitSnapDelta() {
+        let grabbedVertex = HorizontalPoint(x: 400_000, y: 600_000)
+
+        let initial = HorizontalCanvasModeSupport.moveInitialPoints(
+            startPoint: grabbedVertex,
+            snappedCursorPoint: snap(grabbedVertex.x, grabbedVertex.y),
+            tracksCursor: false
+        )
+
+        XCTAssertEqual(initial.startPoint, grabbedVertex)
+        XCTAssertEqual(initial.lastPoint, grabbedVertex)
+    }
 }

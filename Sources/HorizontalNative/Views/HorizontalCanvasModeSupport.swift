@@ -483,6 +483,21 @@ enum HorizontalCanvasModeSupport {
         return start
     }
 
+    /// Keeps the point grabbed from the selection as the drag origin while a
+    /// cursor-tracked move starts at the cursor's snapped position. This makes
+    /// an off-grid vertex move onto the grid instead of carrying its offset
+    /// through the entire drag.
+    static func moveInitialPoints(
+        startPoint: HorizontalPoint,
+        snappedCursorPoint: HorizontalPoint,
+        tracksCursor: Bool
+    ) -> (startPoint: HorizontalPoint, lastPoint: HorizontalPoint) {
+        (
+            startPoint: startPoint,
+            lastPoint: tracksCursor ? snappedCursorPoint : startPoint
+        )
+    }
+
     static func hitSelectable(
         at point: HorizontalPoint,
         in selectables: [HorizontalSelectable],

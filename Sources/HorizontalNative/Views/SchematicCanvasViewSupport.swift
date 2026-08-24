@@ -75,6 +75,7 @@ func schematicMetalSymbolID(forGeometryID geometryID: String) -> String? {
     let separators: Set<String> = [
         "arc",
         "line",
+        "nopopulate",
         "pin",
         "pin-connector",
         "pin-connector-text",
@@ -333,4 +334,3 @@ final class SchematicSelectableCache: ObservableObject {
         selectionDetailsValue = .empty
     }
 }
-
