@@ -89,4 +89,55 @@ final class HorizontalPlacementTransformTests: XCTestCase {
         XCTAssertTrue(uprightParent.accumulated(with: mirroredChild).mirrored)
         XCTAssertFalse(mirroredParent.accumulated(with: mirroredChild).mirrored)
     }
+
+    // MARK: - Horizon text placement convention
+
+    func testMirroredQuarterTurnPlacesOrientationSpecificTextOnHorizonSide() {
+        let symbol = tf(
+            shift: HorizontalPoint(x: 238.75, y: 88.75),
+            angle: 16_384,
+            mirrored: true
+        )
+
+        // Reduced from Clove's C86 `90m` placements. The old symbol-file
+        // correction has already inverted the mirrored value angle here, just
+        // as the schematic loader does before composing the placement.
+        let value = tf(
+            shift: HorizontalPoint(x: -3.75, y: -3.75),
+            angle: 16_384,
+            mirrored: true
+        )
+        let refdes = tf(
+            shift: HorizontalPoint(x: 3.75, y: -3.75),
+            angle: 16_384,
+            mirrored: false
+        )
+
+        let placedValue = symbol.accumulatedText(with: value)
+        assertClose(placedValue.shift, 235, 85)
+        XCTAssertEqual(placedValue.angle, 0)
+        XCTAssertFalse(placedValue.mirrored)
+
+        let placedRefdes = symbol.accumulatedText(with: refdes)
+        assertClose(placedRefdes.shift, 235, 92.5)
+        XCTAssertEqual(placedRefdes.angle, 0)
+        XCTAssertTrue(placedRefdes.mirrored)
+    }
+
+    func testTextAnchorRotatesBeforeParentMirrorAtEveryCardinalAngle() {
+        let point = HorizontalPoint(x: 2, y: 3)
+        let expected: [(Int, HorizontalPoint)] = [
+            (0, HorizontalPoint(x: -2, y: 3)),
+            (16_384, HorizontalPoint(x: 3, y: 2)),
+            (32_768, HorizontalPoint(x: 2, y: -3)),
+            (49_152, HorizontalPoint(x: -3, y: -2)),
+        ]
+
+        for (angle, anchor) in expected {
+            let placed = tf(angle: angle, mirrored: true).accumulatedText(
+                with: tf(shift: point)
+            )
+            assertClose(placed.shift, anchor.x, anchor.y, "angle \(angle)")
+        }
+    }
 }

@@ -29,6 +29,66 @@ final class HorizontalTextBoundsTests: XCTestCase {
         XCTAssertFalse(isSelfIntersecting(points), "bounds polygon must be simple, not a bowtie")
     }
 
+    func testMultilineTextFlowsFromAnchorUsingResultingMirrorState() {
+        let size = 21.0
+        let lineSkip = size * 1.35
+        let anchor = HorizontalPoint(x: 100, y: 200)
+
+        let upright = HorizontalText(
+            id: "upright",
+            text: "I\nI",
+            position: anchor,
+            size: size,
+            angle: 0,
+            mirrored: false
+        )
+        let mirrored = HorizontalText(
+            id: "mirrored",
+            text: "I\nI",
+            position: anchor,
+            size: size,
+            angle: 0,
+            mirrored: true
+        )
+
+        assertTwoLineOrigins(
+            HorizontalOutlineTextRenderer.outlineSegments(for: upright),
+            first: anchor,
+            second: HorizontalPoint(x: anchor.x, y: anchor.y - lineSkip),
+            size: size
+        )
+        assertTwoLineOrigins(
+            HorizontalOutlineTextRenderer.outlineSegments(for: mirrored),
+            first: HorizontalPoint(x: anchor.x, y: anchor.y + lineSkip),
+            second: anchor,
+            size: size
+        )
+    }
+
+    private func assertTwoLineOrigins(
+        _ actual: [(HorizontalPoint, HorizontalPoint)],
+        first: HorizontalPoint,
+        second: HorizontalPoint,
+        size: Double,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        func singleLine(at position: HorizontalPoint) -> [(HorizontalPoint, HorizontalPoint)] {
+            HorizontalOutlineTextRenderer.outlineSegments(
+                for: HorizontalText(id: "line", text: "I", position: position, size: size)
+            )
+        }
+
+        let expected = singleLine(at: first) + singleLine(at: second)
+        XCTAssertEqual(actual.count, expected.count, file: file, line: line)
+        for (actualSegment, expectedSegment) in zip(actual, expected) {
+            XCTAssertEqual(actualSegment.0.x, expectedSegment.0.x, accuracy: 1e-9, file: file, line: line)
+            XCTAssertEqual(actualSegment.0.y, expectedSegment.0.y, accuracy: 1e-9, file: file, line: line)
+            XCTAssertEqual(actualSegment.1.x, expectedSegment.1.x, accuracy: 1e-9, file: file, line: line)
+            XCTAssertEqual(actualSegment.1.y, expectedSegment.1.y, accuracy: 1e-9, file: file, line: line)
+        }
+    }
+
     private func signedArea(_ points: [HorizontalPoint]) -> Double {
         var sum = 0.0
         for i in points.indices {
