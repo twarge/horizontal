@@ -89,15 +89,58 @@ struct HorizontalPlacementTransform: Hashable {
     }
 
     func accumulatedText(with child: HorizontalPlacementTransform) -> HorizontalPlacementTransform {
-        let accumulated = accumulated(with: child)
+        // Horizon treats a text placement as an anchor in the placed object's
+        // local frame. Its file-format convention transforms that anchor by
+        // rotating it with the parent angle and then applying the parent's
+        // mirror. This intentionally differs from `applying(to:)`, whose
+        // mirror-before-rotation order is used by Horizontal's general geometry
+        // composition. In particular, a 90-degree mirrored symbol would put its
+        // orientation-specific labels on the opposite side if the generic
+        // transform were reused here.
+        let anchor = applyingTextAnchor(to: child.shift)
+        let accumulatedMirror = mirrored != child.mirrored
         let childAngle = child.angle
-        let effectiveAngle = (accumulated.mirrored ? 32_768 - childAngle : childAngle)
+        let effectiveAngle = (accumulatedMirror ? 32_768 - childAngle : childAngle)
             + (mirrored ? -angle : angle)
         return HorizontalPlacementTransform(
-            shift: accumulated.shift,
+            shift: anchor,
             angle: effectiveAngle,
-            mirrored: accumulated.mirrored
+            mirrored: accumulatedMirror
         )
+    }
+
+    private func applyingTextAnchor(to point: HorizontalPoint) -> HorizontalPoint {
+        var x = point.x
+        var y = point.y
+
+        switch Self.wrap(angle) {
+        case 0:
+            break
+        case 16_384:
+            let nx = -y
+            y = x
+            x = nx
+        case 32_768:
+            x = -x
+            y = -y
+        case 49_152:
+            let nx = y
+            y = -x
+            x = nx
+        default:
+            let radians = Double(angle) / 65_536.0 * Double.pi * 2
+            let cosA = cos(radians)
+            let sinA = sin(radians)
+            let rx = x * cosA - y * sinA
+            let ry = x * sinA + y * cosA
+            x = rx
+            y = ry
+        }
+
+        if mirrored {
+            x = -x
+        }
+        return HorizontalPoint(x: x + shift.x, y: y + shift.y)
     }
 
     func rectangle(width: Double, height: Double) -> [HorizontalPoint] {
