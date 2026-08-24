@@ -770,6 +770,9 @@ struct BoardCanvasView: View {
                     }
                 }
             },
+            onViewportMovement: {
+                labelLODDebouncer.postponeForViewportMovement()
+            },
             canvasDisplayTransformReportTrigger: inlineTextEditorReportTrigger,
             allowsContextMenu: moveState == nil && drawGraphicsState == nil && drawTrackState == nil && pastePlacementState == nil,
             handlesInteractionKeys: moveState != nil || drawGraphicsState != nil || drawTrackState != nil || pastePlacementState != nil,

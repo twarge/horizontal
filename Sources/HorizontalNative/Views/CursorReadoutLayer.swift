@@ -20,11 +20,21 @@ final class HorizontalCursorInput: ObservableObject {
     var location: CGPoint? {
         get { storedLocation }
         set {
-            if newValue != nil, Date() < suppressedUntil { return }
-            guard newValue != storedLocation else { return }
-            objectWillChange.send()
-            storedLocation = newValue
+            _ = updateLocation(newValue)
         }
+    }
+
+    /// Attempts to publish a cursor location and reports whether downstream
+    /// cursor work should run too. During viewport navigation non-nil reports
+    /// are deliberately rejected, so callers can skip snapping and hover hit
+    /// testing along with the visual cursor update.
+    @discardableResult
+    func updateLocation(_ newValue: CGPoint?) -> Bool {
+        if newValue != nil, Date() < suppressedUntil { return false }
+        guard newValue != storedLocation else { return true }
+        objectWillChange.send()
+        storedLocation = newValue
+        return true
     }
 
     /// Hide the cursor and ignore re-reports for a short window. Called on every
@@ -33,9 +43,12 @@ final class HorizontalCursorInput: ObservableObject {
     /// any just-computed snap result is disregarded — the crosshair simply clears.
     /// On macOS the cursor sampler + mouseMoved race to re-report the pointer
     /// mid-gesture; this time-boxed gate beats that race without a begin/end signal.
-    func suppressForViewportGesture() {
+    @discardableResult
+    func suppressForViewportGesture() -> Bool {
         suppressedUntil = Date().addingTimeInterval(0.12)
-        location = nil
+        let clearedVisibleCursor = storedLocation != nil
+        _ = updateLocation(nil)
+        return clearedVisibleCursor
     }
 }
 

@@ -421,6 +421,10 @@ struct InteractiveCanvasView: View {
     /// editor popover) anchor against this so the anchor lands on the object.
     /// Optional and harmless when unset (iOS never sets it).
     var onCanvasDisplayTransformChange: ((HorizontalCanvasTransform) -> Void)? = nil
+    /// Cheap, synchronous notification at the leading edge of every pan/zoom
+    /// input. Hosts use this to postpone cancellable work before the throttled
+    /// live transform reaches SwiftUI.
+    var onViewportMovement: () -> Void = {}
     /// When this changes, the display transform is reported immediately even if
     /// the viewport/size didn't change. Lets a host force a fresh report at a
     /// moment it cares about (e.g. when it starts an overlay edit) so it isn't
@@ -744,7 +748,9 @@ struct InteractiveCanvasView: View {
                             handlePrimaryDragEnded(start: start, current: current, points: points, size: size, fitInsets: fitInsets, action: clickAction, isActive: isActive)
                         },
                         onMagnify: { magnification, anchor, size in
-                            cursorInput.suppressForViewportGesture()
+                            HorizontalViewportLatencyDiagnostics.inputBegan(.zoom)
+                            onViewportMovement()
+                            suppressCursorForViewportGesture()
                             updateLiveViewport { viewport in
                                 viewport.applyMagnification(
                                     magnification,
@@ -756,21 +762,22 @@ struct InteractiveCanvasView: View {
                             }
                         },
                         onCursorLocationChange: { location in
-                            cursorInput.location = location
-                            reportCursorWorldPoint(location, size: proxy.size, fitInsets: fitInsets)
+                            reportCursorLocation(location, size: proxy.size, fitInsets: fitInsets)
                         }
                     )
 
                     TrackpadCanvasMonitor(
                         onPan: { delta in
-                            cursorInput.suppressForViewportGesture()
+                            onViewportMovement()
+                            suppressCursorForViewportGesture()
                             updateLiveViewport { viewport in
                                 viewport.pan(by: delta)
                             }
                         },
                         onMagnify: { _, _, _ in },
                         onZoomStep: { step, anchor, size in
-                            cursorInput.suppressForViewportGesture()
+                            onViewportMovement()
+                            suppressCursorForViewportGesture()
                             updateLiveViewport { viewport in
                                 viewport.applyZoomStep(
                                     step,
@@ -826,8 +833,7 @@ struct InteractiveCanvasView: View {
                             }
                         },
                         onCursorLocationChange: { location in
-                            cursorInput.location = location
-                            reportCursorWorldPoint(location, size: proxy.size, fitInsets: fitInsets)
+                            reportCursorLocation(location, size: proxy.size, fitInsets: fitInsets)
                         },
                         onGridDivisorChange: { divisor in
                             gridDivisor = divisor
@@ -879,15 +885,16 @@ struct InteractiveCanvasView: View {
                             performTargetMenuAction(item)
                         },
                         onHover: { location in
-                            cursorInput.location = location
-                            reportCursorWorldPoint(location, size: proxy.size, fitInsets: fitInsets)
+                            reportCursorLocation(location, size: proxy.size, fitInsets: fitInsets)
                         },
                         onPan: { delta in
+                            onViewportMovement()
                             updateLiveViewport { viewport in
                                 viewport.pan(by: delta)
                             }
                         },
                         onPinch: { scale, anchor, panDelta, size in
+                            onViewportMovement()
                             updateLiveViewport { viewport in
                                 viewport.applyMagnification(
                                     scale,
@@ -900,11 +907,11 @@ struct InteractiveCanvasView: View {
                             }
                         },
                         onGestureEnd: {
-                            // Push the live viewport into the @Binding now so the
-                            // selection/hover box (and other viewport-derived chrome)
-                            // re-renders at the settled zoom/pan immediately, instead
-                            // of staying stale until the driver's 600 ms settle fires.
-                            flushLiveViewport()
+                            // Publish only the lightweight live viewport now. The
+                            // expensive @Binding propagation remains behind the
+                            // driver's settle debounce, so another gesture can
+                            // cancel it before it starts.
+                            publishFinalLiveViewport()
                         },
                         onKeyEvent: { keyEvent in
                             // Mirrors the macOS MonitorView.handleInteractionKeyDown
@@ -1096,6 +1103,16 @@ struct InteractiveCanvasView: View {
         }
         liveChromeViewport = viewportDriver.viewport
         viewportDriver.flush()
+        #endif
+    }
+
+    private func publishFinalLiveViewport() {
+        #if canImport(MetalKit)
+        guard usesViewportDriver else {
+            return
+        }
+        liveChromeViewport = viewportDriver.viewport
+        viewportDriver.flushLive()
         #endif
     }
 
@@ -1295,6 +1312,29 @@ struct InteractiveCanvasView: View {
             snappedCursor(at: location, transform: transform).point,
             worldUnitsPerScreenPoint(transform: transform, size: size)
         )
+    }
+
+    /// Keeps the visual cursor and its heavier world-space consumers under the
+    /// same navigation gate. Previously only the visual write was rejected,
+    /// while snapping and "what is under the cursor?" still ran.
+    private func reportCursorLocation(
+        _ location: CGPoint?,
+        size: CGSize,
+        fitInsets: HorizontalCanvasInsets
+    ) {
+        guard cursorInput.updateLocation(location) else {
+            return
+        }
+        reportCursorWorldPoint(location, size: size, fitInsets: fitInsets)
+    }
+
+    /// Clears hover once at the beginning of a navigation burst and extends the
+    /// suppression window on subsequent frames. Returning false after the first
+    /// frame avoids repeated nil @State writes in the canvas host.
+    private func suppressCursorForViewportGesture() {
+        if cursorInput.suppressForViewportGesture() {
+            onCursorWorldPointChange(nil, 0)
+        }
     }
 
     #if canImport(AppKit)
@@ -2342,6 +2382,34 @@ extension UIResponder {
 /// UIKit-recognizer touch arbitration (a layered approach would let whichever view
 /// is on top swallow the other's touches).
 struct HorizontalMultitouchView: UIViewRepresentable {
+    private final class TimestampedPanGestureRecognizer: UIPanGestureRecognizer {
+        private(set) var latestInputTimestamp: TimeInterval?
+
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+            latestInputTimestamp = touches.lazy.filter { $0.type != .pencil }.map(\.timestamp).max()
+            super.touchesBegan(touches, with: event)
+        }
+
+        override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+            latestInputTimestamp = touches.lazy.filter { $0.type != .pencil }.map(\.timestamp).max()
+            super.touchesMoved(touches, with: event)
+        }
+    }
+
+    private final class TimestampedPinchGestureRecognizer: UIPinchGestureRecognizer {
+        private(set) var latestInputTimestamp: TimeInterval?
+
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+            latestInputTimestamp = touches.lazy.filter { $0.type != .pencil }.map(\.timestamp).max()
+            super.touchesBegan(touches, with: event)
+        }
+
+        override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+            latestInputTimestamp = touches.lazy.filter { $0.type != .pencil }.map(\.timestamp).max()
+            super.touchesMoved(touches, with: event)
+        }
+    }
+
     /// Tap: location (points), view size, active keyboard modifiers (iPad hardware
     /// keyboard), and click count (2 = double-tap).
     var onTap: (CGPoint, CGSize, HorizontalCanvasInputModifiers, Int) -> Void
@@ -2359,10 +2427,9 @@ struct HorizontalMultitouchView: UIViewRepresentable {
     /// Combined zoom+pan: incremental scale ratio, the pinch-centroid anchor
     /// (points), the centroid pan delta (points), and the view size.
     var onPinch: (CGFloat, CGPoint, CGSize, CGSize) -> Void
-    /// Fired when a pan/pinch recognizer ends or cancels. Lets the parent flush the
-    /// viewport driver so the settled viewport reaches the @Binding immediately
-    /// (instead of after the 600 ms debounce), forcing a re-render that repositions
-    /// viewport-derived chrome (the selection/hover box) right after the gesture.
+    /// Fired when a pan/pinch recognizer ends or cancels. Lets the parent publish
+    /// the driver's final live viewport immediately, repositioning viewport-derived
+    /// chrome without forcing the heavyweight parent binding to settle yet.
     /// Unlike macOS — which keeps re-sampling via mouseMoved after a magnify — a
     /// touch gesture ends with no follow-up events, so without this the chrome would
     /// stay at its pre-gesture screen position until the debounce fired.
@@ -2425,8 +2492,7 @@ struct HorizontalMultitouchView: UIViewRepresentable {
         view.onMultiTouchSequenceChange = { [weak coordinator] active in
             coordinator?.setMultiTouchSequenceActive(active)
         }
-
-        let pan = UIPanGestureRecognizer(target: coordinator, action: #selector(Coordinator.handlePan(_:)))
+        let pan = TimestampedPanGestureRecognizer(target: coordinator, action: #selector(Coordinator.handlePan(_:)))
         // One finger pans too; two fingers pan (and the pinch recognizer layers
         // zoom on top, with handlePan ceding to it while pinching).
         pan.minimumNumberOfTouches = 1
@@ -2453,7 +2519,7 @@ struct HorizontalMultitouchView: UIViewRepresentable {
         pointerDrag.delegate = coordinator
         view.addGestureRecognizer(pointerDrag)
 
-        let pinch = UIPinchGestureRecognizer(target: coordinator, action: #selector(Coordinator.handlePinch(_:)))
+        let pinch = TimestampedPinchGestureRecognizer(target: coordinator, action: #selector(Coordinator.handlePinch(_:)))
         pinch.delegate = coordinator
         view.addGestureRecognizer(pinch)
 
@@ -2508,7 +2574,6 @@ struct HorizontalMultitouchView: UIViewRepresentable {
         /// direction. While it's set the pinch handler owns panning (it pans by
         /// centroid delta, including its one-touch case).
         var onMultiTouchSequenceChange: ((Bool) -> Void)?
-
         override var canBecomeFirstResponder: Bool { true }
 
         /// Fingers still on the canvas, excluding any ending in this event.
@@ -2918,7 +2983,7 @@ struct HorizontalMultitouchView: UIViewRepresentable {
             guard let view = recognizer.view else { return }
             // Tracked before the pinch guard so it always clears at gesture end.
             isPanning = recognizer.state == .began || recognizer.state == .changed
-            // Settle the viewport at gesture end BEFORE the suppression guard
+            // Publish the final live viewport at gesture end BEFORE the suppression guard
             // below. A pan that ended while `isMultiTouchSequenceActive` was
             // still set (the view holds it until the LAST finger lifts, and the
             // recognizer's .ended arrives before the view's touchesEnded) used
@@ -2927,9 +2992,9 @@ struct HorizontalMultitouchView: UIViewRepresentable {
             // until the 600 ms debounce caught up.
             if recognizer.state == .ended || recognizer.state == .cancelled || recognizer.state == .failed {
                 lastPanTranslation = .zero
-                // Mirror handlePinch: settle the viewport into the @Binding at
-                // gesture end so viewport-derived chrome repositions immediately
-                // rather than after the 600 ms debounce.
+                // Mirror handlePinch: publish the final live viewport so chrome
+                // repositions immediately while the parent binding remains
+                // cancellably debounced.
                 onGestureEnd()
                 return
             }
@@ -2954,6 +3019,10 @@ struct HorizontalMultitouchView: UIViewRepresentable {
                     height: translation.y - lastPanTranslation.y
                 )
                 lastPanTranslation = translation
+                HorizontalViewportLatencyDiagnostics.inputBegan(
+                    .pan,
+                    platformTimestamp: (recognizer as? TimestampedPanGestureRecognizer)?.latestInputTimestamp
+                )
                 onPan(delta)
             default:
                 lastPanTranslation = .zero
@@ -3044,6 +3113,10 @@ struct HorizontalMultitouchView: UIViewRepresentable {
                     width: centroid.x - lastCentroid.x,
                     height: centroid.y - lastCentroid.y
                 )
+                HorizontalViewportLatencyDiagnostics.inputBegan(
+                    incrementalScale == 1 ? .pan : .zoom,
+                    platformTimestamp: (recognizer as? TimestampedPinchGestureRecognizer)?.latestInputTimestamp
+                )
                 onPinch(incrementalScale, centroid, panDelta, view.bounds.size)
                 lastScale = recognizer.scale
                 lastCentroid = centroid
@@ -3052,10 +3125,10 @@ struct HorizontalMultitouchView: UIViewRepresentable {
                 hasReference = false
                 lastScale = 1
                 lastTouchCount = 0
-                // Settle the viewport into the @Binding now (vs. after the 600 ms
-                // debounce) so viewport-derived chrome repositions immediately. Pan
-                // may still be in flight (a finger lifted mid-pinch); handlePan's own
-                // end fires its flush, and a redundant flush is cheap + idempotent.
+                // Publish the final live viewport now so viewport-derived chrome
+                // repositions immediately. The heavier parent binding remains
+                // debounced. Pan may still be in flight (a finger lifted mid-pinch);
+                // handlePan's own publish is cheap and idempotent.
                 if recognizer.state == .ended || recognizer.state == .cancelled {
                     onGestureEnd()
                 }
@@ -3403,6 +3476,10 @@ private struct TrackpadCanvasMonitor: NSViewRepresentable {
 
             // Pinch zoom is handled by the SwiftUI MagnifyGesture.
             if event.type == .magnify {
+                HorizontalViewportLatencyDiagnostics.observeRawEvent(
+                    .zoom,
+                    platformTimestamp: event.timestamp
+                )
                 return event
             }
 
@@ -3415,6 +3492,10 @@ private struct TrackpadCanvasMonitor: NSViewRepresentable {
                     return nil
                 }
 
+                HorizontalViewportLatencyDiagnostics.inputBegan(
+                    .pan,
+                    platformTimestamp: event.timestamp
+                )
                 onPan?(delta)
             } else {
                 let step = event.scrollingDeltaY
@@ -3422,6 +3503,10 @@ private struct TrackpadCanvasMonitor: NSViewRepresentable {
                     return nil
                 }
 
+                HorizontalViewportLatencyDiagnostics.inputBegan(
+                    .zoom,
+                    platformTimestamp: event.timestamp
+                )
                 onZoomStep?(step, canvasLocation, bounds.size)
             }
 

@@ -262,6 +262,9 @@ struct HorizontalMetalBackdropView {
         private var currentMinimumLineWidth: Float = 0
         private var currentGridLineWidth: Float = 0.5
         private var currentViewport = CanvasViewport()
+        /// Identifies the shared live-viewport driver for input-to-first-draw
+        /// latency measurements. Set when the renderer registers as a sink.
+        var viewportLatencyDriverID: ObjectIdentifier?
         private var currentBackingScale: Float = 1
         private var currentViewportSize = SIMD2<Float>(1, 1)
         private var currentVisibleCompositeGroups: Set<Int>?
@@ -425,6 +428,9 @@ struct HorizontalMetalBackdropView {
         }
 
         func draw(in view: MTKView) {
+            if let viewportLatencyDriverID {
+                HorizontalViewportLatencyDiagnostics.firstMetalDrawBegan(driverID: viewportLatencyDriverID)
+            }
             let drawTickStart = BoardLoadTimer.tickDrawStart()
             defer { BoardLoadTimer.tickDrawEnd(drawTickStart) }
             let profilesMovePatchDraw = DispatchTime.now().uptimeNanoseconds < moveProfilerDrawActiveUntilNanoseconds
@@ -1524,18 +1530,26 @@ final class HorizontalCanvasViewportDriver {
 
         viewport = nextViewport
         updateSinks()
+        HorizontalViewportLatencyDiagnostics.viewportSubmitted(driverID: ObjectIdentifier(self))
         scheduleLiveViewportSync()
         scheduleSettledSync()
     }
 
     func flush() {
+        flushLive()
+        viewportSyncTask?.cancel()
+        viewportSyncTask = nil
+        onSettledViewportChange?(viewport)
+    }
+
+    /// Publishes the final live transform without forcing it through the
+    /// heavyweight parent binding. The pending settled sync stays cancellable:
+    /// a new `update` replaces it before it can trigger the larger SwiftUI tree.
+    func flushLive() {
         liveViewportSyncTask?.cancel()
         liveViewportSyncTask = nil
         pendingLiveViewport = nil
         onLiveViewportChange?(viewport)
-        viewportSyncTask?.cancel()
-        viewportSyncTask = nil
-        onSettledViewportChange?(viewport)
     }
 
     func register(renderer: HorizontalMetalBackdropView.Renderer, view: MTKView) {
@@ -1547,6 +1561,7 @@ final class HorizontalCanvasViewportDriver {
             return existingRenderer === renderer || existingView === view
         }
         sinks.append(Sink(renderer: renderer, view: view))
+        renderer.viewportLatencyDriverID = ObjectIdentifier(self)
         renderer.updateLiveViewport(viewport)
         #if os(macOS)
         view.needsDisplay = true

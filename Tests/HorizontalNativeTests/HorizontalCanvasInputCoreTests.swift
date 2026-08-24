@@ -195,4 +195,54 @@ final class HorizontalCanvasInputCoreTests: XCTestCase {
         onlyX.extend(to: CGPoint(x: 40, y: 1), tool: .lasso)
         XCTAssertTrue(onlyX.isActive, "lasso activates on EITHER axis > 10")
     }
+
+    // MARK: - Viewport-navigation cursor gate
+
+    @MainActor
+    func testViewportSuppressionRejectsCursorWorkAndClearsOnlyOnce() {
+        let input = HorizontalCursorInput()
+        let first = CGPoint(x: 10, y: 20)
+        let second = CGPoint(x: 30, y: 40)
+
+        XCTAssertTrue(input.updateLocation(first))
+        XCTAssertEqual(input.location, first)
+
+        XCTAssertTrue(input.suppressForViewportGesture())
+        XCTAssertNil(input.location)
+        XCTAssertFalse(input.updateLocation(second), "suppressed cursor reports must not trigger hover work")
+        XCTAssertNil(input.location)
+
+        XCTAssertFalse(
+            input.suppressForViewportGesture(),
+            "later movement frames must not repeatedly clear host hover state"
+        )
+        XCTAssertTrue(input.updateLocation(nil), "clears always pass through the gate")
+    }
+
+    #if canImport(MetalKit)
+    @MainActor
+    func testFinalLiveViewportPublishLeavesSettledWorkCancellable() {
+        let driver = HorizontalCanvasViewportDriver()
+        var live = [CanvasViewport]()
+        var settled = [CanvasViewport]()
+        driver.configure(viewport: CanvasViewport()) { viewport in
+            settled.append(viewport)
+        } onLiveViewportChange: { viewport in
+            live.append(viewport)
+        }
+
+        driver.update { viewport in
+            viewport.pan(by: CGSize(width: 12, height: -8))
+        }
+        driver.flushLive()
+
+        XCTAssertEqual(live.last?.pan, CGSize(width: 12, height: -8))
+        XCTAssertTrue(settled.isEmpty, "gesture end must not force the heavyweight binding update")
+
+        // Tear down the pending debounce deterministically and also pin the
+        // distinction between the lightweight and full flush paths.
+        driver.flush()
+        XCTAssertEqual(settled.count, 1)
+    }
+    #endif
 }
