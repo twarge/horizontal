@@ -586,6 +586,16 @@ final class BoardLabelLODDebouncer: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Pushes pending LOD work back as soon as a new viewport event arrives.
+    /// This closes the short gap before the throttled live transform reaches
+    /// SwiftUI and calls `schedule` with its next sampled threshold.
+    func postponeForViewportMovement() {
+        guard pendingValue != nil else {
+            return
+        }
+        deadline = ContinuousClock().now.advanced(by: quietPeriod)
+    }
+
     private func flush() {
         task = nil
         deadline = nil
@@ -942,4 +952,3 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         }
     }
 }
-

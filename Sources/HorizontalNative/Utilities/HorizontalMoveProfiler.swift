@@ -1,5 +1,243 @@
 import Foundation
 
+/// Measures the latency the viewport pipeline previously left invisible:
+///
+///   OS input timestamp -> canvas callback -> viewport submitted -> first Metal draw
+///
+/// Work profilers only time code once it starts running, so a 150 ms main-thread
+/// blockage before AppKit/UIKit delivers the next pan event looks like "nothing was
+/// slow." This trace retains the platform event timestamp and can name that gap.
+/// It is enabled by `HORIZON_PROFILE=1`, `HORIZONTAL_PROFILE_VIEWPORT=1`, or the
+/// `--profile-viewport-latency` launch argument. Normal samples are summarized every
+/// two seconds; individual samples print only when total response exceeds one frame.
+enum HorizontalViewportLatencyDiagnostics {
+    enum InputKind: String {
+        case pan
+        case zoom
+    }
+
+    private struct RawEvent {
+        var kind: InputKind
+        var platformTimestamp: TimeInterval
+        var observedAt: UInt64
+    }
+
+    private struct Sample {
+        var sequence: UInt64
+        var kind: InputKind
+        var eventAt: UInt64
+        var callbackAt: UInt64
+        var submittedAt: UInt64?
+        var driverID: ObjectIdentifier?
+    }
+
+    private struct Bucket {
+        var count = 0
+        var deliveryTotal: UInt64 = 0
+        var deliveryMax: UInt64 = 0
+        var handlerTotal: UInt64 = 0
+        var handlerMax: UInt64 = 0
+        var drawWaitTotal: UInt64 = 0
+        var drawWaitMax: UInt64 = 0
+        var totalTotal: UInt64 = 0
+        var totalMax: UInt64 = 0
+
+        mutating func add(delivery: UInt64, handler: UInt64, drawWait: UInt64, total: UInt64) {
+            count += 1
+            deliveryTotal &+= delivery
+            deliveryMax = max(deliveryMax, delivery)
+            handlerTotal &+= handler
+            handlerMax = max(handlerMax, handler)
+            drawWaitTotal &+= drawWait
+            drawWaitMax = max(drawWaitMax, drawWait)
+            totalTotal &+= total
+            totalMax = max(totalMax, total)
+        }
+    }
+
+    private static let isEnabled: Bool = {
+        #if DEBUG
+        let environment = ProcessInfo.processInfo.environment
+        return environment["HORIZON_PROFILE"] != nil
+            || environment["HORIZONTAL_PROFILE_VIEWPORT"] == "1"
+            || CommandLine.arguments.contains("--profile-viewport-latency")
+        #else
+        return false
+        #endif
+    }()
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var nextSequence: UInt64 = 0
+    nonisolated(unsafe) private static var rawEvent: RawEvent?
+    nonisolated(unsafe) private static var pendingSample: Sample?
+    nonisolated(unsafe) private static var buckets = [InputKind: Bucket]()
+    nonisolated(unsafe) private static var lastSummaryAt = DispatchTime.now().uptimeNanoseconds
+    private static let rawEventLifetimeNanoseconds: UInt64 = 250_000_000
+    private static let summaryIntervalNanoseconds: UInt64 = 2_000_000_000
+    private static let slowResponseNanoseconds: UInt64 = 33_000_000
+
+    /// Records an event seen by the native monitor before a separate SwiftUI
+    /// gesture callback handles it (currently macOS magnification).
+    static func observeRawEvent(_ kind: InputKind, platformTimestamp: TimeInterval) {
+        guard isEnabled else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        lock.lock()
+        rawEvent = RawEvent(kind: kind, platformTimestamp: platformTimestamp, observedAt: now)
+        lock.unlock()
+    }
+
+    /// Starts a response sample at the input callback boundary. Platform event
+    /// timestamps use system uptime on both AppKit and UIKit.
+    static func inputBegan(_ kind: InputKind, platformTimestamp: TimeInterval? = nil) {
+        guard isEnabled else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        let timestamp: TimeInterval?
+        var superseded: Sample?
+
+        lock.lock()
+        if let platformTimestamp {
+            timestamp = platformTimestamp
+        } else if let rawEvent,
+                  rawEvent.kind == kind,
+                  elapsed(from: rawEvent.observedAt, to: now) <= rawEventLifetimeNanoseconds {
+            timestamp = rawEvent.platformTimestamp
+            Self.rawEvent = nil
+        } else {
+            timestamp = nil
+        }
+        superseded = pendingSample
+        nextSequence &+= 1
+        pendingSample = Sample(
+            sequence: nextSequence,
+            kind: kind,
+            eventAt: eventUptimeNanoseconds(platformTimestamp: timestamp, observedAt: now),
+            callbackAt: now,
+            submittedAt: nil,
+            driverID: nil
+        )
+        lock.unlock()
+
+        if let superseded,
+           superseded.submittedAt != nil {
+            let unresponded = elapsed(from: superseded.eventAt, to: now)
+            if unresponded >= slowResponseNanoseconds {
+                print(
+                    "Horizontal viewport unresponded #\(superseded.sequence) \(superseded.kind.rawValue): "
+                    + "no Metal draw before the next input (\(milliseconds(unresponded)) ms)"
+                )
+            }
+        }
+    }
+
+    /// Called after viewport uniforms have reached all Metal sinks. A newer input
+    /// supersedes an older unrendered one because the renderer draws latest state.
+    static func viewportSubmitted(driverID: ObjectIdentifier) {
+        guard isEnabled else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        lock.lock()
+        guard var sample = pendingSample else {
+            lock.unlock()
+            return
+        }
+        sample.submittedAt = now
+        sample.driverID = driverID
+        pendingSample = sample
+        lock.unlock()
+    }
+
+    /// Consumes the latest submitted input when the corresponding viewport begins
+    /// its first draw. This is the user's visible-response boundary.
+    static func firstMetalDrawBegan(driverID: ObjectIdentifier) {
+        guard isEnabled else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        var completed: Sample?
+        var summary: [InputKind: Bucket]?
+
+        lock.lock()
+        if let sample = pendingSample,
+           sample.driverID == driverID,
+           sample.submittedAt != nil {
+            completed = sample
+            pendingSample = nil
+            let submittedAt = sample.submittedAt ?? sample.callbackAt
+            let delivery = elapsed(from: sample.eventAt, to: sample.callbackAt)
+            let handler = elapsed(from: sample.callbackAt, to: submittedAt)
+            let drawWait = elapsed(from: submittedAt, to: now)
+            let total = elapsed(from: sample.eventAt, to: now)
+            buckets[sample.kind, default: Bucket()].add(
+                delivery: delivery,
+                handler: handler,
+                drawWait: drawWait,
+                total: total
+            )
+        }
+        if elapsed(from: lastSummaryAt, to: now) >= summaryIntervalNanoseconds,
+           !buckets.isEmpty {
+            summary = buckets
+            buckets.removeAll(keepingCapacity: true)
+            lastSummaryAt = now
+        }
+        lock.unlock()
+
+        if let completed, let submittedAt = completed.submittedAt {
+            let delivery = elapsed(from: completed.eventAt, to: completed.callbackAt)
+            let handler = elapsed(from: completed.callbackAt, to: submittedAt)
+            let drawWait = elapsed(from: submittedAt, to: now)
+            let total = elapsed(from: completed.eventAt, to: now)
+            if total >= slowResponseNanoseconds {
+                print(
+                    "Horizontal viewport stall #\(completed.sequence) \(completed.kind.rawValue): "
+                    + "total \(milliseconds(total)) ms "
+                    + "(delivery \(milliseconds(delivery)), handler \(milliseconds(handler)), draw wait \(milliseconds(drawWait)))"
+                )
+            }
+        }
+        if let summary {
+            printSummary(summary)
+        }
+    }
+
+    private static func eventUptimeNanoseconds(
+        platformTimestamp: TimeInterval?,
+        observedAt: UInt64
+    ) -> UInt64 {
+        guard let platformTimestamp,
+              platformTimestamp.isFinite else {
+            return observedAt
+        }
+        let age = max(ProcessInfo.processInfo.systemUptime - platformTimestamp, 0)
+        let ageNanoseconds = UInt64(min(age * 1_000_000_000, Double(UInt64.max)))
+        return observedAt >= ageNanoseconds ? observedAt - ageNanoseconds : 0
+    }
+
+    private static func printSummary(_ summary: [InputKind: Bucket]) {
+        func timing(total: UInt64, maximum: UInt64, count: Int) -> String {
+            guard count > 0 else { return "n/a" }
+            return String(
+                format: "avg %6.2f  max %6.2f ms",
+                Double(total) / Double(count) / 1_000_000,
+                Double(maximum) / 1_000_000
+            )
+        }
+        print("Horizontal viewport latency:")
+        for kind in [InputKind.pan, .zoom] {
+            guard let bucket = summary[kind] else { continue }
+            print("  \(kind.rawValue) n \(bucket.count)")
+            print("    delivery  \(timing(total: bucket.deliveryTotal, maximum: bucket.deliveryMax, count: bucket.count))")
+            print("    handler   \(timing(total: bucket.handlerTotal, maximum: bucket.handlerMax, count: bucket.count))")
+            print("    draw wait \(timing(total: bucket.drawWaitTotal, maximum: bucket.drawWaitMax, count: bucket.count))")
+            print("    total     \(timing(total: bucket.totalTotal, maximum: bucket.totalMax, count: bucket.count))")
+        }
+    }
+
+    private static func milliseconds(_ nanoseconds: UInt64) -> String {
+        String(format: "%.2f", Double(nanoseconds) / 1_000_000)
+    }
+
+    private static func elapsed(from start: UInt64, to end: UInt64) -> UInt64 {
+        end >= start ? end - start : 0
+    }
+}
+
 enum HorizontalMoveProfiler {
     // Gated on $HORIZON_PROFILE so the perf instrumentation shipped with the
     // recent "Performance: modifications directly to resident Metal buffer" /
