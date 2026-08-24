@@ -35,9 +35,12 @@ struct ProjectDocumentView: View {
     var body: some View {
         content
             .frame(minWidth: 980, minHeight: 640)
-            .background(WindowChromeConfigurator())
+            .background(WindowChromeConfigurator(isTransparent: appearanceSettings.isToolbarTransparent))
             .containerBackground(windowTheme.background, for: .window)
-            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+            .toolbarBackgroundVisibility(
+                appearanceSettings.isToolbarTransparent ? .hidden : .visible,
+                for: .windowToolbar
+            )
             .task(id: configuration.fileURL) {
                 await loadProject()
             }
@@ -686,20 +689,44 @@ struct ProjectWorkspaceView: View {
         .toolbar(isWindowToolbarHidden || isDistractionFree ? .hidden : .visible, for: .windowToolbar)
     }
 
+    /// Canvas content runs up underneath the toolbar only when the toolbar is
+    /// transparent — that is what there is to see through it. With the standard
+    /// toolbar the canvas stops below the title bar, so the bar keeps its own
+    /// background instead of having board artwork painted over it.
+    private var extendsUnderToolbar: Bool {
+        appearanceSettings.isToolbarTransparent
+    }
+
+    /// The overlays inside each pane (tool rails, info buttons) pad themselves
+    /// down by `top` to clear a floating toolbar. Once the canvas no longer
+    /// extends under the toolbar, that clearance is already in the layout and
+    /// padding again would push them a toolbar's height too low.
+    private func canvasSafeAreaInsets(_ insets: EdgeInsets) -> EdgeInsets {
+        guard !extendsUnderToolbar else {
+            return insets
+        }
+        return EdgeInsets(top: 0, leading: insets.leading, bottom: insets.bottom, trailing: insets.trailing)
+    }
+
     private var workspaceDetail: some View {
         GeometryReader { proxy in
             // The right sidebar is a real column: opening it pushes the pane
             // split narrower so the rightmost canvas stays fully visible,
             // rather than sliding over and obscuring it.
+            let canvasInsets = canvasSafeAreaInsets(proxy.safeAreaInsets)
+
             HStack(spacing: 0) {
-                splitContent(safeAreaInsets: proxy.safeAreaInsets)
-                    .ignoresSafeArea(.container, edges: [.top, .leading])
+                splitContent(safeAreaInsets: canvasInsets)
+                    .ignoresSafeArea(.container, edges: extendsUnderToolbar ? [.top, .leading] : [.leading])
                     .frame(maxWidth: .infinity)
 
                 if let rightSidebarPane {
-                    rightSidebarView(rightSidebarPane, safeAreaInsets: proxy.safeAreaInsets)
+                    rightSidebarView(rightSidebarPane, safeAreaInsets: canvasInsets)
                         .frame(width: 340)
-                        .ignoresSafeArea(.container, edges: [.top, .bottom, .trailing])
+                        .ignoresSafeArea(
+                            .container,
+                            edges: extendsUnderToolbar ? [.top, .bottom, .trailing] : [.bottom, .trailing]
+                        )
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                         // Tell the canvas to pass mouse events through to the
                         // sidebar's controls instead of treating them as
@@ -4350,16 +4377,32 @@ private struct NavigatorColorRow: View {
     }
 }
 
+/// Standard window chrome by default — the title bar draws the system toolbar
+/// background over the canvas. With the Transparent Toolbar preference on, that
+/// background goes away and the canvas shows through.
+///
+/// `.fullSizeContentView` stays on either way. It is what keeps the toolbar
+/// laid out across the split columns — sidebar toggle over the navigator, title
+/// at the leading edge of the detail, controls at its trailing edge. Dropping
+/// it for the opaque case rearranged every item into one packed row, so the two
+/// states differed in layout and not just in background.
 private struct WindowChromeConfigurator: NSViewRepresentable {
+    var isTransparent: Bool
+
     func makeNSView(context: Context) -> ConfiguringView {
-        ConfiguringView()
+        let view = ConfiguringView()
+        view.isTransparent = isTransparent
+        return view
     }
 
     func updateNSView(_ nsView: ConfiguringView, context: Context) {
+        nsView.isTransparent = isTransparent
         nsView.configureWindow()
     }
 
     final class ConfiguringView: NSView {
+        var isTransparent = false
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             configureWindow()
@@ -4371,7 +4414,7 @@ private struct WindowChromeConfigurator: NSViewRepresentable {
             }
 
             window.styleMask.insert(.fullSizeContentView)
-            window.titlebarAppearsTransparent = true
+            window.titlebarAppearsTransparent = isTransparent
         }
     }
 }
