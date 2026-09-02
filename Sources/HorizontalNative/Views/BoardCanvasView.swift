@@ -1522,28 +1522,42 @@ struct BoardCanvasView: View {
             guard let via = board.vias.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return []
             }
-            return [
-                readOnlyProperty("name", "Net", netDisplayName(via.netID)),
-                editableNetClassProperty(for: via.netID),
-                readOnlyProperty("span", "Span", viaSpanName(via)),
-                editableLengthProperty("diameter", "Diameter", via.size),
-                editableLengthProperty("positionX", "Position X", via.position.x),
-                editableLengthProperty("positionY", "Position Y", via.position.y),
-            ].compactMap { $0 }
+            return viaProperties(via)
         case .boardHole:
             guard let hole = hole(for: ref.id) else {
                 return []
             }
-            return [
+            var properties = [
                 readOnlyProperty("name", "Net", netDisplayName(hole.netID)),
                 editableNetClassProperty(for: hole.netID),
                 readOnlyProperty("shape", "Shape", hole.shape.rawValue.capitalized),
+                hole.padstackID != nil
+                    ? padstackProperty(for: hole.padstackID, types: ["hole", "mechanical"])
+                    : nil,
                 editableLengthProperty("diameter", "Diameter", hole.diameter),
                 hole.shape == .slot ? editableLengthProperty("length", "Length", hole.effectiveLength) : nil,
-                editableBoolProperty("plated", "Plated", hole.plated),
+                // Plating comes from the padstack for padstack-backed holes, so
+                // only plain holes offer the toggle.
+                hole.padstackID == nil
+                    ? editableBoolProperty("plated", "Plated", hole.plated)
+                    : readOnlyProperty("plated", "Plated", hole.plated ? "Yes" : "No"),
+            ].compactMap { $0 }
+            properties.append(contentsOf: extraParameterProperties(
+                parameterSet: hole.parameterSet,
+                padstackID: hole.padstackID,
+                excluding: ["hole_diameter", "hole_length"]
+            ))
+            if hole.padstackID != nil,
+               let addParameter = addParameterProperty(
+                   existing: Set(hole.parameterSet.keys).union(["hole_diameter", "hole_length"])
+               ) {
+                properties.append(addParameter)
+            }
+            properties.append(contentsOf: [
                 editableLengthProperty("positionX", "Position X", hole.position.x),
                 editableLengthProperty("positionY", "Position Y", hole.position.y),
-            ].compactMap { $0 }
+            ])
+            return properties
         case .plane:
             guard let plane = board.planes.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return []
@@ -1845,6 +1859,202 @@ struct BoardCanvasView: View {
                 title: nonEmpty(netClass.name) ?? shortID(netClass.id)
             )
         }
+    }
+
+    /// Inspector rows for a via, mirroring Horizon's Edit Via dialog: identity
+    /// (net, span), where the geometry comes from (rules / via definition /
+    /// custom), the padstack, the parameter set, then position. Parameter rows
+    /// stay editable in every mode; editing one takes local control of the via
+    /// (see takeLocalViaControl).
+    private func viaProperties(_ via: HorizontalMarker) -> [HorizontalSelectionProperty] {
+        var properties = [
+            readOnlyProperty("name", "Net", netDisplayName(via.netID)),
+            editableNetClassProperty(for: via.netID),
+            readOnlyProperty("span", "Span", viaSpanName(via)),
+        ].compactMap { $0 }
+
+        var sourceOptions = [
+            HorizontalSelectionPropertyOption(id: "rules", title: "From rules"),
+            HorizontalSelectionPropertyOption(id: "local", title: "Custom"),
+        ]
+        if !board.viaDefinitions.isEmpty || via.definitionID != nil {
+            sourceOptions.insert(
+                HorizontalSelectionPropertyOption(id: "definition", title: "Via definition"),
+                at: 1
+            )
+        }
+        let source = via.fromRules ? "rules" : (via.definitionID != nil ? "definition" : "local")
+        properties.append(editableChoiceProperty("viaSource", "Source", value: source, options: sourceOptions))
+
+        if source == "definition", let definitionID = via.definitionID {
+            var definitionOptions = board.viaDefinitions.map {
+                HorizontalSelectionPropertyOption(id: $0.id, title: $0.name)
+            }
+            let current = normalizedID(definitionID)
+            if !definitionOptions.contains(where: { $0.id == current }) {
+                definitionOptions.append(
+                    HorizontalSelectionPropertyOption(id: current, title: shortID(definitionID))
+                )
+            }
+            properties.append(
+                editableChoiceProperty("viaDefinition", "Definition", value: current, options: definitionOptions)
+            )
+        }
+
+        properties.append(contentsOf: [
+            padstackProperty(for: via.padstackID, types: ["via"]),
+            editableLengthProperty("diameter", "Diameter", via.size),
+            editableLengthProperty("holeDiameter", "Hole diameter", via.holeSize ?? 0),
+        ].compactMap { $0 })
+
+        properties.append(contentsOf: extraParameterProperties(
+            parameterSet: via.parameterSet,
+            padstackID: via.padstackID,
+            excluding: ["via_diameter", "hole_diameter"]
+        ))
+        if let addParameter = addParameterProperty(
+            existing: Set(via.parameterSet.keys).union(["via_diameter", "hole_diameter"])
+        ) {
+            properties.append(addParameter)
+        }
+
+        properties.append(contentsOf: [
+            editableLengthProperty("positionX", "Position X", via.position.x),
+            editableLengthProperty("positionY", "Position Y", via.position.y),
+        ])
+        return properties
+    }
+
+    /// A one-shot "Add parameter" picker, mirroring Horizon's ParameterSetEditor
+    /// "+" button: choosing a parameter seeds it into the object's parameter
+    /// set, after which it appears above as a regular editable row.
+    private func addParameterProperty(existing: Set<String>) -> HorizontalSelectionProperty? {
+        let available = Self.knownParameterDisplayNames.keys
+            .filter { !existing.contains($0) }
+            .sorted { Self.parameterDisplayName($0) < Self.parameterDisplayName($1) }
+        guard !available.isEmpty else {
+            return nil
+        }
+        let options = [HorizontalSelectionPropertyOption(id: "none", title: "Choose…")]
+            + available.map { HorizontalSelectionPropertyOption(id: $0, title: Self.parameterDisplayName($0)) }
+        return editableChoiceProperty("addParameter", "Add parameter", value: "none", options: options)
+    }
+
+    /// The starting value for a freshly added parameter: the padstack's own
+    /// default when it declares one, else the same defaults Horizon's rules
+    /// parameters use, else zero.
+    private func seededParameterValue(_ key: String, padstackID: String?) -> Double {
+        if let padstackID, let poolURL,
+           let padstackJSON = HorizontalPoolPadstacks.padstack(id: padstackID, poolURL: poolURL),
+           let value = padstackJSON.dictionary("parameter_set")?.double(key) {
+            return value
+        }
+        switch key {
+        case "solder_mask_expansion", "via_solder_mask_expansion", "hole_solder_mask_expansion":
+            return 100_000
+        case "courtyard_expansion":
+            return 250_000
+        default:
+            return 0
+        }
+    }
+
+    /// A "Padstack" row: a picker over the pool's padstacks of the given types
+    /// when the pool offers alternatives, else the current padstack read-only.
+    /// Nil when the object has no padstack reference at all (e.g. a via placed
+    /// this session — the template padstack is attached at save).
+    private func padstackProperty(
+        for padstackID: String?,
+        types: Set<String>
+    ) -> HorizontalSelectionProperty? {
+        guard let padstackID else {
+            return nil
+        }
+        let currentID = normalizedID(padstackID)
+        var options = poolURL
+            .map { HorizontalPoolPadstacks.padstacks(ofTypes: types, poolURL: $0) }?
+            .map { HorizontalSelectionPropertyOption(id: $0.id, title: $0.name) } ?? []
+        // Read-only only when the pool catalog is unreachable; a pool with a
+        // single via padstack still gets a working (one-entry) picker.
+        let hasCatalog = !options.isEmpty
+        if !options.contains(where: { $0.id == currentID }) {
+            options.append(
+                HorizontalSelectionPropertyOption(id: currentID, title: padstackDisplayName(padstackID))
+            )
+        }
+        guard hasCatalog else {
+            return readOnlyProperty("padstack", "Padstack", padstackDisplayName(padstackID))
+        }
+        return editableChoiceProperty("padstack", "Padstack", value: currentID, options: options)
+    }
+
+    private func padstackDisplayName(_ padstackID: String) -> String {
+        poolURL.flatMap { HorizontalPoolPadstacks.padstackName(id: padstackID, poolURL: $0) }
+            ?? shortID(padstackID)
+    }
+
+    /// Editable rows for every parameter beyond the dedicated diameter/hole
+    /// rows: whatever the entry already carries, plus whatever the padstack
+    /// declares as required (Horizon's "add parameter" affordance — a required
+    /// parameter is always offered, seeded from the padstack's defaults).
+    private func extraParameterProperties(
+        parameterSet: [String: Double],
+        padstackID: String?,
+        excluding excluded: Set<String>
+    ) -> [HorizontalSelectionProperty] {
+        var keys = Set(parameterSet.keys)
+        var required = Set<String>()
+        var defaults = [String: Double]()
+        if let padstackID, let poolURL,
+           let padstackJSON = HorizontalPoolPadstacks.padstack(id: padstackID, poolURL: poolURL) {
+            for case let key as String in padstackJSON["parameters_required"] as? [Any] ?? [] {
+                required.insert(key)
+            }
+            keys.formUnion(required)
+            for (key, value) in padstackJSON.dictionary("parameter_set") ?? [:] {
+                defaults[key] = JSONHelper.doubleValue(value)
+            }
+        }
+        return keys.subtracting(excluded).sorted().map { key in
+            var property = editableLengthProperty(
+                "param:\(key)",
+                Self.parameterDisplayName(key),
+                parameterSet[key] ?? defaults[key] ?? 0
+            )
+            // Only parameters the object actually carries can be removed, and
+            // never ones the padstack requires — a required row without a
+            // stored value is just the padstack default being offered.
+            if parameterSet[key] != nil, !required.contains(key) {
+                property.removeID = "removeParam:\(key)"
+            }
+            return property
+        }
+    }
+
+    /// Horizon's display names for its built-in parameter IDs
+    /// (parameter/set.cpp); unknown IDs (custom parameter classes) fall back to
+    /// a humanized spelling of the key.
+    private static let knownParameterDisplayNames: [String: String] = [
+        "pad_width": "Pad width",
+        "pad_height": "Pad height",
+        "pad_diameter": "Pad diameter",
+        "solder_mask_expansion": "Solder mask expansion",
+        "paste_mask_margin": "Paste mask margin",
+        "hole_diameter": "Hole diameter",
+        "hole_length": "Hole length",
+        "via_diameter": "Via diameter",
+        "hole_solder_mask_expansion": "Hole solder mask expansion",
+        "via_solder_mask_expansion": "Via solder mask expansion",
+        "courtyard_expansion": "Courtyard expansion",
+        "corner_radius": "Corner radius",
+    ]
+
+    private static func parameterDisplayName(_ key: String) -> String {
+        if let name = knownParameterDisplayNames[key] {
+            return name
+        }
+        let words = key.split(separator: "_").joined(separator: " ")
+        return words.prefix(1).uppercased() + words.dropFirst()
     }
 
     /// Layers offered by an inspector layer picker: only copper layers the
@@ -3312,7 +3522,10 @@ struct BoardCanvasView: View {
                     holeSize: via.drill,
                     layer: nil,
                     connectedLayers: BoardTrackRouting.throughViaLayers(copperLayerCount: draft.copperLayerCount),
-                    netID: via.netID
+                    netID: via.netID,
+                    // Router vias are pinned (patchNewBoardVias writes net_set),
+                    // so the model pins them too.
+                    netSetID: via.netID
                 )
             )
         }
@@ -3976,7 +4189,10 @@ struct BoardCanvasView: View {
                 holeSize: viaHole,
                 layer: nil,
                 connectedLayers: BoardTrackRouting.throughViaLayers(copperLayerCount: board.copperLayerCount),
-                netID: netID
+                netID: netID,
+                // Track-tool vias are pinned (patchNewBoardVias writes net_set),
+                // so the model pins them too.
+                netSetID: netID
             )
         )
         draft.viaHoles.append(
@@ -5759,6 +5975,7 @@ struct BoardCanvasView: View {
             updateHole(&board.holes, ref: ref, propertyID: propertyID, value: value)
             updateHole(&board.packageHoles, ref: ref, propertyID: propertyID, value: value)
             updateHole(&board.viaHoles, ref: ref, propertyID: propertyID, value: value)
+            syncViaFromHole(ref: ref, board: &board)
         case .plane:
             updatePlane(ref: ref, propertyID: propertyID, value: value, board: &board)
         case .keepout:
@@ -5899,17 +6116,183 @@ struct BoardCanvasView: View {
         }
 
         switch (propertyID, value) {
-        case ("diameter", .length(let diameter)):
-            board.vias[index].size = max(diameter, 0)
         case ("positionX", .length(let x)):
             let delta = HorizontalPoint(x: x - board.vias[index].position.x, y: 0)
             moveVia(ref: ref, by: delta, board: &board)
+            return
         case ("positionY", .length(let y)):
             let delta = HorizontalPoint(x: 0, y: y - board.vias[index].position.y)
             moveVia(ref: ref, by: delta, board: &board)
+            return
         default:
             break
         }
+
+        var via = board.vias[index]
+        switch (propertyID, value) {
+        case ("diameter", .length(let diameter)):
+            via.size = max(diameter, 0)
+            via.parameterSet["via_diameter"] = via.size
+            takeLocalViaControl(&via)
+        case ("holeDiameter", .length(let diameter)):
+            via.holeSize = max(diameter, 0)
+            via.parameterSet["hole_diameter"] = max(diameter, 0)
+            takeLocalViaControl(&via)
+        case ("viaSource", .choice(let source)):
+            switch source {
+            case "rules":
+                via.fromRules = true
+                via.definitionID = nil
+            case "definition":
+                via.fromRules = false
+                if let definitionID = via.definitionID ?? board.viaDefinitions.first?.id {
+                    applyViaDefinition(definitionID, to: &via, definitions: board.viaDefinitions)
+                }
+            default:
+                via.fromRules = false
+                via.definitionID = nil
+            }
+        case ("viaDefinition", .choice(let definitionID)):
+            applyViaDefinition(definitionID, to: &via, definitions: board.viaDefinitions)
+        case ("padstack", .choice(let padstackID)):
+            via.padstackID = padstackID
+            takeLocalViaControl(&via)
+            adoptViaPadstack(&via, padstackID: padstackID)
+        case ("addParameter", .choice(let key)):
+            guard key != "none", via.parameterSet[key] == nil else {
+                return
+            }
+            let seeded = seededParameterValue(key, padstackID: via.padstackID)
+            via.parameterSet[key] = seeded
+            syncViaMaskExpansion(&via, key: key, value: seeded)
+            takeLocalViaControl(&via)
+        default:
+            if propertyID.hasPrefix("removeParam:") {
+                let key = String(propertyID.dropFirst("removeParam:".count))
+                guard via.parameterSet.removeValue(forKey: key) != nil else {
+                    return
+                }
+                takeLocalViaControl(&via)
+            } else if propertyID.hasPrefix("param:"), case .length(let parameter) = value {
+                let key = String(propertyID.dropFirst("param:".count))
+                via.parameterSet[key] = max(parameter, 0)
+                syncViaMaskExpansion(&via, key: key, value: max(parameter, 0))
+                takeLocalViaControl(&via)
+            } else {
+                return
+            }
+        }
+        board.vias[index] = via
+        syncViaHole(for: via, board: &board)
+    }
+
+    /// Selecting a padstack copies a base-pool padstack into the project
+    /// pool's cache (so the reference survives a reload and the project stays
+    /// self-contained for Horizon) and re-derives the via's solder-mask
+    /// openings from the new padstack's shapes — switching a via between a
+    /// tented and an untented padstack takes effect immediately.
+    private func adoptViaPadstack(_ via: inout HorizontalMarker, padstackID: String) {
+        guard let poolURL else {
+            return
+        }
+        HorizontalPoolPadstacks.ensureCached(id: padstackID, poolURL: poolURL)
+        guard let padstackJSON = HorizontalPoolPadstacks.padstack(id: padstackID, poolURL: poolURL) else {
+            return
+        }
+        let parameters = via.parameterSet.reduce(into: JSONDictionary()) { result, item in
+            result[item.key] = item.value
+        }
+        let expansions = HorizontalBoard.viaMaskExpansions(
+            padstackJSON: padstackJSON,
+            parameterSet: parameters,
+            viaDiameter: via.size,
+            ruleMaskExpansion: board.ruleViaMaskExpansion
+        )
+        via.topMaskExpansion = expansions.top
+        via.bottomMaskExpansion = expansions.bottom
+    }
+
+    /// Keeps the rendered solder-mask openings live when the mask-expansion
+    /// parameter itself is edited. Only existing openings resize — a tented
+    /// via (nil expansion) stays tented.
+    private func syncViaMaskExpansion(_ via: inout HorizontalMarker, key: String, value: Double) {
+        guard key == "via_solder_mask_expansion" else {
+            return
+        }
+        if via.topMaskExpansion != nil {
+            via.topMaskExpansion = value
+        }
+        if via.bottomMaskExpansion != nil {
+            via.bottomMaskExpansion = value
+        }
+    }
+
+    /// Any direct geometry edit takes local control of the via: Horizon only
+    /// honors a via's own parameter_set when its source is local, so a
+    /// rules/definition via must flip to Custom or the edit would silently be
+    /// overwritten on the next rules expansion.
+    private func takeLocalViaControl(_ via: inout HorizontalMarker) {
+        via.fromRules = false
+        via.definitionID = nil
+    }
+
+    /// Points a via at a board via definition and adopts its padstack and
+    /// parameter values, mirroring Horizon's expand (definition vias serialize
+    /// the definition's parameters).
+    private func applyViaDefinition(
+        _ definitionID: String,
+        to via: inout HorizontalMarker,
+        definitions: [HorizontalViaDefinition]
+    ) {
+        via.fromRules = false
+        via.definitionID = definitionID
+        guard let definition = definitions.first(where: { normalizedID($0.id) == normalizedID(definitionID) }) else {
+            return
+        }
+        if let padstackID = definition.padstackID {
+            via.padstackID = padstackID
+            adoptViaPadstack(&via, padstackID: padstackID)
+        }
+        for (key, value) in definition.parameters {
+            via.parameterSet[key] = value
+            syncViaMaskExpansion(&via, key: key, value: value)
+        }
+        if let diameter = definition.parameters["via_diameter"] {
+            via.size = diameter
+        }
+        if let holeDiameter = definition.parameters["hole_diameter"] {
+            via.holeSize = holeDiameter
+        }
+    }
+
+    /// Re-derives the via's drill object (rendered and selectable on its own)
+    /// from the marker's hole size after a parameter edit.
+    private func syncViaHole(for via: HorizontalMarker, board: inout HorizontalBoard) {
+        guard let holeSize = via.holeSize else {
+            return
+        }
+        let holeID = normalizedID(via.id) + "/hole"
+        guard let index = board.viaHoles.firstIndex(where: { normalizedID($0.id) == holeID }) else {
+            return
+        }
+        board.viaHoles[index].diameter = holeSize
+        board.viaHoles[index].length = holeSize
+    }
+
+    /// A via's drill is selectable as its own board-hole object; pushing a
+    /// diameter edit back onto the owning via keeps the marker (and the
+    /// persisted via parameter_set) in sync.
+    private func syncViaFromHole(ref: HorizontalSelectableRef, board: inout HorizontalBoard) {
+        let holeID = normalizedID(ref.id)
+        guard holeID.hasSuffix("/hole"),
+              let hole = board.viaHoles.first(where: { normalizedID($0.id) == holeID }),
+              let index = board.vias.firstIndex(where: { normalizedID($0.id) + "/hole" == holeID }),
+              board.vias[index].holeSize != hole.diameter else {
+            return
+        }
+        board.vias[index].holeSize = hole.diameter
+        board.vias[index].parameterSet["hole_diameter"] = hole.diameter
+        takeLocalViaControl(&board.vias[index])
     }
 
     private func updateHole(
@@ -5926,17 +6309,52 @@ struct BoardCanvasView: View {
         case ("diameter", .length(let diameter)):
             holes[index].diameter = max(diameter, 0)
             holes[index].length = max(holes[index].effectiveLength, holes[index].diameter)
+            syncHoleParameters(&holes[index])
         case ("length", .length(let length)):
             holes[index].length = max(length, holes[index].diameter)
             holes[index].shape = holes[index].effectiveLength > holes[index].diameter ? .slot : .round
+            syncHoleParameters(&holes[index])
         case ("positionX", .length(let x)):
             holes[index].position.x = x
         case ("positionY", .length(let y)):
             holes[index].position.y = y
         case ("plated", .bool(let plated)):
             holes[index].plated = plated
+        case ("padstack", .choice(let padstackID)):
+            guard holes[index].padstackID != nil else {
+                break
+            }
+            holes[index].padstackID = padstackID
+            if let poolURL {
+                HorizontalPoolPadstacks.ensureCached(id: padstackID, poolURL: poolURL)
+            }
+        case ("addParameter", .choice(let key)):
+            guard key != "none", holes[index].padstackID != nil, holes[index].parameterSet[key] == nil else {
+                break
+            }
+            holes[index].parameterSet[key] = seededParameterValue(key, padstackID: holes[index].padstackID)
         default:
-            break
+            if propertyID.hasPrefix("removeParam:") {
+                let key = String(propertyID.dropFirst("removeParam:".count))
+                holes[index].parameterSet.removeValue(forKey: key)
+            } else if propertyID.hasPrefix("param:"), case .length(let parameter) = value {
+                let key = String(propertyID.dropFirst("param:".count))
+                holes[index].parameterSet[key] = max(parameter, 0)
+            }
+        }
+    }
+
+    /// Mirrors a padstack-backed hole's geometry into its parameter set — for
+    /// those holes the parameters are what persists (BoardHole::serialize keeps
+    /// geometry in parameter_set, not direct keys). hole_length is only
+    /// materialized when the entry already speaks it or the hole is a slot.
+    private func syncHoleParameters(_ hole: inout HorizontalHole) {
+        guard hole.padstackID != nil else {
+            return
+        }
+        hole.parameterSet["hole_diameter"] = hole.diameter
+        if hole.parameterSet["hole_length"] != nil || hole.shape == .slot {
+            hole.parameterSet["hole_length"] = hole.effectiveLength
         }
     }
 
@@ -7503,6 +7921,11 @@ struct BoardCanvasView: View {
                 for layer in renderedViaLayers(for: via) {
                     result[layer, default: []].append(via)
                 }
+                // Solder-mask openings render on the mask layers alongside the
+                // pads' mask shapes; the draw loop picks the mask diameter.
+                for layer in via.maskLayers {
+                    result[layer, default: []].append(via)
+                }
             }
             return result
         }
@@ -8368,13 +8791,16 @@ struct BoardCanvasView: View {
                 }
             }
 
-            // Vias (ring + fill)
+            // Vias (ring + fill on copper; the padstack's mask opening on mask)
             profile("vias") {
                 for via in viasByLayer[layer] ?? [] {
-                    let outerRadius = via.size / 2
+                    let maskDiameter = via.maskDiameter(on: layer)
+                    let outerRadius = (maskDiameter ?? via.size) / 2
                     let owner = selectableRef(id: via.id, type: .via)
-                    let points = viaCirclePointsByID[via.id]
-                        ?? circlePoints(center: via.position, radius: outerRadius, segments: 24)
+                    let points = maskDiameter == nil
+                        ? viaCirclePointsByID[via.id]
+                            ?? circlePoints(center: via.position, radius: outerRadius, segments: 24)
+                        : circlePoints(center: via.position, radius: outerRadius, segments: 24)
                     appendClosedPolyline(
                         points,
                         color: layerMetalColor(layer),
@@ -9267,6 +9693,15 @@ struct BoardCanvasView: View {
                         compositeGroup: metalCompositeGroup(for: layer)
                     )
                 }
+                for layer in via.maskLayers {
+                    guard let maskDiameter = via.maskDiameter(on: layer) else { continue }
+                    appendClosedPolyline(
+                        circlePoints(center: via.position, radius: maskDiameter / 2),
+                        color: layerMetalColor(layer),
+                        minimumWidth: 0.55,
+                        compositeGroup: metalCompositeGroup(for: layer)
+                    )
+                }
                 if Self.emitsGeneratedBoardLabelsInMetal,
                    displayOptions.viaLabels,
                    let label = viaLabelText(via),
@@ -9330,6 +9765,13 @@ struct BoardCanvasView: View {
                 for layer in renderedViaLayers(for: via) where displayOptions.isLayerFilled(layer) {
                     appendTriangles(
                         HorizontalMetalTessellator.circle(center: via.position, radius: via.size / 2, color: layerMetalColor(layer)),
+                        compositeGroup: metalCompositeGroup(for: layer)
+                    )
+                }
+                for layer in via.maskLayers where displayOptions.isLayerFilled(layer) {
+                    guard let maskDiameter = via.maskDiameter(on: layer) else { continue }
+                    appendTriangles(
+                        HorizontalMetalTessellator.circle(center: via.position, radius: maskDiameter / 2, color: layerMetalColor(layer)),
                         compositeGroup: metalCompositeGroup(for: layer)
                     )
                 }
@@ -10877,6 +11319,9 @@ struct BoardCanvasView: View {
             for layer in renderedViaLayers(for: via) {
                 layers.insert(layer)
             }
+            for layer in via.maskLayers {
+                layers.insert(layer)
+            }
         }
         for decal in board.decals {
             for polygon in decal.polygons {
@@ -11046,8 +11491,12 @@ struct BoardCanvasView: View {
     }
 
     private func drawVias(on layer: Int, context: GraphicsContext, transform: HorizontalCanvasTransform) {
-        for via in board.vias where visibleViaLayers(for: via).contains(layer) {
-            drawViaRing(via, layer: layer, context: context, transform: transform)
+        for via in board.vias {
+            let drawsCopper = visibleViaLayers(for: via).contains(layer)
+            let drawsMask = via.maskDiameter(on: layer) != nil && displayOptions.isLayerVisible(layer)
+            if drawsCopper || drawsMask {
+                drawViaRing(via, layer: layer, context: context, transform: transform)
+            }
         }
     }
 
@@ -11067,7 +11516,8 @@ struct BoardCanvasView: View {
         transform: HorizontalCanvasTransform
     ) {
         let point = transform.point(via.position)
-        let outerRadius = max(transform.length(via.size) / 2, 1.8)
+        let diameter = via.maskDiameter(on: layer) ?? via.size
+        let outerRadius = max(transform.length(diameter) / 2, 1.8)
         let outerRect = CGRect(x: point.x - outerRadius, y: point.y - outerRadius, width: outerRadius * 2, height: outerRadius * 2)
         let outerPath = Path(ellipseIn: outerRect)
 

@@ -1060,21 +1060,51 @@ enum HorizontalProjectJSONApplicator {
 
         for hole in holes {
             guard let itemKey = matchingKey(hole.id, in: map),
-                  var item = map[itemKey] as? JSONDictionary else {
+                  let item = map[itemKey] as? JSONDictionary else {
                 continue
             }
-
-            var placement = item["placement"] as? JSONDictionary ?? [:]
-            placement["shift"] = jsonPoint(hole.position)
-            placement["angle"] = hole.angle
-            item["placement"] = placement
-            item["diameter"] = jsonNumber(hole.diameter)
-            item["length"] = jsonNumber(hole.effectiveLength)
-            item["shape"] = hole.shape.rawValue
-            item["plated"] = hole.plated
-            map[itemKey] = item
+            map[itemKey] = holeJSONEntry(hole, existing: item)
         }
         json[key] = map
+    }
+
+    /// Builds one hole's on-disk entry, merged over the existing entry so
+    /// unknown keys survive. Padstack-backed board holes follow Horizon's
+    /// BoardHole::serialize — geometry lives in `parameter_set`, never as
+    /// direct diameter/length/shape keys — while plain holes keep the direct
+    /// Hole::serialize keys.
+    static func holeJSONEntry(_ hole: HorizontalHole, existing: JSONDictionary) -> JSONDictionary {
+        var item = existing
+        var placement = item["placement"] as? JSONDictionary ?? [:]
+        placement["shift"] = jsonPoint(hole.position)
+        placement["angle"] = hole.angle
+        item["placement"] = placement
+
+        if item["padstack"] != nil || hole.padstackID != nil {
+            var parameters = foreignParameters(in: item)
+            for (key, value) in hole.parameterSet {
+                parameters[key] = jsonNumber(value)
+            }
+            parameters["hole_diameter"] = jsonNumber(hole.diameter)
+            // hole_length is only materialized when the entry already carries
+            // it or the hole is genuinely a slot, so round holes don't grow a
+            // spurious key on unrelated saves.
+            if parameters["hole_length"] != nil || hole.shape == .slot {
+                parameters["hole_length"] = jsonNumber(hole.effectiveLength)
+            }
+            item["parameter_set"] = parameters
+            if let padstackID = hole.padstackID,
+               (item["padstack"] as? String)?.lowercased() != padstackID.lowercased() {
+                item["padstack"] = padstackID
+            }
+            return item
+        }
+
+        item["diameter"] = jsonNumber(hole.diameter)
+        item["length"] = jsonNumber(hole.effectiveLength)
+        item["shape"] = hole.shape.rawValue
+        item["plated"] = hole.plated
+        return item
     }
 
     private static func patchVias(_ json: inout JSONDictionary, vias: [HorizontalMarker]) {
@@ -1085,15 +1115,71 @@ enum HorizontalProjectJSONApplicator {
 
         for via in vias {
             guard let itemKey = matchingKey(via.id, in: map),
-                  var item = map[itemKey] as? JSONDictionary else {
+                  let item = map[itemKey] as? JSONDictionary else {
                 continue
             }
-            var parameters = item["parameter_set"] as? JSONDictionary ?? [:]
-            parameters["via_diameter"] = jsonNumber(via.size)
-            item["parameter_set"] = parameters
-            map[itemKey] = item
+            map[itemKey] = viaJSONEntry(via, existing: item)
         }
         json["vias"] = map
+    }
+
+    /// Builds one via's on-disk entry from the model, merged over the existing
+    /// entry so unknown item-level keys survive (Via::serialize: junction,
+    /// padstack, parameter_set, from_rules, source, definition, net_set,
+    /// locked). The parameter_set itself is REBUILT from the model — the parse
+    /// lifts every numeric entry into `parameterSet`, so nothing is lost and a
+    /// parameter removed in the inspector actually disappears from disk; only
+    /// non-numeric foreign entries are carried over verbatim. The expanded set
+    /// is always written — Horizon serializes it expanded too — with the
+    /// marker's size/hole authoritative for the two geometry parameters.
+    static func viaJSONEntry(_ via: HorizontalMarker, existing: JSONDictionary) -> JSONDictionary {
+        var item = existing
+        var parameters = foreignParameters(in: existing)
+        for (key, value) in via.parameterSet {
+            parameters[key] = jsonNumber(value)
+        }
+        parameters["via_diameter"] = jsonNumber(via.size)
+        if let holeSize = via.holeSize {
+            parameters["hole_diameter"] = jsonNumber(holeSize)
+        }
+        item["parameter_set"] = parameters
+
+        // Only rewrite the padstack when it actually changed, so an untouched
+        // reference keeps its original casing.
+        if let padstackID = via.padstackID,
+           (item["padstack"] as? String)?.lowercased() != padstackID.lowercased() {
+            item["padstack"] = padstackID
+        }
+
+        // from_rules: an absent key means true in Horizon, so it is only
+        // materialized when the model departs from that default.
+        let existingFromRules = item["from_rules"] as? Bool
+        if existingFromRules != nil || via.fromRules != (existingFromRules ?? true) {
+            item["from_rules"] = via.fromRules
+        }
+
+        if let definitionID = via.definitionID {
+            if (item["definition"] as? String)?.lowercased() != definitionID.lowercased() {
+                item["definition"] = definitionID
+            }
+        } else {
+            item.removeValue(forKey: "definition")
+        }
+
+        // source mirrors from_rules/definition; only written when the file
+        // already speaks that dialect or a definition forces it.
+        if item["source"] != nil || via.definitionID != nil {
+            item["source"] = via.fromRules ? "rules" : (via.definitionID != nil ? "definition" : "local")
+        }
+        return item
+    }
+
+    /// The parameter_set entries the model cannot represent (non-numeric
+    /// values — Horizon parameters are int64, so these are foreign data). The
+    /// entry builders start from these so a rebuild-from-model never destroys
+    /// them, while numeric keys absent from the model stay deleted.
+    private static func foreignParameters(in item: JSONDictionary) -> JSONDictionary {
+        (item["parameter_set"] as? JSONDictionary ?? [:]).filter { !($0.value is NSNumber) }
     }
 
     private static func patchPlanes(_ json: inout JSONDictionary, planes: [HorizontalPlane]) {

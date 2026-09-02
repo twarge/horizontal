@@ -32,6 +32,10 @@ struct HorizontalSelectionProperty: Identifiable, Equatable {
     var label: String
     var editor: HorizontalSelectionPropertyEditor
     var value: HorizontalSelectionPropertyValue
+    /// When set, the row gets an (X) remove button that sends a property
+    /// change with this ID (the value is carried along but unused). The
+    /// property builder owns the ID scheme, e.g. "removeParam:<key>".
+    var removeID: String? = nil
 
     var isEditable: Bool {
         switch editor {
@@ -473,6 +477,8 @@ struct HorizontalSelectionPopoverView: View {
                     .frame(width: 36, alignment: .leading)
 
                 allToggle(for: property, group: group, item: item)
+
+                removeButton(for: property, group: group, item: item)
             } else {
                 Text(displayValue(property.value))
                     .font(propertyValueFont)
@@ -510,6 +516,37 @@ struct HorizontalSelectionPopoverView: View {
                     ? "Disabled because only one \(group.title.lowercased()) is selected"
                     : "Apply changes to all selected \(group.pluralTitle.lowercased())"
             )
+    }
+
+    /// The (X) remove button for rows carrying a `removeID` (added parameters).
+    /// Sends the removal through the normal change funnel; with the row's
+    /// "All" toggle on, the removal applies to every selected object of the
+    /// group's type, like any other property change.
+    @ViewBuilder
+    private func removeButton(
+        for property: HorizontalSelectionProperty,
+        group: HorizontalSelectionDetailGroup,
+        item: HorizontalSelectionDetailItem
+    ) -> some View {
+        if let removeID = property.removeID {
+            Button {
+                let key = HorizontalSelectionApplyAllKey(type: group.type, propertyID: property.id)
+                onChange(HorizontalSelectionPropertyChange(
+                    ref: item.ref,
+                    type: group.type,
+                    propertyID: removeID,
+                    value: property.value,
+                    applyToAll: applyAllProperties.contains(key)
+                ))
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(foregroundColor.opacity(0.42))
+            }
+            .buttonStyle(.plain)
+            .controlSize(chrome == .sidebar ? .small : .mini)
+            .help("Remove \(property.label)")
+            .accessibilityLabel("Remove \(property.label)")
+        }
     }
 
     @ViewBuilder

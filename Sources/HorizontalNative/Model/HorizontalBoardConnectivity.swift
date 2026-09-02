@@ -67,6 +67,17 @@ enum HorizontalBoardConnectivity {
         for hole in board.packageHoles {
             seedSpanning(hole.position, hole.netID)
         }
+        // A via with a pinned net (Horizon `net_set` — plane-stitching vias,
+        // and router-placed vias generally) is a net SOURCE like a pad: its
+        // net must survive with no track path to a pad, and copper reaching
+        // the via inherits it. Without this, any edit commit stripped the net
+        // (and its display name) off every stitching via.
+        for via in board.vias {
+            guard let netSetID = via.netSetID else { continue }
+            for layer in viaSpan(via, copperLayers: copperLayers) {
+                seed(via.position, layer: layer, netSetID)
+            }
+        }
 
         // --- Connectivity graph over copper positions ------------------------
         var trackIdx = [String: [Int]]()
@@ -148,7 +159,9 @@ enum HorizontalBoardConnectivity {
                 for k in keys { netForKey[k] = net }
             }
             for i in tIdx { tracks[i].netID = net }
-            for i in vIdx { vias[i].netID = net }
+            // A net collision (nil component net) never un-pins a net_set via:
+            // the surrounding copper goes nil/flagged, the pin stays.
+            for i in vIdx { vias[i].netID = net ?? vias[i].netSetID }
             for i in hIdx { viaHoles[i].netID = net }
         }
 
