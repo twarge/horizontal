@@ -4569,6 +4569,7 @@ struct BoardCanvasView: View {
         changed = removeAll(from: &board.packageLines) { belongsToPackage($0.id) } || changed
         changed = removeAll(from: &board.packageArcs) { belongsToPackage($0.id) } || changed
         changed = removeAll(from: &board.packageTexts) { belongsToPackage($0.id) } || changed
+        changed = removeAll(from: &board.keepouts) { belongsToPackage($0.id) } || changed
         changed = removeAll(from: &board.connectionLines) {
             anchorKeys.contains(pointKey($0.from)) || anchorKeys.contains(pointKey($0.to))
         } || changed
@@ -6259,6 +6260,9 @@ struct BoardCanvasView: View {
         for index in board.packageTexts.indices where belongsToPackage(board.packageTexts[index].id) {
             board.packageTexts[index] = shifted(board.packageTexts[index], by: delta)
         }
+        for index in board.keepouts.indices where belongsToPackage(board.keepouts[index].id) {
+            board.keepouts[index] = shifted(board.keepouts[index], by: delta)
+        }
     }
 
     private func mirrorBoardPackageGeometry(
@@ -6289,6 +6293,9 @@ struct BoardCanvasView: View {
         }
         for index in board.packageTexts.indices where belongsToPackage(board.packageTexts[index].id) {
             board.packageTexts[index] = mirrored(board.packageTexts[index], around: center, flipsLayer: true)
+        }
+        for index in board.keepouts.indices where belongsToPackage(board.keepouts[index].id) {
+            board.keepouts[index] = mirrored(board.keepouts[index], around: center, flipsLayer: true)
         }
     }
 
@@ -6325,6 +6332,9 @@ struct BoardCanvasView: View {
         }
         for index in board.packageTexts.indices where belongsToPackage(board.packageTexts[index].id) {
             board.packageTexts[index] = rotated(board.packageTexts[index], around: origin, by: angleDelta)
+        }
+        for index in board.keepouts.indices where belongsToPackage(board.keepouts[index].id) {
+            board.keepouts[index] = rotated(board.keepouts[index], around: origin, by: angleDelta)
         }
     }
 
@@ -6416,6 +6426,18 @@ struct BoardCanvasView: View {
     private func shifted(_ keepout: HorizontalKeepout, by delta: HorizontalPoint) -> HorizontalKeepout {
         var keepout = keepout
         keepout.polygon = shifted(keepout.polygon, by: delta)
+        return keepout
+    }
+
+    private func mirrored(_ keepout: HorizontalKeepout, around center: HorizontalPoint, flipsLayer: Bool) -> HorizontalKeepout {
+        var keepout = keepout
+        keepout.polygon = mirrored(keepout.polygon, around: center, flipsLayer: flipsLayer)
+        return keepout
+    }
+
+    private func rotated(_ keepout: HorizontalKeepout, around origin: HorizontalPoint, by angleDelta: Int) -> HorizontalKeepout {
+        var keepout = keepout
+        keepout.polygon = rotated(keepout.polygon, around: origin, by: angleDelta)
         return keepout
     }
 
@@ -7980,7 +8002,8 @@ struct BoardCanvasView: View {
         // ============================================================
         profile("all-copper keepouts") {
             for keepout in board.keepouts where keepout.allCopperLayers {
-                let owner = selectableRef(id: keepout.id, type: .keepout, layer: keepout.polygon.layer)
+                let owner = packageOwner(for: keepout.id)
+                    ?? selectableRef(id: keepout.id, type: .keepout, layer: keepout.polygon.layer)
                 appendClosedPolyline(
                     keepout.polygon.renderVertices(arcPrecision: 24),
                     color: keepoutStrokeColor,
@@ -8175,7 +8198,8 @@ struct BoardCanvasView: View {
 
                 // Keepouts (per-layer)
                 for keepout in board.keepouts where !keepout.allCopperLayers && keepout.polygon.layer == layer {
-                    let owner = selectableRef(id: keepout.id, type: .keepout, layer: layer)
+                    let owner = packageOwner(for: keepout.id, layer: layer)
+                        ?? selectableRef(id: keepout.id, type: .keepout, layer: layer)
                     appendClosedPolyline(
                         keepout.polygon.renderVertices(arcPrecision: 24),
                         color: keepoutStrokeColor,
@@ -9755,7 +9779,7 @@ struct BoardCanvasView: View {
             }
 
             func packageIDPrefix(for geometryID: String) -> String? {
-                let separators: Set<String> = ["arc", "hole", "line", "pad", "polygon", "text"]
+                let separators: Set<String> = ["arc", "hole", "keepout", "line", "pad", "polygon", "text"]
                 let components = geometryID.lowercased().split(separator: "/").map(String.init)
                 guard let separatorIndex = components.firstIndex(where: { separators.contains($0) }),
                       separatorIndex > components.startIndex else {
@@ -9793,6 +9817,11 @@ struct BoardCanvasView: View {
                     for text in boardSnapshot.packageTexts where displayOptionsSnapshot.isLayerVisible(text.layer) && belongsToPackage(text.id, packageID: packageID) {
                         appendHighlightedText(text)
                     }
+                    if displayOptionsSnapshot.keepouts {
+                        for keepout in boardSnapshot.keepouts where displayOptionsSnapshot.isLayerVisible(keepout.polygon.layer) && belongsToPackage(keepout.id, packageID: packageID) {
+                            appendHighlightedPolygon(keepout.polygon)
+                        }
+                    }
                 }
 
                 if displayOptionsSnapshot.pads {
@@ -9813,6 +9842,11 @@ struct BoardCanvasView: View {
                 if displayOptionsSnapshot.text && !displayOptionsSnapshot.packages {
                     for text in boardSnapshot.packageTexts where displayOptionsSnapshot.isLayerVisible(text.layer) && belongsToPackage(text.id, packageID: packageID) {
                         appendHighlightedText(text)
+                    }
+                    if displayOptionsSnapshot.keepouts {
+                        for keepout in boardSnapshot.keepouts where displayOptionsSnapshot.isLayerVisible(keepout.polygon.layer) && belongsToPackage(keepout.id, packageID: packageID) {
+                            appendHighlightedPolygon(keepout.polygon)
+                        }
                     }
                 }
             }
@@ -12408,7 +12442,7 @@ struct BoardCanvasView: View {
     private func packageID(forGeometryID geometryID: String) -> String? {
         objectIDPrefix(
             in: geometryID,
-            separators: ["arc", "hole", "line", "pad", "polygon", "text"]
+            separators: ["arc", "hole", "keepout", "line", "pad", "polygon", "text"]
         )
     }
 

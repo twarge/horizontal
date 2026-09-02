@@ -434,6 +434,31 @@ struct HorizontalMarker: Identifiable, Hashable {
             HorizontalPoint(x: position.x + radius, y: position.y + radius),
         ]
     }
+
+    /// The copper layers this via's annular ring lands on: its span
+    /// (`connectedLayers`), or the single layer it was placed on when no span
+    /// is known. Sorted, copper only. The canvas, the Gerber/ODB++ layer
+    /// collector and the board drawings all render the ring on exactly these
+    /// layers, so the fabrication output matches what the canvas shows.
+    var copperLayers: [Int] {
+        let layers = connectedLayers.isEmpty
+            ? [layer ?? HorizontalBoardLayers.topCopper]
+            : connectedLayers
+        return layers
+            .filter { HorizontalBoardLayers.isCopper($0) }
+            .sorted()
+    }
+
+    /// The ring's outline as a closed polygon (first vertex at angle 0, counter-
+    /// clockwise), in the same tessellation the padstack circles use. Empty when
+    /// the via has no copper diameter.
+    func ringOutline(segments: Int = 32) -> [HorizontalPoint] {
+        guard size > 0 else {
+            return []
+        }
+        return HorizontalPlacementTransform(shift: position, angle: 0, mirrored: false)
+            .circle(diameter: size, segments: segments)
+    }
 }
 
 /// What a newly drawn via should look like, harvested at parse time from the
@@ -1231,6 +1256,12 @@ struct HorizontalPackageGeometry {
     var holes: [HorizontalHole]
     var padPositions: [String: HorizontalPoint]
     var padNetIDs: [String: String]
+    /// The package's own keepout regions (Horizon `Package::keepouts`), already
+    /// placed on the board. Their polygons are NOT in `polygons`: a keepout is a
+    /// design-rule region, not copper, so it must not render or export as one.
+    /// Ids are "<board package id>/keepout/<uuid>" so the package editing paths
+    /// recognise them as package-owned, like every other package geometry id.
+    var keepouts: [HorizontalKeepout] = []
 
     static let empty = HorizontalPackageGeometry(pads: [], polygons: [], lines: [], arcs: [], texts: [], holes: [], padPositions: [:], padNetIDs: [:])
 
@@ -1243,6 +1274,7 @@ struct HorizontalPackageGeometry {
         result.append(contentsOf: texts.flatMap(\.renderBoundsPoints))
         result.append(contentsOf: holes.flatMap(\.boundsPoints))
         result.append(contentsOf: padPositions.values)
+        result.append(contentsOf: keepouts.flatMap(\.points))
         return result
     }
 
@@ -1253,6 +1285,7 @@ struct HorizontalPackageGeometry {
         arcs.append(contentsOf: other.arcs)
         texts.append(contentsOf: other.texts)
         holes.append(contentsOf: other.holes)
+        keepouts.append(contentsOf: other.keepouts)
         padPositions.merge(other.padPositions) { current, _ in current }
         padNetIDs.merge(other.padNetIDs) { current, _ in current }
     }

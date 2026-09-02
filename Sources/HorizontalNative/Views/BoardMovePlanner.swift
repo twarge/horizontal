@@ -300,7 +300,7 @@ enum BoardMovePlanner {
     /// The geometry-id segment kinds that separate a package id from the rest of a
     /// board-geometry id like "pkg-uuid/pad/pad-uuid". Hoisted to a static so the
     /// whole-board index build doesn't rebuild this `Set` once per pad/hole.
-    private static let packageGeometrySeparators: Set<String> = ["arc", "hole", "line", "pad", "polygon", "text"]
+    private static let packageGeometrySeparators: Set<String> = ["arc", "hole", "keepout", "line", "pad", "polygon", "text"]
 
     /// Derives the owning package id from a board-geometry id like
     /// "pkg-uuid/pad/pad-uuid". Mirrors `BoardCanvasView.packageID(forGeometryID:)`.
