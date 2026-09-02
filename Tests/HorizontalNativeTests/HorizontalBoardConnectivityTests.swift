@@ -159,6 +159,44 @@ final class HorizontalBoardConnectivityTests: XCTestCase {
         XCTAssertNil(out.junctionNetIDs["j"])
     }
 
+    /// A via with a pinned net (Horizon `net_set` — plane-stitching vias) has
+    /// no track path to any pad, yet its net must survive every recompute:
+    /// this is the "changing a via property strips the net name" regression.
+    func testPinnedNetSetViaKeepsItsNetWithoutAPad() {
+        let board = makeBoard(
+            vias: [HorizontalMarker(id: "v", position: p(5_000_000, 0), size: 600_000, holeSize: 300_000,
+                                    layer: nil, connectedLayers: [0, -100], netID: "gnd", netSetID: "gnd")]
+        )
+        let out = HorizontalBoardConnectivity.recompute(board)
+        XCTAssertEqual(out.vias[0].netID, "gnd")
+    }
+
+    func testTrackInheritsPinnedViaNet() {
+        // The pinned via is a net source like a pad, so copper reaching it
+        // takes its net.
+        let board = makeBoard(
+            tracks: [track("t", p(0, 0), p(5_000_000, 0))],
+            vias: [HorizontalMarker(id: "v", position: p(5_000_000, 0), size: 600_000, holeSize: 300_000,
+                                    layer: nil, connectedLayers: [0, -100], netID: "gnd", netSetID: "gnd")]
+        )
+        let out = HorizontalBoardConnectivity.recompute(board)
+        XCTAssertEqual(netID(out, track: "t") ?? nil, "gnd")
+    }
+
+    func testNetCollisionNeverUnpinsANetSetVia() {
+        // A pinned GND via shorted to an n1 pad: the connecting copper goes
+        // nil (flagged short), the via keeps its pinned net.
+        let board = makeBoard(
+            tracks: [track("t", p(0, 0), p(5_000_000, 0))],
+            vias: [HorizontalMarker(id: "v", position: p(5_000_000, 0), size: 600_000, holeSize: 300_000,
+                                    layer: nil, connectedLayers: [0, -100], netID: "gnd", netSetID: "gnd")],
+            packagePads: [pad("pkg/pad/1", cx: 0, cy: 0, net: "n1")]
+        )
+        let out = HorizontalBoardConnectivity.recompute(board)
+        XCTAssertEqual(netID(out, track: "t") ?? nil, nil, "shorted copper is flagged net-less")
+        XCTAssertEqual(out.vias[0].netID, "gnd", "the pin survives the collision")
+    }
+
     func testIdempotent() {
         let board = makeBoard(
             tracks: [track("t1", p(0, 0), p(5_000_000, 0)),

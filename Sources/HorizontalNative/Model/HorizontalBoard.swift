@@ -494,6 +494,12 @@ struct HorizontalBoard {
     /// Padstack + default geometry for vias the track tool creates. Nil when
     /// the board has no via definition and no existing via to source one from.
     var viaTemplate: HorizontalBoardViaTemplate? = nil
+    /// Named via definitions from the board rules, offered by the via
+    /// inspector's Definition picker. Sorted by name.
+    var viaDefinitions: [HorizontalViaDefinition] = []
+    /// The rules' `via_solder_mask_expansion`, kept so the inspector's live
+    /// padstack switch can re-derive mask openings the same way the parse did.
+    var ruleViaMaskExpansion: Double = 100_000
     var packages: [HorizontalPlacement]
     var packagePads: [HorizontalPolygon]
     /// Pad path ("package_uuid/pad_uuid", normalized) → pad center, retained
@@ -625,7 +631,9 @@ struct HorizontalBoard {
             junctions: junctions,
             junctionNetIDs: junctionNetIDs,
             viaDefinitions: viaDefinitions,
-            nInnerLayers: nInnerLayers
+            nInnerLayers: nInnerLayers,
+            poolURL: poolURL,
+            boardParameterSet: boardParameterSet
         )
         var ownViaHoles = parseViaHoles(
             from: json.dictionaryMap("vias"),
@@ -762,6 +770,8 @@ struct HorizontalBoard {
             vias: vias,
             viaHoles: viaHoles,
             viaTemplate: viaTemplate,
+            viaDefinitions: viaDefinitionModels(from: viaDefinitions),
+            ruleViaMaskExpansion: boardParameterSet.double("via_solder_mask_expansion") ?? 100_000,
             packages: packages,
             packagePads: packagePads,
             packagePadPositions: packageGeometry.padPositions,
@@ -1221,15 +1231,12 @@ struct HorizontalBoard {
         panelID: String,
         placement: HorizontalPlacementTransform
     ) -> HorizontalMarker {
-        HorizontalMarker(
-            id: prefixed(marker.id, panelID: panelID),
-            position: placement.applying(to: marker.position),
-            size: marker.size,
-            holeSize: marker.holeSize,
-            layer: marker.layer,
-            connectedLayers: marker.connectedLayers,
-            netID: marker.netID
-        )
+        // Mutate a copy so panel vias keep every non-positional field (padstack,
+        // parameter set, mask openings) rather than being rebuilt lossily.
+        var marker = marker
+        marker.id = prefixed(marker.id, panelID: panelID)
+        marker.position = placement.applying(to: marker.position)
+        return marker
     }
 
     private static func transformed(
@@ -2480,6 +2487,8 @@ struct HorizontalBoard {
                     var hole = hole
                     hole.id = holes.count == 1 ? id : "\(id)/hole/\(index + 1)"
                     hole.netID = item.string("net").map(normalizedID)
+                    hole.padstackID = padstackID
+                    hole.parameterSet = doubleParameters(item.dictionary("parameter_set"))
                     return hole
                 }
             }
@@ -2496,7 +2505,9 @@ struct HorizontalBoard {
                 length: length,
                 shape: holeShape(for: item, length: length, diameter: diameter),
                 angle: placement.angle,
-                plated: item.bool("plated") ?? false
+                plated: item.bool("plated") ?? false,
+                padstackID: item.string("padstack"),
+                parameterSet: doubleParameters(item.dictionary("parameter_set"))
             )]
         }
     }
@@ -2506,19 +2517,31 @@ struct HorizontalBoard {
         junctions: [String: HorizontalPoint],
         junctionNetIDs: [String: String],
         viaDefinitions: [String: JSONDictionary],
-        nInnerLayers: Int
+        nInnerLayers: Int,
+        poolURL: URL?,
+        boardParameterSet: JSONDictionary
     ) -> [HorizontalMarker] {
-        map.compactMap { id, item in
+        var maskCache = [String: (top: Double?, bottom: Double?)]()
+        return map.compactMap { id, item in
             guard let junctionID = item.string("junction"),
                   let position = junctions[junctionID] else {
                 return nil
             }
 
             let parameterSet = viaParameterSet(for: item, viaDefinitions: viaDefinitions)
+            let size = parameterSet?.double("via_diameter") ?? 450_000
+            let maskExpansions = viaMaskExpansions(
+                padstackID: item.string("padstack"),
+                parameterSet: parameterSet,
+                viaDiameter: size,
+                poolURL: poolURL,
+                boardParameterSet: boardParameterSet,
+                cache: &maskCache
+            )
             return HorizontalMarker(
                 id: id,
                 position: position,
-                size: parameterSet?.double("via_diameter") ?? 450_000,
+                size: size,
                 holeSize: parameterSet?.double("hole_diameter"),
                 layer: nil,
                 connectedLayers: viaConnectedLayers(
@@ -2528,9 +2551,127 @@ struct HorizontalBoard {
                 ),
                 netID: item.string("net_set").map(normalizedID)
                     ?? item.string("net").map(normalizedID)
-                    ?? junctionNetIDs[junctionID]
+                    ?? junctionNetIDs[junctionID],
+                netSetID: item.string("net_set").map(normalizedID),
+                padstackID: item.string("padstack"),
+                definitionID: item.string("definition"),
+                fromRules: item.bool("from_rules")
+                    ?? (item.string("source").map { $0 == "rules" } ?? true),
+                parameterSet: doubleParameters(parameterSet),
+                topMaskExpansion: maskExpansions.top,
+                bottomMaskExpansion: maskExpansions.bottom
             )
         }
+    }
+
+    /// Derives a via's solder-mask openings the way Horizon's board expand
+    /// does: run the via padstack's parameter program with the via's parameter
+    /// set (injecting the rules' `via_solder_mask_expansion` when the via
+    /// doesn't carry one) and read the resulting mask-layer shapes back. When
+    /// the padstack can't be loaded (no pool), the openings fall back to plain
+    /// rule-expansion circles — the geometry every stock via padstack produces
+    /// — so a pool-less load still shows and exports honest mask openings. A
+    /// genuinely tented padstack (one with no mask shapes) yields nil.
+    private static func viaMaskExpansions(
+        padstackID: String?,
+        parameterSet: JSONDictionary?,
+        viaDiameter: Double,
+        poolURL: URL?,
+        boardParameterSet: JSONDictionary,
+        cache: inout [String: (top: Double?, bottom: Double?)]
+    ) -> (top: Double?, bottom: Double?) {
+        let ruleExpansion = parameterSet?.double("via_solder_mask_expansion")
+            ?? boardParameterSet.double("via_solder_mask_expansion")
+            ?? 100_000
+        guard let padstackID, let poolURL,
+              let padstackJSON = loadPoolPadstack(padstackID, poolURL: poolURL) else {
+            return (ruleExpansion, ruleExpansion)
+        }
+
+        let cacheKey = normalizedID(padstackID)
+            + "|" + parameterSetCacheKey(parameterSet ?? [:])
+            + "|\(viaDiameter)"
+        if let cached = cache[cacheKey] {
+            return cached
+        }
+
+        let result = viaMaskExpansions(
+            padstackJSON: padstackJSON,
+            parameterSet: parameterSet ?? [:],
+            viaDiameter: viaDiameter,
+            ruleMaskExpansion: ruleExpansion
+        )
+        cache[cacheKey] = result
+        return result
+    }
+
+    /// Core of the mask-opening derivation, shared by the parse and the
+    /// inspector's live padstack switch: expand the padstack's parameter
+    /// program and read the mask-layer shapes back as expansions relative to
+    /// the via diameter.
+    static func viaMaskExpansions(
+        padstackJSON: JSONDictionary,
+        parameterSet: JSONDictionary,
+        viaDiameter: Double,
+        ruleMaskExpansion: Double
+    ) -> (top: Double?, bottom: Double?) {
+        var parameters = parameterSet
+        if parameters["via_solder_mask_expansion"] == nil {
+            parameters["via_solder_mask_expansion"] = Int(ruleMaskExpansion)
+        }
+        let expanded = expandedPadstack(padstackJSON, padParameterSet: parameters)
+
+        func expansion(onLayer layer: Int) -> Double? {
+            let diameters = expanded.json.dictionaryMap("shapes").values.compactMap { shape -> Double? in
+                guard shape.int("layer") == layer else {
+                    return nil
+                }
+                return shapeParameters(for: shape, parameterSet: expanded.parameterSet).max()
+            }
+            guard let diameter = diameters.max(), diameter > 0 else {
+                return nil
+            }
+            return (diameter - viaDiameter) / 2
+        }
+
+        return (
+            top: expansion(onLayer: HorizontalBoardLayers.topMask),
+            bottom: expansion(onLayer: HorizontalBoardLayers.bottomMask)
+        )
+    }
+
+    /// Flattens a JSON parameter set into the nanometer values the model
+    /// carries; non-numeric entries are dropped (Horizon parameters are int64).
+    private static func doubleParameters(_ parameters: JSONDictionary?) -> [String: Double] {
+        (parameters ?? [:]).reduce(into: [String: Double]()) { result, item in
+            switch item.value {
+            case let value as Double:
+                result[item.key] = value
+            case let value as Int:
+                result[item.key] = Double(value)
+            case let value as NSNumber:
+                result[item.key] = value.doubleValue
+            default:
+                break
+            }
+        }
+    }
+
+    /// Converts the raw via-definition JSON map into the sidebar-facing models,
+    /// sorted by display name for a stable picker order.
+    private static func viaDefinitionModels(
+        from viaDefinitions: [String: JSONDictionary]
+    ) -> [HorizontalViaDefinition] {
+        viaDefinitions
+            .map { id, definition in
+                HorizontalViaDefinition(
+                    id: id,
+                    name: definition.string("name") ?? String(id.prefix(8)),
+                    padstackID: definition.string("padstack"),
+                    parameters: doubleParameters(definition.dictionary("parameters"))
+                )
+            }
+            .sorted { ($0.name, $0.id) < ($1.name, $1.id) }
     }
 
     private static func parseViaHoles(

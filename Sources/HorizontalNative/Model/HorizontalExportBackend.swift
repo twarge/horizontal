@@ -271,11 +271,23 @@ enum HorizontalExportBackend {
         }
         for via in board.vias {
             let ring = via.ringOutline()
-            guard ring.count >= 3 else { continue }
-            for layer in via.copperLayers {
-                guard let setting = setting(for: layer) else { continue }
+            if ring.count >= 3 {
+                for layer in via.copperLayers {
+                    guard let setting = setting(for: layer) else { continue }
+                    writer.addClosedPolygon(
+                        ring,
+                        layer: dxfLayerName(for: setting),
+                        color: setting.color,
+                        fill: setting.mode == .fill,
+                        outlineWidth: defaultWidth
+                    )
+                }
+            }
+            for layer in via.maskLayers {
+                let opening = via.maskOutline(on: layer)
+                guard opening.count >= 3, let setting = setting(for: layer) else { continue }
                 writer.addClosedPolygon(
-                    ring,
+                    opening,
                     layer: dxfLayerName(for: setting),
                     color: setting.color,
                     fill: setting.mode == .fill,
@@ -898,10 +910,16 @@ enum HorizontalExportBackend {
         }
         for via in board.vias {
             let ring = via.ringOutline()
-            guard ring.count >= 3 else { continue }
-            for layer in via.copperLayers {
-                guard let setting = setting(for: layer) else { continue }
-                drawPolygonVertices(ring, color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
+            if ring.count >= 3 {
+                for layer in via.copperLayers {
+                    guard let setting = setting(for: layer) else { continue }
+                    drawPolygonVertices(ring, color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
+                }
+            }
+            for layer in via.maskLayers {
+                let opening = via.maskOutline(on: layer)
+                guard opening.count >= 3, let setting = setting(for: layer) else { continue }
+                drawPolygonVertices(opening, color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
             }
         }
         for keepout in board.keepouts {
@@ -1673,6 +1691,14 @@ enum HorizontalExportBackend {
             let ring = via.ringOutline()
             guard ring.count >= 3 else { continue }
             objects.append(.region(ring))
+        }
+        // Via solder-mask openings: the padstack's expanded mask circle, on
+        // the mask files exactly as the canvas shows it. maskOutline is empty
+        // for every non-mask target layer and for tented vias.
+        for via in board.vias {
+            let opening = via.maskOutline(on: targetLayer)
+            guard opening.count >= 3 else { continue }
+            objects.append(.region(opening))
         }
         // Keepouts are design-rule regions, not copper or artwork: Horizon's
         // Gerber export skips them, so they never reach fabrication output.

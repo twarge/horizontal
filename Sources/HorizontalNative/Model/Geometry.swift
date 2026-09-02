@@ -426,6 +426,33 @@ struct HorizontalMarker: Identifiable, Hashable {
     var layer: Int?
     var connectedLayers: [Int] = []
     var netID: String? = nil
+    /// Horizon `net_set`: a net pinned onto the via by the user or the router
+    /// (plane-stitching vias, and router-placed vias generally). A pinned via
+    /// SEEDS net propagation like a pad instead of merely inheriting, so it
+    /// never goes net-less just because no track path reaches a pad.
+    var netSetID: String? = nil
+    /// Pool padstack UUID the via references on disk (raw casing preserved for
+    /// byte-faithful writes). Nil for markers that aren't padstack-backed vias.
+    var padstackID: String? = nil
+    /// Via-definition UUID when the via takes its parameters from a board via
+    /// definition (Horizon `source: "definition"`).
+    var definitionID: String? = nil
+    /// Horizon `from_rules`: parameters come from the via rules, not the via's
+    /// own parameter set. In-app-created vias are local (false), matching the
+    /// `source: "local"` entries the applicator writes for them.
+    var fromRules: Bool = false
+    /// The via's effective parameter set (definition parameters overlaid with
+    /// the entry's own `parameter_set`), all values in nanometers. Horizon
+    /// serializes the expanded set, so writing this back is byte-faithful.
+    var parameterSet: [String: Double] = [:]
+    /// Solder-mask opening per side, stored as the expansion beyond the ring
+    /// ((mask shape diameter − via_diameter) / 2), derived at parse time from
+    /// the via padstack's expanded mask shapes. Nil means no opening on that
+    /// side — a tented padstack, or a marker that isn't a parsed via. Keeping
+    /// the expansion rather than the diameter lets the opening track diameter
+    /// edits made in the inspector.
+    var topMaskExpansion: Double? = nil
+    var bottomMaskExpansion: Double? = nil
 
     var boundsPoints: [HorizontalPoint] {
         let radius = size / 2
@@ -459,6 +486,40 @@ struct HorizontalMarker: Identifiable, Hashable {
         return HorizontalPlacementTransform(shift: position, angle: 0, mirrored: false)
             .circle(diameter: size, segments: segments)
     }
+
+    /// The mask layers this via actually opens. An opening needs both the
+    /// padstack to define one on that side (`topMaskExpansion` /
+    /// `bottomMaskExpansion`) and the span to reach that outer copper layer —
+    /// a buried via never punches solder mask.
+    var maskLayers: [Int] {
+        [HorizontalBoardLayers.topMask, HorizontalBoardLayers.bottomMask]
+            .filter { maskDiameter(on: $0) != nil }
+    }
+
+    /// The solder-mask opening diameter on one mask layer, or nil when the via
+    /// has no opening there.
+    func maskDiameter(on layer: Int) -> Double? {
+        switch layer {
+        case HorizontalBoardLayers.topMask
+            where copperLayers.contains(HorizontalBoardLayers.topCopper):
+            return topMaskExpansion.map { size + 2 * $0 }
+        case HorizontalBoardLayers.bottomMask
+            where copperLayers.contains(HorizontalBoardLayers.bottomCopper):
+            return bottomMaskExpansion.map { size + 2 * $0 }
+        default:
+            return nil
+        }
+    }
+
+    /// The mask opening's outline on one mask layer, in the same tessellation
+    /// as `ringOutline`. Empty when the via has no opening there.
+    func maskOutline(on layer: Int, segments: Int = 32) -> [HorizontalPoint] {
+        guard let diameter = maskDiameter(on: layer), diameter > 0 else {
+            return []
+        }
+        return HorizontalPlacementTransform(shift: position, angle: 0, mirrored: false)
+            .circle(diameter: diameter, segments: segments)
+    }
 }
 
 /// What a newly drawn via should look like, harvested at parse time from the
@@ -470,6 +531,15 @@ struct HorizontalBoardViaTemplate: Equatable {
     var padstackID: String
     var diameter: Double
     var holeDiameter: Double
+}
+
+/// A named via definition from the board rules (`rules.via_definitions`):
+/// a padstack plus the parameter values vias referencing it inherit.
+struct HorizontalViaDefinition: Identifiable, Hashable {
+    var id: String
+    var name: String
+    var padstackID: String?
+    var parameters: [String: Double] = [:]
 }
 
 enum HorizontalHoleShape: String, Hashable {
@@ -486,6 +556,12 @@ struct HorizontalHole: Identifiable, Hashable {
     var angle: Int = 0
     var plated: Bool
     var netID: String? = nil
+    /// Pool padstack UUID for padstack-backed board holes (Horizon `BoardHole`),
+    /// raw casing preserved. Nil for plain holes (package geometry, via holes).
+    var padstackID: String? = nil
+    /// The board hole's `parameter_set` (nanometer values) for padstack-backed
+    /// holes — geometry edits persist here, not as direct diameter/length keys.
+    var parameterSet: [String: Double] = [:]
 
     var effectiveLength: Double {
         max(length ?? diameter, diameter)
