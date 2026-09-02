@@ -689,7 +689,7 @@ struct HorizontalBoard {
         let airwires = ownAirwires + panelGeometry.airwires
         let polygons = ownPolygons + panelGeometry.polygons
         let planes = ownPlanes + panelGeometry.planes
-        let keepouts = ownKeepouts + panelGeometry.keepouts
+        let keepouts = ownKeepouts + packageGeometry.keepouts + panelGeometry.keepouts
         let dimensions = ownDimensions + panelGeometry.dimensions
         let decals = ownDecals + panelGeometry.decals
         let holes = ownHoles + panelGeometry.holes
@@ -3744,16 +3744,31 @@ struct HorizontalBoard {
         // package's own silk *text* for a `smashed` package (its editable
         // from-smash copies render instead); omit_silkscreen additionally hides
         // non-smashed silk text at render time.
+        // A package keepout references one of the package's polygons. Horizon
+        // gives that polygon a Keepout usage: it renders as a keepout and stays
+        // out of the fabrication output. Pull those polygons out of the plain
+        // polygon list so they never become copper here either.
+        let packagePolygonMap = expandedPackageJSON.dictionaryMap("polygons")
+        let packageKeepouts = BoardLoadTimer.measure("package geometry: parse package keepouts") {
+            parsePackageKeepouts(
+                from: expandedPackageJSON.dictionaryMap("keepouts"),
+                polygons: packagePolygonMap,
+                boardPackageID: boardPackageID,
+                packageTransform: packageTransform,
+                nInnerLayers: nInnerLayers
+            )
+        }
         return HorizontalPackageGeometry(
             pads: packagePads.pads,
             polygons: BoardLoadTimer.measure("package geometry: parse package polygons") {
                 parsePackagePolygons(
-                    from: expandedPackageJSON.dictionaryMap("polygons"),
+                    from: packagePolygonMap,
                     boardPackageID: boardPackageID,
                     packageTransform: packageTransform,
                     omitSilkscreen: false,
                     omitOutline: false,
-                    nInnerLayers: nInnerLayers
+                    nInnerLayers: nInnerLayers,
+                    excludingPolygonIDs: Set(packageKeepouts.map { normalizedID($0.sourcePolygonID) })
                 )
             },
             lines: BoardLoadTimer.measure("package geometry: parse package lines") {
@@ -3791,7 +3806,34 @@ struct HorizontalBoard {
             },
             holes: packagePads.holes,
             padPositions: packagePads.positions,
-            padNetIDs: packagePads.netIDs
+            padNetIDs: packagePads.netIDs,
+            keepouts: packageKeepouts.map(\.keepout)
+        )
+    }
+
+    /// Places one package polygon on the board: the same layer mapping
+    /// (flip, inner-layer expansion) and vertex transform for every polygon the
+    /// package owns, whether it ends up as artwork or as a keepout region.
+    private static func placedPackagePolygon(
+        id polygonID: String,
+        item: JSONDictionary,
+        boardPackageID: String,
+        packageTransform: HorizontalPlacementTransform,
+        nInnerLayers: Int
+    ) -> HorizontalPolygon? {
+        let layer = packageLayer(item.int("layer"), flipped: packageTransform.mirrored, nInnerLayers: nInnerLayers)
+        let vertices = parsePolygonVertexList(
+            from: item.dictionaryArray("vertices"),
+            transform: packageTransform.applying,
+            flipsArcReverse: packageTransform.mirrored
+        )
+        guard vertices.count >= 2 else {
+            return nil
+        }
+        return HorizontalPolygon(
+            id: "\(boardPackageID)/polygon/\(polygonID)",
+            polygonVertices: vertices,
+            layer: layer
         )
     }
 
@@ -3801,29 +3843,74 @@ struct HorizontalBoard {
         packageTransform: HorizontalPlacementTransform,
         omitSilkscreen: Bool,
         omitOutline: Bool,
-        nInnerLayers: Int
+        nInnerLayers: Int,
+        excludingPolygonIDs excludedPolygonIDs: Set<String> = []
     ) -> [HorizontalPolygon] {
         map.compactMap { id, item in
-            let layer = packageLayer(item.int("layer"), flipped: packageTransform.mirrored, nInnerLayers: nInnerLayers)
-            guard !(omitSilkscreen && isBoardSilkscreenLayer(layer)),
-                  !(omitOutline && isBoardOutlineLayer(layer)) else {
+            guard !excludedPolygonIDs.contains(normalizedID(id)),
+                  let polygon = placedPackagePolygon(
+                      id: id,
+                      item: item,
+                      boardPackageID: boardPackageID,
+                      packageTransform: packageTransform,
+                      nInnerLayers: nInnerLayers
+                  ) else {
                 return nil
             }
-
-            let vertices = parsePolygonVertexList(
-                from: item.dictionaryArray("vertices"),
-                transform: packageTransform.applying,
-                flipsArcReverse: packageTransform.mirrored
-            )
-
-            guard vertices.count >= 2 else {
+            guard !(omitSilkscreen && isBoardSilkscreenLayer(polygon.layer)),
+                  !(omitOutline && isBoardOutlineLayer(polygon.layer)) else {
                 return nil
             }
+            return polygon
+        }
+    }
 
-            return HorizontalPolygon(
-                id: "\(boardPackageID)/polygon/\(id)",
-                polygonVertices: vertices,
-                layer: layer
+    /// A placed package keepout plus the pool-local id of the polygon it took,
+    /// so the caller can keep that polygon out of the artwork list.
+    private struct PackageKeepout {
+        var keepout: HorizontalKeepout
+        var sourcePolygonID: String
+    }
+
+    /// Horizon `Package::keepouts`: `{ polygon, keepout_class, all_cu_layers,
+    /// exposed_cu_only, patch_types_cu }`, the same shape as a board keepout
+    /// (`parseKeepouts`), referencing one of the package's own polygons.
+    private static func parsePackageKeepouts(
+        from map: [String: JSONDictionary],
+        polygons: [String: JSONDictionary],
+        boardPackageID: String,
+        packageTransform: HorizontalPlacementTransform,
+        nInnerLayers: Int
+    ) -> [PackageKeepout] {
+        guard !map.isEmpty else {
+            return []
+        }
+        let polygonsByID = polygons.reduce(into: [String: (id: String, item: JSONDictionary)]()) { result, entry in
+            result[normalizedID(entry.key)] = (entry.key, entry.value)
+        }
+        return map.compactMap { keepoutID, item in
+            guard let polygonRef = item.string("polygon"),
+                  let source = polygonsByID[normalizedID(polygonRef)],
+                  let polygon = placedPackagePolygon(
+                      id: source.id,
+                      item: source.item,
+                      boardPackageID: boardPackageID,
+                      packageTransform: packageTransform,
+                      nInnerLayers: nInnerLayers
+                  ) else {
+                return nil
+            }
+            return PackageKeepout(
+                keepout: HorizontalKeepout(
+                    id: "\(boardPackageID)/keepout/\(keepoutID)",
+                    polygonID: polygon.id,
+                    polygon: polygon,
+                    keepoutClass: item.string("keepout_class") ?? "",
+                    allCopperLayers: item.bool("all_cu_layers") ?? false,
+                    exposedCopperOnly: item.bool("exposed_cu_only") ?? false,
+                    copperPatchTypes: item["patch_types_cu"] as? [String] ?? []
+                ),
+                sourcePolygonID: source.id
             )
         }
     }

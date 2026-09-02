@@ -269,6 +269,20 @@ enum HorizontalExportBackend {
                 )
             }
         }
+        for via in board.vias {
+            let ring = via.ringOutline()
+            guard ring.count >= 3 else { continue }
+            for layer in via.copperLayers {
+                guard let setting = setting(for: layer) else { continue }
+                writer.addClosedPolygon(
+                    ring,
+                    layer: dxfLayerName(for: setting),
+                    color: setting.color,
+                    fill: setting.mode == .fill,
+                    outlineWidth: defaultWidth
+                )
+            }
+        }
 
         appendDerivedDXFPadLayer(
             targetLayer: HorizontalBoardLayers.topMask,
@@ -565,7 +579,8 @@ enum HorizontalExportBackend {
         }
     }
 
-    private static func exportGerber(
+    /// Internal (not private) so the Gerber tests can drive it directly.
+    static func exportGerber(
         project: HorizontalProject,
         settings: HorizontalGerberExportSettings,
         to directoryURL: URL
@@ -879,6 +894,14 @@ enum HorizontalExportBackend {
             guard let setting = setting(for: pad.layer) else { continue }
             for path in pad.paths where path.count >= 3 {
                 drawPolygonVertices(path, color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
+            }
+        }
+        for via in board.vias {
+            let ring = via.ringOutline()
+            guard ring.count >= 3 else { continue }
+            for layer in via.copperLayers {
+                guard let setting = setting(for: layer) else { continue }
+                drawPolygonVertices(ring, color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
             }
         }
         for keepout in board.keepouts {
@@ -1642,11 +1665,17 @@ enum HorizontalExportBackend {
                 objects.append(.region(path))
             }
         }
-        for keepout in board.keepouts where keepout.polygon.layer == targetLayer {
-            let vertices = keepout.polygon.renderVertices(arcPrecision: 32)
-            guard vertices.count >= 3 else { continue }
-            objects.append(.polyline(closedPolyline(vertices), defaultWidth))
+        // Via annular rings. A via's padstack copper is a circle of its
+        // diameter on every copper layer of its span (Horizon's via padstacks
+        // put the same `via_diameter` circle on top, inner and bottom), so the
+        // ring goes on exactly the layers the canvas renders it on.
+        for via in board.vias where via.copperLayers.contains(targetLayer) {
+            let ring = via.ringOutline()
+            guard ring.count >= 3 else { continue }
+            objects.append(.region(ring))
         }
+        // Keepouts are design-rule regions, not copper or artwork: Horizon's
+        // Gerber export skips them, so they never reach fabrication output.
         for segment in board.tracks + board.netTies + board.lines + board.packageLines where segment.layer == targetLayer {
             if let arc = segment.arc {
                 objects.append(.polyline(arc.polyline(), max(segment.width, defaultWidth)))
@@ -1804,13 +1833,6 @@ enum HorizontalExportBackend {
         }
         lines.append("M30")
         try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: url, options: [.atomic])
-    }
-
-    private static func closedPolyline(_ vertices: [HorizontalPoint]) -> [HorizontalPoint] {
-        guard let first = vertices.first else {
-            return []
-        }
-        return vertices + [first]
     }
 
     private static func writeODBJob(project: HorizontalProject, board: HorizontalBoard, jobName: String, to jobURL: URL) throws {

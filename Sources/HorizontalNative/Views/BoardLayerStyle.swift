@@ -42,11 +42,6 @@ struct BoardLayerStyle {
     /// The copper layers a via spans (its explicit connected layers, or its own
     /// layer / top copper as a fallback), copper-only and sorted.
     static func renderedViaLayers(for via: HorizontalMarker) -> [Int] {
-        let layers = via.connectedLayers.isEmpty
-            ? [via.layer ?? HorizontalBoardLayers.topCopper]
-            : via.connectedLayers
-        return layers
-            .filter { HorizontalBoardLayers.isCopper($0) }
-            .sorted()
+        via.copperLayers
     }
 }
