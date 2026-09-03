@@ -67,7 +67,7 @@ struct ProjectDocumentView: View {
             ContentUnavailableView("Could Not Open Project", systemImage: "exclamationmark.triangle", description: Text(message))
         case .needsFolderAccess(let message):
             ContentUnavailableView {
-                Label("Needs Access to the Project Folder", systemImage: "lock.trianglebadge.exclamationmark")
+                Label("Needs Folder Access", systemImage: "lock.trianglebadge.exclamationmark")
             } description: {
                 Text(message)
             } actions: {
@@ -88,6 +88,11 @@ struct ProjectDocumentView: View {
             )
                 .id(project.url)
                 .navigationTitle(project.displayTitle)
+        case .pool(let poolURL):
+            HorizontalPoolBrowserView(root: .pool(poolURL))
+                .id(poolURL)
+                .navigationTitle(HorizontalPoolRegistryStore.poolInfo(at: poolURL).name)
+                .navigationSubtitle(poolURL.path)
         }
     }
 
@@ -99,6 +104,11 @@ struct ProjectDocumentView: View {
     private func loadProject() async {
         guard let url = configuration.fileURL else {
             await loadUntitledProject()
+            return
+        }
+
+        if Self.isPoolManifest(url) {
+            await loadPool(manifestURL: url)
             return
         }
 
@@ -148,6 +158,30 @@ struct ProjectDocumentView: View {
         }
     }
 
+    /// A `pool.json` opened as a document — the project type accepts plain
+    /// JSON, and Horizon's own manager opens pools this way — is a pool, not a
+    /// project: show the library browser rooted at its folder instead of
+    /// failing to find a project inside the file.
+    private static func isPoolManifest(_ url: URL) -> Bool {
+        guard url.lastPathComponent.caseInsensitiveCompare("pool.json") == .orderedSame,
+              let json = try? JSONHelper.loadDictionary(from: url) else {
+            return false
+        }
+        return json.string("type") == "pool"
+    }
+
+    private func loadPool(manifestURL url: URL) async {
+        state = .loading
+        // Sandbox: the open grants pool.json alone; the browser lists the
+        // whole folder, so restore or prompt for that first.
+        await HorizontalFolderAccessStore.preparePoolAccess(for: url)
+        guard HorizontalFolderAccessStore.hasPoolFolderAccess(for: url) else {
+            state = .needsFolderAccess(HorizontalFolderAccessStore.poolFolderAccessMessage(for: url))
+            return
+        }
+        state = .pool(url.deletingLastPathComponent().standardizedFileURL)
+    }
+
     /// File > New: the document has no URL until its first save, so materialize
     /// the in-memory template archive in a temporary folder and load from there
     /// (the iPad view does the same for URL-less documents). The archive is
@@ -176,6 +210,8 @@ struct ProjectDocumentView: View {
 private enum ProjectLoadState {
     case loading
     case loaded(HorizontalProject)
+    /// A pool.json opened as a document: the library browser on its folder.
+    case pool(URL)
     case failed(String)
     /// The sandbox can't read the folder holding a bare `.hprj`'s siblings.
     /// Distinct from `.failed` so it can explain the grant and offer to ask for
@@ -1090,6 +1126,13 @@ struct ProjectWorkspaceView: View {
                     safeAreaInsets: fitSafeAreaInsets,
                     isReadOnly: isReadOnly,
                     onPlacePart: beginPartPlacement
+                )
+            }
+        case .library:
+            ViewerPane(title: "Library", subtitle: "Pools") {
+                HorizontalPoolBrowserView(
+                    root: .project(poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }),
+                    safeAreaInsets: fitSafeAreaInsets
                 )
             }
         case .schematic:

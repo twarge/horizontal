@@ -1308,6 +1308,23 @@ struct HorizontalSchematic {
             return .empty
         }
 
+        let substitutions = frameSubstitutions(
+            sheet: sheet,
+            sheetName: sheetName,
+            sheetIndex: sheetIndex,
+            sheetTotal: sheetTotal,
+            projectMeta: blockInfo.projectMeta
+        )
+        return frameArtwork(from: frameJSON, substitutions: substitutions)
+    }
+
+    /// A frame's drawing from its pool JSON: its lines, arcs and polygons plus
+    /// the page border its width/height imply, and its texts with the given
+    /// title-block substitutions applied.
+    private static func frameArtwork(
+        from frameJSON: JSONDictionary,
+        substitutions: [String: String]
+    ) -> SchematicFrameArtwork {
         let junctions = parseJunctions(from: frameJSON)
         var lines = parseSymbolLines(from: frameJSON.dictionaryMap("lines"), symbolInstanceID: "frame", junctions: junctions)
         lines.append(contentsOf: parseSymbolArcs(
@@ -1326,14 +1343,6 @@ struct HorizontalSchematic {
                 HorizontalSegment(id: "frame/border/left", from: HorizontalPoint(x: 0, y: height), to: .zero, width: 0, layer: 0),
             ])
         }
-
-        let substitutions = frameSubstitutions(
-            sheet: sheet,
-            sheetName: sheetName,
-            sheetIndex: sheetIndex,
-            sheetTotal: sheetTotal,
-            projectMeta: blockInfo.projectMeta
-        )
 
         return SchematicFrameArtwork(
             lines: lines,
@@ -4248,5 +4257,96 @@ struct HorizontalSchematic {
                 && isDirectory.boolValue
                 && $0.lastPathComponent.caseInsensitiveCompare(filename) == .orderedSame
         }
+    }
+}
+
+// MARK: - Pool previews
+
+/// A pool symbol or frame drawn on its own — what the library browser's
+/// preview shows. Coordinates are the item's own (a frame's origin is its
+/// bottom-left corner), already run through the requested placement so a
+/// symbol preview can show its per-orientation text placements.
+struct HorizontalSymbolPreviewArtwork {
+    var lines: [HorizontalSegment] = []
+    var pins: [HorizontalSegment] = []
+    var pinCircles: [HorizontalCircle] = []
+    var polygons: [HorizontalPolygon] = []
+    var texts: [HorizontalText] = []
+
+    var points: [HorizontalPoint] {
+        var result = [HorizontalPoint]()
+        for segment in lines {
+            result.append(segment.from)
+            result.append(segment.to)
+        }
+        for segment in pins {
+            result.append(segment.from)
+            result.append(segment.to)
+        }
+        for circle in pinCircles {
+            result.append(HorizontalPoint(x: circle.center.x - circle.radius, y: circle.center.y - circle.radius))
+            result.append(HorizontalPoint(x: circle.center.x + circle.radius, y: circle.center.y + circle.radius))
+        }
+        for polygon in polygons {
+            result.append(contentsOf: polygon.vertices)
+        }
+        for text in texts {
+            result.append(contentsOf: text.renderBoundsPoints)
+        }
+        return result
+    }
+}
+
+extension HorizontalSchematic {
+    /// One pool symbol on its own, placed by `transform` (identity draws it as
+    /// authored). Pin names come from `unitJSON`, the symbol's unit as the
+    /// library browser resolved it — a base pool keeps its units in flat
+    /// directories the project-pool loaders never look in. No component, so
+    /// `$REFDES`-style texts keep their placeholders.
+    static func symbolPreviewArtwork(
+        symbolJSON: JSONDictionary,
+        unitJSON: JSONDictionary?,
+        poolURL: URL,
+        transform: HorizontalPlacementTransform = .identity
+    ) -> HorizontalSymbolPreviewArtwork {
+        let resource = schematicSymbolResource(from: symbolJSON)
+        var unitCache = [String: JSONDictionary]()
+        if let unitID = resource.unitID.map(normalizedID), let unitJSON {
+            unitCache[unitID] = unitJSON
+        }
+        var unitPinInfoCache = [String: [String: SchematicUnitPinInfo]]()
+        var partCache = [String: SchematicPartInfo]()
+        var packageCache = [String: JSONDictionary]()
+        let artwork = parseSingleSymbolArtwork(
+            symbolInstanceID: "preview",
+            symbolItem: [:],
+            symbolResource: resource,
+            symbolTransform: transform,
+            sheetTextsByID: [:],
+            component: nil,
+            poolURL: poolURL,
+            unitCache: &unitCache,
+            unitPinInfoCache: &unitPinInfoCache,
+            partCache: &partCache,
+            packageCache: &packageCache
+        )
+        return HorizontalSymbolPreviewArtwork(
+            lines: artwork.lines,
+            pins: artwork.pins,
+            pinCircles: artwork.pinCircles,
+            polygons: artwork.polygons,
+            texts: artwork.texts
+        )
+    }
+
+    /// One pool frame on its own: its artwork plus the page border, with the
+    /// title-block placeholders left unsubstituted.
+    static func framePreviewArtwork(frameJSON: JSONDictionary) -> HorizontalSymbolPreviewArtwork {
+        let artwork = frameArtwork(from: frameJSON, substitutions: [:])
+        return HorizontalSymbolPreviewArtwork(
+            lines: artwork.lines,
+            polygons: artwork.polygons,
+            texts: artwork.texts
+        )
     }
 }

@@ -477,6 +477,11 @@ struct HorizontalIPadProjectView: View {
         switch pane {
         case .parts:
             partsBrowser(for: project, safeAreaInsets: safeAreaInsets)
+        case .library:
+            HorizontalPoolBrowserView(
+                root: .project(poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }),
+                safeAreaInsets: safeAreaInsets
+            )
         case .schematic:
             schematicView(for: project, safeAreaInsets: safeAreaInsets)
         case .board:

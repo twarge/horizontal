@@ -91,6 +91,34 @@ enum HorizontalFolderAccessStore {
         """
     }
 
+    // MARK: - Pool opening
+
+    /// Ensures a pool opened by its `pool.json` can be browsed: the open
+    /// grant covers that one file, and the browser lists the whole folder.
+    static func preparePoolAccess(for poolJSONURL: URL) async {
+        let folder = poolJSONURL.deletingLastPathComponent().standardizedFileURL
+        await ensureAccess(
+            to: folder,
+            requiresWrite: false,
+            message: "Horizontal needs access to the pool folder to list its parts, symbols and packages. Grant access to “\(folder.lastPathComponent)”."
+        )
+    }
+
+    static func hasPoolFolderAccess(for poolJSONURL: URL) -> Bool {
+        hasAccess(to: poolJSONURL.deletingLastPathComponent().standardizedFileURL, requiresWrite: false)
+    }
+
+    static func poolFolderAccessMessage(for poolJSONURL: URL) -> String {
+        let folderName = poolJSONURL.deletingLastPathComponent().lastPathComponent
+        return """
+        Horizontal doesn’t have permission to read the folder that contains this pool.json.
+
+        A Horizon pool is a folder of parts, symbols, packages and padstacks with a pool.json at its root, so Horizontal needs access to the whole folder “\(folderName)” — not just the pool.json file.
+
+        Choose Grant Access below, then select “\(folderName)” when macOS asks.
+        """
+    }
+
     // MARK: - Exports
 
     /// Ensures the export target directory (which may not exist yet) can be

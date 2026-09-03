@@ -5593,3 +5593,139 @@ struct HorizontalBoard {
         }
     }
 }
+
+// MARK: - Pool previews
+
+extension HorizontalBoard {
+    /// Geometry for one pool package (or a decal, which carries the same
+    /// graphics) placed at the origin, for the library browser's preview.
+    /// There is no board: the package's own parameter set drives its
+    /// parameter program, there are no inner layers, texts keep their
+    /// `$REFDES`-style placeholders, and pads resolve their padstacks through
+    /// `resolvePadstack` — the browser's cross-pool index — because a base
+    /// pool's padstacks live in flat directories no project cache lookup
+    /// would find.
+    static func packagePreviewGeometry(
+        packageJSON: JSONDictionary,
+        packageID: String,
+        poolURL: URL,
+        padstack resolvePadstack: (String) -> JSONDictionary?
+    ) -> HorizontalPackageGeometry {
+        let previewID = "preview"
+        var expandedPackageJSON = packageJSON
+        let packageParameterSet = resolvedPackageParameterSet(
+            packageJSON: packageJSON,
+            boardParameterSet: [:]
+        )
+        HorizontalParameterProgramEvaluator.apply(
+            program: expandedPackageJSON.string("parameter_program"),
+            parameters: packageParameterSet,
+            to: &expandedPackageJSON
+        )
+        let junctions = parseJunctions(from: expandedPackageJSON)
+        let padMap = expandedPackageJSON.dictionaryMap("pads")
+
+        // Seed the padstack cache from the resolver so parsePackagePads never
+        // has to go looking on disk; anything it can't resolve is recorded as
+        // missing up front for the same reason.
+        var padstackCache = [String: JSONDictionary]()
+        var missingPadstackCache = Set<String>()
+        for pad in padMap.values {
+            guard let padstackID = pad.string("padstack") else {
+                continue
+            }
+            let key = "\(normalizedID(packageID))/\(normalizedID(padstackID))"
+            guard padstackCache[key] == nil, !missingPadstackCache.contains(key) else {
+                continue
+            }
+            if let padstackJSON = resolvePadstack(padstackID) {
+                padstackCache[key] = padstackJSON
+            } else {
+                missingPadstackCache.insert(key)
+            }
+        }
+        var expandedPadstackCache = [String: HorizontalExpandedPadstack]()
+        var padstackShapeTemplateCache = [String: PadstackShapeGeometry]()
+        let pads = parsePackagePads(
+            from: padMap,
+            boardPackageID: previewID,
+            packageID: packageID,
+            packageTransform: .identity,
+            padNetIDsByName: [:],
+            poolURL: poolURL,
+            nInnerLayers: 0,
+            packageParameterSet: packageParameterSet,
+            padstackCache: &padstackCache,
+            missingPadstackCache: &missingPadstackCache,
+            expandedPadstackCache: &expandedPadstackCache,
+            padstackShapeTemplateCache: &padstackShapeTemplateCache
+        )
+
+        let polygonMap = expandedPackageJSON.dictionaryMap("polygons")
+        let keepouts = parsePackageKeepouts(
+            from: expandedPackageJSON.dictionaryMap("keepouts"),
+            polygons: polygonMap,
+            boardPackageID: previewID,
+            packageTransform: .identity,
+            nInnerLayers: 0
+        )
+        return HorizontalPackageGeometry(
+            pads: pads.pads,
+            polygons: parsePackagePolygons(
+                from: polygonMap,
+                boardPackageID: previewID,
+                packageTransform: .identity,
+                omitSilkscreen: false,
+                omitOutline: false,
+                nInnerLayers: 0,
+                excludingPolygonIDs: Set(keepouts.map { normalizedID($0.sourcePolygonID) })
+            ),
+            lines: parsePackageLines(
+                from: expandedPackageJSON.dictionaryMap("lines"),
+                boardPackageID: previewID,
+                junctions: junctions,
+                flipped: false,
+                omitSilkscreen: false,
+                nInnerLayers: 0
+            ),
+            arcs: parsePackageArcs(
+                from: expandedPackageJSON.dictionaryMap("arcs"),
+                boardPackageID: previewID,
+                junctions: junctions,
+                flipped: false,
+                omitSilkscreen: false,
+                nInnerLayers: 0
+            ),
+            texts: parsePackageTexts(
+                from: expandedPackageJSON.dictionaryMap("texts"),
+                boardPackageID: previewID,
+                packageTransform: .identity,
+                context: BoardTextContext(),
+                omitSilkscreen: false,
+                nInnerLayers: 0
+            ),
+            holes: pads.holes,
+            padPositions: pads.positions,
+            padNetIDs: pads.netIDs,
+            keepouts: keepouts.map(\.keepout)
+        )
+    }
+
+    /// A padstack on its own: exactly what a package pad referencing it at the
+    /// origin, with the padstack's default parameters, would produce.
+    static func padstackPreviewGeometry(padstackJSON: JSONDictionary, poolURL: URL) -> HorizontalPackageGeometry {
+        let padstackID = padstackJSON.string("uuid") ?? "padstack"
+        let pad: JSONDictionary = [
+            "name": "1",
+            "padstack": padstackID,
+            "parameter_set": JSONDictionary(),
+            "placement": ["shift": [0, 0], "angle": 0, "mirror": false] as JSONDictionary
+        ]
+        let package: JSONDictionary = ["pads": ["preview-pad": pad] as JSONDictionary]
+        return packagePreviewGeometry(
+            packageJSON: package,
+            packageID: "padstack-preview",
+            poolURL: poolURL
+        ) { _ in padstackJSON }
+    }
+}
