@@ -340,7 +340,12 @@ struct HorizontalCanvasPalette {
         HorizontalBoardLayers.topPackage: rgb(0.5, 0.5, 0.5),
         HorizontalBoardLayers.topPaste: rgb(0.8, 0.8, 0.8),
         HorizontalBoardLayers.topSilkscreen: rgb(0.9, 0.9, 0.9),
-        HorizontalBoardLayers.topMask: rgb(1, 0.5, 0.5),
+        // Mask layers get hues no copper layer uses. Horizon's (1, .5, .5) is
+        // exactly what red copper at the 60% default layer opacity becomes over
+        // a white background, so in the light theme a mask opening inside a
+        // copper ring drew in the copper's own colour; the old bottom mask was
+        // a green on green.
+        HorizontalBoardLayers.topMask: rgb(0.7, 0.3, 0.9),
         HorizontalBoardLayers.topCopper: rgb(1, 0, 0),
         HorizontalBoardLayers.in1Copper: rgb(1, 1, 0),
         HorizontalBoardLayers.in2Copper: rgb(1, 1, 0),
@@ -351,7 +356,7 @@ struct HorizontalCanvasPalette {
         HorizontalBoardLayers.in7Copper: rgb(1, 1, 0),
         HorizontalBoardLayers.in8Copper: rgb(1, 1, 0),
         HorizontalBoardLayers.bottomCopper: rgb(0, 0.5, 0),
-        HorizontalBoardLayers.bottomMask: rgb(0.25, 0.5, 0.25),
+        HorizontalBoardLayers.bottomMask: rgb(0.3, 0.7, 1),
         HorizontalBoardLayers.bottomSilkscreen: rgb(0.9, 0.9, 0.9),
         HorizontalBoardLayers.bottomPaste: rgb(0.8, 0.8, 0.8),
         HorizontalBoardLayers.bottomPackage: rgb(0.5, 0.5, 0.5),
