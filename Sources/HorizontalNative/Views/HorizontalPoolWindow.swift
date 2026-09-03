@@ -23,6 +23,12 @@ final class HorizontalPoolWindowManager {
         controllers[standardized.path] = controller
         controller.show(reveal: reveal, appearanceSettings: appearanceSettings)
     }
+
+    /// Re-reads the window title from pool.json — a pool opened before its
+    /// folder grant was titled by its directory name.
+    func refreshTitle(for poolURL: URL) {
+        controllers[poolURL.standardizedFileURL.path]?.refreshTitle()
+    }
 }
 
 /// The reveal request lives in a model the window's content observes, so a
@@ -63,8 +69,13 @@ final class HorizontalPoolWindowController: NSObject, NSWindowDelegate {
         if let reveal {
             model.revealRequest = reveal
         }
+        refreshTitle()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func refreshTitle() {
+        window?.title = HorizontalPoolRegistryStore.poolInfo(at: poolURL).name
     }
 }
 

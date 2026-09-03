@@ -57,8 +57,11 @@ struct HorizontalPoolBrowserView: View {
         var url: URL
         var name: String
         var isProjectPool: Bool
+        /// Why the pool can't be read right now (sandbox), or nil.
+        var accessError: String?
 
         var id: String { url.path }
+        var isReadable: Bool { accessError == nil }
     }
 
     /// The pools the browser (and the padstack pickers) can see, project pool
@@ -68,31 +71,54 @@ struct HorizontalPoolBrowserView: View {
         var result = [BrowsedPool]()
         var seen = Set<String>()
 
-        func add(_ url: URL, name: String, isProjectPool: Bool) {
+        func add(_ url: URL, name: String?, isProjectPool: Bool) {
             let standardized = url.standardizedFileURL
             guard seen.insert(standardized.path).inserted else {
                 return
             }
-            result.append(BrowsedPool(url: standardized, name: name, isProjectPool: isProjectPool))
+            result.append(
+                BrowsedPool(
+                    url: standardized,
+                    name: name ?? HorizontalPoolRegistryStore.poolInfo(at: standardized).name,
+                    isProjectPool: isProjectPool,
+                    accessError: HorizontalPoolLibrary.accessError(for: standardized)
+                )
+            )
         }
+
+        // Registered pools restore their security scopes on first use; make
+        // sure that has happened before any pool is probed for readability.
+        let registeredURLs = HorizontalPoolRegistryStore.poolURLs()
 
         switch root {
         case .project(let projectPoolURL):
             if let projectPoolURL {
                 add(projectPoolURL, name: "Project pool", isProjectPool: true)
             }
-            let baseURLs = projectPoolURL.map { HorizontalPoolPadstacks.basePoolURLs(for: $0) }
-                ?? HorizontalPoolRegistryStore.poolURLs()
+            let baseURLs = projectPoolURL.map { HorizontalPoolPadstacks.basePoolURLs(for: $0) } ?? registeredURLs
             for url in baseURLs {
-                add(url, name: HorizontalPoolRegistryStore.poolInfo(at: url).name, isProjectPool: false)
+                add(url, name: nil, isProjectPool: false)
             }
         case .pool(let poolURL):
-            add(poolURL, name: HorizontalPoolRegistryStore.poolInfo(at: poolURL).name, isProjectPool: false)
+            add(poolURL, name: nil, isProjectPool: false)
             for url in Self.includedPoolURLs(for: poolURL) {
-                add(url, name: HorizontalPoolRegistryStore.poolInfo(at: url).name, isProjectPool: false)
+                add(url, name: nil, isProjectPool: false)
             }
         }
         return result
+    }
+
+    private var unreadablePools: [BrowsedPool] {
+        browsedPools.filter { !$0.isReadable }
+    }
+
+    /// A standalone pool window whose own pool can't be read has nothing to
+    /// show but the way to fix that.
+    private var unreadableRootPool: BrowsedPool? {
+        guard case .pool = root, let pool = browsedPools.first, !pool.isReadable else {
+            return nil
+        }
+        return pool
     }
 
     /// The pools a standalone pool includes (`pools_included` uuids in its
@@ -150,6 +176,8 @@ struct HorizontalPoolBrowserView: View {
             Divider()
             if browsedPools.isEmpty {
                 noPoolsView
+            } else if let pool = unreadableRootPool {
+                needsAccessView(pool)
             } else {
                 splitContent
             }
@@ -236,6 +264,37 @@ struct HorizontalPoolBrowserView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// The sandbox lets the app see that a pool exists without letting it
+    /// read the folder; the fix is a folder grant, kept as a registered pool
+    /// so it survives relaunches.
+    private func needsAccessView(_ pool: BrowsedPool) -> some View {
+        ContentUnavailableView {
+            Label("Needs Access to “\(pool.url.lastPathComponent)”", systemImage: "lock.trianglebadge.exclamationmark")
+        } description: {
+            Text(
+                "Horizontal found this pool at \(pool.url.path) but isn’t allowed to read it.\n\(pool.accessError ?? "")\n\nGrant access to browse it; the pool is registered so the grant persists."
+            )
+        } actions: {
+            Button("Grant Access…") {
+                grantAccess(to: pool.url)
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var emptyListDescription: String {
+        var text = searchText.isEmpty
+            ? "None of the browsed pools contain \(category.title.lowercased())."
+            : "No \(category.title.lowercased()) match “\(searchText)”."
+        let unreadable = unreadablePools
+        if !unreadable.isEmpty {
+            let names = unreadable.map { "“\($0.url.lastPathComponent)”" }.joined(separator: ", ")
+            text += "\n\nHorizontal isn’t allowed to read \(names). Use Pools > Grant Access… to browse \(unreadable.count == 1 ? "it" : "them")."
+        }
+        return text
+    }
+
     @ViewBuilder
     private var listContent: some View {
         if isLoading && items.isEmpty {
@@ -245,11 +304,7 @@ struct HorizontalPoolBrowserView: View {
             ContentUnavailableView(
                 searchText.isEmpty ? "No \(category.title)" : "No Matches",
                 systemImage: category.symbolName,
-                description: Text(
-                    searchText.isEmpty
-                        ? "None of the browsed pools contain \(category.title.lowercased())."
-                        : "No \(category.title.lowercased()) match “\(searchText)”."
-                )
+                description: Text(emptyListDescription)
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -304,7 +359,8 @@ struct HorizontalPoolBrowserView: View {
                 ForEach(browsedPools) { pool in
                     poolMenu(
                         title: "\(pool.name)\(pool.isProjectPool ? " (project)" : "")",
-                        url: pool.url
+                        url: pool.url,
+                        accessError: pool.accessError
                     )
                 }
             }
@@ -330,9 +386,15 @@ struct HorizontalPoolBrowserView: View {
         .help("The pools being browsed; register more to make their padstacks and parts available")
     }
 
-    private func poolMenu(title: String, url: URL) -> some View {
-        Menu(title) {
+    private func poolMenu(title: String, url: URL, accessError: String? = nil) -> some View {
+        Menu {
             Text(url.path)
+            if let accessError {
+                Text("Not readable: \(accessError)")
+                Button("Grant Access…") {
+                    grantAccess(to: url)
+                }
+            }
             #if os(macOS)
             if root != .pool(url) {
                 Button("Open in Separate Window") {
@@ -349,6 +411,12 @@ struct HorizontalPoolBrowserView: View {
                     HorizontalPoolLibrary.invalidateCache()
                     scanGeneration += 1
                 }
+            }
+        } label: {
+            if accessError != nil {
+                Label(title, systemImage: "lock")
+            } else {
+                Text(title)
             }
         }
     }
@@ -484,9 +552,35 @@ struct HorizontalPoolBrowserView: View {
         if registry.addPool(at: url) {
             HorizontalPoolLibrary.invalidateCache()
             scanGeneration += 1
+            #if os(macOS)
+            HorizontalPoolWindowManager.shared.refreshTitle(for: url)
+            #endif
         } else {
             addPoolFailurePath = url.lastPathComponent
         }
+    }
+
+    /// Asks macOS for the folder grant a discovered-but-unreadable pool needs,
+    /// then registers it so the grant is kept. On iPadOS the folder picker
+    /// (Add Pool…) is the same flow.
+    private func grantAccess(to poolURL: URL) {
+        #if os(macOS)
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = poolURL
+        panel.message = "Grant Horizontal access to the pool folder “\(poolURL.lastPathComponent)” to browse it."
+        panel.prompt = "Grant Access"
+        panel.begin { response in
+            guard response == .OK, let chosen = panel.url else {
+                return
+            }
+            addPool(at: chosen)
+        }
+        #else
+        isImportingPool = true
+        #endif
     }
 
     private func applyPendingReveal() {

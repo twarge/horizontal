@@ -122,6 +122,19 @@ enum HorizontalPoolLibrary {
         "3d_models", ".git", "layer_help", "tmp", "scripts", "versions",
     ]
 
+    /// Why the pool directory can't be listed, or nil when it can. Under the
+    /// sandbox a pool found by path — a horizon-pool checkout beside the
+    /// projects — is visible (it exists) yet unreadable until the user grants
+    /// access to its folder, and a scan of it would come back empty.
+    static func accessError(for poolURL: URL) -> String? {
+        do {
+            _ = try FileManager.default.contentsOfDirectory(atPath: poolURL.path)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     static func items(inPool poolURL: URL, poolName: String) -> [HorizontalPoolLibraryItem] {
         let cacheKey = poolURL.standardizedFileURL.path
 
@@ -130,6 +143,12 @@ enum HorizontalPoolLibrary {
         lock.unlock()
         if let cached {
             return cached
+        }
+
+        // An unreadable pool is not "empty": leave it uncached so the scan
+        // after an access grant sees the real contents.
+        guard accessError(for: poolURL) == nil else {
+            return []
         }
 
         let items = scan(poolURL: poolURL, poolName: poolName)
