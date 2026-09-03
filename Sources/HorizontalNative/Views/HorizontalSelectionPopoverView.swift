@@ -165,7 +165,9 @@ struct HorizontalSelectionPopoverView: View {
 
     private var inspectorContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            header
+            if showsHeader {
+                header
+            }
 
             if chrome == .popover {
                 ScrollView {
@@ -186,16 +188,28 @@ struct HorizontalSelectionPopoverView: View {
 
             ForEach(state.groups) { group in
                 if let item = currentItem(in: group) {
-                    groupView(group, item: item)
+                    groupView(
+                        group,
+                        item: item,
+                        showsDivider: showsHeader || state.hovered != nil || group.id != state.groups.first?.id
+                    )
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// The "Selection / N selected" row only earns its place when the
+    /// selection spans several object types. With one group, that group's
+    /// heading already names the type and its pager carries the count, so
+    /// the row would just restate them.
+    private var showsHeader: Bool {
+        state.groups.count > 1
+    }
+
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(selectionTitle)
+            Text("Selection")
                 .font(headerTitleFont)
             Spacer()
             Text(selectionCountText)
@@ -252,14 +266,6 @@ struct HorizontalSelectionPopoverView: View {
         chrome == .sidebar ? .body.monospacedDigit() : .caption.monospacedDigit()
     }
 
-    private var selectionTitle: String {
-        let typeCount = state.groups.count
-        if typeCount == 1, let group = state.groups.first {
-            return group.items.count == 1 ? group.title : group.pluralTitle
-        }
-        return "Selection"
-    }
-
     private var selectionCountText: String {
         let count = state.groups.reduce(0) { $0 + $1.items.count }
         return "\(count) selected"
@@ -282,12 +288,18 @@ struct HorizontalSelectionPopoverView: View {
         .padding(.bottom, 2)
     }
 
-    private func groupView(_ group: HorizontalSelectionDetailGroup, item: HorizontalSelectionDetailItem) -> some View {
+    private func groupView(
+        _ group: HorizontalSelectionDetailGroup,
+        item: HorizontalSelectionDetailItem,
+        showsDivider: Bool
+    ) -> some View {
         let details = filteredDetails(item.details, properties: item.properties)
         let properties = filteredProperties(item.properties, details: item.details)
         return VStack(alignment: .leading, spacing: 8) {
-            Divider()
-                .opacity(0.55)
+            if showsDivider {
+                Divider()
+                    .opacity(0.55)
+            }
 
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(group.items.count == 1 ? group.title : group.pluralTitle)
@@ -296,7 +308,7 @@ struct HorizontalSelectionPopoverView: View {
                 objectSelector(group, currentItem: item)
             }
 
-            VStack(alignment: .leading, spacing: 2) {
+            if showsItemTitle(item, in: group) {
                 Text(item.title)
                     .font(objectTitleFont)
             }
@@ -313,6 +325,16 @@ struct HorizontalSelectionPopoverView: View {
                 }
             }
         }
+    }
+
+    /// A via's or junction's own title just repeats its group heading. Only
+    /// a title that adds something — a refdes, a pad name, a label's text —
+    /// gets its own line.
+    private func showsItemTitle(
+        _ item: HorizontalSelectionDetailItem,
+        in group: HorizontalSelectionDetailGroup
+    ) -> Bool {
+        item.title.caseInsensitiveCompare(group.title) != .orderedSame
     }
 
     private func filteredDetails(
