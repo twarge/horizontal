@@ -2310,6 +2310,25 @@ enum BoardSceneFactory {
             ))
         }
 
+        // Via openings: the padstack's expanded mask circle, the same outline
+        // the canvas draws and the Gerber export writes. A tented padstack
+        // has none, so those vias stay under the mask here too.
+        for via in board.vias {
+            let opening = via.maskOutline(on: layer)
+            guard opening.count >= 3 else {
+                continue
+            }
+            let points = cleanedClosedScenePoints(opening)
+            guard let path = closedPath(for: points, center: center) else {
+                continue
+            }
+            openings.append(SolderMaskOpening(
+                path: path,
+                bounds: HorizontalRect(points: points),
+                samplePoints: points
+            ))
+        }
+
         let lines = board.lines + board.packageLines
         for line in lines where line.layer == layer {
             let points = cleanedOpenScenePoints(line.pathPoints)
