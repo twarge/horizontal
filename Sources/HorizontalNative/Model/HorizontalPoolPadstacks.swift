@@ -149,11 +149,12 @@ enum HorizontalPoolPadstacks {
         }
     }
 
-    /// Base pools reachable from a project pool: the directory named by
-    /// `$HORIZON_POOL`, plus any `horizon-pool` directory (carrying a
-    /// `pool.json`) next to the project or up to a few levels above it —
-    /// covering the common "checkout of horizon-pool beside the projects"
-    /// layout. The project pool itself is never returned.
+    /// Base pools reachable from a project pool: pools the user registered in
+    /// the library browser first, then the directory named by `$HORIZON_POOL`,
+    /// then any `horizon-pool` directory (carrying a `pool.json`) next to the
+    /// project or up to a few levels above it — covering the common "checkout
+    /// of horizon-pool beside the projects" layout. The project pool itself is
+    /// never returned.
     static func basePoolURLs(for poolURL: URL) -> [URL] {
         var results = [URL]()
         var seen = Set([poolURL.standardizedFileURL.path])
@@ -167,6 +168,9 @@ enum HorizontalPoolPadstacks {
             results.append(standardized)
         }
 
+        for registered in HorizontalPoolRegistryStore.poolURLs() {
+            addIfPool(registered)
+        }
         if let environmentPool = ProcessInfo.processInfo.environment["HORIZON_POOL"], !environmentPool.isEmpty {
             addIfPool(URL(fileURLWithPath: environmentPool, isDirectory: true))
         }
@@ -176,6 +180,15 @@ enum HorizontalPoolPadstacks {
             ancestor = ancestor.deletingLastPathComponent()
         }
         return results
+    }
+
+    /// Drops every cached catalog and padstack JSON, so the next lookup
+    /// rescans. Called when the registered-pool list changes.
+    static func invalidateCaches() {
+        lock.lock()
+        catalogCache.removeAll()
+        jsonCache.removeAll()
+        lock.unlock()
     }
 
     /// Makes sure the project pool itself carries this padstack, copying it

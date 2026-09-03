@@ -182,11 +182,14 @@ struct HorizontalPartBrowserView: View {
     }
 
     private var unavailableView: some View {
+        // Greedy frame so the toolbar stays pinned to the top — without it the
+        // enclosing VStack hugs its content and floats to the pane's center.
         ContentUnavailableView(
             "No Parts",
             systemImage: "list.bullet.rectangle",
             description: Text(poolURL.map { "No cached parts were found in \($0.path)." } ?? "This project does not declare a pool directory.")
         )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func tableText(_ value: String, part: HorizontalPoolPart) -> some View {
