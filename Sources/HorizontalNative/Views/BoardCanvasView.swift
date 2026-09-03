@@ -11231,6 +11231,13 @@ struct BoardCanvasView: View {
                 for layer in visibleViaLayers(for: via) {
                     layers.insert(layer)
                 }
+                // A via's solder-mask openings live on the mask layers. On a
+                // board with no pads those layers carry nothing else, and a
+                // layer missing here is masked out of the draw entirely — so
+                // the openings vanished even with the mask layer shown.
+                for layer in via.maskLayers where displayOptions.isLayerVisible(layer) {
+                    layers.insert(layer)
+                }
             }
         }
         if displayOptions.decals {
