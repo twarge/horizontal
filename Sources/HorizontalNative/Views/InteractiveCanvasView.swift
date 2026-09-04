@@ -97,6 +97,18 @@ enum HorizontalCanvasCommand {
     case editSymbolPinNames
     case toggleRectanglePlacementMode
     case moveSelectionBy(HorizontalPoint)
+    /// Package editor: pick a padstack and place pads with it.
+    case placePad
+    /// Padstack editor: place a circle / rectangle / obround shape.
+    case placeShape(HorizontalPadstackShapeForm)
+    /// Padstack editor: place a round or slot hole.
+    case placeHole(HorizontalHoleShape)
+    /// Symbol editor: place the next unplaced unit pin (Horizon's map-pin).
+    case placePin
+    /// Symbol editor: place `$REFDES` and `$VALUE` texts together.
+    case placeRefdesAndValue
+    /// Symbol editor: place a filled dot (a two-vertex arc polygon).
+    case placeDot
     case commitInteraction
     case cancelInteraction
 }

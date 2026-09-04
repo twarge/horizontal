@@ -435,6 +435,97 @@ struct AddTextToolButton: View {
     }
 }
 
+struct PlacePadToolButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "Place pad") {
+            Button(action: action) {
+                Image(systemName: "circle.grid.2x2")
+            }
+            .help("Place pads from a padstack (P)")
+        }
+    }
+}
+
+struct PlaceShapeToolButtonGroup: View {
+    var action: (HorizontalPadstackShapeForm) -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "Place shape") {
+            Menu {
+                ForEach(HorizontalPadstackShapeForm.allCases, id: \.self) { form in
+                    Button(form.displayName) {
+                        action(form)
+                    }
+                }
+            } label: {
+                Image(systemName: "rectangle.on.rectangle.circle")
+            }
+            .help("Place a circular, rectangular or obround shape")
+        }
+    }
+}
+
+struct PlaceHoleToolButtonGroup: View {
+    var action: (HorizontalHoleShape) -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "Place hole") {
+            Menu {
+                Button("Round") {
+                    action(.round)
+                }
+                Button("Slot") {
+                    action(.slot)
+                }
+            } label: {
+                Image(systemName: "circle.dotted")
+            }
+            .help("Place a round or slot hole")
+        }
+    }
+}
+
+struct PlacePinToolButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "Place pin") {
+            Button(action: action) {
+                Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
+            }
+            .help("Place the next unplaced pin (P)")
+        }
+    }
+}
+
+struct PlaceRefdesValueToolButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "Place refdes and value") {
+            Button(action: action) {
+                Image(systemName: "textformat.abc")
+            }
+            .help("Place $REFDES and $VALUE texts")
+        }
+    }
+}
+
+struct PlaceDotToolButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "Place dot") {
+            Button(action: action) {
+                Image(systemName: "circle.fill")
+            }
+            .help("Place a filled dot")
+        }
+    }
+}
+
 struct DrawPlaneToolButton: View {
     var action: () -> Void
 
@@ -1459,6 +1550,12 @@ struct BoardLayerControls: View {
     @Binding var displayOptions: BoardDisplayOptions
     @Binding var selectedLayer: Int
     var includesThreeDControls: Bool
+    /// A pool item editor's fixed layer set, top to bottom; nil lists the
+    /// board's full stack.
+    var layers: [Int]? = nil
+    /// Board-only object toggles (vias, connections, decals) are hidden for
+    /// pool items, which have none.
+    var showsBoardObjectToggles = true
 
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
@@ -1549,17 +1646,25 @@ struct BoardLayerControls: View {
             .padding(.top, 10)
 
             LayerControlSection(title: "Objects") {
-                BoardDisplayToggle(title: "Track Labels", isOn: $displayOptions.trackLabels)
-                BoardDisplayToggle(title: "Vias", color: theme.hole, isOn: $displayOptions.vias)
-                BoardDisplayToggle(title: "Via Labels", color: theme.hole, isOn: $displayOptions.viaLabels)
+                if showsBoardObjectToggles {
+                    BoardDisplayToggle(title: "Track Labels", isOn: $displayOptions.trackLabels)
+                    BoardDisplayToggle(title: "Vias", color: theme.hole, isOn: $displayOptions.vias)
+                    BoardDisplayToggle(title: "Via Labels", color: theme.hole, isOn: $displayOptions.viaLabels)
+                }
                 BoardDisplayToggle(title: "Pads", color: theme.layerColor(for: HorizontalBoardLayers.topCopper), isOn: $displayOptions.pads)
                 BoardDisplayToggle(title: "Pad Labels", color: theme.layerColor(for: HorizontalBoardLayers.topCopper), isOn: $displayOptions.padLabels)
                 BoardDisplayToggle(title: "Holes", color: theme.hole, isOn: $displayOptions.holes)
-                BoardDisplayToggle(title: "Packages", isOn: $displayOptions.packages)
+                if showsBoardObjectToggles {
+                    BoardDisplayToggle(title: "Packages", isOn: $displayOptions.packages)
+                }
                 BoardDisplayToggle(title: "Text", isOn: $displayOptions.text)
-                BoardDisplayToggle(title: "Connections", color: theme.airwire, isOn: $displayOptions.connectionLines)
-                BoardDisplayToggle(title: "Connection Labels", color: theme.connectionLine, isOn: $displayOptions.connectionLabels)
-                BoardDisplayToggle(title: "Decals", isOn: $displayOptions.decals)
+                BoardDisplayToggle(title: "Keepouts", isOn: $displayOptions.keepouts)
+                BoardDisplayToggle(title: "Dimensions", isOn: $displayOptions.dimensions)
+                if showsBoardObjectToggles {
+                    BoardDisplayToggle(title: "Connections", color: theme.airwire, isOn: $displayOptions.connectionLines)
+                    BoardDisplayToggle(title: "Connection Labels", color: theme.connectionLine, isOn: $displayOptions.connectionLabels)
+                    BoardDisplayToggle(title: "Decals", isOn: $displayOptions.decals)
+                }
             }
             .padding([.horizontal, .bottom], 12)
             .padding(.top, 10)
@@ -1568,6 +1673,9 @@ struct BoardLayerControls: View {
     }
 
     private var layerEntries: [BoardLayerEntry] {
+        if let layers {
+            return layers.map { BoardLayerEntry(layer: $0) }
+        }
         var entries = [
             BoardLayerEntry(layer: HorizontalBoardLayers.topNotes),
             BoardLayerEntry(layer: HorizontalBoardLayers.outlineNotes),

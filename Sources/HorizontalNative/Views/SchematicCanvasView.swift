@@ -84,6 +84,12 @@ struct SchematicCanvasView: View {
         var actionName: String
     }
 
+    /// Symbol editor: a unit pin following the cursor until a click places it.
+    private struct PlacePinState {
+        var originalSheet: HorizontalSchematicSheet
+        var pinID: String
+    }
+
     private enum DrawNetLineBendMode {
         case xy
         case yx
@@ -201,6 +207,14 @@ struct SchematicCanvasView: View {
     var drawNetLineCommand: HorizontalDrawNetLineCommand?
     var placePartRequest: HorizontalPartPlacementRequest?
     var poolURL: URL?
+    /// What the canvas edits: a sheet, or a pool symbol / frame (see
+    /// `HorizontalSchematicEditorProfile`).
+    var mode: HorizontalSchematicEditorMode = .sheet
+    var symbolEditorContext: HorizontalSymbolEditorContext?
+    /// Bumped by the host when it replaced `sheet` underneath the canvas (a
+    /// header edit, an undo of one, a unit change); the draft is dropped and
+    /// the new sheet adopted in place.
+    var syncRevision = 0
 
     @State private var hoveredObject: HorizontalSelectableRef?
     @State private var selectedObjects: [HorizontalSelectableRef] = []
@@ -208,6 +222,10 @@ struct SchematicCanvasView: View {
     @State private var editedSheet: HorizontalSchematicSheet?
     @State private var moveState: MoveState?
     @State private var placePartState: PlacePartState?
+    @State private var placePinState: PlacePinState?
+    /// The orientation the next placed pin starts with — the last one used,
+    /// as Horizon's map-pin tool remembers it.
+    @State private var placePinOrientation = HorizontalPinOrientation.right
     @State private var handledPlacePartRequestID: UUID?
     @State private var drawNetLineState: DrawNetLineState?
     @State private var drawGraphicsState: DrawGraphicsState?
@@ -261,7 +279,10 @@ struct SchematicCanvasView: View {
         drawingToolCommand: HorizontalDrawingToolCommand? = nil,
         drawNetLineCommand: HorizontalDrawNetLineCommand? = nil,
         placePartRequest: HorizontalPartPlacementRequest? = nil,
-        poolURL: URL? = nil
+        poolURL: URL? = nil,
+        mode: HorizontalSchematicEditorMode = .sheet,
+        symbolEditorContext: HorizontalSymbolEditorContext? = nil,
+        syncRevision: Int = 0
     ) {
         self.sourceSheet = sheet
         self.sourceAllSheets = allSheets.isEmpty ? [sheet] : allSheets
@@ -293,10 +314,23 @@ struct SchematicCanvasView: View {
         self.drawNetLineCommand = drawNetLineCommand
         self.placePartRequest = placePartRequest
         self.poolURL = poolURL
+        self.mode = mode
+        self.symbolEditorContext = symbolEditorContext
+        self.syncRevision = syncRevision
     }
 
     private var sheet: HorizontalSchematicSheet {
         editedSheet ?? sourceSheet
+    }
+
+    private var editorProfile: HorizontalSchematicEditorProfile {
+        .profile(for: mode)
+    }
+
+    /// Pool modes draw junctions on request (frame: always; symbol: with the
+    /// "junctions and hidden names" toggle); a sheet draws them by attachment.
+    private var showsEditorJunctions: Bool {
+        editorProfile.showsJunctionsAlways || symbolEditorContext?.showsJunctionsAndHiddenNames == true
     }
 
     private var schematicSheets: [HorizontalSchematicSheet] {
@@ -343,7 +377,7 @@ struct SchematicCanvasView: View {
              .schematicNetTie,
              .text:
             return true
-        case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
+        case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
             return false
         }
     }
@@ -615,6 +649,10 @@ struct SchematicCanvasView: View {
                 updateCursor(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
             },
             onPrimaryClick: { point, worldUnitsPerPoint, clickAction, clickCount in
+                if placePinState != nil {
+                    commitPlacePin()
+                    return
+                }
                 if placePartState != nil {
                     commitPlacePart()
                     return
@@ -654,6 +692,7 @@ struct SchematicCanvasView: View {
             },
             onAreaSelection: { refs, action in
                 guard placePartState == nil,
+                      placePinState == nil,
                       moveState == nil,
                       drawNetLineState == nil,
                       drawGraphicsState == nil else {
@@ -677,6 +716,8 @@ struct SchematicCanvasView: View {
             onUnplacedObjectSelection: { object in
                 if isReadOnly {
                     selectUnplacedObject(object)
+                } else if editorProfile.supportsPins {
+                    beginPlacePin(pinID: object.id)
                 } else {
                     beginPlaceUnplacedObject(object)
                 }
@@ -698,11 +739,12 @@ struct SchematicCanvasView: View {
                 #endif
             },
             canvasDisplayTransformReportTrigger: inlineTextEditorReportTrigger,
-            allowsContextMenu: placePartState == nil && moveState == nil && drawNetLineState == nil && drawGraphicsState == nil,
-            handlesInteractionKeys: placePartState != nil || moveState != nil || drawNetLineState != nil || drawGraphicsState != nil,
+            allowsContextMenu: placePartState == nil && placePinState == nil && moveState == nil && drawNetLineState == nil && drawGraphicsState == nil,
+            handlesInteractionKeys: placePartState != nil || placePinState != nil || moveState != nil || drawNetLineState != nil || drawGraphicsState != nil,
             hasKeyboardFocus: hasKeyboardFocus,
             onRequestKeyboardFocus: onRequestKeyboardFocus,
             samplesCursorContinuously: placePartState != nil
+                || placePinState != nil
                 || moveState?.tracksCursor == true
                 || drawNetLineState != nil
                 || drawGraphicsState != nil
@@ -720,6 +762,7 @@ struct SchematicCanvasView: View {
             hoveredObject = nil
             moveState = nil
             placePartState = nil
+            placePinState = nil
             drawNetLineState = nil
             drawGraphicsState = nil
             lastCursorWorldPoint = nil
@@ -727,6 +770,9 @@ struct SchematicCanvasView: View {
             invalidateSelectableCache()
             configureUndoTarget()
             publishSelectionContext()
+        }
+        .onChange(of: syncRevision) { _, _ in
+            adoptExternallyUpdatedSheet()
         }
         .onAppear {
             configureUndoTarget()
@@ -765,6 +811,7 @@ struct SchematicCanvasView: View {
         .onChange(of: isReadOnly) { _, readOnly in
             if readOnly {
                 cancelPlacePart()
+                cancelPlacePin()
                 cancelDrawGraphics()
                 cancelDrawNetLine()
                 cancelMove()
@@ -1036,6 +1083,10 @@ struct SchematicCanvasView: View {
         if placePartState != nil {
             return "Place: click to place   Esc cancels"
         }
+        if let state = placePinState {
+            let name = sheet.placeableObjects.first { normalizedID($0.id) == normalizedID(state.pinID) }?.label ?? "pin"
+            return "Place pin \(name): click places   R rotates   E mirrors   Esc ends"
+        }
         if moveState != nil {
             return "Move: click or Return commits   Esc cancels"
         }
@@ -1113,6 +1164,13 @@ struct SchematicCanvasView: View {
     }
 
     private var currentUnplacedObjects: [HorizontalUnplacedObject] {
+        if editorProfile.supportsPins {
+            // The unit's pins the symbol has not placed yet.
+            let placed = Set(sheet.editablePins.map { normalizedID($0.id) })
+            return sheet.placeableObjects
+                .filter { !placed.contains(normalizedID($0.id)) }
+                .sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
+        }
         let placeableObjects = sheet.placeableObjects.isEmpty ? sheet.unplacedObjects : sheet.placeableObjects
         var placedGates = Set<String>()
         var placedComponents = Set<String>()
@@ -1147,6 +1205,7 @@ struct SchematicCanvasView: View {
     private var canDeleteSelection: Bool {
         !isReadOnly
             && placePartState == nil
+            && placePinState == nil
             && moveState == nil
             && drawNetLineState == nil
             && drawGraphicsState == nil
@@ -1284,6 +1343,9 @@ struct SchematicCanvasView: View {
         guard let ref else {
             return nil
         }
+        if let item = poolEditorHUDItem(for: ref) {
+            return item
+        }
 
         switch ref.type {
         case .schematicSymbol:
@@ -1381,7 +1443,7 @@ struct SchematicCanvasView: View {
             return segmentHUDItem(for: ref, in: sheet.drawingLines, title: "Drawing line", includesLength: true)
         case .drawingArc:
             return arcHUDItem(for: ref, in: sheet.drawingArcs, title: "Drawing arc", includesLength: true)
-        case .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .track, .via:
+        case .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .track, .via:
             return genericHUDItem(for: ref)
         }
     }
@@ -1524,6 +1586,9 @@ struct SchematicCanvasView: View {
     }
 
     private func selectionProperties(for ref: HorizontalSelectableRef) -> [HorizontalSelectionProperty] {
+        if let properties = poolEditorProperties(for: ref) {
+            return properties
+        }
         switch ref.type {
         case .schematicSymbol:
             guard let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
@@ -1594,7 +1659,7 @@ struct SchematicCanvasView: View {
             ].compactMap { $0 }
         case .schematicBlockSymbol:
             return []
-        case .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .track, .via:
+        case .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .track, .via:
             return []
         }
     }
@@ -2504,12 +2569,14 @@ struct SchematicCanvasView: View {
         let validArcs = result.arcs.filter {
             pointKey($0.from) != pointKey($0.to) && $0.radius > 0
         }
-        guard !validSegments.isEmpty || !validArcs.isEmpty else {
+        let validPolygons = result.polygons.filter { $0.polygonVertices.count >= 3 }
+        guard !validSegments.isEmpty || !validArcs.isEmpty || !validPolygons.isEmpty else {
             drawGraphicsState = state
             return
         }
 
         var draft = editedSheet ?? sourceSheet
+        draft.drawingPolygons.append(contentsOf: validPolygons)
         for segment in validSegments {
             _ = ensureJunction(at: segment.from, preferredID: junctionID(at: segment.from, in: draft), netID: nil, sheet: &draft)
             _ = ensureJunction(at: segment.to, preferredID: junctionID(at: segment.to, in: draft), netID: nil, sheet: &draft)
@@ -2547,7 +2614,11 @@ struct SchematicCanvasView: View {
             pointKey: pointKey,
             makeSegment: { drawingSegment(from: $0, to: $1) },
             makeArc: { drawingArc(from: $0, to: $1, center: $2) },
-            makePolygonResult: { DrawGraphicsResult(lines: closedDrawingSegments(points: $0)) }
+            makePolygonResult: { points in
+                editorProfile.supportsPolygons
+                    ? DrawGraphicsResult(polygons: [drawingPolygon(points: points)])
+                    : DrawGraphicsResult(lines: closedDrawingSegments(points: points))
+            }
         )
     }
 
@@ -2844,6 +2915,14 @@ struct SchematicCanvasView: View {
         }
 
         for ref in refs {
+            if editorProfile.isPoolMode, ref.type == .symbolPin {
+                changed = sheet.removeEditablePin(id: ref.id) || changed
+                continue
+            }
+            if editorProfile.isPoolMode, ref.type == .polygonEdge {
+                changed = removeElement(from: &sheet.drawingPolygons, matching: ref) || changed
+                continue
+            }
             switch ref.type {
             case .schematicSymbol:
                 changed = deleteSchematicSymbol(ref.id, from: &sheet) || changed
@@ -2869,7 +2948,7 @@ struct SchematicCanvasView: View {
                 changed = deleteSchematicBlockSymbol(ref.id, from: &sheet) || changed
             case .junction:
                 changed = deleteSchematicJunction(ref.id, from: &sheet) || changed
-            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
+            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
                 break
             }
         }
@@ -3148,6 +3227,10 @@ struct SchematicCanvasView: View {
     }
 
     private func mirrorSelection() {
+        if placePinState != nil {
+            mirrorPlacingPin()
+            return
+        }
         let cursor = lastCursorWorldPoint
         transformSelection(actionName: "Mirror") { center, draft in
             mirrorSelectedObjects(around: cursor ?? center, sheet: &draft)
@@ -3155,6 +3238,10 @@ struct SchematicCanvasView: View {
     }
 
     private func rotateSelection() {
+        if placePinState != nil {
+            rotatePlacingPin()
+            return
+        }
         let cursor = lastCursorWorldPoint
         transformSelection(actionName: "Rotate") { center, draft in
             rotateSelectedObjects(around: cursor ?? center, by: Self.quarterTurnAngle, sheet: &draft)
@@ -3228,6 +3315,14 @@ struct SchematicCanvasView: View {
     }
 
     private func selectionAnchorPoints(for ref: HorizontalSelectableRef, in sheet: HorizontalSchematicSheet) -> [HorizontalPoint] {
+        if editorProfile.isPoolMode {
+            if ref.type == .symbolPin {
+                return sheet.editablePin(id: ref.id).map { [$0.position] } ?? []
+            }
+            if ref.type == .polygonEdge {
+                return drawingPolygon(for: ref, in: sheet)?.vertices ?? []
+            }
+        }
         switch ref.type {
         case .schematicSymbol:
             return sheet.symbols.first { normalizedID($0.id) == normalizedID(ref.id) }.map { [$0.position] } ?? []
@@ -3378,6 +3473,9 @@ struct SchematicCanvasView: View {
             if connectionMovePlan.handledRefs.contains(ref) {
                 continue
             }
+            if editorProfile.isPoolMode, movePoolEditorObject(ref: ref, by: delta, sheet: &sheet) {
+                continue
+            }
 
             switch ref.type {
             case .schematicSymbol:
@@ -3415,7 +3513,7 @@ struct SchematicCanvasView: View {
                 moveBusRipper(ref: ref, by: delta, sheet: &sheet, movedKeys: &movedJunctionKeys)
             case .schematicBlockSymbol:
                 moveSchematicBlockSymbol(ref: ref, by: delta, sheet: &sheet, movedKeys: &movedJunctionKeys)
-            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
+            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
                 break
             }
         }
@@ -3448,6 +3546,9 @@ struct SchematicCanvasView: View {
             if handledRefs.contains(ref) {
                 continue
             }
+            if editorProfile.isPoolMode, movePoolEditorObject(ref: ref, by: delta, sheet: &sheet) {
+                continue
+            }
             switch ref.type {
             case .schematicSymbol:
                 break
@@ -3475,7 +3576,7 @@ struct SchematicCanvasView: View {
                 moveSchematicBlockSymbol(ref: ref, by: delta, sheet: &sheet, movedKeys: &movedJunctionKeys)
             case .blockSymbolPort:
                 moveSegment(&sheet.blockSymbolPorts, ref: ref, by: delta)
-            case .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
+            case .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
                 break
             }
         }
@@ -3612,7 +3713,7 @@ struct SchematicCanvasView: View {
                 _ = appendConnectionPoint(tie.from, for: ref)
                 _ = appendConnectionPoint(tie.to, for: ref)
                 plan.handledRefs.insert(ref)
-            case .schematicSymbol, .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busRipper, .connectionLine, .dimension, .keepout, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .powerSymbol, .schematicBlockSymbol, .symbolPin, .text, .track, .via:
+            case .schematicSymbol, .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busRipper, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .powerSymbol, .schematicBlockSymbol, .symbolPin, .text, .track, .via:
                 break
             }
         }
@@ -3707,6 +3808,9 @@ struct SchematicCanvasView: View {
         let selectedPowerSymbolAnchorKeys = selectedPowerSymbolAnchorKeys(in: sheet)
 
         for ref in uniqueSelectedObjectRefs() {
+            if editorProfile.isPoolMode, mirrorPoolEditorObject(ref: ref, around: center, sheet: &sheet) {
+                continue
+            }
             switch ref.type {
             case .schematicSymbol:
                 mirrorSchematicSymbol(ref: ref, around: center, sheet: &sheet, transformedJunctionKeys: &transformedJunctionKeys)
@@ -3731,7 +3835,7 @@ struct SchematicCanvasView: View {
                 mirrorNetTie(ref: ref, around: center, sheet: &sheet, transformedJunctionKeys: &transformedJunctionKeys)
             case .powerSymbol:
                 mirrorPowerSymbol(ref: ref, around: center, sheet: &sheet, transformedJunctionKeys: &transformedJunctionKeys)
-            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busRipper, .connectionLine, .dimension, .keepout, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .schematicBlockSymbol, .symbolPin, .track, .via:
+            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busRipper, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .schematicBlockSymbol, .symbolPin, .track, .via:
                 break
             }
         }
@@ -3762,6 +3866,9 @@ struct SchematicCanvasView: View {
             guard let center = refOrigin(ref) else {
                 continue
             }
+            if editorProfile.isPoolMode, rotatePoolEditorObject(ref: ref, around: center, by: angleDelta, sheet: &sheet) {
+                continue
+            }
             switch ref.type {
             case .schematicSymbol:
                 rotateSchematicSymbol(ref: ref, around: center, by: angleDelta, sheet: &sheet, transformedJunctionKeys: &transformedJunctionKeys)
@@ -3786,7 +3893,7 @@ struct SchematicCanvasView: View {
                 rotateNetTie(ref: ref, around: center, by: angleDelta, sheet: &sheet, transformedJunctionKeys: &transformedJunctionKeys)
             case .powerSymbol:
                 rotatePowerSymbol(ref: ref, around: center, by: angleDelta, sheet: &sheet, transformedJunctionKeys: &transformedJunctionKeys)
-            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busRipper, .connectionLine, .dimension, .keepout, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .schematicBlockSymbol, .symbolPin, .track, .via:
+            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busRipper, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .schematicBlockSymbol, .symbolPin, .track, .via:
                 break
             }
         }
@@ -5476,6 +5583,10 @@ struct SchematicCanvasView: View {
         changedComponentRefdes: inout [(componentID: String, refdes: String)],
         changedComponentPinNames: inout [(componentID: String, pins: [HorizontalSymbolPinName])]
     ) {
+        if editorProfile.supportsPins, ref.type == .symbolPin {
+            updateEditablePin(ref: ref, propertyID: propertyID, value: value, sheet: &sheet)
+            return
+        }
         if propertyID == "netClass", case .choice(let classID) = value {
             updateNetClass(for: netID(for: ref), classID: classID, sheet: &sheet, changedNetClasses: &changedNetClasses)
             return
@@ -5503,7 +5614,7 @@ struct SchematicCanvasView: View {
             updateBusLabel(&sheet.busLabels, ref: ref, propertyID: propertyID, value: value)
         case .text:
             updateText(&sheet.texts, ref: ref, propertyID: propertyID, value: value)
-        case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busRipper, .connectionLine, .dimension, .junction, .keepout, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .symbolPin, .track, .via:
+        case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busRipper, .connectionLine, .dimension, .junction, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .symbolPin, .track, .via:
             break
         }
     }
@@ -6273,7 +6384,7 @@ struct SchematicCanvasView: View {
                 return nil
             }
             return tie.netIDs.first
-        case .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busLabel, .connectionLine, .dimension, .drawingArc, .drawingLine, .keepout, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .schematicBlockSymbol, .schematicSymbol, .text, .track, .via:
+        case .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busLabel, .connectionLine, .dimension, .drawingArc, .drawingLine, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .schematicBlockSymbol, .schematicSymbol, .text, .track, .via:
             return nil
         }
     }
@@ -6885,9 +6996,9 @@ struct SchematicCanvasView: View {
     }
 
     private func canvasCommandHandlers() -> HorizontalCanvasCommandHandlerSet {
-        HorizontalCanvasCommandHandlerSet(
+        var handlers = HorizontalCanvasCommandHandlerSet(
             isReadOnly: isReadOnly,
-            hasInteraction: placePartState != nil || drawGraphicsState != nil
+            hasInteraction: placePartState != nil || placePinState != nil || drawGraphicsState != nil
                 || drawNetLineState != nil || moveState != nil,
             selectAll: selectAllObjects,
             deleteSelection: deleteSelection,
@@ -6908,8 +7019,11 @@ struct SchematicCanvasView: View {
             editSymbolPinNames: selectSymbolForPinNameEditing,
             toggleRectanglePlacementMode: toggleRectanglePlacementMode,
             moveSelectionBy: moveSelectionByGrid,
+            hasPlacementInteraction: placePinState != nil,
             commitInteraction: {
-                if placePartState != nil {
+                if placePinState != nil {
+                    commitPlacePin()
+                } else if placePartState != nil {
                     commitPlacePart()
                 } else if drawGraphicsState != nil {
                     commitDrawGraphicsAtCursor()
@@ -6920,7 +7034,9 @@ struct SchematicCanvasView: View {
                 }
             },
             cancelInteraction: {
-                if placePartState != nil {
+                if placePinState != nil {
+                    cancelPlacePin()
+                } else if placePartState != nil {
                     cancelPlacePart()
                 } else if drawGraphicsState != nil {
                     endDrawGraphicsInteraction()
@@ -6931,6 +7047,22 @@ struct SchematicCanvasView: View {
                 }
             }
         )
+        if editorProfile.isPoolMode {
+            // No nets in a symbol or frame: the net tools and the pin-name
+            // editor (which edits a placed component) do not apply.
+            handlers.drawNetLine = nil
+            handlers.moveNetSegmentToExistingNet = nil
+            handlers.moveNetSegmentToNewNet = nil
+            handlers.editSymbolPinNames = nil
+        }
+        if editorProfile.supportsPins {
+            handlers.placePin = { beginPlaceNextPin() }
+            // The board's "p" reaches the canvas as placePad; here it places a pin.
+            handlers.placePad = { beginPlaceNextPin() }
+            handlers.placeRefdesAndValue = { placeRefdesAndValue() }
+            handlers.placeDot = { placeDot() }
+        }
+        return handlers
     }
 
     private func updateCursor(at point: HorizontalPoint?, worldUnitsPerPoint: Double) {
@@ -6948,6 +7080,12 @@ struct SchematicCanvasView: View {
 
         if placePartState != nil {
             updatePlacePart(to: point)
+            hoveredObject = nil
+            return
+        }
+
+        if placePinState != nil {
+            updatePlacePin(to: point)
             hoveredObject = nil
             return
         }
@@ -6988,6 +7126,7 @@ struct SchematicCanvasView: View {
         guard !isReadOnly,
               moveState == nil,
               placePartState == nil,
+              placePinState == nil,
               drawNetLineState == nil,
               drawGraphicsState == nil,
               !selectedObjects.isEmpty else {
@@ -7112,7 +7251,10 @@ struct SchematicCanvasView: View {
                 sheet.netLabels.count,
                 sheet.powerSymbolLines.count,
                 sheet.powerSymbolCircles.count,
-                sheet.powerSymbolTexts.count
+                sheet.powerSymbolTexts.count,
+                sheet.drawingPolygons.count,
+                sheet.editablePins.count,
+                showsEditorJunctions ? 1 : 0
             ]
         )
     }
@@ -7165,6 +7307,7 @@ struct SchematicCanvasView: View {
         let drawingColor = symbolColor
         let pinColor = HorizontalMetalRGBA(theme.pin.opacity(0.82))
         let pinAnnotationColor = HorizontalMetalRGBA(theme.pinAnnotation)
+        let hiddenPinTextColor = HorizontalMetalRGBA(theme.pin.opacity(0.4))
         let netColor = HorizontalMetalRGBA(theme.net)
         let netTieColor = HorizontalMetalRGBA(theme.netTie)
         let isolatedColor = HorizontalMetalRGBA(theme.error)
@@ -7230,6 +7373,10 @@ struct SchematicCanvasView: View {
             }
 
             func symbolOwnerRef(for geometryID: String) -> HorizontalSelectableRef? {
+                if editorProfile.supportsPins,
+                   let pinID = HorizontalSchematicSheet.editorPinID(forGeometryID: geometryID) {
+                    return HorizontalSelectableRef(id: pinID, type: .symbolPin)
+                }
                 guard let symbolID = schematicMetalSymbolID(forGeometryID: geometryID) else {
                     return nil
                 }
@@ -7478,6 +7625,13 @@ struct SchematicCanvasView: View {
                         owner: HorizontalSelectableRef(id: arc.id, type: .drawingArc)
                     )
                 }
+                for polygon in sheet.drawingPolygons {
+                    appendClosedPolyline(
+                        polygon.renderVertices(arcPrecision: 16),
+                        color: drawingColor,
+                        owner: HorizontalSelectableRef(id: polygon.id, type: .polygonEdge)
+                    )
+                }
             }
 
             if displayOptions.blockSymbols {
@@ -7559,7 +7713,9 @@ struct SchematicCanvasView: View {
                     for text in sheet.symbolTexts {
                         appendText(
                             text,
-                            color: isPinAnnotationTextID(text.id) ? pinAnnotationColor : symbolColor,
+                            color: isHiddenPinTextID(text.id)
+                                ? hiddenPinTextColor
+                                : (isPinAnnotationTextID(text.id) ? pinAnnotationColor : symbolColor),
                             owner: symbolOwnerRef(for: text.id)
                         )
                     }
@@ -7640,17 +7796,21 @@ struct SchematicCanvasView: View {
             }
 
             currentGroup = 0; currentOpacity = 1
-            if displayOptions.junctions {
+            if displayOptions.junctions, !editorProfile.isPoolMode || showsEditorJunctions {
                 for (junctionID, junction) in sheet.junctions {
                     let key = pointKey(junction)
                     var info = junctionRenderInfo[key] ?? JunctionRenderInfo()
                     if info.netID == nil {
                         info.netID = netID(forJunctionID: junctionID)
                     }
-                    guard info.connectionCount < 3,
-                          info.connectionCount != 2,
-                          !info.hasAttachment else {
-                        continue
+                    // A symbol or frame shows every junction it has (there
+                    // are no nets to imply them); a sheet only the free ones.
+                    if !editorProfile.isPoolMode {
+                        guard info.connectionCount < 3,
+                              info.connectionCount != 2,
+                              !info.hasAttachment else {
+                            continue
+                        }
                     }
 
                     let color = junctionMetalColor(for: info)
@@ -7741,6 +7901,10 @@ struct SchematicCanvasView: View {
             var primitiveCountsByGroup = [Int: Int]()
 
             func symbolOwnerRef(for geometryID: String) -> HorizontalSelectableRef? {
+                if editorProfile.supportsPins,
+                   let pinID = HorizontalSchematicSheet.editorPinID(forGeometryID: geometryID) {
+                    return HorizontalSelectableRef(id: pinID, type: .symbolPin)
+                }
                 guard let symbolID = schematicMetalSymbolID(forGeometryID: geometryID) else {
                     return nil
                 }
@@ -7811,6 +7975,17 @@ struct SchematicCanvasView: View {
                         compositeGroup: 4,
                         compositeOpacity: 0.78,
                         owner: symbolOwnerRef(for: polygon.id)
+                    )
+                }
+            }
+            if displayOptions.drawing {
+                for polygon in sheet.drawingPolygons {
+                    appendFilledPolygon(
+                        polygon.renderVertices(arcPrecision: 16),
+                        color: symbolFillColor,
+                        compositeGroup: 2,
+                        compositeOpacity: 0.68,
+                        owner: HorizontalSelectableRef(id: polygon.id, type: .polygonEdge)
                     )
                 }
             }
@@ -8088,7 +8263,7 @@ struct SchematicCanvasView: View {
             return sheet.texts.first { normalizedID($0.id) == id }?.position
         case .blockSymbolPort:
             return sheet.blockSymbolPorts.first { normalizedID($0.id) == id }?.from
-        case .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
+        case .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
             return nil
         }
     }
@@ -8568,7 +8743,7 @@ struct SchematicCanvasView: View {
             for text in sheet.busRipperTexts where belongsToBusRipper(text.id) {
                 appendText(text, color: busColor, minimumWidth: 0.85, group: 6, opacity: 0.82)
             }
-        case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busLabel, .connectionLine, .dimension, .junction, .keepout, .netLabel, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .powerSymbol, .schematicBlockSymbol, .symbolPin, .track, .via:
+        case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busLabel, .connectionLine, .dimension, .junction, .keepout, .netLabel, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .powerSymbol, .schematicBlockSymbol, .symbolPin, .track, .via:
             break
         }
 
@@ -9501,10 +9676,14 @@ struct SchematicCanvasView: View {
         }
 
         if displayOptions.symbols {
-            selectables.append(contentsOf: schematicSymbolSelectables())
+            if editorProfile.supportsPins {
+                selectables.append(contentsOf: editorPinSelectables())
+            } else {
+                selectables.append(contentsOf: schematicSymbolSelectables())
+            }
         }
 
-        if displayOptions.junctions {
+        if displayOptions.junctions, !editorProfile.isPoolMode || showsEditorJunctions {
             selectables.append(contentsOf: junctionSelectables())
         }
 
@@ -9515,6 +9694,9 @@ struct SchematicCanvasView: View {
         if displayOptions.drawing {
             selectables.append(contentsOf: segmentSelectables(sheet.drawingLines, type: .drawingLine))
             selectables.append(contentsOf: arcSelectables(sheet.drawingArcs, type: .drawingArc))
+            if editorProfile.isPoolMode {
+                selectables.append(contentsOf: drawingPolygonSelectables())
+            }
         }
 
         if displayOptions.text {
@@ -9583,7 +9765,7 @@ struct SchematicCanvasView: View {
                 points.append(contentsOf: selectionAnchorPoints(for: ref))
             case .busRipper:
                 points.append(contentsOf: busRipperConnectionPoints(ripperID: ref.id, sheet: sheet))
-            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .schematicBlockSymbol, .symbolPin, .track, .via:
+            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .schematicBlockSymbol, .symbolPin, .track, .via:
                 break
             }
         }
@@ -10179,6 +10361,9 @@ struct SchematicCanvasView: View {
         for ref: HorizontalSelectableRef,
         in sheet: HorizontalSchematicSheet
     ) -> HorizontalSelectable? {
+        if editorProfile.isPoolMode, let selectable = poolEditorSelectable(for: ref, in: sheet) {
+            return selectable
+        }
         switch ref.type {
         case .schematicSymbol:
             guard let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
@@ -10237,7 +10422,7 @@ struct SchematicCanvasView: View {
             )
         case .powerSymbol:
             return powerSymbolSelectable(symbolID: ref.id, in: sheet)
-        case .schematicBlockSymbol, .busRipper, .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
+        case .schematicBlockSymbol, .busRipper, .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
             return nil
         }
     }
@@ -10324,7 +10509,7 @@ struct SchematicCanvasView: View {
 
     private func pinID(forSymbolPinGeometryID geometryID: String) -> String? {
         let components = normalizedID(geometryID).split(separator: "/").map(String.init)
-        let separators: Set<String> = ["pin", "pin-connector", "pin-connector-text", "pin-decoration", "pin-direction", "pin-name", "pin-pad"]
+        let separators = HorizontalSchematicSheet.editorPinSeparators
         guard let separatorIndex = components.firstIndex(where: { separators.contains($0) }) else {
             return nil
         }
@@ -10381,6 +10566,12 @@ struct SchematicCanvasView: View {
         id.contains("/pin-name/")
             || id.contains("/pin-pad/")
             || id.contains("/pin-connector-text/")
+            || isHiddenPinTextID(id)
+    }
+
+    /// The symbol editor's greyed name / pad texts of pins that hide them.
+    private func isHiddenPinTextID(_ id: String) -> Bool {
+        id.contains("/pin-name-hidden/") || id.contains("/pin-pad-hidden/")
     }
 
     private func isBlockSymbolPortAnnotationTextID(_ id: String) -> Bool {
@@ -11066,6 +11257,7 @@ struct SchematicCanvasView: View {
         case .dimension: "Dimension"
         case .keepout: "Keepout"
         case .pad: "Pad"
+        case .padstackShape: "Padstack shape"
         case .plane: "Plane"
         case .polygonArcCenter: "Polygon arc center"
         case .polygonEdge: "Polygon edge"
@@ -11102,6 +11294,7 @@ struct SchematicCanvasView: View {
         case .dimension: "Dimensions"
         case .keepout: "Keepouts"
         case .pad: "Pads"
+        case .padstackShape: "Padstack shapes"
         case .plane: "Planes"
         case .polygonArcCenter: "Polygon arc centers"
         case .polygonEdge: "Polygon edges"
@@ -11146,5 +11339,517 @@ struct SchematicCanvasView: View {
             return nil
         }
         return value
+    }
+}
+
+// MARK: - Pool item modes (symbol / frame)
+
+extension SchematicCanvasView {
+    // MARK: Lookup
+
+    private func drawingPolygon(for ref: HorizontalSelectableRef, in sheet: HorizontalSchematicSheet) -> HorizontalPolygon? {
+        sheet.drawingPolygons.first { normalizedID($0.id) == normalizedID(ref.id) }
+    }
+
+    private func drawingPolygonIndex(for ref: HorizontalSelectableRef, in sheet: HorizontalSchematicSheet) -> Int? {
+        sheet.drawingPolygons.firstIndex { normalizedID($0.id) == normalizedID(ref.id) }
+    }
+
+    /// The unit pin behind an editable pin: its primary name and direction,
+    /// straight from the context's unit JSON.
+    private func unitPinInfo(for pinID: String) -> (name: String, direction: String)? {
+        guard let unitJSON = symbolEditorContext?.unitJSON?.dictionary else {
+            return nil
+        }
+        let normalized = normalizedID(pinID)
+        guard let pin = unitJSON.dictionaryMap("pins").first(where: { normalizedID($0.key) == normalized })?.value else {
+            return nil
+        }
+        return (pin.string("primary_name") ?? "", pin.string("direction") ?? "bidirectional")
+    }
+
+    private func pinOrientationChoiceOptions() -> [HorizontalSelectionPropertyOption] {
+        HorizontalPinOrientation.allCases.map {
+            HorizontalSelectionPropertyOption(id: $0.rawValue, title: $0.rawValue.capitalized)
+        }
+    }
+
+    // MARK: HUD and inspector
+
+    private func poolEditorHUDItem(for ref: HorizontalSelectableRef) -> HorizontalSelectionHUDItem? {
+        guard editorProfile.isPoolMode else {
+            return nil
+        }
+        switch ref.type {
+        case .symbolPin:
+            guard editorProfile.supportsPins, let pin = sheet.editablePin(id: ref.id) else {
+                return nil
+            }
+            let info = unitPinInfo(for: pin.id)
+            return HorizontalSelectionHUDItem(
+                title: nonEmpty(info?.name) ?? "Pin",
+                subtitle: "Pin \(shortID(pin.id))",
+                details: [
+                    detailRow("Direction", info?.direction.replacingOccurrences(of: "_", with: " ").capitalized),
+                    detailRow("Position", coordinateString(pin.position)),
+                    detailRow("Orientation", pin.orientation.rawValue.capitalized),
+                    detailRow("Length", lengthString(pin.length)),
+                ].compactMap { $0 }
+            )
+        case .polygonEdge:
+            guard let polygon = drawingPolygon(for: ref, in: sheet) else {
+                return nil
+            }
+            return HorizontalSelectionHUDItem(
+                title: "Polygon",
+                subtitle: "Polygon \(shortID(String(ref.id.split(separator: "/").last ?? "")))",
+                details: [detailRow("Vertices", "\(polygon.polygonVertices.count)")].compactMap { $0 }
+            )
+        default:
+            return nil
+        }
+    }
+
+    private func poolEditorProperties(for ref: HorizontalSelectableRef) -> [HorizontalSelectionProperty]? {
+        guard editorProfile.isPoolMode else {
+            return nil
+        }
+        switch ref.type {
+        case .symbolPin:
+            guard editorProfile.supportsPins, let pin = sheet.editablePin(id: ref.id) else {
+                return []
+            }
+            let info = unitPinInfo(for: pin.id)
+            return [
+                readOnlyProperty("name", "Name", info?.name),
+                readOnlyProperty("direction", "Direction", info?.direction.replacingOccurrences(of: "_", with: " ").capitalized),
+                editableLengthProperty("positionX", "Position X", pin.position.x),
+                editableLengthProperty("positionY", "Position Y", pin.position.y),
+                editableLengthProperty("length", "Length", pin.length),
+                HorizontalSelectionProperty(
+                    id: "orientation",
+                    label: "Orientation",
+                    editor: .choice(pinOrientationChoiceOptions()),
+                    value: .choice(pin.orientation.rawValue)
+                ),
+                editableBoolProperty("nameVisible", "Name visible", pin.nameVisible),
+                editableBoolProperty("padVisible", "Pad visible", pin.padVisible),
+                HorizontalSelectionProperty(
+                    id: "nameOrientation",
+                    label: "Name orientation",
+                    editor: .choice(HorizontalPinNameOrientation.allCases.map {
+                        HorizontalSelectionPropertyOption(id: $0.rawValue, title: $0.displayName)
+                    }),
+                    value: .choice(pin.nameOrientation.rawValue)
+                ),
+                editableBoolProperty("dot", "Dot", pin.decoration.dot),
+                editableBoolProperty("clock", "Clock", pin.decoration.clock),
+                editableBoolProperty("schmitt", "Schmitt", pin.decoration.schmitt),
+                HorizontalSelectionProperty(
+                    id: "driver",
+                    label: "Driver",
+                    editor: .choice(HorizontalPinDriver.allCases.map {
+                        HorizontalSelectionPropertyOption(id: $0.rawValue, title: $0.displayName)
+                    }),
+                    value: .choice(pin.decoration.driver.rawValue)
+                ),
+            ].compactMap { $0 }
+        case .polygonEdge:
+            return []
+        default:
+            return nil
+        }
+    }
+
+    private func updateEditablePin(
+        ref: HorizontalSelectableRef,
+        propertyID: String,
+        value: HorizontalSelectionPropertyValue,
+        sheet: inout HorizontalSchematicSheet
+    ) {
+        guard let index = sheet.editablePinIndex(id: ref.id), let context = symbolEditorContext else {
+            return
+        }
+        var pin = sheet.editablePins[index]
+        switch (propertyID, value) {
+        case ("positionX", .length(let x)):
+            pin.position.x = x
+        case ("positionY", .length(let y)):
+            pin.position.y = y
+        case ("length", .length(let length)):
+            pin.length = max(length, 0)
+        case ("orientation", .choice(let raw)):
+            guard let orientation = HorizontalPinOrientation(rawValue: raw) else {
+                return
+            }
+            pin.orientation = orientation
+        case ("nameVisible", .bool(let visible)):
+            pin.nameVisible = visible
+        case ("padVisible", .bool(let visible)):
+            pin.padVisible = visible
+        case ("nameOrientation", .choice(let raw)):
+            guard let orientation = HorizontalPinNameOrientation(rawValue: raw) else {
+                return
+            }
+            pin.nameOrientation = orientation
+        case ("dot", .bool(let flag)):
+            pin.decoration.dot = flag
+        case ("clock", .bool(let flag)):
+            pin.decoration.clock = flag
+        case ("schmitt", .bool(let flag)):
+            pin.decoration.schmitt = flag
+        case ("driver", .choice(let raw)):
+            guard let driver = HorizontalPinDriver(rawValue: raw) else {
+                return
+            }
+            pin.decoration.driver = driver
+        default:
+            return
+        }
+        sheet.editablePins[index] = pin
+        sheet.rebakeEditablePin(id: pin.id, context: context)
+    }
+
+    // MARK: Selectables
+
+    private func editorPinSelectables() -> [HorizontalSelectable] {
+        sheet.editablePins.map { pin in
+            HorizontalSelectable.bounds(
+                ref: HorizontalSelectableRef(id: pin.id, type: .symbolPin),
+                points: sheet.editablePinGeometryPoints(id: pin.id),
+                fallbackCenter: pin.position,
+                fallbackSize: pin.length
+            )
+        }
+    }
+
+    private func drawingPolygonSelectables() -> [HorizontalSelectable] {
+        sheet.drawingPolygons.map { polygon in
+            let points = polygon.renderVertices(arcPrecision: 16)
+            return HorizontalSelectable.bounds(
+                ref: HorizontalSelectableRef(id: polygon.id, type: .polygonEdge),
+                points: points,
+                fallbackCenter: points.first ?? .zero,
+                fallbackSize: 1_000_000
+            )
+        }
+    }
+
+    private func poolEditorSelectable(for ref: HorizontalSelectableRef, in sheet: HorizontalSchematicSheet) -> HorizontalSelectable? {
+        switch ref.type {
+        case .symbolPin:
+            guard editorProfile.supportsPins, let pin = sheet.editablePin(id: ref.id) else {
+                return nil
+            }
+            return HorizontalSelectable.bounds(
+                ref: HorizontalSelectableRef(id: pin.id, type: .symbolPin),
+                points: sheet.editablePinGeometryPoints(id: pin.id),
+                fallbackCenter: pin.position,
+                fallbackSize: pin.length
+            )
+        case .polygonEdge:
+            guard let polygon = drawingPolygon(for: ref, in: sheet) else {
+                return nil
+            }
+            let points = polygon.renderVertices(arcPrecision: 16)
+            return HorizontalSelectable.bounds(
+                ref: HorizontalSelectableRef(id: polygon.id, type: .polygonEdge),
+                points: points,
+                fallbackCenter: points.first ?? .zero,
+                fallbackSize: 1_000_000
+            )
+        default:
+            return nil
+        }
+    }
+
+    // MARK: Transforms
+
+    /// Pool-mode objects the sheet's own arms do not know: returns true when
+    /// `ref` was handled.
+    private func movePoolEditorObject(ref: HorizontalSelectableRef, by delta: HorizontalPoint, sheet: inout HorizontalSchematicSheet) -> Bool {
+        switch ref.type {
+        case .symbolPin:
+            guard editorProfile.supportsPins, sheet.editablePin(id: ref.id) != nil else {
+                return false
+            }
+            sheet.shiftEditablePin(id: ref.id, by: delta)
+            return true
+        case .polygonEdge:
+            guard let index = drawingPolygonIndex(for: ref, in: sheet) else {
+                return false
+            }
+            sheet.drawingPolygons[index] = sheet.drawingPolygons[index].transformed { $0 + delta }
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func mirrorPoolEditorObject(ref: HorizontalSelectableRef, around center: HorizontalPoint, sheet: inout HorizontalSchematicSheet) -> Bool {
+        switch ref.type {
+        case .symbolPin:
+            guard editorProfile.supportsPins,
+                  let index = sheet.editablePinIndex(id: ref.id),
+                  let context = symbolEditorContext else {
+                return false
+            }
+            sheet.editablePins[index].position = mirrored(sheet.editablePins[index].position, around: center)
+            sheet.editablePins[index].orientation = sheet.editablePins[index].orientation.mirrored
+            sheet.rebakeEditablePin(id: ref.id, context: context)
+            return true
+        case .polygonEdge:
+            guard let index = drawingPolygonIndex(for: ref, in: sheet) else {
+                return false
+            }
+            sheet.drawingPolygons[index] = sheet.drawingPolygons[index]
+                .transformed({ mirrored($0, around: center) }, flipsArcReverse: true)
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func rotatePoolEditorObject(ref: HorizontalSelectableRef, around center: HorizontalPoint, by angleDelta: Int, sheet: inout HorizontalSchematicSheet) -> Bool {
+        switch ref.type {
+        case .symbolPin:
+            guard editorProfile.supportsPins,
+                  let index = sheet.editablePinIndex(id: ref.id),
+                  let context = symbolEditorContext else {
+                return false
+            }
+            let clockwise = wrappedAngle(angleDelta) == wrappedAngle(Self.quarterTurnAngle)
+            sheet.editablePins[index].position = rotated(sheet.editablePins[index].position, around: center, by: angleDelta)
+            sheet.editablePins[index].orientation = sheet.editablePins[index].orientation.rotated(clockwise: clockwise)
+            sheet.rebakeEditablePin(id: ref.id, context: context)
+            return true
+        case .polygonEdge:
+            guard let index = drawingPolygonIndex(for: ref, in: sheet) else {
+                return false
+            }
+            sheet.drawingPolygons[index] = sheet.drawingPolygons[index].transformed { rotated($0, around: center, by: angleDelta) }
+            return true
+        default:
+            return false
+        }
+    }
+
+    // MARK: Place pin (Horizon's map-pin tool)
+
+    /// "Place Pin" with nothing chosen: the first unplaced pin in name order.
+    private func beginPlaceNextPin() {
+        guard let next = currentUnplacedObjects.first else {
+            return
+        }
+        beginPlacePin(pinID: next.id)
+    }
+
+    private func beginPlacePin(pinID: String) {
+        guard !isReadOnly,
+              editorProfile.supportsPins,
+              let context = symbolEditorContext,
+              moveState == nil,
+              placePartState == nil,
+              drawNetLineState == nil,
+              drawGraphicsState == nil,
+              sheet.editablePin(id: pinID) == nil else {
+            return
+        }
+        let originalSheet = placePinState?.originalSheet ?? sheet
+        var draft = sheet
+        let pin = HorizontalSymbolPin(
+            id: pinID,
+            position: lastCursorWorldPoint ?? draft.bounds.center,
+            orientation: placePinOrientation
+        )
+        draft.editablePins.append(pin)
+        draft.rebakeEditablePin(id: pinID, context: context)
+        editedSheet = draft
+        placePinState = PlacePinState(originalSheet: originalSheet, pinID: pinID)
+        selectedObjects = [HorizontalSelectableRef(id: pinID, type: .symbolPin)]
+        selectedUnplacedObjectID = nil
+        hoveredObject = nil
+        invalidateSelectableCache()
+        publishSelectionContext()
+    }
+
+    private func updatePlacePin(to point: HorizontalPoint) {
+        guard let state = placePinState,
+              var draft = editedSheet,
+              let pin = draft.editablePin(id: state.pinID) else {
+            return
+        }
+        let delta = point - pin.position
+        guard delta != .zero else {
+            return
+        }
+        draft.shiftEditablePin(id: state.pinID, by: delta)
+        editedSheet = draft
+        invalidateSelectableCache()
+    }
+
+    private func rotatePlacingPin() {
+        guard let state = placePinState,
+              var draft = editedSheet,
+              let index = draft.editablePinIndex(id: state.pinID),
+              let context = symbolEditorContext else {
+            return
+        }
+        draft.editablePins[index].orientation = draft.editablePins[index].orientation.rotated(clockwise: true)
+        placePinOrientation = draft.editablePins[index].orientation
+        draft.rebakeEditablePin(id: state.pinID, context: context)
+        editedSheet = draft
+        invalidateSelectableCache()
+    }
+
+    private func mirrorPlacingPin() {
+        guard let state = placePinState,
+              var draft = editedSheet,
+              let index = draft.editablePinIndex(id: state.pinID),
+              let context = symbolEditorContext else {
+            return
+        }
+        draft.editablePins[index].orientation = draft.editablePins[index].orientation.mirrored
+        placePinOrientation = draft.editablePins[index].orientation
+        draft.rebakeEditablePin(id: state.pinID, context: context)
+        editedSheet = draft
+        invalidateSelectableCache()
+    }
+
+    /// Places the pin under the cursor, then carries on with the next
+    /// unplaced pin (upstream advances the same way); Esc ends the run.
+    private func commitPlacePin() {
+        guard !isReadOnly, let state = placePinState else {
+            return
+        }
+        let placed = sheet
+        registerUndoSnapshot(state.originalSheet, actionName: "Place Pin")
+        placePinState = nil
+        invalidateSelectableCache()
+        onSheetChange(placed)
+        publishSelectionContext()
+        if let next = currentUnplacedObjects.first {
+            beginPlacePin(pinID: next.id)
+        }
+    }
+
+    /// Drops the pin still following the cursor; pins already placed stay.
+    private func cancelPlacePin() {
+        guard let state = placePinState else {
+            return
+        }
+        var draft = sheet
+        _ = draft.removeEditablePin(id: state.pinID)
+        editedSheet = draft
+        placePinState = nil
+        selectedObjects = []
+        hoveredObject = nil
+        invalidateSelectableCache()
+        publishSelectionContext()
+    }
+
+    // MARK: Refdes / value and dot
+
+    /// Upstream's place-refdes-and-value: `$REFDES` above and `$VALUE` below
+    /// the cursor, then both follow the cursor until a click anchors them.
+    private func placeRefdesAndValue() {
+        guard !isReadOnly,
+              editorProfile.supportsPins,
+              moveState == nil,
+              placePartState == nil,
+              placePinState == nil,
+              drawNetLineState == nil,
+              drawGraphicsState == nil else {
+            return
+        }
+        let cursor = lastCursorWorldPoint ?? sheet.bounds.center
+        let previousSheet = editedSheet ?? sourceSheet
+        var draft = previousSheet
+        let refdes = HorizontalText(
+            id: UUID().uuidString.lowercased(),
+            text: "$REFDES",
+            position: HorizontalPoint(x: cursor.x, y: abs(cursor.y)),
+            size: 1_500_000,
+            layer: nil
+        )
+        let value = HorizontalText(
+            id: UUID().uuidString.lowercased(),
+            text: "$VALUE",
+            position: HorizontalPoint(x: cursor.x, y: -abs(cursor.y)),
+            size: 1_500_000,
+            layer: nil
+        )
+        draft.texts.append(contentsOf: [refdes, value])
+        registerUndoSnapshot(previousSheet, actionName: "Place Reference and Value")
+        editedSheet = draft
+        selectedObjects = [
+            HorizontalSelectableRef(id: refdes.id, type: .text),
+            HorizontalSelectableRef(id: value.id, type: .text),
+        ]
+        hoveredObject = nil
+        invalidateSelectableCache()
+        onSheetChange(draft)
+        publishSelectionContext()
+        beginMove(tracksCursor: true)
+    }
+
+    /// Upstream's place-dot: a 0.35 mm filled circle as a two-vertex arc
+    /// polygon, following the cursor until a click anchors it.
+    private func placeDot() {
+        guard !isReadOnly,
+              editorProfile.supportsPolygons,
+              moveState == nil,
+              placePartState == nil,
+              placePinState == nil,
+              drawNetLineState == nil,
+              drawGraphicsState == nil else {
+            return
+        }
+        let center = lastCursorWorldPoint ?? sheet.bounds.center
+        let previousSheet = editedSheet ?? sourceSheet
+        var draft = previousSheet
+        let rim = HorizontalPoint(x: center.x + 175_000, y: center.y)
+        let polygon = HorizontalPolygon(
+            id: HorizontalSchematicSheet.editorPolygonPrefix + UUID().uuidString.lowercased(),
+            polygonVertices: [
+                HorizontalPolygonVertex(type: .line, position: rim),
+                HorizontalPolygonVertex(type: .arc, position: rim, arcCenter: center, arcReverse: true),
+            ],
+            layer: 0
+        )
+        draft.drawingPolygons.append(polygon)
+        registerUndoSnapshot(previousSheet, actionName: "Place Dot")
+        editedSheet = draft
+        selectedObjects = [HorizontalSelectableRef(id: polygon.id, type: .polygonEdge)]
+        hoveredObject = nil
+        invalidateSelectableCache()
+        onSheetChange(draft)
+        publishSelectionContext()
+        beginMove(tracksCursor: true)
+    }
+
+    /// A polygon from the drawing tool's points (symbol / frame modes).
+    private func drawingPolygon(points: [HorizontalPoint]) -> HorizontalPolygon {
+        HorizontalPolygon(
+            id: HorizontalSchematicSheet.editorPolygonPrefix + UUID().uuidString.lowercased(),
+            polygonVertices: points.map { HorizontalPolygonVertex(position: $0) },
+            layer: 0
+        )
+    }
+
+    // MARK: External sheet replacement
+
+    /// Takes on a sheet the host replaced underneath us (a header edit, an
+    /// undo of one, a unit change) without tearing the canvas down: the draft
+    /// and any in-flight interaction are dropped; selection and viewport stay.
+    private func adoptExternallyUpdatedSheet() {
+        editedSheet = nil
+        moveState = nil
+        placePartState = nil
+        placePinState = nil
+        drawNetLineState = nil
+        drawGraphicsState = nil
+        invalidateSelectableCache()
+        publishSelectionContext()
     }
 }

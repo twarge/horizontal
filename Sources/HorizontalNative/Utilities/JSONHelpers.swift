@@ -25,6 +25,25 @@ enum JSONHelper {
         }
         return dictionary
     }
+
+    /// The same parse for bytes already in memory (a document's archive).
+    static func loadDictionary(from data: Data) throws -> JSONDictionary {
+        let object = try JSONSerialization.jsonObject(with: data, options: [])
+        guard let dictionary = object as? JSONDictionary else {
+            throw HorizontalJSONError.invalidRoot(URL(fileURLWithPath: "document.json"))
+        }
+        return dictionary
+    }
+
+    /// Which pool item kind a JSON file holds, from its `type`, or nil for
+    /// anything else (a project file's type is "project", a pool's "pool").
+    static func poolItemCategory(in data: Data) -> HorizontalPoolItemCategory? {
+        guard let json = try? loadDictionary(from: data),
+              let type = json.string("type") else {
+            return nil
+        }
+        return HorizontalPoolItemCategory(rawValue: type)
+    }
 }
 
 extension Dictionary where Key == String, Value == Any {

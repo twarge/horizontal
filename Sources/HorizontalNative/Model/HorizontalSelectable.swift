@@ -33,6 +33,9 @@ enum HorizontalObjectType: String, Hashable {
     case lineNet
     case netLabel
     case pad
+    /// A padstack's own shape (circle / rectangle / obround) in the padstack
+    /// editor.
+    case padstackShape
     case plane
     case polygonArcCenter
     case polygonEdge

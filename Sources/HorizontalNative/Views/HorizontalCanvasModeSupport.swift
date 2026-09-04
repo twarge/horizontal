@@ -199,6 +199,14 @@ struct HorizontalCanvasCommandHandlerSet {
     var editSymbolPinNames: (() -> Void)?
     var toggleRectanglePlacementMode: (() -> Void)? = nil
     var moveSelectionBy: (HorizontalPoint) -> Void
+    var placePad: (() -> Void)? = nil
+    var placeShape: ((HorizontalPadstackShapeForm) -> Void)? = nil
+    var placeHole: ((HorizontalHoleShape) -> Void)? = nil
+    var placePin: (() -> Void)? = nil
+    var placeRefdesAndValue: (() -> Void)? = nil
+    var placeDot: (() -> Void)? = nil
+    /// A pool object (pad / shape / hole / pin) is following the cursor.
+    var hasPlacementInteraction: Bool = false
     var commitInteraction: () -> Void
     var cancelInteraction: () -> Void
 
@@ -328,6 +336,24 @@ struct HorizontalCanvasCommandHandlerSet {
         case .moveSelectionBy(let delta):
             guard !isReadOnly else { return }
             moveSelectionBy(delta)
+        case .placePad:
+            guard !isReadOnly else { return }
+            placePad?()
+        case .placeShape(let form):
+            guard !isReadOnly else { return }
+            placeShape?(form)
+        case .placeHole(let shape):
+            guard !isReadOnly else { return }
+            placeHole?(shape)
+        case .placePin:
+            guard !isReadOnly else { return }
+            placePin?()
+        case .placeRefdesAndValue:
+            guard !isReadOnly else { return }
+            placeRefdesAndValue?()
+        case .placeDot:
+            guard !isReadOnly else { return }
+            placeDot?()
         case .commitInteraction:
             guard !isReadOnly else { return }
             commitInteraction()
@@ -364,6 +390,13 @@ struct HorizontalCanvasCommandHandlerSet {
             canDuplicateSelection: writable && duplicateSelection != nil,
             canCommitInteraction: writable && hasInteraction,
             canCancelInteraction: hasInteraction,
+            canPlacePad: writable && placePad != nil,
+            canPlaceShape: writable && placeShape != nil,
+            canPlaceHole: writable && placeHole != nil,
+            canPlacePin: writable && placePin != nil,
+            canPlaceRefdesAndValue: writable && placeRefdesAndValue != nil,
+            canPlaceDot: writable && placeDot != nil,
+            hasPlacementInteraction: hasPlacementInteraction,
             dispatch: dispatch
         )
     }

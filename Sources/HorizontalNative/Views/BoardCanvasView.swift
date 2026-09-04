@@ -19,6 +19,10 @@ private enum BoardClipboardItem {
     case text(HorizontalText)
     case hole(HorizontalHole)
     case polygon(HorizontalPolygon)
+    /// Package editor: a pad, re-baked at its new position on paste.
+    case pad(HorizontalPad)
+    /// Padstack editor: a shape, re-baked on paste.
+    case padstackShape(HorizontalPadstackShape)
 }
 
 /// Live paste-placement interaction: the harvested clipboard objects are shown
@@ -31,6 +35,23 @@ private struct PastePlacementState {
     /// `cursor − anchor`, so the geometry keeps its offset relative to the cursor.
     var anchor: HorizontalPoint
     /// Current cursor position (updated as the pointer moves).
+    var cursor: HorizontalPoint
+}
+
+/// Live placement of a pool object — a pad in the package editor, a shape or
+/// a hole in the padstack editor — following the cursor until a click places
+/// it. The tool then re-arms with the same padstack / form / angle so a row of
+/// pads is one click each, as Horizon's place tools do. Render-only until the
+/// commit, so Esc simply drops it.
+private enum PoolPlacementKind {
+    /// The pad, and its copper/mask/paste/holes baked at the origin.
+    case pad(HorizontalPad, geometry: HorizontalPackageGeometry)
+    case shape(HorizontalPadstackShape)
+    case hole(HorizontalHole)
+}
+
+private struct PoolPlacementState {
+    var kind: PoolPlacementKind
     var cursor: HorizontalPoint
 }
 
@@ -265,6 +286,11 @@ struct BoardCanvasView: View {
     var onSelectBoardLayerView: (HorizontalBoardLayerViewPreset) -> Void = { _ in }
     /// Pool directory URL, for re-deriving a package's silk on Unsmash.
     var poolURL: URL?
+    /// What the canvas is editing: a board, or a pool package / padstack /
+    /// decal in the mode Horizon's layered imp would open it with.
+    var modeProfile: HorizontalBoardModeProfile = .board
+    /// Padstack resolution and naming for a package / padstack editor.
+    var poolContext: HorizontalPoolEditorContext? = nil
     @ObservedObject var toolSettings: HorizontalBoardToolSettings
 
     @State private var hoveredObject: HorizontalSelectableRef?
@@ -295,6 +321,8 @@ struct BoardCanvasView: View {
     /// follow the cursor (`cursor − anchor` offset) until a click / Return
     /// commits them, or Esc cancels. Nothing is added to the board until commit.
     @State private var pastePlacementState: PastePlacementState?
+    @State private var poolPlacementState: PoolPlacementState?
+    @State private var padstackPickerPresented = false
     /// Step-back history for the in-progress route (Backspace pops one).
     @State private var trackRouteHistory: [BoardTrackRouteStep] = []
     @State private var lastCursorWorldPoint: HorizontalPoint?
@@ -359,7 +387,9 @@ struct BoardCanvasView: View {
         syncRevision: Int = 0,
         onSelectDrawingLayer: @escaping (Int) -> Void = { _ in },
         onSelectBoardLayerView: @escaping (HorizontalBoardLayerViewPreset) -> Void = { _ in },
-        poolURL: URL? = nil
+        poolURL: URL? = nil,
+        modeProfile: HorizontalBoardModeProfile = .board,
+        poolContext: HorizontalPoolEditorContext? = nil
     ) {
         self.sourceBoard = board
         self.netClasses = netClasses
@@ -394,6 +424,8 @@ struct BoardCanvasView: View {
         self.onSelectDrawingLayer = onSelectDrawingLayer
         self.onSelectBoardLayerView = onSelectBoardLayerView
         self.poolURL = poolURL
+        self.modeProfile = modeProfile
+        self.poolContext = poolContext
     }
 
     private var board: HorizontalBoard {
@@ -417,17 +449,33 @@ struct BoardCanvasView: View {
             )
             return preview
         }
+        if let poolPlacementState {
+            var preview = base
+            appendPoolPlacementGhost(poolPlacementState, into: &preview)
+            return preview
+        }
         return base
     }
 
     private var pastePreviewSignature: BoardPastePreviewSignature? {
-        guard let pastePlacementState else { return nil }
-        let offset = pastePlacementState.cursor - pastePlacementState.anchor
-        return BoardPastePreviewSignature(
-            itemCount: pastePlacementState.items.count,
-            offsetX: Int64(offset.x.rounded()),
-            offsetY: Int64(offset.y.rounded())
-        )
+        if let pastePlacementState {
+            let offset = pastePlacementState.cursor - pastePlacementState.anchor
+            return BoardPastePreviewSignature(
+                itemCount: pastePlacementState.items.count,
+                offsetX: Int64(offset.x.rounded()),
+                offsetY: Int64(offset.y.rounded())
+            )
+        }
+        if let poolPlacementState {
+            // The pool ghost rides the same cache slot: its kind, angle and
+            // mirror fold into the count, the cursor into the offset.
+            return BoardPastePreviewSignature(
+                itemCount: poolPlacementSignatureCount(poolPlacementState.kind),
+                offsetX: Int64(poolPlacementState.cursor.x.rounded()),
+                offsetY: Int64(poolPlacementState.cursor.y.rounded())
+            )
+        }
+        return nil
     }
 
     private var boardMovePreviewSignature: BoardMovePreviewSignature? {
@@ -546,7 +594,7 @@ struct BoardCanvasView: View {
             // polygon translates rigidly; a lone vertex/arc move reshapes the
             // polygon (non-rigid) and must fall back to a rebuild.
             return selectedObjects.contains(HorizontalSelectableRef(id: ref.id, type: .polygonEdge, layer: ref.layer))
-        case .blockSymbolPort, .boardPanel, .busLabel, .busRipper, .drawingArc, .drawingLine, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
+        case .blockSymbolPort, .boardPanel, .busLabel, .busRipper, .drawingArc, .drawingLine, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .padstackShape, .symbolPin:
             return false
         }
     }
@@ -672,6 +720,10 @@ struct BoardCanvasView: View {
                     commitPastePlacement(at: point)
                     return
                 }
+                if poolPlacementState != nil {
+                    commitPoolPlacement(at: point)
+                    return
+                }
                 if let moveState {
                     if moveState.tracksCursor {
                         updateMove(to: point)
@@ -718,7 +770,8 @@ struct BoardCanvasView: View {
                 guard moveState == nil,
                       drawGraphicsState == nil,
                       drawTrackState == nil,
-                      pastePlacementState == nil else {
+                      pastePlacementState == nil,
+                      poolPlacementState == nil else {
                     return
                 }
                 updateSelection(with: refs, action: action)
@@ -774,18 +827,29 @@ struct BoardCanvasView: View {
                 labelLODDebouncer.postponeForViewportMovement()
             },
             canvasDisplayTransformReportTrigger: inlineTextEditorReportTrigger,
-            allowsContextMenu: moveState == nil && drawGraphicsState == nil && drawTrackState == nil && pastePlacementState == nil,
-            handlesInteractionKeys: moveState != nil || drawGraphicsState != nil || drawTrackState != nil || pastePlacementState != nil,
+            allowsContextMenu: moveState == nil && drawGraphicsState == nil && drawTrackState == nil && pastePlacementState == nil && poolPlacementState == nil,
+            handlesInteractionKeys: moveState != nil || drawGraphicsState != nil || drawTrackState != nil || pastePlacementState != nil || poolPlacementState != nil,
             hasKeyboardFocus: hasKeyboardFocus,
             onRequestKeyboardFocus: onRequestKeyboardFocus,
             samplesCursorContinuously: drawTrackState != nil
                 || drawGraphicsState != nil
                 || pastePlacementState != nil
+                || poolPlacementState != nil
                 || moveState?.tracksCursor == true,
             supportsTrackVias: true
         )
         .onChange(of: syncRevision) { _, _ in
             adoptExternallyUpdatedBoard()
+        }
+        .sheet(isPresented: $padstackPickerPresented) {
+            HorizontalPadstackPickerSheet(
+                choices: poolContext?.padstackChoices() ?? [],
+                onPick: { padstackID in
+                    padstackPickerPresented = false
+                    beginPlacePad(padstackID: padstackID)
+                },
+                onCancel: { padstackPickerPresented = false }
+            )
         }
         .onChange(of: sourceBoard.uuid) { _, _ in
             undoTarget.removeAllActions(from: undoManager)
@@ -1067,6 +1131,16 @@ struct BoardCanvasView: View {
         if moveState != nil {
             return "Move: click or Return commits   Esc cancels"
         }
+        if let state = poolPlacementState {
+            switch state.kind {
+            case .pad(let pad, _):
+                return "Place pad \(pad.name): click places   R rotates   E mirrors   Esc ends"
+            case .shape(let shape):
+                return "Place \(shape.form.displayName.lowercased()) shape: click places   R rotates   Esc ends"
+            case .hole(let hole):
+                return "Place \(hole.shape == .slot ? "slot" : "round") hole: click places   R rotates   Esc ends"
+            }
+        }
         return nil
     }
 
@@ -1221,6 +1295,9 @@ struct BoardCanvasView: View {
         case .connectionLine:
             return segmentHUDItem(for: ref, in: board.connectionLines, title: "Connection line")
         case .pad:
+            if modeProfile.mode == .package {
+                return poolPadHUDItem(for: ref)
+            }
             guard let pad = board.packagePads.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return genericHUDItem(for: ref)
             }
@@ -1325,6 +1402,8 @@ struct BoardCanvasView: View {
                     detailRow("Size", lengthString(text.size)),
                 ].compactMap { $0 }
             )
+        case .padstackShape:
+            return padstackShapeHUDItem(for: ref)
         case .blockSymbolPort, .busLabel, .busRipper, .drawingArc, .drawingLine, .junction, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
             return genericHUDItem(for: ref)
         }
@@ -1530,7 +1609,20 @@ struct BoardCanvasView: View {
             var properties = [
                 readOnlyProperty("name", "Net", netDisplayName(hole.netID)),
                 editableNetClassProperty(for: hole.netID),
-                readOnlyProperty("shape", "Shape", hole.shape.rawValue.capitalized),
+                modeProfile.mode == .padstack
+                    ? editableChoiceProperty(
+                        "shape",
+                        "Shape",
+                        value: hole.shape.rawValue,
+                        options: [
+                            HorizontalSelectionPropertyOption(id: "round", title: "Round"),
+                            HorizontalSelectionPropertyOption(id: "slot", title: "Slot"),
+                        ]
+                    )
+                    : readOnlyProperty("shape", "Shape", hole.shape.rawValue.capitalized),
+                modeProfile.mode == .padstack
+                    ? editableTextProperty("parameterClass", "Parameter class", hole.parameterClass)
+                    : nil,
                 hole.padstackID != nil
                     ? padstackProperty(for: hole.padstackID, types: ["hole", "mechanical"])
                     : nil,
@@ -1625,10 +1717,15 @@ struct BoardCanvasView: View {
                 readOnlyProperty("net", "Net", netDisplayName(polygon.netID)),
                 editableNetClassProperty(for: polygon.netID),
                 editableLayerProperty("layer", "Layer", polygon.layer, copperOnly: false),
-                readOnlyProperty("usage", "Usage", "Polygon"),
+                modeProfile.isPoolMode
+                    ? editableTextProperty("parameterClass", "Parameter class", polygon.parameterClass)
+                    : readOnlyProperty("usage", "Usage", "Polygon"),
                 readOnlyProperty("area", "Area", areaString(polygon.area)),
             ].compactMap { $0 }
         case .pad:
+            if modeProfile.mode == .package {
+                return poolPadProperties(for: ref)
+            }
             guard let pad = board.packagePads.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return []
             }
@@ -1669,6 +1766,8 @@ struct BoardCanvasView: View {
             return [
                 readOnlyProperty("name", "Name", decal.name),
             ].compactMap { $0 }
+        case .padstackShape:
+            return padstackShapeProperties(for: ref)
         case .blockSymbolPort, .busLabel, .busRipper, .drawingArc, .drawingLine, .junction, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
             return []
         }
@@ -2034,7 +2133,7 @@ struct BoardCanvasView: View {
     /// Horizon's display names for its built-in parameter IDs
     /// (parameter/set.cpp); unknown IDs (custom parameter classes) fall back to
     /// a humanized spelling of the key.
-    private static let knownParameterDisplayNames: [String: String] = [
+    static let knownParameterDisplayNames: [String: String] = [
         "pad_width": "Pad width",
         "pad_height": "Pad height",
         "pad_diameter": "Pad diameter",
@@ -2049,7 +2148,7 @@ struct BoardCanvasView: View {
         "corner_radius": "Corner radius",
     ]
 
-    private static func parameterDisplayName(_ key: String) -> String {
+    static func parameterDisplayName(_ key: String) -> String {
         if let name = knownParameterDisplayNames[key] {
             return name
         }
@@ -2069,6 +2168,9 @@ struct BoardCanvasView: View {
         let layers = HorizontalBoardLayers.all.filter { layer in
             if layer == currentLayer {
                 return true
+            }
+            if !modeProfile.allows(layer: layer) {
+                return false
             }
             if copperOnly && !HorizontalBoardLayers.isCopper(layer) {
                 return false
@@ -2102,9 +2204,12 @@ struct BoardCanvasView: View {
     }
 
     private func canvasCommandHandlers() -> HorizontalCanvasCommandHandlerSet {
-        HorizontalCanvasCommandHandlerSet(
+        // Built as the board handler set, then trimmed for pool modes: the
+        // many conditional closures in one initializer expression exceed what
+        // the type checker will resolve.
+        var handlers = HorizontalCanvasCommandHandlerSet(
             isReadOnly: isReadOnly,
-            hasInteraction: drawGraphicsState != nil || drawTrackState != nil || moveState != nil || pastePlacementState != nil,
+            hasInteraction: drawGraphicsState != nil || drawTrackState != nil || moveState != nil || pastePlacementState != nil || poolPlacementState != nil,
             selectAll: selectAllObjects,
             selectNet: selectNetOfSelection,
             copySelection: { copySelectionToClipboard() },
@@ -2149,9 +2254,12 @@ struct BoardCanvasView: View {
             editSymbolPinNames: nil,
             toggleRectanglePlacementMode: toggleRectanglePlacementMode,
             moveSelectionBy: moveSelectionByGrid,
+            hasPlacementInteraction: poolPlacementState != nil,
             commitInteraction: {
                 if pastePlacementState != nil {
                     commitPastePlacement(at: lastCursorWorldPoint)
+                } else if poolPlacementState != nil {
+                    commitPoolPlacement(at: lastCursorWorldPoint)
                 } else if drawGraphicsState != nil {
                     commitDrawGraphicsAtCursor()
                 } else if drawTrackState != nil {
@@ -2163,6 +2271,8 @@ struct BoardCanvasView: View {
             cancelInteraction: {
                 if pastePlacementState != nil {
                     cancelPastePlacement()
+                } else if poolPlacementState != nil {
+                    cancelPoolPlacement()
                 } else if drawGraphicsState != nil {
                     endDrawGraphicsInteraction()
                 } else if drawTrackState != nil {
@@ -2172,6 +2282,38 @@ struct BoardCanvasView: View {
                 }
             }
         )
+        if modeProfile.isPoolMode {
+            handlers.selectNet = nil
+            handlers.drawTrack = nil
+            handlers.drawPlane = nil
+            handlers.selectBoardLayerView = nil
+            handlers.definePlane = nil
+            handlers.editPlane = nil
+            handlers.openDatasheet = nil
+            handlers.toggleSmash = nil
+            handlers.smashSilkscreenGraphics = nil
+            handlers.toggleOmitSilkscreen = nil
+            handlers.toggleOmitOutline = nil
+            handlers.toggleFixed = nil
+            handlers.showToolSettings = nil
+        }
+        if !modeProfile.allowsGraphics, !modeProfile.allowsPolygons {
+            handlers.drawGraphics = nil
+        }
+        if !modeProfile.allowsText {
+            handlers.addText = nil
+            handlers.editText = nil
+        }
+        if modeProfile.placesPads {
+            handlers.placePad = { requestPlacePad() }
+        }
+        if modeProfile.placesShapes {
+            handlers.placeShape = { beginPlaceShape(form: $0) }
+        }
+        if modeProfile.placesHoles {
+            handlers.placeHole = { beginPlaceHole(shape: $0) }
+        }
+        return handlers
     }
 
     private func updateCursor(at point: HorizontalPoint?, worldUnitsPerPoint: Double) {
@@ -2199,6 +2341,17 @@ struct BoardCanvasView: View {
             if state.cursor != point {
                 state.cursor = point
                 pastePlacementState = state
+            }
+            if hoveredObject != nil {
+                hoveredObject = nil
+            }
+            return
+        }
+
+        if var state = poolPlacementState {
+            if state.cursor != point {
+                state.cursor = point
+                poolPlacementState = state
             }
             if hoveredObject != nil {
                 hoveredObject = nil
@@ -2413,6 +2566,8 @@ struct BoardCanvasView: View {
         case .text: return has(board.texts)
         case .boardHole: return has(board.holes)
         case .polygonVertex, .polygonEdge, .polygonArcCenter: return has(board.polygons)
+        case .pad: return modeProfile.mode == .package && poolPad(for: ref) != nil
+        case .padstackShape: return padstackShape(for: ref) != nil
         default: return false
         }
     }
@@ -2422,8 +2577,11 @@ struct BoardCanvasView: View {
     private func isTransformable(_ ref: HorizontalSelectableRef) -> Bool {
         switch ref.type {
         case .track, .boardNetTie, .boardLine, .boardArc, .via, .text, .boardHole,
-             .polygonVertex, .polygonEdge, .polygonArcCenter, .boardPackage, .dimension, .boardDecal:
+             .polygonVertex, .polygonEdge, .polygonArcCenter, .boardPackage, .dimension, .boardDecal,
+             .padstackShape:
             return true
+        case .pad:
+            return modeProfile.mode == .package
         default:
             return false
         }
@@ -2435,8 +2593,10 @@ struct BoardCanvasView: View {
     private func isRotatableOrMirrorable(_ ref: HorizontalSelectableRef) -> Bool {
         switch ref.type {
         case .track, .boardNetTie, .boardLine, .boardArc, .via, .text, .boardHole,
-             .polygonVertex, .polygonEdge, .polygonArcCenter, .boardPackage:
+             .polygonVertex, .polygonEdge, .polygonArcCenter, .boardPackage, .padstackShape:
             return true
+        case .pad:
+            return modeProfile.mode == .package
         default:
             return false
         }
@@ -2446,7 +2606,9 @@ struct BoardCanvasView: View {
     /// and connected junctions are no-ops there, so we don't offer Delete).
     private func isDeletable(_ ref: HorizontalSelectableRef) -> Bool {
         switch ref.type {
-        case .pad, .junction,
+        case .pad:
+            return modeProfile.mode == .package
+        case .junction,
              .blockSymbolPort, .busLabel, .busRipper, .drawingArc, .drawingLine,
              .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie,
              .schematicSymbol, .symbolPin:
@@ -2774,6 +2936,7 @@ struct BoardCanvasView: View {
               drawTrackState == nil,
               drawGraphicsState == nil,
               pastePlacementState == nil,
+              poolPlacementState == nil,
               !boardClipboard.isEmpty else { return }
         // Anchor on the cursor at copy time; the ghost keeps that relative offset.
         let anchor = boardClipboardAnchor ?? lastCursorWorldPoint ?? .zero
@@ -2878,6 +3041,14 @@ struct BoardCanvasView: View {
                 if seenPolygons.insert(normalizedID(ref.id)).inserted, let poly = match(board.polygons, ref) {
                     items.append(.polygon(poly)); note(poly.polygonVertices.map(\.position))
                 }
+            case .pad:
+                if modeProfile.mode == .package, let pad = poolPad(for: ref, in: board) {
+                    items.append(.pad(pad)); note([pad.placement.shift])
+                }
+            case .padstackShape:
+                if let shape = padstackShape(for: ref, in: board) {
+                    items.append(.padstackShape(shape)); note([shape.placement.shift])
+                }
             default:
                 break
             }
@@ -2955,6 +3126,21 @@ struct BoardCanvasView: View {
                 }
                 board.polygons.append(poly)
                 refs.append(HorizontalSelectableRef(id: poly.id, type: .polygonVertex))
+            case .pad(var pad):
+                pad.id = newID()
+                pad.name = HorizontalPoolPackage.nextPadName(among: board.pads)
+                pad.placement.shift = shift(pad.placement.shift)
+                board.pads.append(pad)
+                if let poolContext {
+                    board.rebakePoolPad(id: pad.id, context: poolContext)
+                }
+                refs.append(HorizontalSelectableRef(id: board.padRefID(for: pad), type: .pad))
+            case .padstackShape(var shape):
+                shape.id = newID()
+                shape.placement.shift = shift(shape.placement.shift)
+                board.padstackShapes.append(shape)
+                board.rebakePadstackShape(id: shape.id)
+                refs.append(HorizontalSelectableRef(id: shape.id, type: .padstackShape, layer: shape.layer))
             }
         }
         return refs
@@ -2998,7 +3184,7 @@ struct BoardCanvasView: View {
     }
 
     private func beginMove(tracksCursor: Bool = true, editTextRefOnCommit: String? = nil) {
-        guard pastePlacementState == nil else { return }
+        guard pastePlacementState == nil, poolPlacementState == nil else { return }
         let selectedCount = selectedObjects.count
         var timings = [(String, UInt64)]()
         func measure<T>(_ label: String, _ body: () -> T) -> T {
@@ -3241,7 +3427,9 @@ struct BoardCanvasView: View {
     private func beginDrawGraphics(_ primitive: HorizontalDrawingPrimitive) {
         guard !isReadOnly,
               moveState == nil,
-              pastePlacementState == nil else {
+              pastePlacementState == nil,
+              poolPlacementState == nil,
+              primitive == .polygon ? modeProfile.allowsPolygons : modeProfile.allowsGraphics else {
             return
         }
         drawGraphicsState = DrawGraphicsState(
@@ -3280,6 +3468,7 @@ struct BoardCanvasView: View {
         drawTrackState = nil
         trackRouterSession = nil
         pastePlacementState = nil
+        poolPlacementState = nil
         invalidateSelectableCache()
         // Plane fills are geometry, and a net change is a colour change, so the
         // Metal scene has to be rebuilt rather than patched in place.
@@ -3297,8 +3486,10 @@ struct BoardCanvasView: View {
 
     private func beginDrawPlane() {
         guard !isReadOnly,
+              modeProfile.usesConnectivity,
               moveState == nil,
-              pastePlacementState == nil else {
+              pastePlacementState == nil,
+              poolPlacementState == nil else {
             return
         }
         drawGraphicsState = DrawGraphicsState(
@@ -3747,8 +3938,10 @@ struct BoardCanvasView: View {
 
     private func beginDrawTrack() {
         guard !isReadOnly,
+              modeProfile.usesConnectivity,
               moveState == nil,
               pastePlacementState == nil,
+              poolPlacementState == nil,
               drawTrackState == nil else {
             return
         }
@@ -4628,6 +4821,7 @@ struct BoardCanvasView: View {
               moveState == nil,
               drawGraphicsState == nil,
               pastePlacementState == nil,
+              poolPlacementState == nil,
               !selectedObjects.isEmpty else {
             return
         }
@@ -4729,7 +4923,11 @@ struct BoardCanvasView: View {
             case .junction:
                 changed = deleteOrphanJunction(ref.id, from: &board) || changed
             case .pad:
-                break
+                if modeProfile.mode == .package {
+                    changed = deletePoolPad(ref: ref, from: &board) || changed
+                }
+            case .padstackShape:
+                changed = deletePadstackShape(ref: ref, from: &board) || changed
             case .blockSymbolPort, .busLabel, .busRipper, .drawingArc, .drawingLine, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
                 break
             }
@@ -4886,6 +5084,10 @@ struct BoardCanvasView: View {
     }
 
     private func mirrorSelection() {
+        if poolPlacementState != nil {
+            mirrorPoolPlacement()
+            return
+        }
         let cursor = lastCursorWorldPoint
         transformSelection(actionName: "Mirror") { center, draft in
             mirrorSelectedObjects(around: cursor ?? center, board: &draft)
@@ -4911,6 +5113,10 @@ struct BoardCanvasView: View {
     }
 
     private func rotateSelection() {
+        if poolPlacementState != nil {
+            rotatePoolPlacement()
+            return
+        }
         let cursor = lastCursorWorldPoint
         transformSelection(actionName: "Rotate") { center, draft in
             rotateSelectedObjects(around: cursor ?? center, by: Self.quarterTurnAngle, board: &draft)
@@ -5017,7 +5223,12 @@ struct BoardCanvasView: View {
         case .text:
             return (board.texts + board.packageTexts).first { normalizedID($0.id) == normalizedID(ref.id) }.map { [$0.position] } ?? []
         case .pad:
+            if modeProfile.mode == .package {
+                return poolPad(for: ref, in: board).map { [$0.placement.shift] } ?? []
+            }
             return board.packagePads.first { normalizedID($0.id) == normalizedID(ref.id) }.map { [HorizontalRect(points: $0.vertices).center] } ?? []
+        case .padstackShape:
+            return padstackShape(for: ref, in: board).map { [$0.placement.shift] } ?? []
         case .polygonArcCenter:
             guard let polygon = boardPolygon(for: ref.id, in: board),
                   polygon.polygonVertices.indices.contains(ref.vertex) else {
@@ -5151,7 +5362,13 @@ struct BoardCanvasView: View {
             case .polygonArcCenter, .polygonEdge, .polygonVertex:
                 movePolygon(&board.polygons, ref: ref, by: delta)
             case .pad:
-                movePolygon(&board.packagePads, ref: ref, by: delta)
+                if modeProfile.mode == .package {
+                    movePoolPad(ref: ref, by: delta, board: &board)
+                } else {
+                    movePolygon(&board.packagePads, ref: ref, by: delta)
+                }
+            case .padstackShape:
+                movePadstackShape(ref: ref, by: delta, board: &board)
             case .connectionLine:
                 moveBoardLayerSegmentSelection(&board.connectionLines, ref: ref, by: delta, movedKeys: &movedLayerVertexKeys)
             case .keepout:
@@ -5195,7 +5412,13 @@ struct BoardCanvasView: View {
             case .polygonArcCenter, .polygonEdge, .polygonVertex:
                 mirrorPolygon(&board.polygons, ref: ref, around: center, flipsLayer: false)
             case .pad:
-                mirrorPolygon(&board.packagePads, ref: ref, around: center, flipsLayer: true)
+                if modeProfile.mode == .package {
+                    mirrorPoolPad(ref: ref, around: center, board: &board)
+                } else {
+                    mirrorPolygon(&board.packagePads, ref: ref, around: center, flipsLayer: true)
+                }
+            case .padstackShape:
+                mirrorPadstackShape(ref: ref, around: center, board: &board)
             case .boardDecal, .boardPanel, .dimension, .keepout, .plane:
                 break
             case .blockSymbolPort, .busLabel, .busRipper, .connectionLine, .drawingArc, .drawingLine, .junction, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
@@ -5251,7 +5474,13 @@ struct BoardCanvasView: View {
             case .polygonArcCenter, .polygonEdge, .polygonVertex:
                 rotatePolygon(&board.polygons, ref: ref, around: center, by: angleDelta)
             case .pad:
-                rotatePolygon(&board.packagePads, ref: ref, around: center, by: angleDelta)
+                if modeProfile.mode == .package {
+                    rotatePoolPad(ref: ref, around: center, by: angleDelta, board: &board)
+                } else {
+                    rotatePolygon(&board.packagePads, ref: ref, around: center, by: angleDelta)
+                }
+            case .padstackShape:
+                rotatePadstackShape(ref: ref, around: center, by: angleDelta, board: &board)
             case .boardDecal, .boardPanel, .dimension, .keepout, .plane:
                 break
             case .blockSymbolPort, .busLabel, .busRipper, .connectionLine, .drawingArc, .drawingLine, .junction, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
@@ -5928,6 +6157,15 @@ struct BoardCanvasView: View {
     /// track without a connection, or copper left dangling by a delete/move,
     /// disconnects automatically (mirrors propagate_nets after edits).
     private func publishConnectivityResolvedEdit(_ board: HorizontalBoard) {
+        // A pool item has no nets: nothing to propagate, and the recompute
+        // would strip the (absent) net of every pad anyway.
+        guard modeProfile.usesConnectivity else {
+            var board = board
+            board.recomputePoolEditorBounds()
+            editedBoard = board
+            onBoardChange(board)
+            return
+        }
         let resolved = HorizontalBoardConnectivity.recompute(board)
         // A net change is a color change (net-less copper is orange), so force a
         // metal-scene rebuild even when the edit would otherwise patch in place.
@@ -5988,7 +6226,13 @@ struct BoardCanvasView: View {
         case .polygonArcCenter, .polygonEdge, .polygonVertex:
             updatePolygon(&board.polygons, ref: ref, propertyID: propertyID, value: value)
         case .pad:
-            updatePad(&board.packagePads, ref: ref, propertyID: propertyID, value: value)
+            if modeProfile.mode == .package {
+                updatePoolPad(ref: ref, propertyID: propertyID, value: value, board: &board)
+            } else {
+                updatePad(&board.packagePads, ref: ref, propertyID: propertyID, value: value)
+            }
+        case .padstackShape:
+            updatePadstackShape(ref: ref, propertyID: propertyID, value: value, board: &board)
         case .boardPackage:
             updateBoardPackage(
                 ref: ref,
@@ -6320,6 +6564,15 @@ struct BoardCanvasView: View {
             holes[index].position.y = y
         case ("plated", .bool(let plated)):
             holes[index].plated = plated
+        case ("shape", .choice(let shape)):
+            holes[index].shape = shape == "slot" ? .slot : .round
+            if holes[index].shape == .slot, holes[index].effectiveLength <= holes[index].diameter {
+                holes[index].length = holes[index].diameter + 500_000
+            } else if holes[index].shape == .round {
+                holes[index].length = holes[index].diameter
+            }
+        case ("parameterClass", .text(let parameterClass)):
+            holes[index].parameterClass = parameterClass
         case ("padstack", .choice(let padstackID)):
             guard holes[index].padstackID != nil else {
                 break
@@ -6762,12 +7015,17 @@ struct BoardCanvasView: View {
         propertyID: String,
         value: HorizontalSelectionPropertyValue
     ) {
-        guard propertyID == "layer",
-              case .layer(let layer) = value,
-              let index = polygons.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+        guard let index = polygons.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
             return
         }
-        polygons[index].layer = layer
+        switch (propertyID, value) {
+        case ("layer", .layer(let layer)):
+            polygons[index].layer = layer
+        case ("parameterClass", .text(let parameterClass)):
+            polygons[index].parameterClass = parameterClass
+        default:
+            break
+        }
     }
 
     private func netID(for ref: HorizontalSelectableRef?) -> String? {
@@ -6798,7 +7056,7 @@ struct BoardCanvasView: View {
             return boardPolygon(for: ref.id, in: board)?.netID
         case .text:
             return (board.texts + board.packageTexts).first { normalizedID($0.id) == normalizedID(ref.id) }?.netID
-        case .blockSymbolPort, .boardDecal, .boardPackage, .boardPanel, .busLabel, .busRipper, .dimension, .drawingArc, .drawingLine, .junction, .keepout, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
+        case .blockSymbolPort, .boardDecal, .boardPackage, .boardPanel, .busLabel, .busRipper, .dimension, .drawingArc, .drawingLine, .junction, .keepout, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .padstackShape, .symbolPin:
             return nil
         }
     }
@@ -7018,6 +7276,8 @@ struct BoardCanvasView: View {
             board.packagePolygons.count,
             board.packageLines.count,
             board.packageArcs.count,
+            board.pads.count,
+            board.padstackShapes.count,
             board.packageTexts.count,
             board.texts.count,
             board.boardPanels.count,
@@ -7145,6 +7405,8 @@ struct BoardCanvasView: View {
         case .connectionLine:
             return displayOptions.connectionLines
         case .pad:
+            return displayOptions.pads && displayOptions.isLayerVisible(ref.layer)
+        case .padstackShape:
             return displayOptions.pads && displayOptions.isLayerVisible(ref.layer)
         case .via:
             return displayOptions.vias && visibleViaIDs.contains(normalizedID(ref.id))
@@ -9184,7 +9446,7 @@ struct BoardCanvasView: View {
             return board.polygons.first { normalizedID($0.id) == id }.map { HorizontalRect(points: $0.renderVertices(arcPrecision: 24)).center }
         case .plane:
             return board.planes.first { normalizedID($0.id) == id }.map { HorizontalRect(points: $0.points).center }
-        case .blockSymbolPort, .boardPanel, .busLabel, .busRipper, .drawingArc, .drawingLine, .lineNet, .netLabel, .pad, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
+        case .blockSymbolPort, .boardPanel, .busLabel, .busRipper, .drawingArc, .drawingLine, .lineNet, .netLabel, .pad, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .padstackShape, .symbolPin:
             return nil
         }
     }
@@ -9728,7 +9990,7 @@ struct BoardCanvasView: View {
             if let text = board.texts.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
                 appendText(text, color: layerMetalColor(text.layer), compositeGroup: text.layer.map(metalCompositeGroup(for:)) ?? 0)
             }
-        case .boardPackage, .blockSymbolPort, .boardDecal, .boardPanel, .busLabel, .busRipper, .dimension, .drawingArc, .drawingLine, .junction, .keepout, .lineNet, .netLabel, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
+        case .boardPackage, .blockSymbolPort, .boardDecal, .boardPanel, .busLabel, .busRipper, .dimension, .drawingArc, .drawingLine, .junction, .keepout, .lineNet, .netLabel, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .padstackShape, .symbolPin:
             break
         }
 
@@ -9785,7 +10047,7 @@ struct BoardCanvasView: View {
             }
         case .boardPackage, .track, .boardNetTie, .boardLine, .boardArc, .connectionLine, .text:
             break
-        case .blockSymbolPort, .boardDecal, .boardPanel, .busLabel, .busRipper, .dimension, .drawingArc, .drawingLine, .junction, .keepout, .lineNet, .netLabel, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
+        case .blockSymbolPort, .boardDecal, .boardPanel, .busLabel, .busRipper, .dimension, .drawingArc, .drawingLine, .junction, .keepout, .lineNet, .netLabel, .pad, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .padstackShape, .symbolPin:
             break
         }
 
@@ -10940,7 +11202,9 @@ struct BoardCanvasView: View {
             )
         })
 
-        selectables.append(contentsOf: (board.holes + board.packageHoles).map { hole in
+        // A package editor's pad holes belong to their pads, not to the hole list.
+        let standaloneHoles = modeProfile.isPoolMode ? board.holes : board.holes + board.packageHoles
+        selectables.append(contentsOf: standaloneHoles.map { hole in
             HorizontalSelectable.bounds(
                 ref: HorizontalSelectableRef(id: hole.id, type: .boardHole),
                 points: hole.boundsPoints,
@@ -10950,6 +11214,12 @@ struct BoardCanvasView: View {
         })
 
         selectables.append(contentsOf: boardPackageSelectables(in: board))
+        if modeProfile.mode == .package {
+            selectables.append(contentsOf: poolPadSelectables(in: board))
+        }
+        if modeProfile.mode == .padstack {
+            selectables.append(contentsOf: padstackShapeSelectables(in: board))
+        }
 
         // Standalone board text is independently selectable. Package-owned text
         // (refdes / value / assembly annotations) normally is NOT — it belongs to
@@ -13013,6 +13283,7 @@ struct BoardCanvasView: View {
         case .schematicBlockSymbol: "Block symbol"
         case .schematicNetTie: "Schematic net tie"
         case .schematicSymbol: "Schematic symbol"
+        case .padstackShape: "Padstack shape"
         case .symbolPin: "Symbol pin"
         }
     }
@@ -13049,6 +13320,7 @@ struct BoardCanvasView: View {
         case .schematicBlockSymbol: "Block symbols"
         case .schematicNetTie: "Schematic net ties"
         case .schematicSymbol: "Schematic symbols"
+        case .padstackShape: "Padstack shapes"
         case .symbolPin: "Symbol pins"
         }
     }
@@ -13141,5 +13413,666 @@ private extension HorizontalDimensionMode {
         case .horizontal: "Horizontal"
         case .vertical: "Vertical"
         }
+    }
+}
+
+// MARK: - Pool item modes (package / padstack / decal)
+
+extension BoardCanvasView {
+    // MARK: Lookup
+
+    private func poolPad(for ref: HorizontalSelectableRef) -> HorizontalPad? {
+        poolPad(for: ref, in: board)
+    }
+
+    private func poolPad(for ref: HorizontalSelectableRef, in board: HorizontalBoard) -> HorizontalPad? {
+        let normalized = normalizedID(ref.id)
+        guard let marker = normalized.range(of: "/pad/") else {
+            return nil
+        }
+        let padID = String(normalized[marker.upperBound...])
+        return board.pads.first { normalizedID($0.id) == padID }
+    }
+
+    private func poolPadIndex(for ref: HorizontalSelectableRef, in board: HorizontalBoard) -> Int? {
+        let normalized = normalizedID(ref.id)
+        guard let marker = normalized.range(of: "/pad/") else {
+            return nil
+        }
+        let padID = String(normalized[marker.upperBound...])
+        return board.pads.firstIndex { normalizedID($0.id) == padID }
+    }
+
+    private func padstackShape(for ref: HorizontalSelectableRef) -> HorizontalPadstackShape? {
+        padstackShape(for: ref, in: board)
+    }
+
+    private func padstackShape(for ref: HorizontalSelectableRef, in board: HorizontalBoard) -> HorizontalPadstackShape? {
+        board.padstackShapes.first { normalizedID($0.id) == normalizedID(ref.id) }
+    }
+
+    private func padstackShapeIndex(for ref: HorizontalSelectableRef, in board: HorizontalBoard) -> Int? {
+        board.padstackShapes.firstIndex { normalizedID($0.id) == normalizedID(ref.id) }
+    }
+
+    private func bakedPadPrefix(for pad: HorizontalPad, in board: HorizontalBoard) -> String {
+        board.padRefID(for: pad) + "/"
+    }
+
+    private func bakedShapePrefix(for shape: HorizontalPadstackShape, in board: HorizontalBoard) -> String {
+        "pad/\(board.poolItemID ?? "padstack")/shape/\(shape.id)/".lowercased()
+    }
+
+    // MARK: Selectables
+
+    private func poolPadSelectables(in board: HorizontalBoard) -> [HorizontalSelectable] {
+        board.pads.map { pad in
+            let prefix = bakedPadPrefix(for: pad, in: board)
+            let polygons = board.packagePads.filter { normalizedID($0.id).hasPrefix(prefix) }
+            let copper = polygons.filter { $0.layer.map(HorizontalBoardLayers.isCopper) ?? false }
+            let points = (copper.isEmpty ? polygons : copper).flatMap(\.vertices)
+            return HorizontalSelectable.bounds(
+                ref: HorizontalSelectableRef(id: board.padRefID(for: pad), type: .pad),
+                points: points,
+                fallbackCenter: pad.placement.shift,
+                fallbackSize: 1_000_000
+            )
+        }
+    }
+
+    private func padstackShapeSelectables(in board: HorizontalBoard) -> [HorizontalSelectable] {
+        board.padstackShapes.map { shape in
+            let prefix = bakedShapePrefix(for: shape, in: board)
+            let points = board.packagePads.filter { normalizedID($0.id).hasPrefix(prefix) }.flatMap(\.vertices)
+            return HorizontalSelectable.bounds(
+                ref: HorizontalSelectableRef(id: shape.id, type: .padstackShape, layer: shape.layer),
+                points: points,
+                fallbackCenter: shape.placement.shift,
+                fallbackSize: 500_000
+            )
+        }
+    }
+
+    // MARK: HUD
+
+    private func poolPadHUDItem(for ref: HorizontalSelectableRef) -> HorizontalSelectionHUDItem {
+        guard let pad = poolPad(for: ref) else {
+            return genericHUDItem(for: ref)
+        }
+        let padstackName = poolContext?.padstackDisplayName(id: pad.padstackID) ?? shortID(pad.padstackID)
+        var details = [
+            detailRow("Padstack", padstackName),
+            detailRow("Position", "\(lengthString(pad.placement.shift.x)), \(lengthString(pad.placement.shift.y))"),
+            detailRow("Angle", "\(pad.placement.angle * 360 / 65_536)°"),
+        ].compactMap { $0 }
+        for (key, value) in pad.parameterSet.sorted(by: { $0.key < $1.key }) {
+            if let row = detailRow(Self.parameterDisplayName(key), lengthString(Double(value))) {
+                details.append(row)
+            }
+        }
+        return HorizontalSelectionHUDItem(title: "Pad \(pad.name)", subtitle: padstackName, details: details)
+    }
+
+    private func padstackShapeHUDItem(for ref: HorizontalSelectableRef) -> HorizontalSelectionHUDItem {
+        guard let shape = padstackShape(for: ref) else {
+            return genericHUDItem(for: ref)
+        }
+        let size = shape.form == .circle
+            ? diameterString(shape.params.first ?? 0)
+            : "\(lengthString(shape.params.first ?? 0)) × \(lengthString(shape.params.count > 1 ? shape.params[1] : 0))"
+        return HorizontalSelectionHUDItem(
+            title: "\(shape.form.displayName) shape",
+            subtitle: layerName(for: shape.layer) ?? "",
+            details: [
+                detailRow("Size", size),
+                detailRow("Parameter class", shape.parameterClass),
+            ].compactMap { $0 }
+        )
+    }
+
+    // MARK: Inspector
+
+    private func poolPadProperties(for ref: HorizontalSelectableRef) -> [HorizontalSelectionProperty] {
+        guard let pad = poolPad(for: ref) else {
+            return []
+        }
+        var properties = [editableTextProperty("name", "Name", pad.name)]
+        let currentID = normalizedID(pad.padstackID)
+        var options = (poolContext?.padstackChoices() ?? []).map {
+            HorizontalSelectionPropertyOption(id: $0.id, title: $0.isPackageLocal ? "\($0.name) (package)" : $0.name)
+        }
+        if !options.contains(where: { $0.id == currentID }) {
+            options.append(HorizontalSelectionPropertyOption(
+                id: currentID,
+                title: poolContext?.padstackDisplayName(id: pad.padstackID) ?? shortID(pad.padstackID)
+            ))
+        }
+        properties.append(editableChoiceProperty("padstack", "Padstack", value: currentID, options: options))
+        properties.append(contentsOf: [
+            editableLengthProperty("positionX", "Position X", pad.placement.shift.x),
+            editableLengthProperty("positionY", "Position Y", pad.placement.shift.y),
+            editableAngleProperty("angle", "Angle", pad.placement.angle),
+            editableBoolProperty("mirror", "Mirror", pad.placement.mirrored),
+        ])
+        properties.append(contentsOf: poolParameterProperties(
+            parameterSet: pad.parameterSet,
+            parametersFixed: pad.parametersFixed,
+            padstackJSON: poolContext?.padstackJSON(id: pad.padstackID)
+        ))
+        return properties
+    }
+
+    /// Parameter rows for a pool object, resolved through the editor context
+    /// (which sees package-local padstacks) rather than the pool catalog.
+    private func poolParameterProperties(
+        parameterSet: [String: Int],
+        parametersFixed: [String],
+        padstackJSON: JSONDictionary?
+    ) -> [HorizontalSelectionProperty] {
+        var keys = Set(parameterSet.keys)
+        var required = Set<String>()
+        var defaults = [String: Int]()
+        if let padstackJSON {
+            for case let key as String in padstackJSON["parameters_required"] as? [Any] ?? [] {
+                required.insert(key)
+            }
+            keys.formUnion(required)
+            for (key, value) in padstackJSON.dictionary("parameter_set") ?? [:] {
+                defaults[key] = Int(JSONHelper.doubleValue(value))
+            }
+        }
+        var properties = [HorizontalSelectionProperty]()
+        for key in keys.sorted() {
+            var property = editableLengthProperty(
+                "param:\(key)",
+                Self.parameterDisplayName(key),
+                Double(parameterSet[key] ?? defaults[key] ?? 0)
+            )
+            if parameterSet[key] != nil, !required.contains(key) {
+                property.removeID = "removeParam:\(key)"
+            }
+            properties.append(property)
+            if parameterSet[key] != nil {
+                properties.append(editableBoolProperty("fixed:\(key)", "Fixed: \(Self.parameterDisplayName(key))", parametersFixed.contains(key)))
+            }
+        }
+        if let addParameter = addParameterProperty(existing: keys) {
+            properties.append(addParameter)
+        }
+        return properties
+    }
+
+    private func padstackShapeProperties(for ref: HorizontalSelectableRef) -> [HorizontalSelectionProperty] {
+        guard let shape = padstackShape(for: ref) else {
+            return []
+        }
+        var properties = [
+            editableChoiceProperty(
+                "form",
+                "Form",
+                value: shape.form.rawValue,
+                options: HorizontalPadstackShapeForm.allCases.map {
+                    HorizontalSelectionPropertyOption(id: $0.rawValue, title: $0.displayName)
+                }
+            ),
+        ]
+        if shape.form == .circle {
+            properties.append(editableLengthProperty("diameter", "Diameter", shape.params.first ?? 0))
+        } else {
+            properties.append(editableLengthProperty("width", "Width", shape.params.first ?? 0))
+            properties.append(editableLengthProperty("height", "Height", shape.params.count > 1 ? shape.params[1] : 0))
+        }
+        properties.append(contentsOf: [
+            editableLayerProperty("layer", "Layer", shape.layer, copperOnly: false),
+            editableTextProperty("parameterClass", "Parameter class", shape.parameterClass),
+            editableLengthProperty("positionX", "Position X", shape.placement.shift.x),
+            editableLengthProperty("positionY", "Position Y", shape.placement.shift.y),
+            editableAngleProperty("angle", "Angle", shape.placement.angle),
+            editableBoolProperty("mirror", "Mirror", shape.placement.mirrored),
+        ])
+        return properties
+    }
+
+    // MARK: Pad transforms
+
+    private func movePoolPad(ref: HorizontalSelectableRef, by delta: HorizontalPoint, board: inout HorizontalBoard) {
+        guard let index = poolPadIndex(for: ref, in: board) else {
+            return
+        }
+        let pad = board.pads[index]
+        let prefix = bakedPadPrefix(for: pad, in: board)
+        board.pads[index].placement.shift = pad.placement.shift + delta
+        for polygonIndex in board.packagePads.indices where normalizedID(board.packagePads[polygonIndex].id).hasPrefix(prefix) {
+            board.packagePads[polygonIndex] = shifted(board.packagePads[polygonIndex], by: delta)
+        }
+        for holeIndex in board.packageHoles.indices where normalizedID(board.packageHoles[holeIndex].id).hasPrefix(prefix) {
+            board.packageHoles[holeIndex] = shifted(board.packageHoles[holeIndex], by: delta)
+        }
+        let positionKey = "\(board.poolItemID ?? "package")/\(pad.id)".lowercased()
+        for key in board.packagePadPositions.keys where key.lowercased() == positionKey {
+            board.packagePadPositions[key] = board.packagePadPositions[key].map { $0 + delta }
+        }
+    }
+
+    private func mirrorPoolPad(ref: HorizontalSelectableRef, around center: HorizontalPoint, board: inout HorizontalBoard) {
+        guard let index = poolPadIndex(for: ref, in: board) else {
+            return
+        }
+        board.pads[index].placement.shift = mirrored(board.pads[index].placement.shift, around: center)
+        board.pads[index].placement.angle = wrappedAngle(-board.pads[index].placement.angle)
+        board.pads[index].placement.mirrored.toggle()
+        rebakePad(board.pads[index], board: &board)
+    }
+
+    private func rotatePoolPad(ref: HorizontalSelectableRef, around center: HorizontalPoint, by angleDelta: Int, board: inout HorizontalBoard) {
+        guard let index = poolPadIndex(for: ref, in: board) else {
+            return
+        }
+        let pad = board.pads[index]
+        board.pads[index].placement.shift = rotated(pad.placement.shift, around: center, by: angleDelta)
+        board.pads[index].placement.angle = wrappedAngle(pad.placement.angle + (pad.placement.mirrored ? -angleDelta : angleDelta))
+        rebakePad(board.pads[index], board: &board)
+    }
+
+    private func deletePoolPad(ref: HorizontalSelectableRef, from board: inout HorizontalBoard) -> Bool {
+        guard let index = poolPadIndex(for: ref, in: board) else {
+            return false
+        }
+        let pad = board.pads.remove(at: index)
+        board.removeBakedPoolPad(id: pad.id)
+        return true
+    }
+
+    private func rebakePad(_ pad: HorizontalPad, board: inout HorizontalBoard) {
+        guard let poolContext else {
+            return
+        }
+        board.rebakePoolPad(id: pad.id, context: poolContext)
+    }
+
+    private func updatePoolPad(
+        ref: HorizontalSelectableRef,
+        propertyID: String,
+        value: HorizontalSelectionPropertyValue,
+        board: inout HorizontalBoard
+    ) {
+        guard let index = poolPadIndex(for: ref, in: board) else {
+            return
+        }
+        switch (propertyID, value) {
+        case ("name", .text(let name)):
+            board.pads[index].name = name
+            rebakePad(board.pads[index], board: &board)
+        case ("padstack", .choice(let padstackID)):
+            board.pads[index].padstackID = padstackID
+            // Required parameters come from the new padstack's defaults, as
+            // placing a pad seeds them.
+            if let json = poolContext?.padstackJSON(id: padstackID) {
+                let defaults = HorizontalPoolJSON.parameterSet(json.dictionary("parameter_set"))
+                for case let key as String in json["parameters_required"] as? [Any] ?? []
+                    where board.pads[index].parameterSet[key] == nil {
+                    board.pads[index].parameterSet[key] = defaults[key] ?? 0
+                }
+            }
+            rebakePad(board.pads[index], board: &board)
+        case ("positionX", .length(let x)):
+            let delta = HorizontalPoint(x: x - board.pads[index].placement.shift.x, y: 0)
+            movePoolPad(ref: ref, by: delta, board: &board)
+        case ("positionY", .length(let y)):
+            let delta = HorizontalPoint(x: 0, y: y - board.pads[index].placement.shift.y)
+            movePoolPad(ref: ref, by: delta, board: &board)
+        case ("angle", .angle(let angle)):
+            board.pads[index].placement.angle = wrappedAngle(angle)
+            rebakePad(board.pads[index], board: &board)
+        case ("mirror", .bool(let mirrored)):
+            board.pads[index].placement.mirrored = mirrored
+            rebakePad(board.pads[index], board: &board)
+        case ("addParameter", .choice(let key)):
+            guard key != "none", board.pads[index].parameterSet[key] == nil else {
+                return
+            }
+            let defaults = poolContext?.padstackJSON(id: board.pads[index].padstackID)
+                .map { HorizontalPoolJSON.parameterSet($0.dictionary("parameter_set")) } ?? [:]
+            board.pads[index].parameterSet[key] = defaults[key] ?? Int(seededParameterValue(key, padstackID: nil))
+            rebakePad(board.pads[index], board: &board)
+        default:
+            if propertyID.hasPrefix("removeParam:") {
+                let key = String(propertyID.dropFirst("removeParam:".count))
+                board.pads[index].parameterSet.removeValue(forKey: key)
+                board.pads[index].parametersFixed.removeAll { $0 == key }
+                rebakePad(board.pads[index], board: &board)
+            } else if propertyID.hasPrefix("param:"), case .length(let parameter) = value {
+                let key = String(propertyID.dropFirst("param:".count))
+                board.pads[index].parameterSet[key] = Int(parameter.rounded())
+                rebakePad(board.pads[index], board: &board)
+            } else if propertyID.hasPrefix("fixed:"), case .bool(let fixed) = value {
+                let key = String(propertyID.dropFirst("fixed:".count))
+                board.pads[index].parametersFixed.removeAll { $0 == key }
+                if fixed {
+                    board.pads[index].parametersFixed.append(key)
+                    board.pads[index].parametersFixed.sort()
+                }
+            }
+        }
+    }
+
+    // MARK: Shape transforms
+
+    private func movePadstackShape(ref: HorizontalSelectableRef, by delta: HorizontalPoint, board: inout HorizontalBoard) {
+        guard let index = padstackShapeIndex(for: ref, in: board) else {
+            return
+        }
+        let prefix = bakedShapePrefix(for: board.padstackShapes[index], in: board)
+        board.padstackShapes[index].placement.shift = board.padstackShapes[index].placement.shift + delta
+        for polygonIndex in board.packagePads.indices where normalizedID(board.packagePads[polygonIndex].id).hasPrefix(prefix) {
+            board.packagePads[polygonIndex] = shifted(board.packagePads[polygonIndex], by: delta)
+        }
+    }
+
+    private func mirrorPadstackShape(ref: HorizontalSelectableRef, around center: HorizontalPoint, board: inout HorizontalBoard) {
+        guard let index = padstackShapeIndex(for: ref, in: board) else {
+            return
+        }
+        board.padstackShapes[index].placement.shift = mirrored(board.padstackShapes[index].placement.shift, around: center)
+        board.padstackShapes[index].placement.angle = wrappedAngle(-board.padstackShapes[index].placement.angle)
+        board.padstackShapes[index].placement.mirrored.toggle()
+        board.rebakePadstackShape(id: board.padstackShapes[index].id)
+    }
+
+    private func rotatePadstackShape(ref: HorizontalSelectableRef, around center: HorizontalPoint, by angleDelta: Int, board: inout HorizontalBoard) {
+        guard let index = padstackShapeIndex(for: ref, in: board) else {
+            return
+        }
+        let shape = board.padstackShapes[index]
+        board.padstackShapes[index].placement.shift = rotated(shape.placement.shift, around: center, by: angleDelta)
+        board.padstackShapes[index].placement.angle = wrappedAngle(shape.placement.angle + (shape.placement.mirrored ? -angleDelta : angleDelta))
+        board.rebakePadstackShape(id: shape.id)
+    }
+
+    private func deletePadstackShape(ref: HorizontalSelectableRef, from board: inout HorizontalBoard) -> Bool {
+        guard let index = padstackShapeIndex(for: ref, in: board) else {
+            return false
+        }
+        let shape = board.padstackShapes.remove(at: index)
+        board.removeBakedPadstackShape(id: shape.id)
+        return true
+    }
+
+    private func updatePadstackShape(
+        ref: HorizontalSelectableRef,
+        propertyID: String,
+        value: HorizontalSelectionPropertyValue,
+        board: inout HorizontalBoard
+    ) {
+        guard let index = padstackShapeIndex(for: ref, in: board) else {
+            return
+        }
+        var shape = board.padstackShapes[index]
+        switch (propertyID, value) {
+        case ("form", .choice(let form)):
+            guard let newForm = HorizontalPadstackShapeForm(rawValue: form) else {
+                return
+            }
+            let width = shape.params.first ?? 1_000_000
+            let height = shape.params.count > 1 ? shape.params[1] : width / 2
+            shape.form = newForm
+            shape.params = newForm == .circle ? [width] : [width, height]
+        case ("diameter", .length(let diameter)):
+            shape.params = [max(diameter, 0)]
+        case ("width", .length(let width)):
+            shape.params = [max(width, 0), shape.params.count > 1 ? shape.params[1] : 0]
+        case ("height", .length(let height)):
+            shape.params = [shape.params.first ?? 0, max(height, 0)]
+        case ("layer", .layer(let layer)):
+            guard let layer else {
+                return
+            }
+            shape.layer = layer
+        case ("parameterClass", .text(let parameterClass)):
+            shape.parameterClass = parameterClass
+        case ("positionX", .length(let x)):
+            shape.placement.shift.x = x
+        case ("positionY", .length(let y)):
+            shape.placement.shift.y = y
+        case ("angle", .angle(let angle)):
+            shape.placement.angle = wrappedAngle(angle)
+        case ("mirror", .bool(let mirrored)):
+            shape.placement.mirrored = mirrored
+        default:
+            return
+        }
+        board.padstackShapes[index] = shape
+        board.rebakePadstackShape(id: shape.id)
+    }
+
+    // MARK: Placement tools
+
+    /// "Place Pad" starts with the padstack picker; the pad follows the cursor
+    /// once one is chosen.
+    private func requestPlacePad() {
+        guard !isReadOnly, modeProfile.placesPads, poolContext != nil,
+              moveState == nil, drawGraphicsState == nil, pastePlacementState == nil, poolPlacementState == nil else {
+            return
+        }
+        padstackPickerPresented = true
+    }
+
+    private func beginPlacePad(padstackID: String) {
+        guard !isReadOnly, let poolContext, modeProfile.placesPads else {
+            return
+        }
+        var parameterSet = [String: Int]()
+        if let json = poolContext.padstackJSON(id: padstackID) {
+            let defaults = HorizontalPoolJSON.parameterSet(json.dictionary("parameter_set"))
+            for case let key as String in json["parameters_required"] as? [Any] ?? [] {
+                parameterSet[key] = defaults[key] ?? 0
+            }
+        }
+        let pad = HorizontalPad(
+            id: UUID().uuidString.lowercased(),
+            name: HorizontalPoolPackage.nextPadName(among: board.pads),
+            padstackID: padstackID,
+            placement: .identity,
+            parameterSet: parameterSet
+        )
+        armPoolPlacement(.pad(pad, geometry: bakePlacementPad(pad)))
+    }
+
+    private func beginPlaceShape(form: HorizontalPadstackShapeForm) {
+        guard !isReadOnly, modeProfile.placesShapes else {
+            return
+        }
+        let shape = HorizontalPadstackShape(
+            id: UUID().uuidString.lowercased(),
+            form: form,
+            params: form == .circle ? [1_000_000] : [1_000_000, 500_000],
+            placement: .identity,
+            layer: modeProfile.allows(layer: drawingLayer) ? drawingLayer : modeProfile.defaultDrawingLayer,
+            parameterClass: ""
+        )
+        armPoolPlacement(.shape(shape))
+    }
+
+    private func beginPlaceHole(shape: HorizontalHoleShape) {
+        guard !isReadOnly, modeProfile.placesHoles else {
+            return
+        }
+        let hole = HorizontalHole(
+            id: UUID().uuidString.lowercased(),
+            position: .zero,
+            diameter: 500_000,
+            length: shape == .slot ? 1_000_000 : 500_000,
+            shape: shape,
+            plated: true,
+            parameterClass: "hole"
+        )
+        armPoolPlacement(.hole(hole))
+    }
+
+    private func armPoolPlacement(_ kind: PoolPlacementKind) {
+        guard moveState == nil, drawGraphicsState == nil, drawTrackState == nil, pastePlacementState == nil else {
+            return
+        }
+        selectedObjects = []
+        hoveredObject = nil
+        poolPlacementState = PoolPlacementState(kind: kind, cursor: lastCursorWorldPoint ?? board.bounds.center)
+        publishSelectionContext()
+        publishCanvasCommandActions()
+    }
+
+    /// The pad's copper, mask, paste and holes baked at the origin, so the
+    /// ghost can be translated to the cursor without re-parsing per frame.
+    private func bakePlacementPad(_ pad: HorizontalPad) -> HorizontalPackageGeometry {
+        guard let poolContext, let packageID = board.poolItemID else {
+            return .empty
+        }
+        var origin = pad
+        origin.placement.shift = .zero
+        let packageJSON: JSONDictionary = [
+            "uuid": packageID,
+            "parameter_set": HorizontalPoolJSON.parameterSetJSON(board.poolParameterSet),
+            "pads": [origin.id: origin.json(original: nil)] as JSONDictionary,
+        ]
+        return HorizontalBoard.packagePreviewGeometry(
+            packageJSON: packageJSON,
+            packageID: packageID,
+            poolURL: poolContext.poolURL,
+            boardPackageID: "place-preview",
+            nInnerLayers: 1,
+            runsParameterProgram: false,
+            padstack: poolContext.padstackJSON(id:)
+        )
+    }
+
+    private func appendPoolPlacementGhost(_ state: PoolPlacementState, into preview: inout HorizontalBoard) {
+        let cursor = state.cursor
+        switch state.kind {
+        case .pad(_, let geometry):
+            preview.packagePads.append(contentsOf: geometry.pads.map { shifted($0, by: cursor) })
+            preview.packageHoles.append(contentsOf: geometry.holes.map { shifted($0, by: cursor) })
+        case .shape(var shape):
+            shape.placement.shift = cursor
+            var polygon = HorizontalBoard.bakedShapePolygon(shape, padstackID: "place-preview")
+            polygon.id = "place-preview/" + polygon.id
+            preview.packagePads.append(polygon)
+        case .hole(var hole):
+            hole.id = "place-preview-hole"
+            hole.position = cursor
+            preview.packageHoles.append(hole)
+        }
+    }
+
+    private func poolPlacementSignatureCount(_ kind: PoolPlacementKind) -> Int {
+        switch kind {
+        case .pad(let pad, _):
+            return 1_000_000 + pad.placement.angle + (pad.placement.mirrored ? 100_000 : 0)
+        case .shape(let shape):
+            return 2_000_000 + shape.placement.angle + (shape.placement.mirrored ? 100_000 : 0) + shape.layer
+        case .hole(let hole):
+            return 3_000_000 + hole.angle + (hole.shape == .slot ? 100_000 : 0)
+        }
+    }
+
+    private func rotatePoolPlacement() {
+        guard var state = poolPlacementState else {
+            return
+        }
+        switch state.kind {
+        case .pad(var pad, _):
+            pad.placement.angle = wrappedAngle(pad.placement.angle + (pad.placement.mirrored ? -Self.quarterTurnAngle : Self.quarterTurnAngle))
+            state.kind = .pad(pad, geometry: bakePlacementPad(pad))
+        case .shape(var shape):
+            shape.placement.angle = wrappedAngle(shape.placement.angle + (shape.placement.mirrored ? -Self.quarterTurnAngle : Self.quarterTurnAngle))
+            state.kind = .shape(shape)
+        case .hole(var hole):
+            hole.angle = wrappedAngle(hole.angle + Self.quarterTurnAngle)
+            state.kind = .hole(hole)
+        }
+        poolPlacementState = state
+    }
+
+    private func mirrorPoolPlacement() {
+        guard var state = poolPlacementState else {
+            return
+        }
+        switch state.kind {
+        case .pad(var pad, _):
+            pad.placement.mirrored.toggle()
+            pad.placement.angle = wrappedAngle(-pad.placement.angle)
+            state.kind = .pad(pad, geometry: bakePlacementPad(pad))
+        case .shape(var shape):
+            shape.placement.mirrored.toggle()
+            shape.placement.angle = wrappedAngle(-shape.placement.angle)
+            state.kind = .shape(shape)
+        case .hole:
+            return
+        }
+        poolPlacementState = state
+    }
+
+    /// Places the ghost at `point`, then re-arms with a fresh object of the
+    /// same kind so the next click places another.
+    private func commitPoolPlacement(at point: HorizontalPoint?) {
+        guard let state = poolPlacementState else {
+            return
+        }
+        let position = point ?? state.cursor
+        let previous = editedBoard ?? sourceBoard
+        var draft = previous
+        let ref: HorizontalSelectableRef
+        let actionName: String
+        var nextKind: PoolPlacementKind
+
+        switch state.kind {
+        case .pad(var pad, _):
+            pad.placement.shift = position
+            draft.pads.append(pad)
+            if let poolContext {
+                draft.rebakePoolPad(id: pad.id, context: poolContext)
+            }
+            ref = HorizontalSelectableRef(id: draft.padRefID(for: pad), type: .pad)
+            actionName = "Place Pad"
+            var next = pad
+            next.id = UUID().uuidString.lowercased()
+            next.name = HorizontalPoolPackage.nextPadName(among: draft.pads)
+            next.placement.shift = .zero
+            nextKind = .pad(next, geometry: bakePlacementPad(next))
+        case .shape(var shape):
+            shape.placement.shift = position
+            draft.padstackShapes.append(shape)
+            draft.rebakePadstackShape(id: shape.id)
+            ref = HorizontalSelectableRef(id: shape.id, type: .padstackShape, layer: shape.layer)
+            actionName = "Place Shape"
+            var next = shape
+            next.id = UUID().uuidString.lowercased()
+            next.placement.shift = .zero
+            nextKind = .shape(next)
+        case .hole(var hole):
+            hole.position = position
+            draft.holes.append(hole)
+            ref = HorizontalSelectableRef(id: hole.id, type: .boardHole)
+            actionName = "Place Hole"
+            var next = hole
+            next.id = UUID().uuidString.lowercased()
+            next.position = .zero
+            nextKind = .hole(next)
+        }
+
+        registerUndoSnapshot(previous, actionName: actionName)
+        invalidateSelectableCache()
+        publishConnectivityResolvedEdit(draft)
+        selectedObjects = [ref]
+        hoveredObject = nil
+        poolPlacementState = PoolPlacementState(kind: nextKind, cursor: position)
+        publishSelectionContext()
+        publishCanvasCommandActions()
+    }
+
+    private func cancelPoolPlacement() {
+        guard poolPlacementState != nil else {
+            return
+        }
+        poolPlacementState = nil
+        publishCanvasCommandActions()
     }
 }

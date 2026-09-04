@@ -82,7 +82,9 @@ func schematicMetalSymbolID(forGeometryID geometryID: String) -> String? {
         "pin-decoration",
         "pin-direction",
         "pin-name",
+        "pin-name-hidden",
         "pin-pad",
+        "pin-pad-hidden",
         "polygon",
         "text"
     ]

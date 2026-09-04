@@ -40,6 +40,9 @@ struct HorizontalPoolBrowserView: View {
 
     @ObservedObject private var registry = HorizontalPoolRegistry.shared
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
+    #if os(iOS)
+    @State private var editingItem: HorizontalPoolLibraryItem?
+    #endif
     @State private var category: HorizontalPoolItemCategory = .part
     @State private var searchText = ""
     @State private var items: [HorizontalPoolLibraryItem] = []
@@ -52,6 +55,50 @@ struct HorizontalPoolBrowserView: View {
     @State private var scanGeneration = 0
     @State private var showsPreview = true
     @State private var pendingReveal: HorizontalPoolRevealRequest?
+    @State private var creationError: String?
+    @State private var pickerRequest: PoolItemPickerRequest?
+
+    /// A "choose an item" step of a creation flow (a symbol's unit, a part's
+    /// entity and package).
+    struct PoolItemPickerRequest: Identifiable {
+        var id = UUID()
+        var title: String
+        var category: HorizontalPoolItemCategory
+        var onPick: (HorizontalPoolLibraryItem) -> Void
+    }
+
+    /// What the New menu offers, in Horizon's pool manager order.
+    enum NewItemKind: String, CaseIterable, Identifiable {
+        case unit, entity, symbol, part, package, padstack, frame, decal
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .unit: "Unit"
+            case .entity: "Entity"
+            case .symbol: "Symbol…"
+            case .part: "Part…"
+            case .package: "Package"
+            case .padstack: "Padstack"
+            case .frame: "Frame"
+            case .decal: "Decal"
+            }
+        }
+
+        var category: HorizontalPoolItemCategory {
+            switch self {
+            case .unit: .unit
+            case .entity: .entity
+            case .symbol: .symbol
+            case .part: .part
+            case .package: .package
+            case .padstack: .padstack
+            case .frame: .frame
+            case .decal: .decal
+            }
+        }
+    }
 
     struct BrowsedPool: Identifiable, Hashable {
         var url: URL
@@ -121,23 +168,8 @@ struct HorizontalPoolBrowserView: View {
         return pool
     }
 
-    /// The pools a standalone pool includes (`pools_included` uuids in its
-    /// pool.json), found among the pools this app knows about: registered
-    /// ones, `$HORIZON_POOL`, and any horizon-pool checkout nearby.
     static func includedPoolURLs(for poolURL: URL) -> [URL] {
-        let json = (try? JSONHelper.loadDictionary(from: poolURL.appendingPathComponent("pool.json"))) ?? [:]
-        let included = (json["pools_included"] as? [String] ?? []).map { $0.lowercased() }
-        guard !included.isEmpty else {
-            return []
-        }
-        var urlsByUUID = [String: URL]()
-        for url in HorizontalPoolPadstacks.basePoolURLs(for: poolURL) {
-            let uuid = HorizontalPoolRegistryStore.poolInfo(at: url).uuid.lowercased()
-            if !uuid.isEmpty, urlsByUUID[uuid] == nil {
-                urlsByUUID[uuid] = url
-            }
-        }
-        return included.compactMap { urlsByUUID[$0] }
+        HorizontalPoolLibrary.includedPoolURLs(for: poolURL)
     }
 
     private var filteredItems: [HorizontalPoolLibraryItem] {
@@ -190,6 +222,13 @@ struct HorizontalPoolBrowserView: View {
         .task(id: scanKey) {
             await reloadItems()
         }
+        // An item saved from its editor shows its new name and metadata here.
+        .onReceive(
+            NotificationCenter.default.publisher(for: HorizontalPoolLibrary.itemDidSaveNotification)
+                .receive(on: RunLoop.main)
+        ) { _ in
+            scanGeneration += 1
+        }
         .onAppear {
             if let revealRequest {
                 pendingReveal = revealRequest
@@ -200,6 +239,14 @@ struct HorizontalPoolBrowserView: View {
             pendingReveal = request
             applyPendingReveal()
         }
+        #if os(iOS)
+        .fullScreenCover(item: $editingItem) { item in
+            HorizontalPoolItemEditorCover(item: item) {
+                editingItem = nil
+            }
+            .environmentObject(appearanceSettings)
+        }
+        #endif
         .fileImporter(isPresented: $isImportingPool, allowedContentTypes: [.folder]) { result in
             guard case .success(let url) = result else {
                 return
@@ -216,6 +263,29 @@ struct HorizontalPoolBrowserView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text("“\(addPoolFailurePath ?? "")” has no pool.json, so it can’t be added as a pool.")
+        }
+        .alert(
+            "Could Not Create Item",
+            isPresented: Binding(
+                get: { creationError != nil },
+                set: { if !$0 { creationError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(creationError ?? "")
+        }
+        .sheet(item: $pickerRequest) { request in
+            HorizontalPoolItemPickerSheet(
+                title: request.title,
+                category: request.category,
+                index: index,
+                onPick: { item in
+                    pickerRequest = nil
+                    request.onPick(item)
+                },
+                onCancel: { pickerRequest = nil }
+            )
         }
     }
 
@@ -335,6 +405,8 @@ struct HorizontalPoolBrowserView: View {
 
             poolsMenu
 
+            newItemMenu
+
             Toggle(isOn: $showsPreview) {
                 Label("Preview", systemImage: "rectangle.bottomhalf.inset.filled")
             }
@@ -384,6 +456,36 @@ struct HorizontalPoolBrowserView: View {
             Label("Pools", systemImage: "books.vertical")
         }
         .help("The pools being browsed; register more to make their padstacks and parts available")
+    }
+
+    /// Horizon's per-kind "Create" buttons, as one menu. With several
+    /// writable pools browsed, each gets a submenu.
+    private var newItemMenu: some View {
+        let pools = browsedPools.filter(\.isReadable)
+        return Menu {
+            if pools.count == 1, let pool = pools.first {
+                newItemButtons(in: pool)
+            } else {
+                ForEach(pools) { pool in
+                    Menu(pool.isProjectPool ? "\(pool.name) (project)" : pool.name) {
+                        newItemButtons(in: pool)
+                    }
+                }
+            }
+        } label: {
+            Label("New", systemImage: "plus")
+        }
+        .disabled(pools.isEmpty || appearanceSettings.isReadOnlyOperationEnabled)
+        .help("Create a new pool item")
+    }
+
+    @ViewBuilder
+    private func newItemButtons(in pool: BrowsedPool) -> some View {
+        ForEach(NewItemKind.allCases) { kind in
+            Button(kind.title) {
+                createItem(kind, in: pool)
+            }
+        }
     }
 
     private func poolMenu(title: String, url: URL, accessError: String? = nil) -> some View {
@@ -455,7 +557,7 @@ struct HorizontalPoolBrowserView: View {
             }
         } primaryAction: { selection in
             if let item = item(for: selection) {
-                openInPool(item)
+                editItem(item)
             }
         }
     }
@@ -467,11 +569,39 @@ struct HorizontalPoolBrowserView: View {
         return items.first { $0.id == id }
     }
 
-    /// Horizon's pool browser context menu, minus what needs editors: open
-    /// the item in each pool that carries it (a window per pool, scrolled to
-    /// the item), reveal the file, copy its identity.
+    /// Horizon's pool browser context menu: edit the item in its own
+    /// document window, open it in each pool that carries it (a window per
+    /// pool, scrolled to the item), reveal the file, copy its identity.
     @ViewBuilder
     private func itemContextMenu(_ item: HorizontalPoolLibraryItem) -> some View {
+        Button("Edit…") {
+            editItem(item)
+        }
+        if !appearanceSettings.isReadOnlyOperationEnabled {
+            Button("Duplicate…") {
+                duplicateItem(item)
+            }
+            switch item.category {
+            case .unit:
+                Button("New Symbol for Unit…") {
+                    createSymbol(forUnit: item)
+                }
+                Button("New Entity for Unit…") {
+                    createEntity(forUnit: item)
+                }
+            case .part:
+                Button("New Part Based on This…") {
+                    createPart(basedOn: item)
+                }
+            case .package:
+                Button("New Padstack for Package…") {
+                    createPackageLocalPadstack(for: item)
+                }
+            default:
+                EmptyView()
+            }
+        }
+        Divider()
         #if os(macOS)
         ForEach(openTargets(for: item)) { target in
             Button("Open in \(target.poolName)") {
@@ -515,9 +645,223 @@ struct HorizontalPoolBrowserView: View {
             .sorted { rank($0) < rank($1) }
     }
 
-    /// Double-click or "Open in Pool": the item's pool in its own window,
-    /// selected there. Inside that pool's own window there is nothing
-    /// further to open (editing is not built).
+    /// Double-click or "Edit…": the item opens as its own document, the way
+    /// Horizon's pool manager spawns an editor per file. On macOS that goes
+    /// through the document controller (the browser may be hosted outside
+    /// any SwiftUI scene, in a pool window); iPadOS uses the scene's
+    /// document opener.
+    private func editItem(_ item: HorizontalPoolLibraryItem) {
+        #if os(macOS)
+        NSDocumentController.shared.openDocument(withContentsOf: item.url, display: true) { _, _, error in
+            if let error {
+                NSAlert(error: error).runModal()
+            }
+        }
+        #else
+        editingItem = item
+        #endif
+    }
+
+    // MARK: - Creating and duplicating
+
+    private func pool(for item: HorizontalPoolLibraryItem) -> BrowsedPool {
+        browsedPools.first { $0.url.standardizedFileURL.path == item.poolURL.standardizedFileURL.path }
+            ?? BrowsedPool(url: item.poolURL, name: item.poolName, isProjectPool: false, accessError: nil)
+    }
+
+    private func loadModel(of item: HorizontalPoolLibraryItem) -> HorizontalPoolItemModel? {
+        do {
+            return try HorizontalPoolItemModel.load(category: item.category, json: JSONHelper.loadDictionary(from: item.url))
+        } catch {
+            creationError = "“\(item.name)” could not be read: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    private func createItem(_ kind: NewItemKind, in pool: BrowsedPool) {
+        switch kind {
+        case .unit:
+            saveNewItem(.unit(HorizontalPoolItemFactory.newUnit()), in: pool)
+        case .entity:
+            saveNewItem(.entity(HorizontalPoolItemFactory.newEntity()), in: pool)
+        case .symbol:
+            pickerRequest = PoolItemPickerRequest(title: "Unit for the New Symbol", category: .unit) { unitItem in
+                createSymbol(forUnit: unitItem, in: pool)
+            }
+        case .part:
+            pickerRequest = PoolItemPickerRequest(title: "Entity for the New Part", category: .entity) { entityItem in
+                // The picker sheet has to go away before the next one can show.
+                DispatchQueue.main.async {
+                    pickerRequest = PoolItemPickerRequest(title: "Package for the New Part", category: .package) { packageItem in
+                        createPart(entity: entityItem, package: packageItem, in: pool)
+                    }
+                }
+            }
+        case .package:
+            saveNewItem(.package(HorizontalPoolItemFactory.newPackage()), in: pool)
+        case .padstack:
+            saveNewItem(.padstack(HorizontalPoolItemFactory.newPadstack()), in: pool)
+        case .frame:
+            saveNewItem(.frame(HorizontalPoolItemFactory.newFrame()), in: pool)
+        case .decal:
+            saveNewItem(.decal(HorizontalPoolItemFactory.newDecal()), in: pool)
+        }
+    }
+
+    /// `handle_create_symbol_for_unit`: named after the unit, suggested at
+    /// the unit's path mirrored under `symbols/`.
+    private func createSymbol(forUnit unitItem: HorizontalPoolLibraryItem, in pool: BrowsedPool? = nil) {
+        guard case .unit(let unit)? = loadModel(of: unitItem) else {
+            return
+        }
+        let pool = pool ?? self.pool(for: unitItem)
+        let symbol = HorizontalPoolItemFactory.newSymbol(for: unit)
+        let mirrored = unitItem.poolURL.standardizedFileURL.path == pool.url.standardizedFileURL.path ? unitItem.url : nil
+        saveNewItem(.symbol(symbol), in: pool, suggested: HorizontalPoolItemFactory.suggestedURL(for: .symbol(symbol), in: pool.url, mirroring: mirrored))
+    }
+
+    private func createEntity(forUnit unitItem: HorizontalPoolLibraryItem) {
+        guard case .unit(let unit)? = loadModel(of: unitItem) else {
+            return
+        }
+        saveNewItem(.entity(HorizontalPoolItemFactory.newEntity(for: unit)), in: pool(for: unitItem))
+    }
+
+    private func createPart(entity entityItem: HorizontalPoolLibraryItem, package packageItem: HorizontalPoolLibraryItem, in pool: BrowsedPool) {
+        guard case .entity(let entity)? = loadModel(of: entityItem) else {
+            return
+        }
+        saveNewItem(.part(HorizontalPoolItemFactory.newPart(entity: entity, packageID: packageItem.uuid)), in: pool)
+    }
+
+    private func createPart(basedOn baseItem: HorizontalPoolLibraryItem) {
+        guard case .part(let base)? = loadModel(of: baseItem) else {
+            return
+        }
+        let part = HorizontalPoolItemFactory.newPart(basedOn: base)
+        saveNewItem(.part(part), in: pool(for: baseItem), suggested: HorizontalPoolItemFactory.suggestedDuplicateURL(of: baseItem.url))
+    }
+
+    /// `handle_create_padstack_for_package`: a padstack that lives in the
+    /// package's own `padstacks/` folder.
+    private func createPackageLocalPadstack(for packageItem: HorizontalPoolLibraryItem) {
+        let padstack = HorizontalPoolItemFactory.newPadstack()
+        let directory = packageItem.url.deletingLastPathComponent().appendingPathComponent("padstacks", isDirectory: true)
+        let suggested = directory.appendingPathComponent(HorizontalPoolItemFactory.slug(padstack.name, fallback: "padstack") + ".json")
+        saveNewItem(.padstack(padstack), in: pool(for: packageItem), suggested: suggested)
+    }
+
+    /// `handle_duplicate_*`: the same item under a fresh uuid, " (Copy)"
+    /// appended, saved next to the original; a package's directory is copied
+    /// whole with its local padstacks re-identified.
+    private func duplicateItem(_ item: HorizontalPoolLibraryItem) {
+        guard let model = loadModel(of: item) else {
+            return
+        }
+        let pool = pool(for: item)
+        let copy = HorizontalPoolItemFactory.duplicate(model)
+        let suggested = HorizontalPoolItemFactory.suggestedDuplicateURL(of: item.url)
+        if case .package = copy {
+            chooseDestination(suggested: suggested, category: .package, in: pool) { url in
+                do {
+                    let newDirectory = url.deletingLastPathComponent()
+                    let written = try HorizontalPoolItemFactory.duplicatePackage(from: item.url, to: newDirectory, name: copy.name)
+                    let package = try HorizontalPoolItemModel.load(category: .package, json: JSONHelper.loadDictionary(from: written))
+                    finishCreation(package, at: written, data: try Data(contentsOf: written), in: pool)
+                } catch {
+                    creationError = error.localizedDescription
+                }
+            }
+            return
+        }
+        saveNewItem(copy, in: pool, suggested: suggested)
+    }
+
+    /// Asks where the item goes (a save panel on macOS; the suggested spot on
+    /// iPadOS), checks the pool layout rules, writes, rescans and opens it.
+    private func saveNewItem(_ model: HorizontalPoolItemModel, in pool: BrowsedPool, suggested: URL? = nil) {
+        let suggestedURL = suggested ?? HorizontalPoolItemFactory.suggestedURL(for: model, in: pool.url)
+        chooseDestination(suggested: suggestedURL, category: model.category, in: pool) { url in
+            do {
+                let data = try HorizontalPoolItemFactory.write(model, to: url, replacingExisting: true)
+                finishCreation(model, at: url, data: data, in: pool)
+            } catch {
+                creationError = error.localizedDescription
+            }
+        }
+    }
+
+    private func chooseDestination(
+        suggested: URL,
+        category: HorizontalPoolItemCategory,
+        in pool: BrowsedPool,
+        completion: @escaping (URL) -> Void
+    ) {
+        let isPackage = category == .package
+        #if os(macOS)
+        // Packages are chosen by directory: the panel names the folder and
+        // package.json goes inside it.
+        let target = isPackage ? suggested.deletingLastPathComponent() : suggested
+        let directory = target.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let panel = NSSavePanel()
+        panel.directoryURL = directory
+        panel.nameFieldStringValue = target.lastPathComponent
+        panel.canCreateDirectories = true
+        panel.title = "New \(category.singularTitle)"
+        panel.prompt = "Create"
+        panel.message = isPackage
+            ? "Choose a folder name for the package inside “\(pool.name)”; package.json is created inside it."
+            : "Choose where the \(category.singularTitle.lowercased()) is saved inside “\(pool.name)”."
+        if !isPackage {
+            panel.allowedContentTypes = [.json]
+        }
+        panel.begin { response in
+            guard response == .OK, let chosen = panel.url else {
+                return
+            }
+            let url = isPackage ? chosen.appendingPathComponent("package.json") : chosen
+            if let problem = HorizontalPoolItemFactory.locationProblem(for: url, category: category, in: pool.url) {
+                creationError = problem
+                return
+            }
+            completion(url)
+        }
+        #else
+        let url = HorizontalPoolItemFactory.availableURL(for: suggested)
+        if let problem = HorizontalPoolItemFactory.locationProblem(for: url, category: category, in: pool.url) {
+            creationError = problem
+            return
+        }
+        completion(url)
+        #endif
+    }
+
+    /// The file is on disk: tell open projects (a project pool lives inside
+    /// the project package, whose in-memory archive must learn the new
+    /// file), rescan the pools and open the editor on it.
+    private func finishCreation(_ model: HorizontalPoolItemModel, at url: URL, data: Data, in pool: BrowsedPool) {
+        HorizontalPoolLibrary.invalidateCache()
+        HorizontalPoolPadstacks.invalidateCaches()
+        let payload = HorizontalPoolLibrary.ItemDidSavePayload(
+            url: url,
+            category: model.category,
+            uuid: model.uuid,
+            data: data
+        )
+        NotificationCenter.default.post(
+            name: HorizontalPoolLibrary.itemDidSaveNotification,
+            object: nil,
+            userInfo: [HorizontalPoolLibrary.itemDidSavePayloadKey: payload]
+        )
+        scanGeneration += 1
+        category = model.category
+        let item = HorizontalPoolItemFactory.libraryItem(for: model, at: url, poolURL: pool.url, poolName: pool.name)
+        selectedItemID = item.id
+        editItem(item)
+    }
+
+    /// "Open in Pool": the item's pool in its own window, selected there.
     private func openInPool(_ item: HorizontalPoolLibraryItem) {
         guard root != .pool(item.poolURL) else {
             return

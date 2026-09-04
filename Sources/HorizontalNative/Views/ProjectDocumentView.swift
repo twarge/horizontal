@@ -32,9 +32,18 @@ struct ProjectDocumentView: View {
         appearanceSettings.palette(for: .board, colorScheme: colorScheme)
     }
 
+    /// Pool item editors are a form beside a preview, not a two-canvas
+    /// workspace, so they don't need the workspace's width.
+    private var minimumWindowWidth: CGFloat {
+        if case .poolItem = state {
+            return 760
+        }
+        return 980
+    }
+
     var body: some View {
         content
-            .frame(minWidth: 980, minHeight: 640)
+            .frame(minWidth: minimumWindowWidth, minHeight: 640)
             .background(WindowChromeConfigurator(isTransparent: appearanceSettings.isToolbarTransparent))
             .containerBackground(windowTheme.background, for: .window)
             .toolbarBackgroundVisibility(
@@ -93,6 +102,10 @@ struct ProjectDocumentView: View {
                 .id(poolURL)
                 .navigationTitle(HorizontalPoolRegistryStore.poolInfo(at: poolURL).name)
                 .navigationSubtitle(poolURL.path)
+        case .poolItem(let session):
+            HorizontalPoolItemDocumentView(session: session, document: $document)
+                .id(session.itemURL)
+                .navigationSubtitle(session.subtitle)
         }
     }
 
@@ -109,6 +122,11 @@ struct ProjectDocumentView: View {
 
         if Self.isPoolManifest(url) {
             await loadPool(manifestURL: url)
+            return
+        }
+        if case .regularFile(let data) = document.archive.root,
+           let category = JSONHelper.poolItemCategory(in: data) {
+            await loadPoolItem(url: url, category: category, data: data)
             return
         }
 
@@ -182,6 +200,31 @@ struct ProjectDocumentView: View {
         state = .pool(url.deletingLastPathComponent().standardizedFileURL)
     }
 
+    /// A unit, symbol, package, … opened as a document: its editor, once the
+    /// pool around it (which its cross-references resolve through) is
+    /// readable. The document's bytes are already in the archive, so nothing
+    /// is re-read from disk here.
+    private func loadPoolItem(url: URL, category: HorizontalPoolItemCategory, data: Data) async {
+        state = .loading
+        let poolRoot = HorizontalPoolLibrary.poolRoot(forItemURL: url)
+        await HorizontalFolderAccessStore.preparePoolItemAccess(for: url, poolRoot: poolRoot)
+        guard HorizontalFolderAccessStore.hasPoolItemAccess(for: url, poolRoot: poolRoot) else {
+            state = .needsFolderAccess(HorizontalFolderAccessStore.poolItemAccessMessage(for: url, poolRoot: poolRoot))
+            return
+        }
+        do {
+            let session = try HorizontalPoolItemEditorSession(
+                itemURL: url,
+                poolURL: poolRoot,
+                category: category,
+                data: data
+            )
+            state = .poolItem(session)
+        } catch {
+            state = .failed(error.localizedDescription)
+        }
+    }
+
     /// File > New: the document has no URL until its first save, so materialize
     /// the in-memory template archive in a temporary folder and load from there
     /// (the iPad view does the same for URL-less documents). The archive is
@@ -212,6 +255,8 @@ private enum ProjectLoadState {
     case loaded(HorizontalProject)
     /// A pool.json opened as a document: the library browser on its folder.
     case pool(URL)
+    /// A pool item (unit, symbol, package, …) opened as a document: its editor.
+    case poolItem(HorizontalPoolItemEditorSession)
     case failed(String)
     /// The sandbox can't read the folder holding a bare `.hprj`'s siblings.
     /// Distinct from `.failed` so it can explain the grant and offer to ask for
@@ -628,6 +673,15 @@ struct ProjectWorkspaceView: View {
 
     var body: some View {
         workspaceContent
+            .onReceive(
+                NotificationCenter.default.publisher(for: HorizontalPoolLibrary.itemDidSaveNotification)
+                    .receive(on: RunLoop.main)
+            ) { notification in
+                if let payload = notification.userInfo?[HorizontalPoolLibrary.itemDidSavePayloadKey]
+                    as? HorizontalPoolLibrary.ItemDidSavePayload {
+                    handlePoolItemSaved(payload)
+                }
+            }
             .focusedSceneValue(\.horizonBoardDisplayOptions, $boardDisplayOptions)
             .focusedSceneValue(\.horizonBoardAvailable, project.board != nil)
             .focusedSceneValue(\.horizonReadOnlyOperation, isReadOnly)
@@ -2072,6 +2126,52 @@ struct ProjectWorkspaceView: View {
         project.board = updatedBoard
         boardSyncRevision += 1
         selectionDetailsByPane[.board] = .empty
+    }
+
+    /// A pool item saved from its own editor window that lives inside this
+    /// project's pool. The in-memory archive still holds the file as it was
+    /// opened, and the next project save writes every differing file back to
+    /// disk — so without this refresh that save would put the stale copy over
+    /// the edit. Then the board is re-read from the refreshed archive (kept in
+    /// memory, no write) so a changed package or padstack shows at once.
+    private func handlePoolItemSaved(_ payload: HorizontalPoolLibrary.ItemDidSavePayload) {
+        guard !isReadOnly,
+              case .directory = document.archive.root,
+              let relativePath = archiveRelativePath(for: payload.url) else {
+            return
+        }
+        do {
+            try document.archive.replaceRegularFileData(relativePath: relativePath, with: payload.data)
+            guard let currentBoard = project.board else {
+                return
+            }
+            let reloaded = try loadProjectSnapshot(from: document.archive)
+            guard var board = reloaded.board else {
+                return
+            }
+            board.url = currentBoard.url
+            rebasePackageModelURLs(in: &board)
+            project.board = board
+            boardSyncRevision += 1
+            selectionDetailsByPane[.board] = .empty
+        } catch {
+            recordArchiveApplyFailure(error)
+        }
+    }
+
+    /// Where `url` lives inside the document archive, or nil when it is not
+    /// part of this project (the applicator resolves paths the same way).
+    private func archiveRelativePath(for url: URL) -> String? {
+        if let path = document.archive.manifest?.relativePath(for: url) {
+            return path
+        }
+        let base = project.baseURL.standardizedFileURL.path
+        let target = url.standardizedFileURL.path
+        let prefix = base.hasSuffix("/") ? base : base + "/"
+        guard target.hasPrefix(prefix) else {
+            return nil
+        }
+        return String(target.dropFirst(prefix.count))
     }
 
     private func loadProjectSnapshot(from archive: HorizontalProjectArchive) throws -> HorizontalProject {

@@ -18,6 +18,12 @@ struct HorizontalProjectDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.horizontalProject, .hprjProject, .legacyHorizonProject, .json] }
     static var writableContentTypes: [UTType] { [.horizontalProject, .hprjProject, .json] }
 
+    /// Posted from `fileWrapper` for every save, autosave included, with the
+    /// archive being written as the object. `WriteConfiguration` carries no
+    /// URL, so a pool item editor recognises its own save by matching the
+    /// archive against the bytes it last handed the document.
+    static let didWriteNotification = Notification.Name("HorizontalProjectDocumentDidWrite")
+
     var archive: HorizontalProjectArchive
 
     init(rawProjectData: Data = Data()) {
@@ -81,9 +87,13 @@ struct HorizontalProjectDocument: FileDocument {
         let writingPackage = configuration.contentType.conforms(to: .package)
             || (configuration.contentType.isDynamic && isNewPackageArchive)
         guard writingPackage, !replacingRegularFile else {
-            return try archive.projectFileWrapper()
+            let wrapper = try archive.projectFileWrapper()
+            NotificationCenter.default.post(name: Self.didWriteNotification, object: archive)
+            return wrapper
         }
-        return try archive.fileWrapper()
+        let wrapper = try archive.fileWrapper()
+        NotificationCenter.default.post(name: Self.didWriteNotification, object: archive)
+        return wrapper
     }
 }
 

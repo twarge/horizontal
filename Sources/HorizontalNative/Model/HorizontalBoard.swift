@@ -65,7 +65,7 @@ private struct HorizontalExpandedPadstack {
     var parameterSet: JSONDictionary
 }
 
-private struct HorizontalParameterProgramEvaluator {
+struct HorizontalParameterProgramEvaluator {
     private static let compileCacheLock = NSLock()
     nonisolated(unsafe) private static var compiledProgramCache = [String: [Token]]()
     nonisolated(unsafe) private static var failedProgramCache = Set<String>()
@@ -519,6 +519,19 @@ struct HorizontalBoard {
     var unplacedObjects: [HorizontalUnplacedObject] = []
     var physicalBounds: HorizontalRect
     var bounds: HorizontalRect
+    /// Package editor only: the package's pads as editable objects. Their
+    /// rendered copper lives in `packagePads`/`packageHoles` under the
+    /// `poolItemID` prefix and is re-baked per pad after an edit.
+    var pads: [HorizontalPad] = []
+    /// Padstack editor only: the padstack's shapes as editable objects, baked
+    /// into `packagePads` under `pad/<padstack uuid>/shape/<shape uuid>/…`.
+    var padstackShapes: [HorizontalPadstackShape] = []
+    /// The pool item a package/padstack/decal editor board stands for; used as
+    /// the board-package id of every baked pad.
+    var poolItemID: String? = nil
+    /// The package's own `parameter_set`, folded into every pad bake the way a
+    /// board's rules would be.
+    var poolParameterSet: [String: Int] = [:]
 
     static func load(
         from url: URL,
@@ -2277,7 +2290,12 @@ struct HorizontalBoard {
             guard vertices.count >= 2 else {
                 return nil
             }
-            return HorizontalPolygon(id: id, polygonVertices: vertices, layer: item.int("layer"))
+            return HorizontalPolygon(
+                id: id,
+                polygonVertices: vertices,
+                layer: item.int("layer"),
+                parameterClass: item.string("parameter_class") ?? ""
+            )
         }
     }
 
@@ -5609,19 +5627,23 @@ extension HorizontalBoard {
         packageJSON: JSONDictionary,
         packageID: String,
         poolURL: URL,
+        boardPackageID previewID: String = "preview",
+        nInnerLayers: Int = 0,
+        runsParameterProgram: Bool = true,
         padstack resolvePadstack: (String) -> JSONDictionary?
     ) -> HorizontalPackageGeometry {
-        let previewID = "preview"
         var expandedPackageJSON = packageJSON
         let packageParameterSet = resolvedPackageParameterSet(
             packageJSON: packageJSON,
             boardParameterSet: [:]
         )
-        HorizontalParameterProgramEvaluator.apply(
-            program: expandedPackageJSON.string("parameter_program"),
-            parameters: packageParameterSet,
-            to: &expandedPackageJSON
-        )
+        if runsParameterProgram {
+            HorizontalParameterProgramEvaluator.apply(
+                program: expandedPackageJSON.string("parameter_program"),
+                parameters: packageParameterSet,
+                to: &expandedPackageJSON
+            )
+        }
         let junctions = parseJunctions(from: expandedPackageJSON)
         let padMap = expandedPackageJSON.dictionaryMap("pads")
 
@@ -5653,7 +5675,7 @@ extension HorizontalBoard {
             packageTransform: .identity,
             padNetIDsByName: [:],
             poolURL: poolURL,
-            nInnerLayers: 0,
+            nInnerLayers: nInnerLayers,
             packageParameterSet: packageParameterSet,
             padstackCache: &padstackCache,
             missingPadstackCache: &missingPadstackCache,
@@ -5667,7 +5689,7 @@ extension HorizontalBoard {
             polygons: polygonMap,
             boardPackageID: previewID,
             packageTransform: .identity,
-            nInnerLayers: 0
+            nInnerLayers: nInnerLayers
         )
         return HorizontalPackageGeometry(
             pads: pads.pads,
@@ -5677,7 +5699,7 @@ extension HorizontalBoard {
                 packageTransform: .identity,
                 omitSilkscreen: false,
                 omitOutline: false,
-                nInnerLayers: 0,
+                nInnerLayers: nInnerLayers,
                 excludingPolygonIDs: Set(keepouts.map { normalizedID($0.sourcePolygonID) })
             ),
             lines: parsePackageLines(
@@ -5686,7 +5708,7 @@ extension HorizontalBoard {
                 junctions: junctions,
                 flipped: false,
                 omitSilkscreen: false,
-                nInnerLayers: 0
+                nInnerLayers: nInnerLayers
             ),
             arcs: parsePackageArcs(
                 from: expandedPackageJSON.dictionaryMap("arcs"),
@@ -5694,7 +5716,7 @@ extension HorizontalBoard {
                 junctions: junctions,
                 flipped: false,
                 omitSilkscreen: false,
-                nInnerLayers: 0
+                nInnerLayers: nInnerLayers
             ),
             texts: parsePackageTexts(
                 from: expandedPackageJSON.dictionaryMap("texts"),
@@ -5702,7 +5724,7 @@ extension HorizontalBoard {
                 packageTransform: .identity,
                 context: BoardTextContext(),
                 omitSilkscreen: false,
-                nInnerLayers: 0
+                nInnerLayers: nInnerLayers
             ),
             holes: pads.holes,
             padPositions: pads.positions,
