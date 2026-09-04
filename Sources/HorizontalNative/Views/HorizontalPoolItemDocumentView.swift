@@ -126,7 +126,8 @@ struct HorizontalPoolItemEditorContent: View {
                     part: part,
                     index: session.index,
                     issues: session.validationIssues,
-                    isReadOnly: isReadOnly
+                    isReadOnly: isReadOnly,
+                    poolURLs: HorizontalPoolLibrary.editorPoolURLs(forPoolRoot: session.poolURL).reversed()
                 ) { commit(.part($0), $1) }
             default:
                 HStack(spacing: 0) {

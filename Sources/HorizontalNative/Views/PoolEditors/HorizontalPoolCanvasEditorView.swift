@@ -275,6 +275,20 @@ struct HorizontalPoolCanvasEditorView: View {
                     isReadOnly: isReadOnly,
                     commit: commit
                 )
+                if session.category == .package {
+                    HorizontalPackageModelsSection(session: session, isReadOnly: isReadOnly, commit: commit)
+                }
+                if session.category == .package || session.category == .decal {
+                    HorizontalPackageToolsSection(
+                        session: session,
+                        isReadOnly: isReadOnly,
+                        context: context,
+                        selectedPadIDs: selectedPadIDs,
+                        drawingLayer: drawingLayer,
+                        layers: modeProfile.layers,
+                        commit: commit
+                    )
+                }
                 if let selectionDetails, selectionDetails.hasSelection || selectionDetails.hovered != nil {
                     Divider()
                     Text("Selection")
@@ -296,6 +310,23 @@ struct HorizontalPoolCanvasEditorView: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// The pads selected on the canvas, by uuid (refs are `<pkg>/pad/<uuid>`).
+    private var selectedPadIDs: Set<String> {
+        guard let selectionDetails else {
+            return []
+        }
+        var ids = Set<String>()
+        for group in selectionDetails.groups where group.type == .pad {
+            for item in group.items {
+                let lowered = item.ref.id.lowercased()
+                if let marker = lowered.range(of: "/pad/") {
+                    ids.insert(String(lowered[marker.upperBound...]))
+                }
+            }
+        }
+        return ids
     }
 
     // MARK: Model ↔ board
@@ -389,7 +420,6 @@ struct HorizontalPoolItemParametersSection: View {
                     commit(.package(model.applyingParameterProgram()), "Apply Parameters")
                 }
             )
-            packageModels(package)
         case .padstack(let padstack):
             section(
                 parameterSet: padstack.parameterSet,
@@ -527,39 +557,9 @@ struct HorizontalPoolItemParametersSection: View {
             loadedProgramFor = program
         }
     }
-
-    @ViewBuilder
-    private func packageModels(_ package: HorizontalPoolPackage) -> some View {
-        if !package.models.isEmpty {
-            Divider()
-            Text("3D Models")
-                .font(.headline)
-            let models = package.models.values.sorted { $0.filename < $1.filename }
-            Picker("Default", selection: Binding(
-                get: { package.defaultModelID },
-                set: { id in
-                    var model = package
-                    model.defaultModelID = id
-                    commit(.package(model), "Change Default Model")
-                }
-            )) {
-                ForEach(models) { model in
-                    Text(model.filename).tag(model.id)
-                }
-            }
-            .disabled(isReadOnly)
-            ForEach(models) { model in
-                Text(model.filename)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        }
-    }
 }
 
-private extension View {
+extension View {
     /// A compact flag toggle: a checkbox on macOS, a small switch on iPadOS.
     @ViewBuilder
     func poolFlagToggleStyle() -> some View {

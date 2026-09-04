@@ -4396,7 +4396,7 @@ extension HorizontalSchematic {
                 symbolInstanceID: context.symbolID,
                 symbolItem: symbolItem,
                 unitID: context.unitID,
-                symbolTransform: .identity,
+                symbolTransform: context.view?.transform ?? .identity,
                 component: nil,
                 poolURL: context.poolURL,
                 unitCache: &unitCache,

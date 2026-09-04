@@ -71,6 +71,8 @@ struct HorizontalCanvasCommandActions {
     var canPlacePin: Bool = false
     var canPlaceRefdesAndValue: Bool = false
     var canPlaceDot: Bool = false
+    var canAutoplacePins: Bool = false
+    var canResizeSymbol: Bool = false
     var hasPlacementInteraction: Bool = false
     var dispatch: (HorizontalCanvasCommand) -> Void
 }
@@ -395,6 +397,18 @@ struct HorizontalViewCommands: Commands {
                 canvasCommandActions?.dispatch(.placeDot)
             }
             .disabled(canvasCommandActions?.canPlaceDot != true)
+            Button("Autoplace Next Pin") {
+                canvasCommandActions?.dispatch(.autoplaceNextPin)
+            }
+            .disabled(canvasCommandActions?.canAutoplacePins != true)
+            Button("Autoplace All Pins") {
+                canvasCommandActions?.dispatch(.autoplaceAllPins)
+            }
+            .disabled(canvasCommandActions?.canAutoplacePins != true)
+            Button("Resize Symbol") {
+                canvasCommandActions?.dispatch(.resizeSymbol)
+            }
+            .disabled(canvasCommandActions?.canResizeSymbol != true)
 
             Divider()
             Button("Flip Track Posture") {

@@ -109,6 +109,12 @@ enum HorizontalCanvasCommand {
     case placeRefdesAndValue
     /// Symbol editor: place a filled dot (a two-vertex arc polygon).
     case placeDot
+    /// Symbol editor, while placing pins: put the next pin (or every
+    /// remaining pin) one step on from the last two placed.
+    case autoplaceNextPin
+    case autoplaceAllPins
+    /// Symbol editor: grow or shrink the symbol from the cursor.
+    case resizeSymbol
     case commitInteraction
     case cancelInteraction
 }

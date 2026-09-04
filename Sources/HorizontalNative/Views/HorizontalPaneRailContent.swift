@@ -526,6 +526,19 @@ struct PlaceDotToolButton: View {
     }
 }
 
+struct ResizeSymbolToolButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "Resize symbol") {
+            Button(action: action) {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+            }
+            .help("Grow or shrink the symbol from the cursor")
+        }
+    }
+}
+
 struct DrawPlaneToolButton: View {
     var action: () -> Void
 
