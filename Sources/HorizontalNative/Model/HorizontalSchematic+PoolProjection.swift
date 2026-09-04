@@ -58,24 +58,85 @@ extension HorizontalSchematicSheet {
 
     /// The pool drawing as sheet geometry: lines, arcs and polygons with the
     /// sheet's `sheet/…/` ids, texts through the shared angle convention.
-    mutating func loadPoolDrawing(_ drawing: HorizontalPoolDrawing) {
-        junctions = drawing.junctions
+    /// With a `transform` (a text-placement view) everything is placed as a
+    /// symbol in that orientation would be, texts taking the view's own
+    /// placements where the symbol has them.
+    mutating func loadPoolDrawing(
+        _ drawing: HorizontalPoolDrawing,
+        transform: HorizontalPlacementTransform = .identity,
+        textPlacements: [String: HorizontalPlacementTransform] = [:]
+    ) {
+        let isIdentity = transform == .identity
+        junctions = drawing.junctions.mapValues(transform.applying)
         drawingLines = drawing.boardLines().map { segment in
             var segment = segment
             segment.id = Self.editorLinePrefix + segment.id
+            segment.from = transform.applying(to: segment.from)
+            segment.to = transform.applying(to: segment.to)
             return segment
         }
         drawingArcs = drawing.boardArcs().map { arc in
             var arc = arc
             arc.id = Self.editorArcPrefix + arc.id
+            // A mirrored arc sweeps the other way round: swap its ends.
+            let from = transform.applying(to: transform.mirrored ? arc.to : arc.from)
+            let to = transform.applying(to: transform.mirrored ? arc.from : arc.to)
+            arc.from = from
+            arc.to = to
+            arc.center = transform.applying(to: arc.center)
             return arc
         }
         drawingPolygons = drawing.boardPolygons().map { polygon in
-            var polygon = polygon
+            var polygon = isIdentity ? polygon : polygon.transformed(transform.applying, flipsArcReverse: transform.mirrored)
             polygon.id = Self.editorPolygonPrefix + polygon.id
             return polygon
         }
-        texts = drawing.boardTexts()
+        texts = drawing.texts.values.map { text in
+            let placement = textPlacements[text.id] ?? text.placement
+            let placed = transform.accumulatedText(with: placement)
+            return HorizontalText(
+                id: text.id,
+                text: text.text,
+                position: placed.shift,
+                size: text.size,
+                layer: text.layer,
+                angle: placed.angle,
+                mirrored: placed.mirrored,
+                width: text.width,
+                origin: text.origin,
+                font: text.font,
+                allowUpsideDown: text.allowUpsideDown,
+                fromSmash: text.fromSmash
+            )
+        }
+    }
+
+    /// `deletePolygonVertices` as the board does it: an arc centre becomes a
+    /// straight edge, an edge takes both its vertices, a vertex itself; a
+    /// polygon left with fewer than three vertices (or no area) goes away.
+    mutating func deleteDrawingPolygonVertices(_ ref: HorizontalSelectableRef) -> Bool {
+        guard let polygonIndex = drawingPolygons.firstIndex(where: { $0.id.lowercased() == ref.id.lowercased() }),
+              drawingPolygons[polygonIndex].polygonVertices.indices.contains(ref.vertex) else {
+            return false
+        }
+        if ref.type == .polygonArcCenter {
+            drawingPolygons[polygonIndex].polygonVertices[ref.vertex].type = .line
+            return true
+        }
+        let indices: [Int]
+        if ref.type == .polygonEdge {
+            let next = drawingPolygons[polygonIndex].nextVertexIndex(after: ref.vertex)
+            indices = Array(Set([ref.vertex, next])).sorted(by: >)
+        } else {
+            indices = [ref.vertex]
+        }
+        for index in indices where drawingPolygons[polygonIndex].polygonVertices.indices.contains(index) {
+            drawingPolygons[polygonIndex].polygonVertices.remove(at: index)
+        }
+        if drawingPolygons[polygonIndex].polygonVertices.count < 2 {
+            drawingPolygons.remove(at: polygonIndex)
+        }
+        return true
     }
 
     /// The drawing taken back from the sheet: prefixes stripped, junctions
@@ -254,26 +315,59 @@ extension HorizontalPoolSymbol {
             }
     }
 
-    /// The symbol as a sheet the symbol editor can drive.
+    /// The symbol as a sheet the symbol editor can drive. In a text-placement
+    /// view the symbol is shown as placed in that orientation, with no pins
+    /// to place.
     func makeSheet(context: HorizontalSymbolEditorContext, unit: HorizontalPoolUnit?) -> HorizontalSchematicSheet {
         var sheet = HorizontalSchematicSheet.poolEditorSheet(
             id: uuid,
             name: name,
             gridSpacing: HorizontalSchematicEditorProfile.symbol.gridSpacing ?? 1_250_000
         )
-        sheet.loadPoolDrawing(drawing)
+        if let view = context.view {
+            sheet.loadPoolDrawing(
+                drawing,
+                transform: view.transform,
+                textPlacements: correctedTextPlacements[view.key] ?? [:]
+            )
+        } else {
+            sheet.loadPoolDrawing(drawing)
+        }
         sheet.editablePins = pins.values.sorted { $0.id < $1.id }
         sheet.rebakeAllEditablePins(context: context)
-        sheet.placeableObjects = unplacedPinObjects(unit: unit)
+        sheet.placeableObjects = context.view == nil ? unplacedPinObjects(unit: unit) : []
         sheet.recomputePoolEditorBounds()
         return sheet
     }
 
-    /// The symbol with its drawing and pins taken back from the sheet.
-    func applying(sheet: HorizontalSchematicSheet) -> HorizontalPoolSymbol {
+    /// The symbol with its drawing and pins taken back from the sheet; in a
+    /// text-placement view only that view's text placements change.
+    func applying(sheet: HorizontalSchematicSheet, view: HorizontalSymbolTextPlacementView? = nil) -> HorizontalPoolSymbol {
         var symbol = self
+        if let view {
+            var placements = correctedTextPlacements
+            var viewPlacements = placements[view.key] ?? [:]
+            for text in sheet.texts where drawing.texts[text.id] != nil {
+                let placed = HorizontalPlacementTransform(shift: text.position, angle: text.angle, mirrored: text.mirrored)
+                viewPlacements[text.id] = view.transform.textPlacement(undoing: placed)
+            }
+            placements[view.key] = viewPlacements
+            symbol.textPlacements = placements
+            symbol.textPlacementsAreLegacy = false
+            return symbol
+        }
         symbol.drawing = sheet.poolDrawing(original: drawing)
         symbol.pins = Dictionary(uniqueKeysWithValues: sheet.editablePins.map { ($0.id, $0) })
+        return symbol
+    }
+
+    /// The symbol without any orientation-specific placements for `view`.
+    func clearingTextPlacements(for view: HorizontalSymbolTextPlacementView) -> HorizontalPoolSymbol {
+        var symbol = self
+        var placements = correctedTextPlacements
+        placements.removeValue(forKey: view.key)
+        symbol.textPlacements = placements
+        symbol.textPlacementsAreLegacy = false
         return symbol
     }
 
@@ -328,5 +422,31 @@ extension HorizontalPoolFrame {
         var frame = self
         frame.drawing = sheet.poolDrawing(original: drawing)
         return frame
+    }
+}
+
+extension HorizontalPlacementTransform {
+    /// The child placement that `accumulatedText(with:)` turned into
+    /// `result` under this parent transform — the inverse the text-placement
+    /// editor needs to store what the user dragged.
+    func textPlacement(undoing result: HorizontalPlacementTransform) -> HorizontalPlacementTransform {
+        // accumulatedText: anchor = mirrorX(rotate(child.shift, angle)) + shift
+        var point = result.shift - shift
+        if mirrored {
+            point.x = -point.x
+        }
+        let unrotated = HorizontalPlacementTransform(shift: .zero, angle: -angle, mirrored: false).applying(to: point)
+        let childMirrored = result.mirrored != mirrored
+        let parentTerm = mirrored ? -angle : angle
+        var childAngle = result.angle - parentTerm
+        if result.mirrored {
+            childAngle = 32_768 - childAngle
+        }
+        childAngle = ((childAngle % 65_536) + 65_536) % 65_536
+        return HorizontalPlacementTransform(
+            shift: HorizontalPoint(x: unrotated.x.rounded(), y: unrotated.y.rounded()),
+            angle: childAngle,
+            mirrored: childMirrored
+        )
     }
 }

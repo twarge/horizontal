@@ -393,6 +393,14 @@ struct HorizontalParameterProgramEvaluator {
         }
     }
 
+    /// `expandPolygon` for callers outside the evaluator (the silkscreen
+    /// generator): a miter offset of one closed contour, nil when Clipper
+    /// cannot return exactly one contour.
+    static func offsetContour(_ points: [HorizontalPoint], by delta: Double) -> [HorizontalPoint]? {
+        expandPolygon(points.map { (Int($0.x.rounded()), Int($0.y.rounded())) }, by: Int(delta.rounded()))?
+            .map { HorizontalPoint(x: Double($0.0), y: Double($0.1)) }
+    }
+
     /// Miter-offsets a closed polygon by `delta` nanometers via Clipper,
     /// returning the single resulting contour, or nil if the offset collapses or
     /// splits the polygon (mirroring the expand-polygon "expand error").

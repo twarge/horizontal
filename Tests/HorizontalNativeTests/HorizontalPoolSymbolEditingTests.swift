@@ -6,7 +6,7 @@ import XCTest
 /// The schematic-mode projections: a symbol or frame becomes a synthetic
 /// sheet the schematic canvas can edit, and comes back unchanged.
 final class HorizontalPoolSymbolEditingTests: XCTestCase {
-    private var poolURL: URL!
+    var poolURL: URL!
 
     override func setUpWithError() throws {
         poolURL = FileManager.default.temporaryDirectory
@@ -18,7 +18,7 @@ final class HorizontalPoolSymbolEditingTests: XCTestCase {
         try? FileManager.default.removeItem(at: poolURL)
     }
 
-    private static var unitJSON: JSONDictionary { [
+    static var unitJSON: JSONDictionary { [
         "type": "unit", "uuid": "u1", "name": "Op-amp", "manufacturer": "", "version": 1,
         "pins": [
             "p1": ["primary_name": "IN+", "direction": "input", "swap_group": 0, "names": [],
@@ -28,7 +28,7 @@ final class HorizontalPoolSymbolEditingTests: XCTestCase {
         ],
     ] }
 
-    private static var symbolJSON: JSONDictionary { [
+    static var symbolJSON: JSONDictionary { [
         "type": "symbol", "uuid": "s1", "name": "Op-amp", "unit": "u1", "can_expand": true,
         "junctions": ["j1": ["position": [0, 0]], "j2": ["position": [1_250_000, 0]], "j3": ["position": [0, 1_250_000]]],
         "lines": ["l1": ["from": "j1", "to": "j2", "width": 0, "layer": 0]],
@@ -229,5 +229,90 @@ final class HorizontalPoolSymbolEditingTests: XCTestCase {
         XCTAssertEqual(edited.drawing.junctions.count, 3, "one new junction; the shared end reuses j2")
         XCTAssertEqual(edited.drawing.lines["new"]?.to, "j2")
         XCTAssertEqual(edited.width, frame.width)
+    }
+}
+
+// MARK: - Follow-ups: text placement views, polygon vertices
+
+extension HorizontalPoolSymbolEditingTests {
+    func testTextPlacementViewsInvertExactly() {
+        let placements = [
+            HorizontalPlacementTransform(shift: HorizontalPoint(x: 1_250_000, y: -2_500_000), angle: 0, mirrored: false),
+            HorizontalPlacementTransform(shift: HorizontalPoint(x: -3_750_000, y: 1_250_000), angle: 16_384, mirrored: true),
+            HorizontalPlacementTransform(shift: HorizontalPoint(x: 0, y: 2_500_000), angle: 49_152, mirrored: false),
+        ]
+        for view in HorizontalSymbolTextPlacementView.all {
+            for placement in placements {
+                let placed = view.transform.accumulatedText(with: placement)
+                let recovered = view.transform.textPlacement(undoing: placed)
+                XCTAssertEqual(recovered, placement, "view \(view.key)")
+            }
+        }
+        XCTAssertEqual(HorizontalSymbolTextPlacementView.all.map(\.key), ["0n", "90n", "180n", "270n", "0m", "90m", "180m", "270m"])
+    }
+
+    func testTextPlacementViewEditsOnlyThatViewsPlacements() throws {
+        var json = Self.symbolJSON
+        json["text_placements"] = [:] as JSONDictionary
+        let symbol = try HorizontalPoolSymbol(json: json)
+        let unit = try HorizontalPoolUnit(json: Self.unitJSON)
+        let view = HorizontalSymbolTextPlacementView(angleDegrees: 90, mirrored: true)
+        var context = HorizontalSymbolEditorContext(symbolID: "s1", unitID: "u1", unitJSON: HorizontalPreservedJSON(Self.unitJSON), poolURL: poolURL)
+        context.view = view
+
+        var sheet = symbol.makeSheet(context: context, unit: unit)
+        XCTAssertTrue(sheet.placeableObjects.isEmpty, "no pin placing in a view")
+        // Geometry is shown as placed in the view: the line from (0,0)→(1.25,0)
+        // mirrored first (Horizon's order) then rotated 90° lands on (0,−1.25).
+        let line = try XCTUnwrap(sheet.drawingLines.first)
+        XCTAssertEqual(Int(line.to.x.rounded()), 0)
+        XCTAssertEqual(Int(line.to.y.rounded()), -1_250_000)
+        XCTAssertTrue(sheet.symbolPins.contains { $0.id == "s1/pin/p1" }, "pins bake in the view too")
+
+        // Drag the refdes text somewhere in the view.
+        guard let textIndex = sheet.texts.firstIndex(where: { $0.id == "t1" }) else {
+            return XCTFail("refdes text missing")
+        }
+        sheet.texts[textIndex].position = HorizontalPoint(x: 5_000_000, y: 1_250_000)
+        let edited = symbol.applying(sheet: sheet, view: view)
+        XCTAssertEqual(edited.drawing, symbol.drawing, "the drawing itself is untouched")
+        XCTAssertEqual(edited.pins, symbol.pins)
+        let viewPlacements = try XCTUnwrap(edited.textPlacements["90m"])
+        XCTAssertEqual(Set(viewPlacements.keys), ["t1", "t2"], "every text of the view is recorded")
+        XCTAssertEqual(edited.requiredVersion, 1)
+        // Re-projecting the view places the text where it was dragged.
+        let again = edited.makeSheet(context: context, unit: unit)
+        XCTAssertEqual(again.texts.first { $0.id == "t1" }?.position, HorizontalPoint(x: 5_000_000, y: 1_250_000))
+        // Other views are unaffected: the plain editor shows the file placement.
+        context.view = nil
+        let plain = edited.makeSheet(context: context, unit: unit)
+        XCTAssertEqual(plain.texts.first { $0.id == "t1" }?.position, HorizontalPoint(x: 0, y: 2_500_000))
+        // Clearing removes the view.
+        XCTAssertNil(edited.clearingTextPlacements(for: view).textPlacements["90m"])
+    }
+
+    func testDeletingPolygonVerticesMirrorsTheBoard() throws {
+        let symbol = try HorizontalPoolSymbol(json: Self.symbolJSON)
+        var sheet = symbol.makeSheet(context: HorizontalSymbolEditorContext(symbolID: "s1", unitID: "u1", unitJSON: nil, poolURL: poolURL), unit: nil)
+        sheet.drawingPolygons.append(HorizontalPolygon(
+            id: "sheet/polygon/tri",
+            polygonVertices: [
+                HorizontalPolygonVertex(position: HorizontalPoint(x: 0, y: 0)),
+                HorizontalPolygonVertex(type: .arc, position: HorizontalPoint(x: 1_000_000, y: 0), arcCenter: HorizontalPoint(x: 500_000, y: 0)),
+                HorizontalPolygonVertex(position: HorizontalPoint(x: 0, y: 1_000_000)),
+                HorizontalPolygonVertex(position: HorizontalPoint(x: -1_000_000, y: 1_000_000)),
+            ],
+            layer: 0
+        ))
+        // An arc centre becomes a straight edge.
+        XCTAssertTrue(sheet.deleteDrawingPolygonVertices(HorizontalSelectableRef(id: "sheet/polygon/tri", type: .polygonArcCenter, vertex: 1)))
+        XCTAssertEqual(sheet.drawingPolygons.last?.polygonVertices[1].type, .line)
+        // An edge takes both its vertices.
+        XCTAssertTrue(sheet.deleteDrawingPolygonVertices(HorizontalSelectableRef(id: "sheet/polygon/tri", type: .polygonEdge, vertex: 0)))
+        XCTAssertEqual(sheet.drawingPolygons.last?.polygonVertices.count, 2)
+        // One vertex more and the polygon is gone.
+        XCTAssertTrue(sheet.deleteDrawingPolygonVertices(HorizontalSelectableRef(id: "sheet/polygon/tri", type: .polygonVertex, vertex: 0)))
+        XCTAssertFalse(sheet.drawingPolygons.contains { $0.id == "sheet/polygon/tri" })
+        XCTAssertFalse(sheet.deleteDrawingPolygonVertices(HorizontalSelectableRef(id: "missing", type: .polygonVertex, vertex: 0)))
     }
 }

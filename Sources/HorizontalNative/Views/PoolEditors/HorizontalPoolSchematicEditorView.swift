@@ -33,6 +33,8 @@ struct HorizontalPoolSchematicEditorView: View {
     @State private var pinDisplayMode = HorizontalSymbolEditorPinDisplayMode.primary
     @State private var showsJunctionsAndHiddenNames = false
     @State private var unitPickerPresented = false
+    /// nil = the editor; a view = Horizon's text placement preview for it.
+    @State private var textPlacementView: HorizontalSymbolTextPlacementView?
 
     private var mode: HorizontalSchematicEditorMode {
         session.category == .frame ? .frame : .symbol
@@ -66,7 +68,8 @@ struct HorizontalPoolSchematicEditorView: View {
             unitJSON: session.index.json(.unit, uuid: symbol.unitID).map(HorizontalPreservedJSON.init),
             poolURL: session.poolURL,
             pinDisplayMode: pinDisplayMode,
-            showsJunctionsAndHiddenNames: showsJunctionsAndHiddenNames
+            showsJunctionsAndHiddenNames: showsJunctionsAndHiddenNames,
+            view: textPlacementView
         )
     }
 
@@ -102,6 +105,9 @@ struct HorizontalPoolSchematicEditorView: View {
             reproject()
         }
         .onChange(of: showsJunctionsAndHiddenNames) { _, _ in
+            reproject()
+        }
+        .onChange(of: textPlacementView) { _, _ in
             reproject()
         }
         .sheet(isPresented: $unitPickerPresented) {
@@ -190,6 +196,10 @@ struct HorizontalPoolSchematicEditorView: View {
                     canvasActions?.dispatch(.placeDot)
                 }
                 .disabled(isReadOnly)
+                ResizeSymbolToolButton {
+                    canvasActions?.dispatch(.resizeSymbol)
+                }
+                .disabled(isReadOnly || canvasActions?.canResizeSymbol != true)
             }
         }
     }
@@ -211,6 +221,14 @@ struct HorizontalPoolSchematicEditorView: View {
                     }
                     control("Mirror", "arrow.left.and.right.righttriangle.left.righttriangle.right", enabled: true) {
                         actions.dispatch(.mirrorSelection)
+                    }
+                    if actions.canAutoplacePins {
+                        control("Next", "forward.frame", enabled: true) {
+                            actions.dispatch(.autoplaceNextPin)
+                        }
+                        control("All", "forward.end", enabled: true) {
+                            actions.dispatch(.autoplaceAllPins)
+                        }
                     }
                 }
             }
@@ -289,6 +307,25 @@ struct HorizontalPoolSchematicEditorView: View {
         }
         .pickerStyle(.segmented)
         Toggle("Junctions and hidden names", isOn: $showsJunctionsAndHiddenNames)
+        Picker("Text placement", selection: $textPlacementView) {
+            Text("Editing").tag(HorizontalSymbolTextPlacementView?.none)
+            ForEach(HorizontalSymbolTextPlacementView.all) { view in
+                Text(view.displayName + (symbol.textPlacements[view.key]?.isEmpty == false ? " •" : "")).tag(Optional(view))
+            }
+        }
+        if let view = textPlacementView {
+            HStack {
+                Text("Drag the texts as they should sit when the symbol is placed this way.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Clear") {
+                    commit(.symbol(symbol.clearingTextPlacements(for: view)), "Clear Text Placements")
+                }
+                .disabled(isReadOnly || symbol.textPlacements[view.key] == nil)
+                .help("Use the default placement in this orientation")
+            }
+        }
         if let unit {
             let placed = Set(symbol.pins.keys.map { $0.lowercased() })
             let unplaced = unit.pins.values.filter { !placed.contains($0.id.lowercased()) }.count
@@ -335,7 +372,7 @@ struct HorizontalPoolSchematicEditorView: View {
         let model: HorizontalPoolItemModel
         switch session.model {
         case .symbol(let symbol):
-            model = .symbol(symbol.applying(sheet: edited))
+            model = .symbol(symbol.applying(sheet: edited, view: textPlacementView))
         case .frame(let frame):
             model = .frame(frame.applying(sheet: edited))
         default:

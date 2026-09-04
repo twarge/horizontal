@@ -154,7 +154,12 @@ struct HorizontalPartEditorView: View {
     var index: HorizontalPoolLibraryIndex
     var issues: [HorizontalPoolCheckIssue]
     var isReadOnly: Bool
+    /// Where `tables.json` is looked for, the part's own pool last so it
+    /// overrides the pools it includes.
+    var poolURLs: [URL] = []
     var commit: (HorizontalPoolPartItem, String) -> Void
+
+    @State private var parametricTables: [HorizontalParametricTable] = []
 
     @State private var context: HorizontalPartEditorContext?
     @State private var picker: HorizontalPoolItemPickerRequest?
@@ -186,11 +191,18 @@ struct HorizontalPartEditorView: View {
                     flagsAndPrefixSection
                 }
                 orderableMPNsSection
+                parametricSection
                 HorizontalPoolItemChecksView(issues: issues + unmappedPinIssues)
                 padMapSection
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .task(id: poolURLs.map(\.path).joined(separator: "|")) {
+            let urls = poolURLs
+            parametricTables = await Task.detached(priority: .utility) {
+                HorizontalPoolParametricTables.load(poolURLs: urls)
+            }.value
         }
         .task(id: loadKey) {
             let key = loadKey
@@ -562,6 +574,110 @@ struct HorizontalPartEditorView: View {
     }
 
     // MARK: - Edits
+
+    // MARK: - Parametric
+
+    private var selectedParametricTable: HorizontalParametricTable? {
+        guard let name = part.parametric["table"] else {
+            return nil
+        }
+        return parametricTables.first { $0.name == name }
+    }
+
+    /// Horizon's parametric editor: the table the part belongs to and a
+    /// field per column, quantities entered with SI prefixes.
+    private var parametricSection: some View {
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 8) {
+            GridRow {
+                Text("Parametric table").gridColumnAlignment(.trailing)
+                Picker("Parametric table", selection: Binding(
+                    get: { part.parametric["table"] ?? "" },
+                    set: { name in
+                        update("Change Parametric Table") { edited in
+                            if name.isEmpty {
+                                edited.parametric = [:]
+                            } else {
+                                edited.parametric = ["table": name]
+                            }
+                        }
+                    }
+                )) {
+                    Text("None").tag("")
+                    ForEach(parametricTables) { table in
+                        Text(table.displayName).tag(table.name)
+                    }
+                    if let name = part.parametric["table"], !parametricTables.contains(where: { $0.name == name }) {
+                        Text(name).tag(name)
+                    }
+                }
+                .labelsHidden()
+                .disabled(isReadOnly)
+            }
+            if let table = selectedParametricTable {
+                ForEach(table.columns) { column in
+                    GridRow {
+                        Text(column.displayName + (column.required ? "" : " (optional)")).gridColumnAlignment(.trailing)
+                        parametricField(column)
+                    }
+                }
+            } else if part.parametric["table"] != nil {
+                GridRow {
+                    Text("")
+                    Text("This table is not defined in the pool's tables.json; the stored values are kept.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func parametricField(_ column: HorizontalParametricColumn) -> some View {
+        let raw = part.parametric[column.name] ?? ""
+        switch column.kind {
+        case .enumeration:
+            Picker(column.displayName, selection: Binding(
+                get: { raw },
+                set: { value in
+                    update("Change \(column.displayName)") { edited in
+                        if value.isEmpty {
+                            edited.parametric.removeValue(forKey: column.name)
+                        } else {
+                            edited.parametric[column.name] = value
+                        }
+                    }
+                }
+            )) {
+                Text("—").tag("")
+                ForEach(column.items, id: \.self) { item in
+                    Text(item).tag(item)
+                }
+                if !raw.isEmpty, !column.items.contains(raw) {
+                    Text(raw).tag(raw)
+                }
+            }
+            .labelsHidden()
+            .disabled(isReadOnly)
+        case .quantity:
+            HStack(spacing: 4) {
+                HorizontalCommittedTextField(text: column.format(raw), isReadOnly: isReadOnly) { value in
+                    update("Change \(column.displayName)") { edited in
+                        let trimmed = value.trimmingCharacters(in: .whitespaces)
+                        if trimmed.isEmpty {
+                            edited.parametric.removeValue(forKey: column.name)
+                        } else if let number = HorizontalPoolParametricTables.parseQuantity(trimmed) {
+                            edited.parametric[column.name] = HorizontalPoolParametricTables.storedQuantity(number)
+                        }
+                    }
+                }
+                .frame(minWidth: 120)
+                if !column.unit.isEmpty {
+                    Text(column.unit)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
 
     private func update(_ actionName: String, _ change: (inout HorizontalPoolPartItem) -> Void) {
         var model = part
