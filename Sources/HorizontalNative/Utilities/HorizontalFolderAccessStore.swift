@@ -119,6 +119,43 @@ enum HorizontalFolderAccessStore {
         """
     }
 
+    // MARK: - Pool item editing
+
+    /// Ensures a pool item opened as a document can resolve its
+    /// cross-references: the open grants the one JSON file, while a symbol
+    /// reads its unit, a package its padstacks, a part its entity and
+    /// package, all from the pool folder around it.
+    static func preparePoolItemAccess(for itemURL: URL, poolRoot: URL?) async {
+        guard !isInsideHorizontalPackage(itemURL) else {
+            return
+        }
+        let folder = (poolRoot ?? itemURL.deletingLastPathComponent()).standardizedFileURL
+        await ensureAccess(
+            to: folder,
+            requiresWrite: false,
+            message: "Horizontal needs access to the pool folder to resolve what this item refers to. Grant access to “\(folder.lastPathComponent)”."
+        )
+    }
+
+    static func hasPoolItemAccess(for itemURL: URL, poolRoot: URL?) -> Bool {
+        guard !isInsideHorizontalPackage(itemURL) else {
+            return true
+        }
+        return hasAccess(to: (poolRoot ?? itemURL.deletingLastPathComponent()).standardizedFileURL, requiresWrite: false)
+    }
+
+    static func poolItemAccessMessage(for itemURL: URL, poolRoot: URL?) -> String {
+        let itemName = itemURL.lastPathComponent
+        let folderName = (poolRoot ?? itemURL.deletingLastPathComponent()).lastPathComponent
+        return """
+        Horizontal doesn’t have permission to read the pool folder that contains “\(itemName)”.
+
+        A pool item refers to other items in its pool — a symbol to its unit, a package to its padstacks — so Horizontal needs access to the whole pool folder “\(folderName)”, not just the item file.
+
+        Choose Grant Access below, then select “\(folderName)” when macOS asks.
+        """
+    }
+
     // MARK: - Exports
 
     /// Ensures the export target directory (which may not exist yet) can be

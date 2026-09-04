@@ -74,16 +74,28 @@ struct HorizontalPoolLibraryIndex: Sendable {
     static let empty = HorizontalPoolLibraryIndex(items: [])
 
     private var itemsByKey: [String: HorizontalPoolLibraryItem]
+    /// The winning item per key, in scan order — what a picker lists.
+    private var orderedItems: [HorizontalPoolLibraryItem]
 
     init(items: [HorizontalPoolLibraryItem]) {
         var itemsByKey = [String: HorizontalPoolLibraryItem]()
+        var orderedItems = [HorizontalPoolLibraryItem]()
         for item in items {
             let key = Self.key(item.category, item.uuid)
             if itemsByKey[key] == nil {
                 itemsByKey[key] = item
+                orderedItems.append(item)
             }
         }
         self.itemsByKey = itemsByKey
+        self.orderedItems = orderedItems
+    }
+
+    /// Every item of one kind, sorted by name.
+    func items(in category: HorizontalPoolItemCategory) -> [HorizontalPoolLibraryItem] {
+        orderedItems
+            .filter { $0.category == category }
+            .sorted { ($0.name.localizedLowercase, $0.uuid) < ($1.name.localizedLowercase, $1.uuid) }
     }
 
     func item(_ category: HorizontalPoolItemCategory, uuid: String) -> HorizontalPoolLibraryItem? {
@@ -263,5 +275,90 @@ enum HorizontalPoolLibrary {
             return string
         }
         return nil
+    }
+}
+
+// MARK: - Editing support
+
+extension HorizontalPoolLibrary {
+    /// Posted after a pool item document was saved, carrying the bytes that
+    /// went to disk. Open projects refresh their in-memory copy of the file
+    /// from the payload (the document write may not have hit disk yet) and
+    /// browsers rescan.
+    static let itemDidSaveNotification = Notification.Name("HorizontalPoolItemDidSave")
+    /// `userInfo` key carrying the `ItemDidSavePayload`.
+    static let itemDidSavePayloadKey = "HorizontalPoolItemDidSavePayload"
+
+    struct ItemDidSavePayload: Sendable {
+        var url: URL
+        var category: HorizontalPoolItemCategory
+        var uuid: String
+        var data: Data
+    }
+
+    /// The nearest ancestor of `itemURL` carrying a `pool.json`, or nil when
+    /// the item lives outside any pool. Registered pools are consulted first
+    /// so their security scopes are restored before the walk probes the
+    /// filesystem (an item reopened from Recent Items after a relaunch would
+    /// otherwise find its pool unreadable).
+    static func poolRoot(forItemURL itemURL: URL) -> URL? {
+        let standardized = itemURL.standardizedFileURL
+        for registered in HorizontalPoolRegistryStore.poolURLs() {
+            let root = registered.standardizedFileURL
+            let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+            if standardized.path.hasPrefix(prefix) {
+                return root
+            }
+        }
+        var directory = standardized.deletingLastPathComponent()
+        while directory.pathComponents.count > 1 {
+            if FileManager.default.fileExists(atPath: directory.appendingPathComponent("pool.json").path) {
+                return directory
+            }
+            directory = directory.deletingLastPathComponent()
+        }
+        return nil
+    }
+
+    /// The pools a standalone pool includes (`pools_included` uuids in its
+    /// pool.json), found among the pools this app knows about: registered
+    /// ones, `$HORIZON_POOL`, and any horizon-pool checkout nearby.
+    static func includedPoolURLs(for poolURL: URL) -> [URL] {
+        let json = (try? JSONHelper.loadDictionary(from: poolURL.appendingPathComponent("pool.json"))) ?? [:]
+        let included = (json["pools_included"] as? [String] ?? []).map { $0.lowercased() }
+        guard !included.isEmpty else {
+            return []
+        }
+        var urlsByUUID = [String: URL]()
+        for url in HorizontalPoolPadstacks.basePoolURLs(for: poolURL) {
+            let uuid = HorizontalPoolRegistryStore.poolInfo(at: url).uuid.lowercased()
+            if !uuid.isEmpty, urlsByUUID[uuid] == nil {
+                urlsByUUID[uuid] = url
+            }
+        }
+        return included.compactMap { urlsByUUID[$0] }
+    }
+
+    /// The pools an item editor indexes, root first so the item's own pool
+    /// shadows the rest (the same precedence the browser and the padstack
+    /// catalog use): the pool itself, the pools it includes, then every
+    /// discovered base pool.
+    static func editorPoolURLs(forPoolRoot poolURL: URL) -> [URL] {
+        var result = [URL]()
+        var seen = Set<String>()
+        func add(_ url: URL) {
+            let standardized = url.standardizedFileURL
+            if seen.insert(standardized.path).inserted {
+                result.append(standardized)
+            }
+        }
+        add(poolURL)
+        for url in includedPoolURLs(for: poolURL) {
+            add(url)
+        }
+        for url in HorizontalPoolPadstacks.basePoolURLs(for: poolURL) {
+            add(url)
+        }
+        return result
     }
 }

@@ -93,6 +93,12 @@ struct HorizontalSchematicSheet: Identifiable {
     var framePolygons: [HorizontalPolygon]
     var frameTexts: [HorizontalText]
     var texts: [HorizontalText]
+    /// Pool editors only: the symbol's or frame's own polygons, editable as
+    /// whole objects (`sheet/polygon/<uuid>` ids).
+    var drawingPolygons: [HorizontalPolygon] = []
+    /// Symbol editor only: the pins as objects; their artwork is baked into
+    /// `symbolPins` / `symbolPinCircles` / `symbolTexts` per pin.
+    var editablePins: [HorizontalSymbolPin] = []
     var netLabels: [HorizontalSchematicNetLabel]
     var powerSymbols: [HorizontalPowerSymbol]
     var powerSymbolLines: [HorizontalSegment]
@@ -1447,7 +1453,8 @@ struct HorizontalSchematic {
         unitCache: inout [String: JSONDictionary],
         unitPinInfoCache: inout [String: [String: SchematicUnitPinInfo]],
         partCache: inout [String: SchematicPartInfo],
-        packageCache: inout [String: JSONDictionary]
+        packageCache: inout [String: JSONDictionary],
+        padPlaceholder: String? = nil
     ) -> (pins: [HorizontalSegment], circles: [HorizontalCircle], texts: [HorizontalText], pinPositions: [String: HorizontalPoint]) {
         var pinPositions = [String: HorizontalPoint]()
         var circles = [HorizontalCircle]()
@@ -1497,9 +1504,10 @@ struct HorizontalSchematic {
                 component: component,
                 pinDisplayMode: pinDisplayMode
             )
+            // The symbol editor has no part: upstream's expand shows "$PAD".
             let padName = gatePinPath.flatMap {
                 expandedPadName(for: $0, partInfo: partInfo, displayAllPads: displayAllPads)
-            }
+            } ?? padPlaceholder
             texts.append(
                 contentsOf: pinTexts(
                     for: item,
@@ -1882,6 +1890,11 @@ struct HorizontalSchematic {
         if pinDisplayMode == "all" {
             let names = alternateNames.keys.sorted().compactMap { alternateNames[$0].map(appendTilde) }
             return (names + ["(\(primaryName))"]).joined(separator: " · ")
+        }
+
+        // `Symbol::PinDisplayMode::ALT`: the alternate names on their own.
+        if pinDisplayMode == "alt_only" {
+            return alternateNames.keys.sorted().compactMap { alternateNames[$0].map(appendTilde) }.joined(separator: " · ")
         }
 
         if pinDisplayMode == "custom_only" {
@@ -4348,5 +4361,88 @@ extension HorizontalSchematic {
             polygons: artwork.polygons,
             texts: artwork.texts
         )
+    }
+}
+
+/// One or more symbol-editor pins baked on their own.
+struct HorizontalSymbolEditorPinArtwork {
+    var pins: [HorizontalSegment] = []
+    var circles: [HorizontalCircle] = []
+    var texts: [HorizontalText] = []
+}
+
+extension HorizontalSchematic {
+    /// The artwork of `pins` as the symbol editor shows them: at their stored
+    /// positions (identity transform), named from the context's unit in the
+    /// chosen display mode, pads as "$PAD", and — when the editor asks for
+    /// hidden names — the name / pad texts hidden pins would otherwise omit,
+    /// under `pin-name-hidden` / `pin-pad-hidden` ids so they draw greyed.
+    static func symbolEditorPinArtwork(
+        pins: [HorizontalSymbolPin],
+        context: HorizontalSymbolEditorContext
+    ) -> HorizontalSymbolEditorPinArtwork {
+        var unitCache = [String: JSONDictionary]()
+        if let unitID = context.unitID.map(normalizedID), let unitJSON = context.unitJSON?.dictionary {
+            unitCache[unitID] = unitJSON
+        }
+        var unitPinInfoCache = [String: [String: SchematicUnitPinInfo]]()
+        var partCache = [String: SchematicPartInfo]()
+        var packageCache = [String: JSONDictionary]()
+        let symbolItem: JSONDictionary = ["pin_display_mode": context.pinDisplayMode.schematicMode]
+
+        func bake(_ map: [String: JSONDictionary]) -> (pins: [HorizontalSegment], circles: [HorizontalCircle], texts: [HorizontalText], pinPositions: [String: HorizontalPoint]) {
+            parseSymbolPins(
+                from: map,
+                symbolInstanceID: context.symbolID,
+                symbolItem: symbolItem,
+                unitID: context.unitID,
+                symbolTransform: .identity,
+                component: nil,
+                poolURL: context.poolURL,
+                unitCache: &unitCache,
+                unitPinInfoCache: &unitPinInfoCache,
+                partCache: &partCache,
+                packageCache: &packageCache,
+                padPlaceholder: "$PAD"
+            )
+        }
+
+        var pinMap = [String: JSONDictionary]()
+        for pin in pins {
+            pinMap[pin.id] = pin.json(original: nil)
+        }
+        let visible = bake(pinMap)
+        var artwork = HorizontalSymbolEditorPinArtwork(pins: visible.pins, circles: visible.circles, texts: visible.texts)
+
+        guard context.showsJunctionsAndHiddenNames else {
+            return artwork
+        }
+        let hiddenPins = pins.filter { !$0.nameVisible || !$0.padVisible }
+        guard !hiddenPins.isEmpty else {
+            return artwork
+        }
+        var forcedMap = [String: JSONDictionary]()
+        for pin in hiddenPins {
+            var json = pin.json(original: nil)
+            json["name_visible"] = true
+            json["pad_visible"] = true
+            forcedMap[pin.id] = json
+        }
+        let forced = bake(forcedMap)
+        for text in forced.texts {
+            guard let pinID = HorizontalSchematicSheet.editorPinID(forGeometryID: text.id),
+                  let pin = hiddenPins.first(where: { $0.id.lowercased() == pinID }) else {
+                continue
+            }
+            var hidden = text
+            if text.id.contains("/pin-name/"), !pin.nameVisible {
+                hidden.id = text.id.replacingOccurrences(of: "/pin-name/", with: "/pin-name-hidden/")
+                artwork.texts.append(hidden)
+            } else if text.id.contains("/pin-pad/"), !pin.padVisible {
+                hidden.id = text.id.replacingOccurrences(of: "/pin-pad/", with: "/pin-pad-hidden/")
+                artwork.texts.append(hidden)
+            }
+        }
+        return artwork
     }
 }

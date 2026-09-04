@@ -7,6 +7,9 @@ struct HorizontalIPadProjectView: View {
     private var fileURL: URL?
 
     @State private var project: HorizontalProject?
+    /// Set instead of `project` when the document is a pool item (unit,
+    /// symbol, package, …): the window shows that item's editor.
+    @State private var poolItemSession: HorizontalPoolItemEditorSession?
     /// Which panes are on screen, side by side (the same model the macOS workspace
     /// uses). A compact width class — iPhone, or a narrow multitasking slice — keeps
     /// this to exactly one pane, so the split layout below collapses to a single view
@@ -71,6 +74,16 @@ struct HorizontalIPadProjectView: View {
     }
 
     var body: some View {
+        if let poolItemSession {
+            HorizontalPoolItemDocumentView(session: poolItemSession, document: $document)
+                .navigationBarTitleDisplayMode(.inline)
+                .modifier(NavigationDocumentModifier(url: fileURL))
+        } else {
+            projectBody
+        }
+    }
+
+    private var projectBody: some View {
         // No NavigationStack here: the DocumentGroup already supplies the document
         // navigation bar (filename + back-to-Files + the document menu). Wrapping
         // the content in another NavigationStack stacked a second, redundant bar
@@ -149,6 +162,38 @@ struct HorizontalIPadProjectView: View {
         .task(id: loadIdentity) {
             loadProject()
         }
+        // A pool item edited over this project (or in another scene) lives in
+        // the project's pool: refresh the archive's copy so a later save can't
+        // put the stale one back, then reload so the canvases show the change.
+        .onReceive(
+            NotificationCenter.default.publisher(for: HorizontalPoolLibrary.itemDidSaveNotification)
+                .receive(on: RunLoop.main)
+        ) { notification in
+            if let payload = notification.userInfo?[HorizontalPoolLibrary.itemDidSavePayloadKey]
+                as? HorizontalPoolLibrary.ItemDidSavePayload {
+                handlePoolItemSaved(payload)
+            }
+        }
+    }
+
+    private func handlePoolItemSaved(_ payload: HorizontalPoolLibrary.ItemDidSavePayload) {
+        guard let project, case .directory = document.archive.root else {
+            return
+        }
+        let base = project.baseURL.standardizedFileURL.path
+        let target = payload.url.standardizedFileURL.path
+        let prefix = base.hasSuffix("/") ? base : base + "/"
+        guard target.hasPrefix(prefix) else {
+            return
+        }
+        let relativePath = String(target.dropFirst(prefix.count))
+        do {
+            try document.archive.replaceRegularFileData(relativePath: relativePath, with: payload.data)
+        } catch {
+            loadError = error.localizedDescription
+            return
+        }
+        loadProject()
     }
 
     /// Name shown in the DocumentGroup navigation bar. The file on disk wins; a
@@ -802,6 +847,29 @@ struct HorizontalIPadProjectView: View {
         isLoading = true
         loadError = nil
         project = nil
+        poolItemSession = nil
+
+        // A pool item is not a project: hand it to its editor instead. The
+        // bytes are already in the archive; only the file's location is needed
+        // to find the pool around it.
+        if case .regularFile(let data) = document.archive.root,
+           let category = JSONHelper.poolItemCategory(in: data) {
+            do {
+                guard let fileURL else {
+                    throw HorizontalPoolItemEditorError.missingFileURL
+                }
+                poolItemSession = try HorizontalPoolItemEditorSession(
+                    itemURL: fileURL,
+                    poolURL: HorizontalPoolLibrary.poolRoot(forItemURL: fileURL),
+                    category: category,
+                    data: data
+                )
+            } catch {
+                loadError = error.localizedDescription
+            }
+            isLoading = false
+            return
+        }
 
         do {
             let url = try projectURLForLoading()

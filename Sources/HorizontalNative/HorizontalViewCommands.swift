@@ -65,6 +65,13 @@ struct HorizontalCanvasCommandActions {
     var canDuplicateSelection: Bool = false
     var canCommitInteraction: Bool
     var canCancelInteraction: Bool
+    var canPlacePad: Bool = false
+    var canPlaceShape: Bool = false
+    var canPlaceHole: Bool = false
+    var canPlacePin: Bool = false
+    var canPlaceRefdesAndValue: Bool = false
+    var canPlaceDot: Bool = false
+    var hasPlacementInteraction: Bool = false
     var dispatch: (HorizontalCanvasCommand) -> Void
 }
 
@@ -353,6 +360,41 @@ struct HorizontalViewCommands: Commands {
                 canvasCommandActions?.dispatch(.drawPlane)
             }
             .disabled(canvasCommandActions?.canDrawPlane != true)
+
+            Divider()
+            Button("Place Pad…") {
+                canvasCommandActions?.dispatch(.placePad)
+            }
+            .disabled(canvasCommandActions?.canPlacePad != true)
+            Menu("Place Shape") {
+                ForEach(HorizontalPadstackShapeForm.allCases, id: \.self) { form in
+                    Button(form.displayName) {
+                        canvasCommandActions?.dispatch(.placeShape(form))
+                    }
+                }
+            }
+            .disabled(canvasCommandActions?.canPlaceShape != true)
+            Menu("Place Hole") {
+                Button("Round") {
+                    canvasCommandActions?.dispatch(.placeHole(.round))
+                }
+                Button("Slot") {
+                    canvasCommandActions?.dispatch(.placeHole(.slot))
+                }
+            }
+            .disabled(canvasCommandActions?.canPlaceHole != true)
+            Button("Place Pin") {
+                canvasCommandActions?.dispatch(.placePin)
+            }
+            .disabled(canvasCommandActions?.canPlacePin != true)
+            Button("Place Reference and Value") {
+                canvasCommandActions?.dispatch(.placeRefdesAndValue)
+            }
+            .disabled(canvasCommandActions?.canPlaceRefdesAndValue != true)
+            Button("Place Dot") {
+                canvasCommandActions?.dispatch(.placeDot)
+            }
+            .disabled(canvasCommandActions?.canPlaceDot != true)
 
             Divider()
             Button("Flip Track Posture") {

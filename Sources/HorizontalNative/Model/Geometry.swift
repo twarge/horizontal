@@ -562,6 +562,9 @@ struct HorizontalHole: Identifiable, Hashable {
     /// The board hole's `parameter_set` (nanometer values) for padstack-backed
     /// holes — geometry edits persist here, not as direct diameter/length keys.
     var parameterSet: [String: Double] = [:]
+    /// Horizon `parameter_class` of a padstack's own hole (the padstack
+    /// editor); empty everywhere else.
+    var parameterClass: String = ""
 
     var effectiveLength: Double {
         max(length ?? diameter, diameter)
@@ -805,6 +808,9 @@ struct HorizontalPolygon: Identifiable, Hashable {
     var layer: Int?
     var netID: String? = nil
     var metadata: [String: String] = [:]
+    /// Horizon `parameter_class`: which parameter-program rule reshapes this
+    /// polygon (e.g. "courtyard"). Empty for board polygons that have none.
+    var parameterClass: String = ""
     /// Populated for *every* pad polygon — through-hole, via, mechanical,
     /// shape-defined and polygon-defined padstacks alike — from the padstack's
     /// local bbox plus the pad's placement, mirroring
@@ -834,7 +840,8 @@ struct HorizontalPolygon: Identifiable, Hashable {
         layer: Int?,
         netID: String? = nil,
         metadata: [String: String] = [:],
-        padLabelFrame: PadLabelFrameDescriptor? = nil
+        padLabelFrame: PadLabelFrameDescriptor? = nil,
+        parameterClass: String = ""
     ) {
         self.id = id
         self.polygonVertices = vertices.map { HorizontalPolygonVertex(position: $0) }
@@ -842,6 +849,7 @@ struct HorizontalPolygon: Identifiable, Hashable {
         self.netID = netID
         self.metadata = metadata
         self.padLabelFrame = padLabelFrame
+        self.parameterClass = parameterClass
     }
 
     init(
@@ -850,7 +858,8 @@ struct HorizontalPolygon: Identifiable, Hashable {
         layer: Int?,
         netID: String? = nil,
         metadata: [String: String] = [:],
-        padLabelFrame: PadLabelFrameDescriptor? = nil
+        padLabelFrame: PadLabelFrameDescriptor? = nil,
+        parameterClass: String = ""
     ) {
         self.id = id
         self.polygonVertices = polygonVertices
@@ -858,6 +867,7 @@ struct HorizontalPolygon: Identifiable, Hashable {
         self.netID = netID
         self.metadata = metadata
         self.padLabelFrame = padLabelFrame
+        self.parameterClass = parameterClass
     }
 }
 

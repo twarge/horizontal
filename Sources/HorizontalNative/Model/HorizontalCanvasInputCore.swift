@@ -307,6 +307,7 @@ enum HorizontalCanvasInputCore {
         case "l": return .highlightNet
         case "m": return .moveSelection
         case "n": return .drawNetLine
+        case "p": return .placePad
         case "x": return .drawTrack
         case "/": return .flipTrackPosture
         case "w": return .enterTrackWidth

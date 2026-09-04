@@ -289,7 +289,7 @@ enum BoardMovePlanner {
                 addTranslatedRef(ref)
             case .boardPanel:
                 break
-            case .blockSymbolPort, .busLabel, .busRipper, .drawingArc, .drawingLine, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
+            case .blockSymbolPort, .busLabel, .busRipper, .drawingArc, .drawingLine, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .padstackShape, .symbolPin:
                 plan.unsupportedRefs.insert(ref)
             }
         }

@@ -6,6 +6,8 @@ struct HorizontalPoolPadstackInfo: Identifiable, Hashable {
     var id: String
     var name: String
     var type: String
+    /// Lives in the package being edited (`<package>/padstacks/`), not the pool.
+    var isPackageLocal = false
 }
 
 /// Scans a pool's global `padstacks/` directory (including the project-pool
