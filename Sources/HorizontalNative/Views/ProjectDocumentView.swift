@@ -1172,6 +1172,7 @@ struct ProjectWorkspaceView: View {
         let exportProject = project
         let schematicPalette = appearanceSettings.palette(for: .schematic, mode: .light)
         let boardPalette = appearanceSettings.palette(for: .board, mode: .light)
+        let silkscreenClipping = appearanceSettings.silkscreenClipping
 
         isExporting = true
         exportStatus = nil
@@ -1181,7 +1182,8 @@ struct ProjectWorkspaceView: View {
                 settings: settings,
                 project: exportProject,
                 schematicPDFPalette: schematicPalette,
-                boardPDFPalette: boardPalette
+                boardPDFPalette: boardPalette,
+                silkscreenClipping: silkscreenClipping
             )
         }.value
         isExporting = false
@@ -1522,6 +1524,7 @@ struct ProjectWorkspaceView: View {
                             layerColors: appearanceSettings.boardSceneLayerColors,
                             materialColors: appearanceSettings.boardSceneMaterialColors,
                             ignoresSceneMouseEvents: panesWithPointerInsideToolbar.contains(.threeD),
+                            silkscreenClipping: appearanceSettings.silkscreenClipping,
                             cameraState: $threeDCameraState
                         )
                     } else {
