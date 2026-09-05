@@ -208,6 +208,9 @@ struct HorizontalCanvasCommandHandlerSet {
     var autoplaceNextPin: (() -> Void)? = nil
     var autoplaceAllPins: (() -> Void)? = nil
     var resizeSymbol: (() -> Void)? = nil
+    var disconnect: (() -> Void)? = nil
+    var showInPoolManager: (() -> Void)? = nil
+    var showInProjectPoolManager: (() -> Void)? = nil
     /// A pool object (pad / shape / hole / pin) is following the cursor.
     var hasPlacementInteraction: Bool = false
     var commitInteraction: () -> Void
@@ -366,6 +369,13 @@ struct HorizontalCanvasCommandHandlerSet {
         case .resizeSymbol:
             guard !isReadOnly else { return }
             resizeSymbol?()
+        case .disconnect:
+            guard !isReadOnly else { return }
+            disconnect?()
+        case .showInPoolManager:
+            showInPoolManager?()
+        case .showInProjectPoolManager:
+            showInProjectPoolManager?()
         case .commitInteraction:
             guard !isReadOnly else { return }
             commitInteraction()
@@ -410,6 +420,9 @@ struct HorizontalCanvasCommandHandlerSet {
             canPlaceDot: writable && placeDot != nil,
             canAutoplacePins: writable && autoplaceNextPin != nil,
             canResizeSymbol: writable && resizeSymbol != nil,
+            canDisconnect: writable && disconnect != nil,
+            canShowInPoolManager: showInPoolManager != nil,
+            canShowInProjectPoolManager: showInProjectPoolManager != nil,
             hasPlacementInteraction: hasPlacementInteraction,
             dispatch: dispatch
         )

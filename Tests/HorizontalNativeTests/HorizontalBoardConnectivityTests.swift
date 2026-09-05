@@ -210,3 +210,51 @@ final class HorizontalBoardConnectivityTests: XCTestCase {
         XCTAssertEqual(once.junctionNetIDs, twice.junctionNetIDs)
     }
 }
+
+// MARK: - Disconnect
+
+extension HorizontalBoardConnectivityTests {
+    /// Horizon attaches a track to a pad only by an explicit pad reference; a
+    /// junction on the pad centre (what Disconnect leaves) is not one. The
+    /// pass mirrors that: the same track goes net-less once a junction sits
+    /// on the pad it ends on.
+    func testJunctionOnPadCentreDetachesTheTrack() {
+        let a = HorizontalPoint(x: 0, y: 0)
+        let b = HorizontalPoint(x: 3_000_000, y: 0)
+        let pad = HorizontalPolygon(
+            id: "pkg/pad/1",
+            vertices: [HorizontalPoint(x: -300_000, y: -300_000), HorizontalPoint(x: 300_000, y: -300_000),
+                       HorizontalPoint(x: 300_000, y: 300_000), HorizontalPoint(x: -300_000, y: 300_000)],
+            layer: 0,
+            netID: "n1"
+        )
+        let track = HorizontalSegment(id: "t", from: a, to: b, width: 200_000, layer: 0, netID: nil)
+
+        let attached = HorizontalBoardConnectivity.recompute(HorizontalBoard(
+            url: URL(fileURLWithPath: "/tmp/t.hprj"), uuid: "b", name: "t", grid: .boardDefault,
+            colors: HorizontalBoardColors(silkscreen: nil, solderMask: nil, substrate: nil),
+            stackupLayers: [HorizontalBoardStackupLayer(layer: 0, copperThickness: 35_000, substrateThickness: 1_500_000)],
+            userLayers: [], junctions: [:], junctionNetIDs: [:], netDetails: [:],
+            tracks: [track], netTies: [], lines: [], arcs: [], connectionLines: [], airwires: [],
+            polygons: [], planes: [], keepouts: [], dimensions: [], decals: [], holes: [],
+            vias: [], viaHoles: [], packages: [], packagePads: [pad], packageHoles: [],
+            packagePolygons: [], packageLines: [], packageArcs: [], packageTexts: [], texts: [],
+            boardPanels: [], physicalBounds: .empty, bounds: .empty
+        ))
+        XCTAssertEqual(attached.tracks.first?.netID, "n1")
+
+        let detached = HorizontalBoardConnectivity.recompute(HorizontalBoard(
+            url: URL(fileURLWithPath: "/tmp/t.hprj"), uuid: "b", name: "t", grid: .boardDefault,
+            colors: HorizontalBoardColors(silkscreen: nil, solderMask: nil, substrate: nil),
+            stackupLayers: [HorizontalBoardStackupLayer(layer: 0, copperThickness: 35_000, substrateThickness: 1_500_000)],
+            userLayers: [], junctions: ["j": a], junctionNetIDs: [:], netDetails: [:],
+            tracks: [track], netTies: [], lines: [], arcs: [], connectionLines: [], airwires: [],
+            polygons: [], planes: [], keepouts: [], dimensions: [], decals: [], holes: [],
+            vias: [], viaHoles: [], packages: [], packagePads: [pad], packageHoles: [],
+            packagePolygons: [], packageLines: [], packageArcs: [], packageTexts: [], texts: [],
+            boardPanels: [], physicalBounds: .empty, bounds: .empty
+        ))
+        XCTAssertNil(detached.tracks.first?.netID, "a junction on the pad centre means no pad reference")
+        XCTAssertEqual(detached.junctions.count, 1, "the junction the track ends on is kept")
+    }
+}

@@ -8,13 +8,22 @@ enum HorizontalPoolBrowserRoot: Hashable {
     case pool(URL)
 }
 
-/// Asks the browser to show one item: switch to its category, clear the
-/// search and select it. A fresh `id` per request means asking for the same
-/// item twice still re-selects it.
+/// A term to look for in one category of the Pools pane: a part's MPN or
+/// manufacturer among the parts, a package name among the packages.
+struct HorizontalPoolSearch: Equatable {
+    var category: HorizontalPoolItemCategory
+    var term: String
+}
+
+/// Asks the browser to show one item — switch to its category, clear the
+/// search and select it — or, with `search` set, to switch to the category
+/// and filter it to the term. A fresh `id` per request means asking for the
+/// same thing twice still applies it.
 struct HorizontalPoolRevealRequest: Equatable {
     var id = UUID()
     var category: HorizontalPoolItemCategory
     var uuid: String
+    var search: String? = nil
 
     init(category: HorizontalPoolItemCategory, uuid: String) {
         self.category = category
@@ -23,6 +32,26 @@ struct HorizontalPoolRevealRequest: Equatable {
 
     init(item: HorizontalPoolLibraryItem) {
         self.init(category: item.category, uuid: item.uuid)
+    }
+
+    init(search: HorizontalPoolSearch) {
+        category = search.category
+        uuid = ""
+        self.search = search.term
+    }
+}
+
+/// The window's way of showing something in its Pools pane, for views that
+/// sit far from it: the selection inspector's MPN, manufacturer and package
+/// rows, the Parts pane's cells. Nil where there is no Pools pane.
+private struct HorizontalPoolRevealActionKey: EnvironmentKey {
+    static var defaultValue: ((HorizontalPoolRevealRequest) -> Void)? { nil }
+}
+
+extension EnvironmentValues {
+    var horizonPoolRevealAction: ((HorizontalPoolRevealRequest) -> Void)? {
+        get { self[HorizontalPoolRevealActionKey.self] }
+        set { self[HorizontalPoolRevealActionKey.self] = newValue }
     }
 }
 
@@ -37,6 +66,9 @@ struct HorizontalPoolBrowserView: View {
     var root: HorizontalPoolBrowserRoot
     var safeAreaInsets: EdgeInsets = EdgeInsets()
     var revealRequest: HorizontalPoolRevealRequest? = nil
+    /// Set by a project window: "Place in Schematic" for parts (double-click,
+    /// the Place button, Return, the context menu). Nil in a pool window.
+    var onPlacePart: ((HorizontalPoolLibraryItem) -> Void)? = nil
 
     @ObservedObject private var registry = HorizontalPoolRegistry.shared
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
@@ -180,7 +212,7 @@ struct HorizontalPoolBrowserView: View {
         let filtered = terms.isEmpty
             ? inCategory
             : inCategory.filter { item in
-                let haystack = [item.name, item.detail, item.tags, item.poolName, item.uuid]
+                let haystack = [item.name, item.detail, item.manufacturer, item.tags, item.poolName, item.uuid]
                     .joined(separator: "\n")
                     .lowercased()
                 return terms.allSatisfy(haystack.contains)
@@ -214,6 +246,10 @@ struct HorizontalPoolBrowserView: View {
                 splitContent
             }
         }
+        // Same as the Parts pane: as the leftmost pane this would otherwise
+        // run under the navigator sidebar.
+        .padding(.leading, safeAreaInsets.leading)
+        .padding(.trailing, safeAreaInsets.trailing)
         #if os(macOS)
         .background(Color(nsColor: .controlBackgroundColor))
         #else
@@ -407,6 +443,18 @@ struct HorizontalPoolBrowserView: View {
 
             newItemMenu
 
+            if onPlacePart != nil {
+                Button {
+                    if let item = selectedItem, canPlace(item) {
+                        onPlacePart?(item)
+                    }
+                } label: {
+                    Label("Place", systemImage: "plus.square.on.square")
+                }
+                .disabled(selectedItem.map { !canPlace($0) } ?? true)
+                .help("Place the selected part in the schematic (also double-click or Return in the list)")
+            }
+
             Toggle(isOn: $showsPreview) {
                 Label("Preview", systemImage: "rectangle.bottomhalf.inset.filled")
             }
@@ -557,7 +605,11 @@ struct HorizontalPoolBrowserView: View {
             }
         } primaryAction: { selection in
             if let item = item(for: selection) {
-                editItem(item)
+                if canPlace(item) {
+                    onPlacePart?(item)
+                } else {
+                    editItem(item)
+                }
             }
         }
     }
@@ -574,8 +626,23 @@ struct HorizontalPoolBrowserView: View {
     /// pool, scrolled to the item), reveal the file, copy its identity.
     @ViewBuilder
     private func itemContextMenu(_ item: HorizontalPoolLibraryItem) -> some View {
+        if canPlace(item) {
+            Button("Place in Schematic") {
+                onPlacePart?(item)
+            }
+        }
         Button("Edit…") {
             editItem(item)
+        }
+        let related = relatedItems(for: item)
+        if !related.isEmpty {
+            Divider()
+            ForEach(related, id: \.item.id) { entry in
+                Button("Show \(entry.title)") {
+                    pendingReveal = HorizontalPoolRevealRequest(item: entry.item)
+                    applyPendingReveal()
+                }
+            }
         }
         if !appearanceSettings.isReadOnlyOperationEnabled {
             Button("Duplicate…") {
@@ -660,6 +727,48 @@ struct HorizontalPoolBrowserView: View {
         #else
         editingItem = item
         #endif
+    }
+
+    // MARK: - Placing and related items
+
+    private func canPlace(_ item: HorizontalPoolLibraryItem) -> Bool {
+        onPlacePart != nil && item.category == .part && !appearanceSettings.isReadOnlyOperationEnabled
+    }
+
+    /// The items this one refers to, for the context menu's "Show …" entries:
+    /// a part's entity, package and base part; an entity's units; a symbol's
+    /// unit; a package's padstacks.
+    private func relatedItems(for item: HorizontalPoolLibraryItem) -> [(title: String, item: HorizontalPoolLibraryItem)] {
+        guard let json = try? JSONHelper.loadDictionary(from: item.url) else {
+            return []
+        }
+        var entries = [(title: String, item: HorizontalPoolLibraryItem)]()
+        var seen = Set<String>()
+        func add(_ category: HorizontalPoolItemCategory, _ uuid: String?, label: String) {
+            guard let uuid, let related = index.item(category, uuid: uuid.lowercased()), seen.insert(related.id).inserted else {
+                return
+            }
+            entries.append((title: "\(label) “\(related.name)”", item: related))
+        }
+        switch item.category {
+        case .part:
+            add(.entity, json.string("entity"), label: "Entity")
+            add(.package, json.string("package"), label: "Package")
+            add(.part, json.string("base"), label: "Base Part")
+        case .entity:
+            for (_, gate) in json.dictionaryMap("gates").sorted(by: { $0.key < $1.key }) {
+                add(.unit, gate.string("unit"), label: "Unit")
+            }
+        case .symbol:
+            add(.unit, json.string("unit"), label: "Unit")
+        case .package:
+            for (_, pad) in json.dictionaryMap("pads").sorted(by: { $0.key < $1.key }) {
+                add(.padstack, pad.string("padstack"), label: "Padstack")
+            }
+        default:
+            break
+        }
+        return Array(entries.prefix(10))
     }
 
     // MARK: - Creating and duplicating
@@ -929,6 +1038,13 @@ struct HorizontalPoolBrowserView: View {
 
     private func applyPendingReveal() {
         guard let request = pendingReveal else {
+            return
+        }
+        if let search = request.search {
+            category = request.category
+            searchText = search
+            selectedItemID = filteredItems.first?.id
+            pendingReveal = nil
             return
         }
         let uuid = request.uuid.lowercased()

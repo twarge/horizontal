@@ -276,6 +276,10 @@ struct HorizontalRect: Equatable {
     /// This rect, or the empty-content canvas region when there is nothing to
     /// frame — see `emptyContentCanvasRegion` for why empty bounds must never
     /// reach a canvas.
+    func contains(_ point: HorizontalPoint) -> Bool {
+        point.x >= minX && point.x <= maxX && point.y >= minY && point.y <= maxY
+    }
+
     func orEmptyContentCanvasRegion() -> HorizontalRect {
         isEmpty ? .emptyContentCanvasRegion : self
     }

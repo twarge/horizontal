@@ -281,6 +281,7 @@ struct HorizontalPoolSchematicEditorView: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .background(.regularMaterial)
     }
 
     /// Horizon's symbol header widgets the shared form does not carry: the

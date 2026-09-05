@@ -56,6 +56,7 @@ struct HorizontalIPadProjectView: View {
     // Part placement: the part browser sets a request, which the schematic canvas
     // picks up (via its onAppear/onChange) to start the place-on-canvas interaction.
     @State private var placePartRequest: HorizontalPartPlacementRequest?
+    @State private var libraryRevealRequest: HorizontalPoolRevealRequest?
     // App settings sheet (the iPad stand-in for the macOS Settings window).
     @State private var settingsSheetPresented = false
     // Per-file view-state persistence (the same store the macOS workspace
@@ -80,7 +81,19 @@ struct HorizontalIPadProjectView: View {
                 .modifier(NavigationDocumentModifier(url: fileURL))
         } else {
             projectBody
+                .environment(\.horizonPoolRevealAction, revealInPools)
         }
+    }
+
+    /// Shows an item, or a search, in the Pools pane, bringing it up first.
+    private func revealInPools(_ request: HorizontalPoolRevealRequest) {
+        libraryRevealRequest = request
+        if isCompact {
+            visiblePanes = [.library]
+        } else {
+            visiblePanes.insert(.library)
+        }
+        focusedPane = .library
     }
 
     private var projectBody: some View {
@@ -525,7 +538,9 @@ struct HorizontalIPadProjectView: View {
         case .library:
             HorizontalPoolBrowserView(
                 root: .project(poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }),
-                safeAreaInsets: safeAreaInsets
+                safeAreaInsets: safeAreaInsets,
+                revealRequest: libraryRevealRequest,
+                onPlacePart: project.schematic == nil ? nil : { item in placePartFromLibrary(item, project: project) }
             )
         case .schematic:
             schematicView(for: project, safeAreaInsets: safeAreaInsets)
@@ -533,6 +548,52 @@ struct HorizontalIPadProjectView: View {
             boardView(for: project, safeAreaInsets: safeAreaInsets)
         case .threeD:
             threeDView(for: project)
+        }
+    }
+
+    /// The Library pane's "Place in Schematic": cache the part into the
+    /// project pool, then place it the way the Parts pane does.
+    private func placePartFromLibrary(_ item: HorizontalPoolLibraryItem, project: HorizontalProject) {
+        guard project.schematic != nil,
+              let poolURL = project.poolDirectory.map({ project.baseURL.appendingPathComponent($0) }) else {
+            return
+        }
+        do {
+            let imported = try HorizontalPoolCacheImporter.cachePart(item, into: poolURL)
+            if case .directory = document.archive.root {
+                for url in imported.writtenFiles {
+                    let base = project.baseURL.standardizedFileURL.path
+                    let target = url.standardizedFileURL.path
+                    let prefix = base.hasSuffix("/") ? base : base + "/"
+                    if target.hasPrefix(prefix) {
+                        try document.archive.replaceRegularFileData(relativePath: String(target.dropFirst(prefix.count)), with: Data(contentsOf: url))
+                    }
+                }
+            }
+            if !imported.writtenFiles.isEmpty {
+                HorizontalPoolLibrary.invalidateCache()
+                HorizontalPoolPadstacks.invalidateCaches()
+            }
+            guard let part = HorizontalPoolPart.loadCached(id: item.uuid, from: poolURL) else {
+                return
+            }
+            if var updated = self.project {
+                if let index = updated.poolParts.firstIndex(where: { $0.id == part.id }) {
+                    updated.poolParts[index] = part
+                } else {
+                    updated.poolParts.append(part)
+                }
+                self.project = updated
+            }
+            placePartRequest = HorizontalPartPlacementRequest(part: part)
+            if isCompact {
+                visiblePanes = [.schematic]
+            } else {
+                visiblePanes.insert(.schematic)
+            }
+            focusedPane = .schematic
+        } catch {
+            print("[pool] could not place \(item.name): \(error)")
         }
     }
 

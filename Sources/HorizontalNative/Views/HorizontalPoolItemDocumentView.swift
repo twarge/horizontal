@@ -109,7 +109,8 @@ struct HorizontalPoolItemEditorContent: View {
                     HorizontalUnitEditorView(
                         unit: unit,
                         issues: session.validationIssues,
-                        isReadOnly: isReadOnly
+                        isReadOnly: isReadOnly,
+                        index: session.index
                     ) { commit(.unit($0), $1) }
                 }
             case .entity(let entity):
@@ -284,7 +285,7 @@ struct HorizontalPoolItemHeaderForm: View {
                 model.name = value
                 commit(.unit(model), "Rename Unit")
             }
-            textRow("Manufacturer", unit.manufacturer, "Change Manufacturer") { value in
+            manufacturerRow(unit.manufacturer) { value in
                 var model = unit
                 model.manufacturer = value
                 commit(.unit(model), "Change Manufacturer")
@@ -295,7 +296,7 @@ struct HorizontalPoolItemHeaderForm: View {
                 model.name = value
                 commit(.entity(model), "Rename Entity")
             }
-            textRow("Manufacturer", entity.manufacturer, "Change Manufacturer") { value in
+            manufacturerRow(entity.manufacturer) { value in
                 var model = entity
                 model.manufacturer = value
                 commit(.entity(model), "Change Manufacturer")
@@ -305,9 +306,9 @@ struct HorizontalPoolItemHeaderForm: View {
                 model.prefix = value
                 commit(.entity(model), "Change Prefix")
             }
-            textRow("Tags", entity.tags.joined(separator: " "), "Change Tags") { value in
+            tagsRow(entity.tags) { tags in
                 var model = entity
-                model.tags = Self.tags(from: value)
+                model.tags = tags
                 commit(.entity(model), "Change Tags")
             }
         case .part(let part):
@@ -339,9 +340,9 @@ struct HorizontalPoolItemHeaderForm: View {
                     }
                 }
             }
-            textRow("Tags", part.tags.joined(separator: " "), "Change Tags") { value in
+            tagsRow(part.tags) { tags in
                 var model = part
-                model.tags = Self.tags(from: value)
+                model.tags = tags
                 commit(.part(model), "Change Tags")
             }
             if part.baseID != nil {
@@ -373,14 +374,14 @@ struct HorizontalPoolItemHeaderForm: View {
                 model.name = value
                 commit(.package(model), "Rename Package")
             }
-            textRow("Manufacturer", package.manufacturer, "Change Manufacturer") { value in
+            manufacturerRow(package.manufacturer) { value in
                 var model = package
                 model.manufacturer = value
                 commit(.package(model), "Change Manufacturer")
             }
-            textRow("Tags", package.tags.joined(separator: " "), "Change Tags") { value in
+            tagsRow(package.tags) { tags in
                 var model = package
-                model.tags = Self.tags(from: value)
+                model.tags = tags
                 commit(.package(model), "Change Tags")
             }
             if let alternateForID = package.alternateForID {
@@ -456,6 +457,22 @@ struct HorizontalPoolItemHeaderForm: View {
             Text(label)
                 .gridColumnAlignment(.trailing)
             HorizontalCommittedTextField(text: value, isReadOnly: isReadOnly, onCommit: onCommit)
+        }
+    }
+
+    private func manufacturerRow(_ value: String, onCommit: @escaping (String) -> Void) -> some View {
+        GridRow {
+            Text("Manufacturer")
+                .gridColumnAlignment(.trailing)
+            HorizontalSuggestingTextField(text: value, suggestions: session.index.manufacturers, isReadOnly: isReadOnly, onCommit: onCommit)
+        }
+    }
+
+    private func tagsRow(_ tags: [String], onCommit: @escaping ([String]) -> Void) -> some View {
+        GridRow {
+            Text("Tags")
+                .gridColumnAlignment(.trailing)
+            HorizontalTokenField(tokens: tags, suggestions: session.index.tags, isReadOnly: isReadOnly, onCommit: onCommit)
         }
     }
 

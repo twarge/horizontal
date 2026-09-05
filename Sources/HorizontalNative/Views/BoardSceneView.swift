@@ -296,6 +296,23 @@ private struct BoardSceneColorKey: Hashable {
     }
 }
 
+/// Which surfaces the 3D scene shows: the 3D view's own toggles, never the
+/// 2D layer eyes. The package editor hides mask and paste in 2D and the
+/// board editor can hide the outline; the 3D view still shows the board.
+struct BoardSceneSurfaceVisibility: Equatable {
+    var substrate: Bool
+    var solderMask: Bool
+    var silkscreen: Bool
+    var paste: Bool
+
+    init(_ options: BoardDisplayOptions) {
+        substrate = options.threeDBoardBody
+        solderMask = options.threeDSolderMask
+        silkscreen = options.threeDSilkscreen
+        paste = options.threeDPaste
+    }
+}
+
 private struct BoardSceneDisplayOptionsKey: Hashable {
     var boardBody: Bool
     var solderMask: Bool
@@ -321,10 +338,11 @@ private struct BoardSceneDisplayOptionsKey: Hashable {
     var modelMode: HorizontalBoardSceneModelMode
 
     init(_ options: BoardDisplayOptions) {
-        self.boardBody = options.boardBody
-        self.solderMask = options.solderMask
-        self.silkscreen = options.silkscreen
-        self.paste = options.paste
+        // The 3D view's own surface toggles, not the 2D layer eyes.
+        self.boardBody = options.threeDBoardBody
+        self.solderMask = options.threeDSolderMask
+        self.silkscreen = options.threeDSilkscreen
+        self.paste = options.threeDPaste
         self.vias = options.vias
         self.holes = options.holes
         self.text = options.text
@@ -470,10 +488,11 @@ private final class BoardSceneNodes {
         layerColors: [Int: HorizontalRGBColor],
         board: HorizontalBoard
     ) {
-        substrateGroup.isHidden = !options.boardBody
-        solderMaskGroup.isHidden = !options.solderMask
-        silkscreenGroup.isHidden = !options.silkscreen
-        pasteGroup.isHidden = !options.paste
+        let surfaces = BoardSceneSurfaceVisibility(options)
+        substrateGroup.isHidden = !surfaces.substrate
+        solderMaskGroup.isHidden = !surfaces.solderMask
+        silkscreenGroup.isHidden = !surfaces.silkscreen
+        pasteGroup.isHidden = !surfaces.paste
         copperGroup.isHidden = options.threeDCopperMode == .off
         // Planes are copper: in 3D they follow the copper mode, the same as
         // every other copper group.
@@ -2076,10 +2095,18 @@ enum BoardSceneFactory {
             $0.substrateThickness > 0 && $0.layer != HorizontalBoardLayers.bottomCopper
         }
 
+        // Every drilled hole — free, via or package — comes out of the
+        // substrate, so a through-hole part's pins show as holes, not as
+        // pads sitting on solid board.
+        let drillCutouts = drillCutoutPaths(for: nil, board: board)
+
         if dielectricLayers.count <= 1 {
             let substrateThickness = dielectricThickness(for: board, fallback: boardThickness)
             let outlineResults = boardOutlinePolygons(from: board.polygons).compactMap {
-                boardBodyNodeAndMaterials(for: $0, center: center, thickness: substrateThickness, topY: boardTopHeight, colors: colors)
+                boardBodyNodeAndMaterials(
+                    for: $0, center: center, thickness: substrateThickness, topY: boardTopHeight, colors: colors,
+                    cutouts: drillCutouts
+                )
             }
             if outlineResults.isEmpty {
                 let (node, face, side) = rectangularBoardNodeAndMaterials(
@@ -2130,7 +2157,8 @@ enum BoardSceneFactory {
                 var sideMats: [SCNMaterial] = []
                 for outline in outlines {
                     if let (node, face, side) = boardBodyNodeAndMaterials(
-                        for: outline, center: center, thickness: chamferSafe, topY: slabTopY, colors: colors
+                        for: outline, center: center, thickness: chamferSafe, topY: slabTopY, colors: colors,
+                        cutouts: drillCutouts
                     ) {
                         slabNodes.append(node)
                         faceMats.append(face)
@@ -2470,9 +2498,10 @@ enum BoardSceneFactory {
         center: HorizontalPoint,
         thickness: Double,
         topY: Double,
-        colors: HorizontalBoardColors
+        colors: HorizontalBoardColors,
+        cutouts: [[HorizontalPoint]] = []
     ) -> (node: SCNNode, face: SCNMaterial, side: SCNMaterial)? {
-        guard let path = boardOutlinePath(for: outline, center: center) else {
+        guard let path = boardBodyPath(for: outline, center: center, cutouts: cutouts) else {
             return nil
         }
 
@@ -2751,20 +2780,23 @@ enum BoardSceneFactory {
         )
     }
 
-    // Matches package model transform (`mat_from_model`) after converting
-    // STEP/Horizon z-up coordinates to SceneKit y-up.
-    private static func modelLocalTransform(for model: HorizontalPackage3DModel) -> SCNMatrix4 {
+    // Horizon's face vertex shader: `rot = R(x, roll) * R(y, pitch) * R(z, yaw)`
+    // applied to column vectors, so the yaw turns the mesh first, the pitch
+    // second and the roll last, and only then is the package-local x/y/z
+    // offset added, unrotated. (Its `rotationMatrix` fills GLSL's
+    // column-major mat4 with a row-major rotation, which turns by the
+    // negated angle; the signs below fold that in together with the z-up to
+    // y-up axis swap: Horizon y is SceneKit -z, Horizon z is SceneKit y.)
+    // SceneKit's `SCNMatrix4Mult(a, b)` applies `a` first, so the order here
+    // reads in application order. Parts with two rotations — a pitch and a
+    // yaw — land wrongly when any of this is composed the other way round.
+    static func modelLocalTransform(for model: HorizontalPackage3DModel) -> SCNMatrix4 {
         let roll = SCNMatrix4MakeRotation(-angleRadians(model.roll), 1, 0, 0)
         let pitch = SCNMatrix4MakeRotation(angleRadians(model.pitch), 0, 0, 1)
         let yaw = SCNMatrix4MakeRotation(-angleRadians(model.yaw), 0, 1, 0)
-        let rotation = SCNMatrix4Mult(SCNMatrix4Mult(roll, pitch), yaw)
+        let rotation = SCNMatrix4Mult(SCNMatrix4Mult(yaw, pitch), roll)
         let offset = modelOffsetVector(for: model)
         let translation = SCNMatrix4MakeTranslation(offset.x, offset.y, offset.z)
-        // SceneKit composes these matrices in the opposite practical order from
-        // GL shader notation. This ordering matches the
-        // board 3D path: rotate the STEP mesh by the model orientation, then
-        // apply the package-local x/y/z model offset without rotating that
-        // offset vector.
         return SCNMatrix4Mult(rotation, translation)
     }
 
@@ -2834,9 +2866,39 @@ enum BoardSceneFactory {
                 && !isSolderMaskLayer($0.layer)
         }
         let board = nodes.board
+        // A pad's own drilled holes come out of its copper; a hole drilled
+        // elsewhere on the board that lands inside the pad does too.
+        let packageHolesByPadID = Dictionary(grouping: board.packageHoles) { packagePadID(for: $0.id) ?? $0.id }
+        let otherHoles = board.holes + board.viaHoles
         for pad in horizonPadOutlineFragments(renderPads) {
+            var cutouts = [[HorizontalPoint]]()
+            if let padID = packagePadID(for: pad.id) {
+                for hole in packageHolesByPadID[padID] ?? [] {
+                    let points = cleanedClosedScenePoints(hole.outlinePoints(precision: 48))
+                    if points.count >= 3 {
+                        cutouts.append(points)
+                    }
+                }
+            }
+            let padBounds = HorizontalRect(points: pad.paths.flatMap { $0 })
+            for hole in otherHoles where padBounds.contains(hole.position) {
+                let points = cleanedClosedScenePoints(hole.outlinePoints(precision: 48))
+                if points.count >= 3 {
+                    cutouts.append(points)
+                }
+            }
+            var paths = pad.paths
+            if !cutouts.isEmpty {
+                let fragments = clippedSceneFragments(subjects: pad.paths, cutouts: cutouts)
+                guard !fragments.isEmpty else {
+                    // The hole swallowed the pad: nothing left to render.
+                    continue
+                }
+                paths = fragments.flatMap { $0 }
+            }
             guard let node = padNode(
                 pad,
+                paths: paths,
                 center: center,
                 board: board,
                 boardThickness: boardThickness,
@@ -4145,13 +4207,14 @@ enum BoardSceneFactory {
 
     private static func padNode(
         _ pad: HorizontalPadOutlineFragment,
+        paths: [[HorizontalPoint]]? = nil,
         center: HorizontalPoint,
         board: HorizontalBoard,
         boardThickness: Double,
         layerSeparation: Double,
         materialPalette: MaterialPalette
     ) -> SCNNode? {
-        guard let path = compoundPath(for: pad.paths, center: center) else {
+        guard let path = compoundPath(for: paths ?? pad.paths, center: center) else {
             return nil
         }
 
@@ -4197,6 +4260,36 @@ enum BoardSceneFactory {
 
     private static func boardOutlinePath(for polygon: HorizontalPolygon, center: HorizontalPoint) -> HorizontalPlatformBezierPath? {
         closedPath(for: polygon.renderVertices(arcPrecision: 32), center: center)
+    }
+
+    /// The outline with the drill cutouts (and the outline's own bridged
+    /// holes) clipped out of it, as an even-odd compound path. Without
+    /// cutouts this is the plain outline path.
+    private static func boardBodyPath(
+        for polygon: HorizontalPolygon,
+        center: HorizontalPoint,
+        cutouts: [[HorizontalPoint]]
+    ) -> HorizontalPlatformBezierPath? {
+        guard !cutouts.isEmpty else {
+            return boardOutlinePath(for: polygon, center: center)
+        }
+        let contours = bridgedClosedSceneContours(from: polygon.renderVertices(arcPrecision: 32))
+        guard let outer = contours.first else {
+            return nil
+        }
+        let outlineHoles = Array(contours.dropFirst())
+        let bounds = HorizontalRect(points: outer)
+        let relevantCutouts = cutouts.filter { cutout in
+            cutout.contains { bounds.contains($0) }
+        }
+        guard !relevantCutouts.isEmpty else {
+            return compoundPath(for: contours, center: center)
+        }
+        let fragments = clippedSceneFragments(subjects: [outer], cutouts: outlineHoles + relevantCutouts)
+        guard !fragments.isEmpty else {
+            return compoundPath(for: contours, center: center)
+        }
+        return compoundPath(for: fragments.flatMap { $0 }, center: center)
     }
 
     private static func closedPath(for vertices: [HorizontalPoint], center: HorizontalPoint) -> HorizontalPlatformBezierPath? {

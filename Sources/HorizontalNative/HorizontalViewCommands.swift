@@ -73,6 +73,9 @@ struct HorizontalCanvasCommandActions {
     var canPlaceDot: Bool = false
     var canAutoplacePins: Bool = false
     var canResizeSymbol: Bool = false
+    var canDisconnect: Bool = false
+    var canShowInPoolManager: Bool = false
+    var canShowInProjectPoolManager: Bool = false
     var hasPlacementInteraction: Bool = false
     var dispatch: (HorizontalCanvasCommand) -> Void
 }
@@ -409,6 +412,20 @@ struct HorizontalViewCommands: Commands {
                 canvasCommandActions?.dispatch(.resizeSymbol)
             }
             .disabled(canvasCommandActions?.canResizeSymbol != true)
+
+            Divider()
+            Button("Disconnect") {
+                canvasCommandActions?.dispatch(.disconnect)
+            }
+            .disabled(canvasCommandActions?.canDisconnect != true)
+            Button("Show in Pool Manager") {
+                canvasCommandActions?.dispatch(.showInPoolManager)
+            }
+            .disabled(canvasCommandActions?.canShowInPoolManager != true)
+            Button("Show in Project Pool Manager") {
+                canvasCommandActions?.dispatch(.showInProjectPoolManager)
+            }
+            .disabled(canvasCommandActions?.canShowInProjectPoolManager != true)
 
             Divider()
             Button("Flip Track Posture") {

@@ -28,8 +28,21 @@ struct ProjectDocumentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
 
+    /// The canvas chrome the window wears: the schematic palette for symbol
+    /// and frame editors, the board palette for everything else.
     private var windowTheme: HorizontalCanvasPalette {
-        appearanceSettings.palette(for: .board, colorScheme: colorScheme)
+        let kind: HorizontalCanvasKind = switch poolItemCategory {
+        case .symbol, .frame: .schematic
+        default: .board
+        }
+        return appearanceSettings.palette(for: kind, colorScheme: colorScheme)
+    }
+
+    private var poolItemCategory: HorizontalPoolItemCategory? {
+        if case .poolItem(let session) = state {
+            return session.category
+        }
+        return nil
     }
 
     /// Pool item editors are a form beside a preview, not a two-canvas
@@ -41,13 +54,34 @@ struct ProjectDocumentView: View {
         return 980
     }
 
+    /// Pool item editors are ordinary document windows with a standard title
+    /// bar. The form editors (unit, entity, part) sit on the system window
+    /// background; the canvas editors keep the canvas chrome, like the board
+    /// and schematic editors they are modes of.
+    private var isPoolItemWindow: Bool {
+        poolItemCategory != nil
+    }
+
+    private var isPoolFormWindow: Bool {
+        switch poolItemCategory {
+        case .unit, .entity, .part: true
+        default: false
+        }
+    }
+
     var body: some View {
         content
             .frame(minWidth: minimumWindowWidth, minHeight: 640)
-            .background(WindowChromeConfigurator(isTransparent: appearanceSettings.isToolbarTransparent))
-            .containerBackground(windowTheme.background, for: .window)
+            .background(WindowChromeConfigurator(
+                isTransparent: appearanceSettings.isToolbarTransparent && !isPoolItemWindow,
+                usesStandardTitleBar: isPoolItemWindow
+            ))
+            .containerBackground(
+                isPoolFormWindow ? AnyShapeStyle(.background) : AnyShapeStyle(windowTheme.background),
+                for: .window
+            )
             .toolbarBackgroundVisibility(
-                appearanceSettings.isToolbarTransparent ? .hidden : .visible,
+                appearanceSettings.isToolbarTransparent && !isPoolItemWindow ? .hidden : .visible,
                 for: .windowToolbar
             )
             .task(id: configuration.fileURL) {
@@ -554,6 +588,9 @@ struct ProjectWorkspaceView: View {
     @State private var didRestoreFileViewState = false
     @State private var fileViewStateSaveTask: Task<Void, Never>?
     @State private var boardSyncRevision = 0
+    /// "Show in Project Pool Manager": the item the Library pane should select.
+    @State private var libraryRevealRequest: HorizontalPoolRevealRequest?
+    @State private var libraryPlacementError: String?
     /// Gates the plane-pour indicator. Separate from `planePourProgress` because
     /// that is nil both when idle and when a pour is deliberately indeterminate.
     @State private var isPouringPlanes = false
@@ -672,7 +709,7 @@ struct ProjectWorkspaceView: View {
     }
 
     var body: some View {
-        workspaceContent
+        workspaceContentWithAlerts
             .onReceive(
                 NotificationCenter.default.publisher(for: HorizontalPoolLibrary.itemDidSaveNotification)
                     .receive(on: RunLoop.main)
@@ -747,6 +784,18 @@ struct ProjectWorkspaceView: View {
                 fileViewStateSaveTask?.cancel()
                 fileViewStateSaveTask = nil
                 saveFileViewState()
+            }
+    }
+
+    /// Kept off `body`'s modifier chain, which is already as long as the type
+    /// checker tolerates.
+    private var workspaceContentWithAlerts: some View {
+        workspaceContent
+            .environment(\.horizonPoolRevealAction, revealInPools)
+            .alert("Could Not Place Part", isPresented: libraryPlacementErrorPresented) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(libraryPlacementError ?? "")
             }
     }
 
@@ -1183,10 +1232,12 @@ struct ProjectWorkspaceView: View {
                 )
             }
         case .library:
-            ViewerPane(title: "Library", subtitle: "Pools") {
+            ViewerPane(title: "Pools", subtitle: poolsPaneSubtitle) {
                 HorizontalPoolBrowserView(
                     root: .project(poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }),
-                    safeAreaInsets: fitSafeAreaInsets
+                    safeAreaInsets: fitSafeAreaInsets,
+                    revealRequest: libraryRevealRequest,
+                    onPlacePart: selectedSchematic == nil ? nil : { item in placePartFromLibrary(item) }
                 )
             }
         case .schematic:
@@ -1378,7 +1429,11 @@ struct ProjectWorkspaceView: View {
                                 syncRevision: boardSyncRevision,
                                 onSelectDrawingLayer: { selectOrSoloBoardLayer($0) },
                                 onSelectBoardLayerView: { applyBoardLayerViewPreset($0) },
-                                poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }
+                                poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
+                                canRevealPoolPackages: true,
+                                onRevealPoolPackage: { packageID, target in
+                                    revealPoolPackage(packageID, in: target)
+                                }
                             )
                             .id(boardLoadID)
                         }
@@ -1756,6 +1811,45 @@ struct ProjectWorkspaceView: View {
         if selection != nil {
             rightSidebarPane = .selection
         }
+    }
+
+    /// The board's "Show in Pool Manager": the package in the registered
+    /// pool that carries it, in that pool's window; "Show in Project Pool
+    /// Manager": the project's own copy, in this window's Library pane. A
+    /// package no registered pool carries falls back to the Library pane.
+    private func revealPoolPackage(_ packageID: String, in target: HorizontalPoolPackageRevealTarget) {
+        let request = HorizontalPoolRevealRequest(category: .package, uuid: packageID)
+        switch target {
+        case .projectPool:
+            revealInPools(request)
+        case .registeredPool:
+            let projectPoolURL = project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }
+            let candidates = projectPoolURL.map { HorizontalPoolPadstacks.basePoolURLs(for: $0) } ?? HorizontalPoolRegistryStore.poolURLs()
+            let normalized = packageID.lowercased()
+            for poolURL in candidates {
+                let name = HorizontalPoolRegistryStore.poolInfo(at: poolURL).name
+                let carriesPackage = HorizontalPoolLibrary.items(inPool: poolURL, poolName: name)
+                    .contains { $0.category == .package && $0.uuid == normalized }
+                if carriesPackage {
+                    HorizontalPoolWindowManager.shared.open(poolURL: poolURL, reveal: request, appearanceSettings: appearanceSettings)
+                    return
+                }
+            }
+            revealInPools(request)
+        }
+    }
+
+    /// Shows an item, or a search, in this window's Pools pane, opening the
+    /// pane when it is hidden.
+    private func revealInPools(_ request: HorizontalPoolRevealRequest) {
+        libraryRevealRequest = request
+        if !visiblePanes.contains(.library) {
+            visiblePanes.insert(.library)
+        }
+    }
+
+    private var poolsPaneSubtitle: String {
+        project.poolDirectory.map { "\($0) and registered pools" } ?? "Registered pools"
     }
 
     private func applySelectionPropertyChange(_ change: HorizontalSelectionPropertyChange, in pane: HorizontalPane) {
@@ -2800,6 +2894,55 @@ struct ProjectWorkspaceView: View {
     private func showPackageView() {
         columnVisibility = .all
         navigatorSelection = .package
+    }
+
+    private var libraryPlacementErrorPresented: Binding<Bool> {
+        Binding(
+            get: { libraryPlacementError != nil },
+            set: { presented in
+                if !presented {
+                    libraryPlacementError = nil
+                }
+            }
+        )
+    }
+
+    /// "Place in Schematic" from the Library pane: the part and everything it
+    /// needs are cached into the project pool first (Horizon's project pool
+    /// cache), the open archive learns the new files, then the placement
+    /// starts exactly as from the Parts pane.
+    private func placePartFromLibrary(_ item: HorizontalPoolLibraryItem) {
+        guard !isReadOnly, selectedSchematic != nil,
+              let poolURL = project.poolDirectory.map({ project.baseURL.appendingPathComponent($0) }) else {
+            return
+        }
+        do {
+            let imported = try HorizontalPoolCacheImporter.cachePart(item, into: poolURL)
+            if case .directory = document.archive.root {
+                for url in imported.writtenFiles {
+                    if let relativePath = archiveRelativePath(for: url) {
+                        try document.archive.replaceRegularFileData(relativePath: relativePath, with: Data(contentsOf: url))
+                    }
+                }
+            }
+            if !imported.writtenFiles.isEmpty {
+                HorizontalPoolLibrary.invalidateCache()
+                HorizontalPoolPadstacks.invalidateCaches()
+            }
+            guard let part = HorizontalPoolPart.loadCached(id: item.uuid, from: poolURL) else {
+                libraryPlacementError = "“\(item.name)” could not be read from the project pool after caching."
+                return
+            }
+            if let index = project.poolParts.firstIndex(where: { $0.id == part.id }) {
+                project.poolParts[index] = part
+            } else {
+                project.poolParts.append(part)
+                project.poolParts.sort { $0.mpn.localizedStandardCompare($1.mpn) == .orderedAscending }
+            }
+            beginPartPlacement(part)
+        } catch {
+            libraryPlacementError = error.localizedDescription
+        }
     }
 
     private func beginPartPlacement(_ part: HorizontalPoolPart) {
@@ -4155,294 +4298,6 @@ private struct ProjectMetadataEditorView: View {
     }
 }
 
-private struct ThreeDViewPresetRailButtons: View {
-    var board: HorizontalBoard?
-    @Binding var displayOptions: BoardDisplayOptions
-    @Binding var cameraState: HorizontalSceneCameraState?
-
-    var body: some View {
-        VStack(spacing: 6) {
-            ForEach(HorizontalBoard3DViewPreset.allCases) { preset in
-                HorizontalRailHelpLabel(title: preset.title) {
-                    Button {
-                        applyViewPreset(preset)
-                    } label: {
-                        Image(systemName: preset.systemImage)
-                    }
-                    .disabled(board == nil)
-                    .help(preset.title)
-                }
-            }
-        }
-    }
-
-    private func applyViewPreset(_ preset: HorizontalBoard3DViewPreset) {
-        guard let board else {
-            return
-        }
-        displayOptions.threeDProjection = preset.projection
-        cameraState = horizonSceneCameraState(for: preset, board: board)
-    }
-}
-
-private struct ThreeDViewControlsButton: View {
-    var board: HorizontalBoard?
-    @Binding var displayOptions: BoardDisplayOptions
-    @Binding var cameraState: HorizontalSceneCameraState?
-
-    @State private var isControlsPresented = false
-
-    var body: some View {
-        HorizontalRailHelpLabel(title: "3D Board controls") {
-            Button {
-                isControlsPresented.toggle()
-            } label: {
-                Image(systemName: isControlsPresented ? "cube.fill" : "cube")
-            }
-            .help("3D Board controls")
-            .popover(isPresented: $isControlsPresented, arrowEdge: .trailing) {
-                ThreeDViewControlsPanel(
-                    board: board,
-                    displayOptions: $displayOptions,
-                    cameraState: $cameraState
-                )
-            }
-        }
-    }
-}
-
-private struct ThreeDViewControlsPanel: View {
-    var board: HorizontalBoard?
-    @Binding var displayOptions: BoardDisplayOptions
-    @Binding var cameraState: HorizontalSceneCameraState?
-
-    @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
-
-    var body: some View {
-        LayerControlsPanel(title: "3D Controls") {
-            VStack(alignment: .leading, spacing: 11) {
-                explodeControl
-                colorToggleRow(
-                    "Solder mask",
-                    isOn: $displayOptions.solderMask,
-                    color: appearanceSettings.boardSceneSolderMaskColorBinding()
-                )
-                solderMaskTransparencyControl
-                colorToggleRow(
-                    "Silkscreen",
-                    isOn: $displayOptions.silkscreen,
-                    color: appearanceSettings.boardSceneSilkscreenColorBinding()
-                )
-                BoardDisplayToggle(title: "Solder paste", isOn: $displayOptions.paste)
-                colorToggleRow(
-                    "Substrate",
-                    isOn: $displayOptions.boardBody,
-                    color: appearanceSettings.boardSceneSubstrateColorBinding()
-                )
-                segmentedPickerRow("Copper", selection: copperModeBinding) {
-                    ForEach(HorizontalBoardSceneCopperMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                viaPlatingControl
-                modelModeControl
-                colorToggleRow(
-                    "Background",
-                    isOn: $displayOptions.threeDBackground,
-                    color: appearanceSettings.boardSceneBackgroundColorBinding()
-                )
-                segmentedPickerRow("Projection", selection: projectionBinding) {
-                    ForEach(HorizontalBoardSceneProjection.allCases) { projection in
-                        Text(projection.title).tag(projection)
-                    }
-                }
-            }
-        }
-    }
-
-    private var explodeControl: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Explode")
-                Spacer()
-                Text(String(format: "%.1f mm", displayOptions.threeDExplode))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            Slider(value: $displayOptions.threeDExplode, in: 0...12, step: 0.25)
-        }
-    }
-
-    private var solderMaskTransparencyControl: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Solder mask transparency")
-                Spacer()
-                Text("\((displayOptions.threeDSolderMaskTransparency * 100).formatted(.number.precision(.fractionLength(0))))%")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            Slider(value: solderMaskTransparencyBinding, in: 0...1, step: 0.01)
-                .disabled(!displayOptions.solderMask)
-        }
-    }
-
-    private var viaPlatingControl: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Via plating")
-                Spacer()
-                Text("\(displayOptions.threeDViaPlatingMicrons.formatted(.number.precision(.fractionLength(0)))) µm")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            HStack(spacing: 6) {
-                TextField(
-                    "Via plating",
-                    value: viaPlatingBinding,
-                    format: .number.precision(.fractionLength(0))
-                )
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 86)
-                Text("µm")
-                    .foregroundStyle(.secondary)
-                Stepper("Via plating", value: viaPlatingBinding, in: 0...250, step: 1)
-                    .labelsHidden()
-            }
-            Text("Applies to via wall thickness and top/bottom protrusion.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var viaPlatingBinding: Binding<Double> {
-        Binding {
-            displayOptions.threeDViaPlatingMicrons
-        } set: { value in
-            displayOptions.threeDViaPlatingMicrons = value.clamped(to: 0...250)
-        }
-    }
-
-    private var solderMaskTransparencyBinding: Binding<Double> {
-        Binding {
-            displayOptions.threeDSolderMaskTransparency
-        } set: { value in
-            displayOptions.threeDSolderMaskTransparency = value.clamped(to: 0...1)
-        }
-    }
-
-    private var modelModeControl: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("3D Models")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 3) {
-                ForEach(HorizontalBoardSceneModelMode.allCases) { mode in
-                    let isSelected = displayOptions.threeDModelMode == mode
-                    Button {
-                        modelModeBinding.wrappedValue = mode
-                    } label: {
-                        Text(mode.title)
-                            .font(.caption.weight(.semibold))
-                            .frame(maxWidth: .infinity, minHeight: 24)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(isSelected ? .primary : .secondary)
-                    .background {
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(isSelected ? Color.accentColor.opacity(0.24) : Color.clear)
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .stroke(isSelected ? Color.accentColor.opacity(0.45) : Color.clear, lineWidth: 0.75)
-                    }
-                }
-            }
-            .padding(3)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(Color.secondary.opacity(0.2), lineWidth: 0.75)
-            }
-        }
-    }
-
-    private var copperModeBinding: Binding<HorizontalBoardSceneCopperMode> {
-        $displayOptions.threeDCopperMode
-    }
-
-    private var modelModeBinding: Binding<HorizontalBoardSceneModelMode> {
-        Binding {
-            displayOptions.threeDModelMode
-        } set: { mode in
-            displayOptions.threeDModelMode = mode
-            displayOptions.threeDModels = mode != .none
-        }
-    }
-
-    private var projectionBinding: Binding<HorizontalBoardSceneProjection> {
-        Binding {
-            displayOptions.threeDProjection
-        } set: { projection in
-            displayOptions.threeDProjection = projection
-            syncCameraStateProjection(projection)
-        }
-    }
-
-    private func syncCameraStateProjection(_ projection: HorizontalBoardSceneProjection) {
-        guard let board else {
-            return
-        }
-
-        let orthographicScale = projection == .orthogonal
-            ? (cameraState?.orthographicScale ?? horizonSceneDefaultOrthographicScale(for: board))
-            : nil
-
-        if let cameraState, cameraState.isValid {
-            self.cameraState = HorizontalSceneCameraState(
-                transform: cameraState.transform,
-                orthographicScale: orthographicScale
-            )
-        } else {
-            let fallback = horizonSceneCameraState(for: .defaultPerspective, board: board)
-            self.cameraState = HorizontalSceneCameraState(
-                transform: fallback.transform,
-                orthographicScale: orthographicScale
-            )
-        }
-    }
-
-    private func colorToggleRow(_ title: String, isOn: Binding<Bool>, color: Binding<Color>) -> some View {
-        HStack(spacing: 8) {
-            Toggle(title, isOn: isOn)
-                .toggleStyle(.checkbox)
-            Spacer()
-            ColorPicker(title, selection: color, supportsOpacity: false)
-                .labelsHidden()
-        }
-    }
-
-    private func segmentedPickerRow<Selection: Hashable, Content: View>(
-        _ title: String,
-        selection: Binding<Selection>,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Picker(title, selection: selection) {
-                content()
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-        }
-    }
-
-}
-
 private struct NavigatorRow: View {
     var icon: String
     var title: String
@@ -4531,20 +4386,26 @@ private struct NavigatorColorRow: View {
 /// states differed in layout and not just in background.
 private struct WindowChromeConfigurator: NSViewRepresentable {
     var isTransparent: Bool
+    /// A plain title bar above the content (pool item editors), instead of
+    /// the full-size content view the canvas windows use.
+    var usesStandardTitleBar = false
 
     func makeNSView(context: Context) -> ConfiguringView {
         let view = ConfiguringView()
         view.isTransparent = isTransparent
+        view.usesStandardTitleBar = usesStandardTitleBar
         return view
     }
 
     func updateNSView(_ nsView: ConfiguringView, context: Context) {
         nsView.isTransparent = isTransparent
+        nsView.usesStandardTitleBar = usesStandardTitleBar
         nsView.configureWindow()
     }
 
     final class ConfiguringView: NSView {
         var isTransparent = false
+        var usesStandardTitleBar = false
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -4556,8 +4417,15 @@ private struct WindowChromeConfigurator: NSViewRepresentable {
                 return
             }
 
-            window.styleMask.insert(.fullSizeContentView)
-            window.titlebarAppearsTransparent = isTransparent
+            if usesStandardTitleBar {
+                window.styleMask.remove(.fullSizeContentView)
+                window.titlebarAppearsTransparent = false
+                window.titleVisibility = .visible
+                window.backgroundColor = .windowBackgroundColor
+            } else {
+                window.styleMask.insert(.fullSizeContentView)
+                window.titlebarAppearsTransparent = isTransparent
+            }
         }
     }
 }

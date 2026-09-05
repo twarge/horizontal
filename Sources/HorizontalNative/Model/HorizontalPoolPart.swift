@@ -28,6 +28,20 @@ struct HorizontalPoolPart: Identifiable, Hashable {
         tags.joined(separator: ", ")
     }
 
+    /// One part from the project pool's cache, resolved the way `loadAll`
+    /// resolves them (entity, gates, symbols, package name).
+    static func loadCached(id: String, from poolURL: URL) -> HorizontalPoolPart? {
+        let normalized = id.lowercased()
+        let url = poolURL
+            .appendingPathComponent("parts")
+            .appendingPathComponent("cache")
+            .appendingPathComponent("\(normalized).json")
+        guard let json = try? JSONHelper.loadDictionary(from: url) else {
+            return nil
+        }
+        return PoolPartLoader(poolURL: poolURL).part(id: normalized, json: json)
+    }
+
     static func loadAll(from poolURL: URL) -> [HorizontalPoolPart] {
         BoardLoadTimer.measure("HorizontalPoolPart.loadAll") {
             let partsURL = poolURL

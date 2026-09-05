@@ -44,9 +44,16 @@ enum HorizontalBoardConnectivity {
         var padNetByPath = [String: String]()
         var padLayersByPath = [String: Set<Int>]()
         var padNodesByPath = [String: [String]]()
+        // Horizon attaches a track to a pad only through an explicit pad
+        // reference; a junction sitting on the pad's centre is *not* one (it is
+        // what Disconnect leaves behind, and what the writer emits when a
+        // junction is there). So a pad whose centre carries a junction seeds
+        // nothing: copper meeting it is detached, as it is on disk.
+        let junctionKeys = Set(board.junctions.values.map(pointKey))
         for pad in board.packagePads {
             guard let layer = pad.layer, HorizontalBoardLayers.isCopper(layer) else { continue }
             let center = HorizontalRect(points: pad.renderVertices(arcPrecision: 24)).center
+            guard !junctionKeys.contains(pointKey(center)) else { continue }
             seed(center, layer: layer, pad.netID)
             guard let path = padPath(forPolygonID: pad.id) else { continue }
             if let net = pad.netID { padNetByPath[path] = net }
@@ -56,7 +63,7 @@ enum HorizontalBoardConnectivity {
             padNodesByPath[path, default: []]
                 .append(HorizontalCopperConnectivity.node(center, layer: layer))
         }
-        for (path, center) in board.packagePadPositions {
+        for (path, center) in board.packagePadPositions where !junctionKeys.contains(pointKey(center)) {
             let normalized = normalizedID(path)
             for layer in padLayersByPath[normalized] ?? [] {
                 seed(center, layer: layer, padNetByPath[normalized])

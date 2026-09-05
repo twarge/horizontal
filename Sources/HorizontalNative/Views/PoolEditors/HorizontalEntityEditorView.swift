@@ -18,10 +18,22 @@ struct HorizontalEntityEditorView: View {
         VStack(alignment: .leading, spacing: 14) {
             Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 8) {
                 gridTextRow("Name", entity.name, "Rename Entity") { $0.name = $1 }
-                gridTextRow("Manufacturer", entity.manufacturer, "Change Manufacturer") { $0.manufacturer = $1 }
+                GridRow {
+                    Text("Manufacturer").gridColumnAlignment(.trailing)
+                    HorizontalSuggestingTextField(text: entity.manufacturer, suggestions: index.manufacturers, isReadOnly: isReadOnly) { value in
+                        var model = entity
+                        model.manufacturer = value
+                        commit(model, "Change Manufacturer")
+                    }
+                }
                 gridTextRow("Prefix", entity.prefix, "Change Prefix") { $0.prefix = $1 }
-                gridTextRow("Tags", entity.tags.joined(separator: " "), "Change Tags") {
-                    $0.tags = HorizontalPoolItemHeaderForm.tags(from: $1)
+                GridRow {
+                    Text("Tags").gridColumnAlignment(.trailing)
+                    HorizontalTokenField(tokens: entity.tags, suggestions: index.tags, isReadOnly: isReadOnly) { tags in
+                        var model = entity
+                        model.tags = tags
+                        commit(model, "Change Tags")
+                    }
                 }
             }
             .frame(maxWidth: 520)

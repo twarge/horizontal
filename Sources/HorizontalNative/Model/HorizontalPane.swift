@@ -1,8 +1,8 @@
 import SwiftUI
 
 enum HorizontalPane: String, CaseIterable, Codable, Identifiable {
-    case parts
     case library
+    case parts
     case schematic
     case board
     case threeD
@@ -12,7 +12,7 @@ enum HorizontalPane: String, CaseIterable, Codable, Identifiable {
     var title: String {
         switch self {
         case .parts: "Parts"
-        case .library: "Library"
+        case .library: "Pools"
         case .schematic: "Schematic"
         case .board: "Board"
         case .threeD: "3D Board"

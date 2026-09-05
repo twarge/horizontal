@@ -291,6 +291,9 @@ struct BoardCanvasView: View {
     var modeProfile: HorizontalBoardModeProfile = .board
     /// Padstack resolution and naming for a package / padstack editor.
     var poolContext: HorizontalPoolEditorContext? = nil
+    /// The host can show a package in a pool window (macOS project windows).
+    var canRevealPoolPackages = false
+    var onRevealPoolPackage: (String, HorizontalPoolPackageRevealTarget) -> Void = { _, _ in }
     @ObservedObject var toolSettings: HorizontalBoardToolSettings
 
     @State private var hoveredObject: HorizontalSelectableRef?
@@ -389,7 +392,9 @@ struct BoardCanvasView: View {
         onSelectBoardLayerView: @escaping (HorizontalBoardLayerViewPreset) -> Void = { _ in },
         poolURL: URL? = nil,
         modeProfile: HorizontalBoardModeProfile = .board,
-        poolContext: HorizontalPoolEditorContext? = nil
+        poolContext: HorizontalPoolEditorContext? = nil,
+        canRevealPoolPackages: Bool = false,
+        onRevealPoolPackage: @escaping (String, HorizontalPoolPackageRevealTarget) -> Void = { _, _ in }
     ) {
         self.sourceBoard = board
         self.netClasses = netClasses
@@ -426,6 +431,8 @@ struct BoardCanvasView: View {
         self.poolURL = poolURL
         self.modeProfile = modeProfile
         self.poolContext = poolContext
+        self.canRevealPoolPackages = canRevealPoolPackages
+        self.onRevealPoolPackage = onRevealPoolPackage
     }
 
     private var board: HorizontalBoard {
@@ -675,6 +682,8 @@ struct BoardCanvasView: View {
             gridColor: theme.grid,
             drawsGridInMetal: drawsGridInMetal,
             gridLineWidth: appearanceSettings.gridMarkLineWidth,
+            showsOriginMark: displayOptions.origin && HorizontalMetalBackdropView.isSupported,
+            originMarkColor: theme.grid,
             metalOverlayTriangles: metalLineBatch.triangles,
             metalOverlayTriangleKey: metalLineBatch.triangleKey,
             metalOverlayLines: metalLineBatch.lines,
@@ -1523,9 +1532,9 @@ struct BoardCanvasView: View {
             detailRow("Refdes", component.refdes),
             detailRow("Value", component.value),
             component.noPopulate ? detailRow("DNP", "Yes") : nil,
-            detailRow("MPN", component.mpn),
-            detailRow("Manufacturer", component.manufacturer),
-            detailRow("Package", component.packageName),
+            detailRow("MPN", component.mpn, poolSearch: .part),
+            detailRow("Manufacturer", component.manufacturer, poolSearch: .part),
+            detailRow("Package", component.packageName, poolSearch: .package),
             detailRow("Description", component.description),
             detailRow("Datasheet", component.datasheet),
         ].compactMap { $0 }
@@ -1578,11 +1587,21 @@ struct BoardCanvasView: View {
         return value
     }
 
-    private func detailRow(_ label: String, _ value: String?) -> HorizontalSelectionHUDDetail? {
+    /// `poolSearch`: the value doubles as a link that filters that category
+    /// of the Pools pane to it.
+    private func detailRow(
+        _ label: String,
+        _ value: String?,
+        poolSearch category: HorizontalPoolItemCategory? = nil
+    ) -> HorizontalSelectionHUDDetail? {
         guard let value = nonEmpty(value) else {
             return nil
         }
-        return HorizontalSelectionHUDDetail(label: label, value: value)
+        return HorizontalSelectionHUDDetail(
+            label: label,
+            value: value,
+            poolSearch: category.map { HorizontalPoolSearch(category: $0, term: value) }
+        )
     }
 
     private func selectionProperties(for ref: HorizontalSelectableRef) -> [HorizontalSelectionProperty] {
@@ -2313,6 +2332,15 @@ struct BoardCanvasView: View {
         if modeProfile.placesHoles {
             handlers.placeHole = { beginPlaceHole(shape: $0) }
         }
+        if modeProfile.mode == .board {
+            if selectedObjects.contains(where: canDisconnect) {
+                handlers.disconnect = { disconnectSelection() }
+            }
+            if canRevealPoolPackages, selectedPackagePoolID() != nil {
+                handlers.showInPoolManager = { revealSelectedPackage(.registeredPool) }
+                handlers.showInProjectPoolManager = { revealSelectedPackage(.projectPool) }
+            }
+        }
         return handlers
     }
 
@@ -2523,7 +2551,7 @@ struct BoardCanvasView: View {
         // Destructive
         entries.append(.separator)
         if writable, isDeletable(ref) { entries.append(.command(title: "Delete", .deleteSelection)) }
-        if writable, hasNet { entries.append(.todo(title: "Disconnect")) }
+        if writable, canDisconnect(ref) { entries.append(.command(title: "Disconnect", .disconnect)) }
 
         // Net
         if hasNet {
@@ -2535,8 +2563,13 @@ struct BoardCanvasView: View {
         // Pool / datasheet (packages)
         if isPackage {
             entries.append(.separator)
-            entries.append(.todo(title: "Show in pool manager"))
-            entries.append(.todo(title: "Show in project pool manager"))
+            if canRevealPoolPackages, packagePoolID(for: ref) != nil {
+                entries.append(.command(title: "Show in Pool Manager", .showInPoolManager))
+                entries.append(.command(title: "Show in Project Pool Manager", .showInProjectPoolManager))
+            } else {
+                entries.append(.todo(title: "Show in Pool Manager"))
+                entries.append(.todo(title: "Show in Project Pool Manager"))
+            }
             if packageDatasheetURL(for: ref) != nil {
                 entries.append(.command(title: "Open Datasheet", .openDatasheet))
             } else {
@@ -8210,10 +8243,6 @@ struct BoardCanvasView: View {
         let bottomFallbackColor = HorizontalMetalRGBA(layerColor(for: HorizontalBoardLayers.bottomCopper).opacity(0.82))
         let panelColor = HorizontalMetalRGBA(theme.textOverlay.opacity(0.36))
         let panelLabelColor = HorizontalMetalRGBA(theme.textOverlay.opacity(0.48))
-        let originXColor = HorizontalMetalRGBA(theme.error.opacity(0.42))
-        let originYColor = HorizontalMetalRGBA(theme.origin.opacity(0.42))
-        let originXLabelColor = HorizontalMetalRGBA(theme.error.opacity(0.58))
-        let originYLabelColor = HorizontalMetalRGBA(theme.origin.opacity(0.58))
         let bodyHighColor = HorizontalMetalRGBA(layerColor(for: HorizontalBoardLayers.outline).opacity(0.74))
         let bodyLowColor = HorizontalMetalRGBA(layerColor(for: HorizontalBoardLayers.outline).opacity(0.18))
         let bodyFillColor = HorizontalMetalRGBA(layerColor(for: HorizontalBoardLayers.outline).opacity(0.23))
@@ -8615,38 +8644,8 @@ struct BoardCanvasView: View {
             }
         }
 
-        // ============================================================
-        // Origin (lines + labels)
-        // ============================================================
-        profile("origin") {
-            let originLength = 1_500_000.0
-            appendLine(
-                from: HorizontalPoint(x: -originLength, y: 0),
-                to: HorizontalPoint(x: originLength, y: 0),
-                color: originXColor,
-                minimumWidth: 0.8,
-                to: \.origin
-            )
-            appendLine(
-                from: HorizontalPoint(x: 0, y: -originLength),
-                to: HorizontalPoint(x: 0, y: originLength),
-                color: originYColor,
-                minimumWidth: 0.8,
-                to: \.origin
-            )
-            appendText(
-                boardOriginText("X", at: HorizontalPoint(x: 1_500_000, y: 0)),
-                color: originXLabelColor,
-                minimumWidth: 0.8,
-                to: \.origin
-            )
-            appendText(
-                boardOriginText("Y", at: HorizontalPoint(x: 0, y: 1_500_000)),
-                color: originYLabelColor,
-                minimumWidth: 0.8,
-                to: \.origin
-            )
-        }
+        // The origin is the backdrop's mark now (see HorizontalGridRenderer.
+        // drawOriginMark); the "origin" bucket stays empty.
 
         // ============================================================
         // Body (boardBody and outline) — outlines emitted in two opacity variants
@@ -11335,6 +11334,14 @@ struct BoardCanvasView: View {
         if displayOptions.grid && !drawsGridInMetal {
             drawGrid(context: context, transform: transform)
         }
+        if displayOptions.origin && !HorizontalMetalBackdropView.isSupported {
+            HorizontalGridRenderer.drawOriginMark(
+                context: context,
+                transform: transform,
+                color: theme.grid,
+                lineWidth: appearanceSettings.gridMarkLineWidth
+            )
+        }
 
         drawLayerPlanesBeforeMetalLines(renderLayers: renderLayers, context: context, transform: transform)
     }
@@ -11410,17 +11417,6 @@ struct BoardCanvasView: View {
         )
     }
 
-    private func boardOriginText(_ label: String, at position: HorizontalPoint) -> HorizontalText {
-        HorizontalText(
-            id: "board-origin-\(label)",
-            text: label,
-            position: position,
-            size: 700_000,
-            layer: nil,
-            origin: .center,
-            centered: true
-        )
-    }
 
     private func drawLayerPlanesBeforeMetalLines(
         renderLayers: [Int],
@@ -13413,6 +13409,130 @@ private extension HorizontalDimensionMode {
         case .horizontal: "Horizontal"
         case .vertical: "Vertical"
         }
+    }
+}
+
+/// Where "Show in Pool Manager" looks for a placed package's pool package.
+enum HorizontalPoolPackageRevealTarget {
+    /// The registered pool the package came from.
+    case registeredPool
+    /// The project's own pool (its cached copy).
+    case projectPool
+}
+
+// MARK: - Disconnect and pool reveal
+
+extension BoardCanvasView {
+    /// The pool package uuid behind a placed package.
+    private func packagePoolID(for ref: HorizontalSelectableRef) -> String? {
+        guard ref.type == .boardPackage,
+              let placement = board.packages.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+            return nil
+        }
+        return placement.packageID
+    }
+
+    private func selectedPackagePoolID() -> String? {
+        selectedObjects.lazy.compactMap { packagePoolID(for: $0) }.first
+    }
+
+    private func revealSelectedPackage(_ target: HorizontalPoolPackageRevealTarget) {
+        guard let packageID = selectedPackagePoolID() else {
+            return
+        }
+        onRevealPoolPackage(packageID, target)
+    }
+
+    /// The pad centres of a placed package, keyed by position.
+    private func padCenterKeys(ofPackage packageRefID: String) -> Set<String> {
+        let prefix = normalizedID(packageRefID) + "/"
+        var keys = Set<String>()
+        for (path, center) in board.packagePadPositions where normalizedID(path).hasPrefix(prefix) {
+            keys.insert(pointKey(center))
+        }
+        return keys
+    }
+
+    private var allPadCenterKeys: Set<String> {
+        Set(board.packagePadPositions.values.map(pointKey))
+    }
+
+    /// `ToolDisconnect::can_begin`: a package with tracks on its pads, or a
+    /// track ending on a pad.
+    private func canDisconnect(_ ref: HorizontalSelectableRef) -> Bool {
+        guard modeProfile.mode == .board else {
+            return false
+        }
+        switch ref.type {
+        case .boardPackage:
+            let centers = padCenterKeys(ofPackage: ref.id)
+            guard !centers.isEmpty else {
+                return false
+            }
+            return board.tracks.contains { centers.contains(pointKey($0.from)) || centers.contains(pointKey($0.to)) }
+        case .track:
+            guard let track = board.tracks.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+                return false
+            }
+            let centers = allPadCenterKeys
+            return centers.contains(pointKey(track.from)) || centers.contains(pointKey(track.to))
+        default:
+            return false
+        }
+    }
+
+    /// `Board::disconnect_package`: every track end on one of the package's
+    /// pads is moved onto a junction at that pad's centre. The copper stays
+    /// where it is; the pad reference is gone, on disk and — because a
+    /// junction on a pad centre no longer counts as attached — in the
+    /// connectivity pass, so the tracks go net-less until reconnected.
+    private func disconnectSelection() {
+        guard !isReadOnly, modeProfile.mode == .board else {
+            return
+        }
+        var detachKeys = Set<String>()
+        for ref in selectedObjects {
+            switch ref.type {
+            case .boardPackage:
+                let centers = padCenterKeys(ofPackage: ref.id)
+                for track in board.tracks {
+                    for end in [track.from, track.to] where centers.contains(pointKey(end)) {
+                        detachKeys.insert(pointKey(end))
+                    }
+                }
+            case .track:
+                guard let track = board.tracks.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+                    continue
+                }
+                let centers = allPadCenterKeys
+                for end in [track.from, track.to] where centers.contains(pointKey(end)) {
+                    detachKeys.insert(pointKey(end))
+                }
+            default:
+                continue
+            }
+        }
+        guard !detachKeys.isEmpty else {
+            return
+        }
+        let previous = editedBoard ?? sourceBoard
+        var draft = previous
+        var changed = false
+        for (_, center) in board.packagePadPositions where detachKeys.contains(pointKey(center)) {
+            let existing = draft.junctions.values.contains { pointKey($0) == pointKey(center) }
+            if !existing {
+                _ = ensureBoardJunction(at: center, board: &draft)
+                changed = true
+            }
+        }
+        guard changed else {
+            return
+        }
+        registerUndoSnapshot(previous, actionName: "Disconnect")
+        invalidateSelectableCache()
+        publishConnectivityResolvedEdit(draft)
+        publishSelectionContext()
+        publishCanvasCommandActions()
     }
 }
 

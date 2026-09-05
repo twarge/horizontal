@@ -138,3 +138,48 @@ final class HorizontalPoolFormEditorTests: XCTestCase {
         XCTAssertTrue(NSDictionary(dictionary: part.json()).isEqual(to: json))
     }
 }
+
+// MARK: - Completions and tokens
+
+extension HorizontalPoolFormEditorTests {
+    func testIndexCollectsManufacturersAndTagsForCompletions() {
+        func item(_ uuid: String, category: HorizontalPoolItemCategory, tags: String, manufacturer: String) -> HorizontalPoolLibraryItem {
+            HorizontalPoolLibraryItem(
+                id: "p|\(category.rawValue)|\(uuid)", uuid: uuid, name: uuid, detail: "", tags: tags,
+                category: category, poolName: "p", poolURL: URL(fileURLWithPath: "/p"),
+                url: URL(fileURLWithPath: "/p/\(uuid).json"), manufacturer: manufacturer
+            )
+        }
+        let index = HorizontalPoolLibraryIndex(items: [
+            item("a", category: .part, tags: "resistor smd", manufacturer: "Yageo"),
+            item("b", category: .package, tags: "smd 0603", manufacturer: " "),
+            item("c", category: .unit, tags: "", manufacturer: "Texas Instruments"),
+            item("d", category: .entity, tags: "opamp", manufacturer: "yageo"),
+        ])
+        XCTAssertEqual(index.manufacturers, ["Texas Instruments", "Yageo"], "case variants fold to the first spelling")
+        XCTAssertEqual(index.tags, ["0603", "opamp", "resistor", "smd"])
+    }
+
+    func testSuggestionMatchingPrefersPrefixesAndSkipsExisting() {
+        let suggestions = ["Texas Instruments", "Yageo", "Vishay", "STMicroelectronics", "Microchip", "TE Connectivity"]
+        XCTAssertEqual(
+            HorizontalSuggestionMatcher.matches(for: "te", in: suggestions, excluding: []),
+            ["Texas Instruments", "TE Connectivity"]
+        )
+        XCTAssertEqual(
+            HorizontalSuggestionMatcher.matches(for: "micro", in: suggestions, excluding: []),
+            ["Microchip", "STMicroelectronics"],
+            "prefix matches first, then substring matches"
+        )
+        XCTAssertEqual(HorizontalSuggestionMatcher.matches(for: "yageo", in: suggestions, excluding: []), [], "an exact match needs no suggestion")
+        XCTAssertEqual(HorizontalSuggestionMatcher.matches(for: "v", in: suggestions, excluding: ["Vishay"]), ["TE Connectivity"])
+        XCTAssertEqual(HorizontalSuggestionMatcher.matches(for: "  ", in: suggestions, excluding: []), [])
+        let many = (0..<20).map { "tag\($0)" }
+        XCTAssertEqual(HorizontalSuggestionMatcher.matches(for: "tag", in: many, excluding: []).count, 8, "capped")
+    }
+
+    func testTokenFieldSplitsOnSeparators() {
+        XCTAssertEqual(HorizontalTokenField.tokens(splitting: "resistor, smd;0603 thin-film"), ["resistor", "smd", "0603", "thin-film"])
+        XCTAssertEqual(HorizontalTokenField.tokens(splitting: "   "), [])
+    }
+}

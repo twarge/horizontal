@@ -94,6 +94,13 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
     }
     var threeDModels = true
     var threeDUseLayerColors = false
+    /// The 3D view's own surface toggles. Independent of the 2D layer eyes
+    /// (`silkscreen`, `solderMask`, `paste`, `boardBody`), so hiding the
+    /// silkscreen or substrate in one view leaves the other alone.
+    var threeDSilkscreen = true
+    var threeDSolderMask = true
+    var threeDPaste = true
+    var threeDBoardBody = true
     var layerOpacity = 0.6
     var highlightMode = "dim_other"
     var layerMode = "as_is"
@@ -171,6 +178,10 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         }
         threeDModels = threeDModelMode != .none
         threeDUseLayerColors = threeDCopperMode == .layerColor
+        threeDSilkscreen = try container.decodeIfPresent(Bool.self, forKey: .threeDSilkscreen) ?? defaults.threeDSilkscreen
+        threeDSolderMask = try container.decodeIfPresent(Bool.self, forKey: .threeDSolderMask) ?? defaults.threeDSolderMask
+        threeDPaste = try container.decodeIfPresent(Bool.self, forKey: .threeDPaste) ?? defaults.threeDPaste
+        threeDBoardBody = try container.decodeIfPresent(Bool.self, forKey: .threeDBoardBody) ?? defaults.threeDBoardBody
         layerOpacity = try container.decodeIfPresent(Double.self, forKey: .layerOpacity) ?? defaults.layerOpacity
         highlightMode = try container.decodeIfPresent(String.self, forKey: .highlightMode) ?? defaults.highlightMode
         layerMode = try container.decodeIfPresent(String.self, forKey: .layerMode) ?? defaults.layerMode
@@ -212,6 +223,10 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         threeDModelMode = .placed
         threeDCopperMode = .on
         threeDBackground = true
+        threeDSilkscreen = true
+        threeDSolderMask = true
+        threeDPaste = true
+        threeDBoardBody = true
         layerVisibilityOverrides.removeAll()
     }
 

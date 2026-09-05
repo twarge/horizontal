@@ -1597,12 +1597,16 @@ struct BoardLayerControls: View {
 
     private var layersTab: some View {
         VStack(alignment: .leading, spacing: 0) {
-            BoardDisplayPresetButtons(displayOptions: $displayOptions)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 10)
+            // The view presets rearrange the 2D view; from the 3D pane they
+            // would change the other window's layers.
+            if !includesThreeDControls {
+                BoardDisplayPresetButtons(displayOptions: $displayOptions)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 10)
 
-            Divider()
-                .padding(.bottom, 6)
+                Divider()
+                    .padding(.bottom, 6)
+            }
 
             ForEach(layerEntries) { entry in
                 BoardLayerRow(
@@ -1736,7 +1740,11 @@ struct BoardLayerControls: View {
 
             if entry.layer == HorizontalBoardLayers.outline {
                 Divider()
-                BoardDisplayToggle(title: "Board Body", color: theme.layerColor(for: HorizontalBoardLayers.outline), isOn: $displayOptions.boardBody)
+                BoardDisplayToggle(
+                    title: "Board Body",
+                    color: theme.layerColor(for: HorizontalBoardLayers.outline),
+                    isOn: includesThreeDControls ? $displayOptions.threeDBoardBody : $displayOptions.boardBody
+                )
             }
 
             if HorizontalBoardLayers.isSilkscreen(entry.layer) {
@@ -1757,6 +1765,20 @@ struct BoardLayerControls: View {
     private func visibilityBinding(for entry: BoardLayerEntry) -> Binding<Bool> {
         if entry.isDimensions {
             return $displayOptions.dimensions
+        }
+        // The 3D pane's surface rows drive the 3D view's own toggles, not the
+        // 2D layer eyes.
+        if includesThreeDControls {
+            switch HorizontalBoardLayers.category(for: entry.layer) {
+            case .silkscreen:
+                return $displayOptions.threeDSilkscreen
+            case .solderMask:
+                return $displayOptions.threeDSolderMask
+            case .paste:
+                return $displayOptions.threeDPaste
+            default:
+                break
+            }
         }
 
         return Binding {
@@ -1984,4 +2006,307 @@ struct BoardDisplayToggle: View {
         .toggleStyle(.checkbox)
         #endif
     }
+}
+
+/// The package editor's switch between its footprint and its 3D view.
+struct ThreeDPreviewToggleButton: View {
+    var isShowingThreeD: Bool
+    var action: () -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: isShowingThreeD ? "Footprint" : "3D view") {
+            Button(action: action) {
+                Image(systemName: isShowingThreeD ? "cpu" : "cube")
+            }
+            .help(isShowingThreeD ? "Back to the footprint" : "Show the package in 3D")
+        }
+    }
+}
+
+struct ThreeDViewPresetRailButtons: View {
+    var board: HorizontalBoard?
+    @Binding var displayOptions: BoardDisplayOptions
+    @Binding var cameraState: HorizontalSceneCameraState?
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ForEach(HorizontalBoard3DViewPreset.allCases) { preset in
+                HorizontalRailHelpLabel(title: preset.title) {
+                    Button {
+                        applyViewPreset(preset)
+                    } label: {
+                        Image(systemName: preset.systemImage)
+                    }
+                    .disabled(board == nil)
+                    .help(preset.title)
+                }
+            }
+        }
+    }
+
+    private func applyViewPreset(_ preset: HorizontalBoard3DViewPreset) {
+        guard let board else {
+            return
+        }
+        displayOptions.threeDProjection = preset.projection
+        cameraState = horizonSceneCameraState(for: preset, board: board)
+    }
+}
+
+struct ThreeDViewControlsButton: View {
+    var board: HorizontalBoard?
+    @Binding var displayOptions: BoardDisplayOptions
+    @Binding var cameraState: HorizontalSceneCameraState?
+
+    @State private var isControlsPresented = false
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "3D Board controls") {
+            Button {
+                isControlsPresented.toggle()
+            } label: {
+                Image(systemName: isControlsPresented ? "cube.fill" : "cube")
+            }
+            .help("3D Board controls")
+            .popover(isPresented: $isControlsPresented, arrowEdge: .trailing) {
+                ThreeDViewControlsPanel(
+                    board: board,
+                    displayOptions: $displayOptions,
+                    cameraState: $cameraState
+                )
+            }
+        }
+    }
+}
+
+private struct ThreeDViewControlsPanel: View {
+    var board: HorizontalBoard?
+    @Binding var displayOptions: BoardDisplayOptions
+    @Binding var cameraState: HorizontalSceneCameraState?
+
+    @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
+
+    var body: some View {
+        LayerControlsPanel(title: "3D Controls") {
+            VStack(alignment: .leading, spacing: 11) {
+                explodeControl
+                colorToggleRow(
+                    "Solder mask",
+                    isOn: $displayOptions.threeDSolderMask,
+                    color: appearanceSettings.boardSceneSolderMaskColorBinding()
+                )
+                solderMaskTransparencyControl
+                colorToggleRow(
+                    "Silkscreen",
+                    isOn: $displayOptions.threeDSilkscreen,
+                    color: appearanceSettings.boardSceneSilkscreenColorBinding()
+                )
+                BoardDisplayToggle(title: "Solder paste", isOn: $displayOptions.threeDPaste)
+                colorToggleRow(
+                    "Substrate",
+                    isOn: $displayOptions.threeDBoardBody,
+                    color: appearanceSettings.boardSceneSubstrateColorBinding()
+                )
+                segmentedPickerRow("Copper", selection: copperModeBinding) {
+                    ForEach(HorizontalBoardSceneCopperMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                viaPlatingControl
+                modelModeControl
+                colorToggleRow(
+                    "Background",
+                    isOn: $displayOptions.threeDBackground,
+                    color: appearanceSettings.boardSceneBackgroundColorBinding()
+                )
+                segmentedPickerRow("Projection", selection: projectionBinding) {
+                    ForEach(HorizontalBoardSceneProjection.allCases) { projection in
+                        Text(projection.title).tag(projection)
+                    }
+                }
+            }
+        }
+    }
+
+    private var explodeControl: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Explode")
+                Spacer()
+                Text(String(format: "%.1f mm", displayOptions.threeDExplode))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: $displayOptions.threeDExplode, in: 0...12, step: 0.25)
+        }
+    }
+
+    private var solderMaskTransparencyControl: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Solder mask transparency")
+                Spacer()
+                Text("\((displayOptions.threeDSolderMaskTransparency * 100).formatted(.number.precision(.fractionLength(0))))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: solderMaskTransparencyBinding, in: 0...1, step: 0.01)
+                .disabled(!displayOptions.threeDSolderMask)
+        }
+    }
+
+    private var viaPlatingControl: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Via plating")
+                Spacer()
+                Text("\(displayOptions.threeDViaPlatingMicrons.formatted(.number.precision(.fractionLength(0)))) µm")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 6) {
+                TextField(
+                    "Via plating",
+                    value: viaPlatingBinding,
+                    format: .number.precision(.fractionLength(0))
+                )
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 86)
+                Text("µm")
+                    .foregroundStyle(.secondary)
+                Stepper("Via plating", value: viaPlatingBinding, in: 0...250, step: 1)
+                    .labelsHidden()
+            }
+            Text("Applies to via wall thickness and top/bottom protrusion.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var viaPlatingBinding: Binding<Double> {
+        Binding {
+            displayOptions.threeDViaPlatingMicrons
+        } set: { value in
+            displayOptions.threeDViaPlatingMicrons = value.clamped(to: 0...250)
+        }
+    }
+
+    private var solderMaskTransparencyBinding: Binding<Double> {
+        Binding {
+            displayOptions.threeDSolderMaskTransparency
+        } set: { value in
+            displayOptions.threeDSolderMaskTransparency = value.clamped(to: 0...1)
+        }
+    }
+
+    private var modelModeControl: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("3D Models")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 3) {
+                ForEach(HorizontalBoardSceneModelMode.allCases) { mode in
+                    let isSelected = displayOptions.threeDModelMode == mode
+                    Button {
+                        modelModeBinding.wrappedValue = mode
+                    } label: {
+                        Text(mode.title)
+                            .font(.caption.weight(.semibold))
+                            .frame(maxWidth: .infinity, minHeight: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+                    .background {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(isSelected ? Color.accentColor.opacity(0.24) : Color.clear)
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(isSelected ? Color.accentColor.opacity(0.45) : Color.clear, lineWidth: 0.75)
+                    }
+                }
+            }
+            .padding(3)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(Color.secondary.opacity(0.2), lineWidth: 0.75)
+            }
+        }
+    }
+
+    private var copperModeBinding: Binding<HorizontalBoardSceneCopperMode> {
+        $displayOptions.threeDCopperMode
+    }
+
+    private var modelModeBinding: Binding<HorizontalBoardSceneModelMode> {
+        Binding {
+            displayOptions.threeDModelMode
+        } set: { mode in
+            displayOptions.threeDModelMode = mode
+            displayOptions.threeDModels = mode != .none
+        }
+    }
+
+    private var projectionBinding: Binding<HorizontalBoardSceneProjection> {
+        Binding {
+            displayOptions.threeDProjection
+        } set: { projection in
+            displayOptions.threeDProjection = projection
+            syncCameraStateProjection(projection)
+        }
+    }
+
+    private func syncCameraStateProjection(_ projection: HorizontalBoardSceneProjection) {
+        guard let board else {
+            return
+        }
+
+        let orthographicScale = projection == .orthogonal
+            ? (cameraState?.orthographicScale ?? horizonSceneDefaultOrthographicScale(for: board))
+            : nil
+
+        if let cameraState, cameraState.isValid {
+            self.cameraState = HorizontalSceneCameraState(
+                transform: cameraState.transform,
+                orthographicScale: orthographicScale
+            )
+        } else {
+            let fallback = horizonSceneCameraState(for: .defaultPerspective, board: board)
+            self.cameraState = HorizontalSceneCameraState(
+                transform: fallback.transform,
+                orthographicScale: orthographicScale
+            )
+        }
+    }
+
+    private func colorToggleRow(_ title: String, isOn: Binding<Bool>, color: Binding<Color>) -> some View {
+        HStack(spacing: 8) {
+            Toggle(title, isOn: isOn)
+                .poolFlagToggleStyle()
+            Spacer()
+            ColorPicker(title, selection: color, supportsOpacity: false)
+                .labelsHidden()
+        }
+    }
+
+    private func segmentedPickerRow<Selection: Hashable, Content: View>(
+        _ title: String,
+        selection: Binding<Selection>,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Picker(title, selection: selection) {
+                content()
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+    }
+
 }
