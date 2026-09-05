@@ -188,6 +188,7 @@ struct BoardSceneView: View {
     var layerColors: [Int: HorizontalRGBColor] = [:]
     var materialColors = HorizontalBoardColors(silkscreen: nil, solderMask: nil, substrate: nil)
     var ignoresSceneMouseEvents = false
+    var silkscreenClipping: HorizontalSilkscreenClipping? = nil
     @Binding var cameraState: HorizontalSceneCameraState?
 
     var body: some View {
@@ -208,6 +209,7 @@ struct BoardSceneView: View {
             layerColors: layerColors,
             materialColors: materialColors,
             ignoresSceneMouseEvents: ignoresSceneMouseEvents,
+            silkscreenClipping: silkscreenClipping,
             cameraState: $cameraState
         )
         .background(horizonSceneEffectiveBackgroundColor(backgroundColor, displayOptions: displayOptions))
@@ -222,12 +224,12 @@ private final class BoardSceneSceneCache {
     private var key: BoardSceneCacheKey?
     private var nodes: BoardSceneNodes?
 
-    func nodes(for board: HorizontalBoard) -> BoardSceneNodes {
-        let candidate = BoardSceneCacheKey(board: board)
+    func nodes(for board: HorizontalBoard, silkscreenClipping: HorizontalSilkscreenClipping? = nil) -> BoardSceneNodes {
+        let candidate = BoardSceneCacheKey(board: board, silkscreenClipping: silkscreenClipping)
         if let nodes, candidate == key {
             return nodes
         }
-        let built = BoardSceneFactory.buildScene(for: board)
+        let built = BoardSceneFactory.buildScene(for: board, silkscreenClipping: silkscreenClipping)
         self.key = candidate
         self.nodes = built
         return built
@@ -240,8 +242,10 @@ private struct BoardSceneCacheKey: Hashable {
     var boardName: String
     var stackupLayers: [HorizontalBoardStackupLayer]
     var userLayers: [HorizontalBoardUserLayer]
+    var silkscreenClipping: HorizontalSilkscreenClipping?
 
-    init(board: HorizontalBoard) {
+    init(board: HorizontalBoard, silkscreenClipping: HorizontalSilkscreenClipping? = nil) {
+        self.silkscreenClipping = silkscreenClipping
         self.boardURL = board.url
         self.boardUUID = board.uuid
         self.boardName = board.name
@@ -375,6 +379,7 @@ private struct BoardSceneAppliedOptionsKey: Hashable {
     #if canImport(AppKit)
     init(
         board: HorizontalBoard,
+        silkscreenClipping: HorizontalSilkscreenClipping? = nil,
         displayOptions: BoardDisplayOptions,
         backgroundColor: Color,
         copperColor: Color,
@@ -382,7 +387,7 @@ private struct BoardSceneAppliedOptionsKey: Hashable {
         materialColors: HorizontalBoardColors,
         appearance: NSAppearance
     ) {
-        self.sceneKey = BoardSceneCacheKey(board: board)
+        self.sceneKey = BoardSceneCacheKey(board: board, silkscreenClipping: silkscreenClipping)
         self.displayOptions = BoardSceneDisplayOptionsKey(displayOptions)
         self.backgroundColor = BoardSceneColorKey(backgroundColor, appearance: appearance)
         self.copperColor = BoardSceneColorKey(copperColor, appearance: appearance)
@@ -392,13 +397,14 @@ private struct BoardSceneAppliedOptionsKey: Hashable {
     #else
     init(
         board: HorizontalBoard,
+        silkscreenClipping: HorizontalSilkscreenClipping? = nil,
         displayOptions: BoardDisplayOptions,
         backgroundColor: Color,
         copperColor: Color,
         layerColors: [Int: HorizontalRGBColor],
         materialColors: HorizontalBoardColors
     ) {
-        self.sceneKey = BoardSceneCacheKey(board: board)
+        self.sceneKey = BoardSceneCacheKey(board: board, silkscreenClipping: silkscreenClipping)
         self.displayOptions = BoardSceneDisplayOptionsKey(displayOptions)
         self.backgroundColor = BoardSceneColorKey(backgroundColor)
         self.copperColor = BoardSceneColorKey(copperColor)
@@ -781,6 +787,7 @@ private struct BoardSceneHostView: NSViewRepresentable {
     var layerColors: [Int: HorizontalRGBColor]
     var materialColors: HorizontalBoardColors
     var ignoresSceneMouseEvents: Bool
+    var silkscreenClipping: HorizontalSilkscreenClipping? = nil
     @Binding var cameraState: HorizontalSceneCameraState?
 
     func makeCoordinator() -> Coordinator {
@@ -788,9 +795,10 @@ private struct BoardSceneHostView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> PannableSceneView {
-        let nodes = context.coordinator.sceneCache.nodes(for: board)
+        let nodes = context.coordinator.sceneCache.nodes(for: board, silkscreenClipping: silkscreenClipping)
         let appliedOptionsKey = BoardSceneAppliedOptionsKey(
             board: board,
+            silkscreenClipping: silkscreenClipping,
             displayOptions: displayOptions,
             backgroundColor: backgroundColor,
             copperColor: copperColor,
@@ -827,10 +835,11 @@ private struct BoardSceneHostView: NSViewRepresentable {
     func updateNSView(_ nsView: PannableSceneView, context: Context) {
         context.coordinator.cameraState = $cameraState
         nsView.ignoresSceneMouseEvents = ignoresSceneMouseEvents
-        let nodes = context.coordinator.sceneCache.nodes(for: board)
+        let nodes = context.coordinator.sceneCache.nodes(for: board, silkscreenClipping: silkscreenClipping)
         let sceneSwapped = nsView.scene !== nodes.scene
         let appliedOptionsKey = BoardSceneAppliedOptionsKey(
             board: board,
+            silkscreenClipping: silkscreenClipping,
             displayOptions: displayOptions,
             backgroundColor: backgroundColor,
             copperColor: copperColor,
@@ -1247,6 +1256,7 @@ private struct BoardSceneHostView: UIViewRepresentable {
     var layerColors: [Int: HorizontalRGBColor]
     var materialColors: HorizontalBoardColors
     var ignoresSceneMouseEvents: Bool
+    var silkscreenClipping: HorizontalSilkscreenClipping? = nil
     @Binding var cameraState: HorizontalSceneCameraState?
 
     func makeCoordinator() -> Coordinator {
@@ -1255,7 +1265,7 @@ private struct BoardSceneHostView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> TouchSceneView {
         let view = TouchSceneView()
-        let nodes = context.coordinator.sceneCache.nodes(for: board)
+        let nodes = context.coordinator.sceneCache.nodes(for: board, silkscreenClipping: silkscreenClipping)
         nodes.applyDisplayOptions(
             displayOptions,
             backgroundColor: backgroundColor,
@@ -1283,7 +1293,7 @@ private struct BoardSceneHostView: UIViewRepresentable {
     func updateUIView(_ uiView: TouchSceneView, context: Context) {
         context.coordinator.cameraState = $cameraState
         uiView.isUserInteractionEnabled = !ignoresSceneMouseEvents
-        let nodes = context.coordinator.sceneCache.nodes(for: board)
+        let nodes = context.coordinator.sceneCache.nodes(for: board, silkscreenClipping: silkscreenClipping)
         let sceneSwapped = uiView.scene !== nodes.scene
         nodes.applyDisplayOptions(
             displayOptions,
@@ -1561,6 +1571,8 @@ private final class HorizontalPackage3DNodeCache: @unchecked Sendable {
     private let stepExtensions: Set<String> = ["step", "stp"]
     private var sceneNodesByURL = [URL: SCNNode]()
     private var failedSceneURLs = Set<URL>()
+    /// STEP models already meshed this session, cloned per placement.
+    private var stepNodesByURL = [URL: SCNNode]()
     private var stepBoundsByURL = [URL: HorizontalStepModelBounds]()
     private var failedStepURLs = Set<URL>()
     private lazy var cartesianPointExpression: NSRegularExpression? = {
@@ -1582,8 +1594,14 @@ private final class HorizontalPackage3DNodeCache: @unchecked Sendable {
 
         if stepExtensions.contains(fileExtension) {
             #if canImport(AppKit)
-            return stepMeshNode(for: fileURL)
-                ?? stepBoundingNode(for: fileURL, fallbackColor: fallbackColor)
+            if let cached = stepNodesByURL[fileURL] {
+                return cached.clone()
+            }
+            if let node = stepMeshNode(for: fileURL) {
+                stepNodesByURL[fileURL] = node
+                return node.clone()
+            }
+            return stepBoundingNode(for: fileURL, fallbackColor: fallbackColor)
             #else
             return stepBoundingNode(for: fileURL, fallbackColor: fallbackColor)
             #endif
@@ -1629,7 +1647,12 @@ private final class HorizontalPackage3DNodeCache: @unchecked Sendable {
     }
 
     #if canImport(AppKit)
-    private func stepMeshNode(for fileURL: URL) -> SCNNode? {
+    /// The model's mesh: from the on-disk cache when it has one, else
+    /// imported (and cached for the next launch).
+    private func stepMesh(for fileURL: URL) -> HorizontalStepMeshData? {
+        if let cached = HorizontalStepMeshDiskCache.shared.mesh(for: fileURL) {
+            return cached
+        }
         var mesh = HNStepMesh(vertices: nil, vertexCount: 0, indices: nil, indexCount: 0)
         guard HNStepImport(fileURL.path, &mesh) else {
             return nil
@@ -1637,7 +1660,6 @@ private final class HorizontalPackage3DNodeCache: @unchecked Sendable {
         defer {
             HNStepMeshFree(&mesh)
         }
-
         let vertexCount = Int(mesh.vertexCount)
         let indexCount = Int(mesh.indexCount)
         guard let meshVertices = mesh.vertices,
@@ -1647,9 +1669,21 @@ private final class HorizontalPackage3DNodeCache: @unchecked Sendable {
               indexCount.isMultiple(of: 3) else {
             return nil
         }
+        let data = HorizontalStepMeshData(
+            vertices: Array(UnsafeBufferPointer(start: meshVertices, count: vertexCount)),
+            indices: Array(UnsafeBufferPointer(start: meshIndices, count: indexCount))
+        )
+        HorizontalStepMeshDiskCache.shared.store(data, for: fileURL)
+        return data
+    }
 
-        let inputVertices = UnsafeBufferPointer(start: meshVertices, count: vertexCount)
-        let inputIndices = UnsafeBufferPointer(start: meshIndices, count: indexCount)
+    private func stepMeshNode(for fileURL: URL) -> SCNNode? {
+        guard let mesh = stepMesh(for: fileURL) else {
+            return nil
+        }
+        let inputVertices = mesh.vertices
+        let inputIndices = mesh.indices
+        let indexCount = inputIndices.count
         let vertices = inputVertices.map { vertex in
             SCNVector3(vertex.x, vertex.z, -vertex.y)
         }
@@ -1831,15 +1865,15 @@ enum BoardSceneFactory {
     private static let solderPasteThickness = 0.035
     private static let layerSurfaceGap = 0.001
     private static let maximumPlaneFragments = 400
-    private static let maximumHoleNodes = 4_000
 
     private static let maximumViaNodes = 2_500
     private static let maximumConnectionLineDashes = 3_000
 
     private struct SolderMaskOpening {
-        var path: HorizontalPlatformBezierPath
         var bounds: HorizontalRect
         var samplePoints: [HorizontalPoint]
+        /// The opening's outline(s) in board coordinates, for the clipper.
+        var paths: [[HorizontalPoint]]
     }
 
     private struct PackageViaRenderInfo {
@@ -1871,6 +1905,7 @@ enum BoardSceneFactory {
         var holes = true
         var originAxes = false
         var orientationAxes = false
+        var silkscreenClipping: HorizontalSilkscreenClipping? = nil
 
         static let full = BuildOptions()
         static let quickLook = BuildOptions(
@@ -1889,8 +1924,28 @@ enum BoardSceneFactory {
         )
     }
 
-    fileprivate static func buildScene(for board: HorizontalBoard) -> BoardSceneNodes {
-        buildScene(for: board, options: .full)
+    /// Builds and discards a full scene: for measuring the build itself.
+    static func measureSceneBuild(for board: HorizontalBoard) {
+        _ = buildScene(for: board, options: .full)
+    }
+
+    /// Receives (stage, milliseconds) for every stage of a scene build.
+    nonisolated(unsafe) static var stageTimingSink: ((String, Double) -> Void)?
+
+    private static func stage<T>(_ label: String, _ body: () -> T) -> T {
+        guard let stageTimingSink else {
+            return body()
+        }
+        let start = DispatchTime.now().uptimeNanoseconds
+        let result = body()
+        stageTimingSink(label, Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
+        return result
+    }
+
+    fileprivate static func buildScene(for board: HorizontalBoard, silkscreenClipping: HorizontalSilkscreenClipping? = nil) -> BoardSceneNodes {
+        var options = BuildOptions.full
+        options.silkscreenClipping = silkscreenClipping
+        return buildScene(for: board, options: options)
     }
 
     fileprivate static func buildQuickLookScene(for board: HorizontalBoard) -> BoardSceneNodes {
@@ -1919,10 +1974,10 @@ enum BoardSceneFactory {
             solderMask: board.colors.solderMask,
             substrate: board.colors.substrate
         )
-        let slabs = boardBodyMultiLayerSlabs(
+        let slabs = stage("substrate") { boardBodyMultiLayerSlabs(
             for: board, center: center, width: width, depth: depth,
             boardThickness: thickness, colors: boardColors
-        )
+        ) }
         let boardCenterY = boardTopHeight - thickness / 2
         let halfThickness = max(thickness / 2, 0.001)
         for slab in slabs {
@@ -1939,69 +1994,73 @@ enum BoardSceneFactory {
             nodes.substrateSideMaterials.append(contentsOf: slab.sideMaterials)
         }
 
-        addSolderMaskSlabs(
+        stage("solder mask") { addSolderMaskSlabs(
             for: board, to: nodes, center: center,
             width: width, depth: depth, boardThickness: thickness,
             colors: boardColors,
             includeOpenings: options.solderMaskOpenings
-        )
+        ) }
 
         addBoardPanelOutlines(
             board.boardPanels, toOutline: nodes.outlineGroup,
             toLabels: nodes.panelLabelGroup, center: center
         )
+        let silkscreenClips = stage("silkscreen clipping") { options.silkscreenClipping.map { clipping in
+            HorizontalSilkscreenClipper.clip(board: board, clipping: clipping)
+        } ?? [:] }
         if options.layerArtwork {
-            addPlanes(board.planes, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette)
-            addKeepouts(board.keepouts, to: nodes.keepoutGroup, center: center, boardThickness: thickness)
-            addCategorizedArtwork(board.polygons.filter { !isBoardBodyLayer($0.layer) }, lines: board.lines, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette, polygonOpacity: 0.34, lineOpacity: 0.58, polygonYOffset: 0.02, lineYOffset: 0.03)
-            addCategorizedArtwork(board.packagePolygons, lines: board.packageLines, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette, polygonOpacity: 0.28, lineOpacity: 0.62, polygonYOffset: 0.04, lineYOffset: 0.05)
+            stage("planes") { addPlanes(board.planes, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette) }
+            stage("keepouts") { addKeepouts(board.keepouts, to: nodes.keepoutGroup, center: center, boardThickness: thickness) }
+            stage("board artwork") { addCategorizedArtwork(board.polygons.filter { !isBoardBodyLayer($0.layer) }, lines: board.lines, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette, polygonOpacity: 0.34, lineOpacity: 0.58, polygonYOffset: 0.02, lineYOffset: 0.03, silkscreenClips: silkscreenClips) }
+            stage("package artwork") { addCategorizedArtwork(board.packagePolygons, lines: board.packageLines, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette, polygonOpacity: 0.28, lineOpacity: 0.62, polygonYOffset: 0.04, lineYOffset: 0.05, silkscreenClips: silkscreenClips) }
         }
 
         if options.decals {
-            addDecals(board.decals, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette)
+            stage("decals") { addDecals(board.decals, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette) }
         }
 
         if options.texts {
-            addCategorizedTexts(board.texts, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette)
-            addCategorizedTexts(board.packageTexts, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette)
+            stage("texts") {
+                addCategorizedTexts(board.texts, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette, silkscreenClips: silkscreenClips)
+                addCategorizedTexts(board.packageTexts, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette, silkscreenClips: silkscreenClips)
+            }
         }
 
         if options.placedModels {
-            addPackages(board, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette)
+            stage("models") { addPackages(board, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette) }
         }
         if options.placeholderPackages {
-            addPackagePlaceholders(
+            stage("placeholders") { addPackagePlaceholders(
                 board,
                 to: nodes,
                 center: center,
                 boardThickness: thickness,
                 materialPalette: materialPalette,
                 onlyMissingModels: options.placedModels
-            )
+            ) }
         }
 
-        let packageViaRenderInfo = packageViaRenderInfo(for: board)
+        let packageViaRenderInfo = stage("package vias") { packageViaRenderInfo(for: board) }
         let packageViaPadIDs = Set(packageViaRenderInfo.flatMap(\.coveredPadIDs))
-        let packageViaHoleIDs = Set(packageViaRenderInfo.map(\.coveredHoleID))
         if options.packagePads {
-            addPads(
+            stage("pads") { addPads(
                 board.packagePads,
                 to: nodes,
                 center: center,
                 boardThickness: thickness,
                 materialPalette: materialPalette,
                 excludingPadIDs: packageViaPadIDs
-            )
+            ) }
         }
 
         if options.tracks {
-            addCopperTraceGeometry(
+            stage("tracks") { addCopperTraceGeometry(
                 board.tracks + board.netTies,
                 to: nodes,
                 center: center,
                 boardThickness: thickness,
                 materialPalette: materialPalette
-            )
+            ) }
         }
 
         if options.connectionLines {
@@ -2010,16 +2069,11 @@ enum BoardSceneFactory {
         }
 
         if options.holes {
+            // Drilled holes are the cutouts through the substrate, copper and
+            // mask; nothing is drawn in the void itself (the via and
+            // through-hole barrels are copper and live with the vias).
             let renderedVias = board.vias + packageViaRenderInfo.map(\.marker)
             nodes.vias = Array(renderedVias.prefix(maximumViaNodes))
-            addHoles(board.viaHoles.filter { !$0.plated }, to: nodes.holeGroup, center: center, boardThickness: thickness)
-            addHoles(
-                board.packageHoles.filter { !$0.plated || !packageViaHoleIDs.contains($0.id) },
-                to: nodes.holeGroup,
-                center: center,
-                boardThickness: thickness
-            )
-            addHoles(board.holes, to: nodes.holeGroup, center: center, boardThickness: thickness)
         }
 
         if options.originAxes {
@@ -2100,12 +2154,16 @@ enum BoardSceneFactory {
         // pads sitting on solid board.
         let drillCutouts = drillCutoutPaths(for: nil, board: board)
 
+        // One footprint per outline, extruded once per dielectric layer.
+        let templates = boardOutlinePolygons(from: board.polygons).compactMap {
+            boardBodyTemplate(for: $0, cutouts: drillCutouts)
+        }
+
         if dielectricLayers.count <= 1 {
             let substrateThickness = dielectricThickness(for: board, fallback: boardThickness)
-            let outlineResults = boardOutlinePolygons(from: board.polygons).compactMap {
+            let outlineResults = templates.compactMap {
                 boardBodyNodeAndMaterials(
-                    for: $0, center: center, thickness: substrateThickness, topY: boardTopHeight, colors: colors,
-                    cutouts: drillCutouts
+                    template: $0, center: center, thickness: substrateThickness, topY: boardTopHeight, colors: colors
                 )
             }
             if outlineResults.isEmpty {
@@ -2155,10 +2213,9 @@ enum BoardSceneFactory {
                 var slabNodes: [SCNNode] = []
                 var faceMats: [SCNMaterial] = []
                 var sideMats: [SCNMaterial] = []
-                for outline in outlines {
+                for template in templates {
                     if let (node, face, side) = boardBodyNodeAndMaterials(
-                        for: outline, center: center, thickness: chamferSafe, topY: slabTopY, colors: colors,
-                        cutouts: drillCutouts
+                        template: template, center: center, thickness: chamferSafe, topY: slabTopY, colors: colors
                     ) {
                         slabNodes.append(node)
                         faceMats.append(face)
@@ -2187,6 +2244,9 @@ enum BoardSceneFactory {
         let maskColor = colors.solderMask?.nsColor
             ?? HorizontalDefaultTheme.nsLayerColor(for: HorizontalBoardLayers.topMask)
         let outlines = boardOutlinePolygons(from: board.polygons)
+        // The pad outlines serve both mask layers; unioning seven thousand
+        // pads is worth doing once.
+        let padFragments = includeOpenings ? horizonPadOutlineFragments(board.packagePads) : []
 
         // 3D mesh places soldermask just outside the corresponding
         // copper face (`top copper thickness + 1e-3` on top, outside the
@@ -2196,23 +2256,26 @@ enum BoardSceneFactory {
         let bottomY = solderMaskTopSurfaceHeight(for: HorizontalBoardLayers.bottomMask, board: board, boardThickness: boardThickness)
 
         for (slabTopY, layer) in [(topY, HorizontalBoardLayers.topMask), (bottomY, HorizontalBoardLayers.bottomMask)] {
-            let openings = includeOpenings ? solderMaskOpenings(for: layer, board: board, center: center) : []
+            let openings = stage("mask: openings") { includeOpenings ? solderMaskOpenings(for: layer, board: board, center: center, padFragments: padFragments) : [] }
             if outlines.isEmpty {
                 let node = rectangularSolderMaskNode(
-                    width: width, depth: depth, thickness: solderMaskThickness,
-                    topY: slabTopY, color: maskColor, openings: openings.map(\.path)
+                    width: width, depth: depth, center: center, thickness: solderMaskThickness,
+                    topY: slabTopY, color: maskColor, openings: openings.flatMap(\.paths)
                 )
                 nodes.addExplodable(node: node, layer: layer, baseY: Double(node.position.y))
                 nodes.solderMaskGroup.addChildNode(node)
             } else {
                 for outline in outlines {
-                    let outlineOpenings = openings
+                    let outlineOpenings = stage("mask: filter") { openings
                         .filter { solderMaskOpening($0, intersects: outline) }
-                        .map(\.path)
-                    guard let node = solderMaskNode(
-                        for: outline, center: center, openings: outlineOpenings,
-                        thickness: solderMaskThickness, topY: slabTopY, color: maskColor
-                    ) else { continue }
+                        .flatMap(\.paths) }
+                    let maskNode = stage("mask: node") {
+                        solderMaskNode(
+                            for: outline, center: center, openings: outlineOpenings,
+                            thickness: solderMaskThickness, topY: slabTopY, color: maskColor
+                        )
+                    }
+                    guard let node = maskNode else { continue }
                     nodes.addExplodable(node: node, layer: layer, baseY: Double(node.position.y))
                     nodes.solderMaskGroup.addChildNode(node)
                 }
@@ -2223,37 +2286,55 @@ enum BoardSceneFactory {
     private static func solderMaskNode(
         for outline: HorizontalPolygon,
         center: HorizontalPoint,
-        openings: [HorizontalPlatformBezierPath],
+        openings: [[HorizontalPoint]],
         thickness: Double,
         topY: Double,
         color: HorizontalPlatformColor
     ) -> SCNNode? {
-        guard let path = boardOutlinePath(for: outline, center: center) else {
+        let fragments = outlineFragments(for: outline, cutouts: openings)
+        guard !fragments.isEmpty else {
             return nil
         }
-        path.horizonUseEvenOddWinding()
-        for opening in openings {
-            path.append(opening)
+        let template = ExtrudedMeshTemplate(fragments)
+        guard !template.isEmpty else {
+            return nil
         }
-
-        return solderMaskNode(path: path, thickness: thickness, topY: topY, color: color)
+        let material = solderMaskMaterial(color: color)
+        return extrudedFragmentsNode(
+            template,
+            center: center,
+            thickness: thickness,
+            topY: topY,
+            faceMaterial: material,
+            sideMaterial: material
+        )
     }
 
     private static func rectangularSolderMaskNode(
         width: Double,
         depth: Double,
+        center: HorizontalPoint,
         thickness: Double,
         topY: Double,
         color: HorizontalPlatformColor,
-        openings: [HorizontalPlatformBezierPath] = []
+        openings: [[HorizontalPoint]] = []
     ) -> SCNNode {
         if !openings.isEmpty {
-            let path = rectangularSolderMaskPath(width: width, depth: depth)
-            path.horizonUseEvenOddWinding()
-            for opening in openings {
-                path.append(opening)
+            let halfWidth = width * unitsPerMillimeter / 2
+            let halfDepth = depth * unitsPerMillimeter / 2
+            let rectangle = HorizontalPolygon(
+                id: "solder-mask-rectangle",
+                vertices: [
+                    HorizontalPoint(x: center.x - halfWidth, y: center.y - halfDepth),
+                    HorizontalPoint(x: center.x + halfWidth, y: center.y - halfDepth),
+                    HorizontalPoint(x: center.x + halfWidth, y: center.y + halfDepth),
+                    HorizontalPoint(x: center.x - halfWidth, y: center.y + halfDepth),
+                ],
+                layer: nil
+            )
+            if let node = solderMaskNode(for: rectangle, center: center, openings: openings, thickness: thickness, topY: topY, color: color) {
+                return node
             }
-            return solderMaskNode(path: path, thickness: thickness, topY: topY, color: color)
         }
 
         let material = solderMaskMaterial(color: color)
@@ -2262,25 +2343,6 @@ enum BoardSceneFactory {
 
         let node = SCNNode(geometry: geometry)
         node.position.y = horizonSceneScalar(topY - thickness / 2)
-        return node
-    }
-
-    private static func solderMaskNode(
-        path: HorizontalPlatformBezierPath,
-        thickness: Double,
-        topY: Double,
-        color: HorizontalPlatformColor
-    ) -> SCNNode {
-        let material = solderMaskMaterial(color: color)
-
-        let shape = SCNShape(path: path, extrusionDepth: thickness)
-        shape.chamferRadius = 0
-        shape.materials = [material]
-
-        let node = SCNNode(geometry: shape)
-        let bounds = shape.boundingBox
-        node.position = SCNVector3(0, horizonSceneScalar(topY + Double(bounds.min.z)), 0)
-        node.eulerAngles.x = .pi / 2
         return node
     }
 
@@ -2293,22 +2355,11 @@ enum BoardSceneFactory {
         return material
     }
 
-    private static func rectangularSolderMaskPath(width: Double, depth: Double) -> HorizontalPlatformBezierPath {
-        let path = HorizontalPlatformBezierPath()
-        let halfWidth = width / 2
-        let halfDepth = depth / 2
-        path.move(to: CGPoint(x: -halfWidth, y: -halfDepth))
-        path.horizonLine(to: CGPoint(x: halfWidth, y: -halfDepth))
-        path.horizonLine(to: CGPoint(x: halfWidth, y: halfDepth))
-        path.horizonLine(to: CGPoint(x: -halfWidth, y: halfDepth))
-        path.close()
-        return path
-    }
-
     private static func solderMaskOpenings(
         for layer: Int,
         board: HorizontalBoard,
-        center: HorizontalPoint
+        center: HorizontalPoint,
+        padFragments: [HorizontalPadOutlineFragment]
     ) -> [SolderMaskOpening] {
         var openings: [SolderMaskOpening] = []
         let polygons = board.polygons + board.packagePolygons
@@ -2316,25 +2367,24 @@ enum BoardSceneFactory {
 
         for polygon in polygons where polygon.layer == layer {
             let points = cleanedClosedScenePoints(polygon.renderVertices(arcPrecision: 32))
-            guard let path = closedPath(for: points, center: center) else {
+            guard points.count >= 3 else {
                 continue
             }
             openings.append(SolderMaskOpening(
-                path: path,
                 bounds: HorizontalRect(points: points),
-                samplePoints: points
+                samplePoints: points,
+                paths: [points]
             ))
         }
-        for pad in horizonPadOutlineFragments(board.packagePads) where pad.layer == layer {
-            let cleanedPaths = pad.paths.map(cleanedClosedScenePoints).filter { !$0.isEmpty }
-            guard !cleanedPaths.isEmpty,
-                  let path = compoundPath(for: cleanedPaths, center: center) else {
+        for pad in padFragments where pad.layer == layer {
+            let cleanedPaths = pad.paths.map(cleanedClosedScenePoints).filter { $0.count >= 3 }
+            guard !cleanedPaths.isEmpty else {
                 continue
             }
             openings.append(SolderMaskOpening(
-                path: path,
                 bounds: HorizontalRect(points: cleanedPaths.flatMap { $0 }),
-                samplePoints: cleanedPaths.flatMap { $0 }
+                samplePoints: cleanedPaths.flatMap { $0 },
+                paths: cleanedPaths
             ))
         }
 
@@ -2347,24 +2397,25 @@ enum BoardSceneFactory {
                 continue
             }
             let points = cleanedClosedScenePoints(opening)
-            guard let path = closedPath(for: points, center: center) else {
+            guard points.count >= 3 else {
                 continue
             }
             openings.append(SolderMaskOpening(
-                path: path,
                 bounds: HorizontalRect(points: points),
-                samplePoints: points
+                samplePoints: points,
+                paths: [points]
             ))
         }
 
         let lines = board.lines + board.packageLines
         for line in lines where line.layer == layer {
             let points = cleanedOpenScenePoints(line.pathPoints)
-            guard let path = trackPath(line, center: center, minimumWidthMillimeters: 0.01) else {
+            let strokes = HorizontalSilkscreenClipper.strokePaths(for: line)
+            guard !strokes.isEmpty else {
                 continue
             }
             let bounds = HorizontalRect(points: points).expanded(by: max(line.width, 0) / 2)
-            openings.append(SolderMaskOpening(path: path, bounds: bounds, samplePoints: points))
+            openings.append(SolderMaskOpening(bounds: bounds, samplePoints: points, paths: strokes))
         }
 
         let arcs = board.arcs + board.packageArcs
@@ -2374,11 +2425,12 @@ enum BoardSceneFactory {
                 layer: arc.layer, center: arc.center, reverse: arc.reverse, netID: arc.netID
             )
             let points = cleanedOpenScenePoints(line.pathPoints)
-            guard let path = trackPath(line, center: center, minimumWidthMillimeters: 0.01) else {
+            let strokes = HorizontalSilkscreenClipper.strokePaths(for: line)
+            guard !strokes.isEmpty else {
                 continue
             }
             let bounds = HorizontalRect(points: points).expanded(by: max(arc.width, 0) / 2)
-            openings.append(SolderMaskOpening(path: path, bounds: bounds, samplePoints: points))
+            openings.append(SolderMaskOpening(bounds: bounds, samplePoints: points, paths: strokes))
         }
 
         return openings
@@ -2493,18 +2545,25 @@ enum BoardSceneFactory {
         return node
     }
 
-    private static func boardBodyNodeAndMaterials(
+    private static func boardBodyTemplate(
         for outline: HorizontalPolygon,
+        cutouts: [[HorizontalPoint]]
+    ) -> ExtrudedMeshTemplate? {
+        let fragments = stage("substrate: fragments") { outlineFragments(for: outline, cutouts: cutouts) }
+        guard !fragments.isEmpty else {
+            return nil
+        }
+        let template = stage("substrate: triangles") { ExtrudedMeshTemplate(fragments) }
+        return template.isEmpty ? nil : template
+    }
+
+    private static func boardBodyNodeAndMaterials(
+        template: ExtrudedMeshTemplate,
         center: HorizontalPoint,
         thickness: Double,
         topY: Double,
-        colors: HorizontalBoardColors,
-        cutouts: [[HorizontalPoint]] = []
+        colors: HorizontalBoardColors
     ) -> (node: SCNNode, face: SCNMaterial, side: SCNMaterial)? {
-        guard let path = boardBodyPath(for: outline, center: center, cutouts: cutouts) else {
-            return nil
-        }
-
         let substrateColor = colors.substrate?.nsColor
             ?? HorizontalDefaultTheme.nsLayerColor(for: HorizontalBoardLayers.outline)
         let bodyMaterial = SCNMaterial()
@@ -2517,14 +2576,19 @@ enum BoardSceneFactory {
         sideMaterial.roughness.contents = 0.9
         sideMaterial.transparency = 1
 
-        let shape = SCNShape(path: path, extrusionDepth: thickness)
-        shape.chamferRadius = min(0.05, thickness * 0.15)
-        shape.materials = [bodyMaterial, sideMaterial, bodyMaterial]
-
-        let node = SCNNode(geometry: shape)
-        let bounds = shape.boundingBox
-        node.position = SCNVector3(0, horizonSceneScalar(topY + Double(bounds.min.z)), 0)
-        node.eulerAngles.x = .pi / 2
+        let meshNode = stage("substrate: mesh") {
+            extrudedFragmentsNode(
+                template,
+                center: center,
+                thickness: thickness,
+                topY: topY,
+                faceMaterial: bodyMaterial,
+                sideMaterial: sideMaterial
+            )
+        }
+        guard let node = meshNode else {
+            return nil
+        }
         return (node, bodyMaterial, sideMaterial)
     }
 
@@ -3029,10 +3093,18 @@ enum BoardSceneFactory {
         polygonOpacity: CGFloat,
         lineOpacity: CGFloat,
         polygonYOffset: Double,
-        lineYOffset: Double
+        lineYOffset: Double,
+        silkscreenClips: [Int: HorizontalClippedSilkscreenLayer] = [:]
     ) {
         let board = nodes.board
         for polygon in polygons where !isExcludedFrom3DScene(polygon.layer) && !isPackageOrAssemblyLayer(polygon.layer) && !isSolderMaskLayer(polygon.layer) {
+            if let layer = polygon.layer, let clipped = silkscreenClips[layer]?.object(polygon.id) {
+                addClippedSilkscreen(
+                    clipped, layer: layer, to: nodes, center: center, materialPalette: materialPalette, opacity: 0.72,
+                    height: overlayHeight(for: layer, board: board, boardThickness: boardThickness) + overlayArtworkYOffset(for: layer, fallback: polygonYOffset)
+                )
+                continue
+            }
             let effectiveOpacity: CGFloat
             if let layer = polygon.layer {
                 switch HorizontalBoardLayers.category(for: layer) {
@@ -3063,6 +3135,13 @@ enum BoardSceneFactory {
         }
 
         for line in lines where !isExcludedFrom3DScene(line.layer) && !isPackageOrAssemblyLayer(line.layer) && !isSolderMaskLayer(line.layer) {
+            if let layer = line.layer, let clipped = silkscreenClips[layer]?.object(line.id) {
+                addClippedSilkscreen(
+                    clipped, layer: layer, to: nodes, center: center, materialPalette: materialPalette, opacity: 0.82,
+                    height: overlayHeight(for: layer, board: board, boardThickness: boardThickness) + overlayArtworkYOffset(for: layer, fallback: lineYOffset)
+                )
+                continue
+            }
             let effectiveOpacity: CGFloat
             if let layer = line.layer {
                 switch HorizontalBoardLayers.category(for: layer) {
@@ -3091,6 +3170,90 @@ enum BoardSceneFactory {
             nodes.addExplodable(node: node, layer: line.layer, baseY: baseY)
             group.addChildNode(node)
         }
+    }
+
+    /// Silkscreen clipped to the solder mask: what is left of an object, as
+    /// thin fills in the silkscreen group, in place of its strokes.
+    private static func addClippedSilkscreen(
+        _ clipped: HorizontalClippedSilkscreenObject,
+        layer: Int,
+        to nodes: BoardSceneNodes,
+        center: HorizontalPoint,
+        materialPalette: MaterialPalette,
+        opacity: CGFloat,
+        height: Double
+    ) {
+        let color = materialPalette.color(for: layer)
+        let material = SCNMaterial()
+        material.diffuse.contents = color
+        material.emission.contents = color.withAlphaComponent(0.12)
+        material.roughness.contents = 0.66
+        material.isDoubleSided = true
+        material.transparency = opacity
+        // One flat sheet for the whole object. An extruded solid a few
+        // microns thick z-fights its own back face once it is translucent,
+        // and every triangle where the back face wins blends twice — the
+        // triangulation shows through. A single layer of non-overlapping
+        // triangles blends once everywhere, like the mask and copper slabs.
+        guard let node = flatFragmentsNode(
+            clipped.fragments,
+            center: center,
+            facingUp: !isBottomSideLayer(layer),
+            material: material
+        ) else {
+            return
+        }
+        node.position = SCNVector3(0, horizonSceneScalar(height), 0)
+        nodes.addExplodable(node: node, layer: layer, baseY: height)
+        nodes.silkscreenGroup.addChildNode(node)
+    }
+
+    /// All of `fragments` as one flat mesh at y = 0: the top faces only, no
+    /// thickness, so a translucent material covers the area exactly once.
+    private static func flatFragmentsNode(
+        _ fragments: [[[HorizontalPoint]]],
+        center: HorizontalPoint,
+        facingUp: Bool,
+        material: SCNMaterial
+    ) -> SCNNode? {
+        let black = HorizontalMetalRGBA(red: 0, green: 0, blue: 0, alpha: 1)
+        let triangles = fragments.flatMap { HorizontalMetalTessellator.triangles(for: $0, color: black) }
+        guard !triangles.isEmpty else {
+            return nil
+        }
+        let normal = SCNVector3(0, horizonSceneScalar(facingUp ? 1.0 : -1.0), 0)
+        var vertices = [SCNVector3]()
+        var normals = [SCNVector3]()
+        vertices.reserveCapacity(triangles.count * 3)
+        normals.reserveCapacity(triangles.count * 3)
+        func scenePoint(_ point: HorizontalPoint) -> SCNVector3 {
+            SCNVector3(
+                horizonSceneScalar((point.x - center.x) / unitsPerMillimeter),
+                0,
+                horizonSceneScalar(-(point.y - center.y) / unitsPerMillimeter)
+            )
+        }
+        for triangle in triangles {
+            let corners = facingUp ? [triangle.a, triangle.b, triangle.c] : [triangle.c, triangle.b, triangle.a]
+            for corner in corners {
+                vertices.append(scenePoint(corner))
+                normals.append(normal)
+            }
+        }
+        let indices = (0..<UInt32(vertices.count)).map { $0 }
+        let indexData = indices.withUnsafeBufferPointer { Data(buffer: $0) }
+        let element = SCNGeometryElement(
+            data: indexData,
+            primitiveType: .triangles,
+            primitiveCount: indices.count / 3,
+            bytesPerIndex: MemoryLayout<UInt32>.size
+        )
+        let geometry = SCNGeometry(
+            sources: [SCNGeometrySource(vertices: vertices), SCNGeometrySource(normals: normals)],
+            elements: [element]
+        )
+        geometry.materials = [material]
+        return SCNNode(geometry: geometry)
     }
 
     private static func addPlanes(
@@ -3361,10 +3524,18 @@ enum BoardSceneFactory {
         to nodes: BoardSceneNodes,
         center: HorizontalPoint,
         boardThickness: Double,
-        materialPalette: MaterialPalette
+        materialPalette: MaterialPalette,
+        silkscreenClips: [Int: HorizontalClippedSilkscreenLayer] = [:]
     ) {
         let board = nodes.board
         for text in texts where !text.text.isEmpty && !isExcludedFrom3DScene(text.layer) && !isPackageOrAssemblyLayer(text.layer) {
+            if let layer = text.layer, let clipped = silkscreenClips[layer]?.object(text.id) {
+                addClippedSilkscreen(
+                    clipped, layer: layer, to: nodes, center: center, materialPalette: materialPalette, opacity: 0.82,
+                    height: textOverlayHeight(for: layer, board: board, boardThickness: boardThickness)
+                )
+                continue
+            }
             guard let node = textNode(
                 text,
                 center: center,
@@ -3485,6 +3656,227 @@ enum BoardSceneFactory {
         )
         node.eulerAngles.x = .pi / 2
         return node
+    }
+
+    /// A slab's footprint as clipper fragments (each an outer contour then its
+    /// holes), plus the grid lines the footprint was tiled along: an edge on
+    /// one of those is a seam between tiles, not a wall.
+    private struct SlabFragments {
+        var fragments: [[[HorizontalPoint]]]
+        var seamXs: [Double] = []
+        var seamYs: [Double] = []
+
+        var isEmpty: Bool { fragments.isEmpty }
+    }
+
+    /// A slab's mesh before it has a thickness: oriented contours and their
+    /// triangulation, computed once and extruded for every slab that shares
+    /// the footprint (each dielectric layer of a multi-layer board).
+    private struct ExtrudedMeshTemplate {
+        struct Fragment {
+            var contours: [[HorizontalPoint]]
+            var triangles: [(HorizontalPoint, HorizontalPoint, HorizontalPoint)]
+        }
+
+        var fragments: [Fragment]
+        var seamXs: [Double]
+        var seamYs: [Double]
+
+        var isEmpty: Bool { fragments.allSatisfy { $0.triangles.isEmpty } }
+
+        init(_ slab: SlabFragments) {
+            let black = HorizontalMetalRGBA(red: 0, green: 0, blue: 0, alpha: 1)
+            seamXs = slab.seamXs
+            seamYs = slab.seamYs
+            fragments = slab.fragments.compactMap { fragment in
+                var contours = fragment.map(cleanedClosedScenePoints).filter { $0.count >= 3 }
+                guard !contours.isEmpty else {
+                    return nil
+                }
+                // Outer counter-clockwise, holes clockwise: the wall normals
+                // and windings assume material lies to the left of every edge.
+                for index in contours.indices {
+                    let clockwise = signedArea(of: contours[index]) < 0
+                    if (index == 0) == clockwise {
+                        contours[index].reverse()
+                    }
+                }
+                let triangles = HorizontalMetalTessellator.fragmentTriangles(contours, color: black).map { triangle in
+                    signedArea(of: [triangle.a, triangle.b, triangle.c]) < 0
+                        ? (triangle.c, triangle.b, triangle.a)
+                        : (triangle.a, triangle.b, triangle.c)
+                }
+                return Fragment(contours: contours, triangles: triangles)
+            }
+        }
+    }
+
+    /// `template` as one extruded solid: top and bottom faces from its
+    /// triangulation, a wall along every contour edge that is not a tile
+    /// seam. Built here rather than through `SCNShape`, whose tessellation of
+    /// a path with hundreds of subpaths — a board outline with its drills, a
+    /// mask with its openings — takes tens of seconds. The node's origin sits
+    /// mid-thickness so explode moves it as a slab.
+    private static func extrudedFragmentsNode(
+        _ template: ExtrudedMeshTemplate,
+        center: HorizontalPoint,
+        thickness: Double,
+        topY: Double,
+        faceMaterial: SCNMaterial,
+        sideMaterial: SCNMaterial
+    ) -> SCNNode? {
+        let half = thickness / 2
+        var vertices = [SCNVector3]()
+        var normals = [SCNVector3]()
+        var faceIndices = [UInt32]()
+        var wallIndices = [UInt32]()
+
+        func scenePoint(_ point: HorizontalPoint, y: Double) -> SCNVector3 {
+            SCNVector3(
+                horizonSceneScalar((point.x - center.x) / unitsPerMillimeter),
+                horizonSceneScalar(y),
+                horizonSceneScalar(-(point.y - center.y) / unitsPerMillimeter)
+            )
+        }
+        func append(_ point: HorizontalPoint, y: Double, normal: SCNVector3, to indices: inout [UInt32]) {
+            vertices.append(scenePoint(point, y: y))
+            normals.append(normal)
+            indices.append(UInt32(vertices.count - 1))
+        }
+        func isSeam(_ first: HorizontalPoint, _ second: HorizontalPoint) -> Bool {
+            let tolerance = 1.0
+            if abs(first.x - second.x) <= tolerance,
+               template.seamXs.contains(where: { abs($0 - first.x) <= tolerance }) {
+                return true
+            }
+            if abs(first.y - second.y) <= tolerance,
+               template.seamYs.contains(where: { abs($0 - first.y) <= tolerance }) {
+                return true
+            }
+            return false
+        }
+
+        let up = SCNVector3(0, 1, 0)
+        let down = SCNVector3(0, -1, 0)
+        for fragment in template.fragments {
+            for (a, b, c) in fragment.triangles {
+                append(a, y: half, normal: up, to: &faceIndices)
+                append(b, y: half, normal: up, to: &faceIndices)
+                append(c, y: half, normal: up, to: &faceIndices)
+                append(c, y: -half, normal: down, to: &faceIndices)
+                append(b, y: -half, normal: down, to: &faceIndices)
+                append(a, y: -half, normal: down, to: &faceIndices)
+            }
+            for contour in fragment.contours {
+                for index in contour.indices {
+                    let first = contour[index]
+                    let second = contour[(index + 1) % contour.count]
+                    if isSeam(first, second) {
+                        continue
+                    }
+                    let dx = second.x - first.x
+                    let dy = second.y - first.y
+                    let length = max((dx * dx + dy * dy).squareRoot(), 0.000001)
+                    // Outward for a counter-clockwise outer (and into a
+                    // clockwise hole), in scene axes: Horizon y is scene -z.
+                    let normal = SCNVector3(horizonSceneScalar(dy / length), 0, horizonSceneScalar(dx / length))
+                    append(first, y: -half, normal: normal, to: &wallIndices)
+                    append(second, y: -half, normal: normal, to: &wallIndices)
+                    append(second, y: half, normal: normal, to: &wallIndices)
+                    append(first, y: -half, normal: normal, to: &wallIndices)
+                    append(second, y: half, normal: normal, to: &wallIndices)
+                    append(first, y: half, normal: normal, to: &wallIndices)
+                }
+            }
+        }
+        guard !faceIndices.isEmpty else {
+            return nil
+        }
+
+        func element(_ indices: [UInt32]) -> SCNGeometryElement {
+            let data = indices.withUnsafeBufferPointer { Data(buffer: $0) }
+            return SCNGeometryElement(
+                data: data,
+                primitiveType: .triangles,
+                primitiveCount: indices.count / 3,
+                bytesPerIndex: MemoryLayout<UInt32>.size
+            )
+        }
+        var elements = [element(faceIndices)]
+        if !wallIndices.isEmpty {
+            elements.append(element(wallIndices))
+        }
+        let geometry = SCNGeometry(
+            sources: [SCNGeometrySource(vertices: vertices), SCNGeometrySource(normals: normals)],
+            elements: elements
+        )
+        geometry.materials = wallIndices.isEmpty ? [faceMaterial] : [faceMaterial, sideMaterial]
+        let node = SCNNode(geometry: geometry)
+        node.position = SCNVector3(0, horizonSceneScalar(topY - half), 0)
+        return node
+    }
+
+    /// Tiles a slab is cut into before triangulation. Earcut bridges every
+    /// hole to the outer ring by scanning it, so one polygon with a thousand
+    /// drills costs seconds; tiles of a few holes each cost milliseconds
+    /// in total. The clipper places the same intersection points on both
+    /// sides of a tile edge, so neighbouring meshes meet without cracks.
+    private static let slabTileSize = 8.0 * unitsPerMillimeter
+    private static let untiledCutoutLimit = 48
+
+    /// `outline` minus `cutouts`: the outline's own keyhole-bridged holes
+    /// count as cutouts too. The outline alone when nothing cuts it.
+    private static func outlineFragments(
+        for outline: HorizontalPolygon,
+        cutouts: [[HorizontalPoint]]
+    ) -> SlabFragments {
+        let contours = bridgedClosedSceneContours(from: outline.renderVertices(arcPrecision: 32))
+        guard let outer = contours.first else {
+            return SlabFragments(fragments: [])
+        }
+        let bounds = HorizontalRect(points: outer)
+        let relevant = cutouts.filter { cutout in cutout.contains { bounds.contains($0) } }
+        let allCutouts = Array(contours.dropFirst()) + relevant
+        guard !allCutouts.isEmpty else {
+            return SlabFragments(fragments: [contours])
+        }
+        if allCutouts.count <= untiledCutoutLimit {
+            let fragments = clippedSceneFragments(subjects: [outer], cutouts: allCutouts)
+            return SlabFragments(fragments: fragments.isEmpty ? [contours] : fragments)
+        }
+
+        let columns = max(Int((bounds.width / slabTileSize).rounded(.up)), 1)
+        let rows = max(Int((bounds.height / slabTileSize).rounded(.up)), 1)
+        let xs = (0...columns).map { bounds.minX + bounds.width * Double($0) / Double(columns) }
+        let ys = (0...rows).map { bounds.minY + bounds.height * Double($0) / Double(rows) }
+        let cutoutBounds = allCutouts.map { HorizontalRect(points: $0) }
+        var fragments = [[[HorizontalPoint]]]()
+        for row in 0..<rows {
+            for column in 0..<columns {
+                let tile = [
+                    HorizontalPoint(x: xs[column], y: ys[row]),
+                    HorizontalPoint(x: xs[column + 1], y: ys[row]),
+                    HorizontalPoint(x: xs[column + 1], y: ys[row + 1]),
+                    HorizontalPoint(x: xs[column], y: ys[row + 1]),
+                ]
+                let tileBounds = HorizontalRect(points: tile)
+                // What the tile holds outside the outline is cut away too.
+                let exterior = clippedSceneFragments(subjects: [tile], cutouts: [outer]).compactMap(\.first)
+                let tileCutouts = exterior + zip(allCutouts, cutoutBounds)
+                    .filter { $0.1.intersects(tileBounds) }
+                    .map(\.0)
+                if tileCutouts.isEmpty {
+                    fragments.append([tile])
+                } else {
+                    fragments.append(contentsOf: clippedSceneFragments(subjects: [tile], cutouts: tileCutouts))
+                }
+            }
+        }
+        return SlabFragments(
+            fragments: fragments,
+            seamXs: Array(xs.dropFirst().dropLast()),
+            seamYs: Array(ys.dropFirst().dropLast())
+        )
     }
 
     private static func filledPolygonNode(
@@ -3750,24 +4142,6 @@ enum BoardSceneFactory {
             axis.z / axisLength,
             acos(dotProduct)
         )
-    }
-
-    private static func addHoles(
-        _ holes: [HorizontalHole],
-        to group: SCNNode,
-        center: HorizontalPoint,
-        boardThickness: Double
-    ) {
-        for hole in holes.prefix(maximumHoleNodes) {
-            let radius = max((hole.diameter / unitsPerMillimeter) / 2, 0.08)
-            let height = max(boardThickness + 0.14, 0.16)
-            let cylinder = SCNCylinder(radius: radius, height: height)
-            cylinder.firstMaterial?.diffuse.contents = hole.plated ? HorizontalDefaultTheme.holeNS.withAlphaComponent(0.75) : HorizontalDefaultTheme.holeNS.withAlphaComponent(0.35)
-            cylinder.firstMaterial?.emission.contents = HorizontalPlatformColor.black.withAlphaComponent(0.2)
-            let node = SCNNode(geometry: cylinder)
-            node.position = scenePosition(hole.position, center: center, y: boardTopHeight - boardThickness / 2)
-            group.addChildNode(node)
-        }
     }
 
     private static func addLighting(to scene: SCNScene, width: Double, depth: Double) {
@@ -4096,7 +4470,9 @@ enum BoardSceneFactory {
             guard holeOverlapsLayer(hole) else {
                 return nil
             }
-            let points = cleanedClosedScenePoints(hole.outlinePoints(precision: 48))
+            // 24 segments: round enough for a drill seen in 3D, and every
+            // point costs in the clipper and the earcut alike.
+            let points = cleanedClosedScenePoints(hole.outlinePoints(precision: 24))
             return points.count >= 3 ? points : nil
         }
     }
@@ -4265,33 +4641,6 @@ enum BoardSceneFactory {
     /// The outline with the drill cutouts (and the outline's own bridged
     /// holes) clipped out of it, as an even-odd compound path. Without
     /// cutouts this is the plain outline path.
-    private static func boardBodyPath(
-        for polygon: HorizontalPolygon,
-        center: HorizontalPoint,
-        cutouts: [[HorizontalPoint]]
-    ) -> HorizontalPlatformBezierPath? {
-        guard !cutouts.isEmpty else {
-            return boardOutlinePath(for: polygon, center: center)
-        }
-        let contours = bridgedClosedSceneContours(from: polygon.renderVertices(arcPrecision: 32))
-        guard let outer = contours.first else {
-            return nil
-        }
-        let outlineHoles = Array(contours.dropFirst())
-        let bounds = HorizontalRect(points: outer)
-        let relevantCutouts = cutouts.filter { cutout in
-            cutout.contains { bounds.contains($0) }
-        }
-        guard !relevantCutouts.isEmpty else {
-            return compoundPath(for: contours, center: center)
-        }
-        let fragments = clippedSceneFragments(subjects: [outer], cutouts: outlineHoles + relevantCutouts)
-        guard !fragments.isEmpty else {
-            return compoundPath(for: contours, center: center)
-        }
-        return compoundPath(for: fragments.flatMap { $0 }, center: center)
-    }
-
     private static func closedPath(for vertices: [HorizontalPoint], center: HorizontalPoint) -> HorizontalPlatformBezierPath? {
         let contours = bridgedClosedSceneContours(from: vertices)
         if contours.count > 1 {

@@ -7629,6 +7629,7 @@ struct BoardCanvasView: View {
             pastePreview: pastePreviewSignature,
             routePreviewRemoved: pushShoveRemovedSegmentIDs.sorted(),
             renderLayers: renderLayers,
+            silkscreenClipping: appearanceSettings.silkscreenClipping,
             layerColors: HorizontalBoardLayers.all.map { HorizontalMetalRGBA(layerColor(for: $0)) },
             layerFillModes: HorizontalBoardLayers.all.map { displayOptions.isLayerFilled($0) },
             bodyOutlineHighColor: HorizontalMetalRGBA(layerColor(for: HorizontalBoardLayers.outline).opacity(0.74)),
@@ -8803,6 +8804,45 @@ struct BoardCanvasView: View {
         // ============================================================
         // Per-layer geometry
         // ============================================================
+        // Clip-silkscreen-to-mask mode: a silkscreen object near a mask
+        // opening draws from its clipped fragments instead of its strokes.
+        let silkscreenClips = appearanceSettings.silkscreenClipping.map { clipping in
+            HorizontalSilkscreenClipper.clip(board: board, clipping: clipping)
+        } ?? [:]
+        func clippedSilkscreen(_ id: String, layer: Int) -> HorizontalClippedSilkscreenObject? {
+            silkscreenClips[layer]?.object(id)
+        }
+        func appendClippedSilkscreen(
+            _ clipped: HorizontalClippedSilkscreenObject,
+            color: HorizontalMetalRGBA,
+            compositeGroup: Int,
+            compositeOpacity: Float,
+            owner: HorizontalSelectableRef?,
+            to bucketKey: ReferenceWritableKeyPath<BoardMetalElementBuckets, BoardMetalElementBatch>
+        ) {
+            for fragment in clipped.fragments {
+                appendTriangles(
+                    HorizontalMetalTessellator.triangles(for: fragment, color: color),
+                    compositeGroup: compositeGroup,
+                    compositeOpacity: compositeOpacity,
+                    owner: owner,
+                    to: bucketKey
+                )
+                // The outline keeps hairline strokes visible when zoomed out.
+                for path in fragment {
+                    appendClosedPolyline(
+                        path,
+                        color: color,
+                        minimumWidth: 0.7,
+                        compositeGroup: compositeGroup,
+                        compositeOpacity: compositeOpacity,
+                        owner: owner,
+                        to: bucketKey
+                    )
+                }
+            }
+        }
+
         for layer in renderLayers {
             let compositeGroup = metalCompositeGroup(for: layer)
             // Constant — layerOpacity is applied as a uniform at composite time.
@@ -8813,6 +8853,10 @@ struct BoardCanvasView: View {
             profile("layer polygons lines tracks") {
                 for polygon in board.polygons where polygon.layer == layer && !isBoardBodyLayer(polygon.layer) {
                     let owner = selectableRef(id: polygon.id, type: .polygonEdge, layer: layer)
+                    if let clipped = clippedSilkscreen(polygon.id, layer: layer) {
+                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.alwaysOnLayered)
+                        continue
+                    }
                     appendClosedPolyline(
                         polygon.renderVertices(arcPrecision: 24),
                         color: layerMetalColor(layer),
@@ -8835,6 +8879,10 @@ struct BoardCanvasView: View {
                 }
 
                 for line in board.lines where line.layer == layer {
+                    if let clipped = clippedSilkscreen(line.id, layer: layer) {
+                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: selectableRef(id: line.id, type: .boardLine, layer: layer), to: \.alwaysOnLayered)
+                        continue
+                    }
                     appendSegment(
                         line,
                         color: layerMetalColor(layer),
@@ -8847,6 +8895,10 @@ struct BoardCanvasView: View {
                     )
                 }
                 for arc in board.arcs where arc.layer == layer {
+                    if let clipped = clippedSilkscreen(arc.id, layer: layer) {
+                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: selectableRef(id: arc.id, type: .boardArc, layer: layer), to: \.alwaysOnLayered)
+                        continue
+                    }
                     appendArc(
                         arc,
                         color: layerMetalColor(layer),
@@ -8946,6 +8998,10 @@ struct BoardCanvasView: View {
                 for polygon in board.packagePolygons
                     where polygon.layer == layer && !isPackageGeometryHidden(polygon.id, layer: layer) {
                     let owner = packageOwner(for: polygon.id, layer: layer)
+                    if let clipped = clippedSilkscreen(polygon.id, layer: layer) {
+                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.packagesGeometry)
+                        continue
+                    }
                     appendClosedPolyline(
                         polygon.renderVertices(arcPrecision: 24),
                         color: layerMetalColor(layer),
@@ -8968,10 +9024,18 @@ struct BoardCanvasView: View {
                 }
                 for line in board.packageLines
                     where line.layer == layer && !isPackageGeometryHidden(line.id, layer: layer) {
+                    if let clipped = clippedSilkscreen(line.id, layer: layer) {
+                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: line.id, layer: layer), to: \.packagesGeometry)
+                        continue
+                    }
                     appendSegment(line, color: layerMetalColor(layer), minimumWidth: 1, outlineOnly: outlineOnly, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: line.id, layer: layer), to: \.packagesGeometry)
                 }
                 for arc in board.packageArcs
                     where arc.layer == layer && !isPackageGeometryHidden(arc.id, layer: layer) {
+                    if let clipped = clippedSilkscreen(arc.id, layer: layer) {
+                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: arc.id, layer: layer), to: \.packagesGeometry)
+                        continue
+                    }
                     appendArc(arc, color: layerMetalColor(layer), minimumWidth: 1, outlineOnly: outlineOnly, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: arc.id, layer: layer), to: \.packagesGeometry)
                 }
             }
@@ -8982,6 +9046,10 @@ struct BoardCanvasView: View {
                     // never the smashed (`fromSmash`) board-level copies, which
                     // are the whole point of smashing.
                     if !text.fromSmash, isPackageGeometryHidden(text.id, layer: layer) { continue }
+                    if let clipped = clippedSilkscreen(text.id, layer: layer) {
+                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: text.id, layer: layer), to: \.packagesText)
+                        continue
+                    }
                     appendText(text, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: text.id, layer: layer), to: \.packagesText)
                 }
             }
@@ -8991,6 +9059,10 @@ struct BoardCanvasView: View {
                 for decal in board.decals {
                     let owner = selectableRef(id: decal.id, type: .boardDecal)
                     for polygon in decal.polygons where polygon.layer == layer {
+                        if let clipped = clippedSilkscreen(polygon.id, layer: layer) {
+                            appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
+                            continue
+                        }
                         appendClosedPolyline(
                             polygon.renderVertices(arcPrecision: 24),
                             color: layerMetalColor(layer),
@@ -9012,12 +9084,24 @@ struct BoardCanvasView: View {
                         }
                     }
                     for line in decal.lines where line.layer == layer {
+                        if let clipped = clippedSilkscreen(line.id, layer: layer) {
+                            appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
+                            continue
+                        }
                         appendSegment(line, color: layerMetalColor(layer), minimumWidth: 1, outlineOnly: outlineOnly, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
                     }
                     for arc in decal.arcs where arc.layer == layer {
+                        if let clipped = clippedSilkscreen(arc.id, layer: layer) {
+                            appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
+                            continue
+                        }
                         appendArc(arc, color: layerMetalColor(layer), minimumWidth: 1, outlineOnly: outlineOnly, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
                     }
                     for text in decal.texts where text.layer == layer {
+                        if let clipped = clippedSilkscreen(text.id, layer: layer) {
+                            appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
+                            continue
+                        }
                         appendText(text, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
                     }
                 }
@@ -9089,6 +9173,10 @@ struct BoardCanvasView: View {
             // Texts (board)
             profile("board text") {
                 for text in board.texts where text.layer == layer {
+                    if let clipped = clippedSilkscreen(text.id, layer: layer) {
+                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: selectableRef(id: text.id, type: .text, layer: layer), to: \.text)
+                        continue
+                    }
                     appendText(
                         text,
                         color: layerMetalColor(layer),

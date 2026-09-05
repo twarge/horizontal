@@ -897,6 +897,7 @@ struct HorizontalIPadProjectView: View {
                 copperColor: appearanceSettings.boardSceneCopper,
                 layerColors: appearanceSettings.boardSceneLayerColors,
                 materialColors: appearanceSettings.boardSceneMaterialColors,
+                    silkscreenClipping: appearanceSettings.silkscreenClipping,
                 cameraState: $threeDCameraState
             )
         } else {
@@ -1180,6 +1181,7 @@ struct HorizontalExportPanel: View {
         let exportProject = project
         let schematicPalette = appearanceSettings.palette(for: .schematic, mode: .light)
         let boardPalette = appearanceSettings.palette(for: .board, mode: .light)
+        let silkscreenClipping = appearanceSettings.silkscreenClipping
 
         isExporting = true
         status = nil
@@ -1189,7 +1191,8 @@ struct HorizontalExportPanel: View {
                 settings: exportSettings,
                 project: exportProject,
                 schematicPDFPalette: schematicPalette,
-                boardPDFPalette: boardPalette
+                boardPDFPalette: boardPalette,
+                silkscreenClipping: silkscreenClipping
             )
         }.value
         isExporting = false

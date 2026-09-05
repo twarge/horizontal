@@ -17,7 +17,8 @@ enum HorizontalExportBackend {
         settings: HorizontalExportSettings,
         project: HorizontalProject,
         schematicPDFPalette: HorizontalCanvasPalette = HorizontalCanvasPalette.defaultPalette(kind: .schematic, mode: .light),
-        boardPDFPalette: HorizontalCanvasPalette = HorizontalCanvasPalette.defaultPalette(kind: .board, mode: .light)
+        boardPDFPalette: HorizontalCanvasPalette = HorizontalCanvasPalette.defaultPalette(kind: .board, mode: .light),
+        silkscreenClipping: HorizontalSilkscreenClipping? = nil
     ) -> HorizontalExportStatus {
         guard !sections.isEmpty else {
             return HorizontalExportStatus(kind: .warning, message: "No export sections are enabled.")
@@ -51,10 +52,10 @@ enum HorizontalExportBackend {
                     try exportBOM(project: project, settings: settings.bom, to: url)
                     messages.append("BOM -> \(url.lastPathComponent)")
                 case .gerber:
-                    let urls = try exportGerber(project: project, settings: settings.gerber, to: targetURL)
+                    let urls = try exportGerber(project: project, settings: settings.gerber, to: targetURL, silkscreenClipping: silkscreenClipping)
                     messages.append("Gerber -> \(urls.map(\.lastPathComponent).joined(separator: ", "))")
                 case .odb:
-                    let url = try exportODB(project: project, settings: settings.odb, to: targetURL)
+                    let url = try exportODB(project: project, settings: settings.odb, to: targetURL, silkscreenClipping: silkscreenClipping)
                     messages.append("ODB -> \(url.lastPathComponent)")
                 case .pickAndPlace:
                     let urls = try exportPickAndPlace(project: project, settings: settings.pickAndPlace, to: targetURL)
@@ -66,11 +67,11 @@ enum HorizontalExportBackend {
                     messages.append("3D Model -> \(url.lastPathComponent)\(note)")
                 case .boardDrawing:
                     let url = targetURL.appendingPathComponent(settings.boardDrawing.filename)
-                    try exportBoardDrawingPDF(project: project, settings: settings.boardDrawing, palette: boardPDFPalette, to: url)
+                    try exportBoardDrawingPDF(project: project, settings: settings.boardDrawing, palette: boardPDFPalette, to: url, silkscreenClipping: silkscreenClipping)
                     messages.append("Board Drawing -> \(url.lastPathComponent)")
                 case .boardDXF:
                     let url = targetURL.appendingPathComponent(settings.boardDXF.filename)
-                    try exportBoardDXF(project: project, settings: settings.boardDXF, to: url)
+                    try exportBoardDXF(project: project, settings: settings.boardDXF, to: url, silkscreenClipping: silkscreenClipping)
                     messages.append("Board DXF -> \(url.lastPathComponent)")
                 }
             } catch {
@@ -138,7 +139,8 @@ enum HorizontalExportBackend {
         project: HorizontalProject,
         settings: HorizontalBoardDrawingExportSettings,
         palette: HorizontalCanvasPalette,
-        to url: URL
+        to url: URL,
+        silkscreenClipping: HorizontalSilkscreenClipping? = nil
     ) throws {
         guard let board = project.board else {
             throw HorizontalExportError("No board loaded.")
@@ -155,7 +157,8 @@ enum HorizontalExportBackend {
                 transform: transform,
                 palette: palette,
                 layerSettings: layerSettings,
-                minimumLineWidthMM: settings.minimumLineWidthMM
+                minimumLineWidthMM: settings.minimumLineWidthMM,
+                silkscreenClipping: silkscreenClipping
             )
             context.endPDFPage()
         }
@@ -164,7 +167,8 @@ enum HorizontalExportBackend {
     private static func exportBoardDXF(
         project: HorizontalProject,
         settings: HorizontalBoardDXFExportSettings,
-        to url: URL
+        to url: URL,
+        silkscreenClipping: HorizontalSilkscreenClipping? = nil
     ) throws {
         guard let board = project.board else {
             throw HorizontalExportError("No board loaded.")
@@ -173,6 +177,26 @@ enum HorizontalExportBackend {
         let layerSettings = Dictionary(uniqueKeysWithValues: settings.layers.map { ($0.layer, $0) })
         let defaultWidth = max(settings.minimumLineWidthMM * 1_000_000, 80_000)
         var writer = HorizontalDXFWriter()
+        let clippedSilk = silkscreenClipping.map { clipping in
+            HorizontalSilkscreenClipper.clip(board: board, clipping: clipping)
+        } ?? [:]
+        func addClippedSilk(_ id: String, layer: Int?, setting: HorizontalExportLayerSetting) -> Bool {
+            guard let layer, let clipped = clippedSilk[layer]?.object(id) else {
+                return false
+            }
+            for fragment in clipped.fragments {
+                let contour = HorizontalSilkscreenClipper.bridgedContour(fragment)
+                guard contour.count >= 3 else { continue }
+                writer.addClosedPolygon(
+                    contour,
+                    layer: dxfLayerName(for: setting),
+                    color: setting.color,
+                    fill: true,
+                    outlineWidth: defaultWidth
+                )
+            }
+            return true
+        }
 
         for setting in settings.layers {
             writer.addLayer(dxfLayerName(for: setting), color: setting.color)
@@ -249,6 +273,7 @@ enum HorizontalExportBackend {
         for polygon in board.polygons + board.packagePolygons {
             let vertices = polygon.renderVertices(arcPrecision: 32)
             guard let setting = setting(for: polygon.layer), vertices.count >= 3 else { continue }
+            if addClippedSilk(polygon.id, layer: polygon.layer, setting: setting) { continue }
             writer.addClosedPolygon(
                 vertices,
                 layer: dxfLayerName(for: setting),
@@ -371,6 +396,7 @@ enum HorizontalExportBackend {
 
         for segment in board.lines + board.packageLines {
             guard let setting = setting(for: segment.layer) else { continue }
+            if addClippedSilk(segment.id, layer: segment.layer, setting: setting) { continue }
             addCopperAwareStroke(
                 segment.pathPoints,
                 setting: setting,
@@ -380,6 +406,7 @@ enum HorizontalExportBackend {
 
         for arc in board.arcs + board.packageArcs {
             guard let setting = setting(for: arc.layer) else { continue }
+            if addClippedSilk(arc.id, layer: arc.layer, setting: setting) { continue }
             let width = HorizontalBoardLayers.isCopper(setting.layer) ? traceWidth(arc.width) : max(arc.width, defaultWidth)
             if HorizontalBoardLayers.isCopper(setting.layer) {
                 addCopperAwareStroke(arc.polyline(), setting: setting, width: width)
@@ -397,6 +424,7 @@ enum HorizontalExportBackend {
             for polygon in decal.polygons {
                 let vertices = polygon.renderVertices(arcPrecision: 32)
                 guard let setting = setting(for: polygon.layer), vertices.count >= 3 else { continue }
+                if addClippedSilk(polygon.id, layer: polygon.layer, setting: setting) { continue }
                 writer.addClosedPolygon(
                     vertices,
                     layer: dxfLayerName(for: setting),
@@ -407,6 +435,7 @@ enum HorizontalExportBackend {
             }
             for line in decal.lines {
                 guard let setting = setting(for: line.layer) else { continue }
+                if addClippedSilk(line.id, layer: line.layer, setting: setting) { continue }
                 addCopperAwareStroke(
                     line.pathPoints,
                     setting: setting,
@@ -415,6 +444,7 @@ enum HorizontalExportBackend {
             }
             for arc in decal.arcs {
                 guard let setting = setting(for: arc.layer) else { continue }
+                if addClippedSilk(arc.id, layer: arc.layer, setting: setting) { continue }
                 let width = max(arc.width, defaultWidth)
                 if HorizontalBoardLayers.isCopper(setting.layer) {
                     addCopperAwareStroke(arc.polyline(), setting: setting, width: width)
@@ -429,12 +459,14 @@ enum HorizontalExportBackend {
             }
             for text in decal.texts {
                 guard let setting = setting(for: text.layer) else { continue }
+                if addClippedSilk(text.id, layer: text.layer, setting: setting) { continue }
                 appendText(text, setting: setting)
             }
         }
 
         for text in board.texts + board.packageTexts {
             guard let setting = setting(for: text.layer) else { continue }
+            if addClippedSilk(text.id, layer: text.layer, setting: setting) { continue }
             appendText(text, setting: setting)
         }
 
@@ -595,7 +627,8 @@ enum HorizontalExportBackend {
     static func exportGerber(
         project: HorizontalProject,
         settings: HorizontalGerberExportSettings,
-        to directoryURL: URL
+        to directoryURL: URL,
+        silkscreenClipping: HorizontalSilkscreenClipping? = nil
     ) throws -> [URL] {
         guard let board = project.board else {
             throw HorizontalExportError("No board loaded.")
@@ -604,7 +637,7 @@ enum HorizontalExportBackend {
         let prefix = nonEmpty(settings.prefix) ?? HorizontalExportSettings.sanitizedFilename(project.displayTitle)
         var written = [URL]()
         for layer in settings.layers where layer.enabled {
-            let layerObjects = gerberObjects(for: board, layer: layer.layer, outlineWidthMM: settings.outlineWidthMM)
+            let layerObjects = gerberObjects(for: board, layer: layer.layer, outlineWidthMM: settings.outlineWidthMM, silkscreenClipping: silkscreenClipping)
             guard !layerObjects.isEmpty else {
                 continue
             }
@@ -655,7 +688,8 @@ enum HorizontalExportBackend {
     private static func exportODB(
         project: HorizontalProject,
         settings: HorizontalODBExportSettings,
-        to directoryURL: URL
+        to directoryURL: URL,
+        silkscreenClipping: HorizontalSilkscreenClipping? = nil
     ) throws -> URL {
         guard let board = project.board else {
             throw HorizontalExportError("No board loaded.")
@@ -671,7 +705,7 @@ enum HorizontalExportBackend {
             if fileManager.fileExists(atPath: jobURL.path) {
                 try fileManager.removeItem(at: jobURL)
             }
-            try writeODBJob(project: project, board: board, jobName: jobName, to: jobURL)
+            try writeODBJob(project: project, board: board, jobName: jobName, to: jobURL, silkscreenClipping: silkscreenClipping)
             return jobURL
         case .tgz, .zip:
             let filename = nonEmpty(settings.filename) ?? "\(jobName).\(settings.format == .tgz ? "tgz" : "zip")"
@@ -679,7 +713,7 @@ enum HorizontalExportBackend {
             let scratchRoot = fileManager.temporaryDirectory
                 .appendingPathComponent("Horizontal-ODB-\(UUID().uuidString)", isDirectory: true)
             let jobURL = scratchRoot.appendingPathComponent(jobName, isDirectory: true)
-            try writeODBJob(project: project, board: board, jobName: jobName, to: jobURL)
+            try writeODBJob(project: project, board: board, jobName: jobName, to: jobURL, silkscreenClipping: silkscreenClipping)
             if fileManager.fileExists(atPath: outputURL.path) {
                 try fileManager.removeItem(at: outputURL)
             }
@@ -877,11 +911,26 @@ enum HorizontalExportBackend {
         transform: PDFWorldTransform,
         palette: HorizontalCanvasPalette,
         layerSettings: [Int: HorizontalExportLayerSetting],
-        minimumLineWidthMM: Double
+        minimumLineWidthMM: Double,
+        silkscreenClipping: HorizontalSilkscreenClipping? = nil
     ) {
         context.setFillColor(rgbColor(from: palette.background).cgColor(alpha: 1))
         context.fill(CGRect(origin: .zero, size: transform.pageSize))
         let defaultWidth = max(minimumLineWidthMM * 1_000_000, 80_000)
+        let clippedSilk = silkscreenClipping.map { clipping in
+            HorizontalSilkscreenClipper.clip(board: board, clipping: clipping)
+        } ?? [:]
+        func drawClippedSilk(_ id: String, layer: Int?, setting: HorizontalExportLayerSetting) -> Bool {
+            guard let layer, let clipped = clippedSilk[layer]?.object(id) else {
+                return false
+            }
+            for fragment in clipped.fragments {
+                let contour = HorizontalSilkscreenClipper.bridgedContour(fragment)
+                guard contour.count >= 3 else { continue }
+                drawPolygonVertices(contour, color: setting.color, context: context, transform: transform, fill: true, width: defaultWidth)
+            }
+            return true
+        }
 
         func setting(for layer: Int?) -> HorizontalExportLayerSetting? {
             guard let layer, let setting = layerSettings[layer], setting.enabled else {
@@ -900,6 +949,7 @@ enum HorizontalExportBackend {
         }
         for polygon in board.polygons + board.packagePolygons {
             guard let setting = setting(for: polygon.layer) else { continue }
+            if drawClippedSilk(polygon.id, layer: polygon.layer, setting: setting) { continue }
             drawPolygonVertices(polygon.renderVertices(arcPrecision: 32), color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
         }
         for pad in horizonPadOutlineFragments(board.packagePads) {
@@ -928,32 +978,39 @@ enum HorizontalExportBackend {
         }
         for segment in board.tracks + board.netTies + board.lines + board.packageLines {
             guard let setting = setting(for: segment.layer) else { continue }
+            if drawClippedSilk(segment.id, layer: segment.layer, setting: setting) { continue }
             drawSegment(segment, color: setting.color, width: max(segment.width, defaultWidth), context: context, transform: transform)
         }
         for arc in board.arcs + board.packageArcs {
             guard let setting = setting(for: arc.layer) else { continue }
+            if drawClippedSilk(arc.id, layer: arc.layer, setting: setting) { continue }
             drawArc(arc, color: setting.color, width: max(arc.width, defaultWidth), context: context, transform: transform)
         }
         for decal in board.decals {
             for polygon in decal.polygons {
                 guard let setting = setting(for: polygon.layer) else { continue }
+                if drawClippedSilk(polygon.id, layer: polygon.layer, setting: setting) { continue }
                 drawPolygonVertices(polygon.renderVertices(arcPrecision: 32), color: setting.color, context: context, transform: transform, fill: setting.mode == .fill, width: defaultWidth)
             }
             for line in decal.lines {
                 guard let setting = setting(for: line.layer) else { continue }
+                if drawClippedSilk(line.id, layer: line.layer, setting: setting) { continue }
                 drawSegment(line, color: setting.color, width: max(line.width, defaultWidth), context: context, transform: transform)
             }
             for arc in decal.arcs {
                 guard let setting = setting(for: arc.layer) else { continue }
+                if drawClippedSilk(arc.id, layer: arc.layer, setting: setting) { continue }
                 drawArc(arc, color: setting.color, width: max(arc.width, defaultWidth), context: context, transform: transform)
             }
             for text in decal.texts {
                 guard let setting = setting(for: text.layer) else { continue }
+                if drawClippedSilk(text.id, layer: text.layer, setting: setting) { continue }
                 drawText(text, color: setting.color, context: context, transform: transform, width: defaultWidth)
             }
         }
         for text in board.texts + board.packageTexts {
             guard let setting = setting(for: text.layer) else { continue }
+            if drawClippedSilk(text.id, layer: text.layer, setting: setting) { continue }
             drawText(text, color: setting.color, context: context, transform: transform, width: defaultWidth)
         }
         drawDimensions(board.dimensions, color: rgbColor(from: palette.layerColor(for: HorizontalBoardLayers.dimensions)), context: context, transform: transform, width: defaultWidth)
@@ -1652,12 +1709,38 @@ enum HorizontalExportBackend {
         }
     }
 
-    private static func gerberObjects(for board: HorizontalBoard, layer targetLayer: Int, outlineWidthMM: Double) -> [GerberPrimitive] {
+    private static func gerberObjects(
+        for board: HorizontalBoard,
+        layer targetLayer: Int,
+        outlineWidthMM: Double,
+        silkscreenClipping: HorizontalSilkscreenClipping? = nil
+    ) -> [GerberPrimitive] {
         let defaultWidth = max(outlineWidthMM * 1_000_000, 10_000)
         var objects = [GerberPrimitive]()
 
+        // Silkscreen clipped to the solder mask goes out as regions; every
+        // object the clipping left alone goes out exactly as before.
+        let clippedSilk = silkscreenClipping.flatMap { clipping in
+            HorizontalSilkscreenClipper.clippedLayer(targetLayer, board: board, clipping: clipping)
+        }
+        func appendClippedSilk(_ id: String) -> Bool {
+            guard let clipped = clippedSilk?.object(id) else {
+                return false
+            }
+            for fragment in clipped.fragments {
+                let contour = HorizontalSilkscreenClipper.bridgedContour(fragment)
+                if contour.count >= 3 {
+                    objects.append(.region(contour))
+                }
+            }
+            return true
+        }
+
         func appendText(_ text: HorizontalText) {
             guard text.layer == targetLayer else {
+                return
+            }
+            if appendClippedSilk(text.id) {
                 return
             }
             let width = max(text.width, defaultWidth)
@@ -1674,6 +1757,7 @@ enum HorizontalExportBackend {
             }
         }
         for polygon in board.polygons + board.packagePolygons where polygon.layer == targetLayer {
+            if appendClippedSilk(polygon.id) { continue }
             let vertices = polygon.renderVertices(arcPrecision: 32)
             guard vertices.count >= 3 else { continue }
             objects.append(.region(vertices))
@@ -1703,6 +1787,7 @@ enum HorizontalExportBackend {
         // Keepouts are design-rule regions, not copper or artwork: Horizon's
         // Gerber export skips them, so they never reach fabrication output.
         for segment in board.tracks + board.netTies + board.lines + board.packageLines where segment.layer == targetLayer {
+            if appendClippedSilk(segment.id) { continue }
             if let arc = segment.arc {
                 objects.append(.polyline(arc.polyline(), max(segment.width, defaultWidth)))
             } else {
@@ -1710,21 +1795,26 @@ enum HorizontalExportBackend {
             }
         }
         for arc in board.arcs where arc.layer == targetLayer {
+            if appendClippedSilk(arc.id) { continue }
             objects.append(.polyline(arc.polyline(), max(arc.width, defaultWidth)))
         }
         for arc in board.packageArcs where arc.layer == targetLayer {
+            if appendClippedSilk(arc.id) { continue }
             objects.append(.polyline(arc.polyline(), max(arc.width, defaultWidth)))
         }
         for decal in board.decals {
             for polygon in decal.polygons where polygon.layer == targetLayer {
+                if appendClippedSilk(polygon.id) { continue }
                 let vertices = polygon.renderVertices(arcPrecision: 32)
                 guard vertices.count >= 3 else { continue }
                 objects.append(.region(vertices))
             }
             for line in decal.lines where line.layer == targetLayer {
+                if appendClippedSilk(line.id) { continue }
                 objects.append(.line(line.from, line.to, max(line.width, defaultWidth)))
             }
             for arc in decal.arcs where arc.layer == targetLayer {
+                if appendClippedSilk(arc.id) { continue }
                 objects.append(.polyline(arc.polyline(), max(arc.width, defaultWidth)))
             }
             decal.texts.forEach(appendText)
@@ -1861,12 +1951,18 @@ enum HorizontalExportBackend {
         try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: url, options: [.atomic])
     }
 
-    private static func writeODBJob(project: HorizontalProject, board: HorizontalBoard, jobName: String, to jobURL: URL) throws {
+    private static func writeODBJob(
+        project: HorizontalProject,
+        board: HorizontalBoard,
+        jobName: String,
+        to jobURL: URL,
+        silkscreenClipping: HorizontalSilkscreenClipping? = nil
+    ) throws {
         try FileManager.default.createDirectory(at: jobURL, withIntermediateDirectories: true)
         let stepName = odbLegalEntityName(project.displayTitle.isEmpty ? "pcb" : project.displayTitle)
         let layerIDs = boardLayerIDs(for: board)
         let layers = layerIDs.compactMap { layer -> ODBLayer? in
-            let objects = gerberObjects(for: board, layer: layer, outlineWidthMM: 0.01)
+            let objects = gerberObjects(for: board, layer: layer, outlineWidthMM: 0.01, silkscreenClipping: silkscreenClipping)
             guard !objects.isEmpty else {
                 return nil
             }

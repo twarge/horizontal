@@ -428,6 +428,8 @@ struct BoardMetalElementBucketsCacheKey: Hashable {
     /// removal (track repair / shove). Sorted ids; empty when not routing.
     var routePreviewRemoved: [String] = []
     var renderLayers: [Int]
+    /// The clip-silkscreen-to-mask mode in force when the buckets were built.
+    var silkscreenClipping: HorizontalSilkscreenClipping? = nil
     var layerColors: [HorizontalMetalRGBA]
     // NOTE: `layerOpacity` is intentionally NOT in this key. It is applied as a
     // live uniform at composite time so the slider drags don't rebuild the

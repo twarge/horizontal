@@ -301,6 +301,28 @@ enum HorizontalMetalTessellator {
         triangulateSimple(vertices, color: color, allowsFanFallback: true)
     }
 
+    /// A clipper fragment — its outer contour first, then its holes — as
+    /// triangles, skipping the containment search `triangles(for:)` needs
+    /// for contours of unknown nesting. Holes go through the earcut library,
+    /// the way plane fragments do.
+    static func fragmentTriangles(_ paths: [[HorizontalPoint]], color: HorizontalMetalRGBA) -> [HorizontalMetalTrianglePrimitive] {
+        let contours = paths.map(cleaned).filter { $0.count >= 3 }
+        guard var outer = contours.first else {
+            return []
+        }
+        if signedArea(outer) < 0 {
+            outer.reverse()
+        }
+        let holes = contours.dropFirst().map { hole -> [HorizontalPoint] in
+            signedArea(hole) > 0 ? Array(hole.reversed()) : hole
+        }
+        if holes.isEmpty {
+            return triangulateSimple(outer, color: color, allowsFanFallback: false)
+        }
+        let triangles = triangulateWithPoly2Tri(outer: outer, holes: holes, color: color)
+        return triangles.isEmpty ? triangulate(outer: outer, holes: holes, color: color) : triangles
+    }
+
     static func triangles(for paths: [[HorizontalPoint]], color: HorizontalMetalRGBA) -> [HorizontalMetalTrianglePrimitive] {
         let contours = paths.map(cleaned).filter { $0.count >= 3 }
         guard !contours.isEmpty else {

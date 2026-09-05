@@ -241,6 +241,7 @@ struct HorizontalPoolCanvasEditorView: View {
                     layerColors: appearanceSettings.boardSceneLayerColors,
                     materialColors: appearanceSettings.boardSceneMaterialColors,
                     ignoresSceneMouseEvents: pointerInsideToolbar,
+                    silkscreenClipping: appearanceSettings.silkscreenClipping,
                     cameraState: $threeDCameraState
                 )
                 .id(sceneRevision)
