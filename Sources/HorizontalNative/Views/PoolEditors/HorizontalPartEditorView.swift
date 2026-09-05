@@ -186,10 +186,8 @@ struct HorizontalPartEditorView: View {
             VStack(alignment: .leading, spacing: 18) {
                 attributesSection
                 referencesSection
-                HStack(alignment: .top, spacing: 32) {
-                    tagsAndModelSection
-                    flagsAndPrefixSection
-                }
+                tagsAndModelSection
+                flagsAndPrefixSection
                 orderableMPNsSection
                 parametricSection
                 HorizontalPoolItemChecksView(issues: issues + unmappedPinIssues)
@@ -240,8 +238,9 @@ struct HorizontalPartEditorView: View {
                 GridRow {
                     Text(kind.displayName)
                         .gridColumnAlignment(.trailing)
-                    HorizontalCommittedTextField(
+                    HorizontalSuggestingTextField(
                         text: attribute.inherited ? (context?.baseAttributes[kind] ?? "") : attribute.value,
+                        suggestions: kind == .manufacturer ? index.manufacturers : [],
                         isReadOnly: isReadOnly || attribute.inherited
                     ) { value in
                         update("Change \(kind.displayName)") {
@@ -323,8 +322,8 @@ struct HorizontalPartEditorView: View {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 8) {
             GridRow {
                 Text("Tags").gridColumnAlignment(.trailing)
-                HorizontalCommittedTextField(text: part.tags.joined(separator: " "), isReadOnly: isReadOnly) { value in
-                    update("Change Tags") { $0.tags = HorizontalPoolItemHeaderForm.tags(from: value) }
+                HorizontalTokenField(tokens: part.tags, suggestions: index.tags, isReadOnly: isReadOnly || (hasBase && part.inheritTags)) { tags in
+                    update("Change Tags") { $0.tags = tags }
                 }
                 .frame(minWidth: 200)
             }
@@ -384,21 +383,23 @@ struct HorizontalPartEditorView: View {
     private var flagsAndPrefixSection: some View {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 8) {
             ForEach(HorizontalPartFlag.allCases, id: \.self) { flag in
+                let state = part.flags[flag] ?? .clear
                 GridRow {
-                    Text(flag.displayName).gridColumnAlignment(.trailing)
-                    Picker(flag.displayName, selection: Binding(
-                        get: { part.flags[flag] ?? .clear },
-                        set: { state in update("Change Flag") { $0.flags[flag] = state } }
-                    )) {
-                        Text("Clear").tag(HorizontalPartFlagState.clear)
-                        Text("Set").tag(HorizontalPartFlagState.set)
+                    Text("")
+                    HStack(spacing: 16) {
+                        Toggle(flag.displayName, isOn: Binding(
+                            get: { state == .set },
+                            set: { isOn in update(isOn ? "Set \(flag.displayName)" : "Clear \(flag.displayName)") { $0.flags[flag] = isOn ? .set : .clear } }
+                        ))
+                        .disabled(isReadOnly || state == .inherit)
                         if hasBase {
-                            Text("Inherit").tag(HorizontalPartFlagState.inherit)
+                            Toggle("Inherit", isOn: Binding(
+                                get: { state == .inherit },
+                                set: { inherit in update("Change \(flag.displayName) Inheritance") { $0.flags[flag] = inherit ? .inherit : .clear } }
+                            ))
+                            .disabled(isReadOnly)
                         }
                     }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .disabled(isReadOnly)
                 }
             }
             GridRow {

@@ -627,6 +627,8 @@ struct SchematicCanvasView: View {
             gridColor: theme.grid,
             drawsGridInMetal: drawsGridInMetal,
             gridLineWidth: appearanceSettings.gridMarkLineWidth,
+            showsOriginMark: displayOptions.origin && HorizontalMetalBackdropView.isSupported,
+            originMarkColor: theme.grid,
             metalOverlayTriangles: metalLineBatch.triangles,
             metalOverlayTriangleKey: metalLineBatch.triangleKey,
             metalOverlayLines: metalLineBatch.lines,
@@ -1025,6 +1027,14 @@ struct SchematicCanvasView: View {
     ) {
         if displayOptions.grid && !drawsGridInMetal {
             drawGrid(context: context, transform: transform)
+        }
+        if displayOptions.origin && !HorizontalMetalBackdropView.isSupported {
+            HorizontalGridRenderer.drawOriginMark(
+                context: context,
+                transform: transform,
+                color: theme.grid,
+                lineWidth: appearanceSettings.gridMarkLineWidth
+            )
         }
 
         // Filled/stroked schematic polygons are emitted through the retained Metal layer.
@@ -1566,9 +1576,9 @@ struct SchematicCanvasView: View {
             detailRow("Refdes", component.refdes),
             detailRow("Value", component.value),
             component.noPopulate ? detailRow("DNP", "Yes") : nil,
-            detailRow("MPN", component.mpn),
-            detailRow("Manufacturer", component.manufacturer),
-            detailRow("Package", component.packageName),
+            detailRow("MPN", component.mpn, poolSearch: .part),
+            detailRow("Manufacturer", component.manufacturer, poolSearch: .part),
+            detailRow("Package", component.packageName, poolSearch: .package),
             detailRow("Description", component.description),
             detailRow("Datasheet", component.datasheet),
         ].compactMap { $0 }
@@ -1609,11 +1619,21 @@ struct SchematicCanvasView: View {
         return sheet.netDetails[normalizedID(netID)]?.name ?? shortID(netID)
     }
 
-    private func detailRow(_ label: String, _ value: String?) -> HorizontalSelectionHUDDetail? {
+    /// `poolSearch`: the value doubles as a link that filters that category
+    /// of the Pools pane to it.
+    private func detailRow(
+        _ label: String,
+        _ value: String?,
+        poolSearch category: HorizontalPoolItemCategory? = nil
+    ) -> HorizontalSelectionHUDDetail? {
         guard let value = nonEmpty(value) else {
             return nil
         }
-        return HorizontalSelectionHUDDetail(label: label, value: value)
+        return HorizontalSelectionHUDDetail(
+            label: label,
+            value: value,
+            poolSearch: category.map { HorizontalPoolSearch(category: $0, term: value) }
+        )
     }
 
     private func selectionProperties(for ref: HorizontalSelectableRef) -> [HorizontalSelectionProperty] {
@@ -7647,23 +7667,8 @@ struct SchematicCanvasView: View {
                 return junctionColor
             }
 
-            if displayOptions.origin {
-                let length = 5_080_000.0
-                appendWorldLine(
-                    from: HorizontalPoint(x: -length, y: 0),
-                    to: HorizontalPoint(x: length, y: 0),
-                    color: HorizontalMetalRGBA(theme.error.opacity(0.34)),
-                    minimumWidth: 0.8
-                )
-                appendWorldLine(
-                    from: HorizontalPoint(x: 0, y: -length),
-                    to: HorizontalPoint(x: 0, y: length),
-                    color: HorizontalMetalRGBA(theme.origin.opacity(0.34)),
-                    minimumWidth: 0.8
-                )
-                appendText(schematicOriginText("X", at: HorizontalPoint(x: length, y: 0)), color: HorizontalMetalRGBA(theme.error.opacity(0.52)), minimumWidth: 0.8)
-                appendText(schematicOriginText("Y", at: HorizontalPoint(x: 0, y: length)), color: HorizontalMetalRGBA(theme.origin.opacity(0.52)), minimumWidth: 0.8)
-            }
+            // The origin is the backdrop's mark now (see HorizontalGridRenderer.
+            // drawOriginMark), not axis lines in the batch.
 
             if displayOptions.frame {
                 currentGroup = 1; currentOpacity = 0.72
@@ -10627,17 +10632,6 @@ struct SchematicCanvasView: View {
         ]
     }
 
-    private func schematicOriginText(_ label: String, at position: HorizontalPoint) -> HorizontalText {
-        HorizontalText(
-            id: "schematic-origin-\(label)",
-            text: label,
-            position: position,
-            size: 1_000_000,
-            layer: nil,
-            origin: .center,
-            centered: true
-        )
-    }
 
     private func drawSymbolPlaceholders(context: GraphicsContext, transform: HorizontalCanvasTransform) {
         for symbol in sheet.symbols {

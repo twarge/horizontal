@@ -1,6 +1,32 @@
 import SwiftUI
 
 enum HorizontalGridRenderer {
+    /// The origin mark: the grid's cross at twice its weight with a ring
+    /// around it, a fixed size on screen. Drawn by the Metal backdrop when
+    /// available; this is the CoreGraphics fallback.
+    static func drawOriginMark(
+        context: GraphicsContext,
+        transform: HorizontalCanvasTransform,
+        color: Color,
+        markSize: CGFloat = 5,
+        lineWidth: CGFloat = 0.5
+    ) {
+        let center = pixelAligned(transform.point(.zero))
+        let arm = markSize * 1.8
+        let radius = markSize * 1.2
+        var path = Path()
+        path.move(to: CGPoint(x: center.x, y: center.y - arm))
+        path.addLine(to: CGPoint(x: center.x, y: center.y + arm))
+        path.move(to: CGPoint(x: center.x - arm, y: center.y))
+        path.addLine(to: CGPoint(x: center.x + arm, y: center.y))
+        path.addEllipse(in: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
+        context.stroke(
+            path,
+            with: .color(color),
+            style: StrokeStyle(lineWidth: max(lineWidth, 0.5) * 2, lineCap: .square)
+        )
+    }
+
     static func drawCrossGrid(
         context: GraphicsContext,
         transform: HorizontalCanvasTransform,

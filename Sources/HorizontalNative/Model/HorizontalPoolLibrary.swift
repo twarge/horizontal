@@ -63,6 +63,12 @@ struct HorizontalPoolLibraryItem: Identifiable, Hashable, Sendable {
     /// its `pool.json`. "Open in Pool" opens a window on this directory.
     var poolURL: URL
     var url: URL
+    /// The item's manufacturer (a part's attribute, else the `manufacturer`
+    /// key), for the editors' completions.
+    var manufacturer: String = ""
+    /// A symbol's unit uuid (lowercased), so a unit's symbols can be found
+    /// without opening every symbol file.
+    var symbolUnitID: String = ""
 }
 
 /// Cross-reference lookup over the browsed pools' items by kind and uuid, so
@@ -76,19 +82,35 @@ struct HorizontalPoolLibraryIndex: Sendable {
     private var itemsByKey: [String: HorizontalPoolLibraryItem]
     /// The winning item per key, in scan order — what a picker lists.
     private var orderedItems: [HorizontalPoolLibraryItem]
+    /// Every manufacturer the browsed pools name, sorted, for completions.
+    let manufacturers: [String]
+    /// Every tag the browsed pools use, sorted, for completions.
+    let tags: [String]
 
     init(items: [HorizontalPoolLibraryItem]) {
         var itemsByKey = [String: HorizontalPoolLibraryItem]()
         var orderedItems = [HorizontalPoolLibraryItem]()
+        // Spellings that differ only in case fold to the first one seen.
+        var manufacturers = [String: String]()
+        var tags = [String: String]()
         for item in items {
             let key = Self.key(item.category, item.uuid)
             if itemsByKey[key] == nil {
                 itemsByKey[key] = item
                 orderedItems.append(item)
             }
+            let manufacturer = item.manufacturer.trimmingCharacters(in: .whitespaces)
+            if !manufacturer.isEmpty, manufacturers[manufacturer.lowercased()] == nil {
+                manufacturers[manufacturer.lowercased()] = manufacturer
+            }
+            for tag in item.tags.split(whereSeparator: \.isWhitespace) where !tag.isEmpty && tags[tag.lowercased()] == nil {
+                tags[tag.lowercased()] = String(tag)
+            }
         }
         self.itemsByKey = itemsByKey
         self.orderedItems = orderedItems
+        self.manufacturers = manufacturers.values.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        self.tags = tags.values.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     /// Every item of one kind, sorted by name.
@@ -216,7 +238,11 @@ enum HorizontalPoolLibrary {
                 category: category,
                 poolName: poolName,
                 poolURL: poolURL.standardizedFileURL,
-                url: url
+                url: url,
+                manufacturer: category == .part
+                    ? (attributeString(json["manufacturer"]) ?? "")
+                    : (json.string("manufacturer") ?? ""),
+                symbolUnitID: category == .symbol ? (json.string("unit")?.lowercased() ?? "") : ""
             )
             if isCacheCopy {
                 cachedKeys.insert(key)

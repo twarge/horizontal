@@ -148,7 +148,10 @@ extension BoardDisplayOptions {
     /// footprint reads clearly.
     mutating func poolEditor(mode: HorizontalBoardEditorMode) {
         showAll()
-        vias = false
+        // A package has no vias to hide in 2D, and the 3D view keys its
+        // through-hole pad barrels on this flag: off, only SMD and
+        // non-round pads would show.
+        vias = true
         viaLabels = false
         connectionLines = false
         connectionLabels = false

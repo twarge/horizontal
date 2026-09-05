@@ -35,6 +35,12 @@ struct HorizontalPoolCanvasEditorView: View {
     @State private var canvasModel: HorizontalPoolItemModel?
     @State private var pointerInsideToolbar = false
     @StateObject private var toolSettings = HorizontalBoardToolSettings()
+    /// The package editor's 3D view, shown in the footprint's place.
+    @State private var showsThreeD = false
+    @State private var threeDCameraState: HorizontalSceneCameraState?
+    /// Bumped on every change to what the 3D scene shows, so the scene is
+    /// rebuilt (its cache keys on the board's identity, not its content).
+    @State private var sceneRevision = 0
 
     init(
         session: HorizontalPoolItemEditorSession,
@@ -111,7 +117,16 @@ struct HorizontalPoolCanvasEditorView: View {
 
     // MARK: Canvas
 
+    @ViewBuilder
     private var canvasPane: some View {
+        if showsThreeD, session.category == .package {
+            threeDPane
+        } else {
+            footprintPane
+        }
+    }
+
+    private var footprintPane: some View {
         PaneOverlayContainer(
             pane: .board,
             safeAreaInsets: EdgeInsets(),
@@ -164,6 +179,11 @@ struct HorizontalPoolCanvasEditorView: View {
         } grid: {
             GridControlsPanel(title: "Grid", grid: gridBinding)
         } tools: {
+            if session.category == .package {
+                ThreeDPreviewToggleButton(isShowingThreeD: false) {
+                    showsThreeD = true
+                }
+            }
             SelectionToolButton(settings: $selectionToolSettings)
             if modeProfile.allowsGraphics || modeProfile.allowsPolygons {
                 DrawingToolButtonGroup(primitives: drawingPrimitives) { primitive in
@@ -196,6 +216,65 @@ struct HorizontalPoolCanvasEditorView: View {
                 .disabled(isReadOnly)
             }
         }
+    }
+
+    // MARK: 3D view
+
+    /// Upstream's package 3D view: the package on a small slab of board,
+    /// with the board 3D view's presets, surface toggles and controls. The
+    /// scene follows every edit — pads, silkscreen, the models section.
+    private var threeDPane: some View {
+        PaneOverlayContainer(
+            pane: .threeD,
+            safeAreaInsets: EdgeInsets(),
+            showsInfoButton: false,
+            showsGridButton: false,
+            isKeyboardFocused: true,
+            onToolbarHover: { pointerInsideToolbar = $0 }
+        ) {
+            if let sceneBoard {
+                BoardSceneView(
+                    board: sceneBoard,
+                    displayOptions: displayOptions,
+                    backgroundColor: appearanceSettings.boardSceneBackground,
+                    copperColor: appearanceSettings.boardSceneCopper,
+                    layerColors: appearanceSettings.boardSceneLayerColors,
+                    materialColors: appearanceSettings.boardSceneMaterialColors,
+                    ignoresSceneMouseEvents: pointerInsideToolbar,
+                    cameraState: $threeDCameraState
+                )
+                .id(sceneRevision)
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        } info: {
+            EmptyView()
+        } layers: {
+            BoardLayerControls(
+                board: sceneBoard,
+                displayOptions: $displayOptions,
+                selectedLayer: $drawingLayer,
+                includesThreeDControls: true,
+                layers: modeProfile.layers,
+                showsBoardObjectToggles: false
+            )
+        } grid: {
+            EmptyView()
+        } tools: {
+            ThreeDPreviewToggleButton(isShowingThreeD: true) {
+                showsThreeD = false
+            }
+            ThreeDViewPresetRailButtons(board: sceneBoard, displayOptions: $displayOptions, cameraState: $threeDCameraState)
+            ThreeDViewControlsButton(board: sceneBoard, displayOptions: $displayOptions, cameraState: $threeDCameraState)
+        }
+    }
+
+    private var sceneBoard: HorizontalBoard? {
+        guard let board, case .package(let package) = session.model else {
+            return nil
+        }
+        return package.sceneBoard(from: board, poolURL: session.poolURL)
     }
 
     private var drawingPrimitives: [HorizontalDrawingPrimitive] {
@@ -310,6 +389,7 @@ struct HorizontalPoolCanvasEditorView: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .background(.regularMaterial)
     }
 
     /// The pads selected on the canvas, by uuid (refs are `<pkg>/pad/<uuid>`).
@@ -345,6 +425,7 @@ struct HorizontalPoolCanvasEditorView: View {
     }
 
     private func reproject() {
+        sceneRevision += 1
         guard let projected = projectBoard() else {
             return
         }
@@ -358,6 +439,7 @@ struct HorizontalPoolCanvasEditorView: View {
     /// selection and draft survive) and fold the geometry into the model. The
     /// canvas already registered the undo step on the shared manager.
     private func canvasChanged(_ edited: HorizontalBoard) {
+        sceneRevision += 1
         board = edited
         let model: HorizontalPoolItemModel
         switch session.model {

@@ -14,6 +14,8 @@ struct HorizontalSelectionHUDItem: Equatable {
 struct HorizontalSelectionHUDDetail: Identifiable, Equatable {
     var label: String
     var value: String
+    /// When set, the value is a link that filters the Pools pane to it.
+    var poolSearch: HorizontalPoolSearch? = nil
 
     var id: String { "\(label):\(value)" }
 }
@@ -115,6 +117,13 @@ enum HorizontalCanvasCommand {
     case autoplaceAllPins
     /// Symbol editor: grow or shrink the symbol from the cursor.
     case resizeSymbol
+    /// Board: detach the selected package's (or track's) pad connections,
+    /// leaving the copper in place on junctions (Horizon's Disconnect).
+    case disconnect
+    /// Board: reveal the selected package in the pool it came from, or in
+    /// the project's own pool.
+    case showInPoolManager
+    case showInProjectPoolManager
     case commitInteraction
     case cancelInteraction
 }
@@ -343,6 +352,9 @@ struct InteractiveCanvasView: View {
     var gridColor = Color.clear
     var drawsGridInMetal = false
     var gridLineWidth: CGFloat = 0.5
+    /// The origin mark the Metal backdrop draws at world (0, 0).
+    var showsOriginMark = false
+    var originMarkColor = Color.clear
     var metalTriangles = [HorizontalMetalTrianglePrimitive]()
     var metalTriangleKey = 0
     var metalLines = [HorizontalMetalLinePrimitive]()
@@ -597,6 +609,8 @@ struct InteractiveCanvasView: View {
                         gridColor: gridColor,
                         minimumLineWidth: minimumLineWidth,
                         gridLineWidth: gridLineWidth,
+                        showsOriginMark: showsOriginMark,
+                        originMarkColor: originMarkColor,
                         triangles: metalTriangles,
                         triangleKey: metalTriangleKey,
                         lines: metalLines,

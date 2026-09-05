@@ -54,6 +54,10 @@ struct HorizontalMetalBackdropView {
     var gridColor: Color
     var minimumLineWidth: CGFloat = 0
     var gridLineWidth: CGFloat = 0.5
+    /// The origin mark (the grid's cross doubled, with a ring) at world (0, 0),
+    /// drawn whether or not the grid is.
+    var showsOriginMark = false
+    var originMarkColor: Color = .clear
     /// Multiplier the renderer applies to per-layer composite textures at draw
     /// time. Lets `BoardCanvasView`'s opacity slider drag without invalidating
     /// any cached primitive buckets — the slider is a uniform update.
@@ -144,6 +148,8 @@ struct HorizontalMetalBackdropView {
             gridColor: gridColor,
             minimumLineWidth: Float(minimumLineWidth),
             gridLineWidth: Float(gridLineWidth),
+            showsOriginMark: showsOriginMark,
+            originMarkColor: originMarkColor,
             layerOpacity: Float(layerOpacity),
             triangles: triangles,
             triangleKey: triangleKey,
@@ -261,6 +267,8 @@ struct HorizontalMetalBackdropView {
         private var currentGridColor = Color.clear
         private var currentMinimumLineWidth: Float = 0
         private var currentGridLineWidth: Float = 0.5
+        private var currentShowsOriginMark = false
+        private var currentOriginMarkColor: Color = .clear
         private var currentViewport = CanvasViewport()
         /// Identifies the shared live-viewport driver for input-to-first-draw
         /// latency measurements. Set when the renderer registers as a sink.
@@ -302,6 +310,8 @@ struct HorizontalMetalBackdropView {
             gridColor: Color,
             minimumLineWidth: Float,
             gridLineWidth: Float,
+            showsOriginMark: Bool,
+            originMarkColor: Color,
             layerOpacity: Float,
             triangles: [HorizontalMetalTrianglePrimitive],
             triangleKey: Int,
@@ -336,6 +346,8 @@ struct HorizontalMetalBackdropView {
                 currentGridColor = gridColor
                 currentMinimumLineWidth = minimumLineWidth
                 currentGridLineWidth = gridLineWidth
+                currentShowsOriginMark = showsOriginMark
+                currentOriginMarkColor = originMarkColor
                 currentViewport = viewport
                 currentBackingScale = backingScale
                 currentViewportSize = viewportSize
@@ -1216,6 +1228,8 @@ struct HorizontalMetalBackdropView {
             uniforms.minimumScreenSpacing = 20
             uniforms.markSize = 5
             uniforms.showGrid = currentGrid == nil || effectiveSpacing.x <= 0 || effectiveSpacing.y <= 0 ? 0 : 1
+            uniforms.showOrigin = currentShowsOriginMark ? 1 : 0
+            uniforms.originColor = Self.rgba(currentOriginMarkColor)
         }
 
         private static func makeTrianglePipelineState(
@@ -1650,7 +1664,9 @@ private struct HorizontalMetalBackdropUniforms {
     var gridLineWidth: Float = 0.5
     var minimumLineWidth: Float = 0
     var backingScale: Float = 1
-    var padding = SIMD2<Float>(0, 0)
+    var showOrigin: Float = 0
+    var originPadding: Float = 0
+    var originColor = SIMD4<Float>(0, 0, 0, 0)
 }
 
 private struct HorizontalMetalLineShaderPrimitive {
@@ -1947,7 +1963,9 @@ struct HorizontalMetalBackdropUniforms {
     float gridLineWidth;
     float minimumLineWidth;
     float backingScale;
-    float2 padding;
+    float showOrigin;
+    float originPadding;
+    float4 originColor;
 };
 
 struct BackdropVertexOut {
@@ -2338,6 +2356,25 @@ fragment float4 horizon_backdrop_fragment(
         float gridAlpha = max(vertical, horizontal) * uniforms.gridColor.a;
         color.rgb = mix(color.rgb, uniforms.gridColor.rgb, gridAlpha);
         color.a = max(color.a, gridAlpha);
+    }
+
+    if (uniforms.showOrigin > 0.5) {
+        // The origin mark: the grid cross at twice its weight, plus a ring,
+        // sized on screen so it reads the same at every zoom.
+        float dx = abs(world.x * scale);
+        float dy = abs(world.y * scale);
+        float halfWidth = max(uniforms.gridLineWidth, 0.5);
+        float arm = uniforms.markSize * 1.8;
+        float radius = uniforms.markSize * 1.2;
+        float aa = 0.85;
+        float vertical = (1.0 - smoothstep(halfWidth, halfWidth + aa, dx))
+            * (1.0 - smoothstep(arm, arm + aa, dy));
+        float horizontal = (1.0 - smoothstep(halfWidth, halfWidth + aa, dy))
+            * (1.0 - smoothstep(arm, arm + aa, dx));
+        float ring = 1.0 - smoothstep(halfWidth, halfWidth + aa, abs(sqrt(dx * dx + dy * dy) - radius));
+        float originAlpha = max(max(vertical, horizontal), ring) * uniforms.originColor.a;
+        color.rgb = mix(color.rgb, uniforms.originColor.rgb, originAlpha);
+        color.a = max(color.a, originAlpha);
     }
 
     return color;

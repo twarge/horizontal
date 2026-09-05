@@ -633,3 +633,72 @@ extension HorizontalPoolDecal {
         return decal
     }
 }
+
+// MARK: - Package 3D view
+
+extension HorizontalPoolPackage {
+    /// Upstream's fake board for the package 3D view: the projected package
+    /// on a rectangle of substrate `margin` larger than its footprint, with
+    /// the default 3D model (when its file exists) placed at the origin.
+    func sceneBoard(from board: HorizontalBoard, poolURL: URL, margin: Double = 2_000_000) -> HorizontalBoard {
+        var scene = board
+        var points = [HorizontalPoint]()
+        points.append(contentsOf: scene.packagePads.flatMap(\.vertices))
+        points.append(contentsOf: scene.packageHoles.flatMap(\.boundsPoints))
+        points.append(contentsOf: scene.lines.flatMap { [$0.from, $0.to] })
+        points.append(contentsOf: scene.arcs.flatMap { $0.polyline(precision: 24) })
+        points.append(contentsOf: scene.polygons.flatMap { $0.renderVertices(arcPrecision: 16) })
+        points.append(contentsOf: scene.texts.flatMap(\.renderBoundsPoints))
+        let footprint = points.isEmpty
+            ? HorizontalRect(points: [HorizontalPoint(x: -margin, y: -margin), HorizontalPoint(x: margin, y: margin)])
+            : HorizontalRect(points: points)
+        let minX = footprint.minX - margin
+        let minY = footprint.minY - margin
+        let maxX = footprint.maxX + margin
+        let maxY = footprint.maxY + margin
+        let corners = [
+            HorizontalPoint(x: minX, y: minY),
+            HorizontalPoint(x: maxX, y: minY),
+            HorizontalPoint(x: maxX, y: maxY),
+            HorizontalPoint(x: minX, y: maxY),
+        ]
+        let slab = HorizontalRect(points: corners)
+        let outline = HorizontalPolygon(id: "\(uuid)/scene-outline", vertices: corners, layer: HorizontalBoardLayers.outline)
+        scene.polygons.append(outline)
+        scene.physicalBounds = slab
+        scene.bounds = slab
+
+        var placement = HorizontalPlacement(
+            id: uuid,
+            position: HorizontalPoint(x: 0, y: 0),
+            angle: 0,
+            mirrored: false,
+            label: name
+        )
+        placement.packageID = uuid
+        let model = models[defaultModelID] ?? models.values.min { $0.id < $1.id }
+        if let model {
+            let fileURL = model.filename.hasPrefix("/")
+                ? URL(fileURLWithPath: model.filename)
+                : poolURL.appendingPathComponent(model.filename)
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                placement.modelID = model.id
+                placement.model3D = HorizontalPackage3DModel(
+                    id: model.id,
+                    filename: model.filename,
+                    fileURL: fileURL,
+                    x: model.x,
+                    y: model.y,
+                    z: model.z,
+                    roll: model.roll,
+                    pitch: model.pitch,
+                    yaw: model.yaw,
+                    heightTop: model.heightTop,
+                    heightBottom: model.heightBottom
+                )
+            }
+        }
+        scene.packages = [placement]
+        return scene
+    }
+}

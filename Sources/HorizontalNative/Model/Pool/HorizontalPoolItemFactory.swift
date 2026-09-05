@@ -372,10 +372,26 @@ enum HorizontalPoolItemFactory {
     ) -> HorizontalPoolLibraryItem {
         let key = model.category.rawValue + "|" + model.uuid.lowercased()
         let detail: String
+        let manufacturer: String
         switch model {
-        case .part(let part): detail = part.attribute(.manufacturer).value
-        case .padstack(let padstack): detail = padstack.type.rawValue
-        default: detail = ""
+        case .part(let part):
+            detail = part.attribute(.manufacturer).value
+            manufacturer = detail
+        case .padstack(let padstack):
+            detail = padstack.type.rawValue
+            manufacturer = ""
+        case .unit(let unit):
+            detail = ""
+            manufacturer = unit.manufacturer
+        case .entity(let entity):
+            detail = ""
+            manufacturer = entity.manufacturer
+        case .package(let package):
+            detail = ""
+            manufacturer = package.manufacturer
+        default:
+            detail = ""
+            manufacturer = ""
         }
         return HorizontalPoolLibraryItem(
             id: poolURL.standardizedFileURL.path + "|" + key,
@@ -386,7 +402,9 @@ enum HorizontalPoolItemFactory {
             category: model.category,
             poolName: poolName,
             poolURL: poolURL.standardizedFileURL,
-            url: url
+            url: url,
+            manufacturer: manufacturer,
+            symbolUnitID: { if case .symbol(let symbol) = model { return symbol.unitID.lowercased() }; return "" }()
         )
     }
 }

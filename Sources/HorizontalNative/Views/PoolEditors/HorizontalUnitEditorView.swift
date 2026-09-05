@@ -8,6 +8,8 @@ struct HorizontalUnitEditorView: View {
     var unit: HorizontalPoolUnit
     var issues: [HorizontalPoolCheckIssue]
     var isReadOnly: Bool
+    /// For manufacturer completions.
+    var index: HorizontalPoolLibraryIndex = .empty
     var commit: (HorizontalPoolUnit, String) -> Void
 
     @State private var selectedPinIDs = Set<String>()
@@ -25,7 +27,7 @@ struct HorizontalUnitEditorView: View {
                 }
                 GridRow {
                     Text("Manufacturer").gridColumnAlignment(.trailing)
-                    HorizontalCommittedTextField(text: unit.manufacturer, isReadOnly: isReadOnly) { value in
+                    HorizontalSuggestingTextField(text: unit.manufacturer, suggestions: index.manufacturers, isReadOnly: isReadOnly) { value in
                         var model = unit
                         model.manufacturer = value
                         commit(model, "Change Manufacturer")

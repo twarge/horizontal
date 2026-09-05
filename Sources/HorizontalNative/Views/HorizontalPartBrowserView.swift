@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 private enum HorizontalPartSearchScope: String, CaseIterable, Identifiable {
     case all
@@ -33,6 +36,9 @@ struct HorizontalPartBrowserView: View {
     @State private var searchText = ""
     @State private var selectedPartID: HorizontalPoolPart.ID?
     @State private var sortOrder = [KeyPathComparator(\HorizontalPoolPart.mpn)]
+    @Environment(\.horizonPoolRevealAction) private var poolRevealAction
+    @State private var pendingRevealTask: Task<Void, Never>?
+    @State private var selectionChangedAt = Date.distantPast
     @SceneStorage("Horizontal.partBrowser.columnCustomization")
     private var columnCustomization = TableColumnCustomization<HorizontalPoolPart>()
 
@@ -71,6 +77,15 @@ struct HorizontalPartBrowserView: View {
             } else {
                 partTable
             }
+        }
+        // The pane split runs under the navigator sidebar so canvases can
+        // show through it; a table cannot, so keep the content clear of it.
+        .padding(.leading, safeAreaInsets.leading)
+        .padding(.trailing, safeAreaInsets.trailing)
+        .onChange(of: selectedPartID) { _, _ in
+            selectionChangedAt = Date()
+            pendingRevealTask?.cancel()
+            pendingRevealTask = nil
         }
         #if os(macOS)
         .background(Color(nsColor: .controlBackgroundColor))
@@ -133,7 +148,7 @@ struct HorizontalPartBrowserView: View {
             columnCustomization: $columnCustomization
         ) {
             TableColumn("MPN", value: \.mpn) { part in
-                tableText(part.mpn, part: part)
+                poolLinkText(part.mpn, part: part, category: .part)
             }
             .width(min: 130, ideal: 180)
             .customizationID("mpn")
@@ -147,7 +162,7 @@ struct HorizontalPartBrowserView: View {
             .disabledCustomizationBehavior(.visibility)
 
             TableColumn("Manufacturer", value: \.manufacturer) { part in
-                tableText(part.manufacturer, part: part)
+                poolLinkText(part.manufacturer, part: part, category: .part)
             }
             .width(min: 120, ideal: 150)
             .customizationID("manufacturer")
@@ -161,7 +176,7 @@ struct HorizontalPartBrowserView: View {
             .disabledCustomizationBehavior(.visibility)
 
             TableColumn("Package", value: \.packageName) { part in
-                tableText(part.packageName, part: part)
+                poolLinkText(part.packageName, part: part, category: .package)
             }
             .width(min: 110, ideal: 140)
             .customizationID("package")
@@ -201,6 +216,62 @@ struct HorizontalPartBrowserView: View {
             .onTapGesture(count: 2) {
                 place(part)
             }
+    }
+
+    /// MPN, manufacturer and package: on the selected row they are links into
+    /// the Pools pane. A click on one waits out the double-click interval so
+    /// that a double-click — including one whose first click selected the
+    /// row — still places the part.
+    @ViewBuilder
+    private func poolLinkText(_ value: String, part: HorizontalPoolPart, category: HorizontalPoolItemCategory) -> some View {
+        if selectedPartID == part.id, !value.isEmpty, let poolRevealAction {
+            Button {
+                clickPoolLink(value, part: part, category: category, reveal: poolRevealAction)
+            } label: {
+                Text(value)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Show “\(value)” in the Pools pane (double-click places the part)")
+        } else {
+            tableText(value, part: part)
+        }
+    }
+
+    private func clickPoolLink(
+        _ value: String,
+        part: HorizontalPoolPart,
+        category: HorizontalPoolItemCategory,
+        reveal: @escaping (HorizontalPoolRevealRequest) -> Void
+    ) {
+        let interval = Self.doubleClickInterval
+        let isSecondClick = pendingRevealTask != nil || Date().timeIntervalSince(selectionChangedAt) < interval
+        pendingRevealTask?.cancel()
+        pendingRevealTask = nil
+        if isSecondClick {
+            place(part)
+            return
+        }
+        pendingRevealTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(interval))
+            guard !Task.isCancelled else {
+                return
+            }
+            pendingRevealTask = nil
+            reveal(HorizontalPoolRevealRequest(search: HorizontalPoolSearch(category: category, term: value)))
+        }
+    }
+
+    private static var doubleClickInterval: TimeInterval {
+        #if os(macOS)
+        NSEvent.doubleClickInterval
+        #else
+        0.3
+        #endif
     }
 
     private func placeSelectedPart() {

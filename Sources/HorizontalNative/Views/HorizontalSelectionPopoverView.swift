@@ -138,6 +138,7 @@ struct HorizontalSelectionPopoverView: View {
     var isReadOnly = false
     var onChange: (HorizontalSelectionPropertyChange) -> Void
 
+    @Environment(\.horizonPoolRevealAction) private var poolRevealAction
     @State private var currentObjects = [HorizontalObjectType: HorizontalSelectableRef]()
     @State private var applyAllProperties = Set<HorizontalSelectionApplyAllKey>()
 
@@ -446,6 +447,17 @@ struct HorizontalSelectionPopoverView: View {
         } else if isDatasheetDetail(detail) {
             datasheetText(detail.value)
                 .foregroundStyle(foregroundColor.opacity(0.78))
+        } else if let search = detail.poolSearch, let poolRevealAction {
+            Button {
+                poolRevealAction(HorizontalPoolRevealRequest(search: search))
+            } label: {
+                Text(detail.value)
+                    .font(detailValueFont)
+                    .foregroundStyle(Color.accentColor)
+                    .lineLimit(2)
+            }
+            .buttonStyle(.plain)
+            .help("Show “\(detail.value)” in the Pools pane")
         } else {
             Text(detail.value)
                 .font(detailValueFont)
