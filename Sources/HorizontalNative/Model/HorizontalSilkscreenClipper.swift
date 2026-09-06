@@ -4,8 +4,9 @@ import HorizontalPlaneClipper
 #endif
 
 /// The "clip silkscreen to solder mask" mode: silkscreen closer than
-/// `clearance` (nanometres) to a solder mask opening on the same side is
-/// left out, the way a fab house strips silkscreen off pads.
+/// `clearance` (nanometres) to a solder mask opening on the same side, or
+/// to the board's edge and cutouts, is left out, the way a fab house strips
+/// silkscreen off pads and off the routed edge.
 struct HorizontalSilkscreenClipping: Hashable {
     var clearance: Double
 
@@ -119,7 +120,8 @@ enum HorizontalSilkscreenClipper {
         clearance: Double
     ) -> HorizontalClippedSilkscreenLayer {
         let openings = maskOpenings(on: maskLayer, board: board)
-        guard !openings.isEmpty else {
+        let edge = boardEdge(of: board)
+        guard !openings.isEmpty || !edge.outlinePaths.isEmpty else {
             return HorizontalClippedSilkscreenLayer(layer: layer, clipped: [:])
         }
         let openingBounds = openings.map { HorizontalRect(points: $0).expanded(by: clearance) }
@@ -133,16 +135,59 @@ enum HorizontalSilkscreenClipper {
             let relevant = zip(openings, openingBounds)
                 .filter { rectsTouch($0.1, bounds) }
                 .map(\.0)
-            guard !relevant.isEmpty else {
+            let nearEdge = !edge.outlinePaths.isEmpty && !edge.isWellInside(bounds.expanded(by: clearance))
+            guard !relevant.isEmpty || nearEdge else {
                 continue
             }
-            let fragments = subtract(cutouts: relevant, outset: clearance, from: object.subjects)
+            let fragments = nearEdge
+                ? clip(subjects: object.subjects, cutouts: relevant, outset: clearance, toOutline: edge.outlinePaths, contractedBy: clearance)
+                : subtract(cutouts: relevant, outset: clearance, from: object.subjects)
             clipped[HorizontalCanvasModeSupport.normalizedID(object.id)] = HorizontalClippedSilkscreenObject(
                 id: object.id,
                 fragments: fragments
             )
         }
         return HorizontalClippedSilkscreenLayer(layer: layer, clipped: clipped)
+    }
+
+    // MARK: - Board edge
+
+    /// The board's edge as the silkscreen sees it: the outline layer's
+    /// polygons (outers and cutouts alike, for an even-odd union) and the
+    /// pieces they make, for the quick "nowhere near the edge" test.
+    struct BoardEdge {
+        var outlinePaths: [[HorizontalPoint]] = []
+        var shapes: [HorizontalBoardOutlineShape] = []
+
+        /// True when `rect` lies inside one board piece and touches none of
+        /// its cutouts: such an object needs no edge clipping at all.
+        func isWellInside(_ rect: HorizontalRect) -> Bool {
+            let corners = [
+                HorizontalPoint(x: rect.minX, y: rect.minY),
+                HorizontalPoint(x: rect.maxX, y: rect.minY),
+                HorizontalPoint(x: rect.maxX, y: rect.maxY),
+                HorizontalPoint(x: rect.minX, y: rect.maxY),
+            ]
+            return shapes.contains { shape in
+                corners.allSatisfy { HorizontalBoardOutlines.contains($0, in: shape.vertices) }
+                    && !shape.cutouts.contains { cutout in
+                        let cutoutBounds = HorizontalRect(points: cutout)
+                        return cutoutBounds.minX <= rect.maxX && rect.minX <= cutoutBounds.maxX
+                            && cutoutBounds.minY <= rect.maxY && rect.minY <= cutoutBounds.maxY
+                    }
+            }
+        }
+    }
+
+    static func boardEdge(of board: HorizontalBoard) -> BoardEdge {
+        let shapes = HorizontalBoardOutlines.shapes(from: board.polygons)
+        guard !shapes.isEmpty else {
+            return BoardEdge()
+        }
+        return BoardEdge(
+            outlinePaths: shapes.flatMap { [$0.vertices] + $0.cutouts },
+            shapes: shapes
+        )
     }
 
     // MARK: - Silkscreen objects as fill subjects
@@ -251,6 +296,61 @@ enum HorizontalSilkscreenClipper {
         defer {
             HorizontalClipperFreeFragments(raw)
         }
+        return fragments(from: raw)
+        #else
+        return subjects.map { [$0] }
+        #endif
+    }
+
+    /// `subjects` minus `cutouts` grown by `outset`, kept inside `outline`
+    /// (its paths unioned even-odd, so cutouts drawn on the outline layer
+    /// are holes) after the outline is drawn in by `contract`: the plane
+    /// pour's own "clip to the board" step.
+    static func clip(
+        subjects: [[HorizontalPoint]],
+        cutouts: [[HorizontalPoint]],
+        outset: Double,
+        toOutline outline: [[HorizontalPoint]],
+        contractedBy contract: Double
+    ) -> [[[HorizontalPoint]]] {
+        #if canImport(HorizontalPlaneClipper)
+        let subjectStorage = PathStorage(subjects)
+        let cutoutStorage = PathStorage(cutouts)
+        let outlineStorage = PathStorage(outline)
+        guard subjectStorage.count > 0 else {
+            return []
+        }
+        var cutoutEntries = (0..<cutoutStorage.count).map { index in
+            HorizontalClipperCutout(path: cutoutStorage.pointer![index], outset: outset, joinType: 0, arcTolerance: 2_000)
+        }
+        let raw = cutoutEntries.withUnsafeMutableBufferPointer { cutoutBuffer -> HorizontalClipperFragmentList in
+            var params = HorizontalClipperPlaneFillParams()
+            params.subjects = subjectStorage.pointer
+            params.subjectCount = Int32(subjectStorage.count)
+            params.minWidth = 0
+            params.joinType = 0
+            params.cutouts = UnsafePointer(cutoutBuffer.baseAddress)
+            params.cutoutCount = Int32(cutoutBuffer.count)
+            params.boardOutline = outlineStorage.pointer
+            params.boardOutlineCount = Int32(outlineStorage.count)
+            params.hasBoardOutline = outlineStorage.count > 0 ? 1 : 0
+            params.boardOutlineContract = max(contract, 0)
+            params.thermalPads = nil
+            params.thermalPadCount = 0
+            params.fillStyle = 0
+            return withUnsafePointer(to: &params) { HorizontalClipperBuildPlaneFillEx($0) }
+        }
+        defer {
+            HorizontalClipperFreeFragments(raw)
+        }
+        return fragments(from: raw)
+        #else
+        return subjects.map { [$0] }
+        #endif
+    }
+
+    #if canImport(HorizontalPlaneClipper)
+    private static func fragments(from raw: HorizontalClipperFragmentList) -> [[[HorizontalPoint]]] {
         guard let fragmentPointer = raw.fragments, raw.count > 0 else {
             return []
         }
@@ -275,10 +375,8 @@ enum HorizontalSilkscreenClipper {
             }
         }
         return fragments
-        #else
-        return subjects.map { [$0] }
-        #endif
     }
+    #endif
 
     /// A fragment as one closed contour: each hole is joined to the outer
     /// boundary by a zero-width bridge, for outputs that fill a contour and
@@ -379,7 +477,8 @@ enum HorizontalSilkscreenClipper {
         for arc in board.arcs + board.packageArcs where arc.layer == layer {
             hasher.combine(arc)
         }
-        for polygon in board.polygons + board.packagePolygons where polygon.layer == layer || polygon.layer == maskLayer {
+        for polygon in board.polygons + board.packagePolygons
+            where polygon.layer == layer || polygon.layer == maskLayer || polygon.layer == HorizontalBoardLayers.outline {
             hasher.combine(polygon)
         }
         for text in board.texts + board.packageTexts where text.layer == layer {

@@ -118,10 +118,12 @@ public extension HorizontalProjectArchive {
             "block": blockID,
             "n_inner_layers": 0,
             // Horizon's stock two-layer stackup: 35 µm copper on a 1.6 mm core,
-            // in nanometers.
+            // in nanometers. A layer's substrate is the dielectric below it,
+            // so the bottom copper has none (Horizon's `Board::Board` sets it
+            // to zero); giving it one adds a second core's worth of thickness.
             "stackup": [
                 "0": ["thickness": 35_000, "substrate_thickness": 1_600_000],
-                "-100": ["thickness": 35_000, "substrate_thickness": 1_600_000]
+                "-100": ["thickness": 35_000, "substrate_thickness": 0]
             ],
             "rules": [String: Any](),
             "junctions": [String: Any](),

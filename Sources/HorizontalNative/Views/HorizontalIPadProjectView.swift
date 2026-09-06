@@ -23,6 +23,8 @@ struct HorizontalIPadProjectView: View {
     @State private var boardViewport = CanvasViewport()
     @StateObject private var boardToolSettings = HorizontalBoardToolSettings()
     @State private var threeDCameraState: HorizontalSceneCameraState?
+    /// Counts every change to the board's content, for the 3D view's rebuilds.
+    @State private var boardEditRevision = 0
     @State private var selectedNetIDs = Set<String>()
     @State private var highlightedNetIDs = Set<String>()
     @State private var loadError: String?
@@ -727,7 +729,7 @@ struct HorizontalIPadProjectView: View {
                         HorizontalBoardToolSettingsView(settings: boardToolSettings, viaTemplate: board.viaTemplate)
                             .frame(minWidth: 320, minHeight: 320)
                     }
-                DrawingToolButtonGroup { primitive in
+                DrawingToolButtonGroup(primitives: HorizontalDrawingPrimitive.polygonRail) { primitive in
                     boardDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
                 }
                 DrawPlaneToolButton {
@@ -788,6 +790,11 @@ struct HorizontalIPadProjectView: View {
                         actions.dispatch(.enterTrackWidth)
                     }
                 }
+                if actions.hasRoundOffVertexInteraction {
+                    routeControl("Flip Arc", "arrow.left.arrow.right", enabled: true) {
+                        actions.dispatch(.mirrorSelection)
+                    }
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -845,6 +852,7 @@ struct HorizontalIPadProjectView: View {
         guard var updated = project else { return }
         updated.board = board
         project = updated
+        boardEditRevision += 1
         do {
             try HorizontalProjectJSONApplicator.apply(board: board, in: updated, to: &document.archive)
         } catch {
@@ -897,7 +905,8 @@ struct HorizontalIPadProjectView: View {
                 copperColor: appearanceSettings.boardSceneCopper,
                 layerColors: appearanceSettings.boardSceneLayerColors,
                 materialColors: appearanceSettings.boardSceneMaterialColors,
-                    silkscreenClipping: appearanceSettings.silkscreenClipping,
+                silkscreenClipping: appearanceSettings.silkscreenClipping,
+                revision: boardEditRevision,
                 cameraState: $threeDCameraState
             )
         } else {
@@ -937,6 +946,7 @@ struct HorizontalIPadProjectView: View {
             let url = try projectURLForLoading()
             let loadedProject = try HorizontalProject.load(from: url)
             project = loadedProject
+            boardEditRevision += 1
             visiblePanes = defaultVisiblePanes(for: loadedProject)
             focusedPane = orderedVisiblePanes.first ?? defaultPane(for: loadedProject)
             paneSizeFractions.removeAll()

@@ -107,6 +107,49 @@ final class HorizontalSilkscreenClipperTests: XCTestCase {
         XCTAssertNil(HorizontalSilkscreenClipper.clippedLayer(HorizontalBoardLayers.topCopper, board: board, clipping: clipping))
     }
 
+    func testSilkscreenIsClippedAtTheBoardEdgeAndItsCutouts() throws {
+        var board = board()
+        // A 20 × 20 mm board with a 4 × 4 mm cutout at (6, 6).
+        board.polygons.append(HorizontalPolygon(
+            id: "outline",
+            vertices: [
+                HorizontalPoint(x: -10 * mm, y: -10 * mm), HorizontalPoint(x: 10 * mm, y: -10 * mm),
+                HorizontalPoint(x: 10 * mm, y: 10 * mm), HorizontalPoint(x: -10 * mm, y: 10 * mm),
+            ],
+            layer: HorizontalBoardLayers.outline
+        ))
+        board.polygons.append(HorizontalPolygon(
+            id: "cutout",
+            vertices: [
+                HorizontalPoint(x: 4 * mm, y: 4 * mm), HorizontalPoint(x: 8 * mm, y: 4 * mm),
+                HorizontalPoint(x: 8 * mm, y: 8 * mm), HorizontalPoint(x: 4 * mm, y: 8 * mm),
+            ],
+            layer: HorizontalBoardLayers.outline
+        ))
+        board.lines.append(line("over edge", from: HorizontalPoint(x: 0, y: -5 * mm), to: HorizontalPoint(x: 20 * mm, y: -5 * mm)))
+        board.lines.append(line("over cutout", from: HorizontalPoint(x: 0, y: 6 * mm), to: HorizontalPoint(x: 9.5 * mm, y: 6 * mm)))
+        board.lines.append(line("well inside", from: HorizontalPoint(x: -8 * mm, y: -8 * mm), to: HorizontalPoint(x: -4 * mm, y: -8 * mm)))
+        board.lines.append(line("outside", from: HorizontalPoint(x: 15 * mm, y: 0), to: HorizontalPoint(x: 18 * mm, y: 0)))
+
+        let clipping = HorizontalSilkscreenClipping(clearance: 0.2 * mm)
+        let layer = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(HorizontalBoardLayers.topSilkscreen, board: board, clipping: clipping))
+
+        XCTAssertNil(layer.object("well inside"), "far from every edge, pad and cutout: untouched")
+
+        let overEdge = try XCTUnwrap(layer.object("over edge"))
+        XCTAssertTrue(covers(overEdge.fragments, HorizontalPoint(x: 5 * mm, y: -5 * mm)))
+        XCTAssertFalse(covers(overEdge.fragments, HorizontalPoint(x: 9.9 * mm, y: -5 * mm)), "within the clearance of the edge")
+        XCTAssertFalse(covers(overEdge.fragments, HorizontalPoint(x: 12 * mm, y: -5 * mm)), "off the board")
+
+        let overCutout = try XCTUnwrap(layer.object("over cutout"))
+        XCTAssertTrue(covers(overCutout.fragments, HorizontalPoint(x: 2 * mm, y: 6 * mm)))
+        XCTAssertFalse(covers(overCutout.fragments, HorizontalPoint(x: 6 * mm, y: 6 * mm)), "over the cutout")
+        XCTAssertTrue(covers(overCutout.fragments, HorizontalPoint(x: 9 * mm, y: 6 * mm)), "between the cutout and the edge")
+
+        let outside = try XCTUnwrap(layer.object("outside"))
+        XCTAssertTrue(outside.fragments.isEmpty, "silkscreen entirely off the board vanishes")
+    }
+
     func testBridgedContourKeepsHolesOpen() {
         let outer = [
             HorizontalPoint(x: -3 * mm, y: -3 * mm),

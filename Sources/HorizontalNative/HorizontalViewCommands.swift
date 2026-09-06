@@ -76,7 +76,9 @@ struct HorizontalCanvasCommandActions {
     var canDisconnect: Bool = false
     var canShowInPoolManager: Bool = false
     var canShowInProjectPoolManager: Bool = false
+    var canRoundOffVertex: Bool = false
     var hasPlacementInteraction: Bool = false
+    var hasRoundOffVertexInteraction: Bool = false
     var dispatch: (HorizontalCanvasCommand) -> Void
 }
 
@@ -355,7 +357,7 @@ struct HorizontalViewCommands: Commands {
             .disabled(canvasCommandActions?.canAddText != true)
 
             ForEach(HorizontalDrawingPrimitive.allCases) { primitive in
-                Button(primitive.title) {
+                Button("Draw \(primitive.title)") {
                     canvasCommandActions?.dispatch(.drawGraphics(primitive))
                 }
                 .disabled(canvasCommandActions?.canDrawGraphics != true)
@@ -365,6 +367,11 @@ struct HorizontalViewCommands: Commands {
                 canvasCommandActions?.dispatch(.drawPlane)
             }
             .disabled(canvasCommandActions?.canDrawPlane != true)
+
+            Button("Round Off Vertex") {
+                canvasCommandActions?.dispatch(.roundOffVertex)
+            }
+            .disabled(canvasCommandActions?.canRoundOffVertex != true)
 
             Divider()
             Button("Place Pad…") {

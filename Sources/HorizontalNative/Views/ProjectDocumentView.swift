@@ -588,6 +588,9 @@ struct ProjectWorkspaceView: View {
     @State private var didRestoreFileViewState = false
     @State private var fileViewStateSaveTask: Task<Void, Never>?
     @State private var boardSyncRevision = 0
+    /// Counts every change to `project.board`'s content, so the 3D view
+    /// knows to rebuild its scene (lazily, in the background).
+    @State private var boardEditRevision = 0
     /// "Show in Project Pool Manager": the item the Library pane should select.
     @State private var libraryRevealRequest: HorizontalPoolRevealRequest?
     @State private var libraryPlacementError: String?
@@ -1490,7 +1493,7 @@ struct ProjectWorkspaceView: View {
                                 viaTemplate: project.board?.viaTemplate
                             )
                         }
-                    DrawingToolButtonGroup(primitives: HorizontalDrawingPrimitive.allCases) { primitive in
+                    DrawingToolButtonGroup(primitives: HorizontalDrawingPrimitive.polygonRail) { primitive in
                         boardDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
                     }
                     .disabled(isReadOnly)
@@ -1525,6 +1528,7 @@ struct ProjectWorkspaceView: View {
                             materialColors: appearanceSettings.boardSceneMaterialColors,
                             ignoresSceneMouseEvents: panesWithPointerInsideToolbar.contains(.threeD),
                             silkscreenClipping: appearanceSettings.silkscreenClipping,
+                            revision: boardEditRevision,
                             cameraState: $threeDCameraState
                         )
                     } else {
@@ -1926,6 +1930,7 @@ struct ProjectWorkspaceView: View {
         measure("assign project board") {
             project.board = board
         }
+        boardEditRevision += 1
         if writesPlaneCache {
             planesNeedUpdate = false
         } else if let previousPlaneInputs,
@@ -2222,6 +2227,7 @@ struct ProjectWorkspaceView: View {
         // In-memory mutation only; do not write to document archive.
         project.board = updatedBoard
         boardSyncRevision += 1
+        boardEditRevision += 1
         selectionDetailsByPane[.board] = .empty
     }
 
@@ -2250,6 +2256,7 @@ struct ProjectWorkspaceView: View {
             rebasePackageModelURLs(in: &board)
             project.board = board
             boardSyncRevision += 1
+            boardEditRevision += 1
             selectionDetailsByPane[.board] = .empty
         } catch {
             recordArchiveApplyFailure(error)
@@ -2560,6 +2567,7 @@ struct ProjectWorkspaceView: View {
         if var board = project.board {
             board.netDetails = netDetails(board.netDetails, renamedBy: normalizedClasses)
             project.board = board
+            boardEditRevision += 1
         }
 
         guard let blockURL = selectedSchematic.blockURL else {
@@ -2659,6 +2667,7 @@ struct ProjectWorkspaceView: View {
         if var board = project.board {
             update(&board.netDetails)
             project.board = board
+            boardEditRevision += 1
         }
 
         guard let blockURL = selectedSchematic.blockURL else {
@@ -2721,6 +2730,7 @@ struct ProjectWorkspaceView: View {
                 updatePackageTextRefdes(packageID: board.packages[index].id, oldRefdes: oldRefdes, newRefdes: refdes, board: &board)
             }
             project.board = board
+            boardEditRevision += 1
         }
 
         guard let blockURL = selectedSchematic.blockURL else {

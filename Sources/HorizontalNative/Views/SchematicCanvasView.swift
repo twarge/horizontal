@@ -118,7 +118,7 @@ struct SchematicCanvasView: View {
         var originalSheet: HorizontalSchematicSheet
         var points: [HorizontalPoint] = []
         var cursor: HorizontalPoint?
-        var rectanglePlacementMode: HorizontalRectanglePlacementMode = .corner
+        var rectanglePlacementMode = HorizontalDrawingToolSettings.rectanglePlacementMode()
     }
 
     private typealias DrawGraphicsResult = HorizontalCanvasDrawGraphicsResult
@@ -2596,10 +2596,11 @@ struct SchematicCanvasView: View {
 
     private func toggleRectanglePlacementMode() {
         guard var state = drawGraphicsState,
-              state.primitive == .rectangle else {
+              state.primitive.isRectangle else {
             return
         }
         state.rectanglePlacementMode.toggle()
+        HorizontalDrawingToolSettings.setRectanglePlacementMode(state.rectanglePlacementMode)
         drawGraphicsState = state
     }
 
@@ -2665,10 +2666,14 @@ struct SchematicCanvasView: View {
             pointKey: pointKey,
             makeSegment: { drawingSegment(from: $0, to: $1) },
             makeArc: { drawingArc(from: $0, to: $1, center: $2) },
-            makePolygonResult: { points in
+            makePolygonResult: { vertices in
                 editorProfile.supportsPolygons
-                    ? DrawGraphicsResult(polygons: [drawingPolygon(points: points)])
-                    : DrawGraphicsResult(lines: closedDrawingSegments(points: points))
+                    ? DrawGraphicsResult(polygons: [drawingPolygon(vertices: vertices)])
+                    : HorizontalCanvasModeSupport.outlineResult(
+                        vertices: vertices,
+                        makeSegment: { drawingSegment(from: $0, to: $1) },
+                        makeArc: { drawingArc(from: $0, to: $1, center: $2) }
+                    )
             }
         )
     }
@@ -11956,10 +11961,10 @@ extension SchematicCanvasView {
     }
 
     /// A polygon from the drawing tool's points (symbol / frame modes).
-    private func drawingPolygon(points: [HorizontalPoint]) -> HorizontalPolygon {
+    private func drawingPolygon(vertices: [HorizontalPolygonVertex]) -> HorizontalPolygon {
         HorizontalPolygon(
             id: HorizontalSchematicSheet.editorPolygonPrefix + UUID().uuidString.lowercased(),
-            polygonVertices: points.map { HorizontalPolygonVertex(position: $0) },
+            polygonVertices: vertices,
             layer: 0
         )
     }

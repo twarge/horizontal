@@ -91,25 +91,67 @@ final class HorizontalCanvasSelectableSceneCache<Key: Hashable> {
 
 enum HorizontalDrawingPrimitive: String, CaseIterable, Identifiable, Equatable {
     case line
+    /// Four lines (Horizon's "draw line rectangle").
     case rectangle
+    /// Two arcs (Horizon's "draw line circle").
     case circle
     case arc
     case polygon
+    /// One polygon (Horizon's "draw polygon rectangle"): what a board
+    /// outline, a copper pour or a mask opening has to be.
+    case polygonRectangle
+    /// One two-vertex arc polygon (Horizon's "draw polygon circle").
+    case polygonCircle
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .line: "Line"
-        case .rectangle: "Rectangle"
-        case .circle: "Circle"
+        case .rectangle: "Line Rectangle"
+        case .circle: "Line Circle"
         case .arc: "Arc"
         case .polygon: "Polygon"
+        case .polygonRectangle: "Polygon Rectangle"
+        case .polygonCircle: "Polygon Circle"
         }
+    }
+
+    /// Whether the result is a polygon rather than lines and arcs.
+    var producesPolygon: Bool {
+        switch self {
+        case .polygon, .polygonRectangle, .polygonCircle: true
+        case .line, .rectangle, .circle, .arc: false
+        }
+    }
+
+    var isRectangle: Bool {
+        self == .rectangle || self == .polygonRectangle
+    }
+
+    /// The rail of a canvas that has polygons: rectangles and circles are
+    /// polygons there (the line versions stay in the Design menu).
+    static let polygonRail: [HorizontalDrawingPrimitive] = [.line, .polygonRectangle, .polygonCircle, .arc, .polygon]
+    /// The rail of a canvas without polygons (a schematic sheet).
+    static let lineRail: [HorizontalDrawingPrimitive] = [.line, .rectangle, .circle, .arc]
+}
+
+/// Drawing-tool settings that outlive one run of a tool.
+enum HorizontalDrawingToolSettings {
+    static let rectanglePlacementModeKey = "drawing.rectanglePlacementMode"
+
+    /// How the rectangle tools take their first point; centre unless the
+    /// user last toggled to corner.
+    static func rectanglePlacementMode(in defaults: UserDefaults = .standard) -> HorizontalRectanglePlacementMode {
+        defaults.string(forKey: rectanglePlacementModeKey).flatMap(HorizontalRectanglePlacementMode.init(rawValue:)) ?? .center
+    }
+
+    static func setRectanglePlacementMode(_ mode: HorizontalRectanglePlacementMode, in defaults: UserDefaults = .standard) {
+        defaults.set(mode.rawValue, forKey: rectanglePlacementModeKey)
     }
 }
 
-enum HorizontalRectanglePlacementMode: Equatable {
+enum HorizontalRectanglePlacementMode: String, Equatable {
     case corner
     case center
 
@@ -181,6 +223,7 @@ struct HorizontalCanvasCommandHandlerSet {
     var editPlane: (() -> Void)? = nil
     var convertPolygonToLineLoop: (() -> Void)? = nil
     var convertLineLoopToPolygon: (() -> Void)? = nil
+    var roundOffVertex: (() -> Void)? = nil
     var addText: (() -> Void)? = nil
     var editText: (() -> Void)? = nil
     var filterAirwires: (() -> Void)? = nil
@@ -213,6 +256,8 @@ struct HorizontalCanvasCommandHandlerSet {
     var showInProjectPoolManager: (() -> Void)? = nil
     /// A pool object (pad / shape / hole / pin) is following the cursor.
     var hasPlacementInteraction: Bool = false
+    /// A polygon corner is being rounded off: E flips the arc.
+    var hasRoundOffVertexInteraction: Bool = false
     var commitInteraction: () -> Void
     var cancelInteraction: () -> Void
 
@@ -291,6 +336,9 @@ struct HorizontalCanvasCommandHandlerSet {
         case .convertLineLoopToPolygon:
             guard !isReadOnly else { return }
             convertLineLoopToPolygon?()
+        case .roundOffVertex:
+            guard !isReadOnly else { return }
+            roundOffVertex?()
         case .addText:
             guard !isReadOnly else { return }
             addText?()
@@ -423,7 +471,9 @@ struct HorizontalCanvasCommandHandlerSet {
             canDisconnect: writable && disconnect != nil,
             canShowInPoolManager: showInPoolManager != nil,
             canShowInProjectPoolManager: showInProjectPoolManager != nil,
+            canRoundOffVertex: writable && roundOffVertex != nil,
             hasPlacementInteraction: hasPlacementInteraction,
+            hasRoundOffVertexInteraction: hasRoundOffVertexInteraction,
             dispatch: dispatch
         )
     }
@@ -875,7 +925,7 @@ enum HorizontalCanvasModeSupport {
         pointKey: (HorizontalPoint) -> String,
         makeSegment: (HorizontalPoint, HorizontalPoint) -> HorizontalSegment,
         makeArc: (HorizontalPoint, HorizontalPoint, HorizontalPoint) -> HorizontalArc,
-        makePolygonResult: ([HorizontalPoint]) -> HorizontalCanvasDrawGraphicsResult
+        makePolygonResult: ([HorizontalPolygonVertex]) -> HorizontalCanvasDrawGraphicsResult
     ) -> HorizontalCanvasDrawGraphicsResult {
         switch primitive {
         case .line:
@@ -888,6 +938,10 @@ enum HorizontalCanvasModeSupport {
             let corners = rectangleCorners(from: points[0], to: points[1], placementMode: rectanglePlacementMode)
             let lines = closedSegmentPairs(points: corners).map { makeSegment($0.0, $0.1) }
             return HorizontalCanvasDrawGraphicsResult(lines: lines)
+        case .polygonRectangle:
+            guard points.count >= 2 else { return HorizontalCanvasDrawGraphicsResult() }
+            let corners = rectangleCorners(from: points[0], to: points[1], placementMode: rectanglePlacementMode)
+            return makePolygonResult(corners.map { HorizontalPolygonVertex(position: $0) })
         case .circle:
             guard points.count >= 2 else { return HorizontalCanvasDrawGraphicsResult() }
             let center = points[0]
@@ -900,6 +954,19 @@ enum HorizontalCanvasModeSupport {
                 makeArc(radiusPoint, opposite, center),
                 makeArc(opposite, radiusPoint, center),
             ])
+        case .polygonCircle:
+            // Horizon's polygon circle: two half-circle arc vertices.
+            guard points.count >= 2 else { return HorizontalCanvasDrawGraphicsResult() }
+            let center = points[0]
+            let radiusPoint = points[1]
+            guard pointKey(center) != pointKey(radiusPoint) else {
+                return HorizontalCanvasDrawGraphicsResult()
+            }
+            let opposite = center - (radiusPoint - center)
+            return makePolygonResult([
+                HorizontalPolygonVertex(type: .arc, position: radiusPoint, arcCenter: center),
+                HorizontalPolygonVertex(type: .arc, position: opposite, arcCenter: center),
+            ])
         case .arc:
             guard points.count >= 4,
                   let endpoints = arcEndpointsFromCenterRadiusAngles(points, pointKey: pointKey) else {
@@ -910,8 +977,35 @@ enum HorizontalCanvasModeSupport {
             ])
         case .polygon:
             guard points.count >= 3 else { return HorizontalCanvasDrawGraphicsResult() }
-            return makePolygonResult(points)
+            return makePolygonResult(points.map { HorizontalPolygonVertex(position: $0) })
         }
+    }
+
+    /// A polygon's outline as lines and arcs, for a canvas that has no
+    /// polygons (a schematic sheet): each arc vertex's edge is an arc about
+    /// its centre, drawn the other way round when the vertex is reversed.
+    static func outlineResult(
+        vertices: [HorizontalPolygonVertex],
+        makeSegment: (HorizontalPoint, HorizontalPoint) -> HorizontalSegment,
+        makeArc: (HorizontalPoint, HorizontalPoint, HorizontalPoint) -> HorizontalArc
+    ) -> HorizontalCanvasDrawGraphicsResult {
+        guard vertices.count >= 2 else {
+            return HorizontalCanvasDrawGraphicsResult()
+        }
+        var result = HorizontalCanvasDrawGraphicsResult()
+        for (index, vertex) in vertices.enumerated() {
+            let next = vertices[(index + 1) % vertices.count]
+            if vertex.type == .arc {
+                result.arcs.append(
+                    vertex.arcReverse
+                        ? makeArc(next.position, vertex.position, vertex.arcCenter)
+                        : makeArc(vertex.position, next.position, vertex.arcCenter)
+                )
+            } else {
+                result.lines.append(makeSegment(vertex.position, next.position))
+            }
+        }
+        return result
     }
 
     static func previewGraphicsResult(
@@ -929,7 +1023,7 @@ enum HorizontalCanvasModeSupport {
                 return HorizontalCanvasDrawGraphicsResult()
             }
             return finalizedResult(primitive, points, rectanglePlacementMode)
-        case .rectangle, .circle:
+        case .rectangle, .circle, .polygonRectangle, .polygonCircle:
             guard points.count >= 2 else {
                 return HorizontalCanvasDrawGraphicsResult()
             }
@@ -982,7 +1076,7 @@ enum HorizontalCanvasModeSupport {
                 return nil
             }
             return graphicsResult(primitive, points, rectanglePlacementMode)
-        case .rectangle, .circle:
+        case .rectangle, .circle, .polygonRectangle, .polygonCircle:
             guard points.count >= 2 else {
                 return nil
             }
@@ -1008,9 +1102,13 @@ enum HorizontalCanvasModeSupport {
         case .line:
             return "Line: click vertices   Return, Esc, or right-click ends"
         case .rectangle:
-            return "Rectangle: \(rectanglePlacementMode.title) first point   C toggles   Return commits   Esc cancels"
+            return "Line rectangle: \(rectanglePlacementMode.title) first point   C toggles   Return commits   Esc cancels"
+        case .polygonRectangle:
+            return "Polygon rectangle: \(rectanglePlacementMode.title) first point   C toggles   Return commits   Esc cancels"
         case .circle:
-            return "Circle: click center and radius   Return commits   Esc cancels"
+            return "Line circle: click center and radius   Return commits   Esc cancels"
+        case .polygonCircle:
+            return "Polygon circle: click center and radius   Return commits   Esc cancels"
         case .arc:
             return "Arc: center, radius, start, end   Return commits   Esc cancels"
         case .polygon:

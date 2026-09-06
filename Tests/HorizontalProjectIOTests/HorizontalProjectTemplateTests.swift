@@ -27,6 +27,20 @@ final class HorizontalProjectTemplateTests: XCTestCase {
         XCTAssertNil(archive.manifest)
     }
 
+    /// A layer's substrate is the dielectric below it, so the bottom copper
+    /// has none; Horizon's own new board writes it that way.
+    func testBottomCopperHasNoSubstrate() throws {
+        let archive = HorizontalProjectArchive.newProject()
+        let data = try XCTUnwrap(archive.regularFileData(relativePath: "board.json"))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let stackup = try XCTUnwrap(json["stackup"] as? [String: Any])
+        let top = try XCTUnwrap(stackup["0"] as? [String: Any])
+        let bottom = try XCTUnwrap(stackup["-100"] as? [String: Any])
+        XCTAssertEqual(top["substrate_thickness"] as? Int, 1_600_000)
+        XCTAssertEqual(bottom["substrate_thickness"] as? Int, 0)
+        XCTAssertEqual(bottom["thickness"] as? Int, 35_000)
+    }
+
     func testEveryTemplateFileIsAJSONObjectWithATrailingNewline() throws {
         let archive = HorizontalProjectArchive.newProject()
 

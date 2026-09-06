@@ -242,9 +242,9 @@ struct HorizontalPoolCanvasEditorView: View {
                     materialColors: appearanceSettings.boardSceneMaterialColors,
                     ignoresSceneMouseEvents: pointerInsideToolbar,
                     silkscreenClipping: appearanceSettings.silkscreenClipping,
+                    revision: sceneRevision,
                     cameraState: $threeDCameraState
                 )
-                .id(sceneRevision)
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -279,14 +279,13 @@ struct HorizontalPoolCanvasEditorView: View {
     }
 
     private var drawingPrimitives: [HorizontalDrawingPrimitive] {
-        var primitives = [HorizontalDrawingPrimitive]()
+        if modeProfile.allowsGraphics, modeProfile.allowsPolygons {
+            return HorizontalDrawingPrimitive.polygonRail
+        }
         if modeProfile.allowsGraphics {
-            primitives += [.line, .rectangle, .circle, .arc]
+            return HorizontalDrawingPrimitive.lineRail
         }
-        if modeProfile.allowsPolygons {
-            primitives.append(.polygon)
-        }
-        return primitives
+        return modeProfile.allowsPolygons ? [.polygon, .polygonRectangle, .polygonCircle] : []
     }
 
     /// The grid is a view setting here, not part of the item; changing it
