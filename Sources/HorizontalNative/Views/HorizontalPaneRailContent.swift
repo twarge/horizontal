@@ -409,6 +409,19 @@ struct DrawNetLineToolButton: View {
     }
 }
 
+struct PlacePowerSymbolToolButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "Place power symbol") {
+            Button(action: action) {
+                Image(systemName: "bolt.fill")
+            }
+            .help("Place a power symbol (ground, supply)")
+        }
+    }
+}
+
 struct DrawTrackToolButton: View {
     var action: () -> Void
 

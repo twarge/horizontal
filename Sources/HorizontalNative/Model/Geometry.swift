@@ -1037,6 +1037,7 @@ struct HorizontalNetDetails: Hashable {
     var isPort: Bool = false
     var portDirection: String?
     var powerSymbolStyle: String?
+    var powerSymbolNameVisible: Bool = true
 }
 
 struct HorizontalSchematicComponentRecord: Identifiable, Hashable {
@@ -1059,6 +1060,9 @@ struct HorizontalComponentDetails: Hashable {
     var description: String?
     var datasheet: String?
     var parametricValues: [String: String] = [:]
+    /// The block's `connections` for the component: gate/pin uuid path to
+    /// net id. What a package placed on the board takes its pad nets from.
+    var connections: [String: String] = [:]
 
     var displayLabel: String {
         if !refdes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

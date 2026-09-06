@@ -120,18 +120,34 @@ final class HorizontalFileViewStateStore {
         self.defaults = defaults
     }
 
-    func load(for fileURL: URL) -> HorizontalFileViewState? {
+    /// The state for a project: by its uuid when known — the identity that
+    /// survives the first save of a new document, a rename and a move —
+    /// else by where its file is.
+    func load(for fileURL: URL, projectID: String? = nil) -> HorizontalFileViewState? {
+        if let projectKey = key(forProjectID: projectID),
+           let data = defaults.data(forKey: projectKey),
+           let state = try? decoder.decode(HorizontalFileViewState.self, from: data) {
+            return state
+        }
         guard let data = defaults.data(forKey: key(for: fileURL)) else {
             return nil
         }
         return try? decoder.decode(HorizontalFileViewState.self, from: data)
     }
 
-    func save(_ state: HorizontalFileViewState, for fileURL: URL) {
+    func save(_ state: HorizontalFileViewState, for fileURL: URL, projectID: String? = nil) {
         guard let data = try? encoder.encode(state) else {
             return
         }
-        defaults.set(data, forKey: key(for: fileURL))
+        defaults.set(data, forKey: key(forProjectID: projectID) ?? key(for: fileURL))
+    }
+
+    private func key(forProjectID projectID: String?) -> String? {
+        guard let projectID = projectID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !projectID.isEmpty, projectID != "unknown-project" else {
+            return nil
+        }
+        return Self.defaultsPrefix + "project." + projectID
     }
 
     private func key(for fileURL: URL) -> String {

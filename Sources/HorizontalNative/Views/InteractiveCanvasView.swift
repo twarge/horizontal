@@ -114,6 +114,12 @@ enum HorizontalCanvasCommand {
     case placeRefdesAndValue
     /// Symbol editor: place a filled dot (a two-vertex arc polygon).
     case placeDot
+    /// Schematic: pick a power net and drop its symbols (Horizon's
+    /// place-power-symbol tool).
+    case placePowerSymbol
+    /// Schematic: the power net editor's edits and its "place" (Horizon's
+    /// manage-power-nets dialog).
+    case managePowerNet(HorizontalPowerNetCommand)
     /// Symbol editor, while placing pins: put the next pin (or every
     /// remaining pin) one step on from the last two placed.
     case autoplaceNextPin

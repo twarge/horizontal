@@ -55,6 +55,31 @@ private struct PoolPlacementState {
     var cursor: HorizontalPoint
 }
 
+/// The plane editor popover, anchored on the canvas: defining a plane on a
+/// polygon, editing the plane a polygon backs, or finishing a drawn one.
+private struct PlaneEditorState {
+    enum Purpose {
+        case define(polygonID: String)
+        case edit(planeID: String)
+        /// Draw Plane: the polygons are still the tool's draft; confirming
+        /// commits them with their planes, cancelling drops them.
+        case finishDrawing(polygons: [HorizontalPolygon])
+    }
+
+    var purpose: Purpose
+    var worldPosition: HorizontalPoint
+    var layer: Int?
+    var draft: HorizontalPlaneEditorDraft
+}
+
+/// Horizon's map-package tool in flight: a component's package, just put on
+/// the board, follows the cursor until a click settles it.
+private struct PackagePlacementState {
+    /// The board before the package: what Esc goes back to.
+    var originalBoard: HorizontalBoard
+    var placementID: String
+}
+
 /// Horizon's `ToolRoundOffVertex` in flight: the corner's rounding, the
 /// arc direction (E flips it) and the radius the cursor last set.
 private struct RoundOffVertexState {
@@ -361,6 +386,8 @@ struct BoardCanvasView: View {
     @State private var pastePlacementState: PastePlacementState?
     @State private var poolPlacementState: PoolPlacementState?
     @State private var roundOffVertexState: RoundOffVertexState?
+    @State private var packagePlacementState: PackagePlacementState?
+    @State private var planeEditorState: PlaneEditorState?
     @State private var padstackPickerPresented = false
     /// Step-back history for the in-progress route (Backspace pops one).
     @State private var trackRouteHistory: [BoardTrackRouteStep] = []
@@ -778,6 +805,10 @@ struct BoardCanvasView: View {
                 updateCursor(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
             },
             onPrimaryClick: { point, worldUnitsPerPoint, clickAction, clickCount in
+                if packagePlacementState != nil {
+                    commitPackagePlacement(at: point)
+                    return
+                }
                 if roundOffVertexState != nil {
                     commitRoundOffVertex(at: point)
                     return
@@ -838,7 +869,7 @@ struct BoardCanvasView: View {
                       drawTrackState == nil,
                       pastePlacementState == nil,
                       poolPlacementState == nil,
-                      roundOffVertexState == nil else {
+                      roundOffVertexState == nil, packagePlacementState == nil else {
                     return
                 }
                 updateSelection(with: refs, action: action)
@@ -894,15 +925,15 @@ struct BoardCanvasView: View {
                 labelLODDebouncer.postponeForViewportMovement()
             },
             canvasDisplayTransformReportTrigger: inlineTextEditorReportTrigger,
-            allowsContextMenu: moveState == nil && drawGraphicsState == nil && drawTrackState == nil && pastePlacementState == nil && poolPlacementState == nil && roundOffVertexState == nil,
-            handlesInteractionKeys: moveState != nil || drawGraphicsState != nil || drawTrackState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil,
+            allowsContextMenu: moveState == nil && drawGraphicsState == nil && drawTrackState == nil && pastePlacementState == nil && poolPlacementState == nil && roundOffVertexState == nil && packagePlacementState == nil,
+            handlesInteractionKeys: moveState != nil || drawGraphicsState != nil || drawTrackState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || packagePlacementState != nil,
             hasKeyboardFocus: hasKeyboardFocus,
             onRequestKeyboardFocus: onRequestKeyboardFocus,
             samplesCursorContinuously: drawTrackState != nil
                 || drawGraphicsState != nil
                 || pastePlacementState != nil
                 || poolPlacementState != nil
-                || roundOffVertexState != nil
+                || roundOffVertexState != nil || packagePlacementState != nil
                 || moveState?.tracksCursor == true,
             supportsTrackVias: true
         )
@@ -947,6 +978,7 @@ struct BoardCanvasView: View {
         }
         .horizonCanvasPrompt($promptRequest)
         .overlay { inlineTextEditorOverlay }
+        .overlay { planeEditorOverlay }
         .onChange(of: canvasCommandActionsSignature) { _, _ in
             publishCanvasCommandActions()
         }
@@ -1017,14 +1049,100 @@ struct BoardCanvasView: View {
     }
 
     /// Trigger that forces the canvas to re-report its display transform the
-    /// instant an inline edit begins (so the anchor is fresh even when the
-    /// viewport hasn't changed since the last report). nil on iOS.
+    /// instant an inline edit or the plane editor begins (so the anchor is
+    /// fresh even when the viewport hasn't changed since the last report).
     private var inlineTextEditorReportTrigger: AnyHashable? {
+        if let planeEditorState {
+            return AnyHashable("plane:\(planeEditorState.worldPosition.x),\(planeEditorState.worldPosition.y)")
+        }
         #if os(macOS)
         return editingTextState.map { AnyHashable($0.ref) }
         #else
         return nil
         #endif
+    }
+
+    /// The plane editor: on macOS a 1pt anchor at the polygon under the
+    /// cursor hosts the popover, the same way the inline text editor is
+    /// placed; on iOS the editor is a sheet.
+    @ViewBuilder
+    private var planeEditorOverlay: some View {
+        #if os(macOS)
+        GeometryReader { proxy in
+            if let state = planeEditorState {
+                let transform = canvasDisplayTransform ?? HorizontalCanvasTransform(
+                    bounds: board.bounds,
+                    size: proxy.size,
+                    fitInsets: boardCanvasFitInsets(safeArea: proxy.safeAreaInsets),
+                    zoom: viewport.zoom,
+                    pan: viewport.pan
+                )
+                let anchor = transform.point(state.worldPosition)
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .popover(isPresented: planeEditorPresented, arrowEdge: .top) {
+                        HorizontalPlaneSettingsPopover(
+                            title: planeEditorTitle(for: state.purpose),
+                            confirmTitle: planeEditorConfirmTitle(for: state.purpose),
+                            nets: sortedPlaneNetOptions(),
+                            layerName: layerName(for: state.layer),
+                            draft: state.draft,
+                            canDelete: { if case .edit = state.purpose { return true } else { return false } }(),
+                            onConfirm: { confirmPlaneEditor($0) },
+                            onDelete: { deletePlaneFromEditor() },
+                            onCancel: { cancelPlaneEditor() }
+                        )
+                    }
+                    .position(anchor)
+            }
+        }
+        .allowsHitTesting(false)
+        #else
+        Color.clear
+            .allowsHitTesting(false)
+            .sheet(isPresented: planeEditorPresented) {
+                if let state = planeEditorState {
+                    HorizontalPlaneSettingsPopover(
+                        title: planeEditorTitle(for: state.purpose),
+                        confirmTitle: planeEditorConfirmTitle(for: state.purpose),
+                        nets: sortedPlaneNetOptions(),
+                        layerName: layerName(for: state.layer),
+                        draft: state.draft,
+                        canDelete: { if case .edit = state.purpose { return true } else { return false } }(),
+                        onConfirm: { confirmPlaneEditor($0) },
+                        onDelete: { deletePlaneFromEditor() },
+                        onCancel: { cancelPlaneEditor() }
+                    )
+                }
+            }
+        #endif
+    }
+
+    private var planeEditorPresented: Binding<Bool> {
+        Binding(
+            get: { planeEditorState != nil },
+            set: { presented in
+                if !presented {
+                    cancelPlaneEditor()
+                }
+            }
+        )
+    }
+
+    private func planeEditorTitle(for purpose: PlaneEditorState.Purpose) -> String {
+        switch purpose {
+        case .define: "Define Plane"
+        case .edit: "Edit Plane"
+        case .finishDrawing: "Draw Plane"
+        }
+    }
+
+    private func planeEditorConfirmTitle(for purpose: PlaneEditorState.Purpose) -> String {
+        switch purpose {
+        case .define: "Define Plane"
+        case .edit: "Apply"
+        case .finishDrawing: "Create Plane"
+        }
     }
 
     #if os(macOS)
@@ -1208,6 +1326,10 @@ struct BoardCanvasView: View {
             case .hole(let hole):
                 return "Place \(hole.shape == .slot ? "slot" : "round") hole: click places   R rotates   Esc ends"
             }
+        }
+        if let state = packagePlacementState {
+            let label = board.packages.first { normalizedID($0.id) == normalizedID(state.placementID) }?.label ?? "package"
+            return "Place \(label): click places   R rotates   E flips to the other side   Esc cancels"
         }
         if let state = roundOffVertexState {
             let radiusMM = String(format: "%.3f", state.clampedRadius / 1_000_000)
@@ -2291,7 +2413,7 @@ struct BoardCanvasView: View {
         // the type checker will resolve.
         var handlers = HorizontalCanvasCommandHandlerSet(
             isReadOnly: isReadOnly,
-            hasInteraction: drawGraphicsState != nil || drawTrackState != nil || moveState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil,
+            hasInteraction: drawGraphicsState != nil || drawTrackState != nil || moveState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || packagePlacementState != nil,
             selectAll: selectAllObjects,
             selectNet: selectNetOfSelection,
             copySelection: { copySelectionToClipboard() },
@@ -2340,7 +2462,9 @@ struct BoardCanvasView: View {
             hasPlacementInteraction: poolPlacementState != nil,
             hasRoundOffVertexInteraction: roundOffVertexState != nil,
             commitInteraction: {
-                if roundOffVertexState != nil {
+                if packagePlacementState != nil {
+                    commitPackagePlacement(at: lastCursorWorldPoint)
+                } else if roundOffVertexState != nil {
                     // Return is Horizon's "enter datum": type the radius.
                     enterRoundOffVertexRadius()
                 } else if pastePlacementState != nil {
@@ -2356,7 +2480,9 @@ struct BoardCanvasView: View {
                 }
             },
             cancelInteraction: {
-                if roundOffVertexState != nil {
+                if packagePlacementState != nil {
+                    cancelPackagePlacement()
+                } else if roundOffVertexState != nil {
                     cancelRoundOffVertex()
                 } else if pastePlacementState != nil {
                     cancelPastePlacement()
@@ -2451,6 +2577,14 @@ struct BoardCanvasView: View {
                 state.update(cursor: point)
                 roundOffVertexState = state
             }
+            if hoveredObject != nil {
+                hoveredObject = nil
+            }
+            return
+        }
+
+        if packagePlacementState != nil {
+            updatePackagePlacement(to: point)
             if hoveredObject != nil {
                 hoveredObject = nil
             }
@@ -2615,9 +2749,9 @@ struct BoardCanvasView: View {
         // it a copper plane. Already a plane outline: jump to editing that plane.
         if writable, isPolygonRef(ref) {
             if planeBackedByPolygon(ref.id, in: board) != nil {
-                entries.append(.command(title: "Edit Plane", .editPlane))
-            } else {
-                entries.append(.command(title: "Define Plane", .definePlane))
+                entries.append(.command(title: "Edit Plane…", .editPlane))
+            } else if canDefinePlane(on: ref) {
+                entries.append(.command(title: "Define Plane…", .definePlane))
             }
         }
 
@@ -3054,7 +3188,7 @@ struct BoardCanvasView: View {
               drawGraphicsState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil,
+              roundOffVertexState == nil, packagePlacementState == nil,
               !boardClipboard.isEmpty else { return }
         // Anchor on the cursor at copy time; the ghost keeps that relative offset.
         let anchor = boardClipboardAnchor ?? lastCursorWorldPoint ?? .zero
@@ -3290,11 +3424,105 @@ struct BoardCanvasView: View {
         publishSelectionContext()
     }
 
+    /// A component picked in the unplaced column: its package comes onto
+    /// the board under the cursor (Horizon's map-package tool). Read-only,
+    /// or without a pool to bake from, it is only selected.
     private func selectUnplacedObject(_ object: HorizontalUnplacedObject) {
         selectedObjects = []
         hoveredObject = nil
         selectedUnplacedObjectID = object.id
         publishSelectionContext()
+        beginPackagePlacement(for: object)
+    }
+
+    // MARK: Place package (Horizon's map-package tool)
+
+    private func beginPackagePlacement(for object: HorizontalUnplacedObject) {
+        guard !isReadOnly,
+              modeProfile.mode == .board,
+              let poolURL,
+              moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
+              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil,
+              packagePlacementState == nil else {
+            return
+        }
+        let originalBoard = board
+        guard let draft = HorizontalBoard.placingPackage(
+            for: object,
+            in: originalBoard,
+            at: lastCursorWorldPoint ?? originalBoard.bounds.center,
+            poolURL: poolURL
+        ) else {
+            return
+        }
+        editedBoard = draft.board
+        packagePlacementState = PackagePlacementState(originalBoard: originalBoard, placementID: draft.placementID)
+        selectedObjects = [HorizontalSelectableRef(id: draft.placementID, type: .boardPackage)]
+        hoveredObject = nil
+        invalidateSelectableCache()
+        publishSelectionContext()
+        publishCanvasCommandActions()
+    }
+
+    private func updatePackagePlacement(to point: HorizontalPoint) {
+        guard let state = packagePlacementState,
+              var draft = editedBoard,
+              let package = draft.packages.first(where: { normalizedID($0.id) == normalizedID(state.placementID) }) else {
+            return
+        }
+        let delta = point - package.position
+        guard delta != .zero else {
+            return
+        }
+        moveSelectedObjects(by: delta, board: &draft)
+        editedBoard = draft
+        invalidateSelectableCache()
+    }
+
+    /// R and E while placing: turn or flip the package about its own
+    /// origin, with no undo step of their own.
+    private func transformPlacingPackage(_ transform: (HorizontalPoint, inout HorizontalBoard) -> Void) {
+        guard let state = packagePlacementState,
+              var draft = editedBoard,
+              let package = draft.packages.first(where: { normalizedID($0.id) == normalizedID(state.placementID) }) else {
+            return
+        }
+        transform(package.position, &draft)
+        editedBoard = draft
+        invalidateSelectableCache()
+    }
+
+    private func commitPackagePlacement(at point: HorizontalPoint?) {
+        guard !isReadOnly, let state = packagePlacementState else {
+            return
+        }
+        if let point {
+            updatePackagePlacement(to: point)
+        }
+        guard var draft = editedBoard else {
+            return
+        }
+        draft.regenerateAirwires()
+        packagePlacementState = nil
+        selectedUnplacedObjectID = nil
+        registerUndoSnapshot(state.originalBoard, actionName: "Place Package")
+        invalidateSelectableCache()
+        publishConnectivityResolvedEdit(draft)
+        publishSelectionContext()
+        publishCanvasCommandActions()
+    }
+
+    private func cancelPackagePlacement() {
+        guard let state = packagePlacementState else {
+            return
+        }
+        editedBoard = state.originalBoard
+        packagePlacementState = nil
+        selectedObjects = []
+        hoveredObject = nil
+        invalidateSelectableCache()
+        publishSelectionContext()
+        publishCanvasCommandActions()
     }
 
     private func uniqueRefs(_ refs: [HorizontalSelectableRef]) -> [HorizontalSelectableRef] {
@@ -3302,7 +3530,7 @@ struct BoardCanvasView: View {
     }
 
     private func beginMove(tracksCursor: Bool = true, editTextRefOnCommit: String? = nil) {
-        guard pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil else { return }
+        guard pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil, packagePlacementState == nil else { return }
         let selectedCount = selectedObjects.count
         var timings = [(String, UInt64)]()
         func measure<T>(_ label: String, _ body: () -> T) -> T {
@@ -3547,7 +3775,7 @@ struct BoardCanvasView: View {
               moveState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil,
+              roundOffVertexState == nil, packagePlacementState == nil,
               primitive.producesPolygon ? modeProfile.allowsPolygons : modeProfile.allowsGraphics else {
             return
         }
@@ -3589,6 +3817,7 @@ struct BoardCanvasView: View {
         pastePlacementState = nil
         poolPlacementState = nil
         roundOffVertexState = nil
+        packagePlacementState = nil
         invalidateSelectableCache()
         // Plane fills are geometry, and a net change is a colour change, so the
         // Metal scene has to be rebuilt rather than patched in place.
@@ -3610,7 +3839,7 @@ struct BoardCanvasView: View {
               moveState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil else {
+              roundOffVertexState == nil, packagePlacementState == nil else {
             return
         }
         drawGraphicsState = DrawGraphicsState(
@@ -4063,7 +4292,7 @@ struct BoardCanvasView: View {
               moveState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil,
+              roundOffVertexState == nil, packagePlacementState == nil,
               drawTrackState == nil else {
             return
         }
@@ -4622,40 +4851,24 @@ struct BoardCanvasView: View {
             drawGraphicsState = state
             return
         }
-        #if os(macOS)
-        guard let netID = promptForPlaneNet() else {
-            cancelDrawGraphics()
-            return
-        }
-        finishDrawPlane(polygons: polygons, netID: netID)
-        #else
-        // iOS: pick the net via the canvas prompt (the draw stays in flight behind the
-        // sheet). Default to the highlighted net, else the first; Cancel reverts.
-        let options = sortedPlaneNetOptions()
-        guard !options.isEmpty else {
-            cancelDrawGraphics()
-            return
-        }
-        let defaultNet = highlightedNetIDs.first.map(normalizedID) ?? options.first?.id
-        promptRequest = HorizontalCanvasPromptRequest(
-            title: "Plane Net",
-            confirmTitle: "Create Plane",
-            content: .optionPicker(options: options, selected: defaultNet) { picked in
-                if let picked {
-                    finishDrawPlane(polygons: polygons, netID: picked)
-                } else {
-                    cancelDrawGraphics()
-                }
-            }
+        // The plane editor on the last vertex; the drawing stays the tool's
+        // draft behind it until the editor confirms or cancels.
+        let nets = sortedPlaneNetOptions()
+        let defaultNet = highlightedNetIDs.first.map(normalizedID).flatMap { id in nets.first { $0.id == id }?.id } ?? nets.first?.id
+        let anchor = state.points.last ?? polygons[0].vertices.last ?? board.bounds.center
+        planeEditorState = PlaneEditorState(
+            purpose: .finishDrawing(polygons: polygons),
+            worldPosition: anchor,
+            layer: polygons[0].layer,
+            draft: HorizontalPlaneEditorDraft(netID: defaultNet)
         )
-        #endif
     }
 
-    private func finishDrawPlane(polygons: [HorizontalPolygon], netID: String) {
+    private func finishDrawPlane(polygons: [HorizontalPolygon], draft planeDraft: HorizontalPlaneEditorDraft) {
         var draft = editedBoard ?? sourceBoard
         for polygon in polygons {
             draft.polygons.append(polygon)
-            draft.planes.append(makePlane(on: polygon, netID: netID))
+            draft.planes.append(HorizontalPlane(polygon: polygon, draft: planeDraft))
         }
 
         drawGraphicsState = nil
@@ -4666,24 +4879,6 @@ struct BoardCanvasView: View {
         onPlaneEdit(draft, "Draw Plane")
     }
 
-    /// A fresh net-bound plane whose outline is `polygon` (Horizon: a polygon's
-    /// `usage` becoming a plane). The plane derives its layer from the polygon and
-    /// starts from-rules with default settings; the fill is computed on the pour.
-    private func makePlane(on polygon: HorizontalPolygon, netID: String) -> HorizontalPlane {
-        HorizontalPlane(
-            id: UUID().uuidString.lowercased(),
-            netID: netID,
-            polygonID: polygon.id,
-            layer: polygon.layer,
-            priority: 0,
-            fillStyle: "solid",
-            minWidth: 0,
-            keepOrphans: false,
-            fragments: [],
-            fallbackPolygon: polygon
-        )
-    }
-
     private func isPolygonRef(_ ref: HorizontalSelectableRef) -> Bool {
         ref.type == .polygonEdge || ref.type == .polygonVertex || ref.type == .polygonArcCenter
     }
@@ -4692,37 +4887,119 @@ struct BoardCanvasView: View {
         board.planes.first { normalizedID($0.polygonID) == normalizedID(polygonID) }
     }
 
-    /// Context-menu "Define Plane": turns the right-clicked polygon into a copper
-    /// plane (prompts for the net, like Draw Plane). The polygon already lives in
-    /// `board.polygons`; only a plane referencing it is added, then poured.
+    /// A polygon that can become a plane: on a copper layer (Horizon's
+    /// add-plane tool asks the same), not package-owned, not one already.
+    private func canDefinePlane(on ref: HorizontalSelectableRef) -> Bool {
+        guard isPolygonRef(ref), !normalizedID(ref.id).contains("/"),
+              let polygon = boardPolygon(for: ref.id, in: board),
+              let layer = polygon.layer, HorizontalBoardLayers.isCopper(layer) else {
+            return false
+        }
+        return planeBackedByPolygon(polygon.id, in: board) == nil
+    }
+
+    /// Context-menu "Define Plane": the plane editor on the right-clicked
+    /// polygon; confirming adds a plane referencing it and pours.
     private func definePlaneForSelection() {
         guard !isReadOnly,
               let ref = selectedObjects.first(where: isPolygonRef),
               let polygon = boardPolygon(for: ref.id, in: board) else {
             return
         }
-        // If it's somehow already a plane, edit it instead of duplicating.
+        // Already a plane: edit it instead of duplicating.
         guard planeBackedByPolygon(polygon.id, in: board) == nil else {
             editPlaneForSelection()
             return
         }
-        guard let netID = promptForPlaneNet() else {
+        guard let layer = polygon.layer, HorizontalBoardLayers.isCopper(layer) else {
             return
         }
-        var draft = editedBoard ?? sourceBoard
-        draft.planes.append(makePlane(on: polygon, netID: netID))
-        invalidateSelectableCache()
-        onPlaneEdit(draft, "Define Plane")
+        let nets = sortedPlaneNetOptions()
+        let defaultNet = highlightedNetIDs.first.map(normalizedID).flatMap { id in nets.first { $0.id == id }?.id } ?? nets.first?.id
+        planeEditorState = PlaneEditorState(
+            purpose: .define(polygonID: polygon.id),
+            worldPosition: lastCursorWorldPoint ?? HorizontalRect(points: polygon.vertices).center,
+            layer: polygon.layer,
+            draft: HorizontalPlaneEditorDraft(netID: defaultNet)
+        )
     }
 
-    /// Context-menu "Edit Plane": selects the plane backing the right-clicked
-    /// polygon so its inspector (net / priority / fill / min width / …) appears.
+    /// Context-menu "Edit Plane": the plane editor on the plane the
+    /// right-clicked polygon backs, with the plane selected behind it.
     private func editPlaneForSelection() {
         guard let ref = selectedObjects.first(where: isPolygonRef),
               let plane = planeBackedByPolygon(ref.id, in: board) else {
             return
         }
         setSelectedObject(HorizontalSelectableRef(id: plane.id, type: .plane, layer: plane.layer))
+        guard !isReadOnly else {
+            return
+        }
+        let anchor = lastCursorWorldPoint
+            ?? plane.fallbackPolygon.map { HorizontalRect(points: $0.vertices).center }
+            ?? board.bounds.center
+        planeEditorState = PlaneEditorState(
+            purpose: .edit(planeID: plane.id),
+            worldPosition: anchor,
+            layer: plane.layer,
+            draft: HorizontalPlaneEditorDraft(plane: plane)
+        )
+    }
+
+    private func confirmPlaneEditor(_ draft: HorizontalPlaneEditorDraft) {
+        guard !isReadOnly, let state = planeEditorState else {
+            return
+        }
+        planeEditorState = nil
+        var board = editedBoard ?? sourceBoard
+        switch state.purpose {
+        case .define(let polygonID):
+            guard let polygon = boardPolygon(for: polygonID, in: board),
+                  planeBackedByPolygon(polygon.id, in: board) == nil else {
+                return
+            }
+            let plane = HorizontalPlane(polygon: polygon, draft: draft)
+            board.planes.append(plane)
+            selectedObjects = [HorizontalSelectableRef(id: plane.id, type: .plane, layer: plane.layer)]
+            hoveredObject = nil
+            invalidateSelectableCache()
+            publishSelectionContext()
+            onPlaneEdit(board, "Define Plane")
+        case .edit(let planeID):
+            guard let index = board.planes.firstIndex(where: { normalizedID($0.id) == normalizedID(planeID) }) else {
+                return
+            }
+            board.planes[index].apply(draft)
+            invalidateSelectableCache()
+            onPlaneEdit(board, "Edit Plane")
+        case .finishDrawing(let polygons):
+            finishDrawPlane(polygons: polygons, draft: draft)
+        }
+    }
+
+    private func deletePlaneFromEditor() {
+        guard !isReadOnly, let state = planeEditorState, case .edit(let planeID) = state.purpose else {
+            return
+        }
+        planeEditorState = nil
+        var board = editedBoard ?? sourceBoard
+        // The polygon stays; only the plane over it goes.
+        board.planes.removeAll { normalizedID($0.id) == normalizedID(planeID) }
+        selectedObjects = []
+        hoveredObject = nil
+        invalidateSelectableCache()
+        publishSelectionContext()
+        onPlaneEdit(board, "Delete Plane")
+    }
+
+    private func cancelPlaneEditor() {
+        guard let state = planeEditorState else {
+            return
+        }
+        planeEditorState = nil
+        if case .finishDrawing = state.purpose {
+            cancelDrawGraphics()
+        }
     }
 
     /// True for a standalone board polygon that can convert to a line loop — not a
@@ -4807,21 +5084,6 @@ struct BoardCanvasView: View {
         default:
             return nil
         }
-    }
-
-    /// Net chooser for a freshly drawn plane (Horizon requires a net; its OK button
-    /// is disabled until one is picked). Returns nil to cancel the draw.
-    private func promptForPlaneNet() -> String? {
-        let nets = sortedPlaneNetOptions()
-        guard !nets.isEmpty else {
-            return nil
-        }
-        #if os(macOS)
-        return HorizontalPlaneNetPrompt.run(nets: nets)
-        #else
-        // iOS has no plane dialog; bind the highlighted net, else the first net.
-        return highlightedNetIDs.first.map(normalizedID) ?? nets.first?.id
-        #endif
     }
 
     /// Board nets as `(id, name)` choices, sorted by display name. Shared by the
@@ -4945,7 +5207,7 @@ struct BoardCanvasView: View {
               drawGraphicsState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil,
+              roundOffVertexState == nil, packagePlacementState == nil,
               !selectedObjects.isEmpty else {
             return
         }
@@ -5212,6 +5474,12 @@ struct BoardCanvasView: View {
             mirrorPoolPlacement()
             return
         }
+        if packagePlacementState != nil {
+            transformPlacingPackage { center, draft in
+                mirrorSelectedObjects(around: center, board: &draft)
+            }
+            return
+        }
         if var state = roundOffVertexState {
             // Horizon's "flip arc" (also E): the arc bulges the other way.
             state.reverse.toggle()
@@ -5245,6 +5513,12 @@ struct BoardCanvasView: View {
     private func rotateSelection() {
         if poolPlacementState != nil {
             rotatePoolPlacement()
+            return
+        }
+        if packagePlacementState != nil {
+            transformPlacingPackage { center, draft in
+                rotateSelectedObjects(around: center, by: Self.quarterTurnAngle, board: &draft)
+            }
             return
         }
         let cursor = lastCursorWorldPoint
@@ -14161,7 +14435,7 @@ extension BoardCanvasView {
     private func requestPlacePad() {
         guard !isReadOnly, modeProfile.placesPads, poolContext != nil,
               moveState == nil, drawGraphicsState == nil, pastePlacementState == nil, poolPlacementState == nil,
-              roundOffVertexState == nil else {
+              roundOffVertexState == nil, packagePlacementState == nil else {
             return
         }
         padstackPickerPresented = true
@@ -14221,7 +14495,7 @@ extension BoardCanvasView {
 
     private func armPoolPlacement(_ kind: PoolPlacementKind) {
         guard moveState == nil, drawGraphicsState == nil, drawTrackState == nil, pastePlacementState == nil,
-              roundOffVertexState == nil else {
+              roundOffVertexState == nil, packagePlacementState == nil else {
             return
         }
         selectedObjects = []
@@ -14401,7 +14675,7 @@ extension BoardCanvasView {
 
     private var canRoundOffVertex: Bool {
         guard !isReadOnly, moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
-              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil,
+              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil, packagePlacementState == nil,
               let ref = roundOffVertexCandidate else {
             return false
         }

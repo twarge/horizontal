@@ -1,6 +1,45 @@
 import Foundation
 
+/// What a new document's project pool includes: Horizon's `PoolInfo` for
+/// the pool at `pool/` — the pools the project draws parts from, and the
+/// via and frame defaults, normally those of the first included pool.
+public struct HorizontalProjectPoolTemplate: Equatable, Sendable {
+    public var includedPoolUUIDs: [String]
+    public var defaultViaUUID: String?
+    public var defaultFrameUUID: String?
+
+    public init(includedPoolUUIDs: [String] = [], defaultViaUUID: String? = nil, defaultFrameUUID: String? = nil) {
+        self.includedPoolUUIDs = includedPoolUUIDs
+        self.defaultViaUUID = defaultViaUUID
+        self.defaultFrameUUID = defaultFrameUUID
+    }
+}
+
 public extension HorizontalProjectArchive {
+    /// Horizon's uuid for every project pool (`PoolInfo::project_pool_uuid`).
+    static let projectPoolUUID = "466088f9-3f15-420d-af8a-fff902537aed"
+    /// Horizon parses every uuid it reads and refuses an empty one, so a
+    /// default that is not set is the null uuid.
+    static let nullUUID = "00000000-0000-0000-0000-000000000000"
+    /// Where a project keeps its pool, and Horizon's default when the
+    /// project file names none.
+    static let projectPoolDirectoryName = "pool"
+
+    /// A project pool's `pool.json`, the keys `PoolInfo::save` writes.
+    static func projectPoolJSON(_ pool: HorizontalProjectPoolTemplate = HorizontalProjectPoolTemplate(), name: String = "Project pool") -> [String: Any] {
+        [
+            "type": "pool",
+            "uuid": projectPoolUUID,
+            "name": name,
+            "default_via": pool.defaultViaUUID ?? nullUUID,
+            "default_frame": pool.defaultFrameUUID ?? nullUUID,
+            "pools_included": pool.includedPoolUUIDs
+        ]
+    }
+
+    static func projectPoolData(_ pool: HorizontalProjectPoolTemplate = HorizontalProjectPoolTemplate(), name: String = "Project pool") -> Data {
+        jsonData(projectPoolJSON(pool, name: name))
+    }
     /// The archive behind a brand-new document — File > New on macOS, Create
     /// Document on iPadOS.
     ///
@@ -18,9 +57,10 @@ public extension HorizontalProjectArchive {
     ///   (pretty-printed, sorted keys, unescaped slashes, trailing newline), so
     ///   the first save after an edit rewrites only what actually changed.
     ///
-    /// There is no `pool/`: the app ships no parts pool, so a new project starts
-    /// with schematic and board only and the parts pane stays hidden.
-    static func newProject(named name: String = "Untitled") -> HorizontalProjectArchive {
+    /// `pool/pool.json` is the project pool, empty until a part placed from
+    /// the Pools pane is cached into it (Horizon's project pool layout); the
+    /// project file names it as `pool_directory` the way Horizon does.
+    static func newProject(named name: String = "Untitled", pool: HorizontalProjectPoolTemplate = HorizontalProjectPoolTemplate()) -> HorizontalProjectArchive {
         let safeName = name
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
@@ -42,7 +82,8 @@ public extension HorizontalProjectArchive {
             "name": "",
             "blocks_filename": "blocks.json",
             "board_filename": "board.json",
-            "planes_filename": "planes.json"
+            "planes_filename": "planes.json",
+            "pool_directory": projectPoolDirectoryName
         ]
 
         let blocks: [String: Any] = [
@@ -158,7 +199,10 @@ public extension HorizontalProjectArchive {
                 "top_schematic.json": .regularFile(jsonData(schematic)),
                 "top_symbol.json": .regularFile(jsonData(symbol)),
                 "board.json": .regularFile(jsonData(board)),
-                "planes.json": .regularFile(jsonData(planes))
+                "planes.json": .regularFile(jsonData(planes)),
+                projectPoolDirectoryName: .directory([
+                    "pool.json": .regularFile(projectPoolData(pool))
+                ])
             ]),
             suggestedFilename: "\(safeName).horizontal"
         )

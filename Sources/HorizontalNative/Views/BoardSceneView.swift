@@ -822,7 +822,11 @@ final class BoardSceneNodes: @unchecked Sendable {
                     ? ringExtraThickness / 2
                     : (isBottomCopperRing ? -ringExtraThickness / 2 : 0)
 
-                if outerRadius > holeRadius + 0.001,
+                // No ring for a barrel that only plates a hole in a pad
+                // that draws its own copper.
+                let drawsRing = via.size > (via.holeSize ?? 0) + 2_000
+                if drawsRing,
+                   outerRadius > holeRadius + 0.001,
                    let padNode = annularPadNode(
                     outerRadius: outerRadius, innerRadius: holeRadius,
                     thickness: copperThickness + ringExtraThickness
@@ -2296,6 +2300,13 @@ enum BoardSceneFactory {
     }
     #endif
 
+    /// The barrels the board's plated package holes get, for tests: a
+    /// marker per hole, sized to the round pad it replaces or, in any other
+    /// pad, to the hole alone.
+    static func packageViaMarkers(for board: HorizontalBoard) -> [(marker: HorizontalMarker, coveredPadIDs: Set<String>)] {
+        packageViaRenderInfo(for: board).map { ($0.marker, $0.coveredPadIDs) }
+    }
+
     /// The heights the scene places a board's surfaces at, for tests.
     static func sceneLayout(for board: HorizontalBoard) -> BoardSceneLayout {
         let thickness = boardBodyThickness(for: board)
@@ -3390,16 +3401,21 @@ enum BoardSceneFactory {
                 }
                 return (pad, diameter)
             }
-            guard !roundPads.isEmpty else {
-                return nil
-            }
 
-            let padLayers = Set(roundPads.compactMap(\.pad.layer).filter(HorizontalBoardLayers.isCopper))
+            let padLayers = Set(copperPads.compactMap(\.layer).filter(HorizontalBoardLayers.isCopper))
             let connectedLayers = padLayers.count >= 2
                 ? padLayers.sorted(by: >)
                 : defaultConnectedLayers
-            let padDiameter = roundPads.map(\.diameter).max() ?? hole.diameter
-            let outerDiameter = max(padDiameter, hole.diameter * 1.25)
+            // A round pad is replaced by a ring around the barrel. Any other
+            // pad (an obround with two drills, say) keeps its own copper and
+            // gets just the plated barrel: a marker no wider than its hole
+            // draws no ring.
+            let outerDiameter: Double
+            if let padDiameter = roundPads.map(\.diameter).max() {
+                outerDiameter = max(padDiameter, hole.diameter * 1.25)
+            } else {
+                outerDiameter = hole.diameter
+            }
             let marker = HorizontalMarker(
                 id: "\(hole.id)/package-via",
                 position: hole.position,

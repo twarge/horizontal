@@ -1,4 +1,5 @@
 import Foundation
+import HorizontalProjectIO
 
 struct HorizontalDiagnostic: Identifiable, Hashable {
     var id = UUID()
@@ -73,6 +74,20 @@ struct HorizontalProject: Identifiable {
         try load(from: url, visitedProjectURLs: [])
     }
 
+    /// The project as `archive` holds it now: written to a temporary
+    /// package and loaded from there. How the board learns of changes made
+    /// on the schematic side (components, connections, nets).
+    static func loadSnapshot(of archive: HorizontalProjectArchive) throws -> HorizontalProject {
+        let temporaryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HorizontalBoardSync-\(UUID().uuidString)")
+            .appendingPathExtension("horizontal")
+        try archive.write(to: temporaryURL)
+        defer {
+            try? FileManager.default.removeItem(at: temporaryURL)
+        }
+        return try load(from: temporaryURL)
+    }
+
     static func load(from url: URL, visitedProjectURLs: Set<URL>) throws -> HorizontalProject {
         try BoardLoadTimer.profile("Horizontal project file load profile: \(url.lastPathComponent)") {
             try _loadImpl(from: url, visitedProjectURLs: visitedProjectURLs)
@@ -102,7 +117,9 @@ struct HorizontalProject: Identifiable {
         let boardFilename = projectJSON.string("board_filename")
         let planesFilename = projectJSON.string("planes_filename")
         let blocksFilename = projectJSON.string("blocks_filename") ?? "blocks.json"
-        let poolDirectory = projectJSON.string("pool_directory")
+        // Horizon's default: a project file that names no pool directory
+        // keeps its pool at `pool/`.
+        let poolDirectory: String? = projectJSON.string("pool_directory") ?? "pool"
         let poolURL = poolDirectory.map { baseURL.appendingPathComponent($0) }
         let poolParts = BoardLoadTimer.measure("load project pool parts") {
             poolURL.map { HorizontalPoolPart.loadAll(from: $0) } ?? []

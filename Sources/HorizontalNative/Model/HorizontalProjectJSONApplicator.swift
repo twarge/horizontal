@@ -176,6 +176,7 @@ enum HorizontalProjectJSONApplicator {
         )
         try patchSchematicNets(
             sheet.netDetails,
+            removedNetIDs: sheet.removedNetIDs,
             schematicURL: schematicURL,
             project: project,
             archive: &archive
@@ -427,11 +428,12 @@ enum HorizontalProjectJSONApplicator {
 
     private static func patchSchematicNets(
         _ netDetails: [String: HorizontalNetDetails],
+        removedNetIDs: Set<String> = [],
         schematicURL: URL,
         project: HorizontalProject,
         archive: inout HorizontalProjectArchive
     ) throws {
-        guard !netDetails.isEmpty,
+        guard !netDetails.isEmpty || !removedNetIDs.isEmpty,
               let blockURL = blockURL(for: schematicURL, in: project) else {
             return
         }
@@ -440,7 +442,12 @@ enum HorizontalProjectJSONApplicator {
         var json = try loadJSON(relativePath: path, fallbackURL: blockURL, from: archive)
         var nets = json["nets"] as? JSONDictionary ?? [:]
 
-        for detail in netDetails.values {
+        for removed in removedNetIDs {
+            if let key = matchingKey(normalizedID(removed), in: nets) {
+                nets.removeValue(forKey: key)
+            }
+        }
+        for detail in netDetails.values where !removedNetIDs.contains(normalizedID(detail.id)) {
             let netID = normalizedID(detail.id)
             let key = matchingKey(netID, in: nets) ?? netID
             var item = nets[key] as? JSONDictionary ?? [:]
@@ -663,7 +670,19 @@ enum HorizontalProjectJSONApplicator {
                 item["gate"] = gateID
                 item["symbol"] = symbolID
             } else if map[itemKey] == nil {
-                continue
+                // A package placed on the board: Horizon's `BoardPackage::serialize`.
+                guard let componentID = placement.componentID else {
+                    continue
+                }
+                item["component"] = componentID
+                item["flip"] = placement.mirrored
+                item["smashed"] = placement.smashed
+                item["omit_silkscreen"] = placement.omitSilkscreen
+                if placement.omitOutline {
+                    item["omit_outline"] = true
+                }
+                item["fixed"] = placement.fixed
+                item["texts"] = [String]()
             }
 
             var placementJSON = item["placement"] as? JSONDictionary ?? [:]
@@ -1519,17 +1538,14 @@ enum HorizontalProjectJSONApplicator {
         powerSymbols: [HorizontalPowerSymbol],
         fallbackPowerSymbolIDs: [String]
     ) {
-        guard var map = json["power_symbols"] as? JSONDictionary else {
-            return
-        }
+        var map = json["power_symbols"] as? JSONDictionary ?? [:]
         let keptIDs = powerSymbols.isEmpty ? fallbackPowerSymbolIDs : powerSymbols.map(\.id)
         removeEntriesNotIn(&map, keeping: keptIDs)
 
+        // Placed symbols are new entries; the rest are updated in place.
         for symbol in powerSymbols {
-            guard let itemKey = matchingKey(symbol.id, in: map),
-                  var item = map[itemKey] as? JSONDictionary else {
-                continue
-            }
+            let itemKey = matchingKey(symbol.id, in: map) ?? symbol.id
+            var item = map[itemKey] as? JSONDictionary ?? [:]
             item["junction"] = symbol.junctionID
             if let netID = symbol.netID {
                 item["net"] = netID

@@ -525,6 +525,9 @@ struct HorizontalBoard {
     var boardPanels: [HorizontalBoardPanel]
     var placeableObjects: [HorizontalUnplacedObject] = []
     var unplacedObjects: [HorizontalUnplacedObject] = []
+    /// The board rules' `parameters` (courtyard expansion, mask expansions…)
+    /// as loaded, for baking a package placed after the load.
+    var ruleParameters: [String: Int] = [:]
     var physicalBounds: HorizontalRect
     var bounds: HorizontalRect
     /// Package editor only: the package's pads as editable objects. Their
@@ -764,7 +767,7 @@ struct HorizontalBoard {
         let physicalBounds = HorizontalRect(points: physicalPoints.isEmpty ? points : physicalPoints)
         let placeableObjects = boardPlaceableObjects(componentInfo: blockMetadata.components)
 
-        return HorizontalBoard(
+        var loadedBoard = HorizontalBoard(
             url: url,
             uuid: json.string("uuid") ?? "unknown-board",
             name: json.string("name") ?? url.deletingPathExtension().lastPathComponent,
@@ -811,6 +814,13 @@ struct HorizontalBoard {
             physicalBounds: physicalBounds,
             bounds: HorizontalRect(points: points).padded().orEmptyContentCanvasRegion()
         )
+        loadedBoard.ruleParameters = (json.dictionary("rules")?.dictionary("parameters") ?? [:])
+            .reduce(into: [String: Int]()) { result, item in
+                if let value = (item.value as? NSNumber)?.intValue {
+                    result[item.key] = value
+                }
+            }
+        return loadedBoard
     }
 
     var totalSubstrateThickness: Double {
@@ -2996,12 +3006,13 @@ struct HorizontalBoard {
                 }
             }
             let componentValue = partDetails?.value ?? value.string("value") ?? ""
+            let connections = parseConnectionNetIDs(from: value.dictionaryMap("connections"))
             let componentInfo = BoardComponentInfo(
                 partID: partID,
                 refdes: value.string("refdes") ?? "",
                 value: componentValue,
                 noPopulate: value.bool("nopopulate") ?? false,
-                connections: parseConnectionNetIDs(from: value.dictionaryMap("connections")),
+                connections: connections,
                 details: HorizontalComponentDetails(
                     componentID: componentID,
                     refdes: value.string("refdes") ?? "",
@@ -3012,7 +3023,8 @@ struct HorizontalBoard {
                     manufacturer: partDetails?.manufacturer,
                     packageName: partDetails?.packageName,
                     description: partDetails?.description,
-                    datasheet: partDetails?.datasheet
+                    datasheet: partDetails?.datasheet,
+                    connections: connections
                 )
             )
             result[componentID] = componentInfo
@@ -5757,5 +5769,229 @@ extension HorizontalBoard {
             packageID: "padstack-preview",
             poolURL: poolURL
         ) { _ in padstackJSON }
+    }
+}
+
+/// A package put on the board for a component: the board with it, and its id.
+struct HorizontalBoardPackagePlacementDraft {
+    var board: HorizontalBoard
+    var placementID: String
+}
+
+extension HorizontalBoard {
+    /// The board's unplaced-package column, built from the schematic's
+    /// components the way the loader builds it from the block: every
+    /// component with a part, carrying its connections for the pads.
+    static func placeableObjects(fromSchematicComponents components: [String: SchematicComponentInfo]) -> [HorizontalUnplacedObject] {
+        components.compactMap { componentID, component -> HorizontalUnplacedObject? in
+            let normalizedComponentID = normalizedID(componentID)
+            guard component.partID != nil else {
+                return nil
+            }
+            var details = component.details ?? HorizontalComponentDetails(
+                componentID: normalizedComponentID,
+                refdes: component.refdes,
+                value: component.value,
+                partID: component.partID,
+                noPopulate: component.noPopulate
+            )
+            details.connections = component.connections.reduce(into: [String: String]()) { result, item in
+                if let netID = item.value.netID {
+                    result[item.key] = normalizedID(netID)
+                }
+            }
+            let label = nonEmpty(details.displayLabel) ?? nonEmpty(component.refdes) ?? nonEmpty(component.value) ?? String(componentID.prefix(8))
+            return HorizontalUnplacedObject(
+                id: normalizedComponentID,
+                label: label,
+                subtitle: "Package",
+                componentID: normalizedComponentID,
+                gateID: nil,
+                details: details
+            )
+        }
+        .sorted { lhs, rhs in
+            lhs.label.localizedStandardCompare(rhs.label) == .orderedAscending
+        }
+    }
+
+    /// Replaces the placeable list (and what is left of it once the placed
+    /// packages are taken out).
+    mutating func replacePlaceableObjects(_ objects: [HorizontalUnplacedObject]) {
+        placeableObjects = objects
+        unplacedObjects = Self.unplacedBoardObjects(placeableObjects: objects, placedPackages: packages)
+    }
+
+    /// Horizon's map-package tool: the component's package on the board at
+    /// `position`, baked from the pool exactly as the loader bakes it, its
+    /// pads on the nets the component's connections name. Nil when the part
+    /// or its package is not in the pool.
+    static func placingPackage(
+        for object: HorizontalUnplacedObject,
+        in board: HorizontalBoard,
+        at position: HorizontalPoint,
+        poolURL: URL
+    ) -> HorizontalBoardPackagePlacementDraft? {
+        guard let componentID = object.componentID.map(normalizedID),
+              let details = object.details,
+              let partID = details.partID.map(normalizedID) else {
+            return nil
+        }
+        let component = BoardComponentInfo(
+            partID: partID,
+            refdes: details.refdes,
+            value: details.value,
+            noPopulate: details.noPopulate,
+            connections: details.connections,
+            details: details
+        )
+        var packageCache = [String: JSONDictionary]()
+        var partPackageIDCache = [String: String]()
+        var missingPartPackageIDs = Set<String>()
+        guard let packageSelection = resolvedBoardPackage(
+            for: partID,
+            boardPackage: [:],
+            poolURL: poolURL,
+            cache: &packageCache,
+            partPackageIDCache: &partPackageIDCache,
+            missingPartPackageIDs: &missingPartPackageIDs
+        ) else {
+            return nil
+        }
+
+        let placementID = UUID().uuidString.lowercased()
+        let transform = HorizontalPlacementTransform(shift: position, angle: 0, mirrored: false)
+        var padstackCache = [String: JSONDictionary]()
+        var missingPadstackCache = Set<String>()
+        var expandedPadstackCache = [String: HorizontalExpandedPadstack]()
+        var padstackShapeTemplateCache = [String: PadstackShapeGeometry]()
+        var partPadGatePinPathCache = [String: [String: String]]()
+        var missingPartPadGatePinPaths = Set<String>()
+        let geometry = parseSinglePackageGeometry(
+            boardPackageID: placementID,
+            packageID: packageSelection.packageID,
+            boardPackage: [:],
+            packageJSON: packageSelection.packageJSON,
+            packageTransform: transform,
+            component: component,
+            boardTexts: [:],
+            titleValues: [:],
+            poolURL: poolURL,
+            nInnerLayers: max(board.copperLayerCount - 2, 0),
+            boardParameterSet: boardRuleParameterSet(from: ["parameters": board.ruleParameters]),
+            padstackCache: &padstackCache,
+            missingPadstackCache: &missingPadstackCache,
+            expandedPadstackCache: &expandedPadstackCache,
+            padstackShapeTemplateCache: &padstackShapeTemplateCache,
+            partPadGatePinPathCache: &partPadGatePinPathCache,
+            missingPartPadGatePinPaths: &missingPartPadGatePinPaths
+        )
+
+        var packageModelMapCache = [String: [String: JSONDictionary]]()
+        var partModelIDCache = [String: String]()
+        var missingPartModelIDs = Set<String>()
+        var package3DModelCache = [String: HorizontalPackage3DModel]()
+        var missingPackage3DModels = Set<String>()
+        var modelFileURLCache = [String: URL]()
+        var missingModelFileURLs = Set<String>()
+        let packageModel = resolvedPackage3DModel(
+            for: ["component": componentID],
+            component: component,
+            poolURL: poolURL,
+            packageCache: &packageCache,
+            partPackageIDCache: &partPackageIDCache,
+            missingPartPackageIDs: &missingPartPackageIDs,
+            packageModelMapCache: &packageModelMapCache,
+            partModelIDCache: &partModelIDCache,
+            missingPartModelIDs: &missingPartModelIDs,
+            package3DModelCache: &package3DModelCache,
+            missingPackage3DModels: &missingPackage3DModels,
+            modelFileURLCache: &modelFileURLCache,
+            missingModelFileURLs: &missingModelFileURLs
+        )
+
+        var draft = board
+        draft.packages.append(HorizontalPlacement(
+            id: placementID,
+            position: position,
+            angle: 0,
+            mirrored: false,
+            label: nonEmpty(component.displayLabel) ?? object.label,
+            componentID: componentID,
+            componentDetails: details,
+            packageID: packageModel?.packageID ?? packageSelection.packageID,
+            modelID: packageModel?.modelID,
+            model3D: packageModel?.model
+        ))
+        draft.packagePads.append(contentsOf: geometry.pads)
+        draft.packageHoles.append(contentsOf: geometry.holes)
+        draft.packagePolygons.append(contentsOf: geometry.polygons)
+        draft.packageLines.append(contentsOf: geometry.lines)
+        draft.packageArcs.append(contentsOf: geometry.arcs)
+        draft.packageTexts.append(contentsOf: geometry.texts)
+        draft.keepouts.append(contentsOf: geometry.keepouts)
+        draft.packagePadPositions.merge(geometry.padPositions) { _, new in new }
+        draft.unplacedObjects = unplacedBoardObjects(placeableObjects: draft.placeableObjects, placedPackages: draft.packages)
+        draft.regenerateAirwires()
+        return HorizontalBoardPackagePlacementDraft(board: draft, placementID: placementID)
+    }
+
+    /// The rats' nest again from what is on the board now: the loader's
+    /// airwire pass, fed the pad nets the pad polygons carry.
+    mutating func regenerateAirwires() {
+        var padNetIDs = [String: String]()
+        for pad in packagePads {
+            guard let netID = pad.netID else {
+                continue
+            }
+            // Pad polygons are `<board package>/pad/<pad>/shape/…`; the pad
+            // maps key on `<board package>/<pad>`.
+            let components = pad.id.split(separator: "/")
+            guard components.count >= 3, components[1] == "pad" else {
+                continue
+            }
+            padNetIDs[Self.normalizedUUIDPath("\(components[0])/\(components[2])")] = Self.normalizedID(netID)
+        }
+        airwires = Self.generateAirwires(
+            junctions: junctions,
+            junctionNetIDs: junctionNetIDs,
+            packagePadPositions: packagePadPositions,
+            packagePadNetIDs: padNetIDs,
+            tracks: tracks,
+            netTies: netTies,
+            vias: vias
+        )
+    }
+
+    /// Package 3D model paths come out of a load relative to the pool the
+    /// board was read from; after a reload from a snapshot they must point
+    /// into the project's own pool again.
+    mutating func rebasePackageModelURLs(poolURL: URL) {
+        for index in packages.indices {
+            guard var model = packages[index].model3D,
+                  !model.filename.hasPrefix("/") else {
+                continue
+            }
+            let candidate = model.filename
+                .split(separator: "/")
+                .reduce(poolURL) { url, component in
+                    url.appendingPathComponent(String(component))
+                }
+            if let fileURL = Self.existingFileURL(candidate) {
+                model.fileURL = fileURL
+                packages[index].model3D = model
+            }
+        }
+    }
+
+    /// A plane whose net the schematic no longer has is gone with the net.
+    mutating func removePlanesWithDeletedNets() {
+        let validNetIDs = Set(netDetails.keys.map(Self.normalizedID))
+        planes.removeAll { plane in
+            guard let netID = plane.netID.map(Self.normalizedID) else {
+                return true
+            }
+            return !validNetIDs.contains(netID)
+        }
     }
 }

@@ -28,6 +28,10 @@ private struct HorizontalUpdateAllPlanesActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
 
+private struct HorizontalPowerNetsActionKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
 private struct HorizontalClearAllPlanesActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
@@ -77,6 +81,7 @@ struct HorizontalCanvasCommandActions {
     var canShowInPoolManager: Bool = false
     var canShowInProjectPoolManager: Bool = false
     var canRoundOffVertex: Bool = false
+    var canPlacePowerSymbol: Bool = false
     var hasPlacementInteraction: Bool = false
     var hasRoundOffVertexInteraction: Bool = false
     var dispatch: (HorizontalCanvasCommand) -> Void
@@ -160,6 +165,11 @@ extension FocusedValues {
         set { self[HorizontalUpdateAllPlanesActionKey.self] = newValue }
     }
 
+    var horizonPowerNetsAction: (() -> Void)? {
+        get { self[HorizontalPowerNetsActionKey.self] }
+        set { self[HorizontalPowerNetsActionKey.self] = newValue }
+    }
+
     var horizonClearAllPlanesAction: (() -> Void)? {
         get { self[HorizontalClearAllPlanesActionKey.self] }
         set { self[HorizontalClearAllPlanesActionKey.self] = newValue }
@@ -216,6 +226,7 @@ struct HorizontalViewCommands: Commands {
     @FocusedValue(\.horizonFindAction) private var findAction
     @FocusedValue(\.horizonToggleRightSidebarAction) private var toggleRightSidebarAction
     @FocusedValue(\.horizonUpdateAllPlanesAction) private var updateAllPlanesAction
+    @FocusedValue(\.horizonPowerNetsAction) private var powerNetsAction
     @FocusedValue(\.horizonClearAllPlanesAction) private var clearAllPlanesAction
     @FocusedValue(\.horizonBoardRulesAction) private var boardRulesAction
     @FocusedValue(\.horizonCanvasCommandActions) private var canvasCommandActions
@@ -349,6 +360,15 @@ struct HorizontalViewCommands: Commands {
                 canvasCommandActions?.dispatch(.drawNetLine)
             }
             .disabled(canvasCommandActions?.canDrawNetLine != true)
+
+            Button("Power Nets…") {
+                if let powerNetsAction {
+                    powerNetsAction()
+                } else {
+                    canvasCommandActions?.dispatch(.placePowerSymbol)
+                }
+            }
+            .disabled(canvasCommandActions?.canPlacePowerSymbol != true)
 
             Divider()
             Button("Add Text…") {

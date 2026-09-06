@@ -1,4 +1,5 @@
 #if os(iOS)
+import HorizontalProjectIO
 import SwiftUI
 import UIKit
 
@@ -25,6 +26,12 @@ struct HorizontalIPadProjectView: View {
     @State private var threeDCameraState: HorizontalSceneCameraState?
     /// Counts every change to the board's content, for the 3D view's rebuilds.
     @State private var boardEditRevision = 0
+    /// Bumped when the board is replaced from outside the board canvas (a
+    /// netlist reload), so the canvas adopts it.
+    @State private var boardSyncRevision = 0
+    @State private var boardNetlistSyncTask: Task<Void, Never>?
+    @State private var boardNetlistSyncRequested = false
+    @State private var powerNetsPopoverPresented = false
     @State private var selectedNetIDs = Set<String>()
     @State private var highlightedNetIDs = Set<String>()
     @State private var loadError: String?
@@ -58,6 +65,7 @@ struct HorizontalIPadProjectView: View {
     // Part placement: the part browser sets a request, which the schematic canvas
     // picks up (via its onAppear/onChange) to start the place-on-canvas interaction.
     @State private var placePartRequest: HorizontalPartPlacementRequest?
+    @State private var libraryPlacementError: String?
     @State private var libraryRevealRequest: HorizontalPoolRevealRequest?
     // App settings sheet (the iPad stand-in for the macOS Settings window).
     @State private var settingsSheetPresented = false
@@ -84,7 +92,23 @@ struct HorizontalIPadProjectView: View {
         } else {
             projectBody
                 .environment(\.horizonPoolRevealAction, revealInPools)
+                .alert("Could Not Place Part", isPresented: libraryPlacementErrorPresented) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(libraryPlacementError ?? "")
+                }
         }
+    }
+
+    private var libraryPlacementErrorPresented: Binding<Bool> {
+        Binding(
+            get: { libraryPlacementError != nil },
+            set: { presented in
+                if !presented {
+                    libraryPlacementError = nil
+                }
+            }
+        )
     }
 
     /// Shows an item, or a search, in the Pools pane, bringing it up first.
@@ -556,11 +580,24 @@ struct HorizontalIPadProjectView: View {
     /// The Library pane's "Place in Schematic": cache the part into the
     /// project pool, then place it the way the Parts pane does.
     private func placePartFromLibrary(_ item: HorizontalPoolLibraryItem, project: HorizontalProject) {
-        guard project.schematic != nil,
-              let poolURL = project.poolDirectory.map({ project.baseURL.appendingPathComponent($0) }) else {
+        guard project.schematic != nil else {
+            libraryPlacementError = "This project has no schematic to place “\(item.name)” in."
             return
         }
+        let poolURL = project.baseURL.appendingPathComponent(project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName)
         do {
+            // Documents made before new projects carried a pool have none:
+            // make Horizon's project pool now, so the cache has a home.
+            let manifestURL = poolURL.appendingPathComponent("pool.json")
+            if !FileManager.default.fileExists(atPath: manifestURL.path) {
+                let data = HorizontalProjectArchive.projectPoolData(HorizontalProjectDocument.projectPoolTemplate())
+                try FileManager.default.createDirectory(at: poolURL, withIntermediateDirectories: true)
+                try data.write(to: manifestURL, options: [.atomic])
+                if case .directory = document.archive.root {
+                    try document.archive.replaceRegularFileData(relativePath: "\(project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName)/pool.json", with: data)
+                }
+                HorizontalPoolLibrary.invalidateCache()
+            }
             let imported = try HorizontalPoolCacheImporter.cachePart(item, into: poolURL)
             if case .directory = document.archive.root {
                 for url in imported.writtenFiles {
@@ -577,6 +614,7 @@ struct HorizontalIPadProjectView: View {
                 HorizontalPoolPadstacks.invalidateCaches()
             }
             guard let part = HorizontalPoolPart.loadCached(id: item.uuid, from: poolURL) else {
+                libraryPlacementError = "“\(item.name)” could not be read from the project pool after caching."
                 return
             }
             if var updated = self.project {
@@ -595,7 +633,7 @@ struct HorizontalIPadProjectView: View {
             }
             focusedPane = .schematic
         } catch {
-            print("[pool] could not place \(item.name): \(error)")
+            libraryPlacementError = error.localizedDescription
         }
     }
 
@@ -667,6 +705,17 @@ struct HorizontalIPadProjectView: View {
                 DrawNetLineToolButton {
                     schematicDrawNetLineCommand = HorizontalDrawNetLineCommand()
                 }
+                PlacePowerSymbolToolButton {
+                    powerNetsPopoverPresented.toggle()
+                }
+                .popover(isPresented: $powerNetsPopoverPresented) {
+                    HorizontalPowerNetsPopover(
+                        nets: project.schematic?.powerNetSummaries() ?? [],
+                        isReadOnly: false,
+                        onCommand: { schematicCanvasActions?.dispatch(.managePowerNet($0)) },
+                        onDismiss: { powerNetsPopoverPresented = false }
+                    )
+                }
                 AddTextToolButton {
                     schematicCanvasActions?.dispatch(.addText)
                 }
@@ -703,7 +752,9 @@ struct HorizontalIPadProjectView: View {
                     drawTrackCommand: boardDrawTrackCommand,
                     onShowToolSettings: { boardToolSettingsPresented = true },
                     toolSettings: boardToolSettings,
-                    drawingLayer: boardDrawingLayer
+                    drawingLayer: boardDrawingLayer,
+                    syncRevision: boardSyncRevision,
+                    poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }
                 )
                 .overlay(alignment: .bottom) {
                     toolControlBar(for: boardCanvasActions, safeAreaInsets: safeAreaInsets)
@@ -821,6 +872,7 @@ struct HorizontalIPadProjectView: View {
     /// document, so drawing on a schematic silently didn't save.
     private func applyEditedSchematicSheet(_ sheet: HorizontalSchematicSheet) {
         guard var updated = project, var schematic = updated.schematic else { return }
+        let previousSignature = schematic.sheets.first { $0.id == sheet.id }?.netlistSignature
         for index in schematic.sheets.indices {
             schematic.sheets[index].grid = sheet.grid
         }
@@ -833,6 +885,15 @@ struct HorizontalIPadProjectView: View {
             where updated.schematics[index].schematic.url.standardizedFileURL == standardizedURL {
             updated.schematics[index].schematic = schematic
         }
+        if previousSignature != sheet.netlistSignature, var board = updated.board {
+            let objects = HorizontalBoard.placeableObjects(fromSchematicComponents: sheet.componentInfo)
+            if objects != board.placeableObjects {
+                board.replacePlaceableObjects(objects)
+                updated.board = board
+                boardEditRevision += 1
+                boardSyncRevision += 1
+            }
+        }
         project = updated
         do {
             try HorizontalProjectJSONApplicator.apply(
@@ -844,6 +905,50 @@ struct HorizontalIPadProjectView: View {
         } catch {
             loadError = "Couldn't save schematic changes: \(error.localizedDescription)"
         }
+        if previousSignature != sheet.netlistSignature {
+            scheduleBoardNetlistSync()
+        }
+    }
+
+    /// The macOS workspace's netlist reload: the board from the archive once
+    /// schematic edits settle, off the main thread, one at a time.
+    private func scheduleBoardNetlistSync() {
+        guard project?.board != nil else { return }
+        boardNetlistSyncRequested = true
+        guard boardNetlistSyncTask == nil else { return }
+        boardNetlistSyncTask = Task { @MainActor in
+            defer { boardNetlistSyncTask = nil }
+            while boardNetlistSyncRequested {
+                boardNetlistSyncRequested = false
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled else { return }
+                await performBoardNetlistSync()
+            }
+        }
+    }
+
+    private func performBoardNetlistSync() async {
+        guard let current = project, let previousBoard = current.board else { return }
+        let archive = document.archive
+        let revisionAtStart = boardEditRevision
+        let reloadTask = Task.detached(priority: .userInitiated) {
+            try HorizontalProject.loadSnapshot(of: archive)
+        }
+        guard let reloaded = try? await reloadTask.value else { return }
+        guard boardEditRevision == revisionAtStart else {
+            boardNetlistSyncRequested = true
+            return
+        }
+        guard var syncedBoard = reloaded.board, var updated = project else { return }
+        syncedBoard.url = previousBoard.url
+        if let poolURL = current.poolDirectory.map({ current.baseURL.appendingPathComponent($0) }) {
+            syncedBoard.rebasePackageModelURLs(poolURL: poolURL)
+        }
+        syncedBoard.removePlanesWithDeletedNets()
+        updated.board = syncedBoard
+        project = updated
+        boardEditRevision += 1
+        boardSyncRevision += 1
     }
 
     /// Applies a routed/edited board to the in-memory project and the document
@@ -977,7 +1082,7 @@ struct HorizontalIPadProjectView: View {
             return
         }
 
-        if let stored = HorizontalFileViewStateStore.shared.load(for: fileURL) {
+        if let stored = HorizontalFileViewStateStore.shared.load(for: fileURL, projectID: project.uuid) {
             var panes = stored.visiblePanes.intersection(availablePanes(for: project))
             if isCompact, panes.count > 1, let first = panes.sorted(by: { $0.rawValue < $1.rawValue }).first {
                 panes = [first]
@@ -1020,7 +1125,7 @@ struct HorizontalIPadProjectView: View {
         }
         // Start from the stored state so the fields this view doesn't manage
         // (viewports, display options, window size) survive the round trip.
-        var state = HorizontalFileViewStateStore.shared.load(for: fileURL) ?? .default
+        var state = HorizontalFileViewStateStore.shared.load(for: fileURL, projectID: project?.uuid) ?? .default
         state.visiblePanes = visiblePanes
         state.paneSizeFractions = paneSizeFractions.mapValues(Double.init)
         switch rightPane {
@@ -1032,7 +1137,7 @@ struct HorizontalIPadProjectView: View {
             state.rightSidebarPane = nil
         }
         state.showsSelectionSidebar = rightPane == .inspector
-        HorizontalFileViewStateStore.shared.save(state, for: fileURL)
+        HorizontalFileViewStateStore.shared.save(state, for: fileURL, projectID: project?.uuid)
     }
 
     private func projectURLForLoading() throws -> URL {
