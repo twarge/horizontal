@@ -9,10 +9,14 @@ enum HorizontalTrackWidthPrompt {
     private static let nmPerMM = 1_000_000.0
 
     @MainActor
-    static func run(currentWidthNM: Double) -> Double? {
+    static func run(
+        title: String = "Track Width",
+        message: String = "Enter the track width in millimeters.",
+        currentWidthNM: Double
+    ) -> Double? {
         let alert = NSAlert()
-        alert.messageText = "Track Width"
-        alert.informativeText = "Enter the track width in millimeters."
+        alert.messageText = title
+        alert.informativeText = message
         alert.addButton(withTitle: "Set")
         alert.addButton(withTitle: "Cancel")
 

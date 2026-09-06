@@ -180,6 +180,15 @@ private func horizonSceneBoardDimensions(for board: HorizontalBoard) -> (width: 
     return (width, depth)
 }
 
+/// What the 3D view is doing behind the picture it shows.
+enum BoardSceneBuildState: Equatable {
+    case idle
+    /// Nothing to show yet: the first scene is being built.
+    case building
+    /// The scene on screen is the previous board's; a newer one is coming.
+    case updating
+}
+
 struct BoardSceneView: View {
     var board: HorizontalBoard
     var displayOptions: BoardDisplayOptions
@@ -189,15 +198,20 @@ struct BoardSceneView: View {
     var materialColors = HorizontalBoardColors(silkscreen: nil, solderMask: nil, substrate: nil)
     var ignoresSceneMouseEvents = false
     var silkscreenClipping: HorizontalSilkscreenClipping? = nil
+    /// Bumped by the host whenever the board's content changes. The scene
+    /// is rebuilt in the background once edits settle; the old one stays
+    /// up until the new one is ready.
+    var revision: Int = 0
     @Binding var cameraState: HorizontalSceneCameraState?
+    @State private var buildState: BoardSceneBuildState = .idle
 
     var body: some View {
         // The scene is built lazily inside the host view's coordinator and
-        // cached on `(board.url, board.uuid, render display options)`. We must not
-        // call `BoardSceneFactory.scene(...)` from `body` — `body` re-runs
-        // every time the parent's `@State threeDCameraState` updates (which
-        // happens on every pan/zoom event), and rebuilding the SCNScene per
-        // gesture is what made the 3D view sluggish.
+        // cached on `(board.url, board.uuid, revision, render display options)`.
+        // We must not call `BoardSceneFactory.scene(...)` from `body` — `body`
+        // re-runs every time the parent's `@State threeDCameraState` updates
+        // (which happens on every pan/zoom event), and rebuilding the SCNScene
+        // per gesture is what made the 3D view sluggish.
         //
         // Likewise, no `.id(displayOptions)` here: a layer toggle should swap
         // the scene in place, not destroy and recreate the underlying NSView.
@@ -210,42 +224,162 @@ struct BoardSceneView: View {
             materialColors: materialColors,
             ignoresSceneMouseEvents: ignoresSceneMouseEvents,
             silkscreenClipping: silkscreenClipping,
-            cameraState: $cameraState
+            revision: revision,
+            cameraState: $cameraState,
+            buildState: $buildState
         )
         .background(horizonSceneEffectiveBackgroundColor(backgroundColor, displayOptions: displayOptions))
+        .overlay {
+            if buildState == .building {
+                ProgressView("Building 3D view…")
+                    .padding(18)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if buildState == .updating {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Updating…")
+                }
+                .font(.caption)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.regularMaterial, in: Capsule())
+                .padding(12)
+                .allowsHitTesting(false)
+            }
+        }
     }
 }
 
-/// Caches a `BoardSceneNodes` by board identity so the host view can be
-/// re-evaluated freely without paying the cost of a full SCNScene rebuild.
-/// Display options, colors, and explode are applied as in-place scene
-/// mutations — only a new board triggers a scene rebuild.
-private final class BoardSceneSceneCache {
+/// Caches a `BoardSceneNodes` by board identity and edit revision so the
+/// host view can be re-evaluated freely without paying the cost of a full
+/// SCNScene rebuild. Display options, colors, and explode are applied as
+/// in-place scene mutations — only a changed board triggers a rebuild.
+///
+/// Builds scenes off the main thread. A board's scene takes seconds to
+/// assemble; built inline it froze the window, and the 3D pane stayed empty
+/// for as long as it took. An edit to a board that already has a scene
+/// keeps that scene on screen: the rebuild starts once the edits have
+/// settled, runs one at a time, and picks up whatever arrived meanwhile in
+/// one more pass.
+@MainActor
+final class BoardSceneSceneCache {
+    /// How long edits are left to settle before a rebuild starts.
+    static let editSettleDelay: Duration = .milliseconds(400)
+
     private var key: BoardSceneCacheKey?
     private var nodes: BoardSceneNodes?
+    private var requestedKey: BoardSceneCacheKey?
+    private var requestedBoard: HorizontalBoard?
+    private var requestedClipping: HorizontalSilkscreenClipping?
+    private var onReady: (@MainActor (BoardSceneNodes) -> Void)?
+    private var buildKey: BoardSceneCacheKey?
+    private var settleTask: Task<Void, Never>?
 
-    func nodes(for board: HorizontalBoard, silkscreenClipping: HorizontalSilkscreenClipping? = nil) -> BoardSceneNodes {
-        let candidate = BoardSceneCacheKey(board: board, silkscreenClipping: silkscreenClipping)
-        if let nodes, candidate == key {
+    /// The scene for `board` when it is built. Otherwise the previous
+    /// board's scene as a stand-in (nil before the first build), with a
+    /// build under way or pending that hands the new scene to `onReady` on
+    /// the main actor.
+    func nodes(
+        for board: HorizontalBoard,
+        silkscreenClipping: HorizontalSilkscreenClipping? = nil,
+        revision: Int = 0,
+        onReady: @escaping @MainActor (BoardSceneNodes) -> Void
+    ) -> BoardSceneNodes? {
+        let candidate = BoardSceneCacheKey(board: board, silkscreenClipping: silkscreenClipping, revision: revision)
+        self.onReady = onReady
+        guard candidate != requestedKey else {
             return nodes
         }
-        let built = BoardSceneFactory.buildScene(for: board, silkscreenClipping: silkscreenClipping)
-        self.key = candidate
-        self.nodes = built
-        return built
+        requestedKey = candidate
+        requestedBoard = board
+        requestedClipping = silkscreenClipping
+        settleTask?.cancel()
+        settleTask = nil
+        if candidate == key {
+            // Back to what is built (a toggle undone within the delay).
+            return nodes
+        }
+        if buildKey == nil {
+            if nodes == nil {
+                // Nothing on screen yet: build at once.
+                startBuild()
+            } else {
+                settleTask = Task { [weak self] in
+                    try? await Task.sleep(for: Self.editSettleDelay)
+                    guard !Task.isCancelled, let self else {
+                        return
+                    }
+                    self.settleTask = nil
+                    self.startBuild()
+                }
+            }
+        }
+        return nodes
+    }
+
+    private func startBuild() {
+        guard buildKey == nil,
+              let requestedKey,
+              requestedKey != key,
+              let board = requestedBoard else {
+            return
+        }
+        let clipping = requestedClipping
+        buildKey = requestedKey
+        Task.detached(priority: .userInitiated) { [weak self] in
+            // The pool thread has no run loop, so SceneKit's implicit
+            // transaction there would never flush on its own and its
+            // build-time colours could reach the render tree at some later,
+            // unrelated moment — after the main actor has recoloured the
+            // copper. Commit and flush before handing the nodes over.
+            SCNTransaction.begin()
+            let built = BoardSceneFactory.buildScene(for: board, silkscreenClipping: clipping)
+            SCNTransaction.commit()
+            SCNTransaction.flush()
+            await MainActor.run {
+                guard let self else {
+                    return
+                }
+                self.key = requestedKey
+                self.nodes = built
+                self.buildKey = nil
+                self.onReady?(built)
+                // Edits that arrived while building: one more pass, now.
+                if self.requestedKey != requestedKey {
+                    self.startBuild()
+                }
+            }
+        }
+    }
+
+    /// A build is running or waiting for edits to settle.
+    var isBuilding: Bool {
+        buildKey != nil || (requestedKey != nil && requestedKey != key)
+    }
+
+    /// The revision of the scene on screen, for tests.
+    var builtRevision: Int? {
+        key?.revision
     }
 }
 
-private struct BoardSceneCacheKey: Hashable {
+struct BoardSceneCacheKey: Hashable {
     var boardURL: URL
     var boardUUID: String
     var boardName: String
     var stackupLayers: [HorizontalBoardStackupLayer]
     var userLayers: [HorizontalBoardUserLayer]
     var silkscreenClipping: HorizontalSilkscreenClipping?
+    /// The host's count of edits to the board's content.
+    var revision: Int
 
-    init(board: HorizontalBoard, silkscreenClipping: HorizontalSilkscreenClipping? = nil) {
+    init(board: HorizontalBoard, silkscreenClipping: HorizontalSilkscreenClipping? = nil, revision: Int = 0) {
         self.silkscreenClipping = silkscreenClipping
+        self.revision = revision
         self.boardURL = board.url
         self.boardUUID = board.uuid
         self.boardName = board.name
@@ -380,6 +514,7 @@ private struct BoardSceneAppliedOptionsKey: Hashable {
     init(
         board: HorizontalBoard,
         silkscreenClipping: HorizontalSilkscreenClipping? = nil,
+        revision: Int = 0,
         displayOptions: BoardDisplayOptions,
         backgroundColor: Color,
         copperColor: Color,
@@ -387,7 +522,7 @@ private struct BoardSceneAppliedOptionsKey: Hashable {
         materialColors: HorizontalBoardColors,
         appearance: NSAppearance
     ) {
-        self.sceneKey = BoardSceneCacheKey(board: board, silkscreenClipping: silkscreenClipping)
+        self.sceneKey = BoardSceneCacheKey(board: board, silkscreenClipping: silkscreenClipping, revision: revision)
         self.displayOptions = BoardSceneDisplayOptionsKey(displayOptions)
         self.backgroundColor = BoardSceneColorKey(backgroundColor, appearance: appearance)
         self.copperColor = BoardSceneColorKey(copperColor, appearance: appearance)
@@ -398,13 +533,14 @@ private struct BoardSceneAppliedOptionsKey: Hashable {
     init(
         board: HorizontalBoard,
         silkscreenClipping: HorizontalSilkscreenClipping? = nil,
+        revision: Int = 0,
         displayOptions: BoardDisplayOptions,
         backgroundColor: Color,
         copperColor: Color,
         layerColors: [Int: HorizontalRGBColor],
         materialColors: HorizontalBoardColors
     ) {
-        self.sceneKey = BoardSceneCacheKey(board: board, silkscreenClipping: silkscreenClipping)
+        self.sceneKey = BoardSceneCacheKey(board: board, silkscreenClipping: silkscreenClipping, revision: revision)
         self.displayOptions = BoardSceneDisplayOptionsKey(displayOptions)
         self.backgroundColor = BoardSceneColorKey(backgroundColor)
         self.copperColor = BoardSceneColorKey(copperColor)
@@ -417,7 +553,7 @@ private struct BoardSceneAppliedOptionsKey: Hashable {
 /// Holds the SceneKit scene plus categorised node groups and trackable
 /// materials so that display-option changes can be applied as fast in-place
 /// mutations instead of full scene rebuilds.
-private final class BoardSceneNodes {
+final class BoardSceneNodes: @unchecked Sendable {
     let scene: SCNScene
     let cameraNode: SCNNode
     let board: HorizontalBoard
@@ -448,17 +584,33 @@ private final class BoardSceneNodes {
 
     var center: HorizontalPoint = .zero
     var vias: [HorizontalMarker] = []
+    /// Via barrels and rings come in a handful of sizes: one geometry per
+    /// size, shared by every via of that size. Building one SCNShape per
+    /// ring per via took tens of seconds on a board with a few thousand vias.
+    private var viaGeometryCache = [ViaGeometryKey: SCNTube]()
+    private var viaMaterial = SCNMaterial()
+
+    private struct ViaGeometryKey: Hashable {
+        var innerMicrons: Int
+        var outerMicrons: Int
+        var heightMicrons: Int
+    }
 
     var substrateFaceMaterials: [SCNMaterial] = []
     var substrateSideMaterials: [SCNMaterial] = []
 
-    struct ExplodableEntry {
-        let node: SCNNode
-        let layer: Int?
-        let baseY: Double
-        let explodeFactor: Double
+    /// Exploding moves whole layers, so every node that explodes sits under
+    /// a container for its (group, explode factor) and only the containers
+    /// move — a dozen position changes instead of one per node, which
+    /// SceneKit charged tens of seconds for on a board of ten thousand nodes.
+    private struct ExplodeContainerKey: Hashable {
+        var group: ObjectIdentifier
+        var factorMilli: Int
     }
-    var explodableNodes: [ExplodableEntry] = []
+    private var explodeContainers = [ExplodeContainerKey: (node: SCNNode, factor: Double)]()
+    /// The layer separation the containers currently sit at; nodes are
+    /// built at their base heights (separation 0).
+    private var appliedLayerSeparation = 0.0
 
     init(scene: SCNScene, cameraNode: SCNNode, board: HorizontalBoard, boardThickness: Double, boardWidth: Double, boardDepth: Double) {
         self.scene = scene
@@ -479,11 +631,26 @@ private final class BoardSceneNodes {
         }
     }
 
-    func addExplodable(node: SCNNode, layer: Int?, baseY: Double, explodeFactor: Double? = nil) {
+    /// Adds `node` to `group`, under the container that moves it when the
+    /// view explodes. `baseY` is where the node sits unexploded; its own
+    /// position already says so.
+    func addExplodable(node: SCNNode, layer: Int?, baseY: Double, explodeFactor: Double? = nil, to group: SCNNode) {
         let factor = explodeFactor ?? BoardSceneFactory.explodeFactor(
             for: layer, board: board, boardThickness: boardThickness
         )
-        explodableNodes.append(.init(node: node, layer: layer, baseY: baseY, explodeFactor: factor))
+        let key = ExplodeContainerKey(group: ObjectIdentifier(group), factorMilli: Int((factor * 1_000).rounded()))
+        let container: SCNNode
+        if let existing = explodeContainers[key] {
+            container = existing.node
+        } else {
+            container = SCNNode()
+            container.name = "explode:\(key.factorMilli)"
+            container.position = SCNVector3(0, horizonSceneScalar(factor * appliedLayerSeparation), 0)
+            group.addChildNode(container)
+            explodeContainers[key] = (container, factor)
+        }
+        _ = baseY
+        container.addChildNode(node)
     }
 
     func applyDisplayOptions(
@@ -551,13 +718,15 @@ private final class BoardSceneNodes {
         }
 
         let layerSeparation = max(0, min(options.threeDExplode, 12))
-        SCNTransaction.begin()
-        SCNTransaction.animationDuration = 0.15
-        for entry in explodableNodes {
-            let offset = entry.explodeFactor * layerSeparation
-            entry.node.position.y = horizonSceneScalar(entry.baseY + offset)
+        if layerSeparation != appliedLayerSeparation {
+            appliedLayerSeparation = layerSeparation
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0.15
+            for (_, container) in explodeContainers {
+                container.node.position.y = horizonSceneScalar(container.factor * layerSeparation)
+            }
+            SCNTransaction.commit()
         }
-        SCNTransaction.commit()
 
         rebuildVias(
             layerSeparation: layerSeparation,
@@ -579,7 +748,18 @@ private final class BoardSceneNodes {
         color: HorizontalPlatformColor,
         platingMicrons: Double
     ) {
-        viaGroup.enumerateChildNodes { node, _ in node.removeFromParentNode() }
+        // Iterate a copy: removing while SceneKit enumerates skips nodes,
+        // and a skipped via keeps its old material under the new one.
+        for child in viaGroup.childNodes {
+            child.removeFromParentNode()
+        }
+
+        // One copper material for every barrel and ring; recoloured in place.
+        viaMaterial = SCNMaterial()
+        horizonSceneConfigureCopperMaterial(viaMaterial, color: color)
+        for geometry in viaGeometryCache.values {
+            geometry.materials = [viaMaterial]
+        }
 
         let platingThickness = max(0, min(platingMicrons, 250)) / 1_000
         let padThickness = 0.04
@@ -616,8 +796,7 @@ private final class BoardSceneNodes {
             if let barrelNode = platedBarrelNode(
                 outerRadius: barrelOuterRadius,
                 innerRadius: barrelInnerRadius,
-                height: height,
-                color: color
+                height: height
             ) {
                 barrelNode.position = BoardSceneFactory.scenePosition(via.position, center: center, y: centerY)
                 viaGroup.addChildNode(barrelNode)
@@ -646,8 +825,7 @@ private final class BoardSceneNodes {
                 if outerRadius > holeRadius + 0.001,
                    let padNode = annularPadNode(
                     outerRadius: outerRadius, innerRadius: holeRadius,
-                    thickness: copperThickness + ringExtraThickness,
-                    color: color
+                    thickness: copperThickness + ringExtraThickness
                 ) {
                     padNode.position = BoardSceneFactory.scenePosition(
                         via.position, center: center, y: layerY + explodeOffset + ringCenterOffset
@@ -658,67 +836,49 @@ private final class BoardSceneNodes {
         }
     }
 
-    private func platedBarrelNode(
-        outerRadius: Double,
-        innerRadius: Double,
-        height: Double,
-        color: HorizontalPlatformColor
-    ) -> SCNNode? {
-        guard outerRadius > innerRadius,
-              height > 0 else {
-            return nil
+    /// A tube of the given size, shared by every via that needs one.
+    private func viaTube(innerRadius: Double, outerRadius: Double, height: Double) -> SCNTube {
+        let key = ViaGeometryKey(
+            innerMicrons: Int((innerRadius * 1_000).rounded()),
+            outerMicrons: Int((outerRadius * 1_000).rounded()),
+            heightMicrons: Int((height * 1_000).rounded())
+        )
+        if let cached = viaGeometryCache[key] {
+            return cached
         }
-
         let tube = SCNTube(
             innerRadius: CGFloat(innerRadius),
             outerRadius: CGFloat(outerRadius),
             height: CGFloat(height)
         )
-        tube.radialSegmentCount = 48
+        tube.radialSegmentCount = 24
         tube.heightSegmentCount = 1
-
-        let material = SCNMaterial()
-        horizonSceneConfigureCopperMaterial(material, color: color)
-        tube.materials = [material]
-
-        return SCNNode(geometry: tube)
+        tube.materials = [viaMaterial]
+        viaGeometryCache[key] = tube
+        return tube
     }
 
-    private func annularRingPath(outerRadius: Double, innerRadius: Double) -> HorizontalPlatformBezierPath {
-        let cgOuter = CGFloat(outerRadius)
-        let cgInner = CGFloat(innerRadius)
-        #if os(macOS)
-        let path = HorizontalPlatformBezierPath()
-        path.appendOval(in: CGRect(x: -cgOuter, y: -cgOuter, width: cgOuter * 2, height: cgOuter * 2))
-        let hole = HorizontalPlatformBezierPath()
-        hole.appendOval(in: CGRect(x: -cgInner, y: -cgInner, width: cgInner * 2, height: cgInner * 2))
-        #else
-        let path = HorizontalPlatformBezierPath(ovalIn: CGRect(x: -cgOuter, y: -cgOuter, width: cgOuter * 2, height: cgOuter * 2))
-        let hole = HorizontalPlatformBezierPath(ovalIn: CGRect(x: -cgInner, y: -cgInner, width: cgInner * 2, height: cgInner * 2))
-        #endif
-        #if os(macOS)
-        path.append(hole.reversed)
-        path.flatness = 0.01
-        #else
-        path.append(hole.reversing())
-        path.flatness = 0.01
-        #endif
-        return path
+    private func platedBarrelNode(
+        outerRadius: Double,
+        innerRadius: Double,
+        height: Double
+    ) -> SCNNode? {
+        guard outerRadius > innerRadius,
+              height > 0 else {
+            return nil
+        }
+        return SCNNode(geometry: viaTube(innerRadius: innerRadius, outerRadius: outerRadius, height: height))
     }
 
+    /// The annular ring of a via on one copper layer: a flat tube.
     private func annularPadNode(
         outerRadius: Double, innerRadius: Double,
-        thickness: Double, color: HorizontalPlatformColor
+        thickness: Double
     ) -> SCNNode? {
-        let path = annularRingPath(outerRadius: outerRadius, innerRadius: innerRadius)
-        let shape = SCNShape(path: path, extrusionDepth: CGFloat(thickness))
-        let material = SCNMaterial()
-        horizonSceneConfigureCopperMaterial(material, color: color)
-        shape.materials = [material]
-
-        let node = SCNNode(geometry: shape)
-        node.eulerAngles.x = -.pi / 2
-        return node
+        guard outerRadius > innerRadius, thickness > 0 else {
+            return nil
+        }
+        return SCNNode(geometry: viaTube(innerRadius: innerRadius, outerRadius: outerRadius, height: thickness))
     }
 
     private func updateMaterials(in group: SCNNode, color: HorizontalPlatformColor) {
@@ -788,58 +948,61 @@ private struct BoardSceneHostView: NSViewRepresentable {
     var materialColors: HorizontalBoardColors
     var ignoresSceneMouseEvents: Bool
     var silkscreenClipping: HorizontalSilkscreenClipping? = nil
+    var revision: Int = 0
     @Binding var cameraState: HorizontalSceneCameraState?
+    @Binding var buildState: BoardSceneBuildState
 
     func makeCoordinator() -> Coordinator {
         Coordinator(cameraState: $cameraState)
     }
 
     func makeNSView(context: Context) -> PannableSceneView {
-        let nodes = context.coordinator.sceneCache.nodes(for: board, silkscreenClipping: silkscreenClipping)
-        let appliedOptionsKey = BoardSceneAppliedOptionsKey(
-            board: board,
-            silkscreenClipping: silkscreenClipping,
-            displayOptions: displayOptions,
-            backgroundColor: backgroundColor,
-            copperColor: copperColor,
-            layerColors: layerColors,
-            materialColors: materialColors,
-            appearance: NSApp.effectiveAppearance
-        )
-        nodes.applyDisplayOptions(
-            displayOptions,
-            backgroundColor: backgroundColor,
-            copperColor: copperColor,
-            materialColors: materialColors,
-            layerColors: layerColors,
-            board: board
-        )
         let view = PannableSceneView()
         view.allowsCameraControl = true
         view.autoenablesDefaultLighting = true
         view.antialiasingMode = .multisampling4X
-        view.scene = nodes.scene
-        context.coordinator.lastAppliedProjection = displayOptions.threeDProjection
-        view.pointOfView = nodes.cameraNode
-        view.panningCameraNode = nodes.cameraNode
-        view.defaultCameraController.pointOfView = nodes.cameraNode
         view.ignoresSceneMouseEvents = ignoresSceneMouseEvents
         view.onCameraStateChange = context.coordinator.updateCameraState
         view.applyBackground(backgroundColor, displayOptions: displayOptions)
-        view.applyCameraState(cameraState)
-        view.applyProjection(displayOptions.threeDProjection, board: board)
-        context.coordinator.lastAppliedOptionsKey = appliedOptionsKey
+        context.coordinator.latest = self
+        attachSceneIfReady(to: view, context: context)
         return view
     }
 
-    func updateNSView(_ nsView: PannableSceneView, context: Context) {
-        context.coordinator.cameraState = $cameraState
-        nsView.ignoresSceneMouseEvents = ignoresSceneMouseEvents
-        let nodes = context.coordinator.sceneCache.nodes(for: board, silkscreenClipping: silkscreenClipping)
+    /// Uses the built scene, or starts building it and comes back here on
+    /// the main actor once it exists — configured from whatever this view's
+    /// values are by then, not the ones at the time of the request.
+    private func attachSceneIfReady(to view: PannableSceneView, context: Context) {
+        let coordinator = context.coordinator
+        let cache = coordinator.sceneCache
+        let nodes = cache.nodes(for: board, silkscreenClipping: silkscreenClipping, revision: revision) { [weak view, weak coordinator] nodes in
+            guard let view, let coordinator, let latest = coordinator.latest else {
+                return
+            }
+            latest.configure(view, with: nodes, coordinator: coordinator)
+            latest.publishBuildState(coordinator.sceneCache.isBuilding ? .updating : .idle)
+        }
+        if let nodes {
+            configure(view, with: nodes, coordinator: coordinator)
+        }
+        let desired: BoardSceneBuildState = cache.isBuilding ? (nodes == nil ? .building : .updating) : .idle
+        if buildState != desired {
+            DispatchQueue.main.async { publishBuildState(desired) }
+        }
+    }
+
+    private func publishBuildState(_ state: BoardSceneBuildState) {
+        if buildState != state {
+            buildState = state
+        }
+    }
+
+    private func configure(_ nsView: PannableSceneView, with nodes: BoardSceneNodes, coordinator: Coordinator) {
         let sceneSwapped = nsView.scene !== nodes.scene
         let appliedOptionsKey = BoardSceneAppliedOptionsKey(
             board: board,
             silkscreenClipping: silkscreenClipping,
+            revision: revision,
             displayOptions: displayOptions,
             backgroundColor: backgroundColor,
             copperColor: copperColor,
@@ -847,7 +1010,7 @@ private struct BoardSceneHostView: NSViewRepresentable {
             materialColors: materialColors,
             appearance: nsView.effectiveAppearance
         )
-        let optionsChanged = context.coordinator.lastAppliedOptionsKey != appliedOptionsKey
+        let optionsChanged = coordinator.lastAppliedOptionsKey != appliedOptionsKey
         if sceneSwapped || optionsChanged {
             nodes.applyDisplayOptions(
                 displayOptions,
@@ -858,7 +1021,7 @@ private struct BoardSceneHostView: NSViewRepresentable {
                 board: board
             )
             nsView.applyBackground(backgroundColor, displayOptions: displayOptions)
-            context.coordinator.lastAppliedOptionsKey = appliedOptionsKey
+            coordinator.lastAppliedOptionsKey = appliedOptionsKey
         }
 
         if sceneSwapped {
@@ -866,21 +1029,29 @@ private struct BoardSceneHostView: NSViewRepresentable {
             nsView.pointOfView = nodes.cameraNode
             nsView.panningCameraNode = nodes.cameraNode
             nsView.defaultCameraController.pointOfView = nodes.cameraNode
+            coordinator.reapplyDisplayOptionsAfterAttach(nodes, to: nsView)
         } else {
             if nsView.pointOfView == nil {
                 nsView.pointOfView = nodes.cameraNode
             }
         }
-        let projectionChanged = context.coordinator.lastAppliedProjection != displayOptions.threeDProjection
-        context.coordinator.lastAppliedProjection = displayOptions.threeDProjection
-        nsView.onCameraStateChange = context.coordinator.updateCameraState
-        if sceneSwapped || projectionChanged || cameraState != context.coordinator.lastReportedState {
+        let projectionChanged = coordinator.lastAppliedProjection != displayOptions.threeDProjection
+        coordinator.lastAppliedProjection = displayOptions.threeDProjection
+        nsView.onCameraStateChange = coordinator.updateCameraState
+        if sceneSwapped || projectionChanged || cameraState != coordinator.lastReportedState {
             nsView.applyCameraState(cameraState)
-            context.coordinator.lastReportedState = cameraState
+            coordinator.lastReportedState = cameraState
         }
         if sceneSwapped || projectionChanged {
             nsView.applyProjection(displayOptions.threeDProjection, board: board)
         }
+    }
+
+    func updateNSView(_ nsView: PannableSceneView, context: Context) {
+        context.coordinator.cameraState = $cameraState
+        context.coordinator.latest = self
+        nsView.ignoresSceneMouseEvents = ignoresSceneMouseEvents
+        attachSceneIfReady(to: nsView, context: context)
     }
 
     final class Coordinator {
@@ -889,6 +1060,8 @@ private struct BoardSceneHostView: NSViewRepresentable {
         var lastReportedState: HorizontalSceneCameraState?
         var lastAppliedProjection: HorizontalBoardSceneProjection?
         var lastAppliedOptionsKey: BoardSceneAppliedOptionsKey?
+        /// The view's values as of its last update, for a build that lands later.
+        var latest: BoardSceneHostView?
 
         init(cameraState: Binding<HorizontalSceneCameraState?>) {
             self.cameraState = cameraState
@@ -901,6 +1074,27 @@ private struct BoardSceneHostView: NSViewRepresentable {
 
             lastReportedState = state
             cameraState.wrappedValue = state
+        }
+
+        /// One more pass over the display options once SceneKit has taken
+        /// the scene and drawn it: the first frame after a swap has been seen
+        /// with copper in its build colours beside the recoloured copper.
+        @MainActor
+        func reapplyDisplayOptionsAfterAttach(_ nodes: BoardSceneNodes, to view: PannableSceneView) {
+            Task { @MainActor [weak self, weak view] in
+                try? await Task.sleep(for: .milliseconds(120))
+                guard let self, let view, let latest = self.latest, view.scene === nodes.scene else {
+                    return
+                }
+                nodes.applyDisplayOptions(
+                    latest.displayOptions,
+                    backgroundColor: latest.backgroundColor,
+                    copperColor: latest.copperColor,
+                    materialColors: latest.materialColors,
+                    layerColors: latest.layerColors,
+                    board: latest.board
+                )
+            }
         }
     }
 
@@ -1257,7 +1451,9 @@ private struct BoardSceneHostView: UIViewRepresentable {
     var materialColors: HorizontalBoardColors
     var ignoresSceneMouseEvents: Bool
     var silkscreenClipping: HorizontalSilkscreenClipping? = nil
+    var revision: Int = 0
     @Binding var cameraState: HorizontalSceneCameraState?
+    @Binding var buildState: BoardSceneBuildState
 
     func makeCoordinator() -> Coordinator {
         Coordinator(cameraState: $cameraState)
@@ -1265,35 +1461,52 @@ private struct BoardSceneHostView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> TouchSceneView {
         let view = TouchSceneView()
-        let nodes = context.coordinator.sceneCache.nodes(for: board, silkscreenClipping: silkscreenClipping)
-        nodes.applyDisplayOptions(
-            displayOptions,
-            backgroundColor: backgroundColor,
-            copperColor: copperColor,
-            materialColors: materialColors,
-            layerColors: layerColors,
-            board: board
-        )
-        let platformBackgroundColor = horizonScenePlatformColor(
-            horizonSceneEffectiveBackgroundColor(backgroundColor, displayOptions: displayOptions)
-        )
         view.allowsCameraControl = true
         view.autoenablesDefaultLighting = true
-        view.backgroundColor = platformBackgroundColor
+        view.backgroundColor = horizonScenePlatformColor(
+            horizonSceneEffectiveBackgroundColor(backgroundColor, displayOptions: displayOptions)
+        )
         view.antialiasingMode = .multisampling4X
-        view.scene = nodes.scene
-        context.coordinator.lastAppliedProjection = displayOptions.threeDProjection
-        view.pointOfView = nodes.cameraNode
         view.isUserInteractionEnabled = !ignoresSceneMouseEvents
         view.onCameraStateChange = context.coordinator.updateCameraState
-        view.applyCameraState(cameraState)
+        context.coordinator.latest = self
+        attachSceneIfReady(to: view, context: context)
         return view
+    }
+
+    private func attachSceneIfReady(to view: TouchSceneView, context: Context) {
+        let coordinator = context.coordinator
+        let cache = coordinator.sceneCache
+        let nodes = cache.nodes(for: board, silkscreenClipping: silkscreenClipping, revision: revision) { [weak view, weak coordinator] nodes in
+            guard let view, let coordinator, let latest = coordinator.latest else {
+                return
+            }
+            latest.configure(view, with: nodes, coordinator: coordinator)
+            latest.publishBuildState(coordinator.sceneCache.isBuilding ? .updating : .idle)
+        }
+        if let nodes {
+            configure(view, with: nodes, coordinator: coordinator)
+        }
+        let desired: BoardSceneBuildState = cache.isBuilding ? (nodes == nil ? .building : .updating) : .idle
+        if buildState != desired {
+            DispatchQueue.main.async { publishBuildState(desired) }
+        }
+    }
+
+    private func publishBuildState(_ state: BoardSceneBuildState) {
+        if buildState != state {
+            buildState = state
+        }
     }
 
     func updateUIView(_ uiView: TouchSceneView, context: Context) {
         context.coordinator.cameraState = $cameraState
+        context.coordinator.latest = self
         uiView.isUserInteractionEnabled = !ignoresSceneMouseEvents
-        let nodes = context.coordinator.sceneCache.nodes(for: board, silkscreenClipping: silkscreenClipping)
+        attachSceneIfReady(to: uiView, context: context)
+    }
+
+    private func configure(_ uiView: TouchSceneView, with nodes: BoardSceneNodes, coordinator: Coordinator) {
         let sceneSwapped = uiView.scene !== nodes.scene
         nodes.applyDisplayOptions(
             displayOptions,
@@ -1305,6 +1518,7 @@ private struct BoardSceneHostView: UIViewRepresentable {
         )
         if sceneSwapped {
             uiView.scene = nodes.scene
+            coordinator.reapplyDisplayOptionsAfterAttach(nodes, to: uiView)
         }
         let platformBackgroundColor = horizonScenePlatformColor(
             horizonSceneEffectiveBackgroundColor(backgroundColor, displayOptions: displayOptions)
@@ -1314,12 +1528,12 @@ private struct BoardSceneHostView: UIViewRepresentable {
         if cameraSwapped {
             uiView.pointOfView = nodes.cameraNode
         }
-        let projectionChanged = context.coordinator.lastAppliedProjection != displayOptions.threeDProjection
-        context.coordinator.lastAppliedProjection = displayOptions.threeDProjection
-        uiView.onCameraStateChange = context.coordinator.updateCameraState
-        if sceneSwapped || cameraSwapped || projectionChanged || cameraState != context.coordinator.lastReportedState {
+        let projectionChanged = coordinator.lastAppliedProjection != displayOptions.threeDProjection
+        coordinator.lastAppliedProjection = displayOptions.threeDProjection
+        uiView.onCameraStateChange = coordinator.updateCameraState
+        if sceneSwapped || cameraSwapped || projectionChanged || cameraState != coordinator.lastReportedState {
             uiView.applyCameraState(cameraState)
-            context.coordinator.lastReportedState = cameraState
+            coordinator.lastReportedState = cameraState
         }
     }
 
@@ -1328,9 +1542,29 @@ private struct BoardSceneHostView: UIViewRepresentable {
         let sceneCache = BoardSceneSceneCache()
         var lastReportedState: HorizontalSceneCameraState?
         var lastAppliedProjection: HorizontalBoardSceneProjection?
+        var latest: BoardSceneHostView?
 
         init(cameraState: Binding<HorizontalSceneCameraState?>) {
             self.cameraState = cameraState
+        }
+
+        /// See the AppKit coordinator: one more pass after the first frame.
+        @MainActor
+        func reapplyDisplayOptionsAfterAttach(_ nodes: BoardSceneNodes, to view: TouchSceneView) {
+            Task { @MainActor [weak self, weak view] in
+                try? await Task.sleep(for: .milliseconds(120))
+                guard let self, let view, let latest = self.latest, view.scene === nodes.scene else {
+                    return
+                }
+                nodes.applyDisplayOptions(
+                    latest.displayOptions,
+                    backgroundColor: latest.backgroundColor,
+                    copperColor: latest.copperColor,
+                    materialColors: latest.materialColors,
+                    layerColors: latest.layerColors,
+                    board: latest.board
+                )
+            }
         }
 
         func updateCameraState(_ state: HorizontalSceneCameraState?) {
@@ -1582,9 +1816,14 @@ private final class HorizontalPackage3DNodeCache: @unchecked Sendable {
         )
     }()
 
+    private let lock = NSLock()
+
     private init() {}
 
+    /// Scene builds run off the main thread; one at a time through here.
     func node(for model: HorizontalPackage3DModel, fallbackColor: HorizontalPlatformColor) -> SCNNode? {
+        lock.lock()
+        defer { lock.unlock() }
         let fileURL = model.fileURL.standardizedFileURL
         let fileExtension = fileURL.pathExtension.lowercased()
 
@@ -1852,6 +2091,20 @@ private final class HorizontalPackage3DNodeCache: @unchecked Sendable {
     }
 }
 
+/// Where the scene puts a board's surfaces, in scene millimetres.
+struct BoardSceneLayout: Equatable {
+    var boardThickness: Double
+    var substrateTopY: Double
+    var substrateBottomY: Double
+    var topCopperTopY: Double
+    var bottomCopperBottomY: Double
+    var topMaskBottomY: Double
+    var topMaskTopY: Double
+    var bottomMaskTopY: Double
+    var bottomMaskBottomY: Double
+    var topSilkscreenY: Double
+}
+
 enum BoardSceneFactory {
     fileprivate static let unitsPerMillimeter = 1_000_000.0
     fileprivate static let boardTopHeight = 0.5
@@ -1863,7 +2116,12 @@ enum BoardSceneFactory {
     private static let copperVisualThickness = 0.06
     private static let solderMaskThickness = 0.03
     private static let solderPasteThickness = 0.035
-    private static let layerSurfaceGap = 0.001
+    /// The clearance between a layer's face and the face of the layer it
+    /// sits on (mask over copper, silkscreen over mask). Two faces closer
+    /// than the depth buffer can tell apart draw as a flickering mesh of
+    /// each other's triangles; ten microns is well clear at any zoom the
+    /// camera's automatic depth range allows, and invisible.
+    private static let layerSurfaceGap = 0.01
     private static let maximumPlaneFragments = 400
 
     private static let maximumViaNodes = 2_500
@@ -1929,10 +2187,138 @@ enum BoardSceneFactory {
         _ = buildScene(for: board, options: .full)
     }
 
+    #if canImport(AppKit)
+    /// The first-flush cost of each group on its own, and how many SCNShape
+    /// geometries each holds: for finding what SceneKit defers.
+    static func debugFlushReport(for board: HorizontalBoard) -> String {
+        var lines = [String]()
+        let names = ["substrate", "solderMask", "silkscreen", "copper", "plane", "via", "model", "text", "packageArt", "decal", "keepout", "connection", "pad(other)"]
+        func groups(_ nodes: BoardSceneNodes) -> [SCNNode] {
+            [nodes.substrateGroup, nodes.solderMaskGroup, nodes.silkscreenGroup, nodes.copperGroup, nodes.planeGroup, nodes.viaGroup, nodes.modelGroup, nodes.textGroup, nodes.packageArtGroup, nodes.decalGroup, nodes.keepoutGroup, nodes.connectionGroup]
+        }
+        SCNTransaction.begin(); SCNTransaction.commit()
+        for (index, name) in names.enumerated() where index < 12 {
+            let nodes = buildScene(for: board, options: .full)
+            nodes.applyDisplayOptions(
+                BoardDisplayOptions(),
+                backgroundColor: HorizontalDefaultTheme.background,
+                copperColor: Color(red: 0.72, green: 0.45, blue: 0.2),
+                materialColors: HorizontalBoardColors(silkscreen: nil, solderMask: nil, substrate: nil),
+                layerColors: [:],
+                board: board
+            )
+            var shapeCount = 0
+            var geometryCount = 0
+            groups(nodes)[index].enumerateHierarchy { node, _ in
+                if let geometry = node.geometry {
+                    geometryCount += 1
+                    if geometry is SCNShape { shapeCount += 1 }
+                }
+            }
+            for (otherIndex, group) in groups(nodes).enumerated() where otherIndex != index {
+                group.removeFromParentNode()
+            }
+            let start = DispatchTime.now().uptimeNanoseconds
+            SCNTransaction.begin(); SCNTransaction.commit()
+            lines.append("\(name): geometries=\(geometryCount) shapes=\(shapeCount) flush=\(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6) ms")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// A rendered frame of the full scene from the default perspective, with
+    /// a description of what each group holds: for diagnosing a scene
+    /// without the app.
+    struct DebugSnapshot {
+        var image: NSImage
+        var report: String
+    }
+
+    static func debugSnapshot(
+        for board: HorizontalBoard,
+        size: CGSize,
+        displayOptions: BoardDisplayOptions = BoardDisplayOptions(),
+        silkscreenClipping: HorizontalSilkscreenClipping? = nil,
+        preset: HorizontalBoard3DViewPreset = .defaultPerspective
+    ) -> DebugSnapshot {
+        let buildStart = DispatchTime.now().uptimeNanoseconds
+        let nodes = buildScene(for: board, silkscreenClipping: silkscreenClipping)
+        let buildMilliseconds = Double(DispatchTime.now().uptimeNanoseconds - buildStart) / 1e6
+        let applyStart = DispatchTime.now().uptimeNanoseconds
+        nodes.applyDisplayOptions(
+            displayOptions,
+            backgroundColor: HorizontalDefaultTheme.background,
+            copperColor: Color(red: 0.72, green: 0.45, blue: 0.2),
+            materialColors: HorizontalBoardColors(silkscreen: nil, solderMask: nil, substrate: nil),
+            layerColors: [:],
+            board: board
+        )
+        let applyMilliseconds = Double(DispatchTime.now().uptimeNanoseconds - applyStart) / 1e6
+        var presetOptions = displayOptions
+        presetOptions.threeDProjection = preset.projection
+        horizonSceneApplyProjection(preset.projection, to: nodes.cameraNode, board: board)
+        let state = horizonSceneCameraState(for: preset, board: board)
+        if let transform = state.sceneKitTransform {
+            nodes.cameraNode.transform = transform
+        }
+        if let scale = state.orthographicScale {
+            nodes.cameraNode.camera?.orthographicScale = scale
+        }
+        _ = presetOptions
+        var report = ["apply display options \(applyMilliseconds) ms"]
+        func describe(_ name: String, _ node: SCNNode) {
+            let (minimum, maximum) = node.boundingBox
+            var geometryCount = 0
+            var vertexCount = 0
+            node.enumerateHierarchy { child, _ in
+                if let geometry = child.geometry {
+                    geometryCount += 1
+                    vertexCount += geometry.sources(for: .vertex).first?.vectorCount ?? 0
+                }
+            }
+            report.append("\(name): children=\(node.childNodes.count) geometries=\(geometryCount) vertices=\(vertexCount) hidden=\(node.isHidden) bbox=(\(minimum.x),\(minimum.y),\(minimum.z))-(\(maximum.x),\(maximum.y),\(maximum.z))")
+        }
+        describe("root", nodes.scene.rootNode)
+        describe("substrate", nodes.substrateGroup)
+        describe("solderMask", nodes.solderMaskGroup)
+        describe("silkscreen", nodes.silkscreenGroup)
+        describe("copper", nodes.copperGroup)
+        describe("via", nodes.viaGroup)
+        describe("model", nodes.modelGroup)
+        report.append("camera position=\(nodes.cameraNode.position) pov=\(nodes.cameraNode.camera != nil)")
+        let renderer = SCNRenderer(device: MTLCreateSystemDefaultDevice(), options: nil)
+        renderer.scene = nodes.scene
+        renderer.pointOfView = nodes.cameraNode
+        renderer.autoenablesDefaultLighting = true
+        let renderStart = DispatchTime.now().uptimeNanoseconds
+        let image = renderer.snapshot(atTime: 0, with: size, antialiasingMode: .multisampling4X)
+        report.append("build \(buildMilliseconds) ms, render \(Double(DispatchTime.now().uptimeNanoseconds - renderStart) / 1e6) ms")
+        return DebugSnapshot(image: image, report: report.joined(separator: "\n"))
+    }
+    #endif
+
+    /// The heights the scene places a board's surfaces at, for tests.
+    static func sceneLayout(for board: HorizontalBoard) -> BoardSceneLayout {
+        let thickness = boardBodyThickness(for: board)
+        let topMaskTop = solderMaskTopSurfaceHeight(for: HorizontalBoardLayers.topMask, board: board, boardThickness: thickness)
+        let bottomMaskTop = solderMaskTopSurfaceHeight(for: HorizontalBoardLayers.bottomMask, board: board, boardThickness: thickness)
+        return BoardSceneLayout(
+            boardThickness: thickness,
+            substrateTopY: boardTopHeight,
+            substrateBottomY: boardTopHeight - dielectricThickness(for: board, fallback: thickness),
+            topCopperTopY: copperOuterSurfaceHeight(forTopSide: true, board: board, boardThickness: thickness),
+            bottomCopperBottomY: copperOuterSurfaceHeight(forTopSide: false, board: board, boardThickness: thickness),
+            topMaskBottomY: topMaskTop - solderMaskThickness,
+            topMaskTopY: topMaskTop,
+            bottomMaskTopY: bottomMaskTop,
+            bottomMaskBottomY: bottomMaskTop - solderMaskThickness,
+            topSilkscreenY: silkscreenSurfaceHeight(for: HorizontalBoardLayers.topSilkscreen, board: board, boardThickness: thickness) ?? 0
+        )
+    }
+
     /// Receives (stage, milliseconds) for every stage of a scene build.
     nonisolated(unsafe) static var stageTimingSink: ((String, Double) -> Void)?
 
-    private static func stage<T>(_ label: String, _ body: () -> T) -> T {
+    fileprivate static func stage<T>(_ label: String, _ body: () -> T) -> T {
         guard let stageTimingSink else {
             return body()
         }
@@ -1983,11 +2369,11 @@ enum BoardSceneFactory {
         for slab in slabs {
             let factor = (slab.midY - boardCenterY) / halfThickness
             for slabNode in slab.nodes {
-                nodes.substrateGroup.addChildNode(slabNode)
                 nodes.addExplodable(
                     node: slabNode, layer: nil,
                     baseY: Double(slabNode.position.y),
-                    explodeFactor: factor
+                    explodeFactor: factor,
+                    to: nodes.substrateGroup
                 )
             }
             nodes.substrateFaceMaterials.append(contentsOf: slab.faceMaterials)
@@ -2011,8 +2397,8 @@ enum BoardSceneFactory {
         if options.layerArtwork {
             stage("planes") { addPlanes(board.planes, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette) }
             stage("keepouts") { addKeepouts(board.keepouts, to: nodes.keepoutGroup, center: center, boardThickness: thickness) }
-            stage("board artwork") { addCategorizedArtwork(board.polygons.filter { !isBoardBodyLayer($0.layer) }, lines: board.lines, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette, polygonOpacity: 0.34, lineOpacity: 0.58, polygonYOffset: 0.02, lineYOffset: 0.03, silkscreenClips: silkscreenClips) }
-            stage("package artwork") { addCategorizedArtwork(board.packagePolygons, lines: board.packageLines, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette, polygonOpacity: 0.28, lineOpacity: 0.62, polygonYOffset: 0.04, lineYOffset: 0.05, silkscreenClips: silkscreenClips) }
+            stage("board artwork") { addCategorizedArtwork(board.polygons.filter { !isBoardBodyLayer($0.layer) }, lines: board.lines, arcs: board.arcs, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette, polygonOpacity: 0.34, lineOpacity: 0.58, polygonYOffset: 0.02, lineYOffset: 0.03, silkscreenClips: silkscreenClips) }
+            stage("package artwork") { addCategorizedArtwork(board.packagePolygons, lines: board.packageLines, arcs: board.packageArcs, to: nodes, center: center, boardThickness: thickness, materialPalette: materialPalette, polygonOpacity: 0.28, lineOpacity: 0.62, polygonYOffset: 0.04, lineYOffset: 0.05, silkscreenClips: silkscreenClips) }
         }
 
         if options.decals {
@@ -2154,9 +2540,10 @@ enum BoardSceneFactory {
         // pads sitting on solid board.
         let drillCutouts = drillCutoutPaths(for: nil, board: board)
 
-        // One footprint per outline, extruded once per dielectric layer.
-        let templates = boardOutlinePolygons(from: board.polygons).compactMap {
-            boardBodyTemplate(for: $0, cutouts: drillCutouts)
+        // One footprint per piece of board, extruded once per dielectric
+        // layer; the cutouts drawn on the outline layer come out of it.
+        let templates = HorizontalBoardOutlines.shapes(from: board.polygons).compactMap {
+            boardBodyTemplate(for: $0.outer, cutouts: drillCutouts + $0.cutouts)
         }
 
         if dielectricLayers.count <= 1 {
@@ -2185,7 +2572,6 @@ enum BoardSceneFactory {
                                   midY: boardTopHeight - substrateThickness / 2)]
         }
 
-        let outlines = boardOutlinePolygons(from: board.polygons)
         var result: [SubstrateSlab] = []
         var y = boardTopHeight
 
@@ -2204,7 +2590,7 @@ enum BoardSceneFactory {
             let slabMidY = (slabTopY + y) / 2
             let chamferSafe = min(max(slabThickness, 0.05), 6.0)
 
-            if outlines.isEmpty {
+            if templates.isEmpty {
                 let (node, face, side) = rectangularBoardNodeAndMaterials(
                     width: width, depth: depth, thickness: chamferSafe, topY: slabTopY, colors: colors
                 )
@@ -2243,7 +2629,7 @@ enum BoardSceneFactory {
     ) {
         let maskColor = colors.solderMask?.nsColor
             ?? HorizontalDefaultTheme.nsLayerColor(for: HorizontalBoardLayers.topMask)
-        let outlines = boardOutlinePolygons(from: board.polygons)
+        let shapes = HorizontalBoardOutlines.shapes(from: board.polygons)
         // The pad outlines serve both mask layers; unioning seven thousand
         // pads is worth doing once.
         let padFragments = includeOpenings ? horizonPadOutlineFragments(board.packagePads) : []
@@ -2257,27 +2643,25 @@ enum BoardSceneFactory {
 
         for (slabTopY, layer) in [(topY, HorizontalBoardLayers.topMask), (bottomY, HorizontalBoardLayers.bottomMask)] {
             let openings = stage("mask: openings") { includeOpenings ? solderMaskOpenings(for: layer, board: board, center: center, padFragments: padFragments) : [] }
-            if outlines.isEmpty {
+            if shapes.isEmpty {
                 let node = rectangularSolderMaskNode(
                     width: width, depth: depth, center: center, thickness: solderMaskThickness,
                     topY: slabTopY, color: maskColor, openings: openings.flatMap(\.paths)
                 )
-                nodes.addExplodable(node: node, layer: layer, baseY: Double(node.position.y))
-                nodes.solderMaskGroup.addChildNode(node)
+                nodes.addExplodable(node: node, layer: layer, baseY: Double(node.position.y), to: nodes.solderMaskGroup)
             } else {
-                for outline in outlines {
+                for shape in shapes {
                     let outlineOpenings = stage("mask: filter") { openings
-                        .filter { solderMaskOpening($0, intersects: outline) }
+                        .filter { solderMaskOpening($0, intersects: shape.outer) }
                         .flatMap(\.paths) }
                     let maskNode = stage("mask: node") {
                         solderMaskNode(
-                            for: outline, center: center, openings: outlineOpenings,
+                            for: shape.outer, center: center, openings: outlineOpenings + shape.cutouts,
                             thickness: solderMaskThickness, topY: slabTopY, color: maskColor
                         )
                     }
                     guard let node = maskNode else { continue }
-                    nodes.addExplodable(node: node, layer: layer, baseY: Double(node.position.y))
-                    nodes.solderMaskGroup.addChildNode(node)
+                    nodes.addExplodable(node: node, layer: layer, baseY: Double(node.position.y), to: nodes.solderMaskGroup)
                 }
             }
         }
@@ -2351,7 +2735,10 @@ enum BoardSceneFactory {
         material.diffuse.contents = color
         material.roughness.contents = 0.6
         material.transparency = 0.7
-        material.isDoubleSided = true
+        // Single-sided: the slab's underside lies a hair above the copper it
+        // covers, and drawing it too meant two translucent faces (double the
+        // tint) and a depth fight with the copper's top face.
+        material.isDoubleSided = false
         return material
     }
 
@@ -2637,10 +3024,14 @@ enum BoardSceneFactory {
         }
 
         let topCopper = copperThickness(for: HorizontalBoardLayers.topCopper, board: board, fallback: 0)
+        // A substrate entry on the bottom copper would lie below the board;
+        // Horizon writes it as zero and `totalSubstrateThickness` (which the
+        // substrate slab is built from) ignores it, so the board's depth must
+        // too, or the bottom-side layers float a slab's worth below it.
         let total = layers.reduce(0.0) { partial, layer in
             partial
                 + max(layer.copperThickness / unitsPerMillimeter, 0)
-                + max(layer.substrateThickness / unitsPerMillimeter, 0)
+                + (layer.layer == HorizontalBoardLayers.bottomCopper ? 0 : max(layer.substrateThickness / unitsPerMillimeter, 0))
         } - topCopper
         return max(total, board.totalSubstrateThickness / unitsPerMillimeter)
     }
@@ -2662,19 +3053,6 @@ enum BoardSceneFactory {
         }
         let thickness = stackupLayer.copperThickness / unitsPerMillimeter
         return thickness > 0 ? thickness : fallback
-    }
-
-    private static func boardOutlinePolygons(from polygons: [HorizontalPolygon]) -> [HorizontalPolygon] {
-        polygons
-            .filter { polygon in
-                guard let layer = polygon.layer else {
-                    return false
-                }
-                return HorizontalBoardLayers.isOutline(layer) && polygon.renderVertices(arcPrecision: 32).count >= 3
-            }
-            .sorted { lhs, rhs in
-                abs(polygonArea(lhs.renderVertices(arcPrecision: 32))) > abs(polygonArea(rhs.renderVertices(arcPrecision: 32)))
-            }
     }
 
     private static func polygonArea(_ vertices: [HorizontalPoint]) -> Double {
@@ -2709,12 +3087,8 @@ enum BoardSceneFactory {
                 ? copperOuterSurfaceHeight(forTopSide: false, board: board, boardThickness: boardThickness) - modelBoardClearance
                 : copperOuterSurfaceHeight(forTopSide: true, board: board, boardThickness: boardThickness) + modelBoardClearance
             let modelFactor: Double = package.mirrored ? -3.0 : 3.0
-            nodes.addExplodable(node: node, layer: nil, baseY: baseY, explodeFactor: modelFactor)
-            if package.componentDetails?.noPopulate == true {
-                nodes.noPopulateModelGroup.addChildNode(node)
-            } else {
-                nodes.modelGroup.addChildNode(node)
-            }
+            let group = package.componentDetails?.noPopulate == true ? nodes.noPopulateModelGroup : nodes.modelGroup
+            nodes.addExplodable(node: node, layer: nil, baseY: baseY, explodeFactor: modelFactor, to: group)
         }
     }
 
@@ -2744,8 +3118,7 @@ enum BoardSceneFactory {
                 ? copperOuterSurfaceHeight(forTopSide: false, board: board, boardThickness: boardThickness)
                 : copperOuterSurfaceHeight(forTopSide: true, board: board, boardThickness: boardThickness)
             let modelFactor: Double = package.mirrored ? -3.0 : 3.0
-            nodes.addExplodable(node: node, layer: nil, baseY: baseY, explodeFactor: modelFactor)
-            nodes.placeholderModelGroup.addChildNode(node)
+            nodes.addExplodable(node: node, layer: nil, baseY: baseY, explodeFactor: modelFactor, to: nodes.placeholderModelGroup)
         }
     }
 
@@ -2934,6 +3307,10 @@ enum BoardSceneFactory {
         // elsewhere on the board that lands inside the pad does too.
         let packageHolesByPadID = Dictionary(grouping: board.packageHoles) { packagePadID(for: $0.id) ?? $0.id }
         let otherHoles = board.holes + board.viaHoles
+        // Every pad of a layer goes into one mesh: a node per pad was a
+        // draw call per pad.
+        var fragmentsByLayer = [Int: [[[HorizontalPoint]]]]()
+        var layerOrder = [Int]()
         for pad in horizonPadOutlineFragments(renderPads) {
             var cutouts = [[HorizontalPoint]]()
             if let padID = packagePadID(for: pad.id) {
@@ -2951,18 +3328,25 @@ enum BoardSceneFactory {
                     cutouts.append(points)
                 }
             }
-            var paths = pad.paths
+            var fragments = [pad.paths]
             if !cutouts.isEmpty {
-                let fragments = clippedSceneFragments(subjects: pad.paths, cutouts: cutouts)
+                fragments = clippedSceneFragments(subjects: pad.paths, cutouts: cutouts)
                 guard !fragments.isEmpty else {
                     // The hole swallowed the pad: nothing left to render.
                     continue
                 }
-                paths = fragments.flatMap { $0 }
             }
-            guard let node = padNode(
-                pad,
-                paths: paths,
+            let layerKey = pad.layer ?? Int.min
+            if fragmentsByLayer[layerKey] == nil {
+                layerOrder.append(layerKey)
+            }
+            fragmentsByLayer[layerKey, default: []].append(contentsOf: fragments)
+        }
+        for layerKey in layerOrder {
+            let layer: Int? = layerKey == Int.min ? nil : layerKey
+            guard let node = padsNode(
+                fragments: fragmentsByLayer[layerKey] ?? [],
+                layer: layer,
                 center: center,
                 board: board,
                 boardThickness: boardThickness,
@@ -2971,11 +3355,10 @@ enum BoardSceneFactory {
             ) else {
                 continue
             }
-            node.name = "layer:\(pad.layer ?? -1)"
-            let group = layerGroupForCategory(pad.layer, nodes: nodes)
-            let baseY = padTopSurfaceHeight(for: pad.layer, board: board, boardThickness: boardThickness)
-            nodes.addExplodable(node: node, layer: pad.layer, baseY: baseY)
-            group.addChildNode(node)
+            node.name = "layer:\(layer ?? -1)"
+            let group = layerGroupForCategory(layer, nodes: nodes)
+            let baseY = padTopSurfaceHeight(for: layer, board: board, boardThickness: boardThickness)
+            nodes.addExplodable(node: node, layer: layer, baseY: baseY, to: group)
         }
     }
 
@@ -3086,6 +3469,7 @@ enum BoardSceneFactory {
     private static func addCategorizedArtwork(
         _ polygons: [HorizontalPolygon],
         lines: [HorizontalSegment],
+        arcs: [HorizontalArc] = [],
         to nodes: BoardSceneNodes,
         center: HorizontalPoint,
         boardThickness: Double,
@@ -3130,11 +3514,15 @@ enum BoardSceneFactory {
             }
             let group = layerGroupForCategory(polygon.layer, nodes: nodes)
             let baseY = overlayHeight(for: polygon.layer, board: board, boardThickness: boardThickness) + effectiveYOffset
-            nodes.addExplodable(node: node, layer: polygon.layer, baseY: baseY)
-            group.addChildNode(node)
+            nodes.addExplodable(node: node, layer: polygon.layer, baseY: baseY, to: group)
         }
 
-        for line in lines where !isExcludedFrom3DScene(line.layer) && !isPackageOrAssemblyLayer(line.layer) && !isSolderMaskLayer(line.layer) {
+        // Every line and arc of a layer becomes one mesh: the strokes
+        // unioned, so joints neither double up nor cost a node each.
+        var lineCapsulesByLayer = [Int: [[HorizontalPoint]]]()
+        var lineLayerOrder = [Int]()
+        let strokes = lines + arcs.map(segment(for:))
+        for line in strokes where !isExcludedFrom3DScene(line.layer) && !isPackageOrAssemblyLayer(line.layer) && !isSolderMaskLayer(line.layer) {
             if let layer = line.layer, let clipped = silkscreenClips[layer]?.object(line.id) {
                 addClippedSilkscreen(
                     clipped, layer: layer, to: nodes, center: center, materialPalette: materialPalette, opacity: 0.82,
@@ -3142,8 +3530,16 @@ enum BoardSceneFactory {
                 )
                 continue
             }
+            let layerKey = line.layer ?? Int.min
+            if lineCapsulesByLayer[layerKey] == nil {
+                lineLayerOrder.append(layerKey)
+            }
+            lineCapsulesByLayer[layerKey, default: []].append(contentsOf: traceClosedPaths(line))
+        }
+        for layerKey in lineLayerOrder {
+            let layer: Int? = layerKey == Int.min ? nil : layerKey
             let effectiveOpacity: CGFloat
-            if let layer = line.layer {
+            if let layer {
                 switch HorizontalBoardLayers.category(for: layer) {
                 case .silkscreen: effectiveOpacity = 0.82
                 case .solderMask: effectiveOpacity = 0.72
@@ -3152,23 +3548,22 @@ enum BoardSceneFactory {
             } else {
                 effectiveOpacity = lineOpacity
             }
-            let effectiveYOffset = overlayArtworkYOffset(for: line.layer, fallback: lineYOffset)
-            guard let node = overlayLineNode(
-                line,
+            let effectiveYOffset = overlayArtworkYOffset(for: layer, fallback: lineYOffset)
+            guard let node = overlayLinesNode(
+                fragments: unionedStrokeFragments(lineCapsulesByLayer[layerKey] ?? []),
+                layer: layer,
                 center: center,
                 board: board,
                 boardThickness: boardThickness,
-                layerSeparation: 0,
                 materialPalette: materialPalette,
                 opacity: effectiveOpacity,
                 yOffset: effectiveYOffset
             ) else {
                 continue
             }
-            let group = layerGroupForCategory(line.layer, nodes: nodes)
-            let baseY = overlayHeight(for: line.layer, board: board, boardThickness: boardThickness) + effectiveYOffset
-            nodes.addExplodable(node: node, layer: line.layer, baseY: baseY)
-            group.addChildNode(node)
+            let group = layerGroupForCategory(layer, nodes: nodes)
+            let baseY = overlayHeight(for: layer, board: board, boardThickness: boardThickness) + effectiveYOffset
+            nodes.addExplodable(node: node, layer: layer, baseY: baseY, to: group)
         }
     }
 
@@ -3204,8 +3599,7 @@ enum BoardSceneFactory {
             return
         }
         node.position = SCNVector3(0, horizonSceneScalar(height), 0)
-        nodes.addExplodable(node: node, layer: layer, baseY: height)
-        nodes.silkscreenGroup.addChildNode(node)
+        nodes.addExplodable(node: node, layer: layer, baseY: height, to: nodes.silkscreenGroup)
     }
 
     /// All of `fragments` as one flat mesh at y = 0: the top faces only, no
@@ -3280,8 +3674,7 @@ enum BoardSceneFactory {
                 }
                 node.name = "layer:\(plane.layer ?? -1)"
                 let baseY = planeHeight(for: plane.layer, board: board, boardThickness: boardThickness)
-                nodes.addExplodable(node: node, layer: plane.layer, baseY: baseY)
-                nodes.planeGroup.addChildNode(node)
+                nodes.addExplodable(node: node, layer: plane.layer, baseY: baseY, to: nodes.planeGroup)
             }
         }
     }
@@ -3296,10 +3689,6 @@ enum BoardSceneFactory {
         isFallback: Bool,
         materialPalette: MaterialPalette
     ) -> SCNNode? {
-        guard let path = compoundPath(for: fragment.paths, center: center) else {
-            return nil
-        }
-
         let planeColor = materialPalette.color(for: layer)
         let material = SCNMaterial()
         horizonSceneConfigureCopperMaterial(material, color: planeColor)
@@ -3311,17 +3700,25 @@ enum BoardSceneFactory {
         sideMaterial.roughness.contents = isFallback ? 0.36 : 0.26
         sideMaterial.writesToDepthBuffer = !isFallback
 
-        let shape = SCNShape(path: path, extrusionDepth: CGFloat(copperThickness(for: layer, board: board)))
-        shape.materials = [material, sideMaterial, material]
-
-        let node = SCNNode(geometry: shape)
-        node.position = SCNVector3(
-            0,
-            horizonSceneScalar(planeHeight(for: layer, board: board, boardThickness: boardThickness, layerSeparation: layerSeparation)),
-            0
+        guard let outer = fragment.paths.first else {
+            return nil
+        }
+        // Thermal reliefs make plane holes large next to a tile, so tiling
+        // multiplies their points; one earcut per fragment is cheaper here.
+        _ = outer
+        let template = ExtrudedMeshTemplate(SlabFragments(fragments: [fragment.paths]))
+        guard !template.isEmpty else {
+            return nil
+        }
+        let depth = max(copperThickness(for: layer, board: board), 0.004)
+        return extrudedFragmentsNode(
+            template,
+            center: center,
+            thickness: depth,
+            topY: planeHeight(for: layer, board: board, boardThickness: boardThickness, layerSeparation: layerSeparation) + depth / 2,
+            faceMaterial: material,
+            sideMaterial: sideMaterial
         )
-        node.eulerAngles.x = .pi / 2
-        return node
     }
 
     private static func addCopperTraceGeometry(
@@ -3354,28 +3751,25 @@ enum BoardSceneFactory {
                 pathsToRender = fragments
             }
 
-            for paths in pathsToRender {
-                guard let node = copperTraceNode(
-                    paths: paths,
-                    layer: layer,
-                    center: center,
-                    board: nodes.board,
-                    boardThickness: boardThickness,
-                    layerSeparation: 0,
-                    materialPalette: materialPalette
-                ) else {
-                    continue
-                }
-                node.name = "layer:\(layer ?? -1)"
-                let baseY = copperHeight(for: layer, board: nodes.board, boardThickness: boardThickness)
-                nodes.addExplodable(node: node, layer: layer, baseY: baseY)
-                nodes.copperGroup.addChildNode(node)
+            guard let node = copperTraceNode(
+                fragments: pathsToRender,
+                layer: layer,
+                center: center,
+                board: nodes.board,
+                boardThickness: boardThickness,
+                layerSeparation: 0,
+                materialPalette: materialPalette
+            ) else {
+                continue
             }
+            node.name = "layer:\(layer ?? -1)"
+            let baseY = copperHeight(for: layer, board: nodes.board, boardThickness: boardThickness)
+            nodes.addExplodable(node: node, layer: layer, baseY: baseY, to: nodes.copperGroup)
         }
     }
 
     private static func copperTraceNode(
-        paths: [[HorizontalPoint]],
+        fragments: [[[HorizontalPoint]]],
         layer: Int?,
         center: HorizontalPoint,
         board: HorizontalBoard,
@@ -3383,10 +3777,6 @@ enum BoardSceneFactory {
         layerSeparation: Double,
         materialPalette: MaterialPalette
     ) -> SCNNode? {
-        guard let path = compoundPath(for: paths, center: center) else {
-            return nil
-        }
-
         let material = SCNMaterial()
         horizonSceneConfigureCopperMaterial(material, color: materialPalette.color(for: layer))
 
@@ -3394,18 +3784,14 @@ enum BoardSceneFactory {
         horizonSceneConfigureCopperMaterial(sideMaterial, color: materialPalette.color(for: layer))
         sideMaterial.roughness.contents = 0.28
 
-        let shape = SCNShape(path: path, extrusionDepth: CGFloat(copperThickness(for: layer, board: board)))
-        shape.chamferRadius = 0.008
-        shape.materials = [material, sideMaterial, material]
-
-        let node = SCNNode(geometry: shape)
-        node.position = SCNVector3(
-            0,
-            horizonSceneScalar(copperHeight(for: layer, board: board, boardThickness: boardThickness, layerSeparation: layerSeparation)),
-            0
+        return extrudedFragmentsNode(
+            fragments,
+            center: center,
+            thickness: copperThickness(for: layer, board: board),
+            centerY: copperHeight(for: layer, board: board, boardThickness: boardThickness, layerSeparation: layerSeparation),
+            faceMaterial: material,
+            sideMaterial: sideMaterial
         )
-        node.eulerAngles.x = .pi / 2
-        return node
     }
 
     private static func addDecals(
@@ -3432,18 +3818,18 @@ enum BoardSceneFactory {
                     continue
                 }
                 let baseY = overlayHeight(for: polygon.layer, board: board, boardThickness: boardThickness)
-                nodes.addExplodable(node: node, layer: polygon.layer, baseY: baseY)
-                nodes.decalGroup.addChildNode(node)
+                nodes.addExplodable(node: node, layer: polygon.layer, baseY: baseY, to: nodes.decalGroup)
             }
 
-            for line in decal.lines where !isExcludedFrom3DScene(line.layer) {
+            let decalStrokes = decal.lines + decal.arcs.map(segment(for:))
+            for line in decalStrokes where !isExcludedFrom3DScene(line.layer) {
                 let opacity: CGFloat = isSilkscreenLayer(line.layer) ? 1 : 0.62
-                guard let node = overlayLineNode(
-                    line,
+                guard let node = overlayLinesNode(
+                    fragments: unionedStrokeFragments(traceClosedPaths(line)),
+                    layer: line.layer,
                     center: center,
                     board: board,
                     boardThickness: boardThickness,
-                    layerSeparation: 0,
                     materialPalette: materialPalette,
                     opacity: opacity,
                     yOffset: 0
@@ -3451,8 +3837,7 @@ enum BoardSceneFactory {
                     continue
                 }
                 let baseY = overlayHeight(for: line.layer, board: board, boardThickness: boardThickness)
-                nodes.addExplodable(node: node, layer: line.layer, baseY: baseY)
-                nodes.decalGroup.addChildNode(node)
+                nodes.addExplodable(node: node, layer: line.layer, baseY: baseY, to: nodes.decalGroup)
             }
 
             addCategorizedTexts(
@@ -3490,33 +3875,24 @@ enum BoardSceneFactory {
         boardThickness: Double,
         layerSeparation: Double
     ) -> SCNNode? {
-        guard let path = closedPath(for: keepout.polygon.renderVertices(arcPrecision: 32), center: center) else {
-            return nil
-        }
-
         let material = SCNMaterial()
         material.diffuse.contents = HorizontalDefaultTheme.nsColor(red: 1, green: 0, blue: 0).withAlphaComponent(0.32)
         material.emission.contents = HorizontalDefaultTheme.nsColor(red: 1, green: 0, blue: 0).withAlphaComponent(0.08)
         material.roughness.contents = 0.68
         material.isDoubleSided = true
 
-        let shape = SCNShape(path: path, extrusionDepth: 0.01)
-        shape.materials = [material, material, material]
-
-        let node = SCNNode(geometry: shape)
-        node.position = SCNVector3(
-            0,
-            horizonSceneScalar(
-                overlayHeight(
-                    for: keepout.polygon.layer,
-                    boardThickness: boardThickness,
-                    layerSeparation: layerSeparation
-                ) + 0.015
-            ),
-            0
+        return extrudedFragmentsNode(
+            polygonFragments(keepout.polygon.renderVertices(arcPrecision: 32)),
+            center: center,
+            thickness: 0.01,
+            centerY: overlayHeight(
+                for: keepout.polygon.layer,
+                boardThickness: boardThickness,
+                layerSeparation: layerSeparation
+            ) + 0.015,
+            faceMaterial: material,
+            sideMaterial: material
         )
-        node.eulerAngles.x = .pi / 2
-        return node
     }
 
     private static func addCategorizedTexts(
@@ -3551,8 +3927,7 @@ enum BoardSceneFactory {
             } else {
                 group = nodes.textGroup
             }
-            nodes.addExplodable(node: node, layer: text.layer, baseY: baseY)
-            group.addChildNode(node)
+            nodes.addExplodable(node: node, layer: text.layer, baseY: baseY, to: group)
         }
     }
 
@@ -3572,26 +3947,23 @@ enum BoardSceneFactory {
         material.isDoubleSided = true
         material.roughness.contents = 0.64
 
-        let parent = SCNNode()
+        // The glyph strokes unioned into one mesh per text; the caller sets
+        // its height.
         let strokeWidth = max(text.width, text.size * 0.035, 35_000)
-        for (index, segment) in segments.enumerated() {
-            let line = HorizontalSegment(
-                id: "\(text.id)/outline/\(index)",
-                from: segment.0,
-                to: segment.1,
-                width: strokeWidth,
-                layer: text.layer
-            )
-            if let node = outlineTextSegmentNode(
-                line,
-                center: center,
-                material: material
-            ) {
-                parent.addChildNode(node)
-            }
+        let radius = strokeWidth / 2
+        // One flat sheet per text: glyph strokes are microns thick, so a
+        // single face with a double-sided material reads the same as a
+        // solid at a fraction of the vertices. Overlaps at the joints share
+        // one depth and draw once, so no union is needed.
+        let capsules = segments.compactMap { segment in
+            traceCapsulePoints(from: segment.0, to: segment.1, radius: radius, segments: 8)
         }
-
-        return parent.childNodes.isEmpty ? nil : parent
+        return flatFragmentsNode(
+            capsules.map { [$0] },
+            center: center,
+            facingUp: !(text.layer.map(isBottomSideLayer) ?? false),
+            material: material
+        )
     }
 
     private static func overlayPolygonNode(
@@ -3639,23 +4011,14 @@ enum BoardSceneFactory {
             return node
         }
 
-        guard let path = closedPath(for: polygon.renderVertices(arcPrecision: 32), center: center) else {
-            return nil
-        }
-
-        let shape = SCNShape(path: path, extrusionDepth: 0.012)
-        shape.materials = [material, material, material]
-
-        let node = SCNNode(geometry: shape)
-        node.position = SCNVector3(
-            0,
-            horizonSceneScalar(
-                overlayHeight(for: polygon.layer, board: board, boardThickness: boardThickness, layerSeparation: layerSeparation) + yOffset
-            ),
-            0
+        return extrudedFragmentsNode(
+            polygonFragments(polygon.renderVertices(arcPrecision: 32)),
+            center: center,
+            thickness: 0.012,
+            centerY: overlayHeight(for: polygon.layer, board: board, boardThickness: boardThickness, layerSeparation: layerSeparation) + yOffset,
+            faceMaterial: material,
+            sideMaterial: material
         )
-        node.eulerAngles.x = .pi / 2
-        return node
     }
 
     /// A slab's footprint as clipper fragments (each an outer contour then its
@@ -3701,10 +4064,10 @@ enum BoardSceneFactory {
                         contours[index].reverse()
                     }
                 }
+                // The outer ring is counter-clockwise, and the tessellator
+                // keeps that winding for every triangle it emits.
                 let triangles = HorizontalMetalTessellator.fragmentTriangles(contours, color: black).map { triangle in
-                    signedArea(of: [triangle.a, triangle.b, triangle.c]) < 0
-                        ? (triangle.c, triangle.b, triangle.a)
-                        : (triangle.a, triangle.b, triangle.c)
+                    (triangle.a, triangle.b, triangle.c)
                 }
                 return Fragment(contours: contours, triangles: triangles)
             }
@@ -3744,7 +4107,9 @@ enum BoardSceneFactory {
             indices.append(UInt32(vertices.count - 1))
         }
         func isSeam(_ first: HorizontalPoint, _ second: HorizontalPoint) -> Bool {
-            let tolerance = 1.0
+            // The strips that split the tiles leave the pieces 20 nm short
+            // of the grid line on either side.
+            let tolerance = 100.0
             if abs(first.x - second.x) <= tolerance,
                template.seamXs.contains(where: { abs($0 - first.x) <= tolerance }) {
                 return true
@@ -3816,6 +4181,52 @@ enum BoardSceneFactory {
         return node
     }
 
+    /// `fragments` as one extruded solid whose mid-plane sits at `centerY`
+    /// — the same placement an SCNShape got from `eulerAngles.x = π/2`
+    /// with its node at that height. Meshes are built here rather than
+    /// through SCNShape, which tessellates lazily at the next transaction
+    /// flush: seven thousand shapes held the main thread for twenty seconds
+    /// after every scene build, which is what an empty 3D view was.
+    private static func extrudedFragmentsNode(
+        _ fragments: [[[HorizontalPoint]]],
+        center: HorizontalPoint,
+        thickness: Double,
+        centerY: Double,
+        faceMaterial: SCNMaterial,
+        sideMaterial: SCNMaterial
+    ) -> SCNNode? {
+        let template = ExtrudedMeshTemplate(SlabFragments(fragments: fragments))
+        guard !template.isEmpty else {
+            return nil
+        }
+        let depth = max(thickness, 0.004)
+        return extrudedFragmentsNode(
+            template,
+            center: center,
+            thickness: depth,
+            topY: centerY + depth / 2,
+            faceMaterial: faceMaterial,
+            sideMaterial: sideMaterial
+        )
+    }
+
+    /// A polygon's contours as a single fragment (outer first, then the
+    /// holes its keyhole bridges hid).
+    private static func polygonFragments(_ vertices: [HorizontalPoint]) -> [[[HorizontalPoint]]] {
+        let contours = bridgedClosedSceneContours(from: vertices)
+        return contours.isEmpty ? [] : [contours]
+    }
+
+    /// Stroked polylines unioned into fragments: the way silkscreen lines,
+    /// text and copper traces of one layer become one mesh.
+    private static func unionedStrokeFragments(_ capsules: [[HorizontalPoint]]) -> [[[HorizontalPoint]]] {
+        guard !capsules.isEmpty else {
+            return []
+        }
+        let fragments = clippedSceneFragments(subjects: capsules, cutouts: [])
+        return fragments.isEmpty ? capsules.map { [$0] } : fragments
+    }
+
     /// Tiles a slab is cut into before triangulation. Earcut bridges every
     /// hole to the outer ring by scanning it, so one polygon with a thousand
     /// drills costs seconds; tiles of a few holes each cost milliseconds
@@ -3836,47 +4247,70 @@ enum BoardSceneFactory {
         }
         let bounds = HorizontalRect(points: outer)
         let relevant = cutouts.filter { cutout in cutout.contains { bounds.contains($0) } }
-        let allCutouts = Array(contours.dropFirst()) + relevant
+        return tiledFragments(outer: outer, cutouts: Array(contours.dropFirst()) + relevant)
+    }
+
+    /// `outer` minus `cutouts` as fragments; cut into tiles once the
+    /// cutouts are many, so no earcut sees more than a few holes. One
+    /// clipper pass splits the outer along hairline strips on the grid
+    /// lines (a 40 nm gap nothing can see), then each piece loses only the
+    /// cutouts that touch it: linear in the size of the footprint, where
+    /// clipping the whole outer once per tile was quadratic.
+    private static func tiledFragments(outer: [HorizontalPoint], cutouts allCutouts: [[HorizontalPoint]]) -> SlabFragments {
         guard !allCutouts.isEmpty else {
-            return SlabFragments(fragments: [contours])
+            return SlabFragments(fragments: [[outer]])
         }
         if allCutouts.count <= untiledCutoutLimit {
             let fragments = clippedSceneFragments(subjects: [outer], cutouts: allCutouts)
-            return SlabFragments(fragments: fragments.isEmpty ? [contours] : fragments)
+            return SlabFragments(fragments: fragments.isEmpty ? [[outer]] : fragments)
         }
 
+        let bounds = HorizontalRect(points: outer)
         let columns = max(Int((bounds.width / slabTileSize).rounded(.up)), 1)
         let rows = max(Int((bounds.height / slabTileSize).rounded(.up)), 1)
-        let xs = (0...columns).map { bounds.minX + bounds.width * Double($0) / Double(columns) }
-        let ys = (0...rows).map { bounds.minY + bounds.height * Double($0) / Double(rows) }
+        let seamXs = (1..<columns).map { bounds.minX + bounds.width * Double($0) / Double(columns) }
+        let seamYs = (1..<rows).map { bounds.minY + bounds.height * Double($0) / Double(rows) }
+        let halfGap = 20.0
+        var strips = [[HorizontalPoint]]()
+        for x in seamXs {
+            strips.append([
+                HorizontalPoint(x: x - halfGap, y: bounds.minY - halfGap),
+                HorizontalPoint(x: x + halfGap, y: bounds.minY - halfGap),
+                HorizontalPoint(x: x + halfGap, y: bounds.maxY + halfGap),
+                HorizontalPoint(x: x - halfGap, y: bounds.maxY + halfGap),
+            ])
+        }
+        for y in seamYs {
+            strips.append([
+                HorizontalPoint(x: bounds.minX - halfGap, y: y - halfGap),
+                HorizontalPoint(x: bounds.maxX + halfGap, y: y - halfGap),
+                HorizontalPoint(x: bounds.maxX + halfGap, y: y + halfGap),
+                HorizontalPoint(x: bounds.minX - halfGap, y: y + halfGap),
+            ])
+        }
+        let pieces = strips.isEmpty ? [[outer]] : clippedSceneFragments(subjects: [outer], cutouts: strips)
+        guard !pieces.isEmpty else {
+            let fragments = clippedSceneFragments(subjects: [outer], cutouts: allCutouts)
+            return SlabFragments(fragments: fragments.isEmpty ? [[outer]] : fragments)
+        }
+
         let cutoutBounds = allCutouts.map { HorizontalRect(points: $0) }
         var fragments = [[[HorizontalPoint]]]()
-        for row in 0..<rows {
-            for column in 0..<columns {
-                let tile = [
-                    HorizontalPoint(x: xs[column], y: ys[row]),
-                    HorizontalPoint(x: xs[column + 1], y: ys[row]),
-                    HorizontalPoint(x: xs[column + 1], y: ys[row + 1]),
-                    HorizontalPoint(x: xs[column], y: ys[row + 1]),
-                ]
-                let tileBounds = HorizontalRect(points: tile)
-                // What the tile holds outside the outline is cut away too.
-                let exterior = clippedSceneFragments(subjects: [tile], cutouts: [outer]).compactMap(\.first)
-                let tileCutouts = exterior + zip(allCutouts, cutoutBounds)
-                    .filter { $0.1.intersects(tileBounds) }
-                    .map(\.0)
-                if tileCutouts.isEmpty {
-                    fragments.append([tile])
-                } else {
-                    fragments.append(contentsOf: clippedSceneFragments(subjects: [tile], cutouts: tileCutouts))
-                }
+        for piece in pieces {
+            guard let pieceOuter = piece.first else {
+                continue
+            }
+            let pieceBounds = HorizontalRect(points: pieceOuter)
+            let relevant = zip(allCutouts, cutoutBounds)
+                .filter { $0.1.intersects(pieceBounds) }
+                .map(\.0)
+            if relevant.isEmpty {
+                fragments.append(piece)
+            } else {
+                fragments.append(contentsOf: clippedSceneFragments(subjects: [pieceOuter], cutouts: Array(piece.dropFirst()) + relevant))
             }
         }
-        return SlabFragments(
-            fragments: fragments,
-            seamXs: Array(xs.dropFirst().dropLast()),
-            seamYs: Array(ys.dropFirst().dropLast())
-        )
+        return SlabFragments(fragments: fragments, seamXs: seamXs, seamYs: seamYs)
     }
 
     private static func filledPolygonNode(
@@ -3978,23 +4412,29 @@ enum BoardSceneFactory {
         return SCNNode(geometry: geometry)
     }
 
-    private static func overlayLineNode(
-        _ line: HorizontalSegment,
+    /// An arc as the segment the stroke builders understand.
+    private static func segment(for arc: HorizontalArc) -> HorizontalSegment {
+        HorizontalSegment(
+            id: arc.id, from: arc.from, to: arc.to, width: arc.width,
+            layer: arc.layer, center: arc.center, reverse: arc.reverse, netID: arc.netID
+        )
+    }
+
+    /// The lines of one layer — already unioned into fragments — as one thin
+    /// mesh.
+    private static func overlayLinesNode(
+        fragments: [[[HorizontalPoint]]],
+        layer: Int?,
         center: HorizontalPoint,
         board: HorizontalBoard,
         boardThickness: Double,
-        layerSeparation: Double,
         materialPalette: MaterialPalette,
         opacity: CGFloat,
         yOffset: Double
     ) -> SCNNode? {
-        guard let path = trackPath(line, center: center) else {
-            return nil
-        }
-
-        let color = materialPalette.color(for: line.layer)
+        let color = materialPalette.color(for: layer)
         let material = SCNMaterial()
-        if let layer = line.layer, HorizontalBoardLayers.category(for: layer) == .paste {
+        if let layer, HorizontalBoardLayers.category(for: layer) == .paste {
             horizonSceneConfigurePasteMaterial(material, color: color)
         } else {
             material.diffuse.contents = color
@@ -4003,37 +4443,14 @@ enum BoardSceneFactory {
             material.isDoubleSided = true
             material.transparency = opacity
         }
-
-        let shape = SCNShape(path: path, extrusionDepth: 0.012)
-        shape.materials = [material, material, material]
-
-        let node = SCNNode(geometry: shape)
-        node.position = SCNVector3(
-            0,
-            horizonSceneScalar(
-                overlayHeight(for: line.layer, board: board, boardThickness: boardThickness, layerSeparation: layerSeparation) + yOffset
-            ),
-            0
+        return extrudedFragmentsNode(
+            fragments,
+            center: center,
+            thickness: 0.012,
+            centerY: overlayHeight(for: layer, board: board, boardThickness: boardThickness) + yOffset,
+            faceMaterial: material,
+            sideMaterial: material
         )
-        node.eulerAngles.x = .pi / 2
-        return node
-    }
-
-    private static func outlineTextSegmentNode(
-        _ line: HorizontalSegment,
-        center: HorizontalPoint,
-        material: SCNMaterial
-    ) -> SCNNode? {
-        guard let path = trackPath(line, center: center, minimumWidthMillimeters: 0.035) else {
-            return nil
-        }
-
-        let shape = SCNShape(path: path, extrusionDepth: 0.006)
-        shape.materials = [material, material, material]
-
-        let node = SCNNode(geometry: shape)
-        node.eulerAngles.x = .pi / 2
-        return node
     }
 
     private static func addConnectionLines(
@@ -4304,6 +4721,11 @@ enum BoardSceneFactory {
         camera.orthographicScale = max(width, depth) * 1.6
         camera.zNear = 0.1
         camera.zFar = max(width, depth) * 8
+        // Fit the depth range to what is in view every frame. A fixed
+        // 0.1 mm near plane spends the depth buffer's precision within a
+        // few millimetres of the camera and leaves tens of microns of
+        // noise at the board, more than the layers are apart.
+        camera.automaticallyAdjustsZRange = true
 
         let cameraNode = SCNNode()
         cameraNode.camera = camera
@@ -4313,39 +4735,6 @@ enum BoardSceneFactory {
         cameraNode.look(at: SCNVector3(0, 0, 0))
         scene.rootNode.addChildNode(cameraNode)
         return cameraNode
-    }
-
-    private static func trackNode(
-        _ track: HorizontalSegment,
-        center: HorizontalPoint,
-        materialPalette: MaterialPalette,
-        board: HorizontalBoard,
-        boardThickness: Double,
-        layerSeparation: Double
-    ) -> SCNNode? {
-        guard let path = trackPath(track, center: center) else {
-            return nil
-        }
-
-        let material = SCNMaterial()
-        horizonSceneConfigureCopperMaterial(material, color: materialPalette.color(for: track.layer))
-
-        let sideMaterial = SCNMaterial()
-        horizonSceneConfigureCopperMaterial(sideMaterial, color: materialPalette.color(for: track.layer))
-        sideMaterial.roughness.contents = 0.28
-
-        let shape = SCNShape(path: path, extrusionDepth: CGFloat(copperThickness(for: track.layer, board: board)))
-        shape.chamferRadius = 0.008
-        shape.materials = [material, sideMaterial, material]
-
-        let node = SCNNode(geometry: shape)
-        node.position = SCNVector3(
-            0,
-            horizonSceneScalar(copperHeight(for: track.layer, board: board, boardThickness: boardThickness, layerSeparation: layerSeparation)),
-            0
-        )
-        node.eulerAngles.x = .pi / 2
-        return node
     }
 
     private static func trackPath(
@@ -4581,24 +4970,21 @@ enum BoardSceneFactory {
         return true
     }
 
-    private static func padNode(
-        _ pad: HorizontalPadOutlineFragment,
-        paths: [[HorizontalPoint]]? = nil,
+    /// The pads of one layer as a single mesh.
+    private static func padsNode(
+        fragments: [[[HorizontalPoint]]],
+        layer: Int?,
         center: HorizontalPoint,
         board: HorizontalBoard,
         boardThickness: Double,
         layerSeparation: Double,
         materialPalette: MaterialPalette
     ) -> SCNNode? {
-        guard let path = compoundPath(for: paths ?? pad.paths, center: center) else {
-            return nil
-        }
-
         let material = SCNMaterial()
-        let padColor = materialPalette.padColor(for: pad.layer)
-        if let layer = pad.layer, HorizontalBoardLayers.category(for: layer) == .paste {
+        let padColor = materialPalette.padColor(for: layer)
+        if let layer, HorizontalBoardLayers.category(for: layer) == .paste {
             horizonSceneConfigurePasteMaterial(material, color: padColor)
-        } else if let layer = pad.layer, HorizontalBoardLayers.isCopper(layer) {
+        } else if let layer, HorizontalBoardLayers.isCopper(layer) {
             horizonSceneConfigureCopperMaterial(material, color: padColor)
         } else {
             material.diffuse.contents = padColor
@@ -4608,9 +4994,9 @@ enum BoardSceneFactory {
         }
 
         let sideMaterial = SCNMaterial()
-        if let layer = pad.layer, HorizontalBoardLayers.category(for: layer) == .paste {
+        if let layer, HorizontalBoardLayers.category(for: layer) == .paste {
             horizonSceneConfigurePasteMaterial(sideMaterial, color: padColor)
-        } else if let layer = pad.layer, HorizontalBoardLayers.isCopper(layer) {
+        } else if let layer, HorizontalBoardLayers.isCopper(layer) {
             horizonSceneConfigureCopperMaterial(sideMaterial, color: padColor)
             sideMaterial.roughness.contents = 0.28
         } else {
@@ -4620,18 +5006,14 @@ enum BoardSceneFactory {
             sideMaterial.isDoubleSided = true
         }
 
-        let shape = SCNShape(path: path, extrusionDepth: padExtrusionDepth(for: pad.layer, board: board))
-        shape.chamferRadius = 0.01
-        shape.materials = [material, sideMaterial, material]
-
-        let node = SCNNode(geometry: shape)
-        node.position = SCNVector3(
-            0,
-                horizonSceneScalar(padTopSurfaceHeight(for: pad.layer, board: board, boardThickness: boardThickness, layerSeparation: layerSeparation)),
-                0
+        return extrudedFragmentsNode(
+            fragments,
+            center: center,
+            thickness: Double(padExtrusionDepth(for: layer, board: board)),
+            centerY: padTopSurfaceHeight(for: layer, board: board, boardThickness: boardThickness, layerSeparation: layerSeparation),
+            faceMaterial: material,
+            sideMaterial: sideMaterial
         )
-        node.eulerAngles.x = .pi / 2
-        return node
     }
 
     private static func boardOutlinePath(for polygon: HorizontalPolygon, center: HorizontalPoint) -> HorizontalPlatformBezierPath? {
@@ -5027,13 +5409,14 @@ enum BoardSceneFactory {
         guard let layer else {
             return nil
         }
+        // The silkscreen is a flat sheet just off the mask's outer face.
         if layer == HorizontalBoardLayers.topSilkscreen {
             return solderMaskOuterSurfaceHeight(
                 for: HorizontalBoardLayers.topMask,
                 board: board,
                 boardThickness: boardThickness,
                 layerSeparation: layerSeparation
-            )
+            ) + layerSurfaceGap
         }
         if layer == HorizontalBoardLayers.bottomSilkscreen {
             return solderMaskOuterSurfaceHeight(
@@ -5041,7 +5424,7 @@ enum BoardSceneFactory {
                 board: board,
                 boardThickness: boardThickness,
                 layerSeparation: layerSeparation
-            )
+            ) - layerSurfaceGap
         }
         return nil
     }

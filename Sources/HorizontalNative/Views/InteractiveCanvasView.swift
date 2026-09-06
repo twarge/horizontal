@@ -79,6 +79,9 @@ enum HorizontalCanvasCommand {
     case editPlane
     case convertPolygonToLineLoop
     case convertLineLoopToPolygon
+    /// Replace the selected polygon corner with a tangent arc whose radius
+    /// follows the cursor (Horizon's round-off-vertex tool).
+    case roundOffVertex
     case addText
     /// macOS: reopen the inline text editor popover on the selected text
     /// (double-click or the per-object "Edit…" menu item). No-op on iOS.

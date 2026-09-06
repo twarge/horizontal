@@ -1303,7 +1303,7 @@ struct BoardStackupDimensionField: View {
 }
 
 struct DrawingToolButtonGroup: View {
-    var primitives: [HorizontalDrawingPrimitive] = [.line, .rectangle, .circle, .arc]
+    var primitives: [HorizontalDrawingPrimitive] = HorizontalDrawingPrimitive.lineRail
     var onSelect: (HorizontalDrawingPrimitive) -> Void
 
     var body: some View {
@@ -1334,9 +1334,9 @@ struct DrawingPrimitiveIcon: View {
             case .line:
                 path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
                 path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-            case .rectangle:
+            case .rectangle, .polygonRectangle:
                 path.addRect(rect)
-            case .circle:
+            case .circle, .polygonCircle:
                 path.addEllipse(in: rect)
             case .arc:
                 path.addArc(
@@ -1355,6 +1355,10 @@ struct DrawingPrimitiveIcon: View {
                 path.closeSubpath()
             }
 
+            // Polygon tools draw filled shapes; their icons are filled too.
+            if primitive.producesPolygon {
+                context.fill(path, with: .color(.primary.opacity(0.28)))
+            }
             context.stroke(
                 path,
                 with: .color(.primary),
