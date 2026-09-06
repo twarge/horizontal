@@ -174,6 +174,16 @@ struct HorizontalDrawingToolCommand: Equatable {
 
 /// One-shot request (id changes each time) to start the schematic net-line
 /// drawing tool from a rail button, mirroring HorizontalDrawingToolCommand.
+/// What the power net editor asks of the schematic.
+enum HorizontalPowerNetCommand: Equatable {
+    case add(name: String, style: String)
+    case rename(id: String, name: String)
+    case setStyle(id: String, style: String)
+    /// Only a net nothing is on.
+    case delete(id: String)
+    case place(id: String)
+}
+
 struct HorizontalDrawNetLineCommand: Equatable {
     var id = UUID()
 }
@@ -248,6 +258,8 @@ struct HorizontalCanvasCommandHandlerSet {
     var placePin: (() -> Void)? = nil
     var placeRefdesAndValue: (() -> Void)? = nil
     var placeDot: (() -> Void)? = nil
+    var placePowerSymbol: (() -> Void)? = nil
+    var managePowerNet: ((HorizontalPowerNetCommand) -> Void)? = nil
     var autoplaceNextPin: (() -> Void)? = nil
     var autoplaceAllPins: (() -> Void)? = nil
     var resizeSymbol: (() -> Void)? = nil
@@ -339,6 +351,12 @@ struct HorizontalCanvasCommandHandlerSet {
         case .roundOffVertex:
             guard !isReadOnly else { return }
             roundOffVertex?()
+        case .placePowerSymbol:
+            guard !isReadOnly else { return }
+            placePowerSymbol?()
+        case .managePowerNet(let command):
+            guard !isReadOnly else { return }
+            managePowerNet?(command)
         case .addText:
             guard !isReadOnly else { return }
             addText?()
@@ -472,6 +490,7 @@ struct HorizontalCanvasCommandHandlerSet {
             canShowInPoolManager: showInPoolManager != nil,
             canShowInProjectPoolManager: showInProjectPoolManager != nil,
             canRoundOffVertex: writable && roundOffVertex != nil,
+            canPlacePowerSymbol: writable && placePowerSymbol != nil,
             hasPlacementInteraction: hasPlacementInteraction,
             hasRoundOffVertexInteraction: hasRoundOffVertexInteraction,
             dispatch: dispatch

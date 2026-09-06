@@ -100,6 +100,9 @@ struct HorizontalSchematicSheet: Identifiable {
     /// `symbolPins` / `symbolPinCircles` / `symbolTexts` per pin.
     var editablePins: [HorizontalSymbolPin] = []
     var netLabels: [HorizontalSchematicNetLabel]
+    /// Nets deleted on this sheet (power nets nothing uses): taken out of
+    /// the block on save, since `netDetails` alone cannot say "gone".
+    var removedNetIDs: Set<String> = []
     var powerSymbols: [HorizontalPowerSymbol]
     var powerSymbolLines: [HorizontalSegment]
     var powerSymbolCircles: [HorizontalCircle]
@@ -1751,7 +1754,7 @@ struct HorizontalSchematic {
         }
     }
 
-    private static func symbolPinConnectorStyle(
+    fileprivate static func symbolPinConnectorStyle(
         for gatePinPath: String?,
         component: SchematicComponentInfo?
     ) -> String {
@@ -2471,6 +2474,40 @@ struct HorizontalSchematic {
                     mirrored: mirror
                 )
             )
+            let artwork = powerSymbolArtwork(
+                id: id,
+                position: position,
+                style: style,
+                orientation: orientation,
+                mirror: mirror,
+                nameVisible: net?.powerSymbolNameVisible ?? true,
+                name: net?.name ?? netID?.prefix(8).description ?? "power",
+                netID: netID
+            )
+            lines.append(contentsOf: artwork.lines)
+            circles.append(contentsOf: artwork.circles)
+            texts.append(contentsOf: artwork.texts)
+        }
+
+        return (symbols, lines, circles, texts)
+    }
+
+    /// The lines, circle and name text of one power symbol drawn at
+    /// `position` in the net's style (`gnd`, `earth`, `dot`, `antenna`),
+    /// with ids under `id/`.
+    static func powerSymbolArtwork(
+        id: String,
+        position: HorizontalPoint,
+        style: String,
+        orientation: String?,
+        mirror: Bool,
+        nameVisible: Bool,
+        name: String,
+        netID: String?
+    ) -> (lines: [HorizontalSegment], circles: [HorizontalCircle], texts: [HorizontalText]) {
+        var lines = [HorizontalSegment]()
+        var circles = [HorizontalCircle]()
+        var texts = [HorizontalText]()
             let shapeTransform = HorizontalPlacementTransform(
                 shift: position,
                 angle: angle(forOrientation: orientation) - (style == "dot" || style == "antenna" ? 16_384 : 49_152),
@@ -2513,7 +2550,7 @@ struct HorizontalSchematic {
                 lines.append(powerSymbolLine(id: "\(id)/gnd/right", from: HorizontalPoint(x: 1_250_000, y: -1_250_000), to: HorizontalPoint(x: 0, y: -2_500_000), transform: shapeTransform, netID: netID))
             }
 
-            if net?.powerSymbolNameVisible ?? true {
+            if nameVisible {
                 texts.append(
                     powerSymbolText(
                         id: id,
@@ -2521,14 +2558,12 @@ struct HorizontalSchematic {
                         style: style,
                         orientation: orientation,
                         mirror: mirror,
-                        text: net?.name ?? netID?.prefix(8).description ?? "power",
+                        text: name,
                         netID: netID
                     )
                 )
             }
-        }
-
-        return (symbols, lines, circles, texts)
+        return (lines, circles, texts)
     }
 
     private static func powerSymbolLine(
@@ -2966,7 +3001,7 @@ struct HorizontalSchematic {
         }
     }
 
-    private static func pinConnectorSegments(
+    fileprivate static func pinConnectorSegments(
         id: String,
         position: HorizontalPoint,
         orientation: String,
@@ -3014,7 +3049,7 @@ struct HorizontalSchematic {
         }
     }
 
-    private static func pinConnectorText(
+    fileprivate static func pinConnectorText(
         id: String,
         position: HorizontalPoint,
         orientation: String,
@@ -3333,7 +3368,8 @@ struct HorizontalSchematic {
                 isPower: item.value.bool("is_power") ?? false,
                 isPort: item.value.bool("is_port") ?? false,
                 portDirection: item.value.string("port_direction"),
-                powerSymbolStyle: item.value.string("power_symbol_style")
+                powerSymbolStyle: item.value.string("power_symbol_style"),
+                powerSymbolNameVisible: item.value.bool("power_symbol_name_visible") ?? true
             )
         }
         let buses = json.dictionaryMap("buses").reduce(into: [String: SchematicBusInfo]()) { result, item in
@@ -4215,7 +4251,7 @@ struct HorizontalSchematic {
         ]
     }
 
-    private static func normalizedID(_ id: String) -> String {
+    fileprivate static func normalizedID(_ id: String) -> String {
         id.lowercased()
     }
 
@@ -4223,7 +4259,7 @@ struct HorizontalSchematic {
         "\(Int64(point.x.rounded())):\(Int64(point.y.rounded()))"
     }
 
-    private static func normalizedUUIDPath(_ path: String) -> String {
+    fileprivate static func normalizedUUIDPath(_ path: String) -> String {
         path.split(separator: "/").map { normalizedID(String($0)) }.joined(separator: "/")
     }
 
@@ -4444,5 +4480,204 @@ extension HorizontalSchematic {
             }
         }
         return artwork
+    }
+}
+
+extension HorizontalSchematicSheet {
+    /// The default way round for a power symbol of `style`: ground and
+    /// earth hang down, dot and antenna stand up (upstream's `create_attached`).
+    static func defaultPowerSymbolOrientation(forStyle style: String?) -> String {
+        style == "dot" || style == "antenna" ? "up" : "down"
+    }
+
+    /// Redraws the power symbol `id` at its junction from its net's style
+    /// and name, replacing whatever artwork it had.
+    mutating func rebakePowerSymbol(id: String) {
+        guard let symbol = powerSymbols.first(where: { $0.id == id }),
+              let position = junctions[symbol.junctionID] else {
+            return
+        }
+        let prefix = id + "/"
+        powerSymbolLines.removeAll { $0.id.hasPrefix(prefix) }
+        powerSymbolCircles.removeAll { $0.id.hasPrefix(prefix) }
+        powerSymbolTexts.removeAll { $0.id.hasPrefix(prefix) }
+        let detail = symbol.netID.flatMap { netDetails[$0] }
+        let artwork = HorizontalSchematic.powerSymbolArtwork(
+            id: id,
+            position: position,
+            style: detail?.powerSymbolStyle ?? "gnd",
+            orientation: symbol.orientation,
+            mirror: symbol.mirrored,
+            nameVisible: detail?.powerSymbolNameVisible ?? true,
+            name: detail?.name ?? symbol.netID?.prefix(8).description ?? "power",
+            netID: symbol.netID
+        )
+        powerSymbolLines.append(contentsOf: artwork.lines)
+        powerSymbolCircles.append(contentsOf: artwork.circles)
+        powerSymbolTexts.append(contentsOf: artwork.texts)
+    }
+}
+
+extension HorizontalSchematicSheet {
+    /// A hash of what the board's netlist depends on: which components are
+    /// on the sheet and what they are, where their pins connect, and the
+    /// nets' identities. Moving a symbol or drawing a line to nowhere does
+    /// not change it; placing a part, wiring a pin or renaming a net does.
+    var netlistSignature: Int {
+        var hasher = Hasher()
+        for symbol in symbols.sorted(by: { $0.id < $1.id }) {
+            hasher.combine(symbol.id)
+            hasher.combine(symbol.componentID ?? "")
+            hasher.combine(symbol.gateID ?? "")
+        }
+        for componentID in componentInfo.keys.sorted() {
+            let component = componentInfo[componentID]!
+            hasher.combine(componentID)
+            hasher.combine(component.refdes)
+            hasher.combine(component.value)
+            hasher.combine(component.partID ?? "")
+            hasher.combine(component.noPopulate)
+            for path in component.connections.keys.sorted() {
+                hasher.combine(path)
+                hasher.combine(component.connections[path]?.netID ?? "")
+            }
+        }
+        for record in addedComponents.sorted(by: { $0.id < $1.id }) {
+            hasher.combine(record.id)
+            hasher.combine(record.partID)
+            hasher.combine(record.refdes)
+        }
+        for netID in netDetails.keys.sorted() {
+            let detail = netDetails[netID]!
+            hasher.combine(netID)
+            hasher.combine(detail.name)
+            hasher.combine(detail.netClassID ?? "")
+            hasher.combine(detail.isPower)
+        }
+        return hasher.finalize()
+    }
+}
+
+/// One of the block's power nets, for the power net editor.
+struct HorizontalPowerNetSummary: Identifiable, Hashable {
+    var id: String
+    var name: String
+    var style: String
+    /// Something on a sheet is on the net (a wire, label, symbol or pin),
+    /// so it cannot be deleted.
+    var isInUse: Bool
+}
+
+extension HorizontalSchematicSheet {
+    /// The ids of every net something on this sheet is on.
+    var usedNetIDs: Set<String> {
+        var used = Set<String>()
+        for netID in junctionNetIDs.values {
+            used.insert(HorizontalSchematic.normalizedID(netID))
+        }
+        for line in netLines {
+            if let netID = line.netID { used.insert(HorizontalSchematic.normalizedID(netID)) }
+        }
+        for label in netLabels {
+            if let netID = label.netID { used.insert(HorizontalSchematic.normalizedID(netID)) }
+        }
+        for symbol in powerSymbols {
+            if let netID = symbol.netID { used.insert(HorizontalSchematic.normalizedID(netID)) }
+        }
+        for tie in netTies {
+            for netID in tie.netIDs { used.insert(HorizontalSchematic.normalizedID(netID)) }
+        }
+        for component in componentInfo.values {
+            for connection in component.connections.values {
+                if let netID = connection.netID { used.insert(HorizontalSchematic.normalizedID(netID)) }
+            }
+        }
+        return used
+    }
+
+    /// Redraws the connector mark at the end of a placed symbol's pin from
+    /// the component's connection for it: the open box of an unconnected
+    /// pin, the cross of a pin marked not connected, nothing once it is on
+    /// a net. Baked at load, so it has to be redone when the connection
+    /// changes.
+    mutating func rebakePinConnector(symbolID rawSymbolID: String, pinID rawPinID: String) {
+        let symbolID = HorizontalSchematic.normalizedID(rawSymbolID)
+        let pinID = HorizontalSchematic.normalizedID(rawPinID)
+        let stemID = "\(symbolID)/pin/\(pinID)"
+        guard let stem = symbolPins.first(where: { HorizontalSchematic.normalizedID($0.id) == stemID }),
+              let symbol = symbols.first(where: { HorizontalSchematic.normalizedID($0.id) == symbolID }) else {
+            return
+        }
+        let connectorPrefix = "\(symbolID)/pin-connector/\(pinID)"
+        let textPrefix = "\(symbolID)/pin-connector-text/\(pinID)"
+        symbolPins.removeAll { HorizontalSchematic.normalizedID($0.id).hasPrefix(connectorPrefix) }
+        symbolTexts.removeAll { HorizontalSchematic.normalizedID($0.id).hasPrefix(textPrefix) }
+
+        // The stem runs from the connection point into the body; its
+        // direction is the pin's orientation as `pinInnerPoint` lays it.
+        let inward = stem.to - stem.from
+        let orientation: String
+        if abs(inward.x) >= abs(inward.y) {
+            orientation = inward.x >= 0 ? "left" : "right"
+        } else {
+            orientation = inward.y >= 0 ? "down" : "up"
+        }
+        let component = symbol.componentID.flatMap { componentInfo[HorizontalSchematic.normalizedID($0)] }
+        let gatePinPath = symbol.gateID.map { HorizontalSchematic.normalizedUUIDPath("\($0)/\(pinID)") }
+        let style = HorizontalSchematic.symbolPinConnectorStyle(for: gatePinPath, component: component)
+        let netID = gatePinPath.flatMap { component?.connections[$0]?.netID }
+        symbolPins.append(contentsOf: HorizontalSchematic.pinConnectorSegments(
+            id: connectorPrefix,
+            position: stem.from,
+            orientation: orientation,
+            connectorStyle: style
+        ).map { segment in
+            var segment = segment
+            segment.netID = netID
+            return segment
+        })
+        if let text = HorizontalSchematic.pinConnectorText(
+            id: textPrefix,
+            position: stem.from,
+            orientation: orientation,
+            connectorStyle: style
+        ) {
+            symbolTexts.append(text)
+        }
+    }
+}
+
+extension HorizontalSchematic {
+    /// The block's power nets with whether anything on any sheet uses
+    /// them. `currentSheetID` names the sheet whose net details are freshest
+    /// (the one being edited); its entries win over the other sheets'.
+    func powerNetSummaries(currentSheetID: String? = nil) -> [HorizontalPowerNetSummary] {
+        var details = [String: HorizontalNetDetails]()
+        for sheet in sheets where sheet.id != currentSheetID {
+            for (netID, detail) in sheet.netDetails where detail.isPower {
+                details[Self.normalizedID(netID)] = detail
+            }
+        }
+        if let current = sheets.first(where: { $0.id == currentSheetID }) {
+            let currentIDs = Set(current.netDetails.keys.map(Self.normalizedID))
+            // The sheet being edited knows which nets exist now.
+            details = details.filter { currentIDs.contains($0.key) }
+            for (netID, detail) in current.netDetails where detail.isPower {
+                details[Self.normalizedID(netID)] = detail
+            }
+            for removed in current.removedNetIDs {
+                details.removeValue(forKey: Self.normalizedID(removed))
+            }
+        }
+        let used = sheets.reduce(into: Set<String>()) { $0.formUnion($1.usedNetIDs) }
+        return details.map { netID, detail in
+            HorizontalPowerNetSummary(
+                id: netID,
+                name: detail.name,
+                style: detail.powerSymbolStyle ?? "gnd",
+                isInUse: used.contains(netID)
+            )
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 }

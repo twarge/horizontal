@@ -90,6 +90,20 @@ struct SchematicCanvasView: View {
         var pinID: String
     }
 
+    /// Horizon's place-power-symbol tool in flight: a junction and its
+    /// symbol follow the cursor. A click drops them on empty space, hangs
+    /// them on a junction, or, on an unconnected pin, a grid step off the
+    /// pin with a net line between (so the symbol never sits on the pin).
+    private struct PlacePowerSymbolState {
+        /// The sheet before this symbol: what Esc goes back to.
+        var originalSheet: HorizontalSchematicSheet
+        var netID: String
+        var junctionID: String
+        var symbolID: String
+        /// Why the last click did nothing, for the status line.
+        var notice: String?
+    }
+
     /// Symbol editor: Horizon's resize tool — the cursor's offset from where
     /// it started grows the symbol outwards on every side.
     private struct ResizeSymbolState {
@@ -231,6 +245,7 @@ struct SchematicCanvasView: View {
     @State private var moveState: MoveState?
     @State private var placePartState: PlacePartState?
     @State private var placePinState: PlacePinState?
+    @State private var placePowerSymbolState: PlacePowerSymbolState?
     /// The orientation the next placed pin starts with — the last one used,
     /// as Horizon's map-pin tool remembers it.
     @State private var placePinOrientation = HorizontalPinOrientation.right
@@ -675,6 +690,10 @@ struct SchematicCanvasView: View {
                     commitPlacePin()
                     return
                 }
+                if placePowerSymbolState != nil {
+                    commitPlacePowerSymbol(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+                    return
+                }
                 if placePartState != nil {
                     commitPlacePart()
                     return
@@ -715,6 +734,7 @@ struct SchematicCanvasView: View {
             onAreaSelection: { refs, action in
                 guard placePartState == nil,
                       placePinState == nil,
+                      placePowerSymbolState == nil,
                       resizeSymbolState == nil,
                       moveState == nil,
                       drawNetLineState == nil,
@@ -762,12 +782,13 @@ struct SchematicCanvasView: View {
                 #endif
             },
             canvasDisplayTransformReportTrigger: inlineTextEditorReportTrigger,
-            allowsContextMenu: placePartState == nil && placePinState == nil && resizeSymbolState == nil && moveState == nil && drawNetLineState == nil && drawGraphicsState == nil,
-            handlesInteractionKeys: placePartState != nil || placePinState != nil || resizeSymbolState != nil || moveState != nil || drawNetLineState != nil || drawGraphicsState != nil,
+            allowsContextMenu: placePartState == nil && placePinState == nil && placePowerSymbolState == nil && resizeSymbolState == nil && moveState == nil && drawNetLineState == nil && drawGraphicsState == nil,
+            handlesInteractionKeys: placePartState != nil || placePinState != nil || placePowerSymbolState != nil || resizeSymbolState != nil || moveState != nil || drawNetLineState != nil || drawGraphicsState != nil,
             hasKeyboardFocus: hasKeyboardFocus,
             onRequestKeyboardFocus: onRequestKeyboardFocus,
             samplesCursorContinuously: placePartState != nil
                 || placePinState != nil
+                || placePowerSymbolState != nil
                 || resizeSymbolState != nil
                 || moveState?.tracksCursor == true
                 || drawNetLineState != nil
@@ -787,6 +808,7 @@ struct SchematicCanvasView: View {
             moveState = nil
             placePartState = nil
             placePinState = nil
+            placePowerSymbolState = nil
             resizeSymbolState = nil
             placedPinHistory = []
             drawNetLineState = nil
@@ -838,6 +860,7 @@ struct SchematicCanvasView: View {
             if readOnly {
                 cancelPlacePart()
                 cancelPlacePin()
+                cancelPlacePowerSymbol()
                 cancelResizeSymbol()
                 cancelDrawGraphics()
                 cancelDrawNetLine()
@@ -1118,6 +1141,11 @@ struct SchematicCanvasView: View {
         if placePartState != nil {
             return "Place: click to place   Esc cancels"
         }
+        if let state = placePowerSymbolState {
+            let name = nonEmpty(sheet.netDetails[state.netID]?.name) ?? "power"
+            let notice = state.notice.map { "   \($0)" } ?? ""
+            return "Place power symbol \(name): click places   a junction or pin attaches   R rotates   E mirrors   Esc ends" + notice
+        }
         if let state = placePinState {
             let name = sheet.placeableObjects.first { normalizedID($0.id) == normalizedID(state.pinID) }?.label ?? "pin"
             let autoplace = canAutoplacePin ? "   Autoplace via the Design menu" : ""
@@ -1245,6 +1273,7 @@ struct SchematicCanvasView: View {
         !isReadOnly
             && placePartState == nil
             && placePinState == nil
+            && placePowerSymbolState == nil
             && resizeSymbolState == nil
             && !isTextPlacementView
             && moveState == nil
@@ -2038,6 +2067,7 @@ struct SchematicCanvasView: View {
             return
         }
         guard moveState == nil,
+              placePowerSymbolState == nil,
               drawNetLineState == nil,
               drawGraphicsState == nil else {
             return
@@ -2131,6 +2161,7 @@ struct SchematicCanvasView: View {
 
             sheet.componentInfo[componentID]?.connections[gatePinPath] = .connected(connection.netID)
             setPlacedSymbolPin(pin.pinID, symbolID: symbolID, netID: connection.netID, sheet: &sheet)
+            sheet.rebakePinConnector(symbolID: symbolID, pinID: pin.pinID)
             if let junctionID = connection.junctionID, !connection.keepsJunction {
                 sheet.junctions.removeValue(forKey: junctionID)
                 sheet.junctionNetIDs.removeValue(forKey: junctionID)
@@ -2513,6 +2544,7 @@ struct SchematicCanvasView: View {
               moveState == nil else {
             return
         }
+        cancelPlacePowerSymbol()
         drawNetLineState = nil
         drawGraphicsState = DrawGraphicsState(
             primitive: primitive,
@@ -3291,6 +3323,10 @@ struct SchematicCanvasView: View {
             mirrorPlacingPin()
             return
         }
+        if placePowerSymbolState != nil {
+            mirrorPlacingPowerSymbol()
+            return
+        }
         let cursor = lastCursorWorldPoint
         transformSelection(actionName: "Mirror") { center, draft in
             mirrorSelectedObjects(around: cursor ?? center, sheet: &draft)
@@ -3300,6 +3336,10 @@ struct SchematicCanvasView: View {
     private func rotateSelection() {
         if placePinState != nil {
             rotatePlacingPin()
+            return
+        }
+        if placePowerSymbolState != nil {
+            rotatePlacingPowerSymbol()
             return
         }
         let cursor = lastCursorWorldPoint
@@ -6729,6 +6769,7 @@ struct SchematicCanvasView: View {
                 return
             }
             sheet.componentInfo[componentID]?.connections[gatePinPath] = .connected(netID)
+            sheet.rebakePinConnector(symbolID: symbolID, pinID: pinID)
         }
 
         for index in sheet.symbolPins.indices
@@ -7066,8 +7107,8 @@ struct SchematicCanvasView: View {
     private func canvasCommandHandlers() -> HorizontalCanvasCommandHandlerSet {
         var handlers = HorizontalCanvasCommandHandlerSet(
             isReadOnly: isReadOnly,
-            hasInteraction: placePartState != nil || placePinState != nil || resizeSymbolState != nil || drawGraphicsState != nil
-                || drawNetLineState != nil || moveState != nil,
+            hasInteraction: placePartState != nil || placePinState != nil || placePowerSymbolState != nil || resizeSymbolState != nil
+                || drawGraphicsState != nil || drawNetLineState != nil || moveState != nil,
             selectAll: selectAllObjects,
             deleteSelection: deleteSelection,
             highlightSelection: {
@@ -7087,10 +7128,17 @@ struct SchematicCanvasView: View {
             editSymbolPinNames: selectSymbolForPinNameEditing,
             toggleRectanglePlacementMode: toggleRectanglePlacementMode,
             moveSelectionBy: moveSelectionByGrid,
-            hasPlacementInteraction: placePinState != nil,
+            placePowerSymbol: canPlacePowerSymbol ? { beginPlacePowerSymbol() } : nil,
+            managePowerNet: editorProfile.isPoolMode ? nil : { applyPowerNetCommand($0) },
+            hasPlacementInteraction: placePinState != nil || placePowerSymbolState != nil,
             commitInteraction: {
                 if resizeSymbolState != nil {
                     commitResizeSymbol()
+                } else if placePowerSymbolState != nil {
+                    // Return drops the symbol where the cursor is.
+                    if let cursor = lastCursorWorldPoint {
+                        commitPlacePowerSymbol(at: cursor, worldUnitsPerPoint: 0)
+                    }
                 } else if placePinState != nil {
                     commitPlacePin()
                 } else if placePartState != nil {
@@ -7106,6 +7154,8 @@ struct SchematicCanvasView: View {
             cancelInteraction: {
                 if resizeSymbolState != nil {
                     cancelResizeSymbol()
+                } else if placePowerSymbolState != nil {
+                    cancelPlacePowerSymbol()
                 } else if placePinState != nil {
                     cancelPlacePin()
                 } else if placePartState != nil {
@@ -7123,6 +7173,8 @@ struct SchematicCanvasView: View {
             // No nets in a symbol or frame: the net tools and the pin-name
             // editor (which edits a placed component) do not apply.
             handlers.drawNetLine = nil
+            handlers.placePowerSymbol = nil
+            handlers.managePowerNet = nil
             handlers.moveNetSegmentToExistingNet = nil
             handlers.moveNetSegmentToNewNet = nil
             handlers.editSymbolPinNames = nil
@@ -7178,6 +7230,12 @@ struct SchematicCanvasView: View {
             return
         }
 
+        if placePowerSymbolState != nil {
+            updatePlacePowerSymbol(to: point)
+            hoveredObject = nil
+            return
+        }
+
         if resizeSymbolState != nil {
             updateResizeSymbol(to: point)
             hoveredObject = nil
@@ -7221,6 +7279,7 @@ struct SchematicCanvasView: View {
               moveState == nil,
               placePartState == nil,
               placePinState == nil,
+              placePowerSymbolState == nil,
               resizeSymbolState == nil,
               drawNetLineState == nil,
               drawGraphicsState == nil,
@@ -11764,6 +11823,485 @@ extension SchematicCanvasView {
         }
     }
 
+    // MARK: Place power symbol (Horizon's place-power-symbol tool)
+
+    /// How far off an unconnected pin the symbol's junction goes, along
+    /// the symbol's own direction, with a net line between (upstream's
+    /// `1.25_mm`).
+    private static let powerSymbolPinOffset = 1_250_000.0
+    private static let newPowerNetOptionID = "__new-power-net__"
+    private static let powerSymbolStyles: [(id: String, title: String)] = [
+        ("gnd", "Ground"),
+        ("earth", "Earth"),
+        ("dot", "Dot"),
+        ("antenna", "Antenna"),
+    ]
+
+    private var canPlacePowerSymbol: Bool {
+        !isReadOnly
+            && !editorProfile.isPoolMode
+            && moveState == nil
+            && placePartState == nil
+            && placePinState == nil
+            && placePowerSymbolState == nil
+            && resizeSymbolState == nil
+            && drawNetLineState == nil
+            && drawGraphicsState == nil
+    }
+
+    /// Design menu / rail: choose the power net (or make one, as upstream
+    /// sends the user to manage power nets when there are none), then a
+    /// symbol follows the cursor.
+    private func beginPlacePowerSymbol() {
+        guard canPlacePowerSymbol else {
+            return
+        }
+        let nets = selectableNamedNets(powerOnly: true)
+        #if os(macOS)
+        switch HorizontalPowerNetPrompt.run(nets: nets.map { HorizontalPowerNetPrompt.Option(id: $0.id, name: $0.name) }) {
+        case .existing(let netID):
+            startPlacingPowerSymbol(netID: netID)
+        case .new(let name, let style):
+            startPlacingPowerSymbol(netID: powerNet(named: name, style: style))
+        case nil:
+            break
+        }
+        #else
+        var options = nets.map { HorizontalSelectionPropertyOption(id: $0.id, title: $0.name) }
+        options.append(HorizontalSelectionPropertyOption(id: Self.newPowerNetOptionID, title: "New Power Net…"))
+        promptRequest = HorizontalCanvasPromptRequest(
+            title: "Power Net",
+            confirmTitle: "Choose",
+            content: .optionPicker(options: options, selected: nets.first?.id ?? Self.newPowerNetOptionID) { chosen in
+                guard let chosen else { return }
+                if chosen == Self.newPowerNetOptionID {
+                    promptForNewPowerNet()
+                } else {
+                    startPlacingPowerSymbol(netID: chosen)
+                }
+            }
+        )
+        #endif
+    }
+
+    #if !os(macOS)
+    /// Two sheets in a row: the net's name, then its symbol style.
+    private func promptForNewPowerNet() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            promptRequest = HorizontalCanvasPromptRequest(
+                title: "New Power Net",
+                confirmTitle: "Next",
+                content: .text(seed: "GND") { entered in
+                    guard let name = entered?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+                        return
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        promptRequest = HorizontalCanvasPromptRequest(
+                            title: "Symbol Style",
+                            confirmTitle: "Create",
+                            content: .optionPicker(
+                                options: Self.powerSymbolStyles.map { HorizontalSelectionPropertyOption(id: $0.id, title: $0.title) },
+                                selected: "gnd"
+                            ) { style in
+                                guard let style else { return }
+                                startPlacingPowerSymbol(netID: powerNet(named: name, style: style))
+                            }
+                        )
+                    }
+                }
+            )
+        }
+    }
+    #endif
+
+    /// The power net called `name`, made (in the block, with the default
+    /// net class) when there is none: its own undo step, so cancelling the
+    /// placement afterwards leaves the net.
+    private func powerNet(named name: String, style: String) -> String {
+        if let existing = sheet.netDetails.values.first(where: { $0.isPower && $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+            return existing.id
+        }
+        let previousSheet = sheet
+        var draft = sheet
+        let netID = UUID().uuidString.lowercased()
+        draft.netDetails[netID] = HorizontalNetDetails(
+            id: netID,
+            name: name,
+            netClassID: draft.netClasses.first?.id,
+            netClassName: draft.netClasses.first?.name,
+            isPower: true,
+            powerSymbolStyle: style
+        )
+        editedSheet = draft
+        registerUndoSnapshot(previousSheet, actionName: "Add Power Net")
+        onSheetChange(draft)
+        return netID
+    }
+
+    /// The power net editor (the rail's popover): Horizon's manage-power-
+    /// nets dialog, plus placing from it.
+    private func applyPowerNetCommand(_ command: HorizontalPowerNetCommand) {
+        guard !isReadOnly, !editorProfile.isPoolMode else {
+            return
+        }
+        switch command {
+        case .add(let name, let style):
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            _ = powerNet(named: trimmed, style: style)
+        case .rename(let netID, let name):
+            renamePowerNet(netID, to: name)
+        case .setStyle(let netID, let style):
+            setPowerNetStyle(netID, style: style)
+        case .delete(let netID):
+            deletePowerNet(netID)
+        case .place(let netID):
+            if placePowerSymbolState != nil {
+                cancelPlacePowerSymbol()
+            }
+            startPlacingPowerSymbol(netID: netID)
+        }
+    }
+
+    private func renamePowerNet(_ rawNetID: String, to name: String) {
+        let netID = normalizedID(rawNetID)
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let detail = sheet.netDetails[netID], detail.name != trimmed else {
+            return
+        }
+        let previousSheet = sheet
+        var draft = sheet
+        draft.netDetails[netID]?.name = trimmed
+        // Labels and symbols show the name.
+        for index in draft.netLabels.indices where draft.netLabels[index].netID.map(normalizedID) == netID {
+            draft.netLabels[index].text = schematicNetLabelText(forNetID: netID, in: draft)
+        }
+        for symbol in draft.powerSymbols where symbol.netID.map(normalizedID) == netID {
+            draft.rebakePowerSymbol(id: symbol.id)
+        }
+        editedSheet = draft
+        registerUndoSnapshot(previousSheet, actionName: "Rename Power Net")
+        invalidateSelectableCache()
+        onSheetChange(draft)
+        publishSelectionContext()
+    }
+
+    private func setPowerNetStyle(_ rawNetID: String, style: String) {
+        let netID = normalizedID(rawNetID)
+        guard let detail = sheet.netDetails[netID], (detail.powerSymbolStyle ?? "gnd") != style else {
+            return
+        }
+        let previousSheet = sheet
+        var draft = sheet
+        draft.netDetails[netID]?.powerSymbolStyle = style
+        for symbol in draft.powerSymbols where symbol.netID.map(normalizedID) == netID {
+            draft.rebakePowerSymbol(id: symbol.id)
+        }
+        editedSheet = draft
+        registerUndoSnapshot(previousSheet, actionName: "Change Power Symbol")
+        invalidateSelectableCache()
+        onSheetChange(draft)
+        publishSelectionContext()
+    }
+
+    /// Deletes a power net nothing on any sheet is on.
+    private func deletePowerNet(_ rawNetID: String) {
+        let netID = normalizedID(rawNetID)
+        guard sheet.netDetails[netID]?.isPower == true else {
+            return
+        }
+        let used = ([sheet] + sourceAllSheets.filter { $0.id != sheet.id }).reduce(into: Set<String>()) { $0.formUnion($1.usedNetIDs) }
+        guard !used.contains(netID) else {
+            return
+        }
+        if placePowerSymbolState?.netID == netID {
+            cancelPlacePowerSymbol()
+        }
+        let previousSheet = sheet
+        var draft = sheet
+        draft.netDetails.removeValue(forKey: netID)
+        draft.removedNetIDs.insert(netID)
+        editedSheet = draft
+        registerUndoSnapshot(previousSheet, actionName: "Delete Power Net")
+        invalidateSelectableCache()
+        onSheetChange(draft)
+        publishSelectionContext()
+    }
+
+    /// Arms the tool: a junction on the net and its symbol at the cursor.
+    private func startPlacingPowerSymbol(netID rawNetID: String, orientation: String? = nil, mirrored: Bool = false) {
+        let netID = normalizedID(rawNetID)
+        guard canPlacePowerSymbol, let detail = sheet.netDetails[netID] else {
+            return
+        }
+        let originalSheet = sheet
+        var draft = sheet
+        let junctionID = UUID().uuidString.lowercased()
+        let symbolID = UUID().uuidString.lowercased()
+        draft.junctions[junctionID] = lastCursorWorldPoint ?? draft.bounds.center
+        draft.junctionNetIDs[junctionID] = netID
+        draft.powerSymbols.append(HorizontalPowerSymbol(
+            id: symbolID,
+            junctionID: junctionID,
+            netID: netID,
+            orientation: orientation ?? HorizontalSchematicSheet.defaultPowerSymbolOrientation(forStyle: detail.powerSymbolStyle),
+            mirrored: mirrored
+        ))
+        draft.rebakePowerSymbol(id: symbolID)
+        editedSheet = draft
+        placePowerSymbolState = PlacePowerSymbolState(originalSheet: originalSheet, netID: netID, junctionID: junctionID, symbolID: symbolID)
+        selectedObjects = []
+        selectedUnplacedObjectID = nil
+        hoveredObject = nil
+        clearNetSegmentSelection()
+        invalidateSelectableCache()
+        publishSelectionContext()
+        publishCanvasCommandActions()
+    }
+
+    private func updatePlacePowerSymbol(to point: HorizontalPoint) {
+        guard var state = placePowerSymbolState,
+              var draft = editedSheet,
+              draft.junctions[state.junctionID] != point else {
+            return
+        }
+        draft.junctions[state.junctionID] = point
+        draft.rebakePowerSymbol(id: state.symbolID)
+        editedSheet = draft
+        if state.notice != nil {
+            state.notice = nil
+            placePowerSymbolState = state
+        }
+        invalidateSelectableCache()
+    }
+
+    private func rotatePlacingPowerSymbol() {
+        guard let state = placePowerSymbolState,
+              var draft = editedSheet,
+              let index = draft.powerSymbols.firstIndex(where: { $0.id == state.symbolID }) else {
+            return
+        }
+        draft.powerSymbols[index].orientation = Self.rotatedPowerSymbolOrientation(draft.powerSymbols[index].orientation)
+        draft.rebakePowerSymbol(id: state.symbolID)
+        editedSheet = draft
+        invalidateSelectableCache()
+    }
+
+    /// A quarter turn anticlockwise, as R turns everything else.
+    private static func rotatedPowerSymbolOrientation(_ orientation: String) -> String {
+        switch orientation {
+        case "right": "up"
+        case "up": "left"
+        case "left": "down"
+        default: "right"
+        }
+    }
+
+    /// Upstream's `PowerSymbol::mirrorx`: an upright symbol flips its
+    /// name to the other side, a sideways one turns round.
+    private func mirrorPlacingPowerSymbol() {
+        guard let state = placePowerSymbolState,
+              var draft = editedSheet,
+              let index = draft.powerSymbols.firstIndex(where: { $0.id == state.symbolID }) else {
+            return
+        }
+        switch draft.powerSymbols[index].orientation {
+        case "right":
+            draft.powerSymbols[index].orientation = "left"
+        case "left":
+            draft.powerSymbols[index].orientation = "right"
+        default:
+            draft.powerSymbols[index].mirrored.toggle()
+        }
+        draft.rebakePowerSymbol(id: state.symbolID)
+        editedSheet = draft
+        invalidateSelectableCache()
+    }
+
+    private struct PowerSymbolJunctionTarget {
+        var id: String
+        var point: HorizontalPoint
+    }
+
+    private struct PowerSymbolPinTarget {
+        var symbolID: String
+        var pinID: String
+        var componentID: String
+        var gateID: String
+        var point: HorizontalPoint
+    }
+
+    /// The nearest other junction within `tolerance` of `point`.
+    private func powerSymbolJunctionTarget(
+        at point: HorizontalPoint,
+        tolerance: Double,
+        excluding junctionID: String,
+        in sheet: HorizontalSchematicSheet
+    ) -> PowerSymbolJunctionTarget? {
+        var best: (id: String, point: HorizontalPoint, distance: Double)?
+        for (id, position) in sheet.junctions where id != junctionID {
+            let distance = (position - point).length
+            guard distance <= tolerance, best.map({ distance < $0.distance }) ?? true else {
+                continue
+            }
+            best = (id, position, distance)
+        }
+        return best.map { PowerSymbolJunctionTarget(id: $0.id, point: $0.point) }
+    }
+
+    /// The nearest placed-symbol pin whose stem is within `tolerance` of
+    /// `point`, with the component and gate it belongs to.
+    private func powerSymbolPinTarget(
+        at point: HorizontalPoint,
+        tolerance: Double,
+        in sheet: HorizontalSchematicSheet
+    ) -> PowerSymbolPinTarget? {
+        var best: (stem: HorizontalSegment, distance: Double)?
+        for stem in sheet.symbolPins {
+            // The stem itself is `<symbol>/pin/<pin>`; decorations go deeper.
+            let components = normalizedID(stem.id).split(separator: "/")
+            guard components.count == 3, components[1] == "pin" else {
+                continue
+            }
+            let distance = min((stem.from - point).length, Self.distance(from: point, toSegment: stem))
+            guard distance <= tolerance, best.map({ distance < $0.distance }) ?? true else {
+                continue
+            }
+            best = (stem, distance)
+        }
+        guard let stem = best?.stem,
+              let symbolID = symbolID(forGeometryID: stem.id).map(normalizedID),
+              let pinID = pinID(forSymbolPinGeometryID: stem.id).map(normalizedID),
+              let symbol = sheet.symbols.first(where: { normalizedID($0.id) == symbolID }),
+              let componentID = symbol.componentID.map(normalizedID),
+              let gateID = symbol.gateID.map(normalizedID) else {
+            return nil
+        }
+        return PowerSymbolPinTarget(symbolID: symbolID, pinID: pinID, componentID: componentID, gateID: gateID, point: stem.from)
+    }
+
+    private static func distance(from point: HorizontalPoint, toSegment segment: HorizontalSegment) -> Double {
+        let line = segment.to - segment.from
+        let lengthSquared = line.x * line.x + line.y * line.y
+        guard lengthSquared > 0 else {
+            return (point - segment.from).length
+        }
+        let offset = point - segment.from
+        let t = max(0, min(1, (offset.x * line.x + offset.y * line.y) / lengthSquared))
+        return (offset - line * t).length
+    }
+
+    private static func powerSymbolPinOffset(for orientation: String) -> HorizontalPoint {
+        switch orientation {
+        case "up": HorizontalPoint(x: 0, y: powerSymbolPinOffset)
+        case "right": HorizontalPoint(x: powerSymbolPinOffset, y: 0)
+        case "left": HorizontalPoint(x: -powerSymbolPinOffset, y: 0)
+        default: HorizontalPoint(x: 0, y: -powerSymbolPinOffset)
+        }
+    }
+
+    /// Drops the symbol: on empty space where it is; on a junction, hung
+    /// on that junction (an unnamed net there joins the power net; another
+    /// power net, a port or a bus refuses); on an unconnected pin, a grid
+    /// step off the pin with a net line between. Then the next one.
+    private func commitPlacePowerSymbol(at point: HorizontalPoint, worldUnitsPerPoint: Double) {
+        guard !isReadOnly,
+              var state = placePowerSymbolState,
+              var draft = editedSheet,
+              let symbolIndex = draft.powerSymbols.firstIndex(where: { $0.id == state.symbolID }) else {
+            return
+        }
+        let tolerance = max(worldUnitsPerPoint * 8, 50_000)
+
+        if let target = powerSymbolJunctionTarget(at: point, tolerance: tolerance, excluding: state.junctionID, in: draft) {
+            let targetKey = pointKey(target.point)
+            let onBus = draft.busLabels.contains { pointKey($0.position) == targetKey }
+                || draft.busRipperLines.contains { pointKey($0.from) == targetKey || pointKey($0.to) == targetKey }
+            guard !onBus else {
+                state.notice = "Can't attach to a bus"
+                placePowerSymbolState = state
+                return
+            }
+            let existingNetID = draft.junctionNetIDs[target.id].map(normalizedID)
+            if let existingNetID, existingNetID != state.netID {
+                let other = draft.netDetails[existingNetID]
+                if other?.isPower == true || other?.isPort == true {
+                    state.notice = "Already on \(nonEmpty(other?.name) ?? "another net")"
+                    placePowerSymbolState = state
+                    return
+                }
+                // The junction's net joins the power net, on this sheet.
+                let components = schematicNetLineComponents(in: draft)
+                let pointKeys = components[targetKey] ?? [targetKey]
+                applyNetID(
+                    state.netID,
+                    to: NetSegmentSelectionState(
+                        pointKeys: pointKeys,
+                        refs: [],
+                        currentNetID: existingNetID,
+                        currentNetName: "",
+                        anchor: target.point,
+                        powerOnly: false,
+                        hasPowerSymbol: false,
+                        hasBusRipper: false,
+                        hasPins: false
+                    ),
+                    in: &draft
+                )
+            }
+            draft.junctionNetIDs[target.id] = state.netID
+            draft.junctions.removeValue(forKey: state.junctionID)
+            draft.junctionNetIDs.removeValue(forKey: state.junctionID)
+            draft.powerSymbols[symbolIndex].junctionID = target.id
+        } else if let pin = powerSymbolPinTarget(at: point, tolerance: tolerance, in: draft) {
+            let gatePinPath = normalizedUUIDPath("\(pin.gateID)/\(pin.pinID)")
+            guard draft.componentInfo[pin.componentID]?.connections[gatePinPath]?.netID == nil else {
+                state.notice = "Pin is already connected"
+                placePowerSymbolState = state
+                return
+            }
+            let junctionPoint = pin.point + Self.powerSymbolPinOffset(for: draft.powerSymbols[symbolIndex].orientation)
+            draft.junctions[state.junctionID] = junctionPoint
+            draft.netLines.append(HorizontalSegment(
+                id: UUID().uuidString.lowercased(),
+                from: pin.point,
+                to: junctionPoint,
+                width: 0,
+                layer: nil,
+                netID: state.netID
+            ))
+            draft.componentInfo[pin.componentID]?.connections[gatePinPath] = .connected(state.netID)
+            setPlacedSymbolPin(pin.pinID, symbolID: pin.symbolID, netID: state.netID, sheet: &draft)
+            draft.rebakePinConnector(symbolID: pin.symbolID, pinID: pin.pinID)
+        }
+        draft.rebakePowerSymbol(id: state.symbolID)
+        let placed = draft.powerSymbols[symbolIndex]
+
+        editedSheet = draft
+        registerUndoSnapshot(state.originalSheet, actionName: "Place Power Symbol")
+        placePowerSymbolState = nil
+        invalidateSelectableCache()
+        onSheetChange(draft)
+        publishSelectionContext()
+        // The next one, the same way round.
+        startPlacingPowerSymbol(netID: state.netID, orientation: placed.orientation, mirrored: placed.mirrored)
+        publishCanvasCommandActions()
+    }
+
+    /// Drops the symbol still following the cursor; the ones placed stay.
+    private func cancelPlacePowerSymbol() {
+        guard let state = placePowerSymbolState else {
+            return
+        }
+        editedSheet = state.originalSheet
+        placePowerSymbolState = nil
+        selectedObjects = []
+        hoveredObject = nil
+        invalidateSelectableCache()
+        publishSelectionContext()
+        publishCanvasCommandActions()
+    }
+
     // MARK: Place pin (Horizon's map-pin tool)
 
     /// "Place Pin" with nothing chosen: the first unplaced pin in name order.
@@ -11780,6 +12318,7 @@ extension SchematicCanvasView {
               let context = symbolEditorContext,
               moveState == nil,
               placePartState == nil,
+              placePowerSymbolState == nil,
               drawNetLineState == nil,
               drawGraphicsState == nil,
               sheet.editablePin(id: pinID) == nil else {
@@ -11890,6 +12429,7 @@ extension SchematicCanvasView {
               moveState == nil,
               placePartState == nil,
               placePinState == nil,
+              placePowerSymbolState == nil,
               drawNetLineState == nil,
               drawGraphicsState == nil else {
             return
@@ -11933,6 +12473,7 @@ extension SchematicCanvasView {
               moveState == nil,
               placePartState == nil,
               placePinState == nil,
+              placePowerSymbolState == nil,
               drawNetLineState == nil,
               drawGraphicsState == nil else {
             return
@@ -12027,6 +12568,7 @@ extension SchematicCanvasView {
               moveState == nil,
               placePartState == nil,
               placePinState == nil,
+              placePowerSymbolState == nil,
               drawNetLineState == nil,
               drawGraphicsState == nil,
               resizeSymbolState == nil else {

@@ -36,8 +36,31 @@ struct HorizontalProjectDocument: FileDocument {
     /// as a `.horizontal` bundle without needing an in-place `.hprj` manifest.
     static func newProject() -> HorizontalProjectDocument {
         var document = HorizontalProjectDocument()
-        document.archive = .newProject()
+        document.archive = .newProject(pool: projectPoolTemplate())
         return document
+    }
+
+    /// A new project pool's `pool.json` contents: it includes every pool
+    /// the app knows, and takes its via and frame defaults from the first
+    /// of them that has them — what Horizon's new-project dialog does with
+    /// the pool the user picks.
+    static func projectPoolTemplate() -> HorizontalProjectPoolTemplate {
+        var template = HorizontalProjectPoolTemplate()
+        for url in HorizontalPoolRegistryStore.poolURLs() {
+            let json = (try? JSONHelper.loadDictionary(from: url.appendingPathComponent("pool.json"))) ?? [:]
+            guard let uuid = json.string("uuid")?.lowercased(), !uuid.isEmpty,
+                  !template.includedPoolUUIDs.contains(uuid) else {
+                continue
+            }
+            template.includedPoolUUIDs.append(uuid)
+            if template.defaultViaUUID == nil, let via = json.string("default_via"), !via.isEmpty {
+                template.defaultViaUUID = via
+            }
+            if template.defaultFrameUUID == nil, let frame = json.string("default_frame"), !frame.isEmpty {
+                template.defaultFrameUUID = frame
+            }
+        }
+        return template
     }
 
     init(configuration: ReadConfiguration) throws {

@@ -17,6 +17,7 @@ final class HorizontalProjectTemplateTests: XCTestCase {
                 "blocks.json",
                 "board.json",
                 "planes.json",
+                "pool/pool.json",
                 "top_block.json",
                 "top_schematic.json",
                 "top_symbol.json",
@@ -25,6 +26,35 @@ final class HorizontalProjectTemplateTests: XCTestCase {
         )
         XCTAssertEqual(archive.suggestedFilename, "Untitled.horizontal")
         XCTAssertNil(archive.manifest)
+    }
+
+    /// A new project carries Horizon's project pool: `pool/pool.json` with
+    /// the project-pool uuid, named by the project file as `pool_directory`,
+    /// so parts placed from a library have somewhere to be cached and
+    /// Horizon itself can open the project.
+    func testNewProjectHasAProjectPool() throws {
+        let pool = HorizontalProjectPoolTemplate(
+            includedPoolUUIDs: ["8fdb6a1f-7d4b-4a80-9b0c-7d22ab0d8f7a"],
+            defaultViaUUID: "1c4d3f0a-8e7b-4a6e-9c3d-2b1a0f9e8d7c",
+            defaultFrameUUID: nil
+        )
+        let archive = HorizontalProjectArchive.newProject(pool: pool)
+        let project = try projectJSON(from: archive)
+        XCTAssertEqual(project["pool_directory"] as? String, "pool")
+
+        let data = try XCTUnwrap(archive.regularFileData(relativePath: "pool/pool.json"))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(json["type"] as? String, "pool")
+        XCTAssertEqual(json["uuid"] as? String, HorizontalProjectArchive.projectPoolUUID)
+        XCTAssertEqual(json["name"] as? String, "Project pool")
+        XCTAssertEqual(json["pools_included"] as? [String], ["8fdb6a1f-7d4b-4a80-9b0c-7d22ab0d8f7a"])
+        XCTAssertEqual(json["default_via"] as? String, "1c4d3f0a-8e7b-4a6e-9c3d-2b1a0f9e8d7c")
+        // Horizon parses every uuid it reads, so an unset default is the null uuid, not an empty string.
+        XCTAssertEqual(json["default_frame"] as? String, HorizontalProjectArchive.nullUUID)
+
+        let bare = try XCTUnwrap(JSONSerialization.jsonObject(with: HorizontalProjectArchive.projectPoolData()) as? [String: Any])
+        XCTAssertEqual(bare["pools_included"] as? [String], [])
+        XCTAssertEqual(bare["default_via"] as? String, HorizontalProjectArchive.nullUUID)
     }
 
     /// A layer's substrate is the dielectric below it, so the bottom copper
@@ -67,12 +97,14 @@ final class HorizontalProjectTemplateTests: XCTestCase {
                 "blocks.json",
                 "board.json",
                 "planes.json",
+                "pool",
                 "top_block.json",
                 "top_schematic.json",
                 "top_symbol.json",
                 "Untitled.hprj"
             ]
         )
+        XCTAssertEqual(manifest.poolDirectoryURL, packageURL.appendingPathComponent("pool").standardizedFileURL)
         XCTAssertTrue(manifest.missingReferences.isEmpty)
         XCTAssertTrue(manifest.externalReferences.isEmpty)
     }

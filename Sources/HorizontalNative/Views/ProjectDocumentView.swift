@@ -591,6 +591,11 @@ struct ProjectWorkspaceView: View {
     /// Counts every change to `project.board`'s content, so the 3D view
     /// knows to rebuild its scene (lazily, in the background).
     @State private var boardEditRevision = 0
+    /// The board's netlist reload from the schematic, waiting for edits to
+    /// settle or running; see `scheduleBoardNetlistSync`.
+    @State private var boardNetlistSyncTask: Task<Void, Never>?
+    @State private var boardNetlistSyncRequested = false
+    @State private var powerNetsPopoverPresented = false
     /// "Show in Project Pool Manager": the item the Library pane should select.
     @State private var libraryRevealRequest: HorizontalPoolRevealRequest?
     @State private var libraryPlacementError: String?
@@ -633,7 +638,7 @@ struct ProjectWorkspaceView: View {
         selectedComponentIDs: Binding<Set<String>>,
         highlightedComponentIDs: Binding<Set<String>>
     ) {
-        let fileViewState = HorizontalFileViewStateStore.shared.load(for: project.url)
+        let fileViewState = HorizontalFileViewStateStore.shared.load(for: project.url, projectID: project.uuid)
         _project = State(initialValue: project)
         _document = document
         _visiblePanes = visiblePanes
@@ -734,6 +739,7 @@ struct ProjectWorkspaceView: View {
             .focusedSceneValue(\.horizonWindowToolbarHidden, $isWindowToolbarHidden)
             .focusedSceneValue(\.horizonToggleRightSidebarAction, { toggleRightSidebar(.selection) })
             .focusedSceneValue(\.horizonUpdateAllPlanesAction, updateAllBoardPlanes)
+            .focusedSceneValue(\.horizonPowerNetsAction, showPowerNets)
             .focusedSceneValue(\.horizonClearAllPlanesAction, clearAllBoardPlanes)
             .focusedSceneValue(\.horizonBoardRulesAction, showBoardRulesWindow)
             .background(WorkspaceKeyCommandMonitor(
@@ -1083,7 +1089,7 @@ struct ProjectWorkspaceView: View {
             return
         }
 
-        if let savedPanes = HorizontalFileViewStateStore.shared.load(for: project.url)?.visiblePanes,
+        if let savedPanes = HorizontalFileViewStateStore.shared.load(for: project.url, projectID: project.uuid)?.visiblePanes,
            !savedPanes.isEmpty {
             visiblePanes = savedPanes
         } else {
@@ -1117,7 +1123,7 @@ struct ProjectWorkspaceView: View {
             boardDisplayOptions: boardDisplayOptions,
             paneSizeFractions: paneSizeFractions.mapValues(Double.init)
         )
-        HorizontalFileViewStateStore.shared.save(state, for: project.url)
+        HorizontalFileViewStateStore.shared.save(state, for: project.url, projectID: project.uuid)
     }
 
     private func scheduleFileViewStateSave() {
@@ -1344,6 +1350,18 @@ struct ProjectWorkspaceView: View {
                     .disabled(isReadOnly)
                     DrawNetLineToolButton {
                         schematicDrawNetLineCommand = HorizontalDrawNetLineCommand()
+                    }
+                    .disabled(isReadOnly)
+                    PlacePowerSymbolToolButton {
+                        powerNetsPopoverPresented.toggle()
+                    }
+                    .popover(isPresented: $powerNetsPopoverPresented, arrowEdge: .trailing) {
+                        HorizontalPowerNetsPopover(
+                            nets: powerNetSummaries,
+                            isReadOnly: isReadOnly,
+                            onCommand: { canvasCommandActionsByPane[.schematic]?.dispatch(.managePowerNet($0)) },
+                            onDismiss: { powerNetsPopoverPresented = false }
+                        )
                     }
                     .disabled(isReadOnly || selectedSchematic == nil)
                     AddTextToolButton {
@@ -1927,10 +1945,14 @@ struct ProjectWorkspaceView: View {
         // every board edit passes through, so the answer is computed once per
         // edit. A pour's own result is the answer, not a question.
         let previousPlaneInputs = project.board.map(HorizontalBoardPlaneInputs.signature)
+        let previousPackageIDs = Set(project.board?.packages.map(\.id) ?? [])
         measure("assign project board") {
             project.board = board
         }
         boardEditRevision += 1
+        if Set(board.packages.map(\.id)) != previousPackageIDs {
+            scheduleBoardNetlistSync()
+        }
         if writesPlaneCache {
             planesNeedUpdate = false
         } else if let previousPlaneInputs,
@@ -2025,33 +2047,30 @@ struct ProjectWorkspaceView: View {
         return project.projectFileURL
     }
 
+    /// The block's power nets for the editor popover, as the sheet being
+    /// edited knows them.
+    private var powerNetSummaries: [HorizontalPowerNetSummary] {
+        project.schematic?.powerNetSummaries(currentSheetID: selectedSchematic?.sheet.id) ?? []
+    }
+
+    /// Design ▸ Power Nets…: the editor popover on the schematic rail, or
+    /// the plain net prompt when the rail is hidden.
+    private func showPowerNets() {
+        guard selectedSchematic != nil else {
+            return
+        }
+        visiblePanes.insert(.schematic)
+        if !isDistractionFree, !isWindowToolbarHidden {
+            powerNetsPopoverPresented = true
+        } else {
+            canvasCommandActionsByPane[.schematic]?.dispatch(.placePowerSymbol)
+        }
+    }
+
+    /// The rail's Sync button: the netlist reload now, without waiting for
+    /// further schematic edits to settle.
     private func syncBoardWithSchematicData() {
-        guard !isReadOnly else {
-            return
-        }
-        guard let previousBoard = project.board else {
-            recordDiagnostic(BoardSyncError.missingBoard.localizedDescription)
-            return
-        }
-
-        do {
-            var archive = document.archive
-            try HorizontalProjectJSONApplicator.apply(board: previousBoard, in: project, to: &archive)
-            let reloadedProject = try loadProjectSnapshot(from: archive)
-            guard var syncedBoard = reloadedProject.board else {
-                throw BoardSyncError.missingBoard
-            }
-
-            syncedBoard.url = previousBoard.url
-            rebasePackageModelURLs(in: &syncedBoard)
-            removePlanesWithDeletedNets(from: &syncedBoard)
-            registerBoardSyncUndo(previousBoard)
-            applyEditedBoard(syncedBoard)
-            boardSyncRevision += 1
-            selectionDetailsByPane[.board] = .empty
-        } catch {
-            recordDiagnostic("Could not sync board with schematic data: \(error.localizedDescription)")
-        }
+        scheduleBoardNetlistSync()
     }
 
     /// Board options with the working layer stamped in, so the layer selected in
@@ -2289,22 +2308,6 @@ struct ProjectWorkspaceView: View {
         return try HorizontalProject.load(from: temporaryURL)
     }
 
-    private func registerBoardSyncUndo(_ previousBoard: HorizontalBoard) {
-        boardUndoTarget.configure(
-            currentValue: { project.board ?? previousBoard },
-            restoreValue: { board in
-                applyEditedBoard(board)
-                boardSyncRevision += 1
-                selectionDetailsByPane[.board] = .empty
-            }
-        )
-        boardUndoTarget.registerUndo(
-            from: previousBoard,
-            actionName: "Sync Board",
-            undoManager: activeUndoManager
-        )
-    }
-
     private func registerBoardPlaneUpdateUndo(_ previousBoard: HorizontalBoard) {
         boardUndoTarget.configure(
             currentValue: { project.board ?? previousBoard },
@@ -2338,36 +2341,14 @@ struct ProjectWorkspaceView: View {
     }
 
     private func removePlanesWithDeletedNets(from board: inout HorizontalBoard) {
-        let validNetIDs = Set(board.netDetails.keys.map(normalizedID))
-        board.planes.removeAll { plane in
-            guard let netID = plane.netID.map(normalizedID) else {
-                return true
-            }
-            return !validNetIDs.contains(netID)
-        }
+        board.removePlanesWithDeletedNets()
     }
 
     private func rebasePackageModelURLs(in board: inout HorizontalBoard) {
         guard let poolURL = project.poolDirectory.map({ project.baseURL.appendingPathComponent($0) }) else {
             return
         }
-
-        for index in board.packages.indices {
-            guard var model = board.packages[index].model3D,
-                  !model.filename.hasPrefix("/") else {
-                continue
-            }
-
-            let candidate = model.filename
-                .split(separator: "/")
-                .reduce(poolURL) { url, component in
-                    url.appendingPathComponent(String(component))
-                }
-            if let fileURL = existingFileURL(candidate) {
-                model.fileURL = fileURL
-                board.packages[index].model3D = model
-            }
-        }
+        board.rebasePackageModelURLs(poolURL: poolURL)
     }
 
     private func existingFileURL(_ url: URL) -> URL? {
@@ -2394,6 +2375,7 @@ struct ProjectWorkspaceView: View {
             return
         }
         let standardizedURL = schematicURL.standardizedFileURL
+        let previousSignature = project.schematic?.sheets.first { $0.id == sheet.id }?.netlistSignature
         for index in project.schematics.indices
             where project.schematics[index].schematic.url.standardizedFileURL == standardizedURL {
             replace(sheet, in: &project.schematics[index].schematic)
@@ -2415,6 +2397,88 @@ struct ProjectWorkspaceView: View {
         } catch {
             recordArchiveApplyFailure(error)
         }
+
+        if previousSignature != sheet.netlistSignature {
+            // The board's unplaced column follows at once; nets, pad
+            // connections and airwires come with the reload behind it.
+            refreshBoardPlaceableObjects(from: sheet)
+            scheduleBoardNetlistSync()
+        }
+    }
+
+    /// The board's unplaced-package column from the schematic's components,
+    /// so a part placed on a sheet can be placed on the board straight away.
+    private func refreshBoardPlaceableObjects(from sheet: HorizontalSchematicSheet) {
+        guard var board = project.board else {
+            return
+        }
+        let objects = HorizontalBoard.placeableObjects(fromSchematicComponents: sheet.componentInfo)
+        guard objects != board.placeableObjects else {
+            return
+        }
+        board.replacePlaceableObjects(objects)
+        project.board = board
+        boardEditRevision += 1
+        boardSyncRevision += 1
+    }
+
+    /// Reloads the board from the archive once schematic edits have settled,
+    /// off the main thread, so the board's nets, pad connections and airwires
+    /// follow the schematic (Horizon reloads the netlist when the schematic
+    /// is saved). One reload at a time; edits that land meanwhile get one
+    /// more. A board edited while the reload ran is left alone and the
+    /// reload runs again from the newer archive.
+    private func scheduleBoardNetlistSync() {
+        guard !isReadOnly, project.board != nil else {
+            return
+        }
+        boardNetlistSyncRequested = true
+        guard boardNetlistSyncTask == nil else {
+            return
+        }
+        boardNetlistSyncTask = Task { @MainActor in
+            defer { boardNetlistSyncTask = nil }
+            while boardNetlistSyncRequested {
+                boardNetlistSyncRequested = false
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled else {
+                    return
+                }
+                await performBoardNetlistSync()
+            }
+        }
+    }
+
+    private func performBoardNetlistSync() async {
+        guard !isReadOnly, let previousBoard = project.board else {
+            return
+        }
+        let archive = document.archive
+        let revisionAtStart = boardEditRevision
+        let reloaded: HorizontalProject
+        do {
+            reloaded = try await Task.detached(priority: .userInitiated) {
+                try HorizontalProject.loadSnapshot(of: archive)
+            }.value
+        } catch {
+            recordDiagnostic("Could not sync board with schematic data: \(error.localizedDescription)")
+            return
+        }
+        guard boardEditRevision == revisionAtStart else {
+            // The board moved on while the snapshot loaded: go again from it.
+            boardNetlistSyncRequested = true
+            return
+        }
+        guard var syncedBoard = reloaded.board else {
+            recordDiagnostic(BoardSyncError.missingBoard.localizedDescription)
+            return
+        }
+        syncedBoard.url = previousBoard.url
+        rebasePackageModelURLs(in: &syncedBoard)
+        removePlanesWithDeletedNets(from: &syncedBoard)
+        applyEditedBoard(syncedBoard)
+        boardSyncRevision += 1
+        selectionDetailsByPane[.board] = .empty
     }
 
     private func renameSheet(sheetID: String, to name: String, schematicURL: URL) {
@@ -2925,11 +2989,18 @@ struct ProjectWorkspaceView: View {
     /// cache), the open archive learns the new files, then the placement
     /// starts exactly as from the Parts pane.
     private func placePartFromLibrary(_ item: HorizontalPoolLibraryItem) {
-        guard !isReadOnly, selectedSchematic != nil,
-              let poolURL = project.poolDirectory.map({ project.baseURL.appendingPathComponent($0) }) else {
+        guard !isReadOnly else {
             return
         }
+        guard selectedSchematic != nil else {
+            libraryPlacementError = "This project has no schematic to place “\(item.name)” in."
+            return
+        }
+        let poolURL = project.baseURL.appendingPathComponent(project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName)
         do {
+            // Documents made before new projects carried a pool have none:
+            // make Horizon's project pool now, so the cache has a home.
+            try ensureProjectPool(at: poolURL)
             let imported = try HorizontalPoolCacheImporter.cachePart(item, into: poolURL)
             if case .directory = document.archive.root {
                 for url in imported.writtenFiles {
@@ -2956,6 +3027,22 @@ struct ProjectWorkspaceView: View {
         } catch {
             libraryPlacementError = error.localizedDescription
         }
+    }
+
+    /// Creates `pool/pool.json` (Horizon's project pool manifest) when the
+    /// project has none, on disk and in the open archive.
+    private func ensureProjectPool(at poolURL: URL) throws {
+        let manifestURL = poolURL.appendingPathComponent("pool.json")
+        guard !FileManager.default.fileExists(atPath: manifestURL.path) else {
+            return
+        }
+        let data = HorizontalProjectArchive.projectPoolData(HorizontalProjectDocument.projectPoolTemplate())
+        try FileManager.default.createDirectory(at: poolURL, withIntermediateDirectories: true)
+        try data.write(to: manifestURL, options: [.atomic])
+        if case .directory = document.archive.root, let relativePath = archiveRelativePath(for: manifestURL) {
+            try document.archive.replaceRegularFileData(relativePath: relativePath, with: data)
+        }
+        HorizontalPoolLibrary.invalidateCache()
     }
 
     private func beginPartPlacement(_ part: HorizontalPoolPart) {

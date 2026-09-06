@@ -22,6 +22,23 @@ final class HorizontalNewProjectLoadTests: XCTestCase {
         XCTAssertEqual(project.schematic?.sheets.first?.name, "Sheet 1")
         XCTAssertEqual(project.schematic?.netClasses.map(\.name), ["Default"])
         XCTAssertTrue(project.poolParts.isEmpty)
+        // The project pool is there for parts placed from a library.
+        XCTAssertEqual(project.poolDirectory, "pool")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: packageURL.appendingPathComponent("pool/pool.json").path))
+    }
+
+    /// Horizon keeps a project's pool at `pool/` when the project file does
+    /// not say otherwise; documents made before new projects carried a pool
+    /// name none, and placing a library part into them must still find it.
+    func testAProjectFileWithoutAPoolDirectoryDefaultsToPool() throws {
+        let packageURL = try writtenTemplate()
+        let projectFileURL = packageURL.appendingPathComponent("Untitled.hprj")
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: projectFileURL)) as? [String: Any])
+        json.removeValue(forKey: "pool_directory")
+        try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]).write(to: projectFileURL)
+
+        let project = try HorizontalProject.load(from: packageURL)
+        XCTAssertEqual(project.poolDirectory, "pool")
     }
 
     func testTemplateBoardHasTheStockTwoLayerStackup() throws {
