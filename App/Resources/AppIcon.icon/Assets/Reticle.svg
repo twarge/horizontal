@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <g fill="none" stroke="#D9E8FF" stroke-width="3" stroke-linecap="round">
+    <line x1="512" y1="0" x2="512" y2="1024"/>
+    <line x1="0" y1="512" x2="1024" y2="512"/>
+    <circle cx="512" cy="512" r="392"/>
+    <circle cx="512" cy="512" r="316"/>
+    <line x1="512" y1="245" x2="536" y2="245"/>
+    <line x1="512" y1="285" x2="530" y2="285"/>
+    <line x1="512" y1="325" x2="530" y2="325"/>
+    <line x1="512" y1="700" x2="530" y2="700"/>
+    <line x1="512" y1="740" x2="530" y2="740"/>
+    <line x1="512" y1="780" x2="536" y2="780"/>
+    <line x1="174" y1="490" x2="174" y2="534"/>
+    <line x1="206" y1="498" x2="206" y2="526"/>
+    <line x1="243" y1="500" x2="243" y2="524"/>
+    <line x1="251.8" y1="251.8" x2="274.4" y2="274.4"/>
+    <line x1="772.2" y1="251.8" x2="749.6" y2="274.4"/>
+    <line x1="251.8" y1="772.2" x2="274.4" y2="749.6"/>
+    <line x1="772.2" y1="772.2" x2="749.6" y2="749.6"/>
+    <line x1="498" y1="512" x2="526" y2="512"/>
+    <line x1="512" y1="498" x2="512" y2="526"/>
+  </g>
+  <g>
+    <circle cx="512" cy="120" r="34" fill="#FFFFFF" fill-opacity="0.12"/>
+    <circle cx="512" cy="904" r="34" fill="#FFFFFF" fill-opacity="0.12"/>
+    <circle cx="120" cy="512" r="34" fill="#FFFFFF" fill-opacity="0.12"/>
+    <circle cx="904" cy="512" r="34" fill="#FFFFFF" fill-opacity="0.12"/>
+    <circle cx="512" cy="120" r="20" fill="#FFFFFF" fill-opacity="0.35"/>
+    <circle cx="512" cy="904" r="20" fill="#FFFFFF" fill-opacity="0.35"/>
+    <circle cx="120" cy="512" r="20" fill="#FFFFFF" fill-opacity="0.35"/>
+    <circle cx="904" cy="512" r="20" fill="#FFFFFF" fill-opacity="0.35"/>
+    <circle cx="512" cy="120" r="9" fill="#FFFFFF"/>
+    <circle cx="512" cy="904" r="9" fill="#FFFFFF"/>
+    <circle cx="120" cy="512" r="9" fill="#FFFFFF"/>
+    <circle cx="904" cy="512" r="9" fill="#FFFFFF"/>
+  </g>
+</svg>
