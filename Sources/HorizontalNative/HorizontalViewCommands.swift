@@ -85,6 +85,10 @@ struct HorizontalCanvasCommandActions {
     var canUpdateAllPlanes: Bool = false
     var hasPlacementInteraction: Bool = false
     var hasRoundOffVertexInteraction: Bool = false
+    /// The world rectangle the canvas currently shows, for the live channel.
+    var visibleWorldBounds: (() -> HorizontalRect?)? = nil
+    /// Frames a world rectangle in the canvas, for the live channel's zoom-to.
+    var frameWorldRect: ((HorizontalRect) -> Void)? = nil
     var dispatch: (HorizontalCanvasCommand) -> Void
 }
 
