@@ -2437,8 +2437,8 @@ enum BoardSceneFactory {
             ) }
         }
 
-        let packageViaRenderInfo = stage("package vias") { packageViaRenderInfo(for: board) }
-        let packageViaPadIDs = Set(packageViaRenderInfo.flatMap(\.coveredPadIDs))
+        let packageVias = stage("package vias") { packageViaRenderInfo(for: board) }
+        let packageViaPadIDs = Set(packageVias.flatMap(\.coveredPadIDs))
         if options.packagePads {
             stage("pads") { addPads(
                 board.packagePads,
@@ -2469,7 +2469,7 @@ enum BoardSceneFactory {
             // Drilled holes are the cutouts through the substrate, copper and
             // mask; nothing is drawn in the void itself (the via and
             // through-hole barrels are copper and live with the vias).
-            let renderedVias = board.vias + packageViaRenderInfo.map(\.marker)
+            let renderedVias = board.vias + packageVias.map(\.marker)
             nodes.vias = Array(renderedVias.prefix(maximumViaNodes))
         }
 
