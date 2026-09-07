@@ -7486,6 +7486,7 @@ struct SchematicCanvasView: View {
         let noPopulateColor = HorizontalMetalRGBA(theme.noPopulate.opacity(0.95))
         let generalTextColor = symbolColor
         let fillsNetLabelBackground = appearanceSettings.shouldFillNetLabelBackground
+        let fillsClosedSymbolBackground = appearanceSettings.shouldFillClosedSymbolBackground
         // `symbolOwnerRef` below is a local func in each cache closure, and a
         // local func does not inherit the main actor the way the closure
         // around it does. Read the profile out here so it does not reach back
@@ -7510,7 +7511,8 @@ struct SchematicCanvasView: View {
             originColor: originColor,
             noPopulateColor: noPopulateColor,
             generalTextColor: generalTextColor,
-            fillsNetLabelBackground: fillsNetLabelBackground
+            fillsNetLabelBackground: fillsNetLabelBackground,
+            fillsClosedSymbolBackground: fillsClosedSymbolBackground
         )
         let symbolOwnerIDByNormalizedID = sheet.symbols.reduce(into: [String: String]()) { result, symbol in
             result[symbol.id.lowercased()] = symbol.id
@@ -8141,6 +8143,17 @@ struct SchematicCanvasView: View {
             }
 
             if displayOptions.symbols {
+                if fillsClosedSymbolBackground {
+                    for polygon in SchematicSymbolBackground.polygons(for: sheet.symbolLines) {
+                        appendFilledPolygon(
+                            polygon.vertices,
+                            color: symbolFillColor,
+                            compositeGroup: 4,
+                            compositeOpacity: 0.78,
+                            owner: symbolOwnerRef(for: polygon.id)
+                        )
+                    }
+                }
                 for polygon in sheet.symbolPolygons {
                     appendFilledPolygon(
                         polygon.vertices,
@@ -8938,7 +8951,14 @@ struct SchematicCanvasView: View {
         }
 
         var primitives = [HorizontalMetalTrianglePrimitive]()
-        for polygon in sheet.symbolPolygons where belongsToSymbol(polygon.id) {
+        var polygons = sheet.symbolPolygons.filter { belongsToSymbol($0.id) }
+        if appearanceSettings.shouldFillClosedSymbolBackground {
+            let backgrounds = SchematicSymbolBackground.polygons(
+                for: sheet.symbolLines.filter { belongsToSymbol($0.id) }
+            )
+            polygons.insert(contentsOf: backgrounds, at: 0)
+        }
+        for polygon in polygons {
             for var triangle in HorizontalMetalTessellator.triangles(for: polygon.vertices, color: symbolFillColor) {
                 triangle.compositeGroup = 4
                 triangle.compositeOpacity = 0.78

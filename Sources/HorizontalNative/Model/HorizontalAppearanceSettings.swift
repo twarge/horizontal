@@ -394,6 +394,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
     @Published private var selectionHandleShape: HorizontalSelectionHandleShape
     @Published private var showsHoverPopover: Bool
     @Published private var fillsNetLabelBackground: Bool
+    @Published private var fillsClosedSymbolBackground: Bool
     @Published private var swapsViewControlsAndUnplacedReferences: Bool
     @Published private var transparentToolbar: Bool
     @Published private var readOnlyOperation: Bool
@@ -419,6 +420,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
         selectionHandleShape = Self.loadSelectionHandleShape(defaults: defaults)
         showsHoverPopover = Self.loadShowsHoverPopover(defaults: defaults)
         fillsNetLabelBackground = Self.loadFillsNetLabelBackground(defaults: defaults)
+        fillsClosedSymbolBackground = defaults.bool(forKey: Self.closedSymbolBackgroundDefaultsKey)
         swapsViewControlsAndUnplacedReferences = Self.loadSwapsViewControlsAndUnplacedReferences(defaults: defaults)
         transparentToolbar = Self.loadTransparentToolbar(defaults: defaults)
         readOnlyOperation = HorizontalOperationDefaults.readOnlyOperation(defaults: defaults)
@@ -458,6 +460,10 @@ final class HorizontalAppearanceSettings: ObservableObject {
 
     var shouldFillNetLabelBackground: Bool {
         fillsNetLabelBackground
+    }
+
+    var shouldFillClosedSymbolBackground: Bool {
+        fillsClosedSymbolBackground
     }
 
     var shouldSwapViewControlsAndUnplacedReferences: Bool {
@@ -571,6 +577,15 @@ final class HorizontalAppearanceSettings: ObservableObject {
             self.fillsNetLabelBackground
         } set: { fills in
             self.setFillsNetLabelBackground(fills)
+        }
+    }
+
+    func closedSymbolBackgroundBinding() -> Binding<Bool> {
+        Binding {
+            self.fillsClosedSymbolBackground
+        } set: { fills in
+            self.fillsClosedSymbolBackground = fills
+            self.defaults.set(fills, forKey: Self.closedSymbolBackgroundDefaultsKey)
         }
     }
 
@@ -1031,6 +1046,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
     private static let selectionHandleShapeDefaultsKey = "appearance.selectionHandleShape"
     private static let hoverPopoverDefaultsKey = "appearance.showsHoverPopover"
     private static let netLabelBackgroundDefaultsKey = "appearance.fillNetLabelBackground"
+    private static let closedSymbolBackgroundDefaultsKey = "appearance.fillClosedSymbolBackground"
     private static let swapViewControlsAndUnplacedReferencesDefaultsKey = "appearance.swapViewControlsAndUnplacedReferences"
     private static let transparentToolbarDefaultsKey = "appearance.transparentToolbar"
     private static let boardSceneBackgroundColorDefaultsKey = "appearance.boardScene.backgroundColor"
