@@ -693,9 +693,11 @@ struct HorizontalBoard {
                 junctionNetIDs: junctionNetIDs,
                 packagePadPositions: packageGeometry.padPositions,
                 packagePadNetIDs: packageGeometry.padNetIDs,
+                packagePadLayers: padLayers(from: packageGeometry.pads),
                 tracks: ownTracks,
                 netTies: ownNetTies,
-                vias: ownVias
+                vias: ownVias,
+                planes: ownPlanes
             )
         }
         let linkedPackageTextIDs = packageTextIDs(from: packageMap)
@@ -1765,28 +1767,41 @@ struct HorizontalBoard {
         junctionNetIDs: [String: String],
         packagePadPositions: [String: HorizontalPoint],
         packagePadNetIDs: [String: String],
+        packagePadLayers: [String: Set<Int>] = [:],
         tracks: [HorizontalSegment],
         netTies: [HorizontalSegment],
-        vias: [HorizontalMarker]
+        vias: [HorizontalMarker],
+        planes: [HorizontalPlane] = []
     ) -> [HorizontalSegment] {
         var nodesByNet = [String: [BoardAirwireNode]]()
 
-        func add(_ point: HorizontalPoint, netID: String?) {
+        func add(_ point: HorizontalPoint, netID: String?, layers: Set<Int>? = nil) {
             guard let netID = netID.map(normalizedID) else {
                 return
             }
-            nodesByNet[netID, default: []].append(BoardAirwireNode(point: point))
+            nodesByNet[netID, default: []].append(BoardAirwireNode(point: point, layers: layers))
         }
 
         for (junctionID, point) in junctions {
             add(point, netID: junctionNetIDs[junctionID])
         }
         for (padPath, point) in packagePadPositions {
-            add(point, netID: packagePadNetIDs[padPath])
+            add(point, netID: packagePadNetIDs[padPath], layers: packagePadLayers[padPath] ?? [airwireAnyLayer])
         }
         for via in vias {
-            add(via.position, netID: via.netID)
+            let layers: Set<Int>
+            if !via.connectedLayers.isEmpty {
+                layers = Set(via.connectedLayers)
+            } else if let layer = via.layer {
+                layers = [layer]
+            } else {
+                layers = [airwireAnyLayer]
+            }
+            add(via.position, netID: via.netID, layers: layers)
         }
+        // Poured plane copper: every pad and via of the plane's net that sits
+        // inside one of its fragments on that layer is one connected piece.
+        let planesByNet = Dictionary(grouping: planes.filter { $0.netID != nil && $0.layer != nil }) { normalizedID($0.netID!) }
 
         var fixedSegmentsByNet = [String: [HorizontalSegment]]()
         func addFixedSegments(_ segments: [HorizontalSegment]) {
@@ -1832,6 +1847,38 @@ struct HorizontalBoard {
                 }
             }
 
+            for plane in planesByNet[netID] ?? [] {
+                guard let layer = plane.layer else {
+                    continue
+                }
+                for fragment in plane.fragments where !fragment.paths.isEmpty {
+                    let bounds = fragmentBounds(fragment)
+                    var first: Int?
+                    for (index, node) in nodes.enumerated() {
+                        guard let layers = node.layers,
+                              layers.contains(layer) || layers.contains(airwireAnyLayer) else {
+                            continue
+                        }
+                        let point = node.point
+                        guard point.x >= bounds.minX, point.x <= bounds.maxX,
+                              point.y >= bounds.minY, point.y <= bounds.maxY else {
+                            continue
+                        }
+                        // Even-odd over the fragment's paths: inside the outer
+                        // path and outside its holes.
+                        let crossings = fragment.paths.reduce(0) { $0 + (HorizontalBoardOutlines.contains(point, in: $1) ? 1 : 0) }
+                        guard crossings % 2 == 1 else {
+                            continue
+                        }
+                        if let first {
+                            _ = disjointSet.union(first, index)
+                        } else {
+                            first = index
+                        }
+                    }
+                }
+            }
+
             for edge in minimumAirwireEdges(nodes: nodes, disjointSet: &disjointSet) {
                 guard edge.weightSquared > 0 else {
                     continue
@@ -1851,6 +1898,36 @@ struct HorizontalBoard {
         }
 
         return airwires
+    }
+
+    private static func fragmentBounds(_ fragment: HorizontalPlaneFragment) -> (minX: Double, minY: Double, maxX: Double, maxY: Double) {
+        var bounds = (minX: Double.infinity, minY: Double.infinity, maxX: -Double.infinity, maxY: -Double.infinity)
+        for path in fragment.paths {
+            for point in path {
+                bounds.minX = min(bounds.minX, point.x)
+                bounds.minY = min(bounds.minY, point.y)
+                bounds.maxX = max(bounds.maxX, point.x)
+                bounds.maxY = max(bounds.maxY, point.y)
+            }
+        }
+        return bounds
+    }
+
+    /// Pad path (`package/pad`, normalized) to the copper layers its pad
+    /// polygons lie on; polygon ids are `<board package>/pad/<pad>/shape/…`.
+    private static func padLayers(from pads: [HorizontalPolygon]) -> [String: Set<Int>] {
+        var layers = [String: Set<Int>]()
+        for pad in pads {
+            guard let layer = pad.layer else {
+                continue
+            }
+            let components = pad.id.split(separator: "/")
+            guard components.count >= 3, components[1] == "pad" else {
+                continue
+            }
+            layers[normalizedUUIDPath("\(components[0])/\(components[2])"), default: []].insert(layer)
+        }
+        return layers
     }
 
     private static func minimumAirwireEdges(
@@ -5323,7 +5400,14 @@ struct HorizontalBoard {
 
     private struct BoardAirwireNode {
         var point: HorizontalPoint
+        /// Copper layers the node has copper on, for plane connectivity: a
+        /// pad's pad-polygon layers, a via's connected layers. Nil for
+        /// junctions, which a plane never joins on its own.
+        var layers: Set<Int>? = nil
     }
+
+    /// A via whose layers are unknown spans every layer.
+    private static let airwireAnyLayer = Int.max
 
     private struct BoardAirwireCandidate {
         var from: Int
@@ -5957,9 +6041,11 @@ extension HorizontalBoard {
             junctionNetIDs: junctionNetIDs,
             packagePadPositions: packagePadPositions,
             packagePadNetIDs: padNetIDs,
+            packagePadLayers: Self.padLayers(from: packagePads),
             tracks: tracks,
             netTies: netTies,
-            vias: vias
+            vias: vias,
+            planes: planes
         )
     }
 
