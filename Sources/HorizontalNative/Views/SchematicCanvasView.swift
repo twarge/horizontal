@@ -7486,6 +7486,11 @@ struct SchematicCanvasView: View {
         let noPopulateColor = HorizontalMetalRGBA(theme.noPopulate.opacity(0.95))
         let generalTextColor = symbolColor
         let fillsNetLabelBackground = appearanceSettings.shouldFillNetLabelBackground
+        // `symbolOwnerRef` below is a local func in each cache closure, and a
+        // local func does not inherit the main actor the way the closure
+        // around it does. Read the profile out here so it does not reach back
+        // for isolated state.
+        let supportsPins = editorProfile.supportsPins
         let key = SchematicMetalLineCacheKey(
             sheetID: sheet.id,
             revision: metalCacheRevision,
@@ -7541,7 +7546,7 @@ struct SchematicCanvasView: View {
             }
 
             func symbolOwnerRef(for geometryID: String) -> HorizontalSelectableRef? {
-                if editorProfile.supportsPins,
+                if supportsPins,
                    let pinID = HorizontalSchematicSheet.editorPinID(forGeometryID: geometryID) {
                     return HorizontalSelectableRef(id: pinID, type: .symbolPin)
                 }
@@ -8069,7 +8074,7 @@ struct SchematicCanvasView: View {
             var primitiveCountsByGroup = [Int: Int]()
 
             func symbolOwnerRef(for geometryID: String) -> HorizontalSelectableRef? {
-                if editorProfile.supportsPins,
+                if supportsPins,
                    let pinID = HorizontalSchematicSheet.editorPinID(forGeometryID: geometryID) {
                     return HorizontalSelectableRef(id: pinID, type: .symbolPin)
                 }
