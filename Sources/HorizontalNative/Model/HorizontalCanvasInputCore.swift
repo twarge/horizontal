@@ -308,6 +308,9 @@ enum HorizontalCanvasInputCore {
         case "m": return .moveSelection
         case "n": return .drawNetLine
         case "p": return .placePad
+        // Board canvas only (the via flag marks it): elsewhere Q falls
+        // through to the Design menu, which updates the scene's board.
+        case "q": return supportsTrackVias ? .updateAllPlanes : nil
         case "x": return .drawTrack
         case "/": return .flipTrackPosture
         case "w": return .enterTrackWidth

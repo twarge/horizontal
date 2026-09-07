@@ -31,6 +31,10 @@ struct HorizontalIPadProjectView: View {
     @State private var boardSyncRevision = 0
     @State private var boardNetlistSyncTask: Task<Void, Never>?
     @State private var boardNetlistSyncRequested = false
+    @State private var isPouringPlanes = false
+    @State private var planePourProgress: Double?
+    @State private var planesNeedUpdate = false
+    @State private var planePourCache = HorizontalPlanePourCache()
     @State private var powerNetsPopoverPresented = false
     @State private var selectedNetIDs = Set<String>()
     @State private var highlightedNetIDs = Set<String>()
@@ -745,6 +749,8 @@ struct HorizontalIPadProjectView: View {
                     onSelectedNetChange: { selectedNetIDs = $0 },
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
                     onBoardChange: { applyEditedBoard($0) },
+                    onPlaneEdit: { applyBoardPlaneEdit($0, actionName: $1) },
+                    onUpdateAllPlanes: updateAllBoardPlanes,
                     onSelectionDetailsChange: { setSelectionDetails($0, for: .board) },
                     onCanvasCommandActionsChange: { boardCanvasActions = $0 },
                     selectionPropertyChangeCommand: selectionPropertyChangeCommands[.board],
@@ -786,6 +792,13 @@ struct HorizontalIPadProjectView: View {
                 DrawPlaneToolButton {
                     boardCanvasActions?.dispatch(.drawPlane)
                 }
+                BoardUpdatePlanesToolButton(
+                    action: updateAllBoardPlanes,
+                    isUpdating: isPouringPlanes,
+                    progress: planePourProgress,
+                    needsUpdate: planesNeedUpdate
+                )
+                .disabled(board.planes.isEmpty)
                 AddTextToolButton {
                     boardCanvasActions?.dispatch(.addText)
                 }
@@ -953,16 +966,85 @@ struct HorizontalIPadProjectView: View {
 
     /// Applies a routed/edited board to the in-memory project and the document
     /// archive (DocumentGroup persists the binding). Mirrors the macOS path.
-    private func applyEditedBoard(_ board: HorizontalBoard) {
+    private func applyEditedBoard(_ board: HorizontalBoard, writesPlaneCache: Bool = false) {
         guard var updated = project else { return }
+        // Does this edit invalidate the plane fills? A pour's own result never does.
+        let previousPlaneInputs = updated.board.map(HorizontalBoardPlaneInputs.signature)
         updated.board = board
         project = updated
         boardEditRevision += 1
+        if writesPlaneCache {
+            planesNeedUpdate = false
+        } else if let previousPlaneInputs,
+                  !board.planes.isEmpty,
+                  HorizontalBoardPlaneInputs.signature(of: board) != previousPlaneInputs {
+            planesNeedUpdate = true
+        }
         do {
             try HorizontalProjectJSONApplicator.apply(board: board, in: updated, to: &document.archive)
         } catch {
             loadError = "Couldn't save board changes: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Planes
+
+    /// Q, the rail button: pours every plane on the board. Mirrors the macOS
+    /// workspace path minus undo, which this editor doesn't keep for board edits.
+    private func updateAllBoardPlanes() {
+        guard let board = project?.board, !board.planes.isEmpty else { return }
+        Task {
+            await pourAllPlanes(board)
+        }
+    }
+
+    /// A plane create/edit the canvas already applied to `editedBoard`: the
+    /// definition is persisted first, so a discarded pour only costs the fill.
+    private func applyBoardPlaneEdit(_ editedBoard: HorizontalBoard, actionName: String) {
+        applyEditedBoard(editedBoard)
+        Task {
+            await pourAllPlanes(editedBoard)
+        }
+    }
+
+    /// Pours every plane on `boardToPour`, the project's board as it stands,
+    /// off the main actor, and applies the result unless the board moved
+    /// meanwhile — editing stays live during a pour, and fills poured around
+    /// copper that has since moved would be wrong; the rail button then shows
+    /// the fills as stale and one press redoes the work.
+    private func pourAllPlanes(_ boardToPour: HorizontalBoard) async {
+        guard !isPouringPlanes else { return }
+        isPouringPlanes = true
+        let isDeterminate = boardToPour.planes.count > 1
+        planePourProgress = isDeterminate ? 0 : nil
+        let pouredInputs = HorizontalBoardPlaneInputs.signature(of: boardToPour)
+
+        let (progressUpdates, progress) = AsyncStream<Double>.makeStream()
+        let cache = planePourCache
+        let pour = Task.detached(priority: .userInitiated) {
+            let poured = HorizontalBoardPlaneUpdater.updateAllPlanes(
+                in: boardToPour, cache: cache
+            ) { completed, total in
+                progress.yield(total > 0 ? Double(completed) / Double(total) : 1)
+            }
+            progress.finish()
+            return poured
+        }
+        for await fraction in progressUpdates where isDeterminate {
+            planePourProgress = fraction
+        }
+        let (pouredBoard, updatedCache) = await pour.value
+        isPouringPlanes = false
+        planePourProgress = nil
+
+        guard project?.board.map(HorizontalBoardPlaneInputs.signature) == pouredInputs else {
+            planesNeedUpdate = true
+            return
+        }
+        planePourCache = updatedCache
+        applyEditedBoard(pouredBoard, writesPlaneCache: true)
+        boardSyncRevision += 1
+        selectionDetailsByPane[.board] = .empty
     }
 
     /// The board design-rules (DRC) editor + checks. macOS opens this in a separate

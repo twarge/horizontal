@@ -324,6 +324,9 @@ struct BoardCanvasView: View {
     /// mirroring the manual "Update All Planes" path. Distinct from
     /// `onBoardChange` because pouring is heavy and owned by the document.
     var onPlaneEdit: (HorizontalBoard, String) -> Void = { _, _ in }
+    /// Q, or the Update All Planes menu item and rail button: the host pours
+    /// every plane on its current board.
+    var onUpdateAllPlanes: () -> Void = {}
     var onNetClassChange: (String, String?) -> Void = { _, _ in }
     var onComponentRefdesChange: (String, String) -> Void = { _, _ in }
     var onSelectionDetailsChange: (HorizontalSelectionDetailState) -> Void = { _ in }
@@ -438,6 +441,7 @@ struct BoardCanvasView: View {
         onHighlightComponentCommand: @escaping (Set<String>) -> Void = { _ in },
         onBoardChange: @escaping (HorizontalBoard) -> Void = { _ in },
         onPlaneEdit: @escaping (HorizontalBoard, String) -> Void = { _, _ in },
+        onUpdateAllPlanes: @escaping () -> Void = {},
         onNetClassChange: @escaping (String, String?) -> Void = { _, _ in },
         onComponentRefdesChange: @escaping (String, String) -> Void = { _, _ in },
         onSelectionDetailsChange: @escaping (HorizontalSelectionDetailState) -> Void = { _ in },
@@ -476,6 +480,7 @@ struct BoardCanvasView: View {
         self.onHighlightComponentCommand = onHighlightComponentCommand
         self.onBoardChange = onBoardChange
         self.onPlaneEdit = onPlaneEdit
+        self.onUpdateAllPlanes = onUpdateAllPlanes
         self.onNetClassChange = onNetClassChange
         self.onComponentRefdesChange = onComponentRefdesChange
         self.onSelectionDetailsChange = onSelectionDetailsChange
@@ -2441,6 +2446,7 @@ struct BoardCanvasView: View {
             selectBoardLayerView: { onSelectBoardLayerView($0) },
             definePlane: { definePlaneForSelection() },
             editPlane: { editPlaneForSelection() },
+            updateAllPlanes: { onUpdateAllPlanes() },
             convertPolygonToLineLoop: { convertPolygonToLineLoopForSelection() },
             convertLineLoopToPolygon: { convertLineLoopToPolygonForSelection() },
             roundOffVertex: canRoundOffVertex ? { beginRoundOffVertex() } : nil,
@@ -2504,6 +2510,7 @@ struct BoardCanvasView: View {
             handlers.selectBoardLayerView = nil
             handlers.definePlane = nil
             handlers.editPlane = nil
+            handlers.updateAllPlanes = nil
             handlers.openDatasheet = nil
             handlers.toggleSmash = nil
             handlers.smashSilkscreenGraphics = nil
@@ -2750,6 +2757,7 @@ struct BoardCanvasView: View {
         if writable, isPolygonRef(ref) {
             if planeBackedByPolygon(ref.id, in: board) != nil {
                 entries.append(.command(title: "Edit Plane…", .editPlane))
+                entries.append(.command(title: "Update All Planes", .updateAllPlanes))
             } else if canDefinePlane(on: ref) {
                 entries.append(.command(title: "Define Plane…", .definePlane))
             }

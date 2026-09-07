@@ -82,6 +82,7 @@ struct HorizontalCanvasCommandActions {
     var canShowInProjectPoolManager: Bool = false
     var canRoundOffVertex: Bool = false
     var canPlacePowerSymbol: Bool = false
+    var canUpdateAllPlanes: Bool = false
     var hasPlacementInteraction: Bool = false
     var hasRoundOffVertexInteraction: Bool = false
     var dispatch: (HorizontalCanvasCommand) -> Void

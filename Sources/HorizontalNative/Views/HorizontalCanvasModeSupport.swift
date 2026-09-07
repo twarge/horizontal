@@ -231,6 +231,7 @@ struct HorizontalCanvasCommandHandlerSet {
     var selectBoardLayerView: ((HorizontalBoardLayerViewPreset) -> Void)? = nil
     var definePlane: (() -> Void)? = nil
     var editPlane: (() -> Void)? = nil
+    var updateAllPlanes: (() -> Void)? = nil
     var convertPolygonToLineLoop: (() -> Void)? = nil
     var convertLineLoopToPolygon: (() -> Void)? = nil
     var roundOffVertex: (() -> Void)? = nil
@@ -342,6 +343,9 @@ struct HorizontalCanvasCommandHandlerSet {
             definePlane?()
         case .editPlane:
             editPlane?()
+        case .updateAllPlanes:
+            guard !isReadOnly else { return }
+            updateAllPlanes?()
         case .convertPolygonToLineLoop:
             guard !isReadOnly else { return }
             convertPolygonToLineLoop?()
@@ -491,6 +495,7 @@ struct HorizontalCanvasCommandHandlerSet {
             canShowInProjectPoolManager: showInProjectPoolManager != nil,
             canRoundOffVertex: writable && roundOffVertex != nil,
             canPlacePowerSymbol: writable && placePowerSymbol != nil,
+            canUpdateAllPlanes: writable && updateAllPlanes != nil,
             hasPlacementInteraction: hasPlacementInteraction,
             hasRoundOffVertexInteraction: hasRoundOffVertexInteraction,
             dispatch: dispatch
