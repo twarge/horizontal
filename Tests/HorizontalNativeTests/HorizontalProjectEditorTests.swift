@@ -79,8 +79,12 @@ final class HorizontalProjectEditorTests: XCTestCase {
 
     private func call(_ method: String, _ params: [String: Any] = [:]) throws -> [String: Any] {
         var params = params
-        if method != "open_project" {
+        if method != "open_project" && method != "list_ops" {
             params["handle"] = handle
+        }
+        if method == "apply" {
+            params["expected_revision"] = try HorizontalDispatchSession.shared.perform { try $0.entry(handle: handle).revision }
+            params["operation_id"] = UUID().uuidString
         }
         let request: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": method, "params": params]
         let requestJSON = String(decoding: try JSONSerialization.data(withJSONObject: request), as: UTF8.self)
@@ -112,6 +116,48 @@ final class HorizontalProjectEditorTests: XCTestCase {
     func testListOpsDescribesEveryKind() throws {
         let ops = try XCTUnwrap(try result("list_ops") as? [[String: Any]])
         XCTAssertEqual(Set(ops.compactMap { $0["op"] as? String }), Set(HorizontalEditOperationKind.allCases.map(\.rawValue)))
+    }
+
+    func testInheritedValueAndMultiplePhysicalPadsWithoutBoardPlacement() throws {
+        let pool = packageURL.appendingPathComponent("pool")
+        let partURL = pool.appendingPathComponent("parts/cache/\(partID).json")
+        var base = try HorizontalPoolPartItem(json: JSONHelper.loadDictionary(from: partURL))
+        base.attributes[.value] = HorizontalPartAttribute(value: "10k ±1%")
+        let packageID = try XCTUnwrap(base.packageID)
+        let packageFile = pool.appendingPathComponent("packages/cache/\(packageID)/package.json")
+        var package = try HorizontalPoolPackage(json: JSONHelper.loadDictionary(from: packageFile))
+        let extra = UUID().uuidString.lowercased()
+        var pad = try XCTUnwrap(package.pads[padIDs[0]])
+        pad.id = extra; pad.name = "EP"
+        package.pads[extra] = pad
+        base.padMap[extra] = base.padMap[padIDs[0]]
+        let mechanical = HorizontalPoolItemFactory.newPadstack(type: .mechanical)
+        let hole = UUID().uuidString.lowercased()
+        pad.id = hole; pad.name = "MH"; pad.padstackID = mechanical.uuid
+        package.pads[hole] = pad
+        var derived = base
+        derived.uuid = UUID().uuidString.lowercased()
+        derived.baseID = base.uuid
+        derived.attributes[.value] = HorizontalPartAttribute(inherited: true, value: "ignored")
+        _ = try HorizontalPoolItemFactory.write(.part(base), to: partURL, replacingExisting: true)
+        _ = try HorizontalPoolItemFactory.write(.part(derived), to: pool.appendingPathComponent("parts/cache/\(derived.uuid).json"))
+        _ = try HorizontalPoolItemFactory.write(.package(package), to: packageFile, replacingExisting: true)
+        _ = try HorizontalPoolItemFactory.write(.padstack(mechanical), to: pool.appendingPathComponent("padstacks/cache/\(mechanical.uuid).json"))
+        _ = try result("reload_project")
+        _ = try apply([["op": "ensure_component", "refdes": "R1", "part": derived.uuid, "value": "4k7"]])
+        let found = try component("R1")
+        XCTAssertEqual(found["placed_on_board"] as? Bool, false)
+        XCTAssertEqual(found["raw_value"] as? String, "4k7")
+        XCTAssertEqual(found["effective_value"] as? String, "10k ±1%")
+        let quantity = try XCTUnwrap(found["electrical_value"] as? JSONDictionary)
+        XCTAssertEqual(quantity["value_si"] as? Double, 10000)
+        XCTAssertEqual(quantity["tolerance_fraction"] as? Double, 0.01)
+        let pins = try XCTUnwrap(found["pins"] as? [JSONDictionary])
+        let first = try XCTUnwrap(pins.first { $0.string("pin") == "1" })
+        XCTAssertEqual((first["physical_pads"] as? [JSONDictionary])?.compactMap { $0.string("name") }, ["1", "EP"])
+        XCTAssertEqual(first.string("connection_state"), "unconnected")
+        let terminals = try XCTUnwrap(found["physical_terminals"] as? [JSONDictionary])
+        XCTAssertEqual(terminals.first { $0.string("name") == "MH" }?.string("role"), "mechanical")
     }
 
     func testCreateConnectPlaceAndReadBack() throws {

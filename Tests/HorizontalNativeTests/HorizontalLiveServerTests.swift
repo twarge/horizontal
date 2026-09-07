@@ -42,12 +42,12 @@ final class HorizontalLiveServerTests: XCTestCase {
         var current = project
         var currentArchive = archive
         document.currentProject = { current }
-        document.revision = { revision }
+        document.revision = { String(revision) }
         document.archive = { currentArchive }
         document.applyArchive = { [weak self] edited, name in
             self?.applied.append((edited, name))
             currentArchive = edited
-            current = try HorizontalProject.loadSnapshot(of: edited)
+            current = try HorizontalDispatchSession.project(from: HorizontalDispatchSnapshot(archive: edited, baseURL: project.baseURL), url: project.url)
             revision += 1
         }
         var selection = HorizontalLiveSelection(panes: ["board"])
@@ -69,6 +69,42 @@ final class HorizontalLiveServerTests: XCTestCase {
         defaults.set(true, forKey: HorizontalLiveServer.enabledDefaultsKey)
         XCTAssertTrue(HorizontalLiveServer.isEnabled(defaults: defaults))
         XCTAssertTrue(HorizontalAppearanceSettings(defaults: defaults).isLiveServerEnabled)
+    }
+
+    func testUnsavedPoolAndBlockReadsStayOnTheirCapturedRevision() throws {
+        let document = try registerTemplateDocument()
+        let diskSession = HorizontalDispatchSession()
+        let disk = try diskSession.open(url: packageURL)
+        var unit = HorizontalPoolItemFactory.newUnit()
+        let pinID = UUID().uuidString.lowercased()
+        unit.pins = [pinID: HorizontalUnitPin(id: pinID, primaryName: "LIVE_PIN")]
+        var entity = HorizontalPoolItemFactory.newEntity(for: unit)
+        entity.prefix = "R"
+        let current = try HorizontalDispatchSession.shared.entry(handle: handle!)
+        let edited = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 1, "method": "apply", "params": [
+            "handle": handle!, "expected_revision": current.revision, "operation_id": UUID().uuidString,
+            "pool_items": [unit.json(), entity.json()],
+            "ops": [["op": "ensure_component", "refdes": "R1", "entity": entity.uuid, "value": "4k7"]]
+        ]])
+        XCTAssertNil(edited["error"], "\(edited)")
+        let request: JSONDictionary = ["jsonrpc": "2.0", "id": 2, "method": "get_component", "auth": "test-token", "params": ["handle": handle!, "refdes": "R1", "include_metadata": true]]
+        let prepared = try XCTUnwrap(HorizontalLiveServer.prepareRead(line: HorizontalDispatch.serialize(request, pretty: false), expectedToken: "test-token"))
+        let capturedRevision = current.revision
+        var updated = document.archive()
+        unit.pins[pinID]?.primaryName = "LATER_PIN"
+        try updated.replaceRegularFileData(relativePath: "pool/units/cache/\(unit.uuid).json", with: HorizontalHorizonJSONWriter.data(unit.json()))
+        try document.applyArchive(updated, "Change pin")
+        HorizontalDispatchSession.shared.syncLiveEntries()
+        XCTAssertNotEqual(current.revision, capturedRevision)
+        let response = try JSONHelper.loadDictionary(from: Data(prepared().utf8))
+        let envelope = try XCTUnwrap(response.dictionary("result"))
+        let component = try XCTUnwrap(envelope.dictionary("data"))
+        XCTAssertEqual(component.dictionaryArray("pins").first?.string("pin"), "LIVE_PIN")
+        XCTAssertEqual(component.dictionary("electrical_value")?.double("value_si"), 4700)
+        XCTAssertEqual(envelope.dictionary("meta")?.string("revision"), capturedRevision)
+        XCTAssertEqual(envelope.dictionary("meta")?.string("source"), "live")
+        XCTAssertEqual(disk.index.components.count, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: packageURL.appendingPathComponent("pool/units/cache/\(unit.uuid).json").path))
     }
 
     private func discovery() throws -> (port: UInt16, token: String) {
@@ -110,7 +146,7 @@ final class HorizontalLiveServerTests: XCTestCase {
         XCTAssertEqual(file?["token"] as? String, token)
 
         let refused = try send(["jsonrpc": "2.0", "id": 1, "method": "version", "params": [:]], port: port, token: "wrong")
-        XCTAssertEqual((refused["error"] as? [String: Any])?["code"] as? Int, -32001)
+        XCTAssertEqual((refused["error"] as? [String: Any])?["code"] as? Int, -32008)
 
         let version = try send(["jsonrpc": "2.0", "id": 2, "method": "version", "params": [:]], port: port, token: token)
         XCTAssertEqual((version["result"] as? [String: Any])?["api"] as? Int, HorizontalDispatch.apiVersion)
@@ -131,7 +167,7 @@ final class HorizontalLiveServerTests: XCTestCase {
         let opened = try send(["jsonrpc": "2.0", "id": 2, "method": "open_project", "params": ["path": packageURL.path]], port: port, token: token)
         XCTAssertEqual((opened["result"] as? [String: Any])?["handle"] as? Int, handle)
 
-        let edited = try send(["jsonrpc": "2.0", "id": 3, "method": "apply", "params": ["handle": handle!, "ops": [["op": "ensure_net", "name": "VCC"]]]], port: port, token: token)
+        let edited = try send(["jsonrpc": "2.0", "id": 3, "method": "apply", "params": ["handle": handle!, "expected_revision": mine["revision"]!, "operation_id": UUID().uuidString, "ops": [["op": "ensure_net", "name": "VCC"]]]], port: port, token: token)
         let result = try XCTUnwrap(edited["result"] as? [String: Any], "\(edited)")
         XCTAssertEqual(result["live"] as? Bool, true)
         XCTAssertEqual(applied.count, 1)

@@ -17,32 +17,27 @@ enum HorizontalDispatchRender {
         sheetIndex: Int?,
         sheetName: String?,
         sheetID: String? = nil,
+        blockID: String? = nil,
         region: HorizontalRect? = nil,
         dpi: Double,
         maxPixels: Int
     ) throws -> (Image, HorizontalSchematicSheet) {
-        let sheets = HorizontalDesignIndex.schematics(of: project).flatMap { $0.schematic.sheets }
+        let all = HorizontalDesignIndex.schematics(of: project)
+        let scoped = all.flatMap { block in block.schematic.sheets.map { (blockID: block.block.uuid, sheet: $0) } }
+        let sheets = scoped.map(\.sheet)
         guard !sheets.isEmpty else {
             throw HorizontalDispatchError.failed("The project has no schematic sheets.")
         }
-        let position: Int
-        if let sheetID {
-            guard let found = sheets.firstIndex(where: { $0.id.caseInsensitiveCompare(sheetID) == .orderedSame }) else {
-                throw HorizontalDispatchError.notFound("No sheet with id \(sheetID).")
-            }
-            position = found
-        } else if let sheetIndex {
-            guard let found = sheets.firstIndex(where: { $0.index == sheetIndex }) else {
-                throw HorizontalDispatchError.notFound("No sheet with index \(sheetIndex).")
-            }
-            position = found
-        } else if let sheetName {
-            guard let found = sheets.firstIndex(where: { $0.name.caseInsensitiveCompare(sheetName) == .orderedSame }) else {
-                throw HorizontalDispatchError.notFound("No sheet named \(sheetName).")
-            }
-            position = found
-        } else {
-            position = 0
+        let matches = scoped.indices.filter { index in
+            let value = scoped[index]
+            return (blockID.map { value.blockID.caseInsensitiveCompare($0) == .orderedSame } ?? true)
+                && (sheetID.map { value.sheet.id.caseInsensitiveCompare($0) == .orderedSame } ?? true)
+                && (sheetIndex.map { value.sheet.index == $0 } ?? true)
+                && (sheetName.map { value.sheet.name.caseInsensitiveCompare($0) == .orderedSame } ?? true)
+        }
+        guard let position = matches.first else { throw HorizontalDispatchError.notFound("No sheet matches the selector.") }
+        if matches.count > 1 && (sheetID != nil || sheetIndex != nil || sheetName != nil || blockID != nil) {
+            throw HorizontalDispatchError.ambiguous("Sheet selector is ambiguous.", candidates: matches.map { "\(scoped[$0].blockID)/\(scoped[$0].sheet.id)" })
         }
         let sheet = sheets[position]
         let pdfURL = try exportPDF(project: project, section: .schematicPDF) { _ in }
@@ -64,6 +59,12 @@ enum HorizontalDispatchRender {
     ) throws -> Image {
         guard let board = project.board else {
             throw HorizontalDispatchError.notFound("The project has no board.")
+        }
+        if let layerNames {
+            let valid = Self.boardDrawingLayers(project: project)
+            let names = Set(valid.flatMap { [$0["name"] as? String ?? "", String(describing: $0["layer"] ?? "")] }.map { $0.lowercased() })
+            let missing = layerNames.filter { !names.contains($0.lowercased()) }
+            guard missing.isEmpty else { throw HorizontalDispatchError.invalidParams("Unknown board layers: \(missing.joined(separator: ", ")).") }
         }
         let pdfURL = try exportPDF(project: project, section: .boardDrawing) { settings in
             settings.boardDrawing.mirrored = mirrored

@@ -54,7 +54,7 @@ enum HorizontalDispatchMethods {
         .init(
             name: "list_components",
             summary: "Every component with part, value, and placement summary.",
-            params: ["handle": "Project handle.", "sheet": "Optional sheet index; only components with a symbol on that sheet."],
+            params: ["handle": "Project handle.", "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet."],
             handler: listComponents
         ),
         .init(
@@ -123,6 +123,7 @@ enum HorizontalDispatchMethods {
             params: [
                 "handle": "Project handle.",
                 "ops": "Array of operations, each {\"op\": name, ...params}; see list_ops.",
+                "pool_items": "Pool items to install in the same transaction.",
                 "dry_run": "Validate and report without writing (default false)."
             ],
             handler: applyOperations
@@ -164,6 +165,7 @@ enum HorizontalDispatchMethods {
                 "sheet": "Sheet index (default: first sheet).",
                 "name": "Sheet name (alternative to sheet).",
                 "sheet_id": "Sheet id (alternative to sheet).",
+                "block_id": "Block UUID to disambiguate a sheet.",
                 "region": "Optional {min_x_mm, min_y_mm, max_x_mm, max_y_mm} to render only that part of the sheet.",
                 "dpi": "Resolution (default 150).",
                 "max_pixels": "Cap on the longer side (default 4096).",
@@ -214,13 +216,46 @@ enum HorizontalDispatchMethods {
             summary: "Horizon groups (instances of a sub-circuit) with their members by tag and whether each is placed on the board.",
             params: ["handle": "Project handle."],
             handler: listGroups
-        )
+        ),
+        .init(name: "analysis_snapshot", summary: "Immutable electrical input with schematic evidence and file hashes.", params: ["handle": "Project handle."], handler: analysisSnapshot),
+        .init(name: "freeze_project", summary: "Pin a read-only snapshot for repeated analysis and renders. Close it when finished.", params: ["handle": "Project handle."], handler: { session, params in projectSummary(try session.freeze(session.entry(for: params))) }),
+        .init(name: "transaction_status", summary: "Look up a mutation receipt without replaying it.", params: ["handle": "Project handle.", "operation_id": "Mutation identifier."], handler: transactionStatus)
     ]
 
     // MARK: - Handlers
 
+    @Sendable private static func analysisSnapshot(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        guard let snapshot = entry.snapshot else { throw HorizontalDispatchError.failed("No snapshot.") }
+        let components = try entry.index.sortedComponents.map { component -> Any in
+            var json = try getComponent(session, ["handle": entry.handle, "id": component.id]) as! JSONDictionary
+            let block = entry.project.blocks.first { $0.uuid == component.blockID }
+            json["evidence"] = ["file": block?.blockFilename as Any,
+                                "json_pointer": "/components/\(component.id)",
+                                "snapshot_id": snapshot.id, "symbols": json["symbols"] ?? []]
+            return json
+        }
+        let hashes = Dictionary(uniqueKeysWithValues: snapshot.files.map { path in
+            (path, HorizontalProjectTransaction.digest(snapshot.archive.regularFileData(relativePath: path) ?? Data()))
+        })
+        return ["schema_version": 1, "meta": entry.metadata, "project": projectSummary(entry),
+                "components": components, "nets": entry.index.sortedNets.map { netJSON($0, entry: entry, full: true) },
+                "file_hashes": hashes, "hierarchy_supported": entry.project.blocks.count <= 1,
+                "symbolic_links": snapshot.archive.symbolicLinkCount] as JSONDictionary
+    }
+
+    @Sendable private static func transactionStatus(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        guard let id = params.string("operation_id"), !id.isEmpty else { throw HorizontalDispatchError.invalidParams("operation_id is required.") }
+        if entry.live != nil { return entry.receipts[id] ?? ["operation_id": id, "status": "unknown", "instance_id": entry.instanceID] }
+        guard let transaction = try HorizontalProjectTransaction.existing(projectURL: entry.url) else { return ["operation_id": id, "status": "unknown"] }
+        try transaction.recover()
+        if let data = try transaction.receipt(operationID: id) { return try JSONHelper.loadDictionary(from: data) }
+        return ["operation_id": id, "status": "unknown"]
+    }
+
     private static func version() -> Any {
-        var result: JSONDictionary = ["api": HorizontalDispatch.apiVersion, "module": "HorizontalNative"]
+        var result: JSONDictionary = ["api": HorizontalDispatch.apiVersion, "module": "HorizontalNative", "capabilities": ["source_snapshots", "revision_checked_edits", "transactions", "electrical_snapshot", "typed_errors"], "instance_id": HorizontalDispatchSession.shared.serverID]
         if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
             result["host_version"] = version
         }
@@ -265,6 +300,14 @@ enum HorizontalDispatchMethods {
         guard let items = params["items"] as? [Any], !items.isEmpty else {
             throw HorizontalDispatchError.invalidParams("Pass \"items\", a non-empty array of pool item objects.")
         }
+        let targets = try poolTargets(items, entry: entry)
+        return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params) { store in
+            let written = try writePoolItems(targets, to: store)
+            return ["written": written, "skipped": targets.count - written.count, "applied": written.count]
+        }
+    }
+
+    private static func poolTargets(_ items: [Any], entry: HorizontalDispatchProjectEntry) throws -> [(URL, Data)] {
         guard let poolDirectory = entry.project.poolDirectory else {
             throw HorizontalDispatchError.failed("The project has no pool directory.")
         }
@@ -279,6 +322,8 @@ enum HorizontalDispatchMethods {
             guard let uuid = json.string("uuid")?.lowercased(), UUID(uuidString: uuid) != nil else {
                 throw HorizontalDispatchError.invalidParams("Item \(index) has no \"uuid\".")
             }
+            do { _ = try HorizontalPoolItemModel.load(category: category, json: json) }
+            catch { throw HorizontalDispatchError.invalidParams("Invalid pool item \(index): \(error.localizedDescription)") }
             let directory = entry.project.baseURL
                 .appendingPathComponent(poolDirectory)
                 .appendingPathComponent(HorizontalPoolItemFactory.directoryName(for: category))
@@ -286,33 +331,11 @@ enum HorizontalDispatchMethods {
             let url = category == .package
                 ? directory.appendingPathComponent(uuid).appendingPathComponent("package.json")
                 : directory.appendingPathComponent("\(uuid).json")
+            guard !targets.contains(where: { $0.0 == url }) else { throw HorizontalDispatchError.invalidParams("Duplicate pool item target \(uuid).") }
             targets.append((url, try HorizontalHorizonJSONWriter.data(json)))
         }
 
-        if entry.live != nil {
-            let live = try liveDocument(entry)
-            let input = HorizontalUnsafeSendableBox((entry: entry, targets: targets))
-            let output = HorizontalUnsafeSendableBox<JSONDictionary>([:])
-            try MainActor.assumeIsolated {
-                let entry = input.value.entry
-                guard !live.isReadOnly() else {
-                    throw HorizontalDispatchError.failed("Read-only operation is enabled in Horizontal.")
-                }
-                let store = HorizontalArchiveFileStore(archive: live.archive(), baseURL: entry.project.baseURL)
-                let written = try writePoolItems(input.value.targets, to: store)
-                if !written.isEmpty {
-                    try live.applyArchive(store.archive, "Add \(written.count) Pool Item\(written.count == 1 ? "" : "s")")
-                    session.syncLiveEntries()
-                }
-                output.value = ["written": written, "skipped": input.value.targets.count - written.count, "live": true]
-            }
-            return output.value
-        }
-        let written = try writePoolItems(targets, to: HorizontalDiskFileStore())
-        if !written.isEmpty {
-            _ = try session.reload(handle: entry.handle)
-        }
-        return ["written": written, "skipped": targets.count - written.count]
+        return targets
     }
 
     private static func writePoolItems(_ targets: [(URL, Data)], to store: HorizontalProjectFileStore) throws -> [String] {
@@ -332,33 +355,33 @@ enum HorizontalDispatchMethods {
 
     @Sendable private static func closeProject(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
-        session.close(handle: entry.handle)
+        guard session.close(handle: entry.handle) else { throw HorizontalDispatchError.invalidParams("A live document belongs to the app; release the client context instead.") }
         return ["closed": entry.handle]
     }
 
     @Sendable private static func reloadProject(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
-        projectSummary(try session.reload(handle: try session.entry(for: params).handle))
+        let entry = try session.entry(for: params)
+        return projectSummary(try session.reload(handle: entry.handle))
     }
 
     @Sendable private static func projectFiles(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
-        let manifest = try HorizontalProjectManifest.discover(from: entry.url)
+        guard let snapshot = entry.snapshot else { throw HorizontalDispatchError.failed("No snapshot.") }
         return [
-            "base": manifest.baseURL.path,
-            "project_file": manifest.projectFileURL.path,
-            "files": manifest.relativePaths.sorted(),
-            "pool_directory": manifest.poolDirectoryURL?.path as Any,
-            "missing_references": manifest.missingReferences,
-            "external_references": manifest.externalReferences.map(\.path)
+            "base": entry.project.baseURL.path,
+            "project_file": entry.project.projectFileURL.path,
+            "files": snapshot.files,
+            "pool_directory": entry.project.poolDirectory as Any,
+            "snapshot_id": snapshot.id
         ]
     }
 
     @Sendable private static func listComponents(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         var components = entry.index.sortedComponents
-        if let sheet = params.int("sheet") {
+        if let sheet = try HorizontalDispatchValidation.sheet(params, index: entry.index) {
             components = components.filter { component in
-                component.symbolPlacements.contains { $0.sheetIndex == sheet }
+                component.symbolPlacements.contains { $0.sheetID == sheet.id && $0.blockID == sheet.blockID }
             }
         }
         return components.map { componentJSON($0, full: false) }
@@ -368,6 +391,8 @@ enum HorizontalDispatchMethods {
         let entry = try session.entry(for: params)
         let component: HorizontalDesignComponent?
         if let refdes = params.string("refdes") {
+            let candidates = entry.index.sortedComponents.filter { $0.refdes.caseInsensitiveCompare(refdes) == .orderedSame }
+            if candidates.count > 1 { throw HorizontalDispatchError.ambiguous("Component name is ambiguous; use id.", candidates: candidates.map(\.id)) }
             component = entry.index.component(refdes: refdes)
         } else if let id = params.string("id") {
             component = entry.index.component(id: id)
@@ -386,6 +411,11 @@ enum HorizontalDispatchMethods {
                 "direction": pin.direction,
                 "gate_pin_path": pin.gatePinPath
             ]
+            pinJSON["gate_id"] = pin.gateID
+            pinJSON["pin_id"] = pin.pinID
+            pinJSON["connection_state"] = pin.connectionState
+            pinJSON["physical_pads"] = pin.physicalPads.map { ["id": $0.id, "name": $0.name] }
+            pinJSON["mapping_status"] = pin.physicalPads.isEmpty ? "unresolved" : "resolved"
             if let netID = pin.netID {
                 pinJSON["net_id"] = netID
                 pinJSON["net"] = entry.index.net(id: netID)?.name ?? ""
@@ -401,6 +431,8 @@ enum HorizontalDispatchMethods {
         let entry = try session.entry(for: params)
         let net: HorizontalDesignNet?
         if let name = params.string("name") {
+            let candidates = entry.index.sortedNets.filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+            if candidates.count > 1 { throw HorizontalDispatchError.ambiguous("Net name is ambiguous; use id.", candidates: candidates.map(\.id)) }
             net = entry.index.net(named: name)
         } else if let id = params.string("id") {
             net = entry.index.net(id: id)
@@ -524,6 +556,7 @@ enum HorizontalDispatchMethods {
 
     @Sendable private static func recomputeConnectivity(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
+        try entry.requireRevision(params)
         guard let board = entry.project.board else {
             throw HorizontalDispatchError.notFound("The project has no board.")
         }
@@ -535,6 +568,7 @@ enum HorizontalDispatchMethods {
         var resolved = HorizontalBoardConnectivity.recompute(board)
         resolved.regenerateAirwires()
         entry.project.board = resolved
+        entry.generation += 1
         entry.invalidateIndex()
         let after: JSONDictionary = [
             "airwires": resolved.airwires.count,
@@ -555,56 +589,23 @@ enum HorizontalDispatchMethods {
             }
             return try HorizontalEditOperation(json: json)
         }
-        if entry.live != nil {
-            return try applyLive(session, entry: entry, operations: operations, dryRun: params.bool("dry_run") ?? false)
-        }
-        let editor = try HorizontalProjectEditor(project: entry.project)
-        try editor.apply(operations)
-        var result: JSONDictionary = ["applied": editor.changes.count, "changes": editor.changes]
-        if params.bool("dry_run") ?? false {
-            result["dry_run"] = true
-            result["would_write"] = editor.changedFiles
-            return result
-        }
-        result["written"] = try editor.write()
-        result["project"] = projectSummary(try session.reload(handle: entry.handle))
-        return result
-    }
-
-    /// Edits against an open document: the ops run over the document's
-    /// archive and the app swaps the result in as one undoable step.
-    private static func applyLive(
-        _ session: HorizontalDispatchSession,
-        entry: HorizontalDispatchProjectEntry,
-        operations: [HorizontalEditOperation],
-        dryRun: Bool
-    ) throws -> Any {
-        let live = try liveDocument(entry)
-        let input = HorizontalUnsafeSendableBox((entry: entry, operations: operations))
-        let output = HorizontalUnsafeSendableBox<JSONDictionary>([:])
-        try MainActor.assumeIsolated {
-            let entry = input.value.entry
-            guard !live.isReadOnly() else {
-                throw HorizontalDispatchError.failed("Read-only operation is enabled in Horizontal.")
+        return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params) { store in
+            if let items = params["pool_items"] as? [JSONDictionary] {
+                _ = try writePoolItems(poolTargets(items, entry: entry), to: store)
             }
-            let store = HorizontalArchiveFileStore(archive: live.archive(), baseURL: entry.project.baseURL)
-            let editor = try HorizontalProjectEditor(project: entry.project, store: store)
-            try editor.apply(input.value.operations)
-            var result: JSONDictionary = ["applied": editor.changes.count, "changes": editor.changes, "live": true]
-            if dryRun {
-                result["dry_run"] = true
-                result["would_write"] = editor.changedFiles
-                output.value = result
-                return
+            let snapshot = HorizontalDispatchSnapshot(archive: store.archive, baseURL: entry.project.baseURL)
+            let project = params["pool_items"] == nil ? entry.project : try HorizontalDispatchSession.project(from: snapshot, url: entry.url)
+            let editor = try HorizontalProjectEditor(project: project, store: store, snapshot: snapshot)
+            try editor.apply(operations)
+            _ = try editor.write()
+            let normalized = zip(operations, editor.changes).map { operation, change -> JSONDictionary in
+                var json = operation.params
+                if operation.kind == .ensureComponent { json["id"] = change["component"] }
+                if operation.kind == .ensureNet { json["id"] = change["net"] }
+                return json
             }
-            result["written"] = try editor.write()
-            let count = editor.changes.count
-            try live.applyArchive(store.archive, "Apply \(count) Edit\(count == 1 ? "" : "s")")
-            session.syncLiveEntries()
-            result["project"] = projectSummary(entry)
-            output.value = result
+            return ["applied": editor.changes.count, "changes": editor.changes, "normalized_ops": normalized]
         }
-        return output.value
     }
 
     private static func liveDocument(_ entry: HorizontalDispatchProjectEntry) throws -> HorizontalLiveDocument {
@@ -644,16 +645,12 @@ enum HorizontalDispatchMethods {
         let index = entry.index
         var componentIDs = Set<String>()
         for refdes in (params["components"] as? [Any])?.map({ "\($0)" }) ?? [] {
-            guard let component = index.component(refdes: refdes) ?? index.component(id: refdes) else {
-                throw HorizontalDispatchError.notFound("No component \(refdes).")
-            }
+            let component = try HorizontalDispatchValidation.component(refdes, index: index)
             componentIDs.insert(component.id)
         }
         var netIDs = Set<String>()
         for name in (params["nets"] as? [Any])?.map({ "\($0)" }) ?? [] {
-            guard let net = index.net(named: name) ?? index.net(id: name) else {
-                throw HorizontalDispatchError.notFound("No net \(name).")
-            }
+            let net = try HorizontalDispatchValidation.net(name, index: index)
             netIDs.insert(net.id)
         }
         let input = HorizontalUnsafeSendableBox(entry)
@@ -680,6 +677,10 @@ enum HorizontalDispatchMethods {
         return [
             "components": refdes(of: selection.componentIDs),
             "nets": names(ofNets: selection.netIDs),
+            "component_ids": selection.componentIDs.sorted(),
+            "net_ids": selection.netIDs.sorted(),
+            "highlighted_component_ids": selection.highlightedComponentIDs.sorted(),
+            "highlighted_net_ids": selection.highlightedNetIDs.sorted(),
             "highlighted_components": refdes(of: selection.highlightedComponentIDs),
             "highlighted_nets": names(ofNets: selection.highlightedNetIDs),
             "panes": selection.panes.sorted()
@@ -697,8 +698,10 @@ enum HorizontalDispatchMethods {
             settings.targetDirectory = directory
         }
         applyExportOptions(params["options"] as? JSONDictionary, to: &settings)
-        let status = HorizontalExportBackend.export(sections: sections, settings: settings, project: entry.project)
         let targetURL = try HorizontalExportSettings.exportTargetDirectory(for: entry.project, requestedPath: settings.targetDirectory)
+        settings.targetDirectory = targetURL.path
+        let source = try entry.snapshot?.materializedProject() ?? entry.project
+        let status = HorizontalExportBackend.export(sections: sections, settings: settings, project: source)
         let files = (try? FileManager.default.contentsOfDirectory(atPath: targetURL.path))?.sorted() ?? []
         return [
             "status": exportStatusName(status.kind),
@@ -710,11 +713,14 @@ enum HorizontalDispatchMethods {
 
     @Sendable private static func renderSheet(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
+        let selected = try HorizontalDispatchValidation.sheet(params, index: entry.index, defaultFirst: true)
+        let project = try entry.snapshot?.materializedProject() ?? entry.project
         let (image, sheet) = try HorizontalDispatchRender.renderSheet(
-            project: entry.project,
-            sheetIndex: params.int("sheet"),
-            sheetName: params.string("name"),
-            sheetID: params.string("sheet_id"),
+            project: project,
+            sheetIndex: nil,
+            sheetName: nil,
+            sheetID: selected?.id,
+            blockID: selected?.blockID,
             region: try regionParam(params),
             dpi: params.double("dpi") ?? 150,
             maxPixels: params.int("max_pixels") ?? 4096
@@ -728,7 +734,7 @@ enum HorizontalDispatchMethods {
         let entry = try session.entry(for: params)
         let layers = (params["layers"] as? [Any])?.map { "\($0)" }
         let image = try HorizontalDispatchRender.renderBoard(
-            project: entry.project,
+            project: try entry.snapshot?.materializedProject() ?? entry.project,
             layerNames: layers,
             mirrored: params.bool("mirrored") ?? false,
             region: try regionParam(params),
@@ -769,9 +775,7 @@ enum HorizontalDispatchMethods {
         let index = entry.index
         let margin = (params.double("margin_mm") ?? 3) * 1_000_000
         if let refdes = params.string("refdes") {
-            guard let component = index.component(refdes: refdes) ?? index.component(id: refdes) else {
-                throw HorizontalDispatchError.notFound("No component \(refdes).")
-            }
+            let component = try HorizontalDispatchValidation.component(refdes, index: index)
             let wanted = try pane(params, default: component.boardPlacement != nil ? .board : .schematic)
             if wanted == .board {
                 guard let placement = component.boardPlacement, let board = entry.project.board else {
@@ -798,14 +802,11 @@ enum HorizontalDispatchMethods {
             guard let symbol = component.symbolPlacements.first else {
                 throw HorizontalDispatchError.notFound("\(component.refdes) has no symbol on any sheet.")
             }
-            let sheet = index.sheets.first { $0.index == symbol.sheetIndex }
             let rect = HorizontalRect(center: symbol.position, size: 20_000_000)
-            return (expand(rect, by: margin), .schematic, sheet?.id, sheet?.blockID, component.refdes)
+            return (expand(rect, by: margin), .schematic, symbol.sheetID, symbol.blockID, component.refdes)
         }
         if let netName = params.string("net") {
-            guard let net = index.net(named: netName) ?? index.net(id: netName) else {
-                throw HorizontalDispatchError.notFound("No net \(netName).")
-            }
+            let net = try HorizontalDispatchValidation.net(netName, index: index)
             let wanted = try pane(params, default: .board)
             if wanted == .board, let board = entry.project.board {
                 var points: [HorizontalPoint] = []
@@ -830,21 +831,20 @@ enum HorizontalDispatchMethods {
                 return (expand(rect, by: margin), .board, nil, nil, net.name)
             }
             // Schematic: the sheet holding the most of the net's pins.
-            var bySheet = [Int: [HorizontalPoint]]()
+            var bySheet = [String: [HorizontalPoint]]()
             for pin in net.pins {
                 guard let component = index.component(id: pin.componentID) else {
                     continue
                 }
                 for placement in component.symbolPlacements {
-                    bySheet[placement.sheetIndex, default: []].append(placement.position)
+                    bySheet["\(placement.blockID ?? "")/\(placement.sheetID)", default: []].append(placement.position)
                 }
             }
-            guard let best = bySheet.max(by: { $0.value.count < $1.value.count }), let first = best.value.first else {
+            guard let best = bySheet.sorted(by: { $0.value.count == $1.value.count ? $0.key < $1.key : $0.value.count > $1.value.count }).first, let first = best.value.first else {
                 throw HorizontalDispatchError.notFound("\(net.name) has no symbols on any sheet.")
             }
-            let sheetIndex: Int = best.key
             let points: [HorizontalPoint] = best.value
-            let sheet = index.sheets.first { $0.index == sheetIndex }
+            let sheet = index.sheets.first { "\($0.blockID ?? "")/\($0.id)" == best.key }
             var rect = HorizontalRect(points: points)
             if rect.isEmpty {
                 rect = HorizontalRect(center: first, size: 20_000_000)
@@ -903,12 +903,13 @@ enum HorizontalDispatchMethods {
         }
         let dpi = params.double("dpi") ?? 150
         let maxPixels = params.int("max_pixels") ?? 4096
+        let project = try entry.snapshot?.materializedProject() ?? entry.project
         var result: JSONDictionary
         if wanted == .board {
-            let image = try HorizontalDispatchRender.renderBoard(project: entry.project, layerNames: nil, mirrored: false, region: region, dpi: dpi, maxPixels: maxPixels)
+            let image = try HorizontalDispatchRender.renderBoard(project: project, layerNames: nil, mirrored: false, region: region, dpi: dpi, maxPixels: maxPixels)
             result = imageJSON(image, outputPath: params.string("output_path"))
         } else {
-            let (image, sheet) = try HorizontalDispatchRender.renderSheet(project: entry.project, sheetIndex: nil, sheetName: nil, sheetID: state.value.1, region: region, dpi: dpi, maxPixels: maxPixels)
+            let (image, sheet) = try HorizontalDispatchRender.renderSheet(project: project, sheetIndex: nil, sheetName: nil, sheetID: state.value.1, region: region, dpi: dpi, maxPixels: maxPixels)
             result = imageJSON(image, outputPath: params.string("output_path"))
             result["sheet"] = ["index": sheet.index, "name": sheet.name, "id": sheet.id]
         }
@@ -982,14 +983,15 @@ enum HorizontalDispatchMethods {
         json["component_count"] = index.components.count
         json["net_count"] = index.nets.count
         json["pool_part_count"] = project.poolParts.count
-        json["live"] = entry.live != nil
+        json["live"] = entry.live != nil || (!entry.frozen && entry.readMetadata?.string("source") == "live")
         json["diagnostics"] = diagnostics
         json["loaded_at"] = ISO8601DateFormatter().string(from: entry.loadedAt)
+        json.merge(entry.metadata) { _, new in new }
         return json
     }
 
     static func sheetJSON(_ sheet: HorizontalDesignSheet) -> JSONDictionary {
-        ["index": sheet.index, "name": sheet.name, "id": sheet.id, "symbol_count": sheet.symbolCount, "block": sheet.blockName, "is_top_block": sheet.isTopBlock]
+        ["index": sheet.index, "name": sheet.name, "id": sheet.id, "symbol_count": sheet.symbolCount, "block": sheet.blockName, "block_id": sheet.blockID as Any, "is_top_block": sheet.isTopBlock]
     }
 
     static func componentJSON(_ component: HorizontalDesignComponent, full: Bool, index: HorizontalDesignIndex? = nil) -> JSONDictionary {
@@ -1010,6 +1012,14 @@ enum HorizontalDispatchMethods {
             "sheets": Array(Set(component.symbolPlacements.map(\.sheetIndex))).sorted(),
             "placed_on_board": component.boardPlacement != nil
         ]
+        let effective = component.partValue.isEmpty ? component.rawValue : component.partValue
+        json["raw_value"] = component.rawValue
+        json["part_value"] = component.partValue
+        json["effective_value"] = effective
+        json["value_source"] = component.partValue.isEmpty ? "component" : "part"
+        json["electrical_value"] = HorizontalElectricalValue.parse(effective, refdes: component.refdes)
+        json["block_id"] = component.blockID as Any
+        json["physical_terminals"] = component.physicalTerminals
         if let placement = component.boardPlacement {
             json["board"] = [
                 "x_mm": HorizontalDispatchJSON.mm(placement.position.x),
@@ -1034,6 +1044,10 @@ enum HorizontalDispatchMethods {
             [
                 "sheet": placement.sheetIndex,
                 "sheet_name": placement.sheetName,
+                "sheet_id": placement.sheetID,
+                "symbol_id": placement.symbolID,
+                "block_id": placement.blockID as Any,
+                "gate_id": placement.gateID,
                 "gate_suffix": placement.gateSuffix,
                 "x_mm": HorizontalDispatchJSON.mm(placement.position.x),
                 "y_mm": HorizontalDispatchJSON.mm(placement.position.y),
@@ -1061,7 +1075,9 @@ enum HorizontalDispatchMethods {
             return json
         }
         json["pins"] = net.pins.map { pin -> JSONDictionary in
-            ["refdes": pin.refdes, "pin": pin.pinName, "gate": pin.gateName, "gate_suffix": pin.gateSuffix, "direction": pin.direction]
+            ["refdes": pin.refdes, "component_id": pin.componentID, "pin": pin.pinName, "gate": pin.gateName, "gate_suffix": pin.gateSuffix, "direction": pin.direction,
+             "gate_id": pin.gateID, "pin_id": pin.pinID, "gate_pin_path": "\(pin.gateID)/\(pin.pinID)",
+             "physical_pads": pin.physicalPads.map { ["id": $0.id, "name": $0.name] }]
         }
         if let board = entry.project.board {
             let airwires = board.airwires.filter { $0.netID?.lowercased() == net.id }

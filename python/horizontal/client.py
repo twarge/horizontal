@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import base64
 import itertools
+import time
+import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-from ._native import HorizontalError, LiveTransport, Transport, default_transport, find_live
+from ._native import HorizontalError, LiveTransport, Transport, default_transport, find_live, transport_error
+
+_request_deadline: ContextVar[float | None] = ContextVar("horizontal_deadline", default=None)
 
 
 class Session:
@@ -16,6 +21,9 @@ class Session:
     def __init__(self, transport: Transport | None = None, isolated: bool = False):
         self.transport = transport or default_transport(isolated=isolated)
         self._ids = itertools.count(1)
+        self.isolated = isolated
+        self.generation = 0
+        self.engine: dict[str, Any] | None = None
 
     @classmethod
     def live(cls) -> "Session | None":
@@ -28,12 +36,34 @@ class Session:
         return isinstance(self.transport, LiveTransport)
 
     def call(self, method: str, **params: Any) -> Any:
-        request = {"jsonrpc": "2.0", "id": next(self._ids), "method": method, "params": params}
+        if self.engine is None and method != "version":
+            self.engine = self.call("version")
+        if method != "version" and self.engine.get("api") != 2:
+            raise transport_error("INCOMPATIBLE_ENGINE", "This client requires native API 2. Rebuild horizontal and HorizontalPy; check the selected binary in connection_status.")
+        remaining = min(self.transport.timeout, (_request_deadline.get() or (time.monotonic() + self.transport.timeout)) - time.monotonic())
+        if remaining <= 0: raise transport_error("TIMEOUT", "Request exceeded its total deadline.")
+        request = {"jsonrpc": "2.0", "id": next(self._ids), "method": method, "params": params,
+                   "deadline_unix_ms": (time.time() + remaining) * 1000}
         response = self.transport.call(request)
         if "error" in response:
             error = response["error"]
             raise HorizontalError(error.get("code", -32603), error.get("message", "Unknown error"), error.get("data"))
         return response.get("result")
+
+    def reconnect(self, timeout: float) -> None:
+        live = self.is_live
+        configured_timeout = self.transport.timeout
+        self.transport.close()
+        if live:
+            info = find_live()
+            if info is None: raise transport_error("LIVE_UNAVAILABLE", "The live endpoint is unavailable; the source remains live.")
+            self.transport = LiveTransport(info, timeout=max(0.01, timeout))
+        else:
+            self.transport = default_transport(isolated=self.isolated)
+            self.transport.timeout = max(0.01, timeout)
+        self.transport.timeout = configured_timeout
+        self.engine = None
+        self.generation += 1
 
     def version(self) -> dict[str, Any]:
         return self.call("version")
@@ -70,6 +100,8 @@ class Project:
         self.session = session
         self.summary = summary
         self.handle: int = summary["handle"]
+        self._generation = session.generation
+        self.last_metadata = {k: summary[k] for k in ("revision", "snapshot_id", "source", "instance_id", "frozen") if k in summary}
 
     def __repr__(self) -> str:
         return f"Project({self.summary.get('title')!r}, handle={self.handle})"
@@ -81,7 +113,46 @@ class Project:
         self.close()
 
     def _call(self, method: str, **params: Any) -> Any:
-        return self.session.call(method, handle=self.handle, **params)
+        token = _request_deadline.set(min(_request_deadline.get() or float('inf'), time.monotonic() + self.session.transport.timeout))
+        try:
+            return self._perform_call(method, **params)
+        finally:
+            _request_deadline.reset(token)
+
+    def _perform_call(self, method: str, **params: Any) -> Any:
+        reads = {"project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status"}
+        deadline = _request_deadline.get() or (time.monotonic() + self.session.transport.timeout)
+        if self._generation != self.session.generation:
+            self._rebind()
+        try:
+            result = self.session.call(method, handle=self.handle, include_metadata=True, **params)
+        except HorizontalError as error:
+            if method not in reads or error.structured()["code"] not in {"CONNECTION_LOST", "TIMEOUT", "AUTH_FAILED"} or self.summary.get("frozen"):
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0: raise
+            self.session.reconnect(remaining)
+            self._rebind()
+            result = self.session.call(method, handle=self.handle, include_metadata=True, **params)
+        if isinstance(result, dict) and "meta" in result and "data" in result:
+            self.last_metadata = result["meta"]
+            self.summary.update(result["meta"])
+            return result["data"]
+        return result
+
+    def _rebind(self) -> None:
+        if self.summary.get("frozen"):
+            raise transport_error("SNAPSHOT_EXPIRED", "The worker holding this pinned snapshot restarted.")
+        if self.is_live:
+            candidates = [s for s in self.session.call("list_projects") if s.get("live") and Path(s["path"]).resolve() == Path(self.path).resolve()]
+            if len(candidates) != 1 or candidates[0].get("instance_id") != self.summary.get("instance_id"):
+                raise transport_error("LIVE_DOCUMENT_CHANGED", "The live document closed or was reopened. Open a new context explicitly.")
+            summary = candidates[0]
+        else:
+            summary = self.session.call("open_project", path=self.path)
+        self.handle = summary["handle"]
+        self.summary = summary
+        self._generation = self.session.generation
 
     @property
     def path(self) -> str:
@@ -116,24 +187,26 @@ class Project:
         return self.summary
 
     def close(self) -> None:
-        self._call("close_project")
+        if not self.is_live:
+            self._call("close_project")
 
     def sheets(self) -> list[dict[str, Any]]:
         return self._call("list_sheets")
 
-    def components(self, sheet: int | None = None) -> list[dict[str, Any]]:
+    def components(self, sheet: int | None = None, sheet_id: str | None = None, block_id: str | None = None, name: str | None = None) -> list[dict[str, Any]]:
         params = {"sheet": sheet} if sheet is not None else {}
+        params.update({k: v for k, v in {"sheet_id": sheet_id, "block_id": block_id, "name": name}.items() if v is not None})
         return self._call("list_components", **params)
 
     def component(self, refdes: str | None = None, id: str | None = None) -> dict[str, Any]:
-        params = {"refdes": refdes} if refdes else {"id": id}
+        params = {k: v for k, v in {"refdes": refdes, "id": id}.items() if v is not None}
         return self._call("get_component", **params)
 
     def nets(self) -> list[dict[str, Any]]:
         return self._call("list_nets")
 
     def net(self, name: str | None = None, id: str | None = None) -> dict[str, Any]:
-        params = {"name": name} if name else {"id": id}
+        params = {k: v for k, v in {"name": name, "id": id}.items() if v is not None}
         return self._call("get_net", **params)
 
     def netlist(self, include_unconnected: bool = False) -> dict[str, Any]:
@@ -157,9 +230,15 @@ class Project:
         """The edit vocabulary `apply` accepts."""
         return self.session.call("list_ops")
 
-    def apply(self, ops: list[dict[str, Any]], dry_run: bool = False) -> dict[str, Any]:
+    def apply(self, ops: list[dict[str, Any]], dry_run: bool = False, *, expected_revision: str | None = None,
+              operation_id: str | None = None, plan_digest: str | None = None, pool_items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """Apply edit operations; each is {"op": name, ...params}. Writes only changed files."""
-        result = self._call("apply", ops=list(ops), dry_run=dry_run)
+        params: dict[str, Any] = {"ops": list(ops), "dry_run": dry_run,
+                                  "expected_revision": expected_revision or self.summary["revision"],
+                                  "operation_id": operation_id or str(uuid.uuid4())}
+        if plan_digest is not None: params["plan_digest"] = plan_digest
+        if pool_items is not None: params["pool_items"] = pool_items
+        result = self._call("apply", **params)
         if not dry_run and "project" in result:
             self.summary = result["project"]
         return result
@@ -198,11 +277,22 @@ class Project:
 
     def pool_write(self, items: list[dict[str, Any]]) -> dict[str, Any]:
         """Write pool items (unit, entity, symbol, part, package, padstack) into the project pool."""
-        return self._call("pool_write", items=list(items))
+        result = self._call("pool_write", items=list(items), expected_revision=self.summary["revision"], operation_id=str(uuid.uuid4()))
+        if "project" in result: self.summary = result["project"]
+        return result
+
+    def freeze(self) -> "Project":
+        return Project(self.session, self._call("freeze_project"))
+
+    def analysis_snapshot(self) -> dict[str, Any]:
+        return self._call("analysis_snapshot")
+
+    def transaction_status(self, operation_id: str) -> dict[str, Any]:
+        return self._call("transaction_status", operation_id=operation_id)
 
     def recompute_connectivity(self) -> dict[str, Any]:
         """The editor's post-edit connectivity pass; `open` already ran it once."""
-        return self._call("recompute_connectivity")
+        return self._call("recompute_connectivity", expected_revision=self.summary["revision"])
 
     def export(self, sections: list[str], target_directory: str | Path | None = None, **options: Any) -> dict[str, Any]:
         params: dict[str, Any] = {"sections": list(sections)}
@@ -217,6 +307,7 @@ class Project:
         sheet: int | None = None,
         name: str | None = None,
         sheet_id: str | None = None,
+        block_id: str | None = None,
         region: dict[str, float] | None = None,
         dpi: float = 150,
         max_pixels: int = 4096,
@@ -231,6 +322,8 @@ class Project:
             params["name"] = name
         if sheet_id is not None:
             params["sheet_id"] = sheet_id
+        if block_id is not None:
+            params["block_id"] = block_id
         if region is not None:
             params["region"] = region
         if output_path is not None:
@@ -302,33 +395,39 @@ def _image_result(result: dict[str, Any]) -> bytes | Path:
 
 
 _default_session: Session | None = None
-_live_session: Session | None = None
 
 
 def new_project(path: str | Path, name: str | None = None, isolated: bool = False) -> Project:
     """Create a project from the template (a .horizontal package) and open it in this process."""
     global _default_session
-    if _default_session is None:
+    if _default_session is None or _default_session.isolated != isolated or _default_session.transport.closed:
         _default_session = Session(isolated=isolated)
     return _default_session.new_project(path, name=name)
 
 
-def open(path: str | Path, isolated: bool = False, prefer_live: bool = True) -> Project:
+def open(path: str | Path, isolated: bool = False, prefer_live: bool = True, source: str | None = None) -> Project:
     """Open a project. When Horizontal has it open, the app's live document is used
     (reads see unsaved edits; writes land on its undo stack); otherwise the engine
     in this process opens the files."""
-    global _default_session, _live_session
     resolved = str(Path(path).expanduser().resolve())
-    if prefer_live:
-        if _live_session is None:
-            _live_session = Session.live()
-        if _live_session is not None:
-            try:
-                for summary in _live_session.call("list_projects"):
+    source = source or ("auto" if prefer_live else "disk")
+    if source not in {"auto", "live", "disk"}: raise ValueError("source must be auto, live, or disk")
+    if source != "disk":
+        live = None
+        try:
+            live = Session.live()
+            if live is not None:
+                for summary in live.call("list_projects"):
                     if summary.get("live") and Path(summary["path"]).resolve() == Path(resolved):
-                        return Project(_live_session, summary)
-            except HorizontalError:
-                _live_session = None
-    if _default_session is None:
-        _default_session = Session(isolated=isolated)
-    return _default_session.open(resolved)
+                        return Project(live, summary)
+        except (HorizontalError, OSError):
+            if live is not None: live.close()
+            if source == "live": raise
+        if live is not None: live.close()
+        if source == "live":
+            raise transport_error("LIVE_UNAVAILABLE", "No live document matches this project; enable automation and open it in Horizontal.")
+    disk = Session(isolated=isolated)
+    try: return disk.open(resolved)
+    except Exception:
+        disk.close()
+        raise

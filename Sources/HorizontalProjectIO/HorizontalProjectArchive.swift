@@ -158,7 +158,9 @@ public struct HorizontalProjectArchive: Equatable, Sendable {
             throw HorizontalProjectArchiveError.missingManifest
         }
 
-        let fileManager = FileManager.default
+        let transaction = try HorizontalProjectTransaction(projectURL: manifest.projectFileURL)
+        try transaction.recover()
+        var updates = [HorizontalProjectTransaction.Update]()
         var written = [String]()
         for relativePath in regularFilePaths where !skippedRelativePaths.contains(relativePath) {
             guard let data = regularFileData(relativePath: relativePath) else {
@@ -168,13 +170,11 @@ public struct HorizontalProjectArchive: Equatable, Sendable {
             if let existing = try? Data(contentsOf: url), existing == data {
                 continue
             }
-            try fileManager.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try data.write(to: url, options: [.atomic])
+            let before = FileManager.default.fileExists(atPath: url.path) ? try Data(contentsOf: url) : nil
+            updates.append(.init(url: url, before: before, after: data))
             written.append(relativePath)
         }
+        try transaction.commit(updates)
         return written.sorted()
     }
 

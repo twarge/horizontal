@@ -10,7 +10,7 @@ end, and each front end is a thin adapter over it:
 | `libHorizontalPy.dylib` | `Sources/HorizontalPy` | exports `horizontal_call` / `horizontal_free` (C ABI) |
 | `horizontal` Python package | `python/horizontal` | loads the dylib with ctypes, or spawns `horizontal serve` |
 | `horizontal-mcp` server | `python/horizontal/mcp_server.py` | the Python package, framed as MCP tools for Claude Code |
-| The app (later) | `Sources/HorizontalNative/Dispatch` | the same table, served over localhost for live state |
+| The app | `Sources/HorizontalNative/Dispatch` | the same table, served over authenticated loopback for live state |
 
 The engine is the app's own Swift code. `Sources/HorizontalNative` is a
 library target in `Package.swift` (the `@main` App file is excluded and only
@@ -31,11 +31,18 @@ Every request is `{"jsonrpc": "2.0", "id": …, "method": …, "params": {…}}`
 Methods that act on a project take the `handle` that `open_project` returned.
 `horizontal methods` prints the live list with parameters.
 
+Native API 2 adds explicit source contexts, snapshot/revision metadata,
+guarded edits and recoverable transactions. MCP success results use
+`{data, meta}` envelopes; every design edit requires `expected_revision` and
+`operation_id`. See [the API 2 and analysis guide](mcp-analysis.md) for migration,
+connection diagnostics, typed models, numerical tools and operational limits.
+
 | Method | What it answers |
 |---|---|
 | `version`, `methods` | API version; the method table |
 | `open_project`, `close_project`, `reload_project`, `list_projects` | project handles; opening a path twice returns the same handle |
-| `project_info`, `project_files` | blocks, sheets, counts, diagnostics; files on disk |
+| `project_info`, `project_files` | blocks, sheets, counts, diagnostics; files in the captured source |
+| `freeze_project`, `analysis_snapshot`, `transaction_status` | immutable read context; electrical evidence; mutation receipt lookup |
 | `list_sheets` | sheets in the PDF exporter's page order |
 | `list_components`, `get_component` | components with part details; one component with every pin, its net, symbol and board placements |
 | `list_nets`, `get_net`, `netlist` | nets with class and flags; one net with its pins, routing counts, and airwire geometry; the whole netlist |
@@ -94,9 +101,11 @@ designator or id, nets by name or id, pins by name (`EN`), by gate and pin
 | `place_component`, `remove_placement` | Board placement in millimetres and degrees; a placed package moves, an unplaced one gets a package entry the loader completes from the part |
 | `copy_group_layout` | Lay one group out like another: every member with a matching tag gets the same relative placement and rotation around an anchor, and the tracks, junctions and vias inside the source group are cloned onto the target's pads |
 
-A batch is validated and applied in memory first; any failing op aborts the
-whole batch and nothing is written. `dry_run` returns the change log and the
-files that would be written. After a write the project is reloaded.
+A batch is validated and applied in memory first; a failing operation writes
+nothing. `dry_run` returns normalized operations, changed-file previews and a
+plan digest. Disk commits journal all file replacements and recover interrupted
+batches; live commits install one undoable archive. Pool items and operations
+can share the same batch. The complete staged project is loaded before commit.
 
 Two things to know. Horizon shows a part's own value over the component's,
 so `set_value` on a part-backed component records a note saying so. And the
@@ -193,7 +202,7 @@ that the design no longer has are removed. After applying, the pad-to-net
 map is read back and compared with the design; any mismatch fails the run.
 
 The sync runs headless or against the document open in Horizontal, where
-the pool items and the edits land as undoable steps.
+the pool items and the edits land together as one undoable step.
 
 Module layouts transfer through Horizon's groups. Lay one instance out, then
 `horizontal-ato copy-layout project --from usb_c[0] --to usb_c[1]` (or

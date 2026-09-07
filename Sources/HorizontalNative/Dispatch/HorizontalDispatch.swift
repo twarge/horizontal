@@ -1,4 +1,5 @@
 import Foundation
+import HorizontalProjectIO
 
 /// JSON-RPC 2.0 dispatch over the loaded model.
 ///
@@ -8,7 +9,7 @@ import Foundation
 /// Requests are `{"jsonrpc": "2.0", "id": …, "method": …, "params": {…}}`
 /// objects; the method table lives in `HorizontalDispatchMethods`.
 public enum HorizontalDispatch {
-    public static let apiVersion = 1
+    public static let apiVersion = 2
 
     /// JSON text in, JSON text out. Never throws: failures come back as
     /// JSON-RPC error objects so the caller has a single code path.
@@ -24,12 +25,16 @@ public enum HorizontalDispatch {
         return serialize(response, pretty: false)
     }
 
-    static func call(_ request: JSONDictionary) -> JSONDictionary {
+    static func call(_ request: JSONDictionary, in dispatchSession: HorizontalDispatchSession = .shared) -> JSONDictionary {
         let id = request["id"]
         guard let method = request["method"] as? String else {
             return errorResponse(id: id, code: .invalidRequest, message: "Request has no method.")
         }
-        let params = request["params"] as? JSONDictionary ?? [:]
+        guard request["jsonrpc"] as? String == "2.0", request["params"] == nil || request["params"] is JSONDictionary else {
+            return errorResponse(id: id, code: .invalidRequest, message: "Expected JSON-RPC 2.0 and object params.")
+        }
+        var params = request["params"] as? JSONDictionary ?? [:]
+        if let deadline = request["deadline_unix_ms"] { params["deadline_unix_ms"] = deadline }
         guard let handler = HorizontalDispatchMethods.handler(named: method) else {
             return errorResponse(
                 id: id,
@@ -39,12 +44,27 @@ public enum HorizontalDispatch {
             )
         }
         do {
-            let result = try HorizontalDispatchSession.shared.perform { session in
-                try handler(session, params)
+            let result: Any = try dispatchSession.perform { session -> Any in
+                try HorizontalDispatchValidation.validate(method: method, params: params)
+                try HorizontalDispatchValidation.checkDeadline(params)
+                let result = try handler(session, params)
+                if params.bool("include_metadata") == true, let handle = params.int("handle"), method != "close_project" {
+                    return ["data": result, "meta": try session.entry(handle: handle).metadata] as JSONDictionary
+                }
+                return result
             }
             return ["jsonrpc": "2.0", "id": id ?? NSNull(), "result": HorizontalDispatchJSON.sanitized(result)]
         } catch let error as HorizontalDispatchError {
-            return errorResponse(id: id, code: error.code, message: error.message)
+            return errorResponse(id: id, code: error.code, message: error.message, data: error.data)
+        } catch let error as HorizontalProjectTransaction.Failure {
+            let code: HorizontalDispatchError.Code
+            switch error {
+            case .timeout: code = .timeout
+            case .conflict: code = .staleRevision
+            case .recoveryRequired: code = .recoveryRequired
+            }
+            let typed = HorizontalDispatchError(code: code, message: error.localizedDescription)
+            return errorResponse(id: id, code: code, message: typed.message, data: typed.data)
         } catch {
             return errorResponse(id: id, code: .applicationError, message: error.localizedDescription)
         }
@@ -57,9 +77,12 @@ public enum HorizontalDispatch {
         data: JSONDictionary? = nil
     ) -> JSONDictionary {
         var error: JSONDictionary = ["code": code.rawValue, "message": message]
+        var structured = HorizontalDispatchError(code: code, message: message).data
         if let data {
-            error["data"] = data
+            if data["code"] == nil { structured["details"] = data }
+            structured.merge(data) { _, new in new }
         }
+        error["data"] = structured
         return ["jsonrpc": "2.0", "id": id ?? NSNull(), "error": error]
     }
 
@@ -87,7 +110,7 @@ final class HorizontalUnsafeSendableBox<Value>: @unchecked Sendable {
     }
 }
 
-struct HorizontalDispatchError: Error {
+struct HorizontalDispatchError: Error, @unchecked Sendable {
     enum Code: Int {
         case parseError = -32700
         case invalidRequest = -32600
@@ -96,10 +119,42 @@ struct HorizontalDispatchError: Error {
         case internalError = -32603
         case applicationError = -32000
         case notFound = -32001
+        case ambiguous = -32002
+        case staleRevision = -32003
+        case timeout = -32004
+        case recoveryRequired = -32005
+        case unsupported = -32006
+        case readOnly = -32007
+        case authFailed = -32008
+
+        var label: String {
+            switch self {
+            case .invalidParams, .invalidRequest, .parseError: "INVALID_ARGUMENT"
+            case .notFound, .methodNotFound: "NOT_FOUND"
+            case .ambiguous: "AMBIGUOUS_SELECTOR"
+            case .staleRevision: "STALE_REVISION"
+            case .timeout: "TIMEOUT"
+            case .recoveryRequired: "RECOVERY_REQUIRED"
+            case .unsupported: "UNSUPPORTED_MODEL"
+            case .readOnly: "READ_ONLY"
+            case .authFailed: "AUTH_FAILED"
+            default: "ENGINE_ERROR"
+            }
+        }
     }
 
     var code: Code
     var message: String
+    var details: JSONDictionary = [:]
+    var data: JSONDictionary {
+        ["code": code.label, "details": details, "retryable": code == .timeout,
+         "outcome": code == .recoveryRequired ? "indeterminate" : [.applicationError, .internalError].contains(code) ? "unknown" : "not_committed"]
+    }
+
+    static func unsupported(_ message: String) -> Self { Self(code: .unsupported, message: message) }
+    static func ambiguous(_ message: String, candidates: [String]) -> Self {
+        Self(code: .ambiguous, message: message, details: ["candidates": candidates.sorted()])
+    }
 
     static func invalidParams(_ message: String) -> Self {
         Self(code: .invalidParams, message: message)

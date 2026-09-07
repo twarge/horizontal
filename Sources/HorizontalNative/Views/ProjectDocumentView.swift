@@ -1136,7 +1136,7 @@ struct ProjectWorkspaceView: View {
         }
         let live = HorizontalLiveDocument(url: project.url, title: project.displayTitle, project: project, archive: document.archive)
         live.currentProject = { project }
-        live.revision = { boardEditRevision &+ boardSyncRevision &* 100_003 &+ schematicEditRevision &* 1_000_033 }
+        live.revision = { "\(boardEditRevision):\(boardSyncRevision):\(schematicEditRevision)" }
         live.archive = { document.archive }
         live.isReadOnly = { isReadOnly }
         live.selection = {
