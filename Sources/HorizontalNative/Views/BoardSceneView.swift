@@ -908,7 +908,9 @@ final class BoardSceneNodes: @unchecked Sendable {
                 material.emission.contents = color.withAlphaComponent(0.08)
                 material.roughness.contents = 0.62
                 material.transparency = opacity
-                material.isDoubleSided = true
+                // Sidedness stays with whoever built the material: the slabs
+                // are single-sided on purpose (see `solderMaskMaterial`), and
+                // forcing double-sided here drew their undersides too.
             }
         }
     }
