@@ -24,7 +24,7 @@ final class HorizontalLiveDocument {
     let url: URL
     var title: String
     var currentProject: () -> HorizontalProject
-    var revision: () -> Int
+    var revision: () -> String
     var archive: () -> HorizontalProjectArchive
     var isReadOnly: () -> Bool
     var selection: () -> HorizontalLiveSelection
@@ -46,7 +46,7 @@ final class HorizontalLiveDocument {
         self.url = url
         self.title = title
         currentProject = { project }
-        revision = { 0 }
+        revision = { "0" }
         self.archive = { archive }
         isReadOnly = { false }
         selection = { HorizontalLiveSelection() }

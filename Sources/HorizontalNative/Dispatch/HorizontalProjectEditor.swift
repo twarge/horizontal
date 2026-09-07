@@ -99,6 +99,17 @@ struct HorizontalEditOperation {
             throw HorizontalDispatchError.invalidParams("Unknown op \(name). Known: \(HorizontalEditOperationKind.allCases.map(\.rawValue).joined(separator: ", ")).")
         }
         self.kind = kind
+        let unknown = Set(json.keys).subtracting(Set(kind.params.keys).union(["op"]))
+        guard unknown.isEmpty else { throw HorizontalDispatchError.invalidParams("Unknown \(name) fields: \(unknown.sorted().joined(separator: ", ")).") }
+        for (key, value) in json where key != "op" {
+            if ["x_mm", "y_mm", "angle_deg"].contains(key) {
+                try HorizontalDispatchValidation.number(value, key: key)
+            } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing"].contains(key) {
+                try HorizontalDispatchValidation.boolean(value, key: key)
+            } else if value is NSNull, ["part", "group", "tag"].contains(key) {
+                continue
+            } else if !(value is String) { throw HorizontalDispatchError.invalidParams("\(key) must be a string.") }
+        }
         params = json
     }
 }
@@ -136,11 +147,19 @@ final class HorizontalArchiveFileStore: HorizontalProjectFileStore {
     }
 
     func relativePath(for url: URL) -> String? {
+        // Resolve archive-relative paths before filesystem-dependent URL
+        // canonicalization, including files that exist only in the archive.
+        let prefix = baseURL.path.hasSuffix("/") ? baseURL.path : baseURL.path + "/"
+        if url.path.hasPrefix(prefix) {
+            let relative = String(url.path.dropFirst(prefix.count))
+            guard !relative.split(separator: "/").contains("..") else { return nil }
+            return relative
+        }
         if let path = archive.manifest?.relativePath(for: url) {
             return path
         }
-        let base = baseURL.standardizedFileURL.path
-        let path = url.standardizedFileURL.path
+        let base = baseURL.resolvingSymlinksInPath().standardizedFileURL.path
+        let path = url.resolvingSymlinksInPath().standardizedFileURL.path
         guard path.hasPrefix(base + "/") else {
             return nil
         }
@@ -156,7 +175,7 @@ final class HorizontalArchiveFileStore: HorizontalProjectFileStore {
 
     func write(_ data: Data, to url: URL) throws {
         guard let path = relativePath(for: url) else {
-            throw HorizontalDispatchError.failed("Could not map \(url.lastPathComponent) into the document archive.")
+            throw HorizontalDispatchError.failed("Could not map \(url.path) into the document archive rooted at \(baseURL.path).")
         }
         try archive.replaceRegularFileData(relativePath: path, with: data)
     }
@@ -179,10 +198,10 @@ final class HorizontalProjectEditor {
     private var dirty = Set<String>()
     private(set) var changes: [JSONDictionary] = []
 
-    init(project: HorizontalProject, store: HorizontalProjectFileStore = HorizontalDiskFileStore()) throws {
+    init(project: HorizontalProject, store: HorizontalProjectFileStore = HorizontalDiskFileStore(), snapshot: HorizontalDispatchSnapshot? = nil) throws {
         self.project = project
         self.store = store
-        pool = HorizontalDispatchPoolIndex(project: project)
+        pool = HorizontalDispatchPoolIndex(project: project, snapshot: snapshot)
         poolURL = project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }
         let blockFilename = project.blocks.first(where: \.isTop)?.blockFilename ?? project.blockFilename
         guard let blockFilename, !blockFilename.isEmpty else {
@@ -277,7 +296,7 @@ final class HorizontalProjectEditor {
             change["created"] = created
         case .renameNet:
             let id = try netID(params)
-            guard let name = params.string("name"), !name.isEmpty else {
+            guard let name = params["name"] as? String else {
                 throw HorizontalDispatchError.invalidParams("rename_net needs \"name\".")
             }
             try updateNet(id) { $0["name"] = name }
@@ -484,7 +503,7 @@ final class HorizontalProjectEditor {
         if let part = project.poolParts.first(where: { $0.id.lowercased() == id }) {
             return part
         }
-        guard let poolURL else {
+        guard !(store is HorizontalArchiveFileStore), let poolURL else {
             return nil
         }
         return HorizontalPoolPart.loadCached(id: id, from: poolURL)

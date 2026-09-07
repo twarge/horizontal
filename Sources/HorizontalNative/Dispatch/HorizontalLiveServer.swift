@@ -64,13 +64,28 @@ enum HorizontalLiveServer {
         }
         guard let auth = request["auth"] as? String, auth == expectedToken else {
             return HorizontalDispatch.serialize(
-                HorizontalDispatch.errorResponse(id: request["id"], code: .notFound, message: "Unauthorized: the request's auth token does not match live.json."),
+                HorizontalDispatch.errorResponse(id: request["id"], code: .authFailed, message: "Unauthorized: the request's auth token does not match live.json.", data: ["code": "AUTH_FAILED", "retryable": false, "outcome": "not_committed"]),
                 pretty: false
             )
         }
         request.removeValue(forKey: "auth")
         HorizontalDispatchSession.shared.syncLiveEntries()
         return HorizontalDispatch.serialize(HorizontalDispatch.call(request), pretty: false)
+    }
+
+    /// Capture on the main actor, then evaluate model-only queries on the
+    /// connection queue. Rendering/export retain their audited main-actor path.
+    static func prepareRead(line: String, expectedToken: String) -> (@Sendable () -> String)? {
+        let eligible: Set<String> = ["project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "board_info", "list_groups", "analysis_snapshot"]
+        guard let data = line.data(using: .utf8),
+              var request = (try? JSONSerialization.jsonObject(with: data)) as? JSONDictionary,
+              request.string("auth") == expectedToken, let method = request.string("method"), eligible.contains(method),
+              let params = request.dictionary("params"), let handle = params.int("handle") else { return nil }
+        HorizontalDispatchSession.shared.syncLiveEntries()
+        guard let session = try? HorizontalDispatchSession.shared.perform({ try $0.detachedReadSession(handle: handle) }) else { return nil }
+        request.removeValue(forKey: "auth")
+        let input = HorizontalUnsafeSendableBox(request)
+        return { HorizontalDispatch.serialize(HorizontalDispatch.call(input.value, in: session), pretty: false) }
     }
 }
 
@@ -143,6 +158,7 @@ final class HorizontalLiveListener {
     }
 
     private func accept(_ connection: NWConnection, token: String) {
+        guard connections.count < 16 else { connection.cancel(); return }
         let live = HorizontalLiveConnection(connection: connection, token: token, queue: queue) { [weak self] finished in
             Task { @MainActor in
                 self?.connections.removeValue(forKey: ObjectIdentifier(finished))
@@ -226,6 +242,10 @@ final class HorizontalLiveConnection: @unchecked Sendable {
             }
             if let data, !data.isEmpty {
                 self.buffer.append(data)
+                guard self.buffer.count <= 16 * 1024 * 1024 else {
+                    self.connection.cancel()
+                    return
+                }
                 self.drainLines()
             }
             if isComplete || error != nil {
@@ -248,11 +268,14 @@ final class HorizontalLiveConnection: @unchecked Sendable {
             // actor because live documents live there. The connection queue
             // waits for each answer rather than interleaving them.
             let token = self.token
-            let response = DispatchQueue.main.sync {
+            let execute: @Sendable () -> String = DispatchQueue.main.sync {
                 MainActor.assumeIsolated {
-                    HorizontalLiveServer.handle(line: line, expectedToken: token)
+                    if let read = HorizontalLiveServer.prepareRead(line: line, expectedToken: token) { return read }
+                    let response = HorizontalLiveServer.handle(line: line, expectedToken: token)
+                    return { response }
                 }
             }
+            let response = execute()
             connection.send(content: Data((response + "\n").utf8), completion: .contentProcessed { _ in })
         }
     }

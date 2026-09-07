@@ -667,13 +667,15 @@ def sync(board: Path, project_path: Path, create: bool = False, dry_run: bool = 
         report["dry_run"] = True
         report["op_summary"] = _summarize(plan.ops)
         return report
-    written = project.pool_write(plan.pool_items) if plan.pool_items else {"written": [], "skipped": 0}
-    report["pool_written"] = len(written.get("written", []))
+    report["pool_written"] = 0
     if plan.ops:
-        result = project.apply(plan.ops)
+        result = project.apply(plan.ops, pool_items=plan.pool_items)
+        report["pool_written"] = sum("/cache/" in path for path in result.get("written", []))
         report["applied"] = result["applied"]
         report["diagnostics"] = result.get("project", {}).get("diagnostics", [])
     else:
+        if plan.pool_items:
+            report["pool_written"] = len(project.pool_write(plan.pool_items).get("written", []))
         report["applied"] = 0
     report["op_summary"] = _summarize(plan.ops)
     report["mismatches"] = validate(project, plan)

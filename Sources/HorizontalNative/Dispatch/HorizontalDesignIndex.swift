@@ -8,8 +8,15 @@ struct HorizontalDesignPin: Hashable {
     var pinName: String
     var direction: String
     var netID: String?
+    var physicalPads: [HorizontalDesignPad] = []
+    var connectionState = "unconnected"
 
     var gatePinPath: String { "\(gateID)/\(pinID)" }
+}
+
+struct HorizontalDesignPad: Hashable {
+    var id: String
+    var name: String
 }
 
 struct HorizontalDesignSymbolPlacement: Hashable {
@@ -20,6 +27,9 @@ struct HorizontalDesignSymbolPlacement: Hashable {
     var position: HorizontalPoint
     var angle: Int
     var mirrored: Bool
+    var sheetID: String = ""
+    var blockID: String? = nil
+    var symbolID: String = ""
 }
 
 struct HorizontalDesignBoardPlacement: Hashable {
@@ -44,6 +54,10 @@ struct HorizontalDesignComponent {
     var boardPlacement: HorizontalDesignBoardPlacement?
     var group: String?
     var tag: String?
+    var rawValue: String = ""
+    var partValue: String = ""
+    var blockID: String? = nil
+    var physicalTerminals: [JSONDictionary] = []
 
     var connectedPins: [HorizontalDesignPin] { pins.filter { $0.netID != nil } }
 }
@@ -55,6 +69,9 @@ struct HorizontalDesignNetPin: Hashable {
     var gateSuffix: String
     var pinName: String
     var direction: String
+    var gateID: String = ""
+    var pinID: String = ""
+    var physicalPads: [HorizontalDesignPad] = []
 }
 
 struct HorizontalDesignNet {
@@ -93,10 +110,20 @@ struct HorizontalDesignIndex {
     private(set) var groupNames: [String: String] = [:]
     private(set) var tagNames: [String: String] = [:]
 
-    init(project: HorizontalProject) {
-        let pool = HorizontalDispatchPoolIndex(project: project)
-        let block = Self.loadTopBlockJSON(project: project)
-        let blockComponents = Self.lowercasedKeys(block?.dictionaryMap("components") ?? [:])
+    init(project: HorizontalProject, snapshot: HorizontalDispatchSnapshot? = nil) {
+        let pool = HorizontalDispatchPoolIndex(project: project, snapshot: snapshot)
+        let block = Self.loadTopBlockJSON(project: project, snapshot: snapshot)
+        var blockComponents = Self.lowercasedKeys(block?.dictionaryMap("components") ?? [:])
+        var componentBlocks = [String: String]()
+        for definition in project.blocks {
+            guard let filename = definition.blockFilename else { continue }
+            let url = project.baseURL.appendingPathComponent(filename)
+            let json = snapshot.map { $0.json(at: url) } ?? (try? JSONHelper.loadDictionary(from: url))
+            for (id, component) in json?.dictionaryMap("components") ?? [:] {
+                blockComponents[id.lowercased()] = component
+                componentBlocks[id.lowercased()] = definition.uuid
+            }
+        }
         for (id, name) in block?["group_names"] as? [String: String] ?? [:] {
             groupNames[id.lowercased()] = name
         }
@@ -141,7 +168,10 @@ struct HorizontalDesignIndex {
                         gateSuffix: "",
                         position: symbol.position,
                         angle: symbol.angle,
-                        mirrored: symbol.mirrored
+                        mirrored: symbol.mirrored,
+                        sheetID: sheet.id,
+                        blockID: project.schematics.isEmpty ? nil : entry.block.uuid,
+                        symbolID: symbol.id
                     ))
                     for pin in symbol.symbolPinNames {
                         symbolPinNames[componentID, default: [:]][pin.gatePinPath.lowercased()] = (pin.primaryName, pin.primaryDirection)
@@ -153,7 +183,7 @@ struct HorizontalDesignIndex {
             if lhs.isTopBlock != rhs.isTopBlock {
                 return lhs.isTopBlock
             }
-            return lhs.index < rhs.index
+            return (lhs.index, lhs.blockID ?? "", lhs.id) < (rhs.index, rhs.blockID ?? "", rhs.id)
         }
 
         var boardPlacements = [String: HorizontalDesignBoardPlacement]()
@@ -243,6 +273,10 @@ struct HorizontalDesignIndex {
                     pin.pinName = String(pinID.prefix(8))
                 }
                 pin.netID = state.netID?.lowercased()
+                switch state {
+                case .notConnected: pin.connectionState = "no_connect"
+                default: pin.connectionState = pin.netID == nil ? "unconnected" : "connected"
+                }
                 pins[key] = pin
             }
             for (key, names) in namesFromSymbols where pins[key]?.pinName.isEmpty ?? false {
@@ -250,17 +284,20 @@ struct HorizontalDesignIndex {
                 pins[key]?.direction = names.direction
             }
 
+            if let partID {
+                for key in pins.keys { pins[key]?.physicalPads = pool.pads(partID: partID, gatePinPath: key) }
+            }
             let sortedPins = pins.values.sorted { lhs, rhs in
                 if lhs.gateSuffix != rhs.gateSuffix {
-                    return lhs.gateSuffix.localizedStandardCompare(rhs.gateSuffix) == .orderedAscending
+                    return lhs.gateSuffix < rhs.gateSuffix
                 }
-                return lhs.pinName.localizedStandardCompare(rhs.pinName) == .orderedAscending
+                return (lhs.pinName, lhs.gatePinPath) < (rhs.pinName, rhs.gatePinPath)
             }
             var placements = symbolPlacements[componentID] ?? []
             for index in placements.indices {
                 placements[index].gateSuffix = gates[placements[index].gateID]?.suffix ?? ""
             }
-            placements.sort { ($0.sheetIndex, $0.gateSuffix) < ($1.sheetIndex, $1.gateSuffix) }
+            placements.sort { ($0.sheetIndex, $0.gateSuffix, $0.symbolID) < ($1.sheetIndex, $1.gateSuffix, $1.symbolID) }
 
             let component = HorizontalDesignComponent(
                 id: componentID,
@@ -275,7 +312,11 @@ struct HorizontalDesignIndex {
                 symbolPlacements: placements,
                 boardPlacement: boardPlacements[componentID],
                 group: blockEntry?.string("group")?.lowercased(),
-                tag: blockEntry?.string("tag")?.lowercased()
+                tag: blockEntry?.string("tag")?.lowercased(),
+                rawValue: blockEntry?.string("value") ?? info.value,
+                partValue: partID.flatMap { pool.partValue($0) } ?? "",
+                blockID: componentBlocks[componentID],
+                physicalTerminals: partID.map { pool.terminals(partID: $0) } ?? []
             )
             components[componentID] = component
             if !info.refdes.isEmpty {
@@ -307,16 +348,16 @@ struct HorizontalDesignIndex {
                     gateName: pin.gateName,
                     gateSuffix: pin.gateSuffix,
                     pinName: pin.pinName,
-                    direction: pin.direction
+                    direction: pin.direction,
+                    gateID: pin.gateID,
+                    pinID: pin.pinID,
+                    physicalPads: pin.physicalPads
                 ))
             }
         }
         for netID in nets.keys {
             nets[netID]?.pins.sort { lhs, rhs in
-                if lhs.refdes != rhs.refdes {
-                    return lhs.refdes.localizedStandardCompare(rhs.refdes) == .orderedAscending
-                }
-                return lhs.pinName.localizedStandardCompare(rhs.pinName) == .orderedAscending
+                (lhs.refdes, lhs.componentID, lhs.gateID, lhs.pinID) < (rhs.refdes, rhs.componentID, rhs.gateID, rhs.pinID)
             }
         }
         for net in nets.values where !net.name.isEmpty {
@@ -339,11 +380,11 @@ struct HorizontalDesignIndex {
     }
 
     var sortedComponents: [HorizontalDesignComponent] {
-        components.values.sorted { $0.refdes.localizedStandardCompare($1.refdes) == .orderedAscending }
+        components.values.sorted { ($0.refdes, $0.id) < ($1.refdes, $1.id) }
     }
 
     var sortedNets: [HorizontalDesignNet] {
-        nets.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        nets.values.sorted { ($0.name, $0.id) < ($1.name, $1.id) }
     }
 
     func component(refdes: String) -> HorizontalDesignComponent? {
@@ -386,12 +427,14 @@ struct HorizontalDesignIndex {
         return [HorizontalProjectSchematic(block: block, schematicFilename: schematic.url.lastPathComponent, schematic: schematic)]
     }
 
-    static func loadTopBlockJSON(project: HorizontalProject) -> JSONDictionary? {
+    static func loadTopBlockJSON(project: HorizontalProject, snapshot: HorizontalDispatchSnapshot? = nil) -> JSONDictionary? {
         let filename = project.blocks.first(where: \.isTop)?.blockFilename ?? project.blockFilename
         guard let filename, !filename.isEmpty else {
             return nil
         }
-        return try? JSONHelper.loadDictionary(from: project.baseURL.appendingPathComponent(filename))
+        let url = project.baseURL.appendingPathComponent(filename)
+        if let snapshot { return snapshot.json(at: url) }
+        return try? JSONHelper.loadDictionary(from: url)
     }
 
     private static func lowercasedKeys(_ map: [String: JSONDictionary]) -> [String: JSONDictionary] {
@@ -426,14 +469,33 @@ final class HorizontalDispatchPoolIndex {
 
     private var entities: [String: Entity] = [:]
     private var units: [String: Unit] = [:]
+    private var parts: [String: JSONDictionary] = [:]
+    private var packages: [String: JSONDictionary] = [:]
+    private var padstacks: [String: JSONDictionary] = [:]
 
-    init(project: HorizontalProject) {
+    init(project: HorizontalProject, snapshot: HorizontalDispatchSnapshot? = nil) {
         guard let poolDirectory = project.poolDirectory else {
             return
         }
         let poolURL = project.baseURL.appendingPathComponent(poolDirectory)
-        for url in Self.jsonFiles(under: poolURL.appendingPathComponent("entities")) {
-            guard let json = try? JSONHelper.loadDictionary(from: url),
+        func files(_ category: String) -> [URL] {
+            let url = poolURL.appendingPathComponent(category)
+            return snapshot?.jsonFiles(under: url) ?? Self.jsonFiles(under: url)
+        }
+        func read(_ url: URL) -> JSONDictionary? {
+            if let snapshot { return snapshot.json(at: url) }
+            return try? JSONHelper.loadDictionary(from: url)
+        }
+        for category in ["parts", "packages", "padstacks"] {
+            for url in files(category) {
+                guard let json = read(url), let id = json.string("uuid")?.lowercased() else { continue }
+                if category == "parts" { parts[id] = json }
+                else if category == "packages" { packages[id] = json }
+                else { padstacks[id] = json }
+            }
+        }
+        for url in files("entities") {
+            guard let json = read(url),
                   json.string("type") == "entity",
                   let uuid = json.string("uuid")?.lowercased() else {
                 continue
@@ -448,8 +510,8 @@ final class HorizontalDispatchPoolIndex {
             }
             entities[uuid] = Entity(name: json.string("name") ?? "", prefix: json.string("prefix") ?? "", gates: gates)
         }
-        for url in Self.jsonFiles(under: poolURL.appendingPathComponent("units")) {
-            guard let json = try? JSONHelper.loadDictionary(from: url),
+        for url in files("units") {
+            guard let json = read(url),
                   json.string("type") == "unit",
                   let uuid = json.string("uuid")?.lowercased() else {
                 continue
@@ -467,6 +529,53 @@ final class HorizontalDispatchPoolIndex {
 
     func entity(_ id: String) -> Entity? {
         entities[id.lowercased()]
+    }
+
+    private func resolvedPart(_ id: String, visited: Set<String> = []) -> JSONDictionary? {
+        let id = id.lowercased()
+        guard !visited.contains(id), let part = parts[id] else { return nil }
+        guard let base = part.string("base") else { return part }
+        guard var resolved = resolvedPart(base, visited: visited.union([id])) else { return nil }
+        for (key, value) in part where !["entity", "package", "pad_map"].contains(key) {
+            if let pair = value as? [Any], pair.count == 2, pair[0] as? Bool == true { continue }
+            resolved[key] = value
+        }
+        return resolved
+    }
+
+    func partValue(_ id: String) -> String? {
+        guard let value = resolvedPart(id)?["value"] as? [Any], value.count == 2 else { return nil }
+        return value[1] as? String
+    }
+
+    func pads(partID: String, gatePinPath: String) -> [HorizontalDesignPad] {
+        guard let part = resolvedPart(partID), let packageID = part.string("package"),
+              let package = packages[packageID.lowercased()] else { return [] }
+        let pads = package.dictionaryMap("pads")
+        return part.dictionaryMap("pad_map").compactMap { id, mapping in
+            guard let gate = mapping.string("gate"), let pin = mapping.string("pin"),
+                  "\(gate)/\(pin)".lowercased() == gatePinPath.lowercased() else { return nil }
+            let padID = mapping.string("pad") ?? id
+            guard let pad = pads.first(where: { $0.key.lowercased() == padID.lowercased() }) else { return nil }
+            return HorizontalDesignPad(id: pad.key, name: pad.value.string("name") ?? "")
+        }.sorted { ($0.name, $0.id) < ($1.name, $1.id) }
+    }
+
+    func terminals(partID: String) -> [JSONDictionary] {
+        guard let part = resolvedPart(partID), let packageID = part.string("package"), let package = packages[packageID.lowercased()] else { return [] }
+        let mappings = part.dictionaryMap("pad_map")
+        return package.dictionaryMap("pads").map { id, pad -> JSONDictionary in
+            let mapping = mappings.first { ($0.value.string("pad") ?? $0.key).caseInsensitiveCompare(id) == .orderedSame }?.value
+            let type = pad.string("padstack").flatMap { padstacks[$0.lowercased()]?.string("padstack_type") }
+            var result: JSONDictionary = ["id": id, "name": pad.string("name") ?? "",
+                                           "role": ["hole", "mechanical"].contains(type ?? "") ? "mechanical" : mapping == nil ? "unmapped" : "electrical"]
+            if let mapping, let gate = mapping.string("gate"), let pin = mapping.string("pin") {
+                result["gate_id"] = gate
+                result["pin_id"] = pin
+                result["gate_pin_path"] = "\(gate)/\(pin)"
+            }
+            return result
+        }.sorted { ($0.string("name") ?? "", $0.string("id") ?? "") < ($1.string("name") ?? "", $1.string("id") ?? "") }
     }
 
     func unit(_ id: String) -> Unit? {

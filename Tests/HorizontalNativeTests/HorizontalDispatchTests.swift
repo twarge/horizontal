@@ -8,6 +8,11 @@ import XCTest
 /// new-document template written to disk.
 final class HorizontalDispatchTests: XCTestCase {
     private func call(_ method: String, _ params: [String: Any] = [:]) throws -> [String: Any] {
+        var params = params
+        if method == "pool_write", let handle = params["handle"] as? Int {
+            params["expected_revision"] = try HorizontalDispatchSession.shared.perform { try $0.entry(handle: handle).revision }
+            params["operation_id"] = UUID().uuidString
+        }
         let request: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": method, "params": params]
         let requestJSON = String(decoding: try JSONSerialization.data(withJSONObject: request), as: UTF8.self)
         let responseJSON = HorizontalDispatch.call(requestJSON)
