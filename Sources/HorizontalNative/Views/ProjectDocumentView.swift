@@ -723,6 +723,16 @@ struct ProjectWorkspaceView: View {
     }
 
     var body: some View {
+        workspaceWithViewStateObservers
+    }
+
+    /// SwiftUI type-checks a modifier chain as a single expression, and this
+    /// one — fifteen scene values, thirteen observers, the window monitors —
+    /// grew past what the Xcode 26 toolchain would finish, so CI failed to
+    /// build while ours still (just) got through at about ten seconds for the
+    /// one expression. The slices below apply in the same order the one chain
+    /// did; each is its own expression, so each is type-checked on its own.
+    private var workspaceWithFocusedValues: some View {
         workspaceContentWithAlerts
             .onReceive(
                 NotificationCenter.default.publisher(for: HorizontalPoolLibrary.itemDidSaveNotification)
@@ -738,16 +748,29 @@ struct ProjectWorkspaceView: View {
             .focusedSceneValue(\.horizonReadOnlyOperation, isReadOnly)
             .focusedSceneValue(\.horizonSchematicDisplayOptions, $schematicDisplayOptions)
             .focusedSceneValue(\.horizonSchematicAvailable, selectedSchematicAvailable)
+    }
+
+    /// The actions the menu bar sends back to this document.
+    private var workspaceWithSceneActions: some View {
+        workspaceWithFocusedValues
             .focusedSceneValue(\.horizonDocumentViewActions, documentViewActions)
             .focusedSceneValue(\.horizonCanvasCommandActions, activeCanvasCommandActions)
             .focusedSceneValue(\.horizonFindAction, activateFind)
             .focusedSceneValue(\.horizonDistractionFreeMode, $isDistractionFree)
             .focusedSceneValue(\.horizonWindowToolbarHidden, $isWindowToolbarHidden)
+    }
+
+    private var workspaceWithBoardSceneActions: some View {
+        workspaceWithSceneActions
             .focusedSceneValue(\.horizonToggleRightSidebarAction, { toggleRightSidebar(.selection) })
             .focusedSceneValue(\.horizonUpdateAllPlanesAction, updateAllBoardPlanes)
             .focusedSceneValue(\.horizonPowerNetsAction, showPowerNets)
             .focusedSceneValue(\.horizonClearAllPlanesAction, clearAllBoardPlanes)
             .focusedSceneValue(\.horizonBoardRulesAction, showBoardRulesWindow)
+    }
+
+    private var workspaceWithWindowObservers: some View {
+        workspaceWithBoardSceneActions
             .background(WorkspaceKeyCommandMonitor(
                 onFind: activateFind,
                 onDistractionFree: toggleDistractionFreeMode,
@@ -756,6 +779,11 @@ struct ProjectWorkspaceView: View {
             .background(WindowSizeObserver(savedSize: windowSize, onSizeChange: updateWindowSize))
             .onAppear(perform: appear)
             .onDisappear(perform: unregisterLiveDocument)
+    }
+
+    /// What the panes and the window show.
+    private var workspaceWithSelectionObservers: some View {
+        workspaceWithWindowObservers
             .onChange(of: navigatorSelection) { _, selection in
                 syncPanesForSelection(selection)
             }
@@ -775,6 +803,11 @@ struct ProjectWorkspaceView: View {
             .onChange(of: project.board?.uuid) { _, _ in
                 exportSettings.refreshBoardLayers(from: project.board)
             }
+    }
+
+    /// What is written back to the file's saved view state.
+    private var workspaceWithViewStateObservers: some View {
+        workspaceWithSelectionObservers
             .onChange(of: schematicDisplayOptions) { _, _ in
                 scheduleFileViewStateSave()
             }
