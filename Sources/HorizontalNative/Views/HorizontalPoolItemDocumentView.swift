@@ -5,9 +5,10 @@ import SwiftUI
 /// preview, backed by an editor session whose commits flow into the
 /// document (dirty state, Save, undo) like any other document edit.
 ///
-/// Until a kind has its full editor, this shows the item's header fields —
-/// the values Horizon's own editors keep in their title-bar popover — plus
-/// its checks and the same preview the library pane draws.
+/// Every kind has its own editor now: a canvas for packages, padstacks,
+/// decals, symbols and frames, a form for units, entities and parts. The
+/// header fields Horizon keeps in its title-bar popover — plus the item's
+/// checks — ride along in each editor's sidebar.
 struct HorizontalPoolItemDocumentView: View {
     @ObservedObject var session: HorizontalPoolItemEditorSession
     @Binding var document: HorizontalProjectDocument
@@ -130,17 +131,6 @@ struct HorizontalPoolItemEditorContent: View {
                     isReadOnly: isReadOnly,
                     poolURLs: HorizontalPoolLibrary.editorPoolURLs(forPoolRoot: session.poolURL).reversed()
                 ) { commit(.part($0), $1) }
-            default:
-                HStack(spacing: 0) {
-                    ScrollView {
-                        HorizontalPoolItemHeaderForm(session: session, isReadOnly: isReadOnly, commit: commit)
-                            .padding(20)
-                    }
-                    .frame(width: 380)
-                    Divider()
-                    HorizontalPoolItemPreviewView(item: session.libraryItem, index: session.index)
-                        .id(session.model.uuid)
-                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -498,7 +488,7 @@ struct HorizontalPoolItemHeaderForm: View {
     private func toggleRow(_ label: String, _ value: Bool, onCommit: @escaping (Bool) -> Void) -> some View {
         GridRow {
             Text("")
-            Toggle(label, isOn: Binding(get: { value }, set: onCommit))
+            Toggle(label, isOn: Binding(get: { value }, set: { onCommit($0) }))
                 .disabled(isReadOnly)
         }
     }

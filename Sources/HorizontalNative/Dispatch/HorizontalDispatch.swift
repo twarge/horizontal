@@ -44,7 +44,7 @@ public enum HorizontalDispatch {
             }
             return ["jsonrpc": "2.0", "id": id ?? NSNull(), "result": HorizontalDispatchJSON.sanitized(result)]
         } catch let error as HorizontalDispatchError {
-            return errorResponse(id: id, code: error.code, message: error.message, data: error.data)
+            return errorResponse(id: id, code: error.code, message: error.message)
         } catch {
             return errorResponse(id: id, code: .applicationError, message: error.localizedDescription)
         }
@@ -100,7 +100,6 @@ struct HorizontalDispatchError: Error {
 
     var code: Code
     var message: String
-    var data: JSONDictionary? = nil
 
     static func invalidParams(_ message: String) -> Self {
         Self(code: .invalidParams, message: message)
