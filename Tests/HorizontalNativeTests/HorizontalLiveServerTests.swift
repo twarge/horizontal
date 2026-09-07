@@ -14,6 +14,12 @@ final class HorizontalLiveServerTests: XCTestCase {
     private var applied: [(HorizontalProjectArchive, String)] = []
 
     override func setUp() async throws {
+        // The channel ships off; this suite is about what it does once on.
+        // Without this the listener never comes up and every test here skips.
+        let enabledKey = HorizontalLiveServer.enabledDefaultsKey
+        UserDefaults.standard.set(true, forKey: enabledKey)
+        addTeardownBlock { UserDefaults.standard.removeObject(forKey: enabledKey) }
+
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("horizontal-live-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -52,6 +58,17 @@ final class HorizontalLiveServerTests: XCTestCase {
         }
         handle = HorizontalDispatchSession.shared.registerLive(document)
         return document
+    }
+
+    func testTheChannelIsOffUntilItIsTurnedOn() throws {
+        let suite = "horizontal-live-default-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: suite) }
+
+        XCTAssertFalse(HorizontalLiveServer.isEnabled(defaults: defaults))
+        defaults.set(true, forKey: HorizontalLiveServer.enabledDefaultsKey)
+        XCTAssertTrue(HorizontalLiveServer.isEnabled(defaults: defaults))
+        XCTAssertTrue(HorizontalAppearanceSettings(defaults: defaults).isLiveServerEnabled)
     }
 
     private func discovery() throws -> (port: UInt16, token: String) {

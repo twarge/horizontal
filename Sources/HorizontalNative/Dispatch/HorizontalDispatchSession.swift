@@ -19,6 +19,12 @@ final class HorizontalDispatchSession: @unchecked Sendable {
         entries.values.sorted { $0.handle < $1.handle }
     }
 
+    /// How many open documents are being served live — what decides whether
+    /// the live listener runs.
+    var liveDocumentCount: Int {
+        perform { session in session.entries.values.filter { $0.live != nil }.count }
+    }
+
     /// Opens the project at `url`, or returns the entry already holding it.
     func open(url: URL) throws -> HorizontalDispatchProjectEntry {
         let standardized = url.standardizedFileURL
@@ -85,7 +91,7 @@ final class HorizontalDispatchSession: @unchecked Sendable {
             entry.liveRevision = document.revision()
             session.nextHandle += 1
             session.entries[entry.handle] = entry
-            HorizontalLiveServer.documentsDidChange(count: session.entries.values.filter { $0.live != nil }.count)
+            HorizontalLiveServer.documentsDidChange(count: session.liveDocumentCount)
             return entry.handle
         }
     }
@@ -97,7 +103,7 @@ final class HorizontalDispatchSession: @unchecked Sendable {
                 return
             }
             session.entries.removeValue(forKey: handle)
-            HorizontalLiveServer.documentsDidChange(count: session.entries.values.filter { $0.live != nil }.count)
+            HorizontalLiveServer.documentsDidChange(count: session.liveDocumentCount)
         }
     }
 
