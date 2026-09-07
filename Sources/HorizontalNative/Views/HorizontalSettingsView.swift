@@ -105,6 +105,7 @@ struct HorizontalSettingsView: View {
 
             Section("Schematic") {
                 Toggle("Fill Net Label Background", isOn: appearanceSettings.netLabelBackgroundBinding())
+                Toggle("Fill Closed Symbol Background", isOn: appearanceSettings.closedSymbolBackgroundBinding())
             }
 
             Section("Hover") {
