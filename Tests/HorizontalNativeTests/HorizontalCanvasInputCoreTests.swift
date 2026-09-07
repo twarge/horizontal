@@ -36,6 +36,7 @@ final class HorizontalCanvasInputCoreTests: XCTestCase {
         case .rotateSelection: return "rotate"
         case .twirlSelection: return "twirl"
         case .toggleVia: return "via"
+        case .updateAllPlanes: return "updatePlanes"
         default: return "other"
         }
     }
@@ -102,6 +103,13 @@ final class HorizontalCanvasInputCoreTests: XCTestCase {
     func testCommandViaDependsOnTrackViaSupport() {
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("v"), supportsTrackVias: true)), "via")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("v"), supportsTrackVias: false)), "moveNetExisting")
+    }
+
+    func testCommandUpdateAllPlanesIsBoardOnly() {
+        // Q pours the planes on the board canvas; the schematic leaves the key
+        // to the Design menu, which updates the scene's board from anywhere.
+        XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("q"), supportsTrackVias: true)), "updatePlanes")
+        XCTAssertNil(HorizontalCanvasInputCore.command(key("q"), supportsTrackVias: false))
     }
 
     func testCommandRejectsExtraModifiers() {

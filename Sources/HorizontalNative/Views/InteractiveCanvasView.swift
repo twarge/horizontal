@@ -77,6 +77,8 @@ enum HorizontalCanvasCommand {
     case selectBoardLayerView(HorizontalBoardLayerViewPreset)
     case definePlane
     case editPlane
+    /// Pours every plane (Q): the fills go stale as copper moves.
+    case updateAllPlanes
     case convertPolygonToLineLoop
     case convertLineLoopToPolygon
     /// Replace the selected polygon corner with a tangent arc whose radius

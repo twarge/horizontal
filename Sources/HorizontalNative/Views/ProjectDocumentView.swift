@@ -1417,6 +1417,7 @@ struct ProjectWorkspaceView: View {
                                 onPlaneEdit: { board, actionName in
                                     applyBoardPlaneEdit(board, actionName: actionName)
                                 },
+                                onUpdateAllPlanes: updateAllBoardPlanes,
                                 onNetClassChange: { netID, netClassID in
                                     if let selectedSchematic {
                                         applyEditedNetClass(
@@ -2114,43 +2115,35 @@ struct ProjectWorkspaceView: View {
         guard !isReadOnly else {
             return
         }
-        guard let previousBoard = project.board,
-              !previousBoard.planes.isEmpty else {
+        guard let board = project.board, !board.planes.isEmpty else {
             return
         }
 
         Task {
-            await pourAllPlanes(from: previousBoard, pouring: previousBoard, undo: .updateAll)
+            await pourAllPlanes(board, registersUndo: true)
         }
     }
 
-    /// Pours, persists, and registers undo for a plane create/edit the canvas
-    /// already applied to `editedBoard` (e.g. a freshly drawn plane). Mirrors the
-    /// manual "Update All Planes" path so a new plane fills immediately and its
-    /// fragments are cached; the bumped `boardSyncRevision` re-feeds the canvas.
+    /// Persists a plane create/edit the canvas already applied to `editedBoard`
+    /// (a drawn or defined plane, changed settings), then pours it so the fill
+    /// shows at once. The definition lands first, under the named undo, so it
+    /// survives whatever happens to the pour: a pour is discarded when the
+    /// board moves under it, and that must only ever cost the fills. (Pouring
+    /// the edit and applying the result afterwards lost the plane entirely:
+    /// the project board never matched a board with one more plane on it.)
     private func applyBoardPlaneEdit(_ editedBoard: HorizontalBoard, actionName: String) {
-        guard !isReadOnly else {
+        guard !isReadOnly, let previousBoard = project.board else {
             return
         }
-        guard let previousBoard = project.board else {
-            return
-        }
+        registerBoardPlaneEditUndo(previousBoard, actionName: actionName)
+        applyEditedBoard(editedBoard)
         Task {
-            await pourAllPlanes(
-                from: previousBoard,
-                pouring: editedBoard,
-                undo: .edit(actionName: actionName)
-            )
+            await pourAllPlanes(editedBoard, registersUndo: false)
         }
     }
 
     /// Which undo entry a pour registers. An enum rather than a closure so
     /// nothing non-Sendable has to survive the `await` in `pourAllPlanes`.
-    private enum PlanePourUndo {
-        case updateAll
-        case edit(actionName: String)
-    }
-
     /// Pours every plane off the main thread, publishing progress so the board
     /// pane can show a determinate ring.
     ///
@@ -2163,11 +2156,10 @@ struct ProjectWorkspaceView: View {
     /// `planePourProgress` would be a main-actor write from a background thread;
     /// yielding to a stream and consuming it here keeps every state write on the
     /// main actor, where the `for await` loop already is.
-    private func pourAllPlanes(
-        from previousBoard: HorizontalBoard,
-        pouring boardToPour: HorizontalBoard,
-        undo: PlanePourUndo
-    ) async {
+    /// Pours every plane on `boardToPour`, the project's board as it stands,
+    /// and applies the result unless the board moved meanwhile. `registersUndo`
+    /// names the step "Update All Planes"; a plane edit has registered its own.
+    private func pourAllPlanes(_ boardToPour: HorizontalBoard, registersUndo: Bool) async {
         // A second pour would work from a stale snapshot and clobber the first.
         // Reachable because Q stays live while the overlay covers only the canvas.
         guard !isPouringPlanes else {
@@ -2214,11 +2206,8 @@ struct ProjectWorkspaceView: View {
 
         planePourCache = updatedCache
 
-        switch undo {
-        case .updateAll:
-            registerBoardPlaneUpdateUndo(previousBoard)
-        case .edit(let actionName):
-            registerBoardPlaneEditUndo(previousBoard, actionName: actionName)
+        if registersUndo {
+            registerBoardPlaneUpdateUndo(boardToPour)
         }
         applyEditedBoard(pouredBoard, writesPlaneCache: true)
         boardSyncRevision += 1

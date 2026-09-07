@@ -3674,10 +3674,22 @@ enum BoardSceneFactory {
         materialPalette: MaterialPalette
     ) {
         let board = nodes.board
+        // The drills through a layer, once per layer: every plane on it is cut
+        // by the same holes.
+        var drillCutoutsByLayer = [Int: [[HorizontalPoint]]]()
         for plane in planes where !isExcludedFrom3DScene(plane.layer) {
+            let layerKey = plane.layer ?? Int.min
+            let drillCutouts: [[HorizontalPoint]]
+            if let cached = drillCutoutsByLayer[layerKey] {
+                drillCutouts = cached
+            } else {
+                drillCutouts = drillCutoutPaths(for: plane.layer, board: board)
+                drillCutoutsByLayer[layerKey] = drillCutouts
+            }
             for fragment in plane.renderFragments.prefix(maximumPlaneFragments) {
                 guard let node = planeNode(
                     for: fragment,
+                    drillCutouts: drillCutouts,
                     layer: plane.layer,
                     center: center,
                     board: board,
@@ -3695,8 +3707,29 @@ enum BoardSceneFactory {
         }
     }
 
+    /// A plane's poured copper with the drills through it taken out. The
+    /// pour treats a plated hole as copper to connect to — its fill and its
+    /// thermal spokes run straight across the hole — while the board has a
+    /// hole there. Only drills whose bounds meet the fragment's are clipped;
+    /// the fragment's own holes (thermal gaps, clearances) pass through.
+    static func planeSceneFragments(
+        _ fragment: HorizontalPlaneFragment,
+        drillCutouts: [[HorizontalPoint]]
+    ) -> [[[HorizontalPoint]]] {
+        guard let outer = fragment.paths.first else {
+            return []
+        }
+        let bounds = HorizontalRect(points: outer)
+        let drills = drillCutouts.filter { bounds.intersects(HorizontalRect(points: $0)) }
+        guard !drills.isEmpty else {
+            return [fragment.paths]
+        }
+        return clippedSceneFragments(subjects: [outer], cutouts: Array(fragment.paths.dropFirst()) + drills)
+    }
+
     private static func planeNode(
         for fragment: HorizontalPlaneFragment,
+        drillCutouts: [[HorizontalPoint]],
         layer: Int?,
         center: HorizontalPoint,
         board: HorizontalBoard,
@@ -3716,13 +3749,13 @@ enum BoardSceneFactory {
         sideMaterial.roughness.contents = isFallback ? 0.36 : 0.26
         sideMaterial.writesToDepthBuffer = !isFallback
 
-        guard let outer = fragment.paths.first else {
-            return nil
-        }
         // Thermal reliefs make plane holes large next to a tile, so tiling
         // multiplies their points; one earcut per fragment is cheaper here.
-        _ = outer
-        let template = ExtrudedMeshTemplate(SlabFragments(fragments: [fragment.paths]))
+        let fragments = planeSceneFragments(fragment, drillCutouts: drillCutouts)
+        guard !fragments.isEmpty else {
+            return nil
+        }
+        let template = ExtrudedMeshTemplate(SlabFragments(fragments: fragments))
         guard !template.isEmpty else {
             return nil
         }
@@ -4854,7 +4887,7 @@ enum BoardSceneFactory {
         return cleanedClosedScenePoints(points)
     }
 
-    private static func drillCutoutPaths(for layer: Int?, board: HorizontalBoard) -> [[HorizontalPoint]] {
+    static func drillCutoutPaths(for layer: Int?, board: HorizontalBoard) -> [[HorizontalPoint]] {
         let viaLayersByHoleID = Dictionary(
             uniqueKeysWithValues: board.vias.map { via in
                 ("\(via.id)/hole", Set(via.connectedLayers.filter(HorizontalBoardLayers.isCopper)))
@@ -4890,7 +4923,16 @@ enum BoardSceneFactory {
             return []
         }
 
-        let rawFragments = BoardSceneClipperPathStorage.withPaths(subjects, cutouts) { subjectStorage, cutoutStorage in
+        // A cutout is a solid region to remove, whatever way round it was
+        // drawn. Clipper unions them with the nonzero rule, where a clockwise
+        // path counts against a counter-clockwise one: a drill overlapping a
+        // pour's clockwise thermal-gap hole cancelled it there, and copper
+        // came back over the drill instead of leaving it.
+        let orientedCutouts = cutouts.map { path in
+            HorizontalBoardOutlines.signedArea(path) < 0 ? Array(path.reversed()) : path
+        }
+
+        let rawFragments = BoardSceneClipperPathStorage.withPaths(subjects, orientedCutouts) { subjectStorage, cutoutStorage in
             HorizontalClipperBuildPlaneFill(
                 subjectStorage.pointer,
                 Int32(subjectStorage.count),
