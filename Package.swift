@@ -18,7 +18,12 @@ let package = Package(
         // only depend on package products (not bare targets).
         .library(name: "HorizontalStepImporter", targets: ["HorizontalStepImporter"]),
         .library(name: "HorizontalPlaneClipper", targets: ["HorizontalPlaneClipper"]),
-        .executable(name: "HorizontalProjectRoundTrip", targets: ["HorizontalProjectRoundTrip"])
+        .executable(name: "HorizontalProjectRoundTrip", targets: ["HorizontalProjectRoundTrip"]),
+        // The headless front ends over the app's own model: a dynamic library
+        // exporting one C symbol (loaded by the Python package in python/),
+        // and a command line tool speaking the same JSON-RPC dispatch.
+        .library(name: "HorizontalPy", type: .dynamic, targets: ["HorizontalPy"]),
+        .executable(name: "horizontal", targets: ["HorizontalCLI"])
         // No `HorizontalNative` executable product: the app is built by
         // Horizontal.xcodeproj, which compiles Sources/HorizontalNative directly
         // and links only the library products above. Exposing it here let
@@ -68,7 +73,11 @@ let package = Package(
             path: "Sources/HorizontalPlaneClipper",
             publicHeadersPath: "include"
         ),
-        .executableTarget(
+        // A library target, not an executable: the `@main` App lives in
+        // HorizontalNativeApp.swift, which only the Xcode app target compiles.
+        // Everything else (model, exporters, and the Dispatch/ layer) is what
+        // the tests, HorizontalPy, and HorizontalCLI link.
+        .target(
             name: "HorizontalNative",
             dependencies: [
                 "HorizontalProjectIO",
@@ -76,6 +85,23 @@ let package = Package(
                 "HorizontalPlaneClipper"
             ],
             path: "Sources/HorizontalNative",
+            exclude: ["HorizontalNativeApp.swift"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        .target(
+            name: "HorizontalPy",
+            dependencies: ["HorizontalNative"],
+            path: "Sources/HorizontalPy",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        .executableTarget(
+            name: "HorizontalCLI",
+            dependencies: ["HorizontalNative"],
+            path: "Sources/HorizontalCLI",
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]

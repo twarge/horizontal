@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "horizontal": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--project", "python", "horizontal-mcp"]
+    }
+  }
+}

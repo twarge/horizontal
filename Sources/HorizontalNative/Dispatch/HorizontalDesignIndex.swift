@@ -1,0 +1,482 @@
+import Foundation
+
+struct HorizontalDesignPin: Hashable {
+    var gateID: String
+    var pinID: String
+    var gateName: String
+    var gateSuffix: String
+    var pinName: String
+    var direction: String
+    var netID: String?
+
+    var gatePinPath: String { "\(gateID)/\(pinID)" }
+}
+
+struct HorizontalDesignSymbolPlacement: Hashable {
+    var sheetIndex: Int
+    var sheetName: String
+    var gateID: String
+    var gateSuffix: String
+    var position: HorizontalPoint
+    var angle: Int
+    var mirrored: Bool
+}
+
+struct HorizontalDesignBoardPlacement: Hashable {
+    var position: HorizontalPoint
+    var angle: Int
+    var bottom: Bool
+    var packageID: String?
+    var fixed: Bool
+}
+
+struct HorizontalDesignComponent {
+    var id: String
+    var refdes: String
+    var value: String
+    var partID: String?
+    var entityID: String?
+    var entityName: String?
+    var noPopulate: Bool
+    var details: HorizontalComponentDetails?
+    var pins: [HorizontalDesignPin]
+    var symbolPlacements: [HorizontalDesignSymbolPlacement]
+    var boardPlacement: HorizontalDesignBoardPlacement?
+    var group: String?
+    var tag: String?
+
+    var connectedPins: [HorizontalDesignPin] { pins.filter { $0.netID != nil } }
+}
+
+struct HorizontalDesignNetPin: Hashable {
+    var componentID: String
+    var refdes: String
+    var gateName: String
+    var gateSuffix: String
+    var pinName: String
+    var direction: String
+}
+
+struct HorizontalDesignNet {
+    var id: String
+    var name: String
+    var netClassName: String?
+    var isPower: Bool
+    var isPort: Bool
+    var pins: [HorizontalDesignNetPin]
+}
+
+struct HorizontalDesignSheet {
+    var id: String
+    var index: Int
+    var name: String
+    var symbolCount: Int
+    var blockName: String
+    /// Nil when the schematic stands alone (no blocks file).
+    var blockID: String?
+    var isTopBlock: Bool
+}
+
+/// Everything the netlist-shaped dispatch methods answer from, built once per
+/// loaded project: components with their pins resolved to names and nets,
+/// nets with their pins, and where each component sits on the schematic and
+/// the board. Pin names come from the placed symbols where a gate is placed,
+/// and from the project pool's units otherwise.
+struct HorizontalDesignIndex {
+    private(set) var components: [String: HorizontalDesignComponent] = [:]
+    private(set) var componentIDsByRefdes: [String: String] = [:]
+    private(set) var nets: [String: HorizontalDesignNet] = [:]
+    private(set) var netIDsByName: [String: String] = [:]
+    private(set) var sheets: [HorizontalDesignSheet] = []
+    /// Horizon's group and tag names by id (the block's `group_names` and
+    /// `tag_names`).
+    private(set) var groupNames: [String: String] = [:]
+    private(set) var tagNames: [String: String] = [:]
+
+    init(project: HorizontalProject) {
+        let pool = HorizontalDispatchPoolIndex(project: project)
+        let block = Self.loadTopBlockJSON(project: project)
+        let blockComponents = Self.lowercasedKeys(block?.dictionaryMap("components") ?? [:])
+        for (id, name) in block?["group_names"] as? [String: String] ?? [:] {
+            groupNames[id.lowercased()] = name
+        }
+        for (id, name) in block?["tag_names"] as? [String: String] ?? [:] {
+            tagNames[id.lowercased()] = name
+        }
+        let partsByID = Dictionary(
+            project.poolParts.map { ($0.id.lowercased(), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        var componentInfo = [String: SchematicComponentInfo]()
+        var symbolPlacements = [String: [HorizontalDesignSymbolPlacement]]()
+        var symbolPinNames = [String: [String: (name: String, direction: String)]]()
+        var netDetails = [String: HorizontalNetDetails]()
+
+        for entry in Self.schematics(of: project) {
+            for sheet in entry.schematic.sheets {
+                sheets.append(HorizontalDesignSheet(
+                    id: sheet.id,
+                    index: sheet.index,
+                    name: sheet.name,
+                    symbolCount: sheet.symbols.count,
+                    blockName: entry.block.displayName,
+                    blockID: project.schematics.isEmpty ? nil : entry.block.uuid,
+                    isTopBlock: entry.block.isTop
+                ))
+                for (componentID, info) in sheet.componentInfo {
+                    componentInfo[componentID.lowercased()] = info
+                }
+                for (netID, details) in sheet.netDetails where netDetails[netID.lowercased()] == nil {
+                    netDetails[netID.lowercased()] = details
+                }
+                for symbol in sheet.symbols {
+                    guard let componentID = symbol.componentID?.lowercased() else {
+                        continue
+                    }
+                    symbolPlacements[componentID, default: []].append(HorizontalDesignSymbolPlacement(
+                        sheetIndex: sheet.index,
+                        sheetName: sheet.name,
+                        gateID: symbol.gateID?.lowercased() ?? "",
+                        gateSuffix: "",
+                        position: symbol.position,
+                        angle: symbol.angle,
+                        mirrored: symbol.mirrored
+                    ))
+                    for pin in symbol.symbolPinNames {
+                        symbolPinNames[componentID, default: [:]][pin.gatePinPath.lowercased()] = (pin.primaryName, pin.primaryDirection)
+                    }
+                }
+            }
+        }
+        sheets.sort { lhs, rhs in
+            if lhs.isTopBlock != rhs.isTopBlock {
+                return lhs.isTopBlock
+            }
+            return lhs.index < rhs.index
+        }
+
+        var boardPlacements = [String: HorizontalDesignBoardPlacement]()
+        if let board = project.board {
+            for package in board.packages {
+                guard let componentID = package.componentID?.lowercased() else {
+                    continue
+                }
+                boardPlacements[componentID] = HorizontalDesignBoardPlacement(
+                    position: package.position,
+                    angle: package.angle,
+                    bottom: package.mirrored,
+                    packageID: package.packageID,
+                    fixed: package.fixed
+                )
+            }
+            for (netID, details) in board.netDetails where netDetails[netID.lowercased()] == nil {
+                netDetails[netID.lowercased()] = details
+            }
+        }
+
+        for (componentID, info) in componentInfo {
+            let blockEntry = blockComponents[componentID]
+            let partID = (info.partID ?? info.details?.partID)?.lowercased()
+            let part = partID.flatMap { partsByID[$0] }
+            let entityID = (blockEntry?.string("entity") ?? part?.entityID)?.lowercased()
+            let entity = entityID.flatMap { pool.entity($0) }
+
+            var gates = [String: (name: String, suffix: String, unitID: String?)]()
+            if let entity {
+                for (gateID, gate) in entity.gates {
+                    gates[gateID] = (gate.name, gate.suffix, gate.unitID)
+                }
+            }
+            if let part {
+                for gate in part.gates {
+                    let gateID = gate.id.lowercased()
+                    let existing = gates[gateID]
+                    gates[gateID] = (
+                        existing?.name ?? "",
+                        gate.suffix.isEmpty ? (existing?.suffix ?? "") : gate.suffix,
+                        gate.unitID.isEmpty ? existing?.unitID : gate.unitID.lowercased()
+                    )
+                }
+            }
+            for (gateID, suffix) in info.gateSuffixes where gates[gateID.lowercased()] == nil {
+                gates[gateID.lowercased()] = ("", suffix, nil)
+            }
+
+            var pins = [String: HorizontalDesignPin]()
+            for (gateID, gate) in gates {
+                guard let unitID = gate.unitID, let unit = pool.unit(unitID) else {
+                    continue
+                }
+                for (pinID, pin) in unit.pins {
+                    pins["\(gateID)/\(pinID)"] = HorizontalDesignPin(
+                        gateID: gateID,
+                        pinID: pinID,
+                        gateName: gate.name,
+                        gateSuffix: gate.suffix,
+                        pinName: pin.name,
+                        direction: pin.direction,
+                        netID: nil
+                    )
+                }
+            }
+            let namesFromSymbols = symbolPinNames[componentID] ?? [:]
+            for (path, state) in info.connections {
+                let key = path.lowercased()
+                let pieces = key.split(separator: "/", maxSplits: 1).map(String.init)
+                let gateID = pieces.first ?? ""
+                let pinID = pieces.count > 1 ? pieces[1] : ""
+                var pin = pins[key] ?? HorizontalDesignPin(
+                    gateID: gateID,
+                    pinID: pinID,
+                    gateName: gates[gateID]?.name ?? "",
+                    gateSuffix: gates[gateID]?.suffix ?? "",
+                    pinName: "",
+                    direction: "",
+                    netID: nil
+                )
+                if pin.pinName.isEmpty, let symbolPin = namesFromSymbols[key] {
+                    pin.pinName = symbolPin.name
+                    pin.direction = symbolPin.direction
+                }
+                if pin.pinName.isEmpty {
+                    pin.pinName = String(pinID.prefix(8))
+                }
+                pin.netID = state.netID?.lowercased()
+                pins[key] = pin
+            }
+            for (key, names) in namesFromSymbols where pins[key]?.pinName.isEmpty ?? false {
+                pins[key]?.pinName = names.name
+                pins[key]?.direction = names.direction
+            }
+
+            let sortedPins = pins.values.sorted { lhs, rhs in
+                if lhs.gateSuffix != rhs.gateSuffix {
+                    return lhs.gateSuffix.localizedStandardCompare(rhs.gateSuffix) == .orderedAscending
+                }
+                return lhs.pinName.localizedStandardCompare(rhs.pinName) == .orderedAscending
+            }
+            var placements = symbolPlacements[componentID] ?? []
+            for index in placements.indices {
+                placements[index].gateSuffix = gates[placements[index].gateID]?.suffix ?? ""
+            }
+            placements.sort { ($0.sheetIndex, $0.gateSuffix) < ($1.sheetIndex, $1.gateSuffix) }
+
+            let component = HorizontalDesignComponent(
+                id: componentID,
+                refdes: info.refdes,
+                value: info.value,
+                partID: partID,
+                entityID: entityID,
+                entityName: entity?.name,
+                noPopulate: info.noPopulate,
+                details: info.details,
+                pins: sortedPins,
+                symbolPlacements: placements,
+                boardPlacement: boardPlacements[componentID],
+                group: blockEntry?.string("group")?.lowercased(),
+                tag: blockEntry?.string("tag")?.lowercased()
+            )
+            components[componentID] = component
+            if !info.refdes.isEmpty {
+                componentIDsByRefdes[info.refdes] = componentID
+            }
+        }
+
+        for (netID, details) in netDetails {
+            nets[netID] = HorizontalDesignNet(
+                id: netID,
+                name: details.name,
+                netClassName: details.netClassName,
+                isPower: details.isPower,
+                isPort: details.isPort,
+                pins: []
+            )
+        }
+        for component in components.values {
+            for pin in component.pins {
+                guard let netID = pin.netID else {
+                    continue
+                }
+                if nets[netID] == nil {
+                    nets[netID] = HorizontalDesignNet(id: netID, name: "", netClassName: nil, isPower: false, isPort: false, pins: [])
+                }
+                nets[netID]?.pins.append(HorizontalDesignNetPin(
+                    componentID: component.id,
+                    refdes: component.refdes,
+                    gateName: pin.gateName,
+                    gateSuffix: pin.gateSuffix,
+                    pinName: pin.pinName,
+                    direction: pin.direction
+                ))
+            }
+        }
+        for netID in nets.keys {
+            nets[netID]?.pins.sort { lhs, rhs in
+                if lhs.refdes != rhs.refdes {
+                    return lhs.refdes.localizedStandardCompare(rhs.refdes) == .orderedAscending
+                }
+                return lhs.pinName.localizedStandardCompare(rhs.pinName) == .orderedAscending
+            }
+        }
+        for net in nets.values where !net.name.isEmpty {
+            netIDsByName[net.name] = net.id
+        }
+    }
+
+    func groupName(_ id: String?) -> String? {
+        guard let id, id != HorizontalProjectEditor.nullUUID else {
+            return nil
+        }
+        return groupNames[id.lowercased()]
+    }
+
+    func tagName(_ id: String?) -> String? {
+        guard let id, id != HorizontalProjectEditor.nullUUID else {
+            return nil
+        }
+        return tagNames[id.lowercased()]
+    }
+
+    var sortedComponents: [HorizontalDesignComponent] {
+        components.values.sorted { $0.refdes.localizedStandardCompare($1.refdes) == .orderedAscending }
+    }
+
+    var sortedNets: [HorizontalDesignNet] {
+        nets.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    func component(refdes: String) -> HorizontalDesignComponent? {
+        if let id = componentIDsByRefdes[refdes], let component = components[id] {
+            return component
+        }
+        return components.values.first { $0.refdes.caseInsensitiveCompare(refdes) == .orderedSame }
+    }
+
+    func component(id: String) -> HorizontalDesignComponent? {
+        components[id.lowercased()]
+    }
+
+    func net(named name: String) -> HorizontalDesignNet? {
+        if let id = netIDsByName[name], let net = nets[id] {
+            return net
+        }
+        return nets.values.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+    }
+
+    func net(id: String) -> HorizontalDesignNet? {
+        nets[id.lowercased()]
+    }
+
+    /// The schematics the PDF exporter walks, in its page order.
+    static func schematics(of project: HorizontalProject) -> [HorizontalProjectSchematic] {
+        if !project.schematics.isEmpty {
+            return project.schematics
+        }
+        guard let schematic = project.schematic else {
+            return []
+        }
+        let block = HorizontalProjectBlock(
+            uuid: schematic.uuid,
+            blockFilename: nil,
+            schematicFilename: schematic.url.lastPathComponent,
+            symbolFilename: nil,
+            isTop: true
+        )
+        return [HorizontalProjectSchematic(block: block, schematicFilename: schematic.url.lastPathComponent, schematic: schematic)]
+    }
+
+    static func loadTopBlockJSON(project: HorizontalProject) -> JSONDictionary? {
+        let filename = project.blocks.first(where: \.isTop)?.blockFilename ?? project.blockFilename
+        guard let filename, !filename.isEmpty else {
+            return nil
+        }
+        return try? JSONHelper.loadDictionary(from: project.baseURL.appendingPathComponent(filename))
+    }
+
+    private static func lowercasedKeys(_ map: [String: JSONDictionary]) -> [String: JSONDictionary] {
+        Dictionary(map.map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { first, _ in first })
+    }
+}
+
+/// Entities and units from the project pool, indexed by uuid, so pins can be
+/// named for gates that have no symbol placed on any sheet.
+final class HorizontalDispatchPoolIndex {
+    struct Gate {
+        var name: String
+        var suffix: String
+        var unitID: String?
+    }
+
+    struct Entity {
+        var name: String
+        var prefix: String
+        var gates: [String: Gate]
+    }
+
+    struct Pin {
+        var name: String
+        var direction: String
+    }
+
+    struct Unit {
+        var name: String
+        var pins: [String: Pin]
+    }
+
+    private var entities: [String: Entity] = [:]
+    private var units: [String: Unit] = [:]
+
+    init(project: HorizontalProject) {
+        guard let poolDirectory = project.poolDirectory else {
+            return
+        }
+        let poolURL = project.baseURL.appendingPathComponent(poolDirectory)
+        for url in Self.jsonFiles(under: poolURL.appendingPathComponent("entities")) {
+            guard let json = try? JSONHelper.loadDictionary(from: url),
+                  json.string("type") == "entity",
+                  let uuid = json.string("uuid")?.lowercased() else {
+                continue
+            }
+            var gates = [String: Gate]()
+            for (gateID, gate) in json.dictionaryMap("gates") {
+                gates[gateID.lowercased()] = Gate(
+                    name: gate.string("name") ?? "",
+                    suffix: gate.string("suffix") ?? "",
+                    unitID: gate.string("unit")?.lowercased()
+                )
+            }
+            entities[uuid] = Entity(name: json.string("name") ?? "", prefix: json.string("prefix") ?? "", gates: gates)
+        }
+        for url in Self.jsonFiles(under: poolURL.appendingPathComponent("units")) {
+            guard let json = try? JSONHelper.loadDictionary(from: url),
+                  json.string("type") == "unit",
+                  let uuid = json.string("uuid")?.lowercased() else {
+                continue
+            }
+            var pins = [String: Pin]()
+            for (pinID, pin) in json.dictionaryMap("pins") {
+                pins[pinID.lowercased()] = Pin(
+                    name: pin.string("primary_name") ?? "",
+                    direction: pin.string("direction") ?? ""
+                )
+            }
+            units[uuid] = Unit(name: json.string("name") ?? "", pins: pins)
+        }
+    }
+
+    func entity(_ id: String) -> Entity? {
+        entities[id.lowercased()]
+    }
+
+    func unit(_ id: String) -> Unit? {
+        units[id.lowercased()]
+    }
+
+    private static func jsonFiles(under directory: URL) -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil) else {
+            return []
+        }
+        return enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "json" }
+    }
+}

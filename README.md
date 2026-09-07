@@ -19,6 +19,16 @@ The first build also compiles the vendored OpenCascade static libraries, which
 takes tens of minutes. `make deps` rebuilds them
 explicitly. 
 
+## Automation
+
+The model, exporters, and checks run without the app through one JSON-RPC
+dispatcher: a `horizontal` command line tool, a dynamic library that the
+`python/` package loads with ctypes, an MCP server for Claude Code on top of
+that package, and a live channel the app serves while a document is open so
+the same calls reach unsaved state and edits land on the undo stack.
+`make native python` builds it; `docs/automation.md` has the method list, the
+edit vocabulary, and what remains.
+
 ## Licensing
 
 Horizontal is Apache 2.0 — see `LICENSE`.

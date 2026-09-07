@@ -17,6 +17,9 @@
 #   make release    Release build
 #   make ios        build for the iOS Simulator
 #   make test       run the test suite (see the note on `test` below)
+#   make native     release build of the headless dylib and CLI
+#   make python     set up the Python package and MCP server
+#   make python-test run the Python package tests
 #   make deps       build the vendored dependencies (OpenCascade)
 #   make clean      remove build products
 #   make help       list targets
@@ -35,7 +38,7 @@ XCODEBUILD := xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(
 OCCT_XCFRAMEWORK := Vendor/OpenCascadeStatic/OpenCascadeStairs.xcframework
 OCCT_LIB         := $(OCCT_XCFRAMEWORK)/macos-arm64/libOpenCascadeStairs-macos-arm64.a
 
-.PHONY: all build run release ios test deps clean help app-path archive upload
+.PHONY: all build run release ios test deps clean help app-path archive upload native python python-test
 
 all: build
 
@@ -83,6 +86,23 @@ run: build
 ## test: run the package test suite
 test: deps
 	swift test
+
+# The headless front ends over the app's model (docs/automation.md): the
+# dynamic library the Python package loads and the `horizontal` command line
+# tool. Release builds so the Python package prefers them over debug ones.
+## native: release build of libHorizontalPy.dylib and the horizontal CLI
+# One --product per invocation: SwiftPM keeps only the last one given.
+native: deps
+	swift build -c release --product HorizontalPy
+	swift build -c release --product horizontal
+
+## python: set up python/ (the bindings and the MCP server) with uv
+python: native
+	cd python && uv sync
+
+## python-test: run the Python package's tests against the release dylib
+python-test: python
+	cd python && uv run python -m unittest discover -s tests -v
 
 # ---------------------------------------------------------------------------
 # App Store distribution
