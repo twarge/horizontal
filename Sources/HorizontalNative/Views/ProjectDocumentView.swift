@@ -591,6 +591,12 @@ struct ProjectWorkspaceView: View {
     /// Counts every change to `project.board`'s content, so the 3D view
     /// knows to rebuild its scene (lazily, in the background).
     @State private var boardEditRevision = 0
+    /// Bumped by every schematic mutation, for the live channel's change
+    /// detection (the board has its own two counters).
+    @State private var schematicEditRevision = 0
+    /// The live channel's handle for this document (docs/automation.md).
+    @State private var liveHandle: Int?
+    @StateObject private var liveUndoTarget = HorizontalUndoTarget<HorizontalLiveSnapshot>()
     /// The board's netlist reload from the schematic, waiting for edits to
     /// settle or running; see `scheduleBoardNetlistSync`.
     @State private var boardNetlistSyncTask: Task<Void, Never>?
@@ -749,6 +755,7 @@ struct ProjectWorkspaceView: View {
             ))
             .background(WindowSizeObserver(savedSize: windowSize, onSizeChange: updateWindowSize))
             .onAppear(perform: appear)
+            .onDisappear(perform: unregisterLiveDocument)
             .onChange(of: navigatorSelection) { _, selection in
                 syncPanesForSelection(selection)
             }
@@ -1079,8 +1086,125 @@ struct ProjectWorkspaceView: View {
 
     private func appear() {
         restoreFileViewStateIfNeeded()
+        registerLiveDocument()
         if navigatorSelection == nil {
             navigatorSelection = defaultNavigatorSelection
+        }
+    }
+
+    // MARK: - Live channel
+
+    /// Exposes this document to the dispatch layer (docs/automation.md): the
+    /// Python package and MCP server read its in-memory state, highlight and
+    /// select through it, and submit edits that land as one undoable step.
+    private func registerLiveDocument() {
+        guard liveHandle == nil else {
+            return
+        }
+        let live = HorizontalLiveDocument(url: project.url, title: project.displayTitle, project: project, archive: document.archive)
+        live.currentProject = { project }
+        live.revision = { boardEditRevision &+ boardSyncRevision &* 100_003 &+ schematicEditRevision &* 1_000_033 }
+        live.archive = { document.archive }
+        live.isReadOnly = { isReadOnly }
+        live.selection = {
+            HorizontalLiveSelection(
+                netIDs: selectedNetIDs,
+                componentIDs: selectedComponentIDs,
+                highlightedNetIDs: highlightedNetIDs,
+                highlightedComponentIDs: highlightedComponentIDs,
+                panes: visiblePanes.map { "\($0)" }
+            )
+        }
+        live.setHighlight = { nets, components in
+            highlightedNetIDs = nets
+            highlightedComponentIDs = components
+        }
+        live.setSelection = { nets, components in
+            selectNet(nets)
+            selectComponents(components)
+        }
+        live.applyArchive = { archive, actionName in
+            try applyLiveArchive(archive, actionName: actionName)
+        }
+        live.visibleBounds = { pane in
+            canvasCommandActionsByPane[pane]?.visibleWorldBounds?()
+        }
+        live.frame = { pane, rect in
+            visiblePanes.insert(pane)
+            canvasCommandActionsByPane[pane]?.frameWorldRect?(rect)
+        }
+        live.showSheet = { blockID, sheetID in
+            visiblePanes.insert(.schematic)
+            navigatorSelection = blockID.map { .sheet(blockID: $0, sheetID: sheetID) } ?? .standaloneSheet(sheetID)
+        }
+        live.currentSheet = {
+            switch navigatorSelection {
+            case .sheet(_, let sheetID), .standaloneSheet(let sheetID):
+                return sheetID
+            default:
+                return nil
+            }
+        }
+        liveHandle = HorizontalDispatchSession.shared.registerLive(live)
+    }
+
+    private func unregisterLiveDocument() {
+        guard let liveHandle else {
+            return
+        }
+        HorizontalDispatchSession.shared.unregisterLive(handle: liveHandle)
+        self.liveHandle = nil
+    }
+
+    /// An edited archive from the live channel becomes the document: the
+    /// model reloads from it, URLs are pointed back at the real project (the
+    /// snapshot loads from a temporary copy), and the previous archive and
+    /// model go on the undo stack as one step.
+    private func applyLiveArchive(_ archive: HorizontalProjectArchive, actionName: String) throws {
+        guard !isReadOnly else {
+            throw HorizontalDispatchError.failed("Read-only operation is enabled in Horizontal.")
+        }
+        let previous = HorizontalLiveSnapshot(archive: document.archive, project: project)
+        var reloaded = try HorizontalProject.loadSnapshot(of: archive)
+        rebaseProjectURLs(&reloaded, onto: project)
+        liveUndoTarget.configure(
+            currentValue: { HorizontalLiveSnapshot(archive: document.archive, project: project) },
+            restoreValue: { snapshot in installLiveSnapshot(snapshot) }
+        )
+        liveUndoTarget.registerUndo(from: previous, actionName: actionName, undoManager: activeUndoManager)
+        installLiveSnapshot(HorizontalLiveSnapshot(archive: archive, project: reloaded))
+    }
+
+    private func installLiveSnapshot(_ snapshot: HorizontalLiveSnapshot) {
+        document.archive = snapshot.archive
+        project = snapshot.project
+        boardEditRevision += 1
+        boardSyncRevision += 1
+        schematicEditRevision += 1
+        selectionDetailsByPane = [:]
+    }
+
+    private func rebaseProjectURLs(_ reloaded: inout HorizontalProject, onto current: HorizontalProject) {
+        reloaded.url = current.url
+        reloaded.projectFileURL = current.projectFileURL
+        reloaded.baseURL = current.baseURL
+        if var board = reloaded.board {
+            board.url = current.board?.url ?? current.baseURL.appendingPathComponent(board.url.lastPathComponent)
+            rebasePackageModelURLs(in: &board)
+            reloaded.board = board
+        }
+        if var schematic = reloaded.schematic {
+            schematic.url = current.schematic?.url ?? current.baseURL.appendingPathComponent(schematic.url.lastPathComponent)
+            reloaded.schematic = schematic
+        }
+        for index in reloaded.schematics.indices {
+            let blockID = reloaded.schematics[index].block.uuid
+            if let match = current.schematics.first(where: { $0.block.uuid == blockID }) {
+                reloaded.schematics[index].schematic.url = match.schematic.url
+            } else {
+                reloaded.schematics[index].schematic.url = current.baseURL
+                    .appendingPathComponent(reloaded.schematics[index].schematicFilename)
+            }
         }
     }
 
@@ -2530,6 +2654,7 @@ struct ProjectWorkspaceView: View {
             mutate(&schematic)
             project.schematic = schematic
         }
+        schematicEditRevision += 1
     }
 
     private func replace(_ sheet: HorizontalSchematicSheet, in schematic: inout HorizontalSchematic) {

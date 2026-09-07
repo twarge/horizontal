@@ -269,6 +269,8 @@ struct SchematicCanvasView: View {
     /// InteractiveCanvasView from its on-screen viewport). The inline editor
     /// popover anchors against this so it lands on the text at any zoom/pan.
     @State private var canvasDisplayTransform: HorizontalCanvasTransform?
+    /// Every reported transform, for the live channel (see HorizontalLiveCanvasTransform).
+    @State private var liveCanvasTransform = HorizontalLiveCanvasTransform()
     #endif
     @StateObject private var undoTarget = HorizontalUndoTarget<HorizontalSchematicSheet>()
     @StateObject private var selectableCache = SchematicSelectableCache()
@@ -771,6 +773,7 @@ struct SchematicCanvasView: View {
                 pressLandsOnSelection(at: worldPoint, worldUnitsPerPoint: worldUnitsPerPoint)
             },
             onCanvasDisplayTransformChange: { transform in
+                liveCanvasTransform.transform = transform
                 #if os(macOS)
                 // Only store while editing (no gesturing then, so it stays
                 // stable); avoids per-frame @State churn during pan/zoom. The
@@ -7101,7 +7104,17 @@ struct SchematicCanvasView: View {
     }
 
     private func canvasCommandActions() -> HorizontalCanvasCommandActions {
-        canvasCommandHandlers().actions()
+        var actions = canvasCommandHandlers().actions()
+        // The live channel (docs/automation.md): what the canvas shows, and
+        // framing a rectangle in it.
+        actions.visibleWorldBounds = { liveCanvasTransform.transform?.visibleBounds }
+        actions.frameWorldRect = { rect in
+            guard let transform = liveCanvasTransform.transform else {
+                return
+            }
+            viewport = CanvasViewport.framing(rect, in: transform)
+        }
+        return actions
     }
 
     private func canvasCommandHandlers() -> HorizontalCanvasCommandHandlerSet {

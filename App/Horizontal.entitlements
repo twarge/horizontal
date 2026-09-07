@@ -8,5 +8,8 @@
 	<true/>
 	<key>com.apple.security.files.bookmarks.app-scope</key>
 	<true/>
+	<!-- The live channel: a loopback JSON-RPC listener for the Python package and MCP server (docs/automation.md). -->
+	<key>com.apple.security.network.server</key>
+	<true/>
 </dict>
 </plist>
