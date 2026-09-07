@@ -115,9 +115,14 @@ The Python package and the MCP server look for that file first, so opening a
 project the app holds returns the app's document: reads see unsaved edits,
 `select` and `highlight` change what the canvases show, and `apply` lands as
 one undoable step named for the edit. `live_state` lists the open documents
-with their selection. The listener starts with the first document and stops
-with the last; `HorizontalLiveServerEnabled` in the app's defaults turns it
-off.
+with their selection.
+
+The channel is off until it is turned on: Settings > Automation > Enable MCP
+Server, stored as `HorizontalLiveServerEnabled` in the app's defaults. With
+it off the Python package and the MCP server still read and write project
+files on disk, but cannot reach a document the app is holding. With it on the
+listener starts with the first document and stops with the last, and the
+switch takes effect at once rather than at the next open or close.
 
 An edit through the channel runs the same ops over the document's in-memory
 archive, then the workspace reloads its model from that archive, points the

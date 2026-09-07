@@ -397,6 +397,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
     @Published private var swapsViewControlsAndUnplacedReferences: Bool
     @Published private var transparentToolbar: Bool
     @Published private var readOnlyOperation: Bool
+    @Published private var liveServerEnabled: Bool
     @Published private var boardSceneBackgroundColor: Color
     @Published private var boardSceneSubstrateColor: Color
     @Published private var boardSceneSolderMaskColor: Color
@@ -421,6 +422,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
         swapsViewControlsAndUnplacedReferences = Self.loadSwapsViewControlsAndUnplacedReferences(defaults: defaults)
         transparentToolbar = Self.loadTransparentToolbar(defaults: defaults)
         readOnlyOperation = HorizontalOperationDefaults.readOnlyOperation(defaults: defaults)
+        liveServerEnabled = HorizontalLiveServer.isEnabled(defaults: defaults)
         boardSceneBackgroundColor = Self.loadBoardSceneBackgroundColor(defaults: defaults)
         boardSceneSubstrateColor = Self.loadBoardSceneSubstrateColor(defaults: defaults)
         boardSceneSolderMaskColor = Self.loadBoardSceneSolderMaskColor(defaults: defaults)
@@ -471,6 +473,12 @@ final class HorizontalAppearanceSettings: ObservableObject {
     /// `defaults write`) can't unlock a shipped build.
     var isReadOnlyOperationEnabled: Bool {
         HorizontalOperationDefaults.isReadOnlyOperationForced || readOnlyOperation
+    }
+
+    /// Whether the app serves its open documents to the MCP server and the
+    /// Python package over the loopback channel.
+    var isLiveServerEnabled: Bool {
+        liveServerEnabled
     }
 
     var boardSceneBackground: Color {
@@ -587,6 +595,14 @@ final class HorizontalAppearanceSettings: ObservableObject {
             self.readOnlyOperation
         } set: { isReadOnly in
             self.setReadOnlyOperation(isReadOnly)
+        }
+    }
+
+    func liveServerEnabledBinding() -> Binding<Bool> {
+        Binding {
+            self.liveServerEnabled
+        } set: { isEnabled in
+            self.setLiveServerEnabled(isEnabled)
         }
     }
 
@@ -811,6 +827,15 @@ final class HorizontalAppearanceSettings: ObservableObject {
         objectWillChange.send()
         readOnlyOperation = newValue
         defaults.set(newValue, forKey: HorizontalOperationDefaults.readOnlyOperationKey)
+    }
+
+    private func setLiveServerEnabled(_ newValue: Bool) {
+        objectWillChange.send()
+        liveServerEnabled = newValue
+        defaults.set(newValue, forKey: HorizontalLiveServer.enabledDefaultsKey)
+        // Start or stop the listener now rather than at the next document
+        // open or close, so the switch matches what the app is doing.
+        HorizontalLiveServer.enabledDidChange()
     }
 
     private func setBoardSceneBackgroundColor(_ color: Color) {

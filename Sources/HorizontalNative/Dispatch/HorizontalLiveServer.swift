@@ -14,13 +14,22 @@ import Network
 enum HorizontalLiveServer {
     static let enabledDefaultsKey = "HorizontalLiveServerEnabled"
 
-    static var isEnabled: Bool {
-        UserDefaults.standard.object(forKey: enabledDefaultsKey) as? Bool ?? true
+    /// Off until the user turns it on in Settings: the channel hands an
+    /// automation client the documents on screen, so it opts in rather than
+    /// out. Also the one place the default lives.
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: enabledDefaultsKey) as? Bool ?? false
+    }
+
+    /// Starts or stops the listener after the preference changes, so the
+    /// toggle takes effect without closing and reopening a document.
+    static func enabledDidChange() {
+        documentsDidChange(count: HorizontalDispatchSession.shared.liveDocumentCount)
     }
 
     static func documentsDidChange(count: Int) {
         #if canImport(Network) && os(macOS)
-        if count > 0, isEnabled {
+        if count > 0, isEnabled() {
             HorizontalLiveListener.shared.start()
         } else {
             HorizontalLiveListener.shared.stop()
