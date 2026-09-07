@@ -455,7 +455,7 @@ private enum HorizontalBoardRuleEditorTab: String, CaseIterable, Identifiable {
     }
 }
 
-private enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
+enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
     case clearanceCopper = "clearance_copper"
     case clearanceCopperOther = "clearance_copper_other"
     case clearanceCopperKeepout = "clearance_copper_keepout"
@@ -747,7 +747,7 @@ private enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashab
     }
 }
 
-private struct HorizontalBoardRuleContext {
+struct HorizontalBoardRuleContext {
     var board: HorizontalBoard?
     var netClasses: [HorizontalNetClass]
 
@@ -923,7 +923,7 @@ private struct HorizontalBoardRuleContext {
     }
 }
 
-private struct HorizontalBoardRuleInstance: Identifiable {
+struct HorizontalBoardRuleInstance: Identifiable {
     var id: String
     var title: String
     var enabled: Bool
@@ -3120,7 +3120,7 @@ struct HorizontalBoardRuleCheckMessage: Identifiable {
     var detail: String
 }
 
-private enum HorizontalBoardRulesValidator {
+enum HorizontalBoardRulesValidator {
     static func validate(
         rules: JSONDictionary,
         selectedKind: HorizontalBoardRuleKind,

@@ -13,3 +13,5 @@ xcuserdata/
 Horizontal.xcodeproj/xcuserdata/
 Vendor/OpenCascade/
 Vendor/OpenCascadeStatic/
+__pycache__/
+python/.venv/
