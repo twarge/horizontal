@@ -407,9 +407,9 @@ struct BoardCanvasView: View {
     /// InteractiveCanvasView from its on-screen viewport). The inline editor
     /// popover anchors against this so it lands on the text at any zoom/pan.
     @State private var canvasDisplayTransform: HorizontalCanvasTransform?
+    #endif
     /// Every reported transform, for the live channel (see HorizontalLiveCanvasTransform).
     @State private var liveCanvasTransform = HorizontalLiveCanvasTransform()
-    #endif
     /// Quantized world-space cull threshold for generated labels at the current
     /// zoom (0 = show everything). Unlike `canvasDisplayTransform` this IS
     /// maintained during live pan/zoom, but only written when the quantized step
