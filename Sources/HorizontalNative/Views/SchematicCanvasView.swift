@@ -269,9 +269,9 @@ struct SchematicCanvasView: View {
     /// InteractiveCanvasView from its on-screen viewport). The inline editor
     /// popover anchors against this so it lands on the text at any zoom/pan.
     @State private var canvasDisplayTransform: HorizontalCanvasTransform?
+    #endif
     /// Every reported transform, for the live channel (see HorizontalLiveCanvasTransform).
     @State private var liveCanvasTransform = HorizontalLiveCanvasTransform()
-    #endif
     @StateObject private var undoTarget = HorizontalUndoTarget<HorizontalSchematicSheet>()
     @StateObject private var selectableCache = SchematicSelectableCache()
     @Environment(\.colorScheme) private var colorScheme
