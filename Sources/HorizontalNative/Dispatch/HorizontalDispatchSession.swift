@@ -21,6 +21,12 @@ final class HorizontalDispatchSession: @unchecked Sendable {
         entries.values.sorted { $0.handle < $1.handle }
     }
 
+    /// What a holder record beside a project calls this process.
+    static var holderName: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? ProcessInfo.processInfo.processName
+    }
+
     /// How many open documents are being served live — what decides whether
     /// the live listener runs.
     var liveDocumentCount: Int {
@@ -124,6 +130,8 @@ final class HorizontalDispatchSession: @unchecked Sendable {
                 project: Self.withEditorConnectivity(document.currentProject())
             )
             entry.live = document
+            entry.holder = HorizontalProjectHolder(projectURL: entry.url, name: Self.holderName,
+                                                   endpoint: HorizontalLiveServer.endpoint())
             entry.liveRevision = document.revision()
             entry.snapshot = HorizontalDispatchSnapshot(archive: document.archive(), baseURL: entry.project.baseURL)
             session.nextHandle += 1
@@ -133,12 +141,25 @@ final class HorizontalDispatchSession: @unchecked Sendable {
         }
     }
 
+    /// Republishes the live channel in every open document's holder record.
+    /// Called when the listener starts or stops, which is also when the user
+    /// turns the channel on or off.
+    @MainActor
+    func refreshHolders(endpoint: [String: String]?) {
+        perform { session in
+            for entry in session.entries.values where entry.live != nil {
+                entry.holder?.update(endpoint: endpoint)
+            }
+        }
+    }
+
     @MainActor
     func unregisterLive(handle: Int) {
         perform { session in
             guard session.entries[handle]?.live != nil else {
                 return
             }
+            session.entries[handle]?.holder = nil
             session.entries.removeValue(forKey: handle)
             HorizontalLiveServer.documentsDidChange(count: session.liveDocumentCount)
         }
@@ -229,6 +250,10 @@ final class HorizontalDispatchProjectEntry {
     var loadedAt: Date
     /// Set when the entry stands for a document open in the app.
     var live: HorizontalLiveDocument?
+    /// The record beside the project announcing that this process has it open,
+    /// retained for as long as the document is. Disk writers consult it before
+    /// editing files an editor is holding.
+    var holder: HorizontalProjectHolder?
     var liveRevision = "0"
     var snapshot: HorizontalDispatchSnapshot?
     let instanceID: String

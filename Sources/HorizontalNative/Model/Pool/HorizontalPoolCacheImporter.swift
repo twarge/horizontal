@@ -26,6 +26,32 @@ struct HorizontalPoolCacheImportResult {
     var writtenFiles: [URL] = []
 }
 
+/// One file the import would put in the project pool.
+struct HorizontalPoolCacheFile {
+    var url: URL
+    var data: Data
+}
+
+/// How the importer sees the project pool it is caching into. The app's copy
+/// is on disk; an edit made through the dispatch layer stages into the open
+/// document's archive instead, and must see files this transaction has already
+/// staged as well as the ones already there.
+struct HorizontalPoolCacheDestination {
+    var read: (URL) throws -> Data?
+    var list: (URL) -> [URL]
+
+    /// Immutable and stateless; the closures capture nothing.
+    nonisolated(unsafe) static let disk = HorizontalPoolCacheDestination(
+        read: { url in
+            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+            return try Data(contentsOf: url)
+        },
+        list: { url in
+            (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
+        }
+    )
+}
+
 /// Horizon's project pool cache: a part placed from a pool is copied, with
 /// everything it depends on, into the project pool's `<kind>/cache/`
 /// directories so the project stays self-contained — the layout
@@ -39,26 +65,82 @@ enum HorizontalPoolCacheImporter {
     /// pool and the pools it includes. Already-cached files are left alone.
     static func cachePart(_ item: HorizontalPoolLibraryItem, into projectPoolURL: URL) throws -> HorizontalPoolCacheImportResult {
         var result = HorizontalPoolCacheImportResult()
+        for file in try plan(item, into: projectPoolURL) {
+            try FileManager.default.createDirectory(at: file.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try file.data.write(to: file.url, options: [.atomic])
+            result.writtenFiles.append(file.url)
+        }
+        return result
+    }
+
+    /// The files caching `item` would add, in dependency order and without
+    /// touching anything. `destination` decides what the project pool already
+    /// holds, so an edit staged in a document archive is not asked to consult
+    /// the last-saved copy on disk.
+    static func plan(
+        _ item: HorizontalPoolLibraryItem,
+        into projectPoolURL: URL,
+        destination: HorizontalPoolCacheDestination = .disk
+    ) throws -> [HorizontalPoolCacheFile] {
         let sourcePools = HorizontalPoolLibrary.editorPoolURLs(forPoolRoot: item.poolURL)
         let index = HorizontalPoolLibraryIndex(items: sourcePools.flatMap { poolURL in
             HorizontalPoolLibrary.items(inPool: poolURL, poolName: HorizontalPoolRegistryStore.poolInfo(at: poolURL).name)
         })
-        var session = Session(projectPoolURL: projectPoolURL, index: index, result: result)
+        var session = Session(projectPoolURL: projectPoolURL, index: index, destination: destination)
         try session.cachePart(item.uuid)
-        result = session.result
-        return result
+        return session.planned
+    }
+
+    /// `plan` with the destination reading through a caller's own store.
+    static func plan(
+        _ item: HorizontalPoolLibraryItem,
+        into projectPoolURL: URL,
+        read: @escaping (URL) throws -> Data?
+    ) throws -> [HorizontalPoolCacheFile] {
+        try plan(item, into: projectPoolURL,
+                 destination: HorizontalPoolCacheDestination(read: read, list: HorizontalPoolCacheDestination.disk.list))
     }
 
     private struct Session {
         let projectPoolURL: URL
         let index: HorizontalPoolLibraryIndex
-        var result: HorizontalPoolCacheImportResult
+        let destination: HorizontalPoolCacheDestination
+        /// The files this import would add, in dependency order.
+        var planned = [HorizontalPoolCacheFile]()
+        private var stagedByPath = [String: Data]()
         private var visitedParts = Set<String>()
+        /// A base part usually names the same package as the part deriving
+        /// from it; caching it once is enough.
+        private var visitedPackages = Set<String>()
 
-        init(projectPoolURL: URL, index: HorizontalPoolLibraryIndex, result: HorizontalPoolCacheImportResult) {
+        init(projectPoolURL: URL, index: HorizontalPoolLibraryIndex, destination: HorizontalPoolCacheDestination) {
             self.projectPoolURL = projectPoolURL
             self.index = index
-            self.result = result
+            self.destination = destination
+        }
+
+        /// What the project pool holds at `url`, counting files this import has
+        /// already staged.
+        private func existing(_ url: URL) -> Data? {
+            stagedByPath[url.standardizedFileURL.path] ?? (try? destination.read(url)) ?? nil
+        }
+
+        private mutating func stage(_ data: Data, at url: URL) {
+            let path = url.standardizedFileURL.path
+            guard stagedByPath[path] == nil else { return }
+            stagedByPath[path] = data
+            planned.append(HorizontalPoolCacheFile(url: url, data: data))
+        }
+
+        /// What `directory` holds, counting files this import has staged but
+        /// not yet written.
+        private func contents(of directory: URL) -> [URL] {
+            let prefix = directory.standardizedFileURL.path + "/"
+            let staged = stagedByPath.keys
+                .filter { $0.hasPrefix(prefix) && !$0.dropFirst(prefix.count).contains("/") }
+                .map { URL(fileURLWithPath: $0) }
+            var seen = Set(staged.map(\.path))
+            return staged + destination.list(directory).filter { seen.insert($0.standardizedFileURL.path).inserted }
         }
 
         // MARK: Parts
@@ -117,6 +199,9 @@ enum HorizontalPoolCacheImporter {
 
         private mutating func cachePackage(_ packageID: String) throws {
             let normalized = packageID.lowercased()
+            guard visitedPackages.insert(normalized).inserted else {
+                return
+            }
             let directory = projectPoolURL
                 .appendingPathComponent("packages", isDirectory: true)
                 .appendingPathComponent("cache", isDirectory: true)
@@ -126,12 +211,12 @@ enum HorizontalPoolCacheImporter {
 
             let packageJSON: JSONDictionary
             var localPadstackIDs = Set<String>()
-            if fileManager.fileExists(atPath: destination.path) {
-                packageJSON = try JSONHelper.loadDictionary(from: destination)
-                localPadstackIDs = Self.padstackIDs(inDirectory: directory.appendingPathComponent("padstacks"))
+            if let cached = existing(destination) {
+                packageJSON = try JSONHelper.loadDictionary(from: cached)
+                localPadstackIDs = padstackIDs(inDirectory: directory.appendingPathComponent("padstacks"))
             } else if let source = index.item(.package, uuid: normalized), isInsideProjectPool(source.url) {
                 packageJSON = try JSONHelper.loadDictionary(from: source.url)
-                localPadstackIDs = Self.padstackIDs(inDirectory: source.url.deletingLastPathComponent().appendingPathComponent("padstacks"))
+                localPadstackIDs = Self.padstackIDsOnDisk(inDirectory: source.url.deletingLastPathComponent().appendingPathComponent("padstacks"))
             } else {
                 guard let source = index.item(.package, uuid: normalized) else {
                     throw HorizontalPoolCacheImporterError.missing(.package, normalized)
@@ -158,16 +243,12 @@ enum HorizontalPoolCacheImporter {
                 if !models.isEmpty {
                     json["models"] = models
                 }
-                try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-                try HorizontalHorizonJSONWriter.data(json).write(to: destination, options: [.atomic])
-                result.writtenFiles.append(destination)
+                stage(try HorizontalHorizonJSONWriter.data(json), at: destination)
                 for path in modelPaths {
                     let modelSource = source.poolURL.appendingPathComponent(path)
                     let modelDestination = projectPoolURL.appendingPathComponent(Self.cachedModelPath(path, poolUUID: sourcePoolUUID))
-                    if fileManager.fileExists(atPath: modelSource.path), !fileManager.fileExists(atPath: modelDestination.path) {
-                        try fileManager.createDirectory(at: modelDestination.deletingLastPathComponent(), withIntermediateDirectories: true)
-                        try fileManager.copyItem(at: modelSource, to: modelDestination)
-                        result.writtenFiles.append(modelDestination)
+                    if fileManager.fileExists(atPath: modelSource.path), existing(modelDestination) == nil {
+                        stage(try Data(contentsOf: modelSource), at: modelDestination)
                     }
                 }
 
@@ -180,11 +261,9 @@ enum HorizontalPoolCacheImporter {
                               let uuid = padstackJSON.string("uuid")?.lowercased() else {
                             continue
                         }
-                        try fileManager.createDirectory(at: localDestination, withIntermediateDirectories: true)
                         let target = localDestination.appendingPathComponent(url.lastPathComponent)
-                        if !fileManager.fileExists(atPath: target.path) {
-                            try fileManager.copyItem(at: url, to: target)
-                            result.writtenFiles.append(target)
+                        if existing(target) == nil {
+                            stage(try Data(contentsOf: url), at: target)
                         }
                         localPadstackIDs.insert(uuid)
                     }
@@ -206,7 +285,17 @@ enum HorizontalPoolCacheImporter {
             return url.standardizedFileURL.path.hasPrefix(prefix)
         }
 
-        private static func padstackIDs(inDirectory directory: URL) -> Set<String> {
+        /// The padstacks already cached beside a package in the project pool.
+        private func padstackIDs(inDirectory directory: URL) -> Set<String> {
+            Set(contents(of: directory).compactMap { url in
+                guard let data = existing(url) else { return nil }
+                return (try? JSONHelper.loadDictionary(from: data))?.string("uuid")?.lowercased()
+            })
+        }
+
+        /// The same, for a package directory in a source pool, which is always
+        /// on disk.
+        private static func padstackIDsOnDisk(inDirectory directory: URL) -> Set<String> {
             guard let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
                 return []
             }
@@ -229,8 +318,8 @@ enum HorizontalPoolCacheImporter {
                 .appendingPathComponent(HorizontalPoolItemFactory.directoryName(for: category), isDirectory: true)
                 .appendingPathComponent("cache", isDirectory: true)
                 .appendingPathComponent("\(normalized).json")
-            if FileManager.default.fileExists(atPath: destination.path) {
-                return try JSONHelper.loadDictionary(from: destination)
+            if let cached = existing(destination) {
+                return try JSONHelper.loadDictionary(from: cached)
             }
             guard let source = index.item(category, uuid: normalized) else {
                 throw HorizontalPoolCacheImporterError.missing(category, normalized)
@@ -241,10 +330,9 @@ enum HorizontalPoolCacheImporter {
             if isInsideProjectPool(source.url) {
                 return try JSONHelper.loadDictionary(from: source.url)
             }
-            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try FileManager.default.copyItem(at: source.url, to: destination)
-            result.writtenFiles.append(destination)
-            return try JSONHelper.loadDictionary(from: destination)
+            let data = try Data(contentsOf: source.url)
+            stage(data, at: destination)
+            return try JSONHelper.loadDictionary(from: data)
         }
     }
 }

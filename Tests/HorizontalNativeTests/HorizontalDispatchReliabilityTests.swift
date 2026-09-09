@@ -111,4 +111,91 @@ final class HorizontalDispatchReliabilityTests: XCTestCase {
         XCTAssertEqual(HorizontalElectricalValue.parse("OPA1612", refdes: "U1")["status"] as? String, "unsupported")
         XCTAssertEqual(HorizontalElectricalValue.parse("10", refdes: "U1")["status"] as? String, "ambiguous")
     }
+
+    /// How people actually write values: a space before the multiplier, either
+    /// ohm sign, and the unit in whatever case it came out of a datasheet.
+    func testSpacedAndSpelledUnits() {
+        // U+03A9 GREEK CAPITAL OMEGA, then U+2126 OHM SIGN.
+        for (raw, refdes, value, unit) in [("1 kΩ", "R18", 1000.0, "ohm"), ("1 k\u{2126}", "R18", 1000.0, "ohm"),
+                                           ("1 k", "R1", 1000.0, "ohm"), ("100 nF", "C1", 1e-7, "F"),
+                                           ("470 Ohms", "R1", 470.0, "ohm"), ("10 uF", "C1", 1e-5, "F"),
+                                           ("4.7 mH", "L1", 4.7e-3, "H"), ("1 kΩ ±1%", "R1", 1000.0, "ohm")] {
+            let parsed = HorizontalElectricalValue.parse(raw, refdes: refdes)
+            XCTAssertEqual(parsed["status"] as? String, "parsed", raw)
+            XCTAssertEqual(parsed["unit"] as? String, unit, raw)
+            XCTAssertEqual(parsed["value_si"] as? Double ?? -1, value, accuracy: value * 1e-12, raw)
+        }
+        XCTAssertEqual(HorizontalElectricalValue.parse("1 kΩ ±1%", refdes: "R1")["tolerance_fraction"] as? Double, 0.01)
+        // A separated number is still not a decimal point.
+        XCTAssertEqual(HorizontalElectricalValue.parse("1 000", refdes: "R1")["status"] as? String, "unsupported")
+    }
+
+    /// A part that declares the quantity outright is evidence the notation
+    /// does not have to repeat — and the result says where the number is from.
+    func testDeclaredParametricValueBacksUpUnreadableNotation() {
+        let declared = HorizontalElectricalValue.parse("1k0 5%", refdes: "R18", parametric: ["resistance": "1000"])
+        XCTAssertEqual(declared["status"] as? String, "parsed")
+        XCTAssertEqual(declared["value_si"] as? Double, 1000)
+        XCTAssertEqual(declared["unit"] as? String, "ohm")
+        XCTAssertEqual(declared["source"] as? String, "parametric")
+        XCTAssertEqual(declared["parametric_key"] as? String, "resistance")
+
+        // Notation that parses is the answer; the table does not override it.
+        let text = HorizontalElectricalValue.parse("2k2", refdes: "R18", parametric: ["resistance": "1000"])
+        XCTAssertEqual(text["value_si"] as? Double, 2200)
+        XCTAssertEqual(text["source"] as? String, "text")
+
+        // A capacitance does not answer for a resistor, and junk is not a number.
+        XCTAssertEqual(HorizontalElectricalValue.parse("x", refdes: "R1", parametric: ["capacitance": "1e-7"])["status"] as? String, "unsupported")
+        XCTAssertEqual(HorizontalElectricalValue.parse("x", refdes: "R1", parametric: ["resistance": "big"])["status"] as? String, "unsupported")
+    }
+
+    /// A project an editor has open cannot be written underneath it, and the
+    /// refusal does not depend on the live channel being switched on: the
+    /// holder record beside the project is what decides.
+    func testDiskEditsRefuseWhileAnotherEditorHoldsTheProject() throws {
+        XCTAssertEqual((try result("project_info") as! JSONDictionary)["editable"] as? Bool, true)
+
+        // Another process's record: locked, so it counts as live, and carrying
+        // a pid that is not ours, so it counts as somebody else.
+        let holders = HorizontalProjectTransaction.transactionDirectory(url).appendingPathComponent("holders")
+        try FileManager.default.createDirectory(at: holders, withIntermediateDirectories: true)
+        let id = UUID().uuidString.lowercased()
+        let lock = holders.appendingPathComponent("\(id).lock")
+        let record = holders.appendingPathComponent("\(id).json")
+        try Data().write(to: lock)
+        try JSONSerialization.data(withJSONObject: ["pid": Int(getpid()) + 1, "name": "Horizontal",
+                                                    "project": url.path, "since": "2026-09-08T00:00:00Z"],
+                                   options: [.sortedKeys]).write(to: record)
+        let descriptor = Darwin.open(lock.path, O_RDWR)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        XCTAssertEqual(flock(descriptor, LOCK_EX | LOCK_NB), 0)
+        addTeardownBlock { flock(descriptor, LOCK_UN); Darwin.close(descriptor) }
+
+        let edit: JSONDictionary = ["expected_revision": try revision(), "operation_id": UUID().uuidString,
+                                    "ops": [["op": "ensure_net", "name": "VCC"]]]
+        let refused = try XCTUnwrap(try call("apply", edit)["error"] as? JSONDictionary)
+        XCTAssertEqual(refused["code"] as? Int, -32009)
+        XCTAssertEqual((refused["data"] as? JSONDictionary)?["code"] as? String, "DOCUMENT_OPEN")
+        XCTAssertTrue((refused["message"] as? String ?? "").contains("Horizontal"), "\(refused)")
+
+        // A dry run still plans, and says what would block the commit.
+        var planned = edit
+        planned["dry_run"] = true
+        let dry = try result("apply", planned) as! JSONDictionary
+        XCTAssertEqual((dry["blocked_by"] as? [JSONDictionary])?.first?["name"] as? String, "Horizontal")
+
+        let info = try result("project_info") as! JSONDictionary
+        XCTAssertEqual(info["editable"] as? Bool, false)
+        XCTAssertEqual((info["held_by"] as? [JSONDictionary])?.count, 1)
+
+        // Once the editor lets go, the same edit commits.
+        flock(descriptor, LOCK_UN)
+        Darwin.close(descriptor)
+        var retried = edit
+        retried["expected_revision"] = try revision()
+        _ = try result("apply", retried)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: record.path), "a released record is forgotten")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lock.path))
+    }
 }

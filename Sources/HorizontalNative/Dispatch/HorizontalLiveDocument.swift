@@ -33,6 +33,12 @@ final class HorizontalLiveDocument {
     var setSelection: (Set<String>, Set<String>) -> Void
     /// Swaps in an edited archive as one undoable step named `actionName`.
     var applyArchive: (HorizontalProjectArchive, String) throws -> Void
+    /// Whether the document has changes its file does not have yet.
+    var isEdited: () -> Bool
+    /// Writes the document to its file, the way the Save command does. An edit
+    /// made through this channel is one undoable step in an open document and
+    /// nothing more until this runs.
+    var save: () throws -> Void
     /// The world rectangle a pane's canvas shows, if the pane is up.
     var visibleBounds: (HorizontalPane) -> HorizontalRect?
     /// Frames a world rectangle in a pane's canvas, showing the pane first.
@@ -54,6 +60,10 @@ final class HorizontalLiveDocument {
         setSelection = { _, _ in }
         applyArchive = { _, _ in
             throw HorizontalDispatchError.failed("This document does not accept edits.")
+        }
+        isEdited = { false }
+        save = {
+            throw HorizontalDispatchError.failed("This document does not know how to save itself.")
         }
         visibleBounds = { _ in nil }
         frame = { _, _ in }

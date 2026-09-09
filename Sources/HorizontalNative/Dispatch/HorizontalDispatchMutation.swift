@@ -22,6 +22,22 @@ enum HorizontalDispatchMutation {
                 return existing
             }
         }
+        // A disk write under an open editor is a data-loss path in both
+        // directions: the editor's next save overwrites this edit, and
+        // reloading the files discards its undo history. The live channel
+        // cannot rule an editor out — it stays off until the user turns it on
+        // — so the holder records beside the project decide. A dry run reports
+        // the conflict instead of throwing, so a caller can plan and be told.
+        let holders = entry.live == nil ? HorizontalProjectHolders.others(projectURL: entry.url) : []
+        if let holder = holders.first, !dryRun {
+            throw HorizontalDispatchError(
+                code: .documentOpen,
+                message: "\(holder.name) (pid \(holder.pid)) has this project open, so its files cannot be edited on disk. "
+                    + "Edit it there instead: turn on the live channel in \(holder.name)'s settings and open the project with source \"live\". "
+                    + "Closing the document also releases it.",
+                details: ["holders": holders.map(\.summary)]
+            )
+        }
         try entry.requireRevision(params)
         guard let snapshot = entry.snapshot else { throw HorizontalDispatchError.failed("No project snapshot.") }
         if let live = entry.live {
@@ -61,7 +77,11 @@ enum HorizontalDispatchMutation {
              "before": snapshot.archive.regularFileData(relativePath: path).flatMap { String(data: $0, encoding: .utf8) } as Any,
              "after": after.archive.regularFileData(relativePath: path).flatMap { String(data: $0, encoding: .utf8) } as Any]
         }
-        if dryRun { result["dry_run"] = true; return result }
+        if dryRun {
+            result["dry_run"] = true
+            if !holders.isEmpty { result["blocked_by"] = holders.map(\.summary) }
+            return result
+        }
         try HorizontalDispatchValidation.checkDeadline(params)
         result.removeValue(forKey: "preview")
         result["operation_id"] = operationID!

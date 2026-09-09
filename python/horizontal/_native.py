@@ -233,9 +233,91 @@ def live_discovery_paths() -> list[Path]:
     return paths
 
 
+def project_holders(project: str | Path) -> list[dict[str, Any]]:
+    """Who has this project open, read from the records beside it.
+
+    The app writes one per open document and holds an advisory lock on it, so a
+    record this process can lock belonged to one that has exited. Each record
+    names the project it is about, so nothing here has to reproduce the digest
+    that names the directory.
+    """
+    import fcntl
+
+    resolved = Path(project).expanduser().resolve()
+    root = resolved.parent / ".horizontal-transactions"
+    holders = []
+    for lock in sorted(root.glob("*/holders/*.lock")):
+        descriptor = None
+        try:
+            descriptor = os.open(lock, os.O_RDONLY)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                pass  # Held: a live editor.
+            else:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                continue  # Free: the holder is gone.
+            record = json.loads(lock.with_suffix(".json").read_text())
+        except (OSError, ValueError):
+            continue
+        finally:
+            if descriptor is not None: os.close(descriptor)
+        if not isinstance(record, dict): continue
+        try:
+            if Path(record.get("project", "")).resolve() != resolved: continue
+        except OSError:
+            continue
+        holders.append(record)
+    return holders
+
+
+def _reachable(info: dict[str, Any], diagnostics: list[dict[str, Any]] | None, path: str) -> dict[str, Any] | None:
+    """Validates a discovered endpoint and proves something answers on it."""
+    import socket
+
+    port = info.get("port")
+    if isinstance(port, str) and port.isdigit(): port = int(port)
+    token = info.get("token")
+    if (not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535
+            or not isinstance(token, str) or not token or info.get("host", "127.0.0.1") != "127.0.0.1"):
+        if diagnostics is not None: diagnostics.append({"path": path, "status": "invalid_discovery"})
+        return None
+    # A stale file outlives a crashed app; only report a listener that answers.
+    try:
+        with socket.create_connection((info.get("host", "127.0.0.1"), port), timeout=0.5):
+            pass
+    except OSError as error:
+        if diagnostics is not None: diagnostics.append({"path": path, "status": "unreachable", "reason": str(error)})
+        return None
+    return {"host": info.get("host", "127.0.0.1"), "port": port, "token": token, "path": path}
+
+
+def find_live_for(project: str | Path, diagnostics: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+    """The live channel serving `project`.
+
+    The app's own discovery file is inside its sandbox container, which macOS
+    refuses other processes, so a holder record beside the project carries the
+    endpoint too. That record is the one a client which can read the project
+    can always read.
+    """
+    info = find_live(diagnostics)
+    if info is not None:
+        return info
+    for holder in project_holders(project):
+        endpoint = holder.get("endpoint")
+        if not isinstance(endpoint, dict):
+            if diagnostics is not None:
+                diagnostics.append({"path": str(project), "status": "no_channel",
+                                    "reason": f"{holder.get('name', 'An editor')} has the project open but is serving no live channel"})
+            continue
+        reachable = _reachable(endpoint, diagnostics, f"{project} (holder pid {holder.get('pid')})")
+        if reachable is not None:
+            return reachable
+    return None
+
+
 def find_live(diagnostics: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
     """The running app's live channel (port and token), if it is up."""
-    import socket
 
     for path in live_discovery_paths():
         try:
@@ -246,21 +328,9 @@ def find_live(diagnostics: list[dict[str, Any]] | None = None) -> dict[str, Any]
         if not isinstance(info, dict):
             if diagnostics is not None: diagnostics.append({"path": str(path), "status": "invalid_discovery"})
             continue
-        port = info.get("port")
-        token = info.get("token")
-        if (not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535
-                or not isinstance(token, str) or not token or info.get("host", "127.0.0.1") != "127.0.0.1"):
-            if diagnostics is not None: diagnostics.append({"path": str(path), "status": "invalid_discovery"})
-            continue
-        # A stale file outlives a crashed app; only report a listener that answers.
-        try:
-            with socket.create_connection((info.get("host", "127.0.0.1"), int(port)), timeout=0.5):
-                pass
-        except OSError as error:
-            if diagnostics is not None: diagnostics.append({"path": str(path), "status": "unreachable", "reason": str(error)})
-            continue
-        info["path"] = str(path)
-        return info
+        reachable = _reachable(info, diagnostics, str(path))
+        if reachable is not None:
+            return reachable
     return None
 
 

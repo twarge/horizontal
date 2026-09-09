@@ -10,7 +10,8 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-from ._native import HorizontalError, LiveTransport, Transport, default_transport, find_live, transport_error
+from ._native import (HorizontalError, LiveTransport, Transport, default_transport, find_live, find_live_for,
+                      project_holders, transport_error)
 
 _request_deadline: ContextVar[float | None] = ContextVar("horizontal_deadline", default=None)
 
@@ -26,9 +27,14 @@ class Session:
         self.engine: dict[str, Any] | None = None
 
     @classmethod
-    def live(cls) -> "Session | None":
-        """A session on the running app's live channel, or None when the app is not up."""
-        info = find_live()
+    def live(cls, project: str | Path | None = None) -> "Session | None":
+        """A session on the running app's live channel, or None when there is none.
+
+        With a project, the holder records beside it are consulted too: the
+        app's own discovery file is inside its sandbox container, which macOS
+        refuses other processes, so that is often the only way through.
+        """
+        info = find_live_for(project) if project is not None else find_live()
         return cls(transport=LiveTransport(info)) if info else None
 
     @property
@@ -120,7 +126,7 @@ class Project:
             _request_deadline.reset(token)
 
     def _perform_call(self, method: str, **params: Any) -> Any:
-        reads = {"project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status"}
+        reads = {"project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "list_texts", "list_symbols", "list_block_instances", "list_net_lines", "list_net_labels", "list_power_symbols", "list_planes", "list_polygons", "list_tracks", "list_vias", "board_rules", "search_pool", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status"}
         deadline = _request_deadline.get() or (time.monotonic() + self.session.transport.timeout)
         if self._generation != self.session.generation:
             self._rebind()
@@ -215,8 +221,108 @@ class Project:
     def bom(self, include_no_populate: bool = True) -> dict[str, Any]:
         return self._call("bom", include_no_populate=include_no_populate)
 
-    def parts(self) -> list[dict[str, Any]]:
-        return self._call("list_parts")
+    def symbols(self, sheet: int | None = None, sheet_id: str | None = None,
+                name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
+        """Symbol instances on the sheets, with the ids the schematic ops take."""
+        params = {k: v for k, v in {"sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id}.items() if v is not None}
+        return self._call("list_symbols", **params)
+
+    def net_lines(self, net: str | None = None, sheet: int | None = None, sheet_id: str | None = None,
+                  name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
+        """The wires on the sheets, with their ids and what each end connects."""
+        params = {k: v for k, v in {"net": net, "sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id}.items() if v is not None}
+        return self._call("list_net_lines", **params)
+
+    def net_labels(self, net: str | None = None, sheet: int | None = None, sheet_id: str | None = None,
+                   name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
+        """Net labels on the sheets, with the ids remove_net_label takes."""
+        params = {k: v for k, v in {"net": net, "sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id}.items() if v is not None}
+        return self._call("list_net_labels", **params)
+
+    def power_symbols(self, net: str | None = None, sheet: int | None = None, sheet_id: str | None = None,
+                      name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
+        """Power symbols on the sheets, with the net each marks."""
+        params = {k: v for k, v in {"net": net, "sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id}.items() if v is not None}
+        return self._call("list_power_symbols", **params)
+
+    def planes(self, net: str | None = None) -> list[dict[str, Any]]:
+        """Copper pours, with whether each has actually been filled."""
+        return self._call("list_planes", **({"net": net} if net else {}))
+
+    def polygons(self, layer: int | None = None) -> list[dict[str, Any]]:
+        """Board polygons; layer 100 is the outline."""
+        return self._call("list_polygons", **({"layer": layer} if layer is not None else {}))
+
+    def pour_planes(self, dry_run: bool = False, *, expected_revision: str | None = None,
+                    operation_id: str | None = None) -> dict[str, Any]:
+        """Fill every plane from the board as it now stands."""
+        result = self._call("pour_planes", dry_run=dry_run,
+                            expected_revision=expected_revision or self.summary["revision"],
+                            operation_id=operation_id or str(uuid.uuid4()))
+        if not dry_run and "project" in result:
+            self.summary = result["project"]
+        return result
+
+    def tracks(self, net: str | None = None, layer: int | None = None, limit: int = 200) -> dict[str, Any]:
+        """Copper tracks, filtered by net or layer; the result says if it was truncated."""
+        params = {k: v for k, v in {"net": net, "layer": layer}.items() if v is not None}
+        return self._call("list_tracks", limit=limit, **params)
+
+    def vias(self, net: str | None = None, limit: int = 200) -> dict[str, Any]:
+        """Vias, with the layers each spans and where its shape comes from."""
+        params = {k: v for k, v in {"net": net}.items() if v is not None}
+        return self._call("list_vias", limit=limit, **params)
+
+    def block_instances(self) -> list[dict[str, Any]]:
+        """The blocks this block uses, with their ports and where they are drawn."""
+        return self._call("list_block_instances")
+
+    def autoroute(self, net: str, layer: int = 0, width_mm: float | None = None, max_routes: int = 20,
+                  dry_run: bool = False, *, expected_revision: str | None = None,
+                  operation_id: str | None = None) -> dict[str, Any]:
+        """Best-effort automatic routing of one net's airwires."""
+        params = {k: v for k, v in {"width_mm": width_mm}.items() if v is not None}
+        result = self._call("autoroute", net=net, layer=layer, max_routes=max_routes, dry_run=dry_run,
+                            expected_revision=expected_revision or self.summary["revision"],
+                            operation_id=operation_id or str(uuid.uuid4()), **params)
+        if not dry_run and "project" in result:
+            self.summary = result["project"]
+        return result
+
+    def texts(self, sheet: int | None = None, sheet_id: str | None = None,
+              name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
+        """Free text on the schematic sheets, with the ids the text ops take."""
+        params = {k: v for k, v in {"sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id}.items() if v is not None}
+        return self._call("list_texts", **params)
+
+    def parts(self, scope: str = "project") -> list[dict[str, Any]]:
+        """Parts in the project pool, and with scope "pools"/"all" the base pools it draws from."""
+        return self._call("list_parts", scope=scope)
+
+    def search_pool(self, query: str | None = None, kind: str | None = None,
+                    pool_path: str | None = None, limit: int = 50) -> dict[str, Any]:
+        """Search every pool the project draws from, not just its own cache."""
+        params = {k: v for k, v in {"query": query, "kind": kind, "pool_path": pool_path}.items() if v is not None}
+        return self._call("search_pool", limit=limit, **params)
+
+    def pool_item(self, uuid: str, kind: str | None = None, pool_path: str | None = None) -> dict[str, Any]:
+        """One pool item's JSON, read through the project's view of its pool."""
+        params = {k: v for k, v in {"kind": kind, "pool_path": pool_path}.items() if v is not None}
+        return self._call("get_pool_item", uuid=uuid, **params)
+
+    def import_pool_part(self, part: str, dry_run: bool = False, *, expected_revision: str | None = None,
+                         operation_id: str | None = None) -> dict[str, Any]:
+        """Copy a part and its dependencies from a base pool into the project pool cache."""
+        result = self._call("import_pool_part", part=part, dry_run=dry_run,
+                            expected_revision=expected_revision or self.summary["revision"],
+                            operation_id=operation_id or str(uuid.uuid4()))
+        if not dry_run and "project" in result:
+            self.summary = result["project"]
+        return result
+
+    def board_rules(self, kind: str | None = None) -> dict[str, Any]:
+        """The board's design rules, net classes and stackup."""
+        return self._call("board_rules", **({"kind": kind} if kind else {}))
 
     def board_info(self) -> dict[str, Any]:
         return self._call("board_info")
@@ -231,13 +337,15 @@ class Project:
         return self.session.call("list_ops")
 
     def apply(self, ops: list[dict[str, Any]], dry_run: bool = False, *, expected_revision: str | None = None,
-              operation_id: str | None = None, plan_digest: str | None = None, pool_items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+              operation_id: str | None = None, plan_digest: str | None = None,
+              pool_items: list[dict[str, Any]] | None = None, block: str | None = None) -> dict[str, Any]:
         """Apply edit operations; each is {"op": name, ...params}. Writes only changed files."""
         params: dict[str, Any] = {"ops": list(ops), "dry_run": dry_run,
                                   "expected_revision": expected_revision or self.summary["revision"],
                                   "operation_id": operation_id or str(uuid.uuid4())}
         if plan_digest is not None: params["plan_digest"] = plan_digest
         if pool_items is not None: params["pool_items"] = pool_items
+        if block is not None: params["block"] = block
         result = self._call("apply", **params)
         if not dry_run and "project" in result:
             self.summary = result["project"]
@@ -286,6 +394,10 @@ class Project:
 
     def analysis_snapshot(self) -> dict[str, Any]:
         return self._call("analysis_snapshot")
+
+    def save(self) -> dict[str, Any]:
+        """Write an open document to its file. A disk context is already written."""
+        return self._call("save")
 
     def transaction_status(self, operation_id: str) -> dict[str, Any]:
         return self._call("transaction_status", operation_id=operation_id)
@@ -405,6 +517,18 @@ def new_project(path: str | Path, name: str | None = None, isolated: bool = Fals
     return _default_session.new_project(path, name=name)
 
 
+def _no_live_reason(resolved: str) -> str:
+    """Why there is no live document, said as precisely as the evidence allows."""
+    holders = project_holders(resolved)
+    if not holders:
+        return "No live document matches this project; open it in Horizontal and turn on its live channel."
+    without = [h.get("name") or "An editor" for h in holders if not isinstance(h.get("endpoint"), dict)]
+    if without:
+        return (f"{', '.join(without)} has this project open but is serving no live channel. "
+                "Turn the live channel on in its settings; the listener starts at once.")
+    return "The live channel this project's editor published did not answer."
+
+
 def open(path: str | Path, isolated: bool = False, prefer_live: bool = True, source: str | None = None) -> Project:
     """Open a project. When Horizontal has it open, the app's live document is used
     (reads see unsaved edits; writes land on its undo stack); otherwise the engine
@@ -415,7 +539,7 @@ def open(path: str | Path, isolated: bool = False, prefer_live: bool = True, sou
     if source != "disk":
         live = None
         try:
-            live = Session.live()
+            live = Session.live(project=resolved)
             if live is not None:
                 for summary in live.call("list_projects"):
                     if summary.get("live") and Path(summary["path"]).resolve() == Path(resolved):
@@ -425,7 +549,7 @@ def open(path: str | Path, isolated: bool = False, prefer_live: bool = True, sou
             if source == "live": raise
         if live is not None: live.close()
         if source == "live":
-            raise transport_error("LIVE_UNAVAILABLE", "No live document matches this project; enable automation and open it in Horizontal.")
+            raise transport_error("LIVE_UNAVAILABLE", _no_live_reason(resolved))
     disk = Session(isolated=isolated)
     try: return disk.open(resolved)
     except Exception:

@@ -184,6 +184,65 @@ final class HorizontalLiveServerTests: XCTestCase {
         let missing = try send(["jsonrpc": "2.0", "id": 6, "method": "highlight", "params": ["handle": handle!, "nets": ["nope"]]], port: port, token: token)
         XCTAssertEqual((missing["error"] as? [String: Any])?["code"] as? Int, -32001)
     }
+
+
+    /// An edit through this channel is one undo step in the app and nothing
+    /// more until the document is written. `save` is what writes it, and the
+    /// summary says whether anything is outstanding.
+    func testSaveWritesTheDocumentAndReportsWhatWasOutstanding() throws {
+        let document = try registerTemplateDocument()
+        var saves = 0
+        var edited = false
+        document.isEdited = { edited }
+        document.save = { saves += 1; edited = false }
+
+        let handle = try XCTUnwrap(self.handle)
+        func summary() throws -> JSONDictionary {
+            let response = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 1, "method": "project_info", "params": ["handle": handle]])
+            return try XCTUnwrap(response["result"] as? JSONDictionary)
+        }
+        func save() throws -> JSONDictionary {
+            let response = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 2, "method": "save", "params": ["handle": handle]])
+            XCTAssertNil(response["error"], "\(response)")
+            return try XCTUnwrap(response["result"] as? JSONDictionary)
+        }
+
+        XCTAssertEqual(try summary()["unsaved_changes"] as? Bool, false)
+        edited = true
+        XCTAssertEqual(try summary()["unsaved_changes"] as? Bool, true)
+
+        let saved = try save()
+        XCTAssertEqual(saved["saved"] as? Bool, true)
+        XCTAssertEqual(saved["had_unsaved_changes"] as? Bool, true)
+        XCTAssertEqual(saved["path"] as? String, packageURL.path)
+        XCTAssertEqual(saves, 1)
+        XCTAssertEqual(try summary()["unsaved_changes"] as? Bool, false)
+
+        // Saving a document with nothing outstanding is not an error, and
+        // says nothing was written.
+        XCTAssertEqual(try save()["saved"] as? Bool, false)
+        XCTAssertEqual(saves, 2)
+
+        document.isReadOnly = { true }
+        edited = true
+        let refused = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 3, "method": "save", "params": ["handle": handle]])
+        XCTAssertEqual((refused["error"] as? JSONDictionary)?["code"] as? Int, -32007)
+        XCTAssertEqual(saves, 2, "a read-only document is never written")
+    }
+
+    /// A disk context has nothing held back: its edits committed with their
+    /// transaction. Saying so beats an error a caller has to special-case.
+    func testSavingADiskContextIsNotAnError() throws {
+        let session = HorizontalDispatchSession()
+        let entry = try session.open(url: packageURL)
+        let response = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 1, "method": "save", "params": ["handle": entry.handle]])
+        // The shared dispatcher owns handles, so drive the method directly.
+        _ = response
+        let result = try XCTUnwrap(try HorizontalDispatchMethods.handler(named: "save")?(session, ["handle": entry.handle]) as? JSONDictionary)
+        XCTAssertEqual(result["saved"] as? Bool, false)
+        XCTAssertEqual(result["durability"] as? String, "disk")
+        XCTAssertNotNil(result["note"])
+    }
 }
 
 /// A minimal loopback client on Network.framework for the tests above.

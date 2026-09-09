@@ -8,7 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from horizontal._native import HorizontalError, LiveTransport, SubprocessTransport, Transport, transport_error
+from horizontal._native import (HorizontalError, LiveTransport, SubprocessTransport, Transport,
+                                find_live_for, project_holders, transport_error)
 from horizontal.client import Session, Project, open as open_project
 
 
@@ -122,6 +123,75 @@ class TransportTests(unittest.TestCase):
         for _ in range(2):
             with self.assertRaises(HorizontalError) as caught: session.call("list_projects")
             self.assertEqual(caught.exception.structured()["code"], "INCOMPATIBLE_ENGINE")
+
+
+class HolderDiscoveryTests(unittest.TestCase):
+    """The app's discovery file is inside its sandbox container, which macOS
+    refuses other processes. The records beside a project are the way through."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.project = Path(self.temp.name) / "Test.horizontal"
+        self.project.mkdir()
+
+    def hold(self, endpoint=None, pid=4242, project=None, locked=True):
+        """A record beside the project, with its lock held as the app holds it."""
+        import fcntl, os, uuid
+        directory = Path(self.temp.name) / ".horizontal-transactions" / "digest" / "holders"
+        directory.mkdir(parents=True, exist_ok=True)
+        name = str(uuid.uuid4())
+        lock = directory / f"{name}.lock"
+        lock.write_bytes(b"")
+        record = {"pid": pid, "name": "Horizontal", "since": "2026-09-08T00:00:00Z",
+                  "project": str(project or self.project)}
+        if endpoint is not None:
+            record["endpoint"] = endpoint
+        (directory / f"{name}.json").write_text(json.dumps(record))
+        if not locked:
+            return None
+        descriptor = os.open(lock, os.O_RDWR)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.addCleanup(os.close, descriptor)
+        return descriptor
+
+    def test_only_locked_records_for_this_project_count(self):
+        self.assertEqual(project_holders(self.project), [])
+        self.hold(locked=False)
+        self.assertEqual(project_holders(self.project), [], "a record nobody holds is a process that has exited")
+        self.hold(project=Path(self.temp.name) / "Other.horizontal")
+        self.assertEqual(project_holders(self.project), [], "a record for another project is not this one's")
+        self.hold()
+        holders = project_holders(self.project)
+        self.assertEqual([h["name"] for h in holders], ["Horizontal"])
+        self.assertNotIn("endpoint", holders[0])
+
+    def test_a_published_endpoint_is_probed_before_it_is_believed(self):
+        # Nothing listens on this port, so the record is not taken at its word.
+        self.hold(endpoint={"host": "127.0.0.1", "port": "1", "token": "secret"})
+        attempts = []
+        with patch("horizontal._native.find_live", return_value=None):
+            self.assertIsNone(find_live_for(self.project, attempts))
+        self.assertTrue(any(a["status"] == "unreachable" for a in attempts), attempts)
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        self.addCleanup(listener.close)
+        self.hold(endpoint={"host": "127.0.0.1", "port": str(listener.getsockname()[1]), "token": "secret"})
+        with patch("horizontal._native.find_live", return_value=None):
+            found = find_live_for(self.project)
+        self.assertEqual(found["token"], "secret")
+        self.assertEqual(found["port"], listener.getsockname()[1], "a port written as text is still a port")
+
+    def test_an_open_document_without_a_channel_says_so(self):
+        self.hold()
+        with patch("horizontal._native.find_live", return_value=None):
+            with self.assertRaises(HorizontalError) as caught:
+                open_project(self.project, source="live")
+        message = caught.exception.structured()["message"]
+        self.assertIn("Horizontal", message)
+        self.assertIn("live channel", message)
 
 
 if __name__ == "__main__": unittest.main()
