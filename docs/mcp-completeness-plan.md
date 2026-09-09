@@ -22,15 +22,15 @@ all.
 | **done** | ~~No track or via operation.~~ Fixed: `place_track`, `remove_track`, `set_track_width`, `place_via`, `remove_via` — manual routing, which refuses to short two nets. Autorouting remains a separate question. |  |  |
 | **done** | ~~No power symbols or net labels.~~ Fixed: `place_power_symbol`, `place_net_label` and their removes, with `list_power_symbols` and `list_net_labels`. Buses and bus rippers remain. |  |  |
 | **done** | ~~Reads do not cover what writes now touch.~~ Fixed: `list_symbols`, `list_net_lines`, `list_tracks` and `list_vias`, plus `package_instance` alongside `symbol_instance` so endpoint identities are nameable. |  |  |
-| **done** | ~~No sheet management.~~ Fixed: `add_sheet`, `rename_sheet`, `remove_sheet`. Reordering pages is not offered — an index is set when a sheet is added. |  |  |
+| **done** | ~~No sheet management.~~ `add_sheet`, `rename_sheet`, `remove_sheet`, `set_sheet_index` — renumbering swaps, since two sheets cannot share a page number. |  |  |
 | **done** | ~~`new_project` is native-only.~~ Fixed: it is an MCP tool, and refuses a path that already exists. |  |  |
 | **done** | ~~No planes.~~ Fixed: `place_plane`, `remove_plane` and `pour_planes`, which runs the same pour engine the app does. |  |  |
-| **partly** | `place_polygon` covers the outline (layer 100) and any other layer, and `set_stackup` sets the layer count and thicknesses — a board is creatable from nothing. Keepouts, holes, dimensions and board text are still their own object kinds with no ops. |  |  |
+| **partly** | `place_polygon` (layer 100 is the outline), `set_stackup`, `place_hole` and `place_keepout` — a board is creatable from nothing, with holes and keepouts. Dimensions and board text remain. |  |  |
 | **done** | ~~Rules and stackup are read-shallow and write-closed.~~ `board_rules` reads one entry per rule; `add_rule`, `set_rule` and `remove_rule` write, gated on the app's own rules validator; `set_stackup` sets the layers. |  |  |
 | **done** | ~~Pool items are searchable and writable but not readable.~~ Fixed: `get_pool_item` reads through the project's own view of its pool. |  |  |
 | **done** | ~~Only the top block is editable.~~ `apply` takes a `block`; `add_block_instance`, `connect_block_port` and `place_block_symbol` compose blocks; `list_block_instances` reads them. Writes are block-scoped, reads are project-wide — deliberate, and documented. |  |  |
 | P3 | No buses or net ties. | Block `buses`, `net_ties`; sheet and board `net_ties`. | Uncommon in small designs, real in larger ones. |
-| P3 | No undo, and no way to see what a live edit did. | `applyArchive` names one undo step; nothing reverses it from outside. | An agent that makes a wrong edit must construct the inverse itself. |
+| **partly** | An automation edit is now undoable in the app: it registers on the document's own undo manager rather than a fallback the Undo command never reads, so ⌘Z takes it back. There is still no undo *through* the MCP — an agent that makes a wrong edit constructs the inverse itself. |  |  |
 
 ## What is already sound
 
@@ -170,3 +170,26 @@ outright rather than implying the board is fully specified.
 This survey read the dispatch method table, the edit vocabulary, the schematic
 and board object kinds in the file model, and the app's own command set. It
 did not change behaviour.
+
+## What is still missing, on both surfaces
+
+Kept here rather than in a commit message, because it is the list to pick up
+from next.
+
+**In the MCP.** Board dimensions and board text; buses, bus rippers and net
+ties; arcs, in polygons and in tracks — everything drawn here is straight; and
+undo, so a wrong edit has to be inverted by hand.
+
+**In the app.** Board holes and keepouts can be read, drawn, selected and
+hidden, but not *created*: `placeHole` and `placeShape` are padstack-editor
+tools that write into the padstack being edited, while a board hole is a
+padstack reference plus a placement. A board-level tool needs a padstack
+picker, a click-to-place interaction and an inspector — a real feature, not a
+flag on the existing one. The same is true of keepouts, which have a
+visibility toggle and no way to draw one.
+
+**In the router.** Completion, at a few percent. The correctness invariant
+holds and `autoroute` never writes a route it has not verified, but the finder
+walks around one obstacle at a time and gives up after trying both ways past
+each. Getting past that means a real search — A* over the routing graph, or
+finishing the vendored PNS — not better corner selection.

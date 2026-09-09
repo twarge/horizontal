@@ -476,6 +476,39 @@ class RemoveBlockSymbol(Input):
     sheet: StrictStr | StrictInt | None = None
 
 
+class PlaceHole(Input):
+    op: Literal["place_hole"]
+    x_mm: float
+    y_mm: float
+    padstack: StrictStr
+    net: str | None = None
+    angle_deg: float | None = None
+
+
+class RemoveHole(Input):
+    op: Literal["remove_hole"]
+    hole: StrictStr
+
+
+class PlaceKeepout(Input):
+    op: Literal["place_keepout"]
+    vertices: list[Vertex] = Field(min_length=3)
+    layer: StrictInt | None = None
+    keepout_class: str | None = None
+    exposed_copper_only: bool | None = None
+
+
+class RemoveKeepout(Input):
+    op: Literal["remove_keepout"]
+    keepout: StrictStr
+
+
+class SetSheetIndex(Input):
+    op: Literal["set_sheet_index"]
+    sheet: StrictStr | StrictInt
+    index: StrictInt = Field(ge=1)
+
+
 class AddRule(Input):
     op: Literal["add_rule"]
     kind: StrictStr
@@ -604,5 +637,6 @@ EditOperation = Annotated[EnsureComponent | RemoveComponent | SetValue | SetRefd
                           AddNetClass | RenameNetClass |
                           AddBlockInstance | RemoveBlockInstance | ConnectBlockPort |
                           PlaceBlockSymbol | RemoveBlockSymbol | SetStackup |
-                          AddRule | SetRule | RemoveRule | CopyLayout,
+                          AddRule | SetRule | RemoveRule |
+                          PlaceHole | RemoveHole | PlaceKeepout | RemoveKeepout | SetSheetIndex | CopyLayout,
                           Field(discriminator="op")]

@@ -50,6 +50,11 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case removePolygon = "remove_polygon"
     case placePlane = "place_plane"
     case removePlane = "remove_plane"
+    case placeHole = "place_hole"
+    case removeHole = "remove_hole"
+    case placeKeepout = "place_keepout"
+    case removeKeepout = "remove_keepout"
+    case setSheetIndex = "set_sheet_index"
     case placeComponent = "place_component"
     case removePlacement = "remove_placement"
     case copyGroupLayout = "copy_group_layout"
@@ -101,6 +106,11 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .removePolygon: "Remove a board polygon. A polygon a plane pours into belongs to that plane."
         case .placePlane: "Define a copper pour: a polygon on a copper layer, filled with one net. Defining it does not fill it — pour_planes does that."
         case .removePlane: "Remove a plane and the polygon it pours into."
+        case .placeHole: "Put a hole through the board — a mounting hole, or a plated one on a net."
+        case .removeHole: "Remove a board hole."
+        case .placeKeepout: "Mark an area where copper may not go, on one layer or all of them."
+        case .removeKeepout: "Remove a keepout and the polygon bounding it."
+        case .setSheetIndex: "Renumber a schematic sheet, swapping with whatever holds that page number."
         case .placeComponent: "Place a component's package on the board, or move it if it is placed."
         case .removePlacement: "Take a component's package off the board, keeping its copper as junctions."
         case .copyGroupLayout: "Copy the placement (and by default the routing) of one group's packages onto another group whose components carry the same tags."
@@ -222,6 +232,22 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "priority": "Lower pours first where planes overlap (optional; default 0)."]
         case .removePlane:
             return ["plane": "Plane id, from list_planes."]
+        case .placeHole:
+            return ["x_mm": "X position.", "y_mm": "Y position.",
+                    "padstack": "Pool padstack uuid giving the hole its shape and size. search_pool finds one, kind padstack.",
+                    "net": "Net for a plated hole (optional; a mounting hole has none).",
+                    "angle_deg": "Rotation, which matters for a slot (optional)."]
+        case .removeHole:
+            return ["hole": "Hole id, from list_holes."]
+        case .placeKeepout:
+            return ["vertices": "Three or more {\"x_mm\", \"y_mm\"} points bounding the area.",
+                    "layer": "Copper layer number (optional; omit for every copper layer).",
+                    "keepout_class": "Horizon's keepout class name, which its rules match on (optional).",
+                    "exposed_copper_only": "Only exposed copper is kept out (optional)."]
+        case .removeKeepout:
+            return ["keepout": "Keepout id, from list_keepouts."]
+        case .setSheetIndex:
+            return ["sheet": "Sheet index, name or uuid.", "index": "The page number to give it."]
         case .placeTrack:
             let endpoint = "One of {\"component\", \"pad\"}, {\"junction\"} or {\"x_mm\", \"y_mm\"}. A point becomes a junction."
             return ["from": endpoint, "to": endpoint, "layer": "Copper layer number; 0 is the top. board_info lists them.",
@@ -283,7 +309,7 @@ struct HorizontalEditOperation {
                 }
             } else if ["x_mm", "y_mm", "angle_deg", "size_mm", "width_mm", "copper_mm", "substrate_mm"].contains(key) {
                 try HorizontalDispatchValidation.number(value, key: key)
-            } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs"].contains(key) {
+            } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs", "exposed_copper_only"].contains(key) {
                 try HorizontalDispatchValidation.boolean(value, key: key)
             } else if value is NSNull, ["part", "group", "tag"].contains(key) {
                 continue
@@ -616,6 +642,16 @@ final class HorizontalProjectEditor {
             change.merge(try placePlane(params)) { _, new in new }
         case .removePlane:
             change.merge(try removePlane(params)) { _, new in new }
+        case .placeHole:
+            change.merge(try placeHole(params)) { _, new in new }
+        case .removeHole:
+            change.merge(try removeBoardEntry(params, key: "holes", selector: "hole", label: "hole")) { _, new in new }
+        case .placeKeepout:
+            change.merge(try placeKeepout(params)) { _, new in new }
+        case .removeKeepout:
+            change.merge(try removeKeepout(params)) { _, new in new }
+        case .setSheetIndex:
+            change.merge(try setSheetIndex(params)) { _, new in new }
         case .placeTrack:
             change.merge(try placeTrack(params)) { _, new in new }
         case .removeTrack:
@@ -1744,6 +1780,122 @@ final class HorizontalProjectEditor {
             throw HorizontalDispatchError.notFound("No symbol for block instance \(id) is on a sheet.")
         }
         return ["block_instance": id, "symbols": removed]
+    }
+
+    // MARK: - Holes and keepouts
+
+    /// Removes one entry from a board map, by id.
+    private func removeBoardEntry(_ params: JSONDictionary, key: String, selector: String, label: String) throws -> JSONDictionary {
+        guard let reference = params.string(selector), !reference.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("\(selector) is required; list_\(key) returns the ids.")
+        }
+        let map = try board()[key] as? JSONDictionary ?? [:]
+        guard let id = map.keys.first(where: { $0.caseInsensitiveCompare(reference) == .orderedSame }) else {
+            throw HorizontalDispatchError.notFound("No \(label) \(reference) on the board.")
+        }
+        try updateBoard { board in
+            var map = board[key] as? JSONDictionary ?? [:]
+            map.removeValue(forKey: id)
+            board[key] = map
+        }
+        return [selector: id]
+    }
+
+    private func placeHole(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard let x = params.double("x_mm"), let y = params.double("y_mm") else {
+            throw HorizontalDispatchError.invalidParams("place_hole needs \"x_mm\" and \"y_mm\".")
+        }
+        // A board hole takes its shape from a padstack, the way Horizon's does.
+        // Nothing here invents a diameter.
+        guard let padstack = params.string("padstack")?.lowercased(), !padstack.isEmpty else {
+            throw HorizontalDispatchError.invalidParams(
+                "place_hole needs \"padstack\": a hole padstack uuid. search_pool with kind padstack finds one, and import_pool_part brings it in."
+            )
+        }
+        var item: JSONDictionary = [
+            "placement": ["shift": [Self.nanometres(x), Self.nanometres(y)],
+                          "angle": Self.horizonAngle(params.double("angle_deg") ?? 0), "mirror": false],
+            "padstack": padstack,
+            "parameter_set": [String: Any]()
+        ]
+        // A hole on a net is plated and joins that net; one without is a
+        // mounting hole. Horizon tells them apart by whether the net is there.
+        if params.string("net") != nil {
+            item["net"] = try netID(params)
+        }
+        let id = UUID().uuidString.lowercased()
+        try updateBoard { board in
+            var holes = board["holes"] as? JSONDictionary ?? [:]
+            holes[id] = item
+            board["holes"] = holes
+        }
+        return ["hole": id, "padstack": padstack, "net": item["net"] as Any? as Any,
+                "x_mm": x, "y_mm": y]
+    }
+
+    private func placeKeepout(_ params: JSONDictionary) throws -> JSONDictionary {
+        let vertices = try polygonVertices(params)
+        let layer = params.int("layer")
+        // A keepout's shape is a polygon like a plane's; the layer lives on the
+        // polygon, and a keepout with none applies to all copper.
+        let polygon = try writePolygon(layer: layer ?? HorizontalBoardLayers.topCopper, vertices: vertices)
+        let id = UUID().uuidString.lowercased()
+        try updateBoard { board in
+            var keepouts = board["keepouts"] as? JSONDictionary ?? [:]
+            keepouts[id] = ["polygon": polygon,
+                            "keepout_class": params.string("keepout_class") ?? "",
+                            "all_cu_layers": layer == nil,
+                            "exposed_cu_only": params.bool("exposed_copper_only") ?? false,
+                            "patch_types_cu": [String]()]
+            board["keepouts"] = keepouts
+        }
+        return ["keepout": id, "polygon": polygon, "layer": layer as Any? as Any,
+                "all_copper_layers": layer == nil]
+    }
+
+    private func removeKeepout(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard let reference = params.string("keepout"), !reference.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("remove_keepout needs \"keepout\"; list_keepouts returns the ids.")
+        }
+        let keepouts = try board()["keepouts"] as? JSONDictionary ?? [:]
+        guard let match = keepouts.first(where: { $0.key.caseInsensitiveCompare(reference) == .orderedSame }) else {
+            throw HorizontalDispatchError.notFound("No keepout \(reference) on the board.")
+        }
+        let polygon = (match.value as? JSONDictionary)?.string("polygon")
+        try updateBoard { board in
+            var keepouts = board["keepouts"] as? JSONDictionary ?? [:]
+            keepouts.removeValue(forKey: match.key)
+            board["keepouts"] = keepouts
+            if let polygon {
+                var polygons = board["polygons"] as? JSONDictionary ?? [:]
+                polygons.removeValue(forKey: polygon)
+                board["polygons"] = polygons
+            }
+        }
+        return ["keepout": match.key, "polygon": polygon as Any? as Any]
+    }
+
+    /// Renumbering a sheet swaps with whoever holds that number, because two
+    /// sheets sharing a page number is a state the app cannot show.
+    private func setSheetIndex(_ params: JSONDictionary) throws -> JSONDictionary {
+        let id = try sheetID(params)
+        guard let index = params.int("index") else {
+            throw HorizontalDispatchError.invalidParams("set_sheet_index needs \"index\": the page number to give it.")
+        }
+        guard index > 0 else { throw HorizontalDispatchError.invalidParams("A page number starts at 1.") }
+        let sheets = try sheetsInOrder()
+        guard let current = sheets.first(where: { $0.id == id }) else {
+            throw HorizontalDispatchError.notFound("No sheet \(id).")
+        }
+        let was = current.json.int("index") ?? 0
+        guard was != index else { return ["sheet": id, "index": index, "swapped_with": NSNull()] }
+        let occupant = sheets.first { $0.json.int("index") == index && $0.id != id }
+        try updateSheet(id) { $0["index"] = index }
+        if let occupant {
+            try updateSheet(occupant.id) { $0["index"] = was }
+        }
+        return ["sheet": id, "index": index, "was": was,
+                "swapped_with": occupant?.id as Any? as Any]
     }
 
     // MARK: - Board rules

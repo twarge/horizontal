@@ -1212,7 +1212,15 @@ struct ProjectWorkspaceView: View {
             currentValue: { HorizontalLiveSnapshot(archive: document.archive, project: project) },
             restoreValue: { snapshot in installLiveSnapshot(snapshot) }
         )
-        liveUndoTarget.registerUndo(from: previous, actionName: actionName, undoManager: activeUndoManager)
+        // The document's own undo manager, not the view's environment one: an
+        // edit arriving while the app is in the background would otherwise land
+        // on the view's fallback, where Undo never looks, and the user could
+        // not take an automation client's edit back.
+        var undoManager = activeUndoManager
+        #if os(macOS)
+        undoManager = HorizontalDocumentSaving.undoManager(url: project.url) ?? undoManager
+        #endif
+        liveUndoTarget.registerUndo(from: previous, actionName: actionName, undoManager: undoManager)
         installLiveSnapshot(HorizontalLiveSnapshot(archive: archive, project: reloaded))
         #if os(macOS)
         // The undo registration above may have gone to the view's fallback

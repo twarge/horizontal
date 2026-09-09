@@ -56,6 +56,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `list_net_labels`, `list_power_symbols` | what names a net on a page, with the ids their remove ops take |
 | `list_block_instances` | the blocks this block uses, their wired ports, and where each is drawn |
 | `autoroute` | best-effort automatic routing of one net's airwires |
+| `list_holes`, `list_keepouts` | holes through the board and the areas copper may not enter |
 | `list_planes`, `list_polygons` | copper pours (and whether each is actually filled) and board polygons; layer 100 is the outline |
 | `board_rules` | the design rules as data — one entry per rule, not per kind — the net classes they select, and the stackup |
 | `get_pool_item` | one pool item's own JSON — the bytes `pool_write` takes back |
@@ -133,6 +134,9 @@ designator or id, nets by name or id, pins by name (`EN`), by gate and pin
 | `place_text`, `remove_text` | Free text on a sheet: write one, or change the text, position, rotation, size, origin or font of one `list_texts` named. A text Horizon extracted from a symbol with Smash belongs to that symbol and is refused |
 | `place_component`, `remove_placement` | Board placement in millimetres and degrees; a placed package moves, an unplaced one gets a package entry the loader completes from the part |
 | `place_track`, `remove_track`, `set_track_width` | One straight copper segment per op, between pads, junctions or points; a point becomes a junction, and a junction nothing holds any more is removed with the copper that held it |
+| `place_hole`, `remove_hole` | A hole through the board, its size taken from a padstack. A hole with a net is plated onto it; one without is a mounting hole |
+| `place_keepout`, `remove_keepout` | An area copper may not enter, on one layer or on all of them |
+| `set_sheet_index` | Renumber a sheet, swapping with whatever held that page number |
 | `place_polygon`, `remove_polygon` | A closed polygon on a board layer. Layer 100 is the outline — the shape the board is cut to, and a board without one has no shape however complete it otherwise looks |
 | `place_plane`, `remove_plane` | A copper pour: a polygon on a copper layer, filled with one net. Defining it does not fill it; `pour_planes` does, and drops fill that reaches nothing on its net |
 | `add_block_instance`, `remove_block_instance`, `connect_block_port` | Using one block inside another, and wiring its ports to nets here |
@@ -239,6 +243,21 @@ completes a few percent and reports the rest — the harness in
 `/tmp/router-harness.txt`. What it does write has been checked clear of the
 board's clearances; what it cannot route stays an airwire, is listed in
 `unrouted` with what blocked it, and `place_track` draws those by hand.
+
+### What the app shows of an automation edit
+
+Everything these ops write is an ordinary board or schematic object, so the app
+draws it, selects it and hits-tests it like any other — holes and keepouts have
+their own visibility toggles, planes pour, tracks route. What the app cannot
+yet *create* is listed at the end of the completeness plan.
+
+Two things had to be fixed for an edit arriving while the app is in the
+background to behave like one the user made. A live edit registers its undo
+with the document's own undo manager rather than whichever one the view can
+reach from the environment — the environment's is nil when the window is not
+focused, so the edit used to land on a fallback manager that Undo never looks
+at, and an automation edit could not be taken back. And the document is marked
+as changed directly, so the window shows unsaved work and closing it asks.
 
 ### How rules are stored, and why that matters to read them
 

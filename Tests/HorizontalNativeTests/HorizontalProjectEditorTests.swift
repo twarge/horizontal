@@ -1369,4 +1369,80 @@ final class HorizontalProjectEditorTests: XCTestCase {
         let after = try XCTUnwrap(try result("board_rules") as? [String: Any])
         XCTAssertEqual((after["rules"] as? [[String: Any]])?.count, 1)
     }
+
+    /// A mounting hole and a plated one differ by whether they carry a net,
+    /// and both take their size from a padstack rather than a made-up number.
+    func testHolesArePlacedFromAPadstack() throws {
+        let padstack = HorizontalPoolItemFactory.newPadstack(type: .hole)
+        _ = try HorizontalPoolItemFactory.write(
+            .padstack(padstack),
+            to: packageURL.appendingPathComponent("pool/padstacks/cache/\(padstack.uuid).json"))
+        _ = try result("reload_project")
+
+        let placed = try apply([["op": "place_hole", "x_mm": 5, "y_mm": 5, "padstack": padstack.uuid]])
+        let change = try XCTUnwrap((placed["changes"] as? [[String: Any]])?.first)
+        XCTAssertEqual((placed["project"] as? [String: Any])?["diagnostics"] as? [String], [])
+        let id = try XCTUnwrap(change["hole"] as? String)
+
+        let holes = try XCTUnwrap(try result("list_holes") as? [[String: Any]])
+        XCTAssertEqual(holes.count, 1)
+        XCTAssertEqual(holes[0]["id"] as? String, id)
+        XCTAssertEqual(holes[0]["x_mm"] as? Double, 5)
+        XCTAssertEqual(holes[0]["padstack"] as? String, padstack.uuid)
+        XCTAssertEqual(holes[0]["plated"] as? Bool, false, "no net means a mounting hole")
+
+        _ = try apply([["op": "ensure_net", "name": "GND"],
+                       ["op": "place_hole", "x_mm": 15, "y_mm": 5, "padstack": padstack.uuid, "net": "GND"]])
+        let plated = try XCTUnwrap((try result("list_holes") as? [[String: Any]])?.first { $0["plated"] as? Bool == true })
+        XCTAssertEqual(plated["net_name"] as? String, "GND")
+
+        XCTAssertNotNil(try call("apply", ["ops": [["op": "place_hole", "x_mm": 1, "y_mm": 1]]])["error"],
+                        "nothing invents a diameter")
+        _ = try apply([["op": "remove_hole", "hole": id]])
+        XCTAssertEqual((try result("list_holes") as? [[String: Any]])?.count, 1)
+    }
+
+    func testKeepoutsCoverOneLayerOrAllOfThem() throws {
+        let all = try apply([["op": "place_keepout", "vertices": square(10)]])
+        let everywhere = try XCTUnwrap((all["changes"] as? [[String: Any]])?.first)
+        XCTAssertEqual(everywhere["all_copper_layers"] as? Bool, true)
+        XCTAssertEqual((all["project"] as? [String: Any])?["diagnostics"] as? [String], [])
+
+        _ = try apply([["op": "place_keepout", "vertices": square(20), "layer": 0,
+                        "keepout_class": "no_copper", "exposed_copper_only": true]])
+        let keepouts = try XCTUnwrap(try result("list_keepouts") as? [[String: Any]])
+        XCTAssertEqual(keepouts.count, 2)
+        let onTop = try XCTUnwrap(keepouts.first { $0["all_copper_layers"] as? Bool == false })
+        XCTAssertEqual(onTop["layer"] as? Int, 0)
+        XCTAssertEqual(onTop["keepout_class"] as? String, "no_copper")
+        XCTAssertEqual(onTop["exposed_copper_only"] as? Bool, true)
+        XCTAssertEqual((onTop["vertices"] as? [[String: Any]])?.count, 4)
+        XCTAssertEqual(keepouts.first { $0["all_copper_layers"] as? Bool == true }?["layer_name"] as? String,
+                       "every copper layer")
+
+        // Removing a keepout takes the polygon bounding it.
+        let polygonCount = (try result("list_polygons") as? [[String: Any]])?.count ?? 0
+        _ = try apply([["op": "remove_keepout", "keepout": try XCTUnwrap(everywhere["keepout"] as? String)]])
+        XCTAssertEqual((try result("list_keepouts") as? [[String: Any]])?.count, 1)
+        XCTAssertEqual((try result("list_polygons") as? [[String: Any]])?.count, polygonCount - 1)
+        XCTAssertNotNil(try call("apply", ["ops": [["op": "place_keepout", "vertices": [["x_mm": 0, "y_mm": 0]]]]])["error"])
+    }
+
+    /// Two sheets cannot share a page number, so renumbering swaps.
+    func testSheetsAreRenumberedBySwapping() throws {
+        _ = try apply([["op": "add_sheet", "name": "Power"], ["op": "add_sheet", "name": "Analog"]])
+        let before = try XCTUnwrap(try result("list_sheets") as? [[String: Any]])
+        XCTAssertEqual(before.map { $0["index"] as? Int }, [1, 2, 3])
+
+        let moved = try apply([["op": "set_sheet_index", "sheet": "Analog", "index": 1]])
+        let change = try XCTUnwrap((moved["changes"] as? [[String: Any]])?.first)
+        XCTAssertEqual(change["was"] as? Int, 3)
+        XCTAssertNotNil(change["swapped_with"] as? String)
+
+        let after = try XCTUnwrap(try result("list_sheets") as? [[String: Any]])
+        XCTAssertEqual(after.map { $0["name"] as? String }, ["Analog", "Power", "Sheet 1"])
+        XCTAssertEqual(after.map { $0["index"] as? Int }, [1, 2, 3], "no two sheets share a page number")
+
+        XCTAssertNotNil(try call("apply", ["ops": [["op": "set_sheet_index", "sheet": 1, "index": 0]]])["error"])
+    }
 }

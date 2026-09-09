@@ -180,6 +180,18 @@ enum HorizontalDispatchMethods {
             handler: autoroute
         ),
         .init(
+            name: "list_holes",
+            summary: "Holes through the board: where each is, how big, whether it is plated onto a net, and the padstack giving it its shape.",
+            params: ["handle": "Project handle."],
+            handler: listHoles
+        ),
+        .init(
+            name: "list_keepouts",
+            summary: "Areas copper may not enter, with the polygon bounding each and whether it applies to one layer or all of them.",
+            params: ["handle": "Project handle."],
+            handler: listKeepouts
+        ),
+        .init(
             name: "pour_planes",
             summary: "Fill every plane on the board, the way Update All Planes does. Planes are defined by place_plane and stay empty until this runs; it recomputes them all from the board as it now stands.",
             params: ["handle": "Project handle.", "expected_revision": "The revision this was planned against.",
@@ -1736,6 +1748,64 @@ enum HorizontalDispatchMethods {
             }
         }
         return fallback
+    }
+
+    @Sendable private static func listHoles(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        // The file says what the hole references; the parsed model says what
+        // the padstack made of it.
+        let resolved = Dictionary((entry.project.board?.holes ?? []).map { ($0.id.lowercased(), $0) },
+                                  uniquingKeysWith: { first, _ in first })
+        return try boardJSON(entry).dictionaryMap("holes").map { id, item -> JSONDictionary in
+            let hole = resolved[id.lowercased()]
+            let placement = item.dictionary("placement") ?? [:]
+            let shift = placement["shift"] as? [Any] ?? []
+            let net = item.string("net")?.lowercased()
+            var json: JSONDictionary = [
+                "id": id,
+                "x_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(shift.first ?? 0)),
+                "y_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(shift.count > 1 ? shift[1] : 0)),
+                "angle_deg": HorizontalDispatchJSON.degrees(placement.int("angle") ?? 0),
+                "padstack": item.string("padstack") as Any? as Any,
+                "net": net as Any? as Any,
+                "net_name": net.flatMap { entry.index.net(id: $0)?.name } as Any? as Any,
+                // Horizon plates a hole by giving it a net; one without is a
+                // mounting hole.
+                "plated": net != nil
+            ]
+            if let hole {
+                json["diameter_mm"] = HorizontalDispatchJSON.mm(hole.diameter)
+                json["length_mm"] = hole.length.map { HorizontalDispatchJSON.mm($0) } as Any? as Any
+                json["shape"] = hole.shape.rawValue
+            }
+            return json
+        }.sorted { ($0.string("id") ?? "") < ($1.string("id") ?? "") }
+    }
+
+    @Sendable private static func listKeepouts(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let json = try boardJSON(entry)
+        let polygons = json.dictionaryMap("polygons")
+        return json.dictionaryMap("keepouts").map { id, item -> JSONDictionary in
+            let polygonID = item.string("polygon")
+            let polygon = polygonID.flatMap { key in polygons.first { $0.key.caseInsensitiveCompare(key) == .orderedSame }?.value }
+            let layer = polygon?.int("layer")
+            let allLayers = item.bool("all_cu_layers") ?? false
+            return [
+                "id": id,
+                "polygon": polygonID as Any? as Any,
+                "layer": allLayers ? NSNull() : (layer as Any? as Any),
+                "layer_name": allLayers ? "every copper layer" : (layer.map { HorizontalBoardLayers.name(for: $0) } as Any? as Any),
+                "all_copper_layers": allLayers,
+                "exposed_copper_only": item.bool("exposed_cu_only") ?? false,
+                "keepout_class": item.string("keepout_class") ?? "",
+                "vertices": (polygon?["vertices"] as? [JSONDictionary] ?? []).map { vertex -> JSONDictionary in
+                    let position = vertex["position"] as? [Any] ?? []
+                    return ["x_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(position.first ?? 0)),
+                            "y_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(position.count > 1 ? position[1] : 0))]
+                }
+            ]
+        }.sorted { ($0.string("id") ?? "") < ($1.string("id") ?? "") }
     }
 
     @Sendable private static func listTracks(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
