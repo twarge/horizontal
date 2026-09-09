@@ -492,6 +492,9 @@ struct HorizontalBoard {
     /// deletion from absence; this set tells it which keys to drop. Transient edit
     /// state — empty after a save+reload (the entry is gone from disk).
     var removedPolygonIDs: Set<String> = []
+    /// Dimension ids the editor has explicitly removed, for the same reason
+    /// and with the same lifetime as `removedPolygonIDs`.
+    var removedDimensionIDs: Set<String> = []
     var planes: [HorizontalPlane]
     var keepouts: [HorizontalKeepout]
     var dimensions: [HorizontalDimension]
