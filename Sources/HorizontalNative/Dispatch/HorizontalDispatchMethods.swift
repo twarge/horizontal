@@ -711,29 +711,43 @@ enum HorizontalDispatchMethods {
         let json = try boardJSON(entry)
         let classes = netClasses(entry)
         let kind = params.string("kind")
-        // Rules are handed over as the file states them. There are twenty kinds
-        // with twenty shapes, and inventing a normalized form for each would
-        // lose the detail a router or a review actually needs.
-        let rules = json.dictionaryMap("rules").compactMap { id, item -> JSONDictionary? in
-            let ruleKind = item.string("rule") ?? id
-            guard kind == nil || kind == ruleKind else { return nil }
-            var entryJSON: JSONDictionary = ["id": id, "kind": ruleKind, "rule": item]
-            if let match = item.dictionary("match") {
-                let mode = match.string("mode") ?? "all"
-                entryJSON["applies_to"] = mode == "all"
-                    ? "every net"
-                    : (mode == "net_class" ? "net class \(match.string("net_class").flatMap { classes[$0.lowercased()] } ?? "?")" : mode)
+        // Horizon keys rules by kind, and a kind that can hold more than one
+        // ("multi") keys those by uuid underneath while the rest store the rule
+        // directly. Flattening both into one list is what lets a caller name a
+        // single rule; the body is handed over as the file states it, because
+        // twenty kinds have twenty shapes and a normalized form would lose the
+        // detail a router or a review actually needs.
+        var rules = [JSONDictionary]()
+        for (family, value) in json.dictionaryMap("rules") {
+            guard kind == nil || kind == family else { continue }
+            let isMulti = HorizontalBoardRuleKind(rawValue: family)?.isMulti ?? false
+            let items: [(id: String?, rule: JSONDictionary)] = isMulti
+                ? value.compactMap { key, item in (item as? JSONDictionary).map { (key, $0) } }
+                : [(nil, value)]
+            for item in items {
+                var entryJSON: JSONDictionary = ["kind": family, "rule": item.rule,
+                                                 "enabled": item.rule.bool("enabled") ?? true,
+                                                 "order": item.rule.int("order") as Any? as Any]
+                entryJSON["id"] = item.id as Any? as Any
+                if let match = item.rule.dictionary("match") {
+                    let mode = match.string("mode") ?? "all"
+                    entryJSON["applies_to"] = mode == "all"
+                        ? "every net"
+                        : (mode == "net_class" ? "net class \(match.string("net_class").flatMap { classes[$0.lowercased()] } ?? "?")" : mode)
+                }
+                rules.append(entryJSON)
             }
-            entryJSON["enabled"] = item.bool("enabled") ?? true
-            return entryJSON
-        }.sorted { ($0.string("kind") ?? "", $0.string("id") ?? "") < ($1.string("kind") ?? "", $1.string("id") ?? "") }
+        }
+        rules.sort { ($0.string("kind") ?? "", $0.int("order") ?? 0, $0.string("id") ?? "")
+                      < ($1.string("kind") ?? "", $1.int("order") ?? 0, $1.string("id") ?? "") }
 
         let stackup: [JSONDictionary] = board.stackupLayers.map { layer in
             ["layer": layer.layer, "name": HorizontalBoardLayers.name(for: layer.layer)]
         }
         return [
             "rules": rules,
-            "kinds": Array(Set(json.dictionaryMap("rules").values.compactMap { $0.string("rule") })).sorted(),
+            "kinds": json.dictionaryMap("rules").keys.sorted(),
+            "multi_kinds": HorizontalBoardRuleKind.visibleCases.filter(\.isMulti).map(\.rawValue).sorted(),
             "net_classes": classes.map { ["id": $0.key, "name": $0.value] as JSONDictionary }
                 .sorted { ($0.string("name") ?? "") < ($1.string("name") ?? "") },
             "stackup": stackup,
@@ -1706,13 +1720,12 @@ enum HorizontalDispatchMethods {
 
     /// The width a `track_width` rule states for a net's class on a layer.
     private static func ruledWidth(_ entry: HorizontalDispatchProjectEntry, netID: String, layer: Int) -> Double? {
-        guard let rules = (try? boardJSON(entry))?.dictionary("rules") else { return nil }
+        guard let family = (try? boardJSON(entry))?.dictionary("rules")?.dictionary("track_width") else { return nil }
         let netClass = blockJSON(entry)?.dictionaryMap("nets")
             .first { $0.key.lowercased() == netID }?.value.string("net_class")?.lowercased()
         var fallback: Double?
-        for (_, value) in rules {
-            guard let rule = value as? JSONDictionary, rule.string("rule") == "track_width",
-                  rule.bool("enabled") ?? true,
+        for (_, value) in family {
+            guard let rule = value as? JSONDictionary, rule.bool("enabled") ?? true,
                   let width = rule.dictionary("widths")?.dictionary(String(layer))?.double("def") else { continue }
             let match = rule.dictionary("match")
             switch match?.string("mode") ?? "all" {

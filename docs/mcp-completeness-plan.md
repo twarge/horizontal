@@ -26,7 +26,7 @@ all.
 | **done** | ~~`new_project` is native-only.~~ Fixed: it is an MCP tool, and refuses a path that already exists. |  |  |
 | **done** | ~~No planes.~~ Fixed: `place_plane`, `remove_plane` and `pour_planes`, which runs the same pour engine the app does. |  |  |
 | **partly** | `place_polygon` covers the outline (layer 100) and any other layer, and `set_stackup` sets the layer count and thicknesses — a board is creatable from nothing. Keepouts, holes, dimensions and board text are still their own object kinds with no ops. |  |  |
-| **partly** | `board_rules` reads the rules, net classes and stackup, and `place_track` now takes its width from a `track_width` rule. Writing rules is still closed: twenty kinds, twenty shapes, and a wrong clearance is worse than none. |  |  |
+| **done** | ~~Rules and stackup are read-shallow and write-closed.~~ `board_rules` reads one entry per rule; `add_rule`, `set_rule` and `remove_rule` write, gated on the app's own rules validator; `set_stackup` sets the layers. |  |  |
 | **done** | ~~Pool items are searchable and writable but not readable.~~ Fixed: `get_pool_item` reads through the project's own view of its pool. |  |  |
 | **done** | ~~Only the top block is editable.~~ `apply` takes a `block`; `add_block_instance`, `connect_block_port` and `place_block_symbol` compose blocks; `list_block_instances` reads them. Writes are block-scoped, reads are project-wide — deliberate, and documented. |  |  |
 | P3 | No buses or net ties. | Block `buses`, `net_ties`; sheet and board `net_ties`. | Uncommon in small designs, real in larger ones. |
@@ -108,10 +108,17 @@ classes. The follow-through: `place_track` now takes its width from a
 `track_width` rule when one covers the net's class and layer, and still refuses
 to invent one when none does.
 
-Rule *writing* is left undone on purpose. There are twenty rule kinds with
-twenty shapes, and a clearance rule written wrong is worse than no rule at all
-— it would make `check` pass on a board that should fail. That wants a review
-pass, not an autonomous one.
+Rule *writing* followed, once there was a way to make it safe: the app's own
+`HorizontalBoardRulesValidator` gates every write, so nothing commits that the
+rules editor would reject. `add_rule` uses the editor's own defaults for the
+kind, and `set_rule` merges rather than replaces.
+
+Doing it surfaced a bug in the read that shipped before it. Horizon keys rules
+by kind, and the kinds that hold several key those by uuid underneath;
+`board_rules` had treated each top-level entry as a single rule, so it reported
+whole families as one. The synthetic fixture agreed with it, because both were
+written from the same misunderstanding — the fix carries a test that reads a
+board the app actually wrote.
 
 **7. Pool item reads, then hierarchy. — Reads done, hierarchy half done.**
 `get_pool_item` closes the pool loop: search, read, edit, write back.

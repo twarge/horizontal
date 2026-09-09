@@ -208,3 +208,50 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         XCTAssertEqual((notAPool["error"] as? [String: Any])?["code"] as? Int, -32001)
     }
 }
+
+/// Reading a real board's rules.
+///
+/// The synthetic fixtures elsewhere were written from an assumption about how
+/// Horizon stores rules, and the assumption was wrong — rules are keyed by
+/// kind, with the kinds that hold several keying those by uuid underneath, and
+/// a reader that treats each top-level entry as one rule reports whole families
+/// as single rules. A fixture written from the same misunderstanding agrees
+/// with it, so this reads a board the app did not write.
+final class HorizontalBoardRulesRealBoardTests: XCTestCase {
+    func testRealRulesReadAsIndividualRules() throws {
+        let path = ProcessInfo.processInfo.environment["HORIZONTAL_GOLDEN_BOARD"]
+            ?? "/Users/kornack/Repositories/randi/Randi Short Horizon/Randi Short.hprj"
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw XCTSkip("no real board available")
+        }
+        let opened = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 1, "method": "open_project",
+                                              "params": ["path": path]])
+        let handle = try XCTUnwrap((opened["result"] as? [String: Any])?["handle"] as? Int)
+        addTeardownBlock { _ = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 0, "method": "close_project",
+                                                        "params": ["handle": handle]]) }
+
+        let response = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 2, "method": "board_rules",
+                                                "params": ["handle": handle]])
+        XCTAssertNil(response["error"], "\(response)")
+        let result = try XCTUnwrap(response["result"] as? [String: Any])
+        let rules = try XCTUnwrap(result["rules"] as? [[String: Any]])
+        XCTAssertFalse(rules.isEmpty, "a real board states rules")
+
+        for rule in rules {
+            let kind = try XCTUnwrap(rule["kind"] as? String)
+            XCTAssertNotNil(HorizontalBoardRuleKind(rawValue: kind), "\(kind) is a rule kind, not a rule id")
+            let body = try XCTUnwrap(rule["rule"] as? [String: Any])
+            // A family read as one rule shows up here: its keys are uuids, and
+            // an individual rule always carries `enabled`.
+            XCTAssertNotNil(body["enabled"], "\(kind) looks like a family rather than one rule: \(body.keys.sorted())")
+            if HorizontalBoardRuleKind(rawValue: kind)?.isMulti == true {
+                XCTAssertNotNil(rule["id"] as? String, "\(kind) holds several rules, so each needs an id")
+            } else {
+                XCTAssertNil(rule["id"] as? String, "\(kind) holds one rule, so it has no id")
+            }
+        }
+        // More rules than kinds is the point: at least one family holds several.
+        let kinds = Set(rules.compactMap { $0["kind"] as? String })
+        XCTAssertGreaterThanOrEqual(rules.count, kinds.count)
+    }
+}

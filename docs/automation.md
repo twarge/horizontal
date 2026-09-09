@@ -57,7 +57,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `list_block_instances` | the blocks this block uses, their wired ports, and where each is drawn |
 | `autoroute` | best-effort automatic routing of one net's airwires |
 | `list_planes`, `list_polygons` | copper pours (and whether each is actually filled) and board polygons; layer 100 is the outline |
-| `board_rules` | the design rules as data, the net classes they select, and the stackup |
+| `board_rules` | the design rules as data — one entry per rule, not per kind — the net classes they select, and the stackup |
 | `get_pool_item` | one pool item's own JSON — the bytes `pool_write` takes back |
 | `pour_planes` | fills every plane, as Update All Planes does |
 | `list_texts` | free text on the schematic sheets, with the ids the text ops take |
@@ -138,6 +138,7 @@ designator or id, nets by name or id, pins by name (`EN`), by gate and pin
 | `add_block_instance`, `remove_block_instance`, `connect_block_port` | Using one block inside another, and wiring its ports to nets here |
 | `place_block_symbol`, `remove_block_symbol` | Drawing a block instance on a sheet, with the symbol that block defines for itself |
 | `set_stackup` | How many inner copper layers the board has, and the copper and dielectric thicknesses |
+| `add_rule`, `set_rule`, `remove_rule` | Board design rules. A rule of a kind gets the defaults the app's own rules editor would give it; `set_rule` merges fields rather than replacing, and every write is refused unless the app's validator still calls the rules valid |
 | `add_net_class`, `rename_net_class` | Net classes. Their electrical parameters live in the board rules, not here |
 | `place_via`, `remove_via` | A via on a net at a point, sharing the junction with any copper already there. Its padstack defaults to what the board's other vias use |
 | `copy_group_layout` | Lay one group out like another: every member with a matching tag gets the same relative placement and rotation around an anchor, and the tracks, junctions and vias inside the source group are cloned onto the target's pads |
@@ -238,6 +239,23 @@ completes a few percent and reports the rest — the harness in
 `/tmp/router-harness.txt`. What it does write has been checked clear of the
 board's clearances; what it cannot route stays an airwire, is listed in
 `unrouted` with what blocked it, and `place_track` draws those by hand.
+
+### How rules are stored, and why that matters to read them
+
+Horizon keys rules by kind. A kind that can hold several — `clearance_copper`,
+`track_width`, `via`, `plane` and the rest listed in `multi_kinds` — keys those
+by uuid underneath; the others hold the rule directly. `board_rules` flattens
+both, so each entry is one rule with its `kind` and, where the kind holds
+several, its `id`. A reader that treats each top-level entry as a rule reports
+a whole family as one, which is what this used to do.
+
+Writing goes through the same addressing, and through the app's own rules
+validator: `add_rule` builds a rule with the defaults the rules editor would
+give it, `set_rule` merges fields into an existing one, and any edit the
+validator calls an error is refused with what was wrong rather than committed.
+A clearance rule written wrong is worse than no rule — it would let `check`
+pass on a board that should fail — so nothing is written that the app itself
+would reject.
 
 ### Who has the project open
 
