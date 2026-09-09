@@ -3,6 +3,32 @@
 A design study. No code yet — this is the specification work that has to happen
 before any, and the licensing constraint that shapes it.
 
+## Tangent selection (September 2026)
+
+The detour entry used to be the ring corner *nearest* the approach. That is the
+obvious choice and the wrong one: the 45° elbow onto a near corner frequently
+cuts straight across the hull the detour exists to avoid. The route was then
+either rejected downstream — which is where most of the "blocked" count came
+from — or, worse, reported complete while sitting on copper.
+
+`HorizontalRouteWalkaround.detours` now treats every corner the approach can
+reach *without crossing the hull* as a candidate and takes the cheapest pairing.
+The ring has at most eight corners, so this is a small exhaustive search rather
+than a heuristic, and the crossing test is exact: a segment running in one of
+the eight routing directions is its own octagon hull, so the separating-axis
+test decides it outright. An approach that starts inside the hull — which
+happens when the colliding segment's elbow corner lands on the obstacle — keeps
+every corner, because filtering there would reject them all and report the way
+blocked when it is not.
+
+The measured effect on the real-board harness: violations went from every
+completed route to **none**, stable across samples. Completion did not
+materially change — a few percent — because that is a different problem. The
+finder walks around one obstacle at a time and gives up after trying both ways
+past each; getting past a few percent means a real search, not better corner
+selection. The harness now asserts the violation invariant and merely reports
+completion, because pinning a completion number would only record one sample.
+
 ## The licensing constraint comes first
 
 KiCad's PNS router is **GPLv3**. Horizontal is Apache 2.0, and this repository
