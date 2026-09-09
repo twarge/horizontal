@@ -38,6 +38,10 @@ struct HorizontalDesignBoardPlacement: Hashable {
     var bottom: Bool
     var packageID: String?
     var fixed: Bool
+    /// The package instance on the board — the key in the board's `packages`,
+    /// which is what a track endpoint's `pad` path names. `packageID` is the
+    /// pool package it draws.
+    var instanceID: String = ""
 }
 
 struct HorizontalDesignComponent {
@@ -197,7 +201,8 @@ struct HorizontalDesignIndex {
                     angle: package.angle,
                     bottom: package.mirrored,
                     packageID: package.packageID,
-                    fixed: package.fixed
+                    fixed: package.fixed,
+                    instanceID: package.id
                 )
             }
             for (netID, details) in board.netDetails where netDetails[netID.lowercased()] == nil {
@@ -469,6 +474,9 @@ final class HorizontalDispatchPoolIndex {
 
     private var entities: [String: Entity] = [:]
     private var units: [String: Unit] = [:]
+    /// Symbol uuids per unit, sorted, so a gate can be drawn without the
+    /// caller naming the symbol that draws its unit.
+    private var symbolsByUnit: [String: [String]] = [:]
     private var parts: [String: JSONDictionary] = [:]
     private var packages: [String: JSONDictionary] = [:]
     private var padstacks: [String: JSONDictionary] = [:]
@@ -525,6 +533,23 @@ final class HorizontalDispatchPoolIndex {
             }
             units[uuid] = Unit(name: json.string("name") ?? "", pins: pins)
         }
+        for url in files("symbols") {
+            guard let json = read(url),
+                  json.string("type") == "symbol",
+                  let uuid = json.string("uuid")?.lowercased(),
+                  let unitID = json.string("unit")?.lowercased() else {
+                continue
+            }
+            symbolsByUnit[unitID, default: []].append(uuid)
+        }
+        for unitID in symbolsByUnit.keys {
+            symbolsByUnit[unitID]?.sort()
+        }
+    }
+
+    /// The symbols in the project pool that draw `unitID`.
+    func symbols(forUnit unitID: String) -> [String] {
+        symbolsByUnit[unitID.lowercased()] ?? []
     }
 
     func entity(_ id: String) -> Entity? {

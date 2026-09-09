@@ -39,6 +39,12 @@ enum HorizontalDispatchMethods {
             params: ["path": "Where to write the package; must end in .horizontal.", "name": "Project name (optional)."],
             handler: newProject
         ),
+        .init(
+            name: "save",
+            summary: "Write an open document to its file, the way the Save command does. An edit through the live channel is one undoable step in the app and nothing more until this runs. A disk context is already written, and says so.",
+            params: ["handle": "Project handle."],
+            handler: save
+        ),
         .init(name: "close_project", summary: "Close an open project.", params: ["handle": "Project handle."], handler: closeProject),
         .init(name: "reload_project", summary: "Re-read an open project from disk.", params: ["handle": "Project handle."], handler: reloadProject),
         .init(name: "list_projects", summary: "The projects currently open in this session.", params: [:], handler: { session, _ in
@@ -85,11 +91,127 @@ enum HorizontalDispatchMethods {
             params: ["handle": "Project handle.", "include_no_populate": "Include do-not-populate parts (default true)."],
             handler: bom
         ),
-        .init(name: "list_parts", summary: "Parts in the project pool.", params: ["handle": "Project handle."], handler: { session, params in
-            try session.entry(for: params).project.poolParts
-                .sorted { $0.mpn.localizedStandardCompare($1.mpn) == .orderedAscending }
-                .map(partJSON)
-        }),
+        .init(
+            name: "list_parts",
+            summary: "Parts the project can use. By default only the project pool — the self-contained cache beside the project; scope \"pools\" or \"all\" also lists the base pools it draws from, which have to be imported before use.",
+            params: ["handle": "Project handle.", "scope": "project (default), pools, or all."],
+            handler: listParts
+        ),
+        .init(
+            name: "search_pool",
+            summary: "Search every pool the project draws from — its own pool, the pools that pool includes, and the discovered base pools — for parts, entities, symbols, packages, padstacks, units, frames and decals. Items outside the project pool need import_pool_part before a component can use them.",
+            params: ["handle": "Project handle.", "query": "Case-insensitive substring of name, description, manufacturer, tags or uuid (optional).",
+                     "kind": "One of \(HorizontalPoolItemCategory.allCases.map(\.rawValue).joined(separator: ", ")) (optional).",
+                     "pool_path": "Directory of one pool to search (optional). A pool the project already draws from narrows the search; any other pool directory is searched as well, which is how a worker process reaches a pool registered only in the app.",
+                     "limit": "Maximum items to return; default 50, maximum 500."],
+            handler: HorizontalDispatchPool.search
+        ),
+        .init(
+            name: "get_pool_item",
+            summary: "One pool item's own JSON — the bytes pool_write takes back. A project-pool item is read through the project, so an unsaved change to it is what comes back.",
+            params: ["handle": "Project handle.", "uuid": "The item's uuid, from search_pool.",
+                     "kind": "Item kind, when one uuid is used by more than one (optional).",
+                     "pool_path": "Directory of the pool to read from (optional)."],
+            handler: HorizontalDispatchPool.getItem
+        ),
+        .init(
+            name: "import_pool_part",
+            summary: "Copy a part and everything it needs — entity, units, symbols, package, padstacks and 3D models — from a base pool into the project pool cache, the way placing it from the library does, so ensure_component can name it. One transaction; a live document takes it as one undoable step.",
+            params: ["handle": "Project handle.", "part": "Pool part uuid, or MPN when it is unambiguous.",
+                     "pool_path": "Directory of the pool to take it from (optional; needed when the pool is not discovered).",
+                     "expected_revision": "The revision this edit was planned against.", "operation_id": "Caller-chosen id for this mutation.",
+                     "dry_run": "Report the files it would add without writing (default false)."],
+            handler: HorizontalDispatchPool.importPart
+        ),
+        .init(
+            name: "list_symbols",
+            summary: "Symbol instances on the schematic sheets: which component and gate each draws, where, and the instance id place_symbol and draw_net_line refer to.",
+            params: ["handle": "Project handle.", "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet."],
+            handler: listSymbols
+        ),
+        .init(
+            name: "list_net_lines",
+            summary: "The wires drawn on the schematic sheets, with the ids and endpoints they connect. An endpoint is a symbol pin, a junction, a bus ripper or a block port; the pin ones name the component and gate.",
+            params: ["handle": "Project handle.", "net": "Only wires on this net, by name or id (optional).",
+                     "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet."],
+            handler: listNetLines
+        ),
+        .init(
+            name: "list_block_instances",
+            summary: "The blocks this block uses: each instance, the block it stands for, its reference designator, which ports are wired, and where its symbol is drawn.",
+            params: ["handle": "Project handle."],
+            handler: listBlockInstances
+        ),
+        .init(
+            name: "list_net_labels",
+            summary: "Net labels on the schematic sheets: which net each names, where it sits, and the id remove_net_label takes.",
+            params: ["handle": "Project handle.", "net": "Only labels for this net, by name or id (optional).",
+                     "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet."],
+            handler: { session, params in try listSheetMarks(session, params, key: "net_labels", netKey: "last_net") }
+        ),
+        .init(
+            name: "list_power_symbols",
+            summary: "Power symbols on the schematic sheets, with the net each marks and the id remove_power_symbol takes. The symbol's shape comes from the net's power_symbol_style.",
+            params: ["handle": "Project handle.", "net": "Only symbols for this net, by name or id (optional).",
+                     "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet."],
+            handler: { session, params in try listSheetMarks(session, params, key: "power_symbols", netKey: "net") }
+        ),
+        .init(
+            name: "list_planes",
+            summary: "Copper pours on the board: the net each carries, its layer, priority, and whether it has been filled. A plane defined but never poured shows its outline and no copper.",
+            params: ["handle": "Project handle.", "net": "Only planes on this net, by name or id (optional)."],
+            handler: listPlanes
+        ),
+        .init(
+            name: "list_polygons",
+            summary: "Board polygons, with the layer each is on and the id the polygon ops take. Layer 100 is the board outline. A polygon a plane pours into names that plane.",
+            params: ["handle": "Project handle.", "layer": "Only polygons on this layer (optional)."],
+            handler: listPolygons
+        ),
+        .init(
+            name: "autoroute",
+            summary: "Try to route a net's airwires automatically, on one layer. Best effort and usually not enough: on a dense board it completes a small minority, because it walks around one obstacle at a time rather than searching. What it does complete is checked clear before it is written; what it cannot is reported and left as an airwire for place_track.",
+            params: ["handle": "Project handle.", "net": "Net name or id to route.",
+                     "layer": "Copper layer number (optional; default 0, the top).",
+                     "width_mm": "Track width (optional; the net class's track_width rule, else required).",
+                     "max_routes": "Stop after this many airwires; default 20, maximum 200.",
+                     "expected_revision": "The revision this was planned against.",
+                     "operation_id": "Caller-chosen id for this mutation.", "dry_run": "Report without writing (default false)."],
+            handler: autoroute
+        ),
+        .init(
+            name: "pour_planes",
+            summary: "Fill every plane on the board, the way Update All Planes does. Planes are defined by place_plane and stay empty until this runs; it recomputes them all from the board as it now stands.",
+            params: ["handle": "Project handle.", "expected_revision": "The revision this was planned against.",
+                     "operation_id": "Caller-chosen id for this mutation.", "dry_run": "Report without writing (default false)."],
+            handler: pourPlanes
+        ),
+        .init(
+            name: "list_tracks",
+            summary: "Copper tracks on the board, with the net, layer, width and what each end lands on. Boards carry thousands, so filter by net or layer; the result says whether it was truncated.",
+            params: ["handle": "Project handle.", "net": "Only tracks on this net, by name or id (optional).",
+                     "layer": "Only tracks on this layer number (optional).", "limit": "Maximum tracks to return; default 200, maximum 5000."],
+            handler: listTracks
+        ),
+        .init(
+            name: "list_vias",
+            summary: "Vias on the board, with the net, position, the layers each spans and the padstack or via definition it takes its shape from.",
+            params: ["handle": "Project handle.", "net": "Only vias on this net, by name or id (optional).",
+                     "limit": "Maximum vias to return; default 200, maximum 5000."],
+            handler: listVias
+        ),
+        .init(
+            name: "list_texts",
+            summary: "Free text on the schematic sheets, with the ids place_text and remove_text take. A text a symbol carries is marked from_smash and belongs to that symbol.",
+            params: ["handle": "Project handle.", "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet."],
+            handler: listTexts
+        ),
+        .init(
+            name: "board_rules",
+            summary: "The board's design rules as data, with the net classes they select and the stackup they apply to. Clearances, track widths, via and plane rules — what a route has to respect, and what check validates.",
+            params: ["handle": "Project handle.", "kind": "Only rules of this kind, e.g. track_width or clearance_copper (optional)."],
+            handler: boardRules
+        ),
         .init(name: "board_info", summary: "Board size, stackup, layers, and object counts.", params: ["handle": "Project handle."], handler: boardInfo),
         .init(
             name: "recompute_connectivity",
@@ -106,7 +228,8 @@ enum HorizontalDispatchMethods {
         .init(
             name: "pool_write",
             summary: "Write pool items (unit, entity, symbol, part, package, padstack) into the project pool cache and reload. Items already present with the same bytes are skipped. A live document takes them as one undoable step.",
-            params: ["handle": "Project handle.", "items": "Array of pool item objects, each with \"type\" and \"uuid\"."],
+            params: ["handle": "Project handle.", "items": "Array of pool item objects, each with \"type\" and \"uuid\".",
+                     "dry_run": "Report the files it would write without writing (default false)."],
             handler: poolWrite
         ),
         .init(
@@ -123,6 +246,7 @@ enum HorizontalDispatchMethods {
             params: [
                 "handle": "Project handle.",
                 "ops": "Array of operations, each {\"op\": name, ...params}; see list_ops.",
+                "block": "Block uuid or name to edit (optional; default the top block). A sub-block has no board, so board operations are refused for one.",
                 "pool_items": "Pool items to install in the same transaction.",
                 "dry_run": "Validate and report without writing (default false)."
             ],
@@ -301,6 +425,10 @@ enum HorizontalDispatchMethods {
             throw HorizontalDispatchError.invalidParams("Pass \"items\", a non-empty array of pool item objects.")
         }
         let targets = try poolTargets(items, entry: entry)
+        defer {
+            HorizontalPoolLibrary.invalidateCache()
+            HorizontalPoolPadstacks.invalidateCaches()
+        }
         return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params) { store in
             let written = try writePoolItems(targets, to: store)
             return ["written": written, "skipped": targets.count - written.count, "applied": written.count]
@@ -351,6 +479,32 @@ enum HorizontalDispatchMethods {
             written.append(url.path)
         }
         return written
+    }
+
+    @Sendable private static func save(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        guard !entry.frozen else {
+            throw HorizontalDispatchError(code: .readOnly, message: "A pinned snapshot has no document to save.")
+        }
+        guard let live = entry.live else {
+            // Nothing to do rather than an error: a disk edit committed its
+            // files as part of the transaction that made it.
+            return ["saved": false, "path": entry.url.path, "durability": "disk",
+                    "note": "Disk edits are written when they commit; there is nothing held back."]
+        }
+        guard Thread.isMainThread else {
+            throw HorizontalDispatchError.failed("Saving a document requires the app channel.")
+        }
+        let edited: Bool = try MainActor.assumeIsolated {
+            guard !live.isReadOnly() else {
+                throw HorizontalDispatchError(code: .readOnly, message: "The document is read-only.")
+            }
+            let edited = live.isEdited()
+            try live.save()
+            return edited
+        }
+        return ["saved": edited, "had_unsaved_changes": edited, "path": entry.url.path,
+                "durability": "disk", "revision": entry.revision] as JSONDictionary
     }
 
     @Sendable private static func closeProject(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
@@ -514,6 +668,62 @@ enum HorizontalDispatchMethods {
         return ["rows": rows, "line_count": rows.count, "component_count": rows.reduce(0) { $0 + (($1["quantity"] as? Int) ?? 0) }]
     }
 
+    /// The top block as it stands in the selected source.
+    private static func blockJSON(_ entry: HorizontalDispatchProjectEntry) -> JSONDictionary? {
+        let filename = entry.project.blocks.first(where: \.isTop)?.blockFilename ?? entry.project.blockFilename
+        guard let filename, !filename.isEmpty else { return nil }
+        let url = entry.project.baseURL.appendingPathComponent(filename)
+        return entry.snapshot?.json(at: url) ?? (try? JSONHelper.loadDictionary(from: url))
+    }
+
+    /// The block's net classes, by id.
+    private static func netClasses(_ entry: HorizontalDispatchProjectEntry) -> [String: String] {
+        guard let block = blockJSON(entry) else { return [:] }
+        return block.dictionaryMap("net_classes").reduce(into: [String: String]()) {
+            $0[$1.key.lowercased()] = $1.value.string("name") ?? ""
+        }
+    }
+
+    @Sendable private static func boardRules(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        guard let board = entry.project.board else {
+            throw HorizontalDispatchError.notFound("The project has no board.")
+        }
+        let json = try boardJSON(entry)
+        let classes = netClasses(entry)
+        let kind = params.string("kind")
+        // Rules are handed over as the file states them. There are twenty kinds
+        // with twenty shapes, and inventing a normalized form for each would
+        // lose the detail a router or a review actually needs.
+        let rules = json.dictionaryMap("rules").compactMap { id, item -> JSONDictionary? in
+            let ruleKind = item.string("rule") ?? id
+            guard kind == nil || kind == ruleKind else { return nil }
+            var entryJSON: JSONDictionary = ["id": id, "kind": ruleKind, "rule": item]
+            if let match = item.dictionary("match") {
+                let mode = match.string("mode") ?? "all"
+                entryJSON["applies_to"] = mode == "all"
+                    ? "every net"
+                    : (mode == "net_class" ? "net class \(match.string("net_class").flatMap { classes[$0.lowercased()] } ?? "?")" : mode)
+            }
+            entryJSON["enabled"] = item.bool("enabled") ?? true
+            return entryJSON
+        }.sorted { ($0.string("kind") ?? "", $0.string("id") ?? "") < ($1.string("kind") ?? "", $1.string("id") ?? "") }
+
+        let stackup: [JSONDictionary] = board.stackupLayers.map { layer in
+            ["layer": layer.layer, "name": HorizontalBoardLayers.name(for: layer.layer)]
+        }
+        return [
+            "rules": rules,
+            "kinds": Array(Set(json.dictionaryMap("rules").values.compactMap { $0.string("rule") })).sorted(),
+            "net_classes": classes.map { ["id": $0.key, "name": $0.value] as JSONDictionary }
+                .sorted { ($0.string("name") ?? "") < ($1.string("name") ?? "") },
+            "stackup": stackup,
+            "note": rules.isEmpty
+                ? "This board declares no rules, so nothing here constrains a route. Horizon falls back to its own defaults."
+                : "Rules are given as the file states them; check validates them."
+        ] as JSONDictionary
+    }
+
     @Sendable private static func boardInfo(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         guard let board = entry.project.board else {
@@ -595,7 +805,8 @@ enum HorizontalDispatchMethods {
             }
             let snapshot = HorizontalDispatchSnapshot(archive: store.archive, baseURL: entry.project.baseURL)
             let project = params["pool_items"] == nil ? entry.project : try HorizontalDispatchSession.project(from: snapshot, url: entry.url)
-            let editor = try HorizontalProjectEditor(project: project, store: store, snapshot: snapshot)
+            let editor = try HorizontalProjectEditor(project: project, store: store, snapshot: snapshot,
+                                                     block: params.string("block"))
             try editor.apply(operations)
             _ = try editor.write()
             let normalized = zip(operations, editor.changes).map { operation, change -> JSONDictionary in
@@ -604,7 +815,8 @@ enum HorizontalDispatchMethods {
                 if operation.kind == .ensureNet { json["id"] = change["net"] }
                 return json
             }
-            return ["applied": editor.changes.count, "changes": editor.changes, "normalized_ops": normalized]
+            return ["applied": editor.changes.count, "changes": editor.changes, "normalized_ops": normalized,
+                    "block": editor.blockID, "is_top_block": editor.isTopBlock]
         }
     }
 
@@ -984,6 +1196,19 @@ enum HorizontalDispatchMethods {
         json["net_count"] = index.nets.count
         json["pool_part_count"] = project.poolParts.count
         json["live"] = entry.live != nil || (!entry.frozen && entry.readMetadata?.string("source") == "live")
+        // What the file does not have yet. An edit through this channel is one
+        // undo step in the app until `save` writes it.
+        if let live = entry.live, Thread.isMainThread {
+            json["unsaved_changes"] = MainActor.assumeIsolated { live.isEdited() }
+        }
+        // Who else has the project open. A disk context can only be edited
+        // when this is empty, and it is the one answer that does not depend on
+        // the live channel being switched on.
+        if entry.live == nil, !entry.frozen {
+            let holders = HorizontalProjectHolders.others(projectURL: entry.url)
+            json["held_by"] = holders.map(\.summary)
+            json["editable"] = holders.isEmpty
+        }
         json["diagnostics"] = diagnostics
         json["loaded_at"] = ISO8601DateFormatter().string(from: entry.loadedAt)
         json.merge(entry.metadata) { _, new in new }
@@ -1017,7 +1242,8 @@ enum HorizontalDispatchMethods {
         json["part_value"] = component.partValue
         json["effective_value"] = effective
         json["value_source"] = component.partValue.isEmpty ? "component" : "part"
-        json["electrical_value"] = HorizontalElectricalValue.parse(effective, refdes: component.refdes)
+        json["electrical_value"] = HorizontalElectricalValue.parse(effective, refdes: component.refdes,
+                                                                    parametric: component.details?.parametricValues ?? [:])
         json["block_id"] = component.blockID as Any
         json["physical_terminals"] = component.physicalTerminals
         if let placement = component.boardPlacement {
@@ -1027,6 +1253,9 @@ enum HorizontalDispatchMethods {
                 "angle_deg": HorizontalDispatchJSON.degrees(placement.angle),
                 "side": placement.bottom ? "bottom" : "top",
                 "fixed": placement.fixed,
+                // The instance on the board, which a track's pad endpoint
+                // names; `package_id` is the pool package it draws.
+                "package_instance": placement.instanceID,
                 "package_id": placement.packageID as Any
             ]
         }
@@ -1045,6 +1274,10 @@ enum HorizontalDispatchMethods {
                 "sheet": placement.sheetIndex,
                 "sheet_name": placement.sheetName,
                 "sheet_id": placement.sheetID,
+                // The symbol instance on the sheet, not the pool symbol that
+                // draws it. `symbol_id` is the same value under the name it
+                // shipped with; analysis evidence still reads that one.
+                "symbol_instance": placement.symbolID,
                 "symbol_id": placement.symbolID,
                 "block_id": placement.blockID as Any,
                 "gate_id": placement.gateID,
@@ -1086,6 +1319,519 @@ enum HorizontalDispatchMethods {
             }
         }
         return json
+    }
+
+    /// The top block's schematic as it stands in the selected source, so a
+    /// read of the sheets sees an unsaved document rather than the last save.
+    private static func schematicJSON(_ entry: HorizontalDispatchProjectEntry) throws -> JSONDictionary {
+        let filename = entry.project.blocks.first(where: \.isTop)?.schematicFilename ?? entry.project.schematicFilename
+        guard let filename, !filename.isEmpty else {
+            throw HorizontalDispatchError.notFound("The project has no schematic.")
+        }
+        let url = entry.project.baseURL.appendingPathComponent(filename)
+        guard let json = entry.snapshot?.json(at: url) ?? (try? JSONHelper.loadDictionary(from: url)) else {
+            throw HorizontalDispatchError.notFound("Could not read \(filename).")
+        }
+        return json
+    }
+
+    /// The board file as it stands in the selected source. The parsed model
+    /// resolves endpoints to points for drawing; the file says what they are.
+    private static func boardJSON(_ entry: HorizontalDispatchProjectEntry) throws -> JSONDictionary {
+        guard let board = entry.project.board else {
+            throw HorizontalDispatchError.notFound("The project has no board.")
+        }
+        guard let json = entry.snapshot?.json(at: board.url) ?? (try? JSONHelper.loadDictionary(from: board.url)) else {
+            throw HorizontalDispatchError.notFound("Could not read \(board.url.lastPathComponent).")
+        }
+        return json
+    }
+
+    /// The sheets of the top block's schematic that a selector picks, as raw
+    /// JSON paired with the sheet the index knows.
+    private static func selectedSheets(_ entry: HorizontalDispatchProjectEntry, _ params: JSONDictionary) throws
+        -> [(id: String, index: Int, json: JSONDictionary)] {
+        let selected = try HorizontalDispatchValidation.sheet(params, index: entry.index)
+        let sheets = (try schematicJSON(entry)["sheets"] as? JSONDictionary ?? [:])
+            .compactMap { id, value in (value as? JSONDictionary).map { (id: id, index: $0.int("index") ?? 0, json: $0) } }
+            .sorted { ($0.index, $0.id) < ($1.index, $1.id) }
+        guard let selected else { return sheets }
+        return sheets.filter { $0.id.caseInsensitiveCompare(selected.id) == .orderedSame }
+    }
+
+    /// Resolves a net selector to one net id, for the read filters.
+    private static func netFilter(_ entry: HorizontalDispatchProjectEntry, _ params: JSONDictionary) throws -> String? {
+        guard let reference = params.string("net"), !reference.isEmpty else { return nil }
+        if let net = entry.index.net(id: reference) { return net.id }
+        let named = entry.index.sortedNets.filter { $0.name.caseInsensitiveCompare(reference) == .orderedSame }
+        guard named.count <= 1 else {
+            throw HorizontalDispatchError.ambiguous("More than one net is named \(reference); use its id.", candidates: named.map(\.id))
+        }
+        guard let net = named.first else { throw HorizontalDispatchError.notFound("No net \(reference).") }
+        return net.id
+    }
+
+    /// Net labels and power symbols read the same way: a mark on a sheet that
+    /// names a net at a junction.
+    @Sendable private static func listSheetMarks(_ session: HorizontalDispatchSession, _ params: JSONDictionary,
+                                                  key: String, netKey: String) throws -> Any {
+        let entry = try session.entry(for: params)
+        let wanted = try netFilter(entry, params)
+        return try selectedSheets(entry, params).flatMap { sheet -> [JSONDictionary] in
+            let junctions = sheet.json.dictionaryMap("junctions")
+            return sheet.json.dictionaryMap(key).compactMap { id, item -> JSONDictionary? in
+                let netID = item.string(netKey)?.lowercased()
+                guard wanted == nil || wanted == netID else { return nil }
+                let net = netID.flatMap { entry.index.net(id: $0) }
+                let junction = item.string("junction")
+                let position = junction.flatMap { junctions[$0]?["position"] as? [Any] } ?? []
+                var json: JSONDictionary = [
+                    "id": id,
+                    "sheet": sheet.id,
+                    "sheet_index": sheet.index,
+                    "net": netID as Any? as Any,
+                    "net_name": net?.name as Any? as Any,
+                    "junction": junction as Any? as Any,
+                    "x_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(position.first ?? 0)),
+                    "y_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(position.count > 1 ? position[1] : 0)),
+                    "orientation": item.string("orientation") ?? (key == "power_symbols" ? "up" : "right")
+                ]
+                if key == "power_symbols" {
+                    json["mirror"] = item.bool("mirror") ?? false
+                    json["style"] = netID.flatMap { powerSymbolStyle(entry, netID: $0) } ?? "gnd"
+                } else {
+                    json["size_mm"] = HorizontalDispatchJSON.mm(item.double("size") ?? 1_000_000)
+                    json["offsheet_refs"] = item.bool("offsheet_refs") ?? true
+                }
+                return json
+            }.sorted { ($0.string("net_name") ?? "", $0.string("id") ?? "") < ($1.string("net_name") ?? "", $1.string("id") ?? "") }
+        }
+    }
+
+    /// The shape a net's power symbols draw with, which lives on the net.
+    private static func powerSymbolStyle(_ entry: HorizontalDispatchProjectEntry, netID: String) -> String? {
+        blockJSON(entry)?.dictionaryMap("nets").first { $0.key.lowercased() == netID }?.value.string("power_symbol_style")
+    }
+
+    @Sendable private static func listBlockInstances(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        guard let block = blockJSON(entry) else {
+            throw HorizontalDispatchError.notFound("The project has no block.")
+        }
+        let names = Dictionary(uniqueKeysWithValues: entry.project.blocks.map { ($0.uuid.lowercased(), $0.displayName) })
+        // Where each instance is drawn, so a caller can find the symbol to move.
+        var sheetsByInstance = [String: [JSONDictionary]]()
+        for sheet in (try? selectedSheets(entry, [:])) ?? [] {
+            for (symbolID, symbol) in sheet.json.dictionaryMap("block_symbols") {
+                guard let instance = symbol.string("block_instance")?.lowercased() else { continue }
+                sheetsByInstance[instance, default: []].append(["block_symbol": symbolID, "sheet": sheet.id, "sheet_index": sheet.index])
+            }
+        }
+        return block.dictionaryMap("block_instances").map { id, item -> JSONDictionary in
+            let used = item.string("block")?.lowercased()
+            let connections = item.dictionaryMap("connections").compactMap { port, value -> JSONDictionary? in
+                guard let net = value.string("net")?.lowercased() else { return nil }
+                return ["port": port, "net": net, "net_name": entry.index.net(id: net)?.name as Any? as Any]
+            }.sorted { ($0.string("net_name") ?? "") < ($1.string("net_name") ?? "") }
+            return [
+                "id": id,
+                "block": used as Any? as Any,
+                "block_name": used.flatMap { names[$0] } as Any? as Any,
+                "refdes": item.string("refdes") ?? "",
+                "connections": connections,
+                "symbols": sheetsByInstance[id.lowercased()] ?? []
+            ]
+        }.sorted { ($0.string("refdes") ?? "", $0.string("id") ?? "") < ($1.string("refdes") ?? "", $1.string("id") ?? "") }
+    }
+
+    @Sendable private static func listSymbols(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        return try selectedSheets(entry, params).flatMap { sheet -> [JSONDictionary] in
+            sheet.json.dictionaryMap("symbols").map { id, item -> JSONDictionary in
+                let componentID = item.string("component")?.lowercased()
+                let component = componentID.flatMap { entry.index.component(id: $0) }
+                let placement = item.dictionary("placement") ?? [:]
+                let shift = placement["shift"] as? [Any] ?? []
+                return [
+                    "id": id,
+                    "sheet": sheet.id,
+                    "sheet_index": sheet.index,
+                    "component": componentID as Any,
+                    "refdes": component?.refdes as Any,
+                    "gate": item.string("gate") as Any,
+                    "symbol": item.string("symbol") as Any,
+                    "x_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(shift.first ?? 0)),
+                    "y_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(shift.count > 1 ? shift[1] : 0)),
+                    "angle_deg": HorizontalDispatchJSON.degrees(placement.int("angle") ?? 0),
+                    "mirror": placement.bool("mirror") ?? false,
+                    "smashed": item.bool("smashed") ?? false,
+                    "texts": item["texts"] as? [String] ?? []
+                ]
+            }.sorted { ($0.string("refdes") ?? "", $0.string("id") ?? "") < ($1.string("refdes") ?? "", $1.string("id") ?? "") }
+        }
+    }
+
+    /// One end of a wire, said the way the file says it rather than as a point.
+    private static func netLineEndpoint(_ endpoint: JSONDictionary?,
+                                        symbols: [String: JSONDictionary],
+                                        entry: HorizontalDispatchProjectEntry) -> JSONDictionary {
+        guard let endpoint else { return ["kind": "unknown"] }
+        if let junction = endpoint.string("junc") {
+            return ["kind": "junction", "junction": junction]
+        }
+        if let pin = endpoint.string("pin") {
+            let parts = pin.split(separator: "/").map(String.init)
+            var json: JSONDictionary = ["kind": "pin", "symbol": parts.first as Any, "pin": parts.count > 1 ? parts[1] : ""]
+            if let instance = parts.first, let symbol = symbols[instance.lowercased()],
+               let componentID = symbol.string("component")?.lowercased() {
+                json["component"] = componentID
+                json["refdes"] = entry.index.component(id: componentID)?.refdes as Any
+                json["gate"] = symbol.string("gate") as Any
+            }
+            return json
+        }
+        if let ripper = endpoint.string("bus_ripper") { return ["kind": "bus_ripper", "bus_ripper": ripper] }
+        if let port = endpoint.string("port") { return ["kind": "port", "port": port] }
+        return ["kind": "unknown"]
+    }
+
+    @Sendable private static func listNetLines(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let wanted = try netFilter(entry, params)
+        return try selectedSheets(entry, params).flatMap { sheet -> [JSONDictionary] in
+            let symbols = sheet.json.dictionaryMap("symbols").reduce(into: [String: JSONDictionary]()) { $0[$1.key.lowercased()] = $1.value }
+            return sheet.json.dictionaryMap("net_lines").compactMap { id, item -> JSONDictionary? in
+                let netID = item.string("net")?.lowercased()
+                guard wanted == nil || wanted == netID else { return nil }
+                return [
+                    "id": id,
+                    "sheet": sheet.id,
+                    "sheet_index": sheet.index,
+                    "net": netID as Any,
+                    "net_name": netID.flatMap { entry.index.net(id: $0)?.name } as Any,
+                    "from": netLineEndpoint(item.dictionary("from"), symbols: symbols, entry: entry),
+                    "to": netLineEndpoint(item.dictionary("to"), symbols: symbols, entry: entry)
+                ]
+            }.sorted { ($0.string("net_name") ?? "", $0.string("id") ?? "") < ($1.string("net_name") ?? "", $1.string("id") ?? "") }
+        }
+    }
+
+    /// One end of a track: a junction, or a pad on a placed package.
+    private static func trackEndpoint(_ endpoint: JSONDictionary?, entry: HorizontalDispatchProjectEntry) -> JSONDictionary {
+        guard let endpoint else { return ["kind": "unknown"] }
+        if let junction = endpoint.string("junc") { return ["kind": "junction", "junction": junction] }
+        guard let pad = endpoint.string("pad") else { return ["kind": "unknown"] }
+        let parts = pad.split(separator: "/").map(String.init)
+        var json: JSONDictionary = ["kind": "pad", "package": parts.first as Any, "pad": parts.count > 1 ? parts[1] : ""]
+        if let packageID = parts.first?.lowercased(),
+           let component = entry.index.sortedComponents.first(where: { $0.boardPlacement?.instanceID.lowercased() == packageID }) {
+            json["component"] = component.id
+            json["refdes"] = component.refdes
+        }
+        return json
+    }
+
+    private static func readLimit(_ params: JSONDictionary) -> Int {
+        min(max(params.int("limit") ?? 200, 1), 5000)
+    }
+
+    @Sendable private static func listPlanes(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let wanted = try netFilter(entry, params)
+        let polygons = try boardJSON(entry).dictionaryMap("polygons")
+        let filled = Dictionary(uniqueKeysWithValues: (entry.project.board?.planes ?? []).map { ($0.id.lowercased(), $0) })
+        return try boardJSON(entry).dictionaryMap("planes").compactMap { id, item -> JSONDictionary? in
+            let netID = item.string("net")?.lowercased()
+            guard wanted == nil || wanted == netID else { return nil }
+            let polygonID = item.string("polygon")
+            let layer = polygonID.flatMap { key in polygons.first { $0.key.caseInsensitiveCompare(key) == .orderedSame }?.value.int("layer") }
+            let plane = filled[id.lowercased()]
+            return [
+                "id": id,
+                "net": netID as Any? as Any,
+                "net_name": netID.flatMap { entry.index.net(id: $0)?.name } as Any? as Any,
+                "polygon": polygonID as Any? as Any,
+                "layer": layer as Any? as Any,
+                "layer_name": layer.map { HorizontalBoardLayers.name(for: $0) } as Any? as Any,
+                "priority": item.int("priority") ?? 0,
+                "from_rules": item.bool("from_rules") ?? true,
+                // A plane with no fragments has been defined but never poured.
+                "fragment_count": plane?.fragments.count ?? 0,
+                "poured": (plane?.fragments.isEmpty == false)
+            ]
+        }.sorted { ($0.string("net_name") ?? "", $0.string("id") ?? "") < ($1.string("net_name") ?? "", $1.string("id") ?? "") }
+    }
+
+    @Sendable private static func listPolygons(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let layer = params.int("layer")
+        let json = try boardJSON(entry)
+        var planeByPolygon = [String: String]()
+        for (planeID, plane) in json.dictionaryMap("planes") {
+            if let polygon = plane.string("polygon") { planeByPolygon[polygon.lowercased()] = planeID }
+        }
+        return json.dictionaryMap("polygons").compactMap { id, item -> JSONDictionary? in
+            let polygonLayer = item.int("layer")
+            guard layer == nil || layer == polygonLayer else { return nil }
+            let vertices = (item["vertices"] as? [JSONDictionary] ?? []).map { vertex -> JSONDictionary in
+                let position = vertex["position"] as? [Any] ?? []
+                return ["x_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(position.first ?? 0)),
+                        "y_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(position.count > 1 ? position[1] : 0)),
+                        "type": vertex.string("type") ?? "line"]
+            }
+            return [
+                "id": id,
+                "layer": polygonLayer as Any? as Any,
+                "layer_name": polygonLayer.map { HorizontalBoardLayers.name(for: $0) } as Any? as Any,
+                "is_board_outline": polygonLayer == HorizontalBoardLayers.outline,
+                "plane": planeByPolygon[id.lowercased()] as Any? as Any,
+                "vertices": vertices
+            ]
+        }.sorted { ($0.int("layer") ?? 0, $0.string("id") ?? "") < ($1.int("layer") ?? 0, $1.string("id") ?? "") }
+    }
+
+    /// Fills every plane from the board as it now stands, and writes the fills
+    /// to the plane cache file. The definitions are already on disk — pouring
+    /// from anything but the committed board would describe copper that is not
+    /// there.
+    @Sendable private static func pourPlanes(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        guard let board = entry.project.board else {
+            throw HorizontalDispatchError.notFound("The project has no board.")
+        }
+        guard entry.project.planesFilename != nil else {
+            throw HorizontalDispatchError.failed("The project declares no planes_filename, so poured copper has nowhere to live.")
+        }
+        // A board with no planes still goes through the mutation path: the
+        // revision precondition and the result envelope are the same contract
+        // whether or not there was anything to pour.
+        let poured = board.planes.isEmpty ? board : HorizontalBoardPlaneUpdater.updateAllPlanes(in: board)
+        return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params) { store in
+            if !poured.planes.isEmpty {
+                var archive = store.archive
+                try HorizontalProjectJSONApplicator.applyPlaneCache(board: poured, in: entry.project, to: &archive)
+                for path in archive.regularFilePaths where path == entry.project.planesFilename {
+                    if let data = archive.regularFileData(relativePath: path) {
+                        try store.write(data, to: entry.project.baseURL.appendingPathComponent(path))
+                    }
+                }
+            }
+            var result: JSONDictionary = ["poured": poured.planes.count,
+                                          "fragments": poured.planes.reduce(0) { $0 + $1.fragments.count },
+                                          "applied": poured.planes.count]
+            if poured.planes.isEmpty { result["note"] = "The board has no planes; place_plane defines one." }
+            return result
+        }
+    }
+
+    /// Best-effort automatic routing of one net's airwires.
+    ///
+    /// The finder walks around one obstacle at a time and gives up after trying
+    /// both ways past each, so on a real board it completes a few percent of
+    /// requests. That is the honest state of it. What it does complete is
+    /// verified clear by the finder before it is reported complete, so a route
+    /// written here respects the board's clearances; everything else stays an
+    /// airwire and is named in the result.
+    @Sendable private static func autoroute(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        guard let board = entry.project.board else {
+            throw HorizontalDispatchError.notFound("The project has no board.")
+        }
+        guard let netID = try netFilter(entry, params) else {
+            throw HorizontalDispatchError.invalidParams("autoroute needs \"net\": the net whose airwires to route.")
+        }
+        let layer = params.int("layer") ?? HorizontalBoardLayers.topCopper
+        let limit = min(max(params.int("max_routes") ?? 20, 1), 200)
+        let airwires = board.airwires.filter { $0.netID?.lowercased() == netID }.prefix(limit)
+        guard !airwires.isEmpty else {
+            throw HorizontalDispatchError.invalidParams(
+                "\(entry.index.net(id: netID)?.name ?? netID) has no airwires on the board; there is nothing to route."
+            )
+        }
+        guard let width = params.double("width_mm") ?? ruledWidth(entry, netID: netID, layer: layer) else {
+            throw HorizontalDispatchError.invalidParams(
+                "autoroute needs \"width_mm\": this board states no track_width rule for that net class on layer \(layer)."
+            )
+        }
+
+        let router = HorizontalBoardTrackRouterSession(board: board)
+        var routed: [[HorizontalPoint]] = []
+        var failures: [JSONDictionary] = []
+        for airwire in airwires {
+            let result = router.route(from: airwire.from, to: airwire.to, layer: layer,
+                                      netID: netID, width: width * 1_000_000, diagonalFirst: true)
+            if result.isComplete, result.points.count > 1 {
+                routed.append(result.points)
+            } else {
+                failures.append(["from": HorizontalDispatchJSON.point(airwire.from),
+                                 "to": HorizontalDispatchJSON.point(airwire.to),
+                                 "blocked_by": router.blockingObjectID(for: result) as Any? as Any])
+            }
+        }
+
+        return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params) { store in
+            var written = 0
+            if !routed.isEmpty {
+                let editor = try HorizontalProjectEditor(project: entry.project, store: store, snapshot: entry.snapshot)
+                written = try editor.writeRoutedPaths(routed, net: netID, layer: layer, widthMM: width)
+                _ = try editor.write()
+            }
+            return ["applied": written, "routed": routed.count, "segments": written,
+                    "attempted": airwires.count, "failed": failures.count, "unrouted": failures,
+                    "width_mm": width, "layer": layer,
+                    "note": failures.isEmpty
+                        ? "Every airwire tried was routed."
+                        : "\(failures.count) of \(airwires.count) could not be routed and remain airwires; place_track draws those by hand."]
+        }
+    }
+
+    /// The width a `track_width` rule states for a net's class on a layer.
+    private static func ruledWidth(_ entry: HorizontalDispatchProjectEntry, netID: String, layer: Int) -> Double? {
+        guard let rules = (try? boardJSON(entry))?.dictionary("rules") else { return nil }
+        let netClass = blockJSON(entry)?.dictionaryMap("nets")
+            .first { $0.key.lowercased() == netID }?.value.string("net_class")?.lowercased()
+        var fallback: Double?
+        for (_, value) in rules {
+            guard let rule = value as? JSONDictionary, rule.string("rule") == "track_width",
+                  rule.bool("enabled") ?? true,
+                  let width = rule.dictionary("widths")?.dictionary(String(layer))?.double("def") else { continue }
+            let match = rule.dictionary("match")
+            switch match?.string("mode") ?? "all" {
+            case "all": fallback = fallback ?? width / 1_000_000
+            case "net_class":
+                if let netClass, match?.string("net_class")?.lowercased() == netClass { return width / 1_000_000 }
+            default: continue
+            }
+        }
+        return fallback
+    }
+
+    @Sendable private static func listTracks(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let wanted = try netFilter(entry, params)
+        let layer = params.int("layer")
+        // The file says what an end lands on; the parsed model says where that
+        // ended up, so the two are joined by id.
+        let resolved = Dictionary(uniqueKeysWithValues: (entry.project.board?.tracks ?? []).map { ($0.id.lowercased(), $0) })
+        let matched = try boardJSON(entry).dictionaryMap("tracks").compactMap { id, item -> JSONDictionary? in
+            let netID = item.string("net")?.lowercased()
+            guard wanted == nil || wanted == netID else { return nil }
+            let trackLayer = item.int("layer")
+            guard layer == nil || layer == trackLayer else { return nil }
+            var json: JSONDictionary = [
+                "id": id,
+                "net": netID as Any,
+                "net_name": netID.flatMap { entry.index.net(id: $0)?.name } as Any,
+                "layer": trackLayer as Any,
+                "layer_name": trackLayer.map { HorizontalBoardLayers.name(for: $0) } as Any,
+                "width_mm": HorizontalDispatchJSON.mm(item.double("width") ?? 0),
+                "from": trackEndpoint(item.dictionary("from"), entry: entry),
+                "to": trackEndpoint(item.dictionary("to"), entry: entry)
+            ]
+            if let segment = resolved[id.lowercased()] {
+                json["from_mm"] = HorizontalDispatchJSON.point(segment.from)
+                json["to_mm"] = HorizontalDispatchJSON.point(segment.to)
+            }
+            return json
+        }.sorted { ($0.string("net_name") ?? "", $0.string("id") ?? "") < ($1.string("net_name") ?? "", $1.string("id") ?? "") }
+        let limit = readLimit(params)
+        return ["total": matched.count, "truncated": matched.count > limit, "tracks": Array(matched.prefix(limit))] as JSONDictionary
+    }
+
+    @Sendable private static func listVias(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let wanted = try netFilter(entry, params)
+        let resolved = Dictionary(uniqueKeysWithValues: (entry.project.board?.vias ?? []).map { ($0.id.lowercased(), $0) })
+        let matched = try boardJSON(entry).dictionaryMap("vias").compactMap { id, item -> JSONDictionary? in
+            let via = resolved[id.lowercased()]
+            let netID = (item.string("net_set") ?? via?.netID)?.lowercased()
+            guard wanted == nil || wanted == netID else { return nil }
+            var json: JSONDictionary = [
+                "id": id,
+                "net": netID as Any,
+                "net_name": netID.flatMap { entry.index.net(id: $0)?.name } as Any,
+                "junction": item.string("junction") as Any,
+                "padstack": (item.string("padstack") ?? via?.padstackID) as Any? as Any,
+                "definition": (item.string("definition") ?? via?.definitionID) as Any? as Any,
+                "source": item.string("source") ?? "padstack",
+                "from_rules": item.bool("from_rules") ?? false,
+                "net_pinned": item.string("net_set") != nil
+            ]
+            if let via {
+                json["x_mm"] = HorizontalDispatchJSON.mm(via.position.x)
+                json["y_mm"] = HorizontalDispatchJSON.mm(via.position.y)
+                json["size_mm"] = HorizontalDispatchJSON.mm(via.size)
+                json["hole_mm"] = via.holeSize.map { HorizontalDispatchJSON.mm($0) } as Any
+                json["layers"] = via.connectedLayers
+            }
+            return json
+        }.sorted { ($0.string("net_name") ?? "", $0.string("id") ?? "") < ($1.string("net_name") ?? "", $1.string("id") ?? "") }
+        let limit = readLimit(params)
+        return ["total": matched.count, "truncated": matched.count > limit, "vias": Array(matched.prefix(limit))] as JSONDictionary
+    }
+
+    @Sendable private static func listTexts(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let wanted = try selectedSheets(entry, params)
+        // A symbol's smashed texts are listed too, marked with the symbol they
+        // belong to, so a caller can see why they are not free to edit.
+        return wanted.flatMap { sheet -> [JSONDictionary] in
+            var ownerBySymbol = [String: String]()
+            for (symbolID, symbol) in sheet.json.dictionaryMap("symbols") {
+                for id in symbol["texts"] as? [String] ?? [] { ownerBySymbol[id.lowercased()] = symbolID }
+            }
+            return sheet.json.dictionaryMap("texts").map { id, item -> JSONDictionary in
+                let placement = item.dictionary("placement") ?? [:]
+                let shift = placement["shift"] as? [Any] ?? []
+                var json: JSONDictionary = [
+                    "id": id,
+                    "sheet": sheet.id,
+                    "sheet_index": sheet.index,
+                    "text": item.string("text") ?? "",
+                    "x_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(shift.first ?? 0)),
+                    "y_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(shift.count > 1 ? shift[1] : 0)),
+                    "angle_deg": HorizontalDispatchJSON.degrees(placement.int("angle") ?? 0),
+                    "mirror": placement.bool("mirror") ?? false,
+                    "size_mm": HorizontalDispatchJSON.mm(item.double("size") ?? 1_000_000),
+                    "width_mm": HorizontalDispatchJSON.mm(item.double("width") ?? 0),
+                    "origin": item.string("origin") ?? "center",
+                    "font": item.string("font") ?? "simplex",
+                    "from_smash": item.bool("from_smash") ?? false
+                ]
+                json["symbol"] = ownerBySymbol[id.lowercased()] as Any
+                return json
+            }.sorted { ($0.string("text") ?? "", $0.string("id") ?? "") < ($1.string("text") ?? "", $1.string("id") ?? "") }
+        }
+    }
+
+    @Sendable private static func listParts(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let scope = params.string("scope") ?? "project"
+        guard ["project", "pools", "all"].contains(scope) else {
+            throw HorizontalDispatchError.invalidParams("scope must be project, pools, or all.")
+        }
+        var rows = [JSONDictionary]()
+        if scope != "pools" {
+            rows = entry.project.poolParts
+                .sorted { $0.mpn.localizedStandardCompare($1.mpn) == .orderedAscending }
+                .map { partJSON($0).merging(["in_project_pool": true]) { _, new in new } }
+        }
+        guard scope != "project" else { return rows }
+        let (items, _, inProject) = HorizontalDispatchPool.scan(try HorizontalDispatchPool.poolURLs(for: entry))
+        var seen = Set(rows.compactMap { $0.string("id")?.lowercased() })
+        let library = items
+            .filter { $0.category == .part && seen.insert($0.uuid).inserted }
+            .sorted { ($0.name.localizedLowercase, $0.uuid) < ($1.name.localizedLowercase, $1.uuid) }
+            .map { item -> JSONDictionary in
+                var json = HorizontalDispatchPool.itemJSON(item, inProject: inProject)
+                json["id"] = item.uuid
+                json["mpn"] = item.name
+                json["description"] = item.detail
+                return json
+            }
+        // One row shape throughout: a part cached in the project pool carries
+        // the extra fields the project's own loader resolves.
+        return rows + library
     }
 
     static func partJSON(_ part: HorizontalPoolPart) -> JSONDictionary {

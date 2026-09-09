@@ -34,20 +34,36 @@ Methods that act on a project take the `handle` that `open_project` returned.
 Native API 2 adds explicit source contexts, snapshot/revision metadata,
 guarded edits and recoverable transactions. MCP success results use
 `{data, meta}` envelopes; every design edit requires `expected_revision` and
-`operation_id`. See [the API 2 and analysis guide](mcp-analysis.md) for migration,
+`operation_id`. What this surface does not yet reach is surveyed in
+[the completeness plan](mcp-completeness-plan.md).
+See [the API 2 and analysis guide](mcp-analysis.md) for migration,
 connection diagnostics, typed models, numerical tools and operational limits.
 
 | Method | What it answers |
 |---|---|
 | `version`, `methods` | API version; the method table |
-| `open_project`, `close_project`, `reload_project`, `list_projects` | project handles; opening a path twice returns the same handle |
+| `open_project`, `new_project`, `close_project`, `reload_project`, `list_projects` | project handles; opening a path twice returns the same handle; `new_project` writes the template to a path that does not exist yet |
+| `save` | writes an open document to its file; a disk context reports `saved: false` because its edits were already written |
 | `project_info`, `project_files` | blocks, sheets, counts, diagnostics; files in the captured source |
 | `freeze_project`, `analysis_snapshot`, `transaction_status` | immutable read context; electrical evidence; mutation receipt lookup |
 | `list_sheets` | sheets in the PDF exporter's page order |
 | `list_components`, `get_component` | components with part details; one component with every pin, its net, symbol and board placements |
 | `list_nets`, `get_net`, `netlist` | nets with class and flags; one net with its pins, routing counts, and airwire geometry; the whole netlist |
 | `bom` | grouped the way the BOM exporter groups |
-| `list_parts` | the project pool's parts |
+| `list_symbols` | symbol instances on the sheets: component, gate, placement, and the instance id the schematic ops take |
+| `list_net_lines` | the wires on the sheets, with what each end connects — a symbol pin, a junction, a bus ripper or a block port |
+| `list_tracks`, `list_vias` | copper, filtered by net or layer; a track end is a pad (naming the component) or a junction. Both wrap their answer in `total`/`truncated`, because a board has thousands |
+| `list_net_labels`, `list_power_symbols` | what names a net on a page, with the ids their remove ops take |
+| `list_block_instances` | the blocks this block uses, their wired ports, and where each is drawn |
+| `autoroute` | best-effort automatic routing of one net's airwires |
+| `list_planes`, `list_polygons` | copper pours (and whether each is actually filled) and board polygons; layer 100 is the outline |
+| `board_rules` | the design rules as data, the net classes they select, and the stackup |
+| `get_pool_item` | one pool item's own JSON — the bytes `pool_write` takes back |
+| `pour_planes` | fills every plane, as Update All Planes does |
+| `list_texts` | free text on the schematic sheets, with the ids the text ops take |
+| `list_parts` | parts the project can use; `scope` widens it from the project pool to the pools it draws from |
+| `search_pool` | search those pools by name, description, manufacturer, tag or uuid, filtered by item kind |
+| `import_pool_part` | copy a part and its whole dependency chain from a base pool into the project pool cache |
 | `board_info` | bounds, stackup, drawing layers, object counts |
 | `recompute_connectivity` | the editor's post-edit connectivity pass, in memory |
 | `check` | see below |
@@ -57,7 +73,18 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `zoom_to`, `render_viewport` | Live channel: frame a component or net in a pane; render what a pane shows |
 
 Coordinates come back in millimetres; angles in degrees (Horizon stores
-1/65536 turns). Pin names resolve from the placed symbols, and from the
+1/65536 turns).
+
+Two identities are easy to confuse, so both are spelled out. A symbol on a
+sheet is `symbol_instance`; `symbol_id` in a component's symbol list is the
+same value under the name it shipped with, and analysis evidence still uses
+that one. A package on the board is `package_instance` — the key a track's
+`pad` endpoint names — while `package_id` is the pool package it draws.
+
+Every write has a read that names what it wrote. `list_symbols`,
+`list_net_lines` and `list_texts` cover the schematic ops; `list_tracks` and
+`list_vias` cover copper no op writes yet. A write without its read is a
+write-only surface: an agent could create a thing and never find it again. Pin names resolve from the placed symbols, and from the
 project pool's units for gates without a symbol on any sheet.
 
 ### Connectivity on open
@@ -78,9 +105,9 @@ those as informational and anything on a net without a plane as a warning.
 
 Load diagnostics, the rules editor's structural validation of the board
 rules, unannotated and duplicate reference designators, components without a
-part, single-pin and pinless nets, packages not placed, and unrouted
-connections. There is no geometric design rule check in Horizontal yet, so
-none here either.
+part, single-pin and pinless nets, gates with no symbol on any sheet, packages
+not placed, and unrouted connections. There is no geometric design rule check
+in Horizontal yet, so none here either.
 
 ## Edits
 
@@ -98,8 +125,39 @@ designator or id, nets by name or id, pins by name (`EN`), by gate and pin
 | `set_group_tag` | Horizon's group and tag, the fields it uses to copy placement between identical sub-circuits; ids derive from the names |
 | `ensure_net`, `rename_net`, `set_net_class`, `retire_net` | Nets; retiring drops the connections and power symbols on it |
 | `connect`, `disconnect` | Pin connections; `create_net` makes the net when it is missing |
+| `place_symbol`, `remove_symbol` | Schematic placement: draw a gate on a sheet with the symbol for its unit, move it, or take it off with the net lines that ended on it |
+| `draw_net_line` | The wire between two pins the block already ties to one net; it records that connection rather than making one, and refuses pins on different nets |
+| `place_power_symbol`, `remove_power_symbol` | The ground or supply marker that says a point is on that net. Placing one marks the net as a power net, because that is what it means; the shape (`gnd`, `dot`, `antenna`, `earth`) belongs to the net, so every symbol on it matches |
+| `place_net_label`, `remove_net_label` | Names a net on the page — and, placed on more than one sheet, is how a net spans pages |
+| `add_sheet`, `rename_sheet`, `remove_sheet` | Pages. A sheet with anything drawn on it is refused rather than deleted quietly, and a schematic keeps at least one |
+| `place_text`, `remove_text` | Free text on a sheet: write one, or change the text, position, rotation, size, origin or font of one `list_texts` named. A text Horizon extracted from a symbol with Smash belongs to that symbol and is refused |
 | `place_component`, `remove_placement` | Board placement in millimetres and degrees; a placed package moves, an unplaced one gets a package entry the loader completes from the part |
+| `place_track`, `remove_track`, `set_track_width` | One straight copper segment per op, between pads, junctions or points; a point becomes a junction, and a junction nothing holds any more is removed with the copper that held it |
+| `place_polygon`, `remove_polygon` | A closed polygon on a board layer. Layer 100 is the outline — the shape the board is cut to, and a board without one has no shape however complete it otherwise looks |
+| `place_plane`, `remove_plane` | A copper pour: a polygon on a copper layer, filled with one net. Defining it does not fill it; `pour_planes` does, and drops fill that reaches nothing on its net |
+| `add_block_instance`, `remove_block_instance`, `connect_block_port` | Using one block inside another, and wiring its ports to nets here |
+| `place_block_symbol`, `remove_block_symbol` | Drawing a block instance on a sheet, with the symbol that block defines for itself |
+| `set_stackup` | How many inner copper layers the board has, and the copper and dielectric thicknesses |
+| `add_net_class`, `rename_net_class` | Net classes. Their electrical parameters live in the board rules, not here |
+| `place_via`, `remove_via` | A via on a net at a point, sharing the junction with any copper already there. Its padstack defaults to what the board's other vias use |
 | `copy_group_layout` | Lay one group out like another: every member with a matching tag gets the same relative placement and rotation around an anchor, and the tracks, junctions and vias inside the source group are cloned onto the target's pads |
+
+### A live edit is not saved until it is saved
+
+An edit against a document the app has open becomes one undoable step in that
+document and nothing more: the result says `durability: "unsaved_document"`
+and means it. `save` writes it, `project_info` reports `unsaved_changes`, and
+a task that edits a live document is not finished without one. A disk edit
+needs none of this — it committed with its transaction — and `save` says so
+rather than failing.
+
+Saving goes through the document system rather than around it: SwiftUI's
+`DocumentGroup` offers no API for it, so the document is found by URL through
+`NSDocumentController` and written with `writeSafely`, which keeps the
+read-only guard, the write notification the pool editors listen for, and the
+edited flag all behaving as they do when the user presses Save. Targeting by
+URL rather than sending the Save action matters: an automation client is never
+the key window.
 
 A batch is validated and applied in memory first; a failing operation writes
 nothing. `dry_run` returns normalized operations, changed-file previews and a
@@ -107,11 +165,81 @@ plan digest. Disk commits journal all file replacements and recover interrupted
 batches; live commits install one undoable archive. Pool items and operations
 can share the same batch. The complete staged project is loaded before commit.
 
-Two things to know. Horizon shows a part's own value over the component's,
-so `set_value` on a part-backed component records a note saying so. And the
-app does not reload files that change under an open document, so headless
-writes are for projects the app is not holding; the live channel is the path
-for edits while it is.
+Routing here is manual. `place_track` draws the segment it is told to draw; it
+does not find a path, and nothing on this surface autoroutes. An agent routes
+by reading the airwires from `get_net` and placing the segments itself, and
+`check` reports what is still unrouted. Arcs are the app's alone — every track
+placed here is straight.
+
+Two refusals are worth knowing about. A track joins its ends, so ends on
+different nets would tie those nets together: that is refused rather than
+written, and an explicit `net` that disagrees with the ends is refused too.
+And nothing guesses a width: `width_mm` may be left out only when the board
+states a `track_width` rule covering that net's class on that layer, in which
+case the change says `width_from: "track_width rule"`. A board with no such
+rule insists on an explicit width rather than inventing a plausible one.
+
+On the schematic the ops cover components, wires, free text, net labels, power
+symbols and the sheets themselves; buses, bus rippers, net ties, block symbols,
+title block values and a sheet's drawn lines, arcs and pictures are still the
+app's alone.
+
+Net labels and power symbols both sit on a junction, and both share one with
+anything already at that point rather than stacking. Removing either takes the
+junction with it when nothing else needs it — the same rule the copper ops
+follow.
+
+Three things to know. Horizon shows a part's own value over the component's,
+so `set_value` on a part-backed component records a note saying so. A
+component created through the netlist alone is drawn on no sheet, which
+`place_symbol` fixes and `check` reports until it is. And a project an editor
+has open cannot be edited on disk: see below.
+
+### One block at a time
+
+`apply` edits one block: the top one unless `block` names another, and the
+result says which. Blocks are named by their file, the way `list_sheets`
+reports them. A sub-block has no board — its components are instantiated
+wherever that block is used, so there is no single package to place for them —
+so its board file is not even loaded and every board operation on one fails
+saying why.
+
+The two halves disagree on scope, deliberately: **writes are scoped to one
+block, reads are not.** `list_nets` and `list_components` report the whole
+project, so an edit made in a sub-block is visible in a read that names no
+block at all. `written` in the result says which file actually changed.
+
+`add_block_instance` uses one block inside another, `connect_block_port` wires
+its ports to nets here, and `place_block_symbol` draws it — using the symbol
+that block defines for itself, so a block with no `symbol_filename` cannot be
+drawn and says so rather than inventing a shape.
+
+### Routing is manual, and autoroute is honest about it
+
+`autoroute` tries a net's airwires on one layer. It walks around one obstacle
+at a time and gives up after trying both ways past each, so on a dense board it
+completes a few percent and reports the rest — the harness in
+`RouterRealBoardHarnessTests` measures exactly this and prints the numbers to
+`/tmp/router-harness.txt`. What it does write has been checked clear of the
+board's clearances; what it cannot route stays an airwire, is listed in
+`unrouted` with what blocked it, and `place_track` draws those by hand.
+
+### Who has the project open
+
+The app does not reload files that change under an open document, so a disk
+write while it holds a project loses one edit or the other. The live channel
+cannot answer whether it does — that channel is off until the user turns it
+on, and its absence proves nothing. So every process that opens a document
+writes a record in the project's transaction directory and holds an advisory
+lock on it for as long as the document is open. `project_info` reports them as
+`held_by`, with `editable` false, and a disk `apply` refuses with
+`DOCUMENT_OPEN` naming the holder; a `dry_run` plans anyway and reports the
+holder in `blocked_by`. Liveness needs no process table: a record another
+process can lock belonged to one that has exited, and is deleted on sight.
+
+The transaction directory sits beside the project and keeps its lock and
+receipts for good, so it writes a `.gitignore` of `*` into itself — a project
+in a git working tree does not have to know it is there.
 
 ## Live channel
 
@@ -123,15 +251,44 @@ binds to 127.0.0.1 only, and every request line carries `"auth": <token>`.
 The Python package and the MCP server look for that file first, so opening a
 project the app holds returns the app's document: reads see unsaved edits,
 `select` and `highlight` change what the canvases show, and `apply` lands as
-one undoable step named for the edit. `live_state` lists the open documents
-with their selection.
+one undoable step named for the edit. `live_state` reports the channel's status and, when it answers, the open
+documents with their selection; given a project path it also reports that
+project's `held_by` and looks beside the project for the endpoint. An
+unavailable channel without a path means the app is not running, has no
+document open, or has the channel switched off, and it cannot say which.
+`held_by` is the answer that does not depend on the channel at all.
 
 The channel is off until it is turned on: Settings > Automation > Enable MCP
-Server, stored as `HorizontalLiveServerEnabled` in the app's defaults. With
-it off the Python package and the MCP server still read and write project
-files on disk, but cannot reach a document the app is holding. With it on the
-listener starts with the first document and stops with the last, and the
-switch takes effect at once rather than at the next open or close.
+Server, stored as `HorizontalLiveServerEnabled` in the app's defaults. With it
+on the listener starts with the first document and stops with the last, and
+the switch takes effect at once rather than at the next open or close. With it
+off there is no way in: disk writes are refused while the app holds the
+project, which is the point.
+
+### Finding the channel from outside the container
+
+`live.json` is the app's own copy, and a sandboxed build writes it inside
+`~/Library/Containers/com.twarge.app.horizontal/…`, which macOS refuses to
+every other process — reading it returns `Operation not permitted` regardless
+of file mode. A client that only had that path could never reach a sandboxed
+app.
+
+So the listener also publishes itself in each open project's holder record,
+beside the project: `{"host", "port", "token"}`, rewritten when the channel
+starts and cleared when it stops. A client that can read the project can read
+that, which is the same authority it already needed. `find_live_for(project)`
+tries the discovery files first and falls back to the records; `open_project`
+with `source="live"` uses it, and `live_state` takes an optional project path
+for the same reason.
+
+The token is therefore at rest beside the project, in a file this process
+writes mode 0600 — the same protection `live.json` has, in a place a client
+can actually read. Anyone who can read that file as the owning user can drive
+automation on whatever documents the app has open, so a project directory
+shared with another user, or synced somewhere with looser permissions, widens
+who can do that. Holder records are named `*.lock` and `*.json` under
+`.horizontal-transactions/<digest>/holders/`, and the directory ignores itself
+in git.
 
 An edit through the channel runs the same ops over the document's in-memory
 archive, then the workspace reloads its model from that archive, points the

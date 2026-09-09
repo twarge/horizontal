@@ -43,10 +43,26 @@ public final class HorizontalProjectTransaction {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func transactionDirectory(_ projectURL: URL) -> URL {
+    /// Where the writers of one project keep what they share: the lock, the
+    /// journal, the receipts, and the records of who has it open.
+    public static func transactionDirectory(_ projectURL: URL) -> URL {
         let canonical = projectURL.resolvingSymlinksInPath().standardizedFileURL
         return canonical.deletingLastPathComponent().appendingPathComponent(".horizontal-transactions")
             .appendingPathComponent(Self.digest(Data(canonical.path.utf8)))
+    }
+
+    /// Creates the transaction directory. Projects commonly live in a git
+    /// working tree, and the lock and receipts here outlive every commit, so
+    /// the root carries a `.gitignore` of `*` — it ignores itself and all of
+    /// its contents without the project's own `.gitignore` having to know
+    /// this directory exists.
+    static func createDirectory(_ directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let ignore = directory.deletingLastPathComponent().appendingPathComponent(".gitignore")
+        if !FileManager.default.fileExists(atPath: ignore.path) {
+            try? Data("*\n".utf8).write(to: ignore, options: [.atomic])
+        }
     }
 
     /// Readers can join an existing writer lock without creating files or
@@ -67,8 +83,7 @@ public final class HorizontalProjectTransaction {
     private init(projectURL: URL, timeout: TimeInterval, create: Bool) throws {
         directory = Self.transactionDirectory(projectURL)
         if create {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
-                                                    attributes: [.posixPermissions: 0o700])
+            try Self.createDirectory(directory)
         }
         descriptor = Darwin.open(directory.appendingPathComponent("lock").path, create ? O_CREAT | O_RDWR : O_RDONLY, 0o600)
         guard descriptor >= 0 else { throw CocoaError(.fileWriteNoPermission) }

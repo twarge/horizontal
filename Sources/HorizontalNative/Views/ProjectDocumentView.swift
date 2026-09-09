@@ -1159,6 +1159,14 @@ struct ProjectWorkspaceView: View {
         live.applyArchive = { archive, actionName in
             try applyLiveArchive(archive, actionName: actionName)
         }
+        #if os(macOS)
+        // The document system owns saving; find this document by its URL
+        // rather than sending the Save action, which would go to whichever
+        // window happens to be key.
+        let documentURL = live.url
+        live.isEdited = { HorizontalDocumentSaving.isEdited(url: documentURL) }
+        live.save = { try HorizontalDocumentSaving.save(url: documentURL) }
+        #endif
         live.visibleBounds = { pane in
             canvasCommandActionsByPane[pane]?.visibleWorldBounds?()
         }

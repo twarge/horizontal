@@ -8,7 +8,7 @@ enum HorizontalDispatchValidation {
         let allowed = Set(descriptor.params.keys).union(common)
         let unknown = Set(params.keys).subtracting(allowed)
         guard unknown.isEmpty else { throw HorizontalDispatchError.invalidParams("Unknown parameters: \(unknown.sorted().joined(separator: ", ")).") }
-        let integers: Set<String> = ["handle", "sheet", "max_pixels"]
+        let integers: Set<String> = ["handle", "sheet", "max_pixels", "limit", "layer"]
         let numbers: Set<String> = ["dpi", "margin_mm", "deadline_unix_ms"]
         let booleans: Set<String> = ["include_metadata", "include_unconnected", "include_no_populate", "dry_run", "mirrored"]
         let objects: Set<String> = ["region", "options"]
@@ -32,6 +32,8 @@ enum HorizontalDispatchValidation {
         if let dpi = params.double("dpi"), !(1...2400).contains(dpi) { throw HorizontalDispatchError.invalidParams("dpi must be between 1 and 2400.") }
         if let pixels = params.int("max_pixels"), !(1...8192).contains(pixels) { throw HorizontalDispatchError.invalidParams("max_pixels must be between 1 and 8192.") }
         if let margin = params.double("margin_mm"), !(0...1000).contains(margin) { throw HorizontalDispatchError.invalidParams("margin_mm must be between 0 and 1000.") }
+        // Each method clamps to its own documented maximum; this is the outer bound.
+        if let limit = params.int("limit"), !(1...5000).contains(limit) { throw HorizontalDispatchError.invalidParams("limit must be between 1 and 5000.") }
         if let region = params.dictionary("region") {
             let keys: Set<String> = ["min_x_mm", "min_y_mm", "max_x_mm", "max_y_mm"]
             guard Set(region.keys) == keys else { throw HorizontalDispatchError.invalidParams("region requires exactly min_x_mm, min_y_mm, max_x_mm, max_y_mm.") }

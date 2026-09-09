@@ -55,9 +55,16 @@ schema; advertised input/output schemas are tested through the MCP SDK.
 Tool failures set MCP `isError` and retain a structured `error` containing
 `code`, `message`, `details`, `retryable`, and `outcome`. Relevant codes include
 `INVALID_ARGUMENT`, `NOT_FOUND`, `AMBIGUOUS_SELECTOR`, `INCOMPATIBLE_ENGINE`,
-`LIVE_UNAVAILABLE`, `LIVE_DOCUMENT_CHANGED`, `AUTH_FAILED`, `CONNECTION_LOST`,
-`TIMEOUT`, `STALE_REVISION`, `READ_ONLY`, `SNAPSHOT_EXPIRED`,
+`LIVE_UNAVAILABLE`, `LIVE_DOCUMENT_CHANGED`, `DOCUMENT_OPEN`, `AUTH_FAILED`,
+`CONNECTION_LOST`, `TIMEOUT`, `STALE_REVISION`, `READ_ONLY`, `SNAPSHOT_EXPIRED`,
 `UNSUPPORTED_MODEL`, and `RECOVERY_REQUIRED`.
+
+`DOCUMENT_OPEN` is the one that cannot be worked around by retrying: an editor
+has the project open, so its files are not the editor's state and writing them
+would lose an edit either way. `details.holders` names who, `project_info`
+reports the same as `held_by`, and a `dry_run` plans anyway and reports them in
+`blocked_by`. Editing through the live channel, or closing the document, is
+what clears it — see [the automation guide](automation.md).
 
 ## Review and commit an edit
 

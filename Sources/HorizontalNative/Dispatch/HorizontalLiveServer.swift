@@ -37,6 +37,23 @@ enum HorizontalLiveServer {
         #endif
     }
 
+    /// The loopback endpoint this process is serving, or nil when it is not.
+    /// Published in the holder record beside each open project, because the
+    /// discovery file below sits in the app's sandbox container and macOS
+    /// refuses another process access to it.
+    static func endpoint() -> [String: String]? {
+        guard let port, let token else {
+            return nil
+        }
+        return ["host": "127.0.0.1", "port": String(port), "token": token]
+    }
+
+    /// Tells every open document's holder record whether there is a channel to
+    /// reach, so a client that just read the project can find it.
+    static func endpointDidChange() {
+        HorizontalDispatchSession.shared.refreshHolders(endpoint: endpoint())
+    }
+
     static var discoveryURL: URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -140,6 +157,7 @@ final class HorizontalLiveListener {
         port = nil
         token = nil
         try? FileManager.default.removeItem(at: HorizontalLiveServer.discoveryURL)
+        HorizontalLiveServer.endpointDidChange()
     }
 
     private func listenerStateChanged(_ state: NWListener.State) {
@@ -147,6 +165,7 @@ final class HorizontalLiveListener {
         case .ready:
             port = listener?.port?.rawValue
             writeDiscoveryFile()
+            HorizontalLiveServer.endpointDidChange()
         case .failed(let error):
             NSLog("Horizontal live channel failed: \(error.localizedDescription)")
             stop()

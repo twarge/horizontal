@@ -42,6 +42,19 @@ enum HorizontalDispatchChecks {
             if component.partID == nil, !component.noPopulate {
                 messages.append(Message(level: "info", category: "part", title: "No part assigned", detail: "The component has an entity but no pool part, so it has no package or MPN.", refdes: refdes))
             }
+            // A component created through the netlist alone is electrically
+            // real and drawn nowhere: the schematic no longer shows the
+            // circuit it describes. Gates are reported one by one, since half
+            // a dual op-amp on a sheet is the same gap.
+            let placed = Set(component.symbolPlacements.map { $0.gateID.lowercased() })
+            let gates = Dictionary(component.pins.map { ($0.gateID.lowercased(), $0.gateSuffix) }, uniquingKeysWith: { first, _ in first })
+            let missing = gates.keys.filter { !placed.contains($0) }.sorted()
+            if !missing.isEmpty {
+                let detail = placed.isEmpty && missing.count == gates.count
+                    ? "The component is in the netlist but has no symbol on any sheet. place_symbol draws it."
+                    : "Gate\(missing.count == 1 ? "" : "s") \(missing.map { gates[$0].flatMap { $0.isEmpty ? nil : $0 } ?? $0 }.joined(separator: ", ")) \(missing.count == 1 ? "is" : "are") on no sheet."
+                messages.append(Message(level: "warning", category: "schematic", title: "Not drawn on a sheet", detail: detail, refdes: refdes))
+            }
         }
         for (refdes, count) in refdesCounts where count > 1 {
             messages.append(Message(level: "error", category: "annotation", title: "Duplicate reference designator", detail: "\(count) components are named \(refdes).", refdes: refdes))
@@ -98,7 +111,7 @@ enum HorizontalDispatchChecks {
             "ok": (counts["error"] ?? 0) == 0,
             "counts": ["error": counts["error"] ?? 0, "warning": counts["warning"] ?? 0, "info": counts["info"] ?? 0],
             "messages": messages.map(\.json),
-            "note": "Horizontal has no geometric design rule check yet; these are load diagnostics, rules validation, and connectivity facts. Poured planes count as copper for the rats' nest."
+            "note": "Horizontal has no geometric design rule check yet; these are load diagnostics, rules validation, and connectivity facts, plus the components and board packages nothing has placed. Poured planes count as copper for the rats' nest."
         ]
     }
 

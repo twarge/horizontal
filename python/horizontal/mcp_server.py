@@ -27,7 +27,8 @@ from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 from mcp.types import CallToolResult, TextContent, ImageContent, ToolAnnotations
 from pydantic import BaseModel, ValidationError
 
-from ._native import HorizontalError, find_live, find_cli, find_dylib, LiveTransport, transport_error
+from ._native import (HorizontalError, find_live, find_live_for, find_cli, find_dylib, LiveTransport,
+                      project_holders, transport_error)
 from .client import Project, Session, open as open_any, _request_deadline
 from .schemas import (Result, ProjectInfo, Component, Net, Sheet, EditResult, Region, RenderedImage, EditOperation,
                       PinnedSnapshot, AnalysisValidation, AnalysisJob)
@@ -53,14 +54,17 @@ mcp = TypedMCPServer(
     instructions=(
         "Reads Horizon EDA projects (.hprj, .horizontal) through Horizontal's own model. "
         "Call open_project first, or set HORIZONTAL_PROJECT; then query components, nets, the netlist, "
-        "the BOM, run checks, export fabrication files, and render sheets or the board as images."
+        "the BOM, run checks, export fabrication files, and render sheets or the board as images. "
+        "Edits cover the block, schematic symbols, wires and text, board placement and manual track and via "
+        "routing, and can pull parts in from the pools a project draws from. Nothing autoroutes."
     ),
 )
 
 _projects: dict[str, Project] = {}
 _active_project: ContextVar[Project | None] = ContextVar("horizontal_project", default=None)
 _edit_options: ContextVar[dict[str, Any]] = ContextVar("horizontal_edit", default={})
-_mutations = {"apply_ops", "set_component_value", "rename_net", "connect_pin", "place_component", "copy_group_layout"}
+_mutations = {"apply_ops", "set_component_value", "rename_net", "connect_pin", "place_component", "copy_group_layout",
+              "import_pool_part", "pool_write", "pour_planes", "autoroute"}
 _snapshots: dict[str, dict[str, Any]] = {}
 _jobs = AnalysisJobs()
 _tool_lock = threading.RLock()
@@ -70,7 +74,7 @@ def _tool(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Registers `fn` as a tool and turns engine errors into messages the client sees."""
 
     hints = get_type_hints(fn, include_extras=True)
-    result_type = {"open_project": ProjectInfo, "reload_project": ProjectInfo,
+    result_type = {"open_project": ProjectInfo, "new_project": ProjectInfo, "reload_project": ProjectInfo,
                    "analysis_snapshot": PinnedSnapshot, "validate_analysis": AnalysisValidation,
                    **{name: AnalysisJob for name in ("analyze_transfer", "analyze_noise", "analyze_headroom", "analyze_adc_filter", "analysis_result", "cancel_analysis")},
                    "list_components": list[Component], "get_component": Component,
@@ -119,7 +123,8 @@ def _tool(fn: Callable[..., Any]) -> Callable[..., Any]:
 
     signature = inspect.signature(fn)
     parameters = [p.replace(annotation=hints.get(p.name, p.annotation)) for p in signature.parameters.values()]
-    if "path" in signature.parameters and fn.__name__ != "open_project":
+    # live_state takes a project path to look beside, not an open context.
+    if "path" in signature.parameters and fn.__name__ not in {"open_project", "live_state"}:
         parameters.append(inspect.Parameter("project_ref", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=str | None))
     if fn.__name__ in _mutations:
         parameters += [inspect.Parameter("expected_revision", inspect.Parameter.KEYWORD_ONLY, annotation=str),
@@ -127,7 +132,7 @@ def _tool(fn: Callable[..., Any]) -> Callable[..., Any]:
                        inspect.Parameter("plan_digest", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=str | None)]
     wrapper.__signature__ = signature.replace(parameters=parameters, return_annotation=output)
     wrapper.__annotations__ = {p.name: p.annotation for p in parameters} | {"return": output}
-    resource_writes = {"open_project", "reload_project", "analysis_snapshot", "release_analysis_snapshot", "analyze_transfer", "analyze_noise", "analyze_headroom", "analyze_adc_filter", "cancel_analysis", "discard_analysis"}
+    resource_writes = {"open_project", "new_project", "save", "reload_project", "analysis_snapshot", "release_analysis_snapshot", "analyze_transfer", "analyze_noise", "analyze_headroom", "analyze_adc_filter", "cancel_analysis", "discard_analysis"}
     registered = mcp.tool(annotations=ToolAnnotations(read_only_hint=fn.__name__ not in _mutations | resource_writes | {"export", "highlight", "select", "zoom_to", "close_project", "export_analysis"},
                                                destructive_hint=fn.__name__ in _mutations,
                                                idempotent_hint=fn.__name__ not in _mutations | resource_writes | {"export_analysis"},
@@ -163,6 +168,24 @@ def _resolve(path: str | None) -> Project:
     return project
 
 
+def _open_context_for(path: str, name: str | None) -> Project:
+    """A brand-new project, opened as a context of its own."""
+    if len(_projects) >= 64: raise ValueError("Close unused project contexts before opening another.")
+    target = Path(path).expanduser()
+    if target.exists(): raise ValueError(f"{target} already exists; new_project will not write over it.")
+    session = Session(isolated=os.environ.get("HORIZONTAL_ISOLATED") != "0")
+    try:
+        project = session.new_project(target, name=name)
+    except Exception:
+        session.close()
+        raise
+    ref = str(uuid.uuid4())
+    project.summary.update(project_ref=ref, requested_source="disk", transport=type(project.session.transport).__name__)
+    _projects[ref] = project
+    _active_project.set(project)
+    return project
+
+
 def _open_context(path: str, source: str) -> Project:
     if len(_projects) >= 64: raise ValueError("Close unused project contexts before opening another.")
     project = open_any(path, source=source, isolated=os.environ.get("HORIZONTAL_ISOLATED") != "0")
@@ -173,27 +196,33 @@ def _open_context(path: str, source: str) -> Project:
     return project
 
 
-def _edit(project: Project, ops: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
+def _guard(project: Project) -> dict[str, Any]:
+    """The preconditions every mutation shares."""
     if not project.is_live:
-        # A positive live match means a disk edit would race an open document.
-        if _live_has(str(Path(project.path).resolve())):
-            raise transport_error("LIVE_DOCUMENT_OPEN", "Use the live context for edits while Horizontal holds this project.")
+        # A disk edit under an open editor would be lost either way. The holder
+        # records beside the project say who has it, whether or not the app's
+        # live channel is reachable; the engine refuses on the same evidence.
+        holders = project_holders(project.path)
+        if holders:
+            names = ", ".join(h.get("name") or "An editor" for h in holders)
+            reachable = any(isinstance(h.get("endpoint"), dict) for h in holders)
+            raise transport_error("DOCUMENT_OPEN", f"{names} has this project open, so its files cannot be edited on disk. " + (
+                "Open it with source=\"live\" and the edit lands there as one undoable step."
+                if reachable else
+                "Turn on the live channel in its settings, then open the project with source=\"live\"; or close the document."))
     options = _edit_options.get()
     if not options.get("expected_revision") or not options.get("operation_id"):
         raise ValueError("expected_revision and operation_id are required for every edit.")
-    return project.apply(ops, **options, **kwargs)
+    return options
 
 
-def _live_has(key: str) -> bool:
-    live = Session.live()
-    if live is None:
-        return False
-    try:
-        return any(s.get("live") and Path(s["path"]).resolve() == Path(key) for s in live.call("list_projects"))
-    except Exception:
-        return False
-    finally:
-        live.close()
+def _edit(project: Project, ops: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
+    return project.apply(ops, **_guard(project), **{k: v for k, v in kwargs.items() if v is not None or k == "dry_run"})
+
+
+def _edit_call(project: Project, method: str, **params: Any) -> dict[str, Any]:
+    """A mutation that is not an ops batch; the same preconditions apply."""
+    return project._call(method, **_guard(project), **params)
 
 
 @_tool
@@ -377,6 +406,24 @@ def open_project(path: str, source: Literal["auto", "live", "disk"] = "auto") ->
 
 
 @_tool
+def new_project(path: str, name: str | None = None) -> dict[str, Any]:
+    """Create a project from the new-document template as a .horizontal package and open it. path must not exist
+    and must end in .horizontal. The project it makes has a pool, an empty top block, one schematic sheet and a
+    board with no outline — give it one before expecting fabrication output to mean anything."""
+    project = _open_context_for(path, name)
+    return project.summary
+
+
+@_tool
+def save(path: str | None = None) -> dict[str, Any]:
+    """Write a document open in Horizontal to its file, the way the Save command does. An edit through the live
+    channel is one undoable step in the app and nothing more until this runs, so a task that edits a live document
+    is not finished without it. A disk context reports saved false with a note: its edits were written when they
+    committed. saved is false too when the document had nothing outstanding."""
+    return _resolve(path).save()
+
+
+@_tool
 def reload_project(path: str | None = None) -> dict[str, Any]:
     """Re-read the project from disk after it changed."""
     return _resolve(path).reload()
@@ -431,9 +478,162 @@ def bom(path: str | None = None, include_no_populate: bool = True) -> dict[str, 
 
 
 @_tool
-def list_parts(path: str | None = None) -> list[dict[str, Any]]:
-    """Parts available in the project pool."""
-    return _resolve(path).parts()
+def list_parts(path: str | None = None, scope: Literal["project", "pools", "all"] = "project") -> list[dict[str, Any]]:
+    """Parts the project can use. "project" (the default) lists only the project pool — the self-contained cache beside
+    the project, which is all a component can name today. "pools" lists the base pools it draws from, "all" lists both;
+    a row with in_project_pool false needs import_pool_part before ensure_component can use it. Use search_pool to
+    search by name, manufacturer or tag rather than reading a long list."""
+    return _resolve(path).parts(scope=scope)
+
+
+@_tool
+def search_pool(path: str | None = None, query: str | None = None, kind: str | None = None,
+                pool_path: str | None = None, limit: int = 50) -> dict[str, Any]:
+    """Search every pool the project draws from — its own pool, the pools that pool includes, and the discovered base
+    pools — for parts, entities, symbols, packages, padstacks, units, frames and decals. query is a case-insensitive
+    substring of name, description, manufacturer, tags or uuid. Items with in_project_pool false live in a base pool
+    and need import_pool_part first. The pools list says which pools were searched, and names any that could not be
+    read rather than reporting them as empty."""
+    params = {k: v for k, v in {"query": query, "kind": kind, "pool_path": pool_path}.items() if v is not None}
+    return _resolve(path).search_pool(limit=limit, **params)
+
+
+@_tool
+def get_pool_item(uuid: str, path: str | None = None, kind: str | None = None, pool_path: str | None = None) -> dict[str, Any]:
+    """One pool item's own JSON — the bytes pool_write takes back, so this is how an existing item is edited
+    rather than replaced blind. A project-pool item is read through the project, so an unsaved change to it is
+    what comes back; reading the file off disk would miss that, and is impossible anyway when the pool sits
+    inside another app's sandbox container."""
+    params = {k: v for k, v in {"kind": kind, "pool_path": pool_path}.items() if v is not None}
+    return _resolve(path).pool_item(uuid, **params)
+
+
+@_tool
+def import_pool_part(part: str, path: str | None = None, dry_run: bool = False) -> dict[str, Any]:
+    """Copy a part and everything it needs — entity, units, symbols, package, padstacks and 3D models — from a base
+    pool into the project pool cache, exactly as placing it from the library does, so ensure_component can name it.
+    part is a pool part uuid, or an MPN when it is unambiguous; find one with search_pool."""
+    return _edit_call(_resolve(path), "import_pool_part", part=part, dry_run=dry_run)
+
+
+@_tool
+def pool_write(items: list[dict[str, Any]], path: str | None = None, dry_run: bool = False) -> dict[str, Any]:
+    """Write pool items — unit, entity, symbol, part, package, padstack — into the project pool cache and reload.
+    Each item is the pool item's own JSON, with its "type" and "uuid". Use this to author a part the pools do not
+    have; import_pool_part is the way to bring in one they do."""
+    return _edit_call(_resolve(path), "pool_write", items=items, dry_run=dry_run)
+
+
+@_tool
+def list_symbols(path: str | None = None, sheet: int | None = None, sheet_id: str | None = None,
+                 name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
+    """Symbol instances on the schematic sheets: which component and gate each draws, where it sits, and the
+    instance id that place_symbol moves and draw_net_line refers to. get_component answers the same question for
+    one component; this answers it for a sheet."""
+    return _resolve(path).symbols(sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id)
+
+
+@_tool
+def list_net_lines(path: str | None = None, net: str | None = None, sheet: int | None = None,
+                   sheet_id: str | None = None, name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
+    """The wires drawn on the schematic sheets, with their ids and what each end connects to. An endpoint is a
+    symbol pin (naming the component and gate), a junction, a bus ripper or a block port. Horizon derives
+    connectivity from the block, not from these — they are what draw_net_line records."""
+    return _resolve(path).net_lines(net=net, sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id)
+
+
+@_tool
+def list_block_instances(path: str | None = None) -> list[dict[str, Any]]:
+    """The blocks this block uses: each instance, the block it stands for, its reference designator, which of its
+    ports are wired to which net here, and where its symbol is drawn. This is how a hierarchical design is read."""
+    return _resolve(path).block_instances()
+
+
+@_tool
+def autoroute(net: str, path: str | None = None, layer: int = 0, width_mm: float | None = None,
+              max_routes: int = 20, dry_run: bool = False) -> dict[str, Any]:
+    """Try to route a net's airwires automatically on one layer. Best effort, and usually not enough: it walks
+    around one obstacle at a time rather than searching, so on a dense board it completes a small minority and
+    reports the rest. Everything it does write has been checked clear of the board's clearances; what it cannot
+    route stays an airwire, is listed in unrouted with what blocked it, and place_track draws those by hand."""
+    return _edit_call(_resolve(path), "autoroute", net=net, layer=layer, max_routes=max_routes, dry_run=dry_run,
+                      **({"width_mm": width_mm} if width_mm is not None else {}))
+
+
+@_tool
+def list_net_labels(path: str | None = None, net: str | None = None, sheet: int | None = None,
+                    sheet_id: str | None = None, name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
+    """Net labels on the schematic sheets: which net each names, where it sits, and the id remove_net_label takes.
+    A label is how a net is named on the page, and how one net spans several sheets."""
+    return _resolve(path).net_labels(net=net, sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id)
+
+
+@_tool
+def list_power_symbols(path: str | None = None, net: str | None = None, sheet: int | None = None,
+                       sheet_id: str | None = None, name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
+    """Power symbols on the schematic sheets, with the net each marks and the id remove_power_symbol takes. The
+    shape a symbol draws with — gnd, dot, antenna or earth — belongs to the net, not the symbol, so every symbol
+    on one net looks the same."""
+    return _resolve(path).power_symbols(net=net, sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id)
+
+
+@_tool
+def list_planes(path: str | None = None, net: str | None = None) -> list[dict[str, Any]]:
+    """Copper pours on the board: the net each carries, its layer and priority, and whether it has been filled.
+    poured false means the plane is defined and empty — place_plane defines, pour_planes fills."""
+    return _resolve(path).planes(net=net)
+
+
+@_tool
+def list_polygons(path: str | None = None, layer: int | None = None) -> list[dict[str, Any]]:
+    """Board polygons with their vertices and the layer each is on. is_board_outline marks layer 100, the shape
+    the board is cut to — a board without one has no shape, however complete the rest of it looks. A polygon a
+    plane pours into names that plane."""
+    return _resolve(path).polygons(layer=layer)
+
+
+@_tool
+def pour_planes(path: str | None = None, dry_run: bool = False) -> dict[str, Any]:
+    """Fill every plane on the board, as Update All Planes does in the app. Planes stay empty from the moment
+    place_plane defines one until this runs, and it recomputes them all from the board as it now stands — so run
+    it after the copper and placement are settled, not before."""
+    return _edit_call(_resolve(path), "pour_planes", dry_run=dry_run)
+
+
+@_tool
+def list_tracks(path: str | None = None, net: str | None = None, layer: int | None = None, limit: int = 200) -> dict[str, Any]:
+    """Copper tracks on the board: net, layer, width, and what each end lands on — a pad (naming the component)
+    or a junction. Boards carry thousands, so filter by net or layer; truncated says whether the limit cut the
+    answer short, and total says how many matched."""
+    params = {k: v for k, v in {"net": net, "layer": layer}.items() if v is not None}
+    return _resolve(path).tracks(limit=limit, **params)
+
+
+@_tool
+def list_vias(path: str | None = None, net: str | None = None, limit: int = 200) -> dict[str, Any]:
+    """Vias on the board: net, position, the layers each spans, and whether its shape comes from a padstack, a
+    board via definition or the via rules. net_pinned marks a via whose net was set outright rather than
+    inherited through the copper that reaches it."""
+    params = {k: v for k, v in {"net": net}.items() if v is not None}
+    return _resolve(path).vias(limit=limit, **params)
+
+
+@_tool
+def list_texts(path: str | None = None, sheet: int | None = None, sheet_id: str | None = None,
+               name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
+    """Free text on the schematic sheets, with the ids place_text and remove_text take, and where each sits.
+    A text marked from_smash belongs to the symbol named in its symbol field — Horizon extracted it from that
+    symbol, so it moves and dies with the component rather than being edited on its own."""
+    return _resolve(path).texts(sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id)
+
+
+@_tool
+def board_rules(path: str | None = None, kind: str | None = None) -> dict[str, Any]:
+    """The board's design rules as data, with the net classes they select and the stackup they apply to — what a
+    route has to respect and what check validates. Rules are given as the file states them, because twenty rule
+    kinds have twenty shapes and a normalized form would lose the detail that matters. A board that declares no
+    rules says so: nothing then constrains a route, and place_track will insist on an explicit width."""
+    return _resolve(path).board_rules(kind=kind)
 
 
 @_tool
@@ -444,7 +644,8 @@ def board_info(path: str | None = None) -> dict[str, Any]:
 
 @_tool
 def check(path: str | None = None) -> dict[str, Any]:
-    """Run the checks Horizontal has: load diagnostics, rules validation, annotation, single-pin nets, unplaced parts, unrouted connections."""
+    """Run the checks Horizontal has: load diagnostics, rules validation, annotation, single-pin nets, components with
+    no symbol on any sheet, unplaced packages, unrouted connections."""
     return _resolve(path).check()
 
 
@@ -455,13 +656,34 @@ def export(sections: list[str], path: str | None = None, target_directory: str |
 
 
 @_tool
-def live_state() -> list[dict[str, Any]]:
-    """Documents open in Horizontal right now, with their selection and highlight. Empty when the app is not running."""
-    live = Session.live()
-    if live is None:
-        return []
+def live_state(path: str | None = None) -> dict[str, Any]:
+    """Documents open in Horizontal right now, with their selection and highlight.
+
+    status is "connected" only when the app answers. Pass a project path when you have one: the app's own
+    discovery file lives in its sandbox container, which macOS refuses to other processes, so a project's
+    own holder records are often the only way to reach the channel. "unavailable" without a path does not
+    mean no document is open — the channel is also off until the user turns it on, and stops when the last
+    document closes. held_by in open_project answers whether a project is open regardless of any of this.
+    """
+    attempts: list[dict[str, Any]] = []
+    info = find_live_for(path, attempts) if path else find_live(attempts)
+    holders = project_holders(path) if path else []
+    if info is None:
+        blocked = any("not permitted" in str(attempt.get("reason", "")).lower() for attempt in attempts)
+        reason = ("No reachable live endpoint. Horizontal may not be running, may have no document open, "
+                  "or may have its live channel switched off in its settings.")
+        if blocked and not path:
+            reason += (" Its discovery file was found but could not be read — it is inside the app's sandbox "
+                       "container. Pass a project path to look beside the project instead.")
+        if holders:
+            reason = (f"{', '.join(h.get('name') or 'An editor' for h in holders)} has this project open but is "
+                      "serving no reachable live channel. Turn it on in the app's settings; it starts at once.")
+        return {"status": "unavailable", "documents": [], "discovery": attempts,
+                "held_by": [{k: v for k, v in h.items() if k != "endpoint"} for h in holders], "reason": reason}
+    live = Session(transport=LiveTransport(info))
     try:
-        return live.live_state()
+        return {"status": "connected", "endpoint": live.transport.path, "documents": live.live_state(),
+                "discovery": attempts, "held_by": [{k: v for k, v in h.items() if k != "endpoint"} for h in holders]}
     finally:
         live.close()
 
@@ -486,15 +708,29 @@ def select(path: str | None = None, components: list[str] | None = None, nets: l
 
 @_tool
 def list_ops(path: str | None = None) -> list[dict[str, Any]]:
-    """The edit operations apply_ops accepts, with their parameters."""
+    """The edit operations apply_ops accepts, with their parameters. They cover the block, the schematic, board
+    placement and manual copper routing; nothing here autoroutes."""
     return _resolve(path).list_ops()
 
 
 @_tool
-def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool = False, pool_items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Apply edit operations. Each op is {"op": name, ...params}; see list_ops. Components and nets may be named by refdes or net name. When the project is open in Horizontal the edit lands there as one undoable step; otherwise the files are written and reloaded. dry_run validates without changing anything."""
-    encoded = [op.model_dump(exclude_unset=True) if isinstance(op, BaseModel) else op for op in ops]
-    return _edit(_resolve(path), encoded, dry_run=dry_run, pool_items=pool_items)
+def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool = False,
+              pool_items: list[dict[str, Any]] | None = None, block: str | None = None) -> dict[str, Any]:
+    """Apply edit operations. Each op is {"op": name, ...params}; see list_ops. Components and nets may be named by
+    refdes or net name. When the project is open in Horizontal the edit lands there as one undoable step; a project
+    open in an editor cannot be edited on disk at all, and the attempt fails with DOCUMENT_OPEN naming the holder.
+    dry_run validates without changing anything and reports any holder in blocked_by.
+
+    What these ops cover: the block (components, nets, connections), schematic symbols, the wires between their
+    pins, free text on the sheets, board package placement, and copper — tracks and vias. Routing here is manual:
+    place_track draws the segment it is told to draw and does not find a path, and nothing autoroutes. check
+    reports what is still unrouted.
+
+    block selects which block to edit; without it, the top one. A sub-block's components are instantiated
+    wherever that block is used, so it has no board of its own and board operations on one are refused."""
+    # by_alias: a track end is spelled "from", which is a Swift and Python keyword.
+    encoded = [op.model_dump(exclude_unset=True, by_alias=True) if isinstance(op, BaseModel) else op for op in ops]
+    return _edit(_resolve(path), encoded, dry_run=dry_run, pool_items=pool_items, block=block)
 
 
 @_tool
@@ -517,7 +753,9 @@ def connect_pin(refdes: str, pin: str, net: str, path: str | None = None, create
 
 @_tool
 def place_component(refdes: str, path: str | None = None, x_mm: float | None = None, y_mm: float | None = None, angle_deg: float | None = None, bottom: bool | None = None) -> dict[str, Any]:
-    """Place a component's package on the board, or move or rotate it if it is already placed."""
+    """Place a component's package on the board, or move or rotate it if it is already placed. Its connections stay
+    airwires until something routes them: place_track and place_via draw copper one segment at a time, and
+    copy_group_layout clones the routing an already-laid-out group has."""
     fields = {k: v for k, v in {"x_mm": x_mm, "y_mm": y_mm, "angle_deg": angle_deg, "bottom": bottom}.items() if v is not None}
     return _edit(_resolve(path), [{"op": "place_component", "component": refdes, **fields}])
 
