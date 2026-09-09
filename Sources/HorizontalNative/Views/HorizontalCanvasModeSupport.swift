@@ -236,6 +236,7 @@ struct HorizontalCanvasCommandHandlerSet {
     var convertLineLoopToPolygon: (() -> Void)? = nil
     var roundOffVertex: (() -> Void)? = nil
     var addText: (() -> Void)? = nil
+    var drawDimension: (() -> Void)? = nil
     var editText: (() -> Void)? = nil
     var filterAirwires: (() -> Void)? = nil
     var openDatasheet: (() -> Void)? = nil
@@ -260,6 +261,9 @@ struct HorizontalCanvasCommandHandlerSet {
     var placeRefdesAndValue: (() -> Void)? = nil
     var placeDot: (() -> Void)? = nil
     var placePowerSymbol: (() -> Void)? = nil
+    var placeBusLabel: (() -> Void)? = nil
+    var placeBusRipper: (() -> Void)? = nil
+    var tieNets: (() -> Void)? = nil
     var managePowerNet: ((HorizontalPowerNetCommand) -> Void)? = nil
     var autoplaceNextPin: (() -> Void)? = nil
     var autoplaceAllPins: (() -> Void)? = nil
@@ -358,9 +362,21 @@ struct HorizontalCanvasCommandHandlerSet {
         case .placePowerSymbol:
             guard !isReadOnly else { return }
             placePowerSymbol?()
+        case .placeBusLabel:
+            guard !isReadOnly else { return }
+            placeBusLabel?()
+        case .placeBusRipper:
+            guard !isReadOnly else { return }
+            placeBusRipper?()
+        case .tieNets:
+            guard !isReadOnly else { return }
+            tieNets?()
         case .managePowerNet(let command):
             guard !isReadOnly else { return }
             managePowerNet?(command)
+        case .drawDimension:
+            guard !isReadOnly else { return }
+            drawDimension?()
         case .addText:
             guard !isReadOnly else { return }
             addText?()
@@ -485,6 +501,7 @@ struct HorizontalCanvasCommandHandlerSet {
             canPlacePad: writable && placePad != nil,
             canPlaceShape: writable && placeShape != nil,
             canPlaceHole: writable && placeHole != nil,
+            canDrawDimension: writable && drawDimension != nil,
             canPlacePin: writable && placePin != nil,
             canPlaceRefdesAndValue: writable && placeRefdesAndValue != nil,
             canPlaceDot: writable && placeDot != nil,
@@ -495,6 +512,9 @@ struct HorizontalCanvasCommandHandlerSet {
             canShowInProjectPoolManager: showInProjectPoolManager != nil,
             canRoundOffVertex: writable && roundOffVertex != nil,
             canPlacePowerSymbol: writable && placePowerSymbol != nil,
+            canPlaceBusLabel: writable && placeBusLabel != nil,
+            canPlaceBusRipper: writable && placeBusRipper != nil,
+            canTieNets: writable && tieNets != nil,
             canUpdateAllPlanes: writable && updateAllPlanes != nil,
             hasPlacementInteraction: hasPlacementInteraction,
             hasRoundOffVertexInteraction: hasRoundOffVertexInteraction,

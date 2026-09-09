@@ -9,10 +9,11 @@ here; this asks a different question.
 user wants it without the user touching the app? Every gap below is a place
 where the answer is no, and the agent has to hand the work back.
 
-**Where the surface stands.** 47 MCP tools over 38 native methods and 21 edit
-operations. The block is well covered. The schematic is half covered. The
-board is placement only. Nothing that is not the top block is reachable at
-all.
+**Where the surface stood.** 47 MCP tools over 38 native methods and 21 edit
+operations. The block was well covered. The schematic was half covered. The
+board was placement only. Nothing that was not the top block was reachable at
+all. It now stands at 69 tools over 46 methods and 65 operations, and the
+sections below say what closed each gap.
 
 ## Confirmed gaps
 
@@ -25,12 +26,12 @@ all.
 | **done** | ~~No sheet management.~~ `add_sheet`, `rename_sheet`, `remove_sheet`, `set_sheet_index` — renumbering swaps, since two sheets cannot share a page number. |  |  |
 | **done** | ~~`new_project` is native-only.~~ Fixed: it is an MCP tool, and refuses a path that already exists. |  |  |
 | **done** | ~~No planes.~~ Fixed: `place_plane`, `remove_plane` and `pour_planes`, which runs the same pour engine the app does. |  |  |
-| **partly** | `place_polygon` (layer 100 is the outline), `set_stackup`, `place_hole` and `place_keepout` — a board is creatable from nothing, with holes and keepouts. Dimensions and board text remain. |  |  |
+| **done** | `place_polygon` (layer 100 is the outline), `set_stackup`, `place_hole`, `place_keepout`, `place_dimension` and `place_board_text` — a board is creatable from nothing. The app draws dimensions too: Design ▸ Draw Dimension. |  |  |
 | **done** | ~~Rules and stackup are read-shallow and write-closed.~~ `board_rules` reads one entry per rule; `add_rule`, `set_rule` and `remove_rule` write, gated on the app's own rules validator; `set_stackup` sets the layers. |  |  |
 | **done** | ~~Pool items are searchable and writable but not readable.~~ Fixed: `get_pool_item` reads through the project's own view of its pool. |  |  |
 | **done** | ~~Only the top block is editable.~~ `apply` takes a `block`; `add_block_instance`, `connect_block_port` and `place_block_symbol` compose blocks; `list_block_instances` reads them. Writes are block-scoped, reads are project-wide — deliberate, and documented. |  |  |
-| P3 | No buses or net ties. | Block `buses`, `net_ties`; sheet and board `net_ties`. | Uncommon in small designs, real in larger ones. |
-| **partly** | An automation edit is now undoable in the app: it registers on the document's own undo manager rather than a fallback the Undo command never reads, so ⌘Z takes it back. There is still no undo *through* the MCP — an agent that makes a wrong edit constructs the inverse itself. |  |  |
+| **done** | ~~No buses or net ties.~~ `add_bus`, `add_bus_member`, `place_bus_label`, `place_bus_ripper`, `add_net_tie`, `place_net_tie` and their removes and reads. The app draws them too: Design ▸ Place Bus Label, Place Bus Ripper, Tie Nets. |  |  |
+| **done** | An automation edit is undoable in the app — it registers on the document's own undo manager, not a fallback the Undo command never reads — and through the MCP: `undo` drives that same stack, and refuses a disk context rather than pretending to have one. |  |  |
 
 ## What is already sound
 
@@ -176,9 +177,9 @@ did not change behaviour.
 Kept here rather than in a commit message, because it is the list to pick up
 from next.
 
-**In the MCP.** Board dimensions and board text; buses, bus rippers and net
-ties; arcs, in polygons and in tracks — everything drawn here is straight; and
-undo, so a wrong edit has to be inverted by hand.
+**In the MCP.** Nothing on the original list. Board dimensions and board text,
+buses with their labels and rippers, net ties, arcs in polygons and tracks, and
+`undo` are all ops or tools now, each with the read that names what it wrote.
 
 **In the app.** Board holes and keepouts can be read, drawn, selected and
 hidden, but not *created*: `placeHole` and `placeShape` are padstack-editor
@@ -187,6 +188,18 @@ padstack reference plus a placement. A board-level tool needs a padstack
 picker, a click-to-place interaction and an inspector — a real feature, not a
 flag on the existing one. The same is true of keepouts, which have a
 visibility toggle and no way to draw one.
+
+The bus, ripper and net-tie tools took a different route than the rest of the
+canvas, and the reason is worth keeping. Those objects live in the block as
+much as on a sheet, and the sheet applier can update an entry but never create
+one — it was never a writer of new objects. Rather than grow a second creator
+that would have to agree with the first, the tools hand the automation
+channel's own operations to `HorizontalCanvasProjectEdit`, and the document
+adopts the archive that comes back exactly as it adopts one from the live
+channel: reload, and one named step on the undo stack. What that buys is that
+the file the tool writes is the file the MCP writes; what it costs is a whole
+reload per placement, which is why it is not how the tools that only touch a
+sheet work. Board holes and keepouts would fit the same shape.
 
 **In the router.** Completion, at a few percent. The correctness invariant
 holds and `autoroute` never writes a route it has not verified, but the finder

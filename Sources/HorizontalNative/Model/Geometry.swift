@@ -731,6 +731,32 @@ struct HorizontalSchematicNetTie: Identifiable, Hashable {
     }
 }
 
+/// A bus in the block, as a sheet knows it: enough to name it in a picker and
+/// to say which nets travel in it. A label and a ripper both reference a bus,
+/// so a tool that draws either has to be able to choose one.
+struct HorizontalBusDetails: Identifiable, Hashable {
+    struct Member: Identifiable, Hashable {
+        var id: String
+        var name: String
+        var netID: String?
+    }
+
+    var id: String
+    var name: String
+    var members: [Member]
+}
+
+/// A net tie in the block: the two nets it joins, named. A sheet draws a
+/// symbol per tie, which is what `HorizontalSchematicNetTie` is; the tie
+/// itself belongs to the block, which is why it is separate.
+struct HorizontalNetTieDetails: Identifiable, Hashable {
+    var id: String
+    var primaryID: String?
+    var secondaryID: String?
+    var primaryName: String
+    var secondaryName: String
+}
+
 struct HorizontalPolygonVertex: Hashable {
     enum EdgeType: String, Hashable {
         case line

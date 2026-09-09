@@ -72,6 +72,7 @@ struct HorizontalCanvasCommandActions {
     var canPlacePad: Bool = false
     var canPlaceShape: Bool = false
     var canPlaceHole: Bool = false
+    var canDrawDimension: Bool = false
     var canPlacePin: Bool = false
     var canPlaceRefdesAndValue: Bool = false
     var canPlaceDot: Bool = false
@@ -82,6 +83,9 @@ struct HorizontalCanvasCommandActions {
     var canShowInProjectPoolManager: Bool = false
     var canRoundOffVertex: Bool = false
     var canPlacePowerSymbol: Bool = false
+    var canPlaceBusLabel: Bool = false
+    var canPlaceBusRipper: Bool = false
+    var canTieNets: Bool = false
     var canUpdateAllPlanes: Bool = false
     var hasPlacementInteraction: Bool = false
     var hasRoundOffVertexInteraction: Bool = false
@@ -375,7 +379,26 @@ struct HorizontalViewCommands: Commands {
             }
             .disabled(canvasCommandActions?.canPlacePowerSymbol != true)
 
+            Button("Place Bus Label…") {
+                canvasCommandActions?.dispatch(.placeBusLabel)
+            }
+            .disabled(canvasCommandActions?.canPlaceBusLabel != true)
+
+            Button("Place Bus Ripper…") {
+                canvasCommandActions?.dispatch(.placeBusRipper)
+            }
+            .disabled(canvasCommandActions?.canPlaceBusRipper != true)
+
+            Button("Tie Nets…") {
+                canvasCommandActions?.dispatch(.tieNets)
+            }
+            .disabled(canvasCommandActions?.canTieNets != true)
+
             Divider()
+            Button("Draw Dimension") {
+                canvasCommandActions?.dispatch(.drawDimension)
+            }
+            .disabled(canvasCommandActions?.canDrawDimension != true)
             Button("Add Text…") {
                 canvasCommandActions?.dispatch(.addText)
             }

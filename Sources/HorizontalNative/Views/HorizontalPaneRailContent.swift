@@ -448,6 +448,58 @@ struct AddTextToolButton: View {
     }
 }
 
+struct PlaceBusLabelToolButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "Bus label") {
+            Button(action: action) {
+                Image(systemName: "tag")
+            }
+            .help("Name a bus on this sheet")
+        }
+    }
+}
+
+struct PlaceBusRipperToolButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "Bus ripper") {
+            Button(action: action) {
+                Image(systemName: "arrow.triangle.branch")
+            }
+            .help("Take one net off a bus so it can be wired on its own")
+        }
+    }
+}
+
+struct TieNetsToolButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "Tie nets") {
+            Button(action: action) {
+                Image(systemName: "link")
+            }
+            .help("Join two nets on the board while keeping them apart here")
+        }
+    }
+}
+
+struct DrawDimensionToolButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "Dimension") {
+            Button(action: action) {
+                Image(systemName: "ruler")
+            }
+            .help("Measure between two points on the board")
+        }
+    }
+}
+
 struct PlacePadToolButton: View {
     var action: () -> Void
 

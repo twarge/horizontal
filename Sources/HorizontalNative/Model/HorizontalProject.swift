@@ -548,3 +548,38 @@ struct HorizontalProject: Identifiable {
         id.lowercased()
     }
 }
+
+extension HorizontalProject {
+    /// Points a project reloaded from an archive back at the real files.
+    ///
+    /// A snapshot materializes its bytes wherever it likes, so every URL in a
+    /// project loaded from one names a temporary copy. Anything that reloads
+    /// the whole project in place — an edit from the automation channel, a
+    /// canvas tool that writes block objects — has to put them back, or the
+    /// next save writes to the copy and the pool loses track of its models.
+    mutating func rebaseURLs(onto current: HorizontalProject) {
+        url = current.url
+        projectFileURL = current.projectFileURL
+        baseURL = current.baseURL
+        if var board {
+            board.url = current.board?.url ?? current.baseURL.appendingPathComponent(board.url.lastPathComponent)
+            if let poolURL = current.poolDirectory.map({ current.baseURL.appendingPathComponent($0) }) {
+                board.rebasePackageModelURLs(poolURL: poolURL)
+            }
+            self.board = board
+        }
+        if var schematic {
+            schematic.url = current.schematic?.url ?? current.baseURL.appendingPathComponent(schematic.url.lastPathComponent)
+            self.schematic = schematic
+        }
+        for index in schematics.indices {
+            let blockID = schematics[index].block.uuid
+            if let match = current.schematics.first(where: { $0.block.uuid == blockID }) {
+                schematics[index].schematic.url = match.schematic.url
+            } else {
+                schematics[index].schematic.url = current.baseURL
+                    .appendingPathComponent(schematics[index].schematicFilename)
+            }
+        }
+    }
+}
