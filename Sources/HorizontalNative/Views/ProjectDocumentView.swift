@@ -605,6 +605,9 @@ struct ProjectWorkspaceView: View {
     /// "Show in Project Pool Manager": the item the Library pane should select.
     @State private var libraryRevealRequest: HorizontalPoolRevealRequest?
     @State private var libraryPlacementError: String?
+    /// Why a bus, ripper or net tie could not be drawn — the editor's own
+    /// refusal, which is written for whoever has to fix the request.
+    @State private var projectEditError: String?
     /// Gates the plane-pour indicator. Separate from `planePourProgress` because
     /// that is nil both when idle and when a pour is deliberately indeterminate.
     @State private var isPouringPlanes = false
@@ -845,6 +848,11 @@ struct ProjectWorkspaceView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(libraryPlacementError ?? "")
+            }
+            .alert("Could Not Draw That", isPresented: projectEditErrorPresented) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(projectEditError ?? "")
             }
     }
 
@@ -1268,27 +1276,7 @@ struct ProjectWorkspaceView: View {
     }
 
     private func rebaseProjectURLs(_ reloaded: inout HorizontalProject, onto current: HorizontalProject) {
-        reloaded.url = current.url
-        reloaded.projectFileURL = current.projectFileURL
-        reloaded.baseURL = current.baseURL
-        if var board = reloaded.board {
-            board.url = current.board?.url ?? current.baseURL.appendingPathComponent(board.url.lastPathComponent)
-            rebasePackageModelURLs(in: &board)
-            reloaded.board = board
-        }
-        if var schematic = reloaded.schematic {
-            schematic.url = current.schematic?.url ?? current.baseURL.appendingPathComponent(schematic.url.lastPathComponent)
-            reloaded.schematic = schematic
-        }
-        for index in reloaded.schematics.indices {
-            let blockID = reloaded.schematics[index].block.uuid
-            if let match = current.schematics.first(where: { $0.block.uuid == blockID }) {
-                reloaded.schematics[index].schematic.url = match.schematic.url
-            } else {
-                reloaded.schematics[index].schematic.url = current.baseURL
-                    .appendingPathComponent(reloaded.schematics[index].schematicFilename)
-            }
-        }
+        reloaded.rebaseURLs(onto: current)
     }
 
     private func restoreFileViewStateIfNeeded() {
@@ -1493,6 +1481,9 @@ struct ProjectWorkspaceView: View {
                                 onSheetChange: { sheet in
                                     applyEditedSchematicSheet(sheet, schematicURL: selectedSchematic.url)
                                 },
+                                onApplyProjectEdit: { operations, actionName in
+                                    applyProjectEdit(operations, actionName: actionName)
+                                },
                                 onNetClassChange: { netID, netClassID in
                                     applyEditedNetClass(netID: netID, netClassID: netClassID, selectedSchematic: selectedSchematic)
                                 },
@@ -1571,6 +1562,18 @@ struct ProjectWorkspaceView: View {
                         )
                     }
                     .disabled(isReadOnly || selectedSchematic == nil)
+                    PlaceBusLabelToolButton {
+                        canvasCommandActionsByPane[.schematic]?.dispatch(.placeBusLabel)
+                    }
+                    .disabled(canvasCommandActionsByPane[.schematic]?.canPlaceBusLabel != true)
+                    PlaceBusRipperToolButton {
+                        canvasCommandActionsByPane[.schematic]?.dispatch(.placeBusRipper)
+                    }
+                    .disabled(canvasCommandActionsByPane[.schematic]?.canPlaceBusRipper != true)
+                    TieNetsToolButton {
+                        canvasCommandActionsByPane[.schematic]?.dispatch(.tieNets)
+                    }
+                    .disabled(canvasCommandActionsByPane[.schematic]?.canTieNets != true)
                     AddTextToolButton {
                         canvasCommandActionsByPane[.schematic]?.dispatch(.addText)
                     }
@@ -1727,6 +1730,10 @@ struct ProjectWorkspaceView: View {
                         canvasCommandActionsByPane[.board]?.dispatch(.drawPlane)
                     }
                     .disabled(isReadOnly || project.board == nil)
+                    DrawDimensionToolButton {
+                        canvasCommandActionsByPane[.board]?.dispatch(.drawDimension)
+                    }
+                    .disabled(canvasCommandActionsByPane[.board]?.canDrawDimension != true)
                     AddTextToolButton {
                         canvasCommandActionsByPane[.board]?.dispatch(.addText)
                     }
@@ -2566,6 +2573,30 @@ struct ProjectWorkspaceView: View {
         }
     }
 
+    /// Runs a canvas tool's edit operations against the whole project.
+    ///
+    /// The objects these tools draw — a bus and its members, a net tie — live
+    /// in the block as much as on the sheet, which the sheet applier cannot
+    /// reach. What comes back is a whole archive, so it lands the same way an
+    /// edit from the automation channel does: the document adopts it, the
+    /// project reloads, and the step goes on the undo stack under the tool's
+    /// own name.
+    private func applyProjectEdit(_ operations: [JSONDictionary], actionName: String) {
+        guard !isReadOnly, !operations.isEmpty else {
+            return
+        }
+        do {
+            let edited = try HorizontalCanvasProjectEdit.archive(
+                applying: operations,
+                to: document.archive,
+                in: project
+            )
+            try applyLiveArchive(edited.archive, actionName: actionName)
+        } catch {
+            projectEditError = HorizontalCanvasProjectEdit.message(for: error)
+        }
+    }
+
     private func applyEditedSchematicSheet(_ sheet: HorizontalSchematicSheet, schematicURL: URL) {
         guard !isReadOnly else {
             return
@@ -3168,6 +3199,17 @@ struct ProjectWorkspaceView: View {
     private func showPackageView() {
         columnVisibility = .all
         navigatorSelection = .package
+    }
+
+    private var projectEditErrorPresented: Binding<Bool> {
+        Binding(
+            get: { projectEditError != nil },
+            set: { presented in
+                if !presented {
+                    projectEditError = nil
+                }
+            }
+        )
     }
 
     private var libraryPlacementErrorPresented: Binding<Bool> {

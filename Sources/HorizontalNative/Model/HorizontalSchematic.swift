@@ -82,6 +82,13 @@ struct HorizontalSchematicSheet: Identifiable {
     var blockSymbolPorts: [HorizontalSegment]
     var blockSymbolTexts: [HorizontalText]
     var netTies: [HorizontalSchematicNetTie]
+    /// The block's buses, which the labels and rippers above draw. A sheet
+    /// carries them so a tool can offer the buses that exist rather than
+    /// only the ones already drawn on this page.
+    var busDetails: [HorizontalBusDetails] = []
+    /// The block's net ties, for the same reason: a tie exists whether or
+    /// not any sheet draws it.
+    var netTieDetails: [HorizontalNetTieDetails] = []
     var symbols: [HorizontalPlacement]
     var symbolLines: [HorizontalSegment]
     var symbolPins: [HorizontalSegment]
@@ -190,6 +197,37 @@ struct HorizontalSchematic {
         var netClasses: [HorizontalNetClass] = []
         var netDetails: [String: HorizontalNetDetails] = [:]
         var projectMeta: [String: String] = [:]
+
+        /// The buses as a sheet publishes them, named and ordered so a picker
+        /// can show them without knowing how the file spells them.
+        var busDetails: [HorizontalBusDetails] {
+            buses
+                .map { id, bus in
+                    HorizontalBusDetails(
+                        id: id,
+                        name: bus.name,
+                        members: bus.members
+                            .map { HorizontalBusDetails.Member(id: $0.key, name: $0.value.name, netID: $0.value.netID) }
+                            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                    )
+                }
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        }
+
+        /// The net ties as a sheet publishes them, with both nets named.
+        var netTieDetails: [HorizontalNetTieDetails] {
+            netTies
+                .map { id, tie in
+                    HorizontalNetTieDetails(
+                        id: id,
+                        primaryID: tie.primaryID,
+                        secondaryID: tie.secondaryID,
+                        primaryName: tie.primaryName,
+                        secondaryName: tie.secondaryName
+                    )
+                }
+                .sorted { $0.primaryName.localizedStandardCompare($1.primaryName) == .orderedAscending }
+        }
     }
 
     private struct SchematicNetInfo {
@@ -907,6 +945,8 @@ struct HorizontalSchematic {
                 blockSymbolPorts: blockSymbolArtwork.ports,
                 blockSymbolTexts: blockSymbolArtwork.texts,
                 netTies: netTies,
+                busDetails: blockInfo.busDetails,
+                netTieDetails: blockInfo.netTieDetails,
                 symbols: symbols,
                 symbolLines: artwork.lines,
                 symbolPins: artwork.pins,

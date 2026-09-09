@@ -79,6 +79,8 @@ enum HorizontalCanvasCommand {
     case editPlane
     /// Pours every plane (Q): the fills go stale as copper moves.
     case updateAllPlanes
+    /// Board: measure between two points (Horizon's dimension tool).
+    case drawDimension
     case convertPolygonToLineLoop
     case convertLineLoopToPolygon
     /// Replace the selected polygon corner with a tangent arc whose radius
@@ -119,6 +121,12 @@ enum HorizontalCanvasCommand {
     /// Schematic: pick a power net and drop its symbols (Horizon's
     /// place-power-symbol tool).
     case placePowerSymbol
+    /// Schematic: name a bus on the sheet, the way a net label names a net.
+    case placeBusLabel
+    /// Schematic: take one member off a bus so it can be wired on its own.
+    case placeBusRipper
+    /// Schematic: tie two nets — joined on the board, kept apart here.
+    case tieNets
     /// Schematic: the power net editor's edits and its "place" (Horizon's
     /// manage-power-nets dialog).
     case managePowerNet(HorizontalPowerNetCommand)

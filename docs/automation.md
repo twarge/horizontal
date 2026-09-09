@@ -208,9 +208,16 @@ case the change says `width_from: "track_width rule"`. A board with no such
 rule insists on an explicit width rather than inventing a plausible one.
 
 On the schematic the ops cover components, wires, free text, net labels, power
-symbols and the sheets themselves; buses, bus rippers, net ties, block symbols,
-title block values and a sheet's drawn lines, arcs and pictures are still the
-app's alone.
+symbols, buses with their labels and rippers, net ties and the sheets
+themselves; block symbols, title block values and a sheet's drawn lines, arcs
+and pictures are still the app's alone.
+
+The bus, ripper and net-tie ops run the other way round too: the app's own
+Design ▸ Place Bus Label, Place Bus Ripper and Tie Nets are these operations,
+applied to the open document. Those objects belong to the block as much as to a
+sheet, and the writer behind the canvas can update an entry but never create
+one, so the tools use this vocabulary rather than a second one that would have
+to agree with it.
 
 Net labels and power symbols both sit on a junction, and both share one with
 anything already at that point rather than stacking. Removing either takes the

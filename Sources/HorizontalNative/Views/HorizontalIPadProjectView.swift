@@ -684,6 +684,9 @@ struct HorizontalIPadProjectView: View {
                     onSelectedNetChange: { selectedNetIDs = $0 },
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
                     onSheetChange: { applyEditedSchematicSheet($0) },
+                    onApplyProjectEdit: { operations, actionName in
+                        applyProjectEdit(operations, actionName: actionName)
+                    },
                     onSelectionDetailsChange: { setSelectionDetails($0, for: .schematic) },
                     onCanvasCommandActionsChange: { schematicCanvasActions = $0 },
                     selectionPropertyChangeCommand: selectionPropertyChangeCommands[.schematic],
@@ -720,6 +723,18 @@ struct HorizontalIPadProjectView: View {
                         onDismiss: { powerNetsPopoverPresented = false }
                     )
                 }
+                PlaceBusLabelToolButton {
+                    schematicCanvasActions?.dispatch(.placeBusLabel)
+                }
+                .disabled(schematicCanvasActions?.canPlaceBusLabel != true)
+                PlaceBusRipperToolButton {
+                    schematicCanvasActions?.dispatch(.placeBusRipper)
+                }
+                .disabled(schematicCanvasActions?.canPlaceBusRipper != true)
+                TieNetsToolButton {
+                    schematicCanvasActions?.dispatch(.tieNets)
+                }
+                .disabled(schematicCanvasActions?.canTieNets != true)
                 AddTextToolButton {
                     schematicCanvasActions?.dispatch(.addText)
                 }
@@ -799,6 +814,10 @@ struct HorizontalIPadProjectView: View {
                     needsUpdate: planesNeedUpdate
                 )
                 .disabled(board.planes.isEmpty)
+                DrawDimensionToolButton {
+                    boardCanvasActions?.dispatch(.drawDimension)
+                }
+                .disabled(boardCanvasActions?.canDrawDimension != true)
                 AddTextToolButton {
                     boardCanvasActions?.dispatch(.addText)
                 }
@@ -883,6 +902,34 @@ struct HorizontalIPadProjectView: View {
     /// document archive (DocumentGroup persists the binding). Mirrors the macOS
     /// workspace — without this, sheet edits rendered but never reached the
     /// document, so drawing on a schematic silently didn't save.
+    /// Runs a canvas tool's edit operations against the whole project.
+    ///
+    /// The objects these tools draw — a bus and its members, a net tie — live
+    /// in the block as much as on the sheet, which the sheet applier cannot
+    /// reach, so they go through the automation channel's own edit vocabulary.
+    /// It hands back a whole archive, so the project is reloaded from it
+    /// rather than patched in place.
+    private func applyProjectEdit(_ operations: [JSONDictionary], actionName: String) {
+        guard let current = project, !operations.isEmpty else {
+            return
+        }
+        do {
+            let edited = try HorizontalCanvasProjectEdit.archive(
+                applying: operations,
+                to: document.archive,
+                in: current
+            )
+            var reloaded = try HorizontalProject.loadSnapshot(of: edited.archive)
+            reloaded.rebaseURLs(onto: current)
+            document.archive = edited.archive
+            project = reloaded
+            boardEditRevision += 1
+            boardSyncRevision += 1
+        } catch {
+            loadError = "Couldn't \(actionName.lowercased()): \(HorizontalCanvasProjectEdit.message(for: error))"
+        }
+    }
+
     private func applyEditedSchematicSheet(_ sheet: HorizontalSchematicSheet) {
         guard var updated = project, var schematic = updated.schematic else { return }
         let previousSignature = schematic.sheets.first { $0.id == sheet.id }?.netlistSignature

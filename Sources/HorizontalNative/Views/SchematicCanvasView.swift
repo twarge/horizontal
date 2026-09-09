@@ -215,6 +215,13 @@ struct SchematicCanvasView: View {
     var onHighlightNetCommand: (Set<String>) -> Void = { _ in }
     var onHighlightComponentCommand: (Set<String>) -> Void = { _ in }
     var onSheetChange: (HorizontalSchematicSheet) -> Void = { _ in }
+    /// Applies edit operations to the whole project, under the given undo
+    /// action name. Buses, their members and net ties are block objects a
+    /// sheet only draws; the sheet model carries neither half of them, and the
+    /// writer behind `onSheetChange` can update an entry but never create one.
+    /// So those tools go through the same vocabulary the automation channel
+    /// uses. Nil where there is no project to edit — the pool editors.
+    var onApplyProjectEdit: (([JSONDictionary], String) -> Void)? = nil
     var onNetClassChange: (String, String?) -> Void = { _, _ in }
     var onComponentRefdesChange: (String, String) -> Void = { _, _ in }
     var onComponentPinNamesChange: (String, [HorizontalSymbolPinName]) -> Void = { _, _ in }
@@ -294,6 +301,7 @@ struct SchematicCanvasView: View {
         onHighlightNetCommand: @escaping (Set<String>) -> Void = { _ in },
         onHighlightComponentCommand: @escaping (Set<String>) -> Void = { _ in },
         onSheetChange: @escaping (HorizontalSchematicSheet) -> Void = { _ in },
+        onApplyProjectEdit: (([JSONDictionary], String) -> Void)? = nil,
         onNetClassChange: @escaping (String, String?) -> Void = { _, _ in },
         onComponentRefdesChange: @escaping (String, String) -> Void = { _, _ in },
         onComponentPinNamesChange: @escaping (String, [HorizontalSymbolPinName]) -> Void = { _, _ in },
@@ -328,6 +336,7 @@ struct SchematicCanvasView: View {
         self.onHighlightNetCommand = onHighlightNetCommand
         self.onHighlightComponentCommand = onHighlightComponentCommand
         self.onSheetChange = onSheetChange
+        self.onApplyProjectEdit = onApplyProjectEdit
         self.onNetClassChange = onNetClassChange
         self.onComponentRefdesChange = onComponentRefdesChange
         self.onComponentPinNamesChange = onComponentPinNamesChange
@@ -7142,6 +7151,9 @@ struct SchematicCanvasView: View {
             toggleRectanglePlacementMode: toggleRectanglePlacementMode,
             moveSelectionBy: moveSelectionByGrid,
             placePowerSymbol: canPlacePowerSymbol ? { beginPlacePowerSymbol() } : nil,
+            placeBusLabel: canEditBlockObjects ? { beginPlaceBusLabel() } : nil,
+            placeBusRipper: canPlaceBusRipper ? { beginPlaceBusRipper() } : nil,
+            tieNets: canTieNets ? { beginTieNets() } : nil,
             managePowerNet: editorProfile.isPoolMode ? nil : { applyPowerNetCommand($0) },
             hasPlacementInteraction: placePinState != nil || placePowerSymbolState != nil,
             commitInteraction: {
@@ -11874,6 +11886,320 @@ extension SchematicCanvasView {
         ("dot", "Dot"),
         ("antenna", "Antenna"),
     ]
+
+    // MARK: - Buses and net ties
+
+    private static let newBusOptionID = "__new-bus__"
+    private static let newBusMemberOptionID = "__new-bus-member__"
+    /// How far apart a new net tie's two ends sit: one 0.1" schematic step,
+    /// so the symbol lands on the grid the sheet is drawn on.
+    private static let netTieSpan = 2_540_000.0
+
+    private static func millimetres(_ nanometres: Double) -> Double {
+        nanometres / 1_000_000
+    }
+
+    /// Buses, their members and net ties belong to the block; a sheet only
+    /// draws them. Neither half is in the sheet model, and the writer behind
+    /// `onSheetChange` can update an entry but never create one — so these
+    /// tools need the project-wide channel, which the pool editors do not have.
+    private var canEditBlockObjects: Bool {
+        !isReadOnly
+            && !editorProfile.isPoolMode
+            && mode == .sheet
+            && onApplyProjectEdit != nil
+            && moveState == nil
+            && placePartState == nil
+            && placePinState == nil
+            && placePowerSymbolState == nil
+            && resizeSymbolState == nil
+            && drawNetLineState == nil
+            && drawGraphicsState == nil
+    }
+
+    /// A tie joins two nets, so there have to be two to choose between.
+    private var canTieNets: Bool {
+        canEditBlockObjects && selectableNamedNets(powerOnly: false).count >= 2
+    }
+
+    /// A ripper takes a net off a bus, so there has to be a net to take.
+    private var canPlaceBusRipper: Bool {
+        canEditBlockObjects && !selectableNamedNets(powerOnly: false).isEmpty
+    }
+
+    /// Where a bus label, ripper or tie lands: the last place the cursor was
+    /// on the canvas, snapped to the sheet's grid. Answering the prompt takes
+    /// the cursor away, which is why it is read before the prompt runs.
+    private var blockObjectPlacementPoint: HorizontalPoint {
+        snapSchematicPointToGrid(lastCursorWorldPoint ?? sheet.bounds.center)
+    }
+
+    /// A bus to draw for, and the operations that have to run first when it
+    /// does not exist yet.
+    private struct ChosenBus {
+        var id: String
+        var creation: [JSONDictionary]
+        var members: [HorizontalBusDetails.Member]
+    }
+
+    /// One member of that bus, likewise.
+    private struct ChosenBusMember {
+        var id: String
+        var creation: [JSONDictionary]
+    }
+
+    /// Design menu: name a bus on the sheet, the way a net label names a net.
+    private func beginPlaceBusLabel() {
+        guard canEditBlockObjects else { return }
+        let point = blockObjectPlacementPoint
+        chooseBus(title: "Place Bus Label", message: "Which bus does this label name?") { bus in
+            var operations = bus.creation
+            operations.append([
+                "op": "place_bus_label",
+                "bus": bus.id,
+                "sheet": sheet.id,
+                "x_mm": Self.millimetres(point.x),
+                "y_mm": Self.millimetres(point.y),
+            ])
+            applyProjectEdit(operations, actionName: "Place Bus Label")
+        }
+    }
+
+    /// Design menu: take one member off a bus, so that net can be wired on
+    /// its own.
+    private func beginPlaceBusRipper() {
+        guard canPlaceBusRipper else { return }
+        let point = blockObjectPlacementPoint
+        chooseBus(title: "Place Bus Ripper", message: "Which bus does the net come off?") { bus in
+            chooseBusMember(of: bus) { member in
+                var operations = bus.creation + member.creation
+                operations.append([
+                    "op": "place_bus_ripper",
+                    "bus": bus.id,
+                    "member": member.id,
+                    "sheet": sheet.id,
+                    "x_mm": Self.millimetres(point.x),
+                    "y_mm": Self.millimetres(point.y),
+                ])
+                applyProjectEdit(operations, actionName: "Place Bus Ripper")
+            }
+        }
+    }
+
+    /// Design menu: tie two nets — joined on the board, kept apart in the
+    /// schematic, which is what a tie is for.
+    private func beginTieNets() {
+        guard canTieNets else { return }
+        let point = blockObjectPlacementPoint
+        let nets = selectableNamedNets(powerOnly: false)
+        chooseNet(title: "Tie Nets", message: "The net kept as the primary one.", nets: nets) { primary in
+            let others = nets.filter { normalizedID($0.id) != normalizedID(primary) }
+            chooseNet(title: "Tie To", message: "The net tied to it.", nets: others, afterAnotherPrompt: true) { secondary in
+                // A tie between these two nets may already exist; drawing a
+                // second symbol for it is the point, making a second tie is
+                // not.
+                var operations = [JSONDictionary]()
+                let existing = existingNetTieID(primary: primary, secondary: secondary)
+                let tieID = existing ?? UUID().uuidString.lowercased()
+                if existing == nil {
+                    operations.append(["op": "add_net_tie", "primary": primary, "secondary": secondary, "id": tieID])
+                }
+                operations.append([
+                    "op": "place_net_tie",
+                    "net_tie": tieID,
+                    "sheet": sheet.id,
+                    "from": ["x_mm": Self.millimetres(point.x), "y_mm": Self.millimetres(point.y)],
+                    "to": ["x_mm": Self.millimetres(point.x + Self.netTieSpan), "y_mm": Self.millimetres(point.y)],
+                ])
+                applyProjectEdit(operations, actionName: "Tie Nets")
+            }
+        }
+    }
+
+    private func existingNetTieID(primary: String, secondary: String) -> String? {
+        let wanted = Set([normalizedID(primary), normalizedID(secondary)])
+        return sheet.netTieDetails.first { tie in
+            Set([tie.primaryID, tie.secondaryID].compactMap { $0 }.map(normalizedID)) == wanted
+        }?.id
+    }
+
+    /// Picks one of the block's buses, or names a new one.
+    private func chooseBus(title: String, message: String, then use: @escaping (ChosenBus) -> Void) {
+        let buses = sheet.busDetails
+        func made(_ name: String) -> ChosenBus {
+            let id = UUID().uuidString.lowercased()
+            return ChosenBus(id: id, creation: [["op": "add_bus", "name": name, "id": id]], members: [])
+        }
+        func chosen(_ id: String) -> ChosenBus? {
+            buses.first { normalizedID($0.id) == normalizedID(id) }
+                .map { ChosenBus(id: $0.id, creation: [], members: $0.members) }
+        }
+        #if os(macOS)
+        switch HorizontalSchematicObjectPrompt.choose(
+            title: title,
+            message: message,
+            options: buses.map { HorizontalSchematicObjectPrompt.Option(id: $0.id, name: $0.name) },
+            newTitle: "New Bus",
+            newMessage: "Name the bus. The nets in it become its members.",
+            seed: "BUS"
+        ) {
+        case .existing(let id):
+            chosen(id).map(use)
+        case .new(let name):
+            use(made(name))
+        case nil:
+            break
+        }
+        #else
+        var options = buses.map { HorizontalSelectionPropertyOption(id: $0.id, title: $0.name) }
+        options.append(HorizontalSelectionPropertyOption(id: Self.newBusOptionID, title: "New Bus…"))
+        promptRequest = HorizontalCanvasPromptRequest(
+            title: title,
+            confirmTitle: "Choose",
+            content: .optionPicker(options: options, selected: buses.first?.id ?? Self.newBusOptionID) { picked in
+                guard let picked else { return }
+                if picked == Self.newBusOptionID {
+                    promptForName(title: "New Bus", seed: "BUS") { use(made($0)) }
+                } else {
+                    chosen(picked).map(use)
+                }
+            }
+        )
+        #endif
+    }
+
+    /// Picks one of the bus's members, or puts a net in the bus as a new one.
+    /// A new member takes the net's own name, which is what a ripper draws.
+    /// The escape is an option in the same list rather than a second button,
+    /// because it leads to another list — which net — and not to a name.
+    private func chooseBusMember(of bus: ChosenBus, then use: @escaping (ChosenBusMember) -> Void) {
+        let nets = selectableNamedNets(powerOnly: false)
+        func made(netID: String) -> ChosenBusMember? {
+            guard let net = nets.first(where: { normalizedID($0.id) == normalizedID(netID) }) else { return nil }
+            // A member already carrying this net is the one to rip: adding a
+            // second would put the same net in the bus twice.
+            if let existing = bus.members.first(where: { $0.netID.map(normalizedID) == normalizedID(net.id) }) {
+                return ChosenBusMember(id: existing.id, creation: [])
+            }
+            let id = UUID().uuidString.lowercased()
+            return ChosenBusMember(
+                id: id,
+                creation: [["op": "add_bus_member", "bus": bus.id, "name": net.name, "net": net.id, "id": id]]
+            )
+        }
+        func pickNet(afterAnotherPrompt: Bool) {
+            chooseNet(title: "New Bus Member", message: "The net to put in the bus.",
+                      nets: nets, afterAnotherPrompt: afterAnotherPrompt) { netID in
+                made(netID: netID).map(use)
+            }
+        }
+        // An empty bus has only one answer to give, so it is not worth asking.
+        guard !bus.members.isEmpty else {
+            pickNet(afterAnotherPrompt: true)
+            return
+        }
+        let picked: (String?) -> Void = { picked in
+            guard let picked else { return }
+            if picked == Self.newBusMemberOptionID {
+                pickNet(afterAnotherPrompt: true)
+            } else {
+                use(ChosenBusMember(id: picked, creation: []))
+            }
+        }
+        var options = bus.members.map { HorizontalSelectionPropertyOption(id: $0.id, title: $0.name) }
+        options.append(HorizontalSelectionPropertyOption(id: Self.newBusMemberOptionID, title: "New Member…"))
+        #if os(macOS)
+        if case .existing(let id)? = HorizontalSchematicObjectPrompt.choose(
+            title: "Bus Member",
+            message: "Which net comes off the bus here?",
+            options: options.map { HorizontalSchematicObjectPrompt.Option(id: $0.id, name: $0.title) }
+        ) {
+            picked(id)
+        }
+        #else
+        promptAfterAnother(
+            HorizontalCanvasPromptRequest(
+                title: "Bus Member",
+                confirmTitle: "Choose",
+                content: .optionPicker(options: options, selected: bus.members.first?.id, completion: picked)
+            )
+        )
+        #endif
+    }
+
+    /// Picks one of `nets`. `afterAnotherPrompt` is for the second question in
+    /// a row, which on iOS has to wait for the first sheet to go away.
+    private func chooseNet(
+        title: String,
+        message: String,
+        nets: [HorizontalNetDetails],
+        afterAnotherPrompt: Bool = false,
+        then use: @escaping (String) -> Void
+    ) {
+        #if os(macOS)
+        if case .existing(let id)? = HorizontalSchematicObjectPrompt.choose(
+            title: title,
+            message: nets.isEmpty ? "This block has no named net to use." : message,
+            options: nets.map { HorizontalSchematicObjectPrompt.Option(id: $0.id, name: $0.name) }
+        ) {
+            use(id)
+        }
+        #else
+        let request = HorizontalCanvasPromptRequest(
+            title: title,
+            confirmTitle: "Choose",
+            content: .optionPicker(
+                options: nets.map { HorizontalSelectionPropertyOption(id: $0.id, title: $0.name) },
+                selected: nets.first?.id
+            ) { picked in
+                if let picked { use(picked) }
+            }
+        )
+        if afterAnotherPrompt {
+            promptAfterAnother(request)
+        } else {
+            promptRequest = request
+        }
+        #endif
+    }
+
+    #if !os(macOS)
+    /// A second sheet after a first: SwiftUI needs the one on screen dismissed
+    /// before the next presents, which is the wait the power-net prompt uses.
+    private func promptAfterAnother(_ request: HorizontalCanvasPromptRequest) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            promptRequest = request
+        }
+    }
+
+    private func promptForName(title: String, seed: String, then use: @escaping (String) -> Void) {
+        promptAfterAnother(
+            HorizontalCanvasPromptRequest(
+                title: title,
+                confirmTitle: "Create",
+                content: .text(seed: seed) { entered in
+                    let name = entered?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    guard !name.isEmpty else { return }
+                    use(name)
+                }
+            )
+        )
+    }
+    #endif
+
+    /// Hands the operations to the project-wide channel.
+    ///
+    /// What comes back is a whole reloaded project, which reaches this view as
+    /// a new `sourceSheet` — and a draft in `editedSheet` would mask it, since
+    /// that is the one the canvas reads. So the draft goes first, along with
+    /// the selection, whose refs name objects the reload replaces.
+    private func applyProjectEdit(_ operations: [JSONDictionary], actionName: String) {
+        guard let onApplyProjectEdit else { return }
+        selectedObjects = []
+        hoveredObject = nil
+        adoptExternallyUpdatedSheet()
+        onApplyProjectEdit(operations, actionName)
+    }
 
     private var canPlacePowerSymbol: Bool {
         !isReadOnly

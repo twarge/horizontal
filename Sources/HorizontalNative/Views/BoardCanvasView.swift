@@ -228,11 +228,18 @@ struct BoardCanvasView: View {
         var cursor: HorizontalPoint?
         var rectanglePlacementMode = HorizontalDrawingToolSettings.rectanglePlacementMode()
         var layer: Int
-        /// When true this is a "Draw Plane": the closed outline becomes a polygon
-        /// AND a net-bound `HorizontalPlane` (tool_draw_plane = draw-polygon
-        /// + create plane). Reuses every polygon-draw interaction hook so no new
-        /// state-machine plumbing is needed; only `commitDrawGraphics` branches.
-        var createsPlane: Bool = false
+        /// What the finished drawing becomes. Every outcome reuses the same
+        /// interaction hooks — points, cursor, escape, commit — so a new one
+        /// needs no state-machine plumbing; only `commitDrawGraphics` branches.
+        /// `plane` is Horizon's tool_draw_plane: draw a polygon, then bind it to
+        /// a net. `dimension` draws a two-point measurement.
+        var outcome: Outcome = .geometry
+
+        enum Outcome {
+            case geometry
+            case plane
+            case dimension
+        }
     }
 
     /// Corner posture for an orthogonal track segment: `.xy` runs horizontally
@@ -2549,6 +2556,9 @@ struct BoardCanvasView: View {
             handlers.placeHole = { beginPlaceHole(shape: $0) }
         }
         if modeProfile.mode == .board {
+            // Dimensions are the board's: a package or padstack has no use for
+            // one, and Horizon offers the tool only there.
+            handlers.drawDimension = { beginDrawDimension() }
             if selectedObjects.contains(where: canDisconnect) {
                 handlers.disconnect = { disconnectSelection() }
             }
@@ -3854,6 +3864,55 @@ struct BoardCanvasView: View {
         onSelectDrawingLayer(layer)
     }
 
+    /// Begin a dimension: a two-point measurement, drawn with the line tool's
+    /// own interaction and committed as a `HorizontalDimension` rather than as
+    /// board graphics.
+    private func beginDrawDimension() {
+        guard !isReadOnly,
+              modeProfile.mode == .board,
+              moveState == nil,
+              pastePlacementState == nil,
+              poolPlacementState == nil,
+              roundOffVertexState == nil, packagePlacementState == nil else {
+            return
+        }
+        drawGraphicsState = DrawGraphicsState(
+            primitive: .line,
+            originalBoard: board,
+            cursor: lastCursorWorldPoint,
+            layer: drawingLayer,
+            outcome: .dimension
+        )
+        selectedObjects = []
+        hoveredObject = nil
+        publishSelectionContext()
+    }
+
+    private func commitDrawDimension(_ result: DrawGraphicsResult, state: DrawGraphicsState) {
+        // The line tool hands back a segment; a dimension is its two ends. A
+        // zero-length one measures nothing, so the tool stays armed rather than
+        // dropping a dimension the user cannot see.
+        guard let line = result.lines.first(where: { pointKey($0.from) != pointKey($0.to) }) else {
+            drawGraphicsState = state
+            return
+        }
+        var draft = editedBoard ?? sourceBoard
+        draft.dimensions.append(
+            HorizontalDimension(
+                id: UUID().uuidString.lowercased(),
+                p0: line.from,
+                p1: line.to,
+                labelDistance: 1_000_000,
+                labelSize: 1_500_000,
+                mode: .distance
+            )
+        )
+        editedBoard = draft
+        drawGraphicsState = nil
+        invalidateSelectableCache()
+        registerUndoSnapshot(state.originalBoard, actionName: "Draw Dimension")
+    }
+
     private func beginDrawPlane() {
         guard !isReadOnly,
               modeProfile.usesConnectivity,
@@ -3868,7 +3927,7 @@ struct BoardCanvasView: View {
             originalBoard: board,
             cursor: lastCursorWorldPoint,
             layer: drawingLayer,
-            createsPlane: true
+            outcome: .plane
         )
         selectedObjects = []
         hoveredObject = nil
@@ -4828,9 +4887,15 @@ struct BoardCanvasView: View {
         guard !isReadOnly else {
             return
         }
-        if state.createsPlane {
+        switch state.outcome {
+        case .plane:
             commitDrawPlane(result, state: state)
             return
+        case .dimension:
+            commitDrawDimension(result, state: state)
+            return
+        case .geometry:
+            break
         }
         let validLines = result.lines.filter { pointKey($0.from) != pointKey($0.to) }
         let validArcs = result.arcs.filter { pointKey($0.from) != pointKey($0.to) && $0.radius > 0 }
