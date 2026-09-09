@@ -197,8 +197,10 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         # A disk context has nothing held back, and says so rather than failing.
         saved = (await self.call("save", project_ref=self.ref))["data"]
         self.assertFalse(saved["saved"])
-        self.assertEqual(saved["durability"], "disk")
-        self.assertIn("note", saved)
+        # Named distinctly from the live answer: "nothing was saved here" must
+        # never read as "the document was saved".
+        self.assertEqual(saved["source"], "disk")
+        self.assertIn("live", saved["note"])
 
         tools = {t.name: t for t in await server.mcp.list_tools()}
         self.assertFalse(tools["save"].annotations.read_only_hint)

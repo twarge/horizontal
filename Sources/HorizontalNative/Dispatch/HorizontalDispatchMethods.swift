@@ -488,9 +488,12 @@ enum HorizontalDispatchMethods {
         }
         guard let live = entry.live else {
             // Nothing to do rather than an error: a disk edit committed its
-            // files as part of the transaction that made it.
-            return ["saved": false, "path": entry.url.path, "durability": "disk",
-                    "note": "Disk edits are written when they commit; there is nothing held back."]
+            // files as part of the transaction that made it. Named distinctly
+            // from the live answer, so "nothing was saved" can never be read as
+            // "the document was saved".
+            return ["saved": false, "source": "disk", "path": entry.url.path,
+                    "note": "This is a disk context: its edits were written when they committed. "
+                        + "A document open in the app is a different context — open it with source \"live\" to save that."]
         }
         guard Thread.isMainThread else {
             throw HorizontalDispatchError.failed("Saving a document requires the app channel.")
@@ -503,8 +506,24 @@ enum HorizontalDispatchMethods {
             try live.save()
             return edited
         }
-        return ["saved": edited, "had_unsaved_changes": edited, "path": entry.url.path,
-                "durability": "disk", "revision": entry.revision] as JSONDictionary
+        // Trusting the document's edited flag is what let a save report success
+        // over a stale file: the flag was false because the edit had gone onto
+        // an undo manager the document system never saw. So the answer is
+        // checked against the file rather than asserted — what is on disk must
+        // be what the document holds.
+        let onDisk = try HorizontalDispatchSnapshot.capture(url: entry.url)
+        let matches = onDisk.id == entry.snapshot?.id
+        guard matches else {
+            throw HorizontalDispatchError(
+                code: .applicationError,
+                message: "The document was asked to save and the file still does not match it. "
+                    + "Nothing here can force it; save in Horizontal, or report this.",
+                details: ["document_snapshot": entry.snapshot?.id ?? "", "file_snapshot": onDisk.id]
+            )
+        }
+        return ["saved": edited, "had_unsaved_changes": edited, "source": "live",
+                "path": entry.url.path, "verified": true,
+                "snapshot_id": onDisk.id, "revision": entry.revision] as JSONDictionary
     }
 
     @Sendable private static func closeProject(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {

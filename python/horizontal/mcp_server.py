@@ -418,8 +418,13 @@ def new_project(path: str, name: str | None = None) -> dict[str, Any]:
 def save(path: str | None = None) -> dict[str, Any]:
     """Write a document open in Horizontal to its file, the way the Save command does. An edit through the live
     channel is one undoable step in the app and nothing more until this runs, so a task that edits a live document
-    is not finished without it. A disk context reports saved false with a note: its edits were written when they
-    committed. saved is false too when the document had nothing outstanding."""
+    is not finished without it.
+
+    Check source in the reply. "live" means a document was saved, and verified: the file is compared against the
+    document afterwards rather than the document's own edited flag being trusted, so this can no longer claim
+    success over a stale file. "disk" means the context you asked was a disk context, whose edits were already
+    written when they committed — if your edit went to the app, that is the wrong context and you want
+    open_project with source="live"."""
     return _resolve(path).save()
 
 

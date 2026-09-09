@@ -159,6 +159,21 @@ edited flag all behaving as they do when the user presses Save. Targeting by
 URL rather than sending the Save action matters: an automation client is never
 the key window.
 
+Two things had to be right for that to work at all. An edit arriving through
+the live channel registers its undo with whichever undo manager the view can
+reach, and when the app is not frontmost — which is every automation edit —
+that is a fallback manager the document system knows nothing about. So the
+document was never marked as changed: Save stayed disabled, closing the window
+offered no prompt, and `save` wrote nothing while reporting that there was
+nothing to write. `applyLiveArchive` now tells the document directly.
+
+And `save` no longer trusts that flag. After saving it captures the file's
+snapshot and compares it with the document's; a mismatch is an error naming
+both, not a success. The reply's `source` says which context answered — `live`
+saved a document, `disk` means the context asked was a disk one whose edits
+were already committed, which is the answer to give when the edit went
+somewhere else.
+
 A batch is validated and applied in memory first; a failing operation writes
 nothing. `dry_run` returns normalized operations, changed-file previews and a
 plan digest. Disk commits journal all file replacements and recover interrupted
