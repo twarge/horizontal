@@ -45,6 +45,12 @@ enum HorizontalDispatchMethods {
             params: ["handle": "Project handle."],
             handler: save
         ),
+        .init(
+            name: "undo",
+            summary: "Take back the last step on an open document's undo stack — the same stack the app's Edit menu drives, so an edit made here and one made by hand undo alike. Live documents only: a disk edit is a committed transaction, not a step.",
+            params: ["handle": "Project handle.", "redo": "Put back what was undone instead (default false)."],
+            handler: undo
+        ),
         .init(name: "close_project", summary: "Close an open project.", params: ["handle": "Project handle."], handler: closeProject),
         .init(name: "reload_project", summary: "Re-read an open project from disk.", params: ["handle": "Project handle."], handler: reloadProject),
         .init(name: "list_projects", summary: "The projects currently open in this session.", params: [:], handler: { session, _ in
@@ -178,6 +184,30 @@ enum HorizontalDispatchMethods {
                      "expected_revision": "The revision this was planned against.",
                      "operation_id": "Caller-chosen id for this mutation.", "dry_run": "Report without writing (default false)."],
             handler: autoroute
+        ),
+        .init(
+            name: "list_board_texts",
+            summary: "Free text on the board layers, with the ids the board text ops take. A text marked from_smash belongs to the package that carries it.",
+            params: ["handle": "Project handle.", "layer": "Only texts on this layer (optional)."],
+            handler: listBoardTexts
+        ),
+        .init(
+            name: "list_dimensions",
+            summary: "Dimensions on the board: the two points each measures between, its mode, and the distance it reports.",
+            params: ["handle": "Project handle."],
+            handler: listDimensions
+        ),
+        .init(
+            name: "list_buses",
+            summary: "Buses in this block, their members and the net each member carries, plus where each bus is labelled and ripped on the sheets.",
+            params: ["handle": "Project handle."],
+            handler: listBuses
+        ),
+        .init(
+            name: "list_net_ties",
+            summary: "Net ties in this block: which two nets each joins on the board while keeping them apart in the schematic, and where each is drawn.",
+            params: ["handle": "Project handle."],
+            handler: listNetTies
         ),
         .init(
             name: "list_holes",
@@ -536,6 +566,40 @@ enum HorizontalDispatchMethods {
         return ["saved": edited, "had_unsaved_changes": edited, "source": "live",
                 "path": entry.url.path, "verified": true,
                 "snapshot_id": onDisk.id, "revision": entry.revision] as JSONDictionary
+    }
+
+    @Sendable private static func undo(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        guard !entry.frozen else {
+            throw HorizontalDispatchError(code: .readOnly, message: "A pinned snapshot has no undo stack.")
+        }
+        guard let live = entry.live else {
+            // A disk edit committed through a transaction; taking it back means
+            // applying the inverse, not popping a stack that does not exist.
+            throw HorizontalDispatchError.invalidParams(
+                "This is a disk context, which has no undo stack: its edits committed as transactions. "
+                    + "Open the project with source \"live\" to undo in the app, or apply the inverse edit."
+            )
+        }
+        guard Thread.isMainThread else {
+            throw HorizontalDispatchError.failed("Undo requires the app channel.")
+        }
+        let isRedo = params.bool("redo") ?? false
+        let outcome: (done: String?, next: String?, back: String?) = MainActor.assumeIsolated {
+            let done = isRedo ? live.redo() : live.undo()
+            // The document moved under the entry, so the session has to catch
+            // up before the revision this reports means anything.
+            session.syncLiveEntries()
+            return (done, live.undoActionName(), live.redoActionName())
+        }
+        guard let done = outcome.done else {
+            throw HorizontalDispatchError.invalidParams(
+                isRedo ? "There is nothing to redo." : "There is nothing to undo."
+            )
+        }
+        return ["undone": isRedo ? NSNull() : done, "redone": isRedo ? done : NSNull(),
+                "can_undo": outcome.next as Any? as Any, "can_redo": outcome.back as Any? as Any,
+                "revision": entry.revision] as JSONDictionary
     }
 
     @Sendable private static func closeProject(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
@@ -1244,7 +1308,14 @@ enum HorizontalDispatchMethods {
         // What the file does not have yet. An edit through this channel is one
         // undo step in the app until `save` writes it.
         if let live = entry.live, Thread.isMainThread {
-            json["unsaved_changes"] = MainActor.assumeIsolated { live.isEdited() }
+            // What undo would take back, so a caller can tell whether its own
+            // edit is still the top of the stack before reaching for it.
+            let state: (edited: Bool, undo: String?, redo: String?) = MainActor.assumeIsolated {
+                (live.isEdited(), live.undoActionName(), live.redoActionName())
+            }
+            json["unsaved_changes"] = state.edited
+            json["can_undo"] = state.undo as Any? as Any
+            json["can_redo"] = state.redo as Any? as Any
         }
         // Who else has the project open. A disk context can only be edited
         // when this is empty, and it is the one answer that does not depend on
@@ -1748,6 +1819,124 @@ enum HorizontalDispatchMethods {
             }
         }
         return fallback
+    }
+
+    @Sendable private static func listBoardTexts(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let layer = params.int("layer")
+        let json = try boardJSON(entry)
+        // A package that has been smashed refers to the texts pulled out of it.
+        var ownerByText = [String: String]()
+        for (packageID, package) in json.dictionaryMap("packages") {
+            for id in package["texts"] as? [String] ?? [] { ownerByText[id.lowercased()] = packageID }
+        }
+        return json.dictionaryMap("texts").compactMap { id, item -> JSONDictionary? in
+            let textLayer = item.int("layer")
+            guard layer == nil || layer == textLayer else { return nil }
+            let placement = item.dictionary("placement") ?? [:]
+            let shift = placement["shift"] as? [Any] ?? []
+            return [
+                "id": id,
+                "text": item.string("text") ?? "",
+                "layer": textLayer as Any? as Any,
+                "layer_name": textLayer.map { HorizontalBoardLayers.name(for: $0) } as Any? as Any,
+                "x_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(shift.first ?? 0)),
+                "y_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(shift.count > 1 ? shift[1] : 0)),
+                "angle_deg": HorizontalDispatchJSON.degrees(placement.int("angle") ?? 0),
+                "mirror": placement.bool("mirror") ?? false,
+                "size_mm": HorizontalDispatchJSON.mm(item.double("size") ?? 1_500_000),
+                "width_mm": HorizontalDispatchJSON.mm(item.double("width") ?? 0),
+                "origin": item.string("origin") ?? "center",
+                "font": item.string("font") ?? "simplex",
+                "from_smash": item.bool("from_smash") ?? false,
+                "package": ownerByText[id.lowercased()] as Any? as Any
+            ]
+        }.sorted { ($0.string("text") ?? "", $0.string("id") ?? "") < ($1.string("text") ?? "", $1.string("id") ?? "") }
+    }
+
+    @Sendable private static func listDimensions(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        return try boardJSON(entry).dictionaryMap("dimensions").map { id, item -> JSONDictionary in
+            let p0 = item["p0"] as? [Any] ?? []
+            let p1 = item["p1"] as? [Any] ?? []
+            func mm(_ values: [Any], _ index: Int) -> Double {
+                HorizontalDispatchJSON.mm(JSONHelper.doubleValue(values.count > index ? values[index] : 0))
+            }
+            let from = (x: mm(p0, 0), y: mm(p0, 1)), to = (x: mm(p1, 0), y: mm(p1, 1))
+            let mode = item.string("mode") ?? "distance"
+            // What the dimension reads on the board, so a caller does not have
+            // to work out which axis the mode measures.
+            let measured: Double
+            switch mode {
+            case "horizontal": measured = abs(to.x - from.x)
+            case "vertical": measured = abs(to.y - from.y)
+            default: measured = ((to.x - from.x) * (to.x - from.x) + (to.y - from.y) * (to.y - from.y)).squareRoot()
+            }
+            return [
+                "id": id,
+                "mode": mode,
+                "from": ["x_mm": from.x, "y_mm": from.y],
+                "to": ["x_mm": to.x, "y_mm": to.y],
+                "measures_mm": measured,
+                "label_distance_mm": HorizontalDispatchJSON.mm(item.double("label_distance") ?? 0),
+                "size_mm": HorizontalDispatchJSON.mm(item.double("label_size") ?? 1_500_000)
+            ]
+        }.sorted { ($0.string("id") ?? "") < ($1.string("id") ?? "") }
+    }
+
+    @Sendable private static func listBuses(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        guard let block = blockJSON(entry) else {
+            throw HorizontalDispatchError.notFound("The project has no block.")
+        }
+        var marksByBus = [String: [JSONDictionary]]()
+        for sheet in (try? selectedSheets(entry, [:])) ?? [] {
+            for (key, kind) in [("bus_labels", "label"), ("bus_rippers", "ripper")] {
+                for (id, item) in sheet.json.dictionaryMap(key) {
+                    guard let bus = item.string("bus")?.lowercased() else { continue }
+                    marksByBus[bus, default: []].append([
+                        "id": id, "kind": kind, "sheet": sheet.id, "sheet_index": sheet.index,
+                        "member": item.string("bus_member") as Any? as Any
+                    ])
+                }
+            }
+        }
+        return block.dictionaryMap("buses").map { id, item -> JSONDictionary in
+            let members = item.dictionaryMap("members").map { memberID, member -> JSONDictionary in
+                let net = member.string("net")?.lowercased()
+                return ["id": memberID, "name": member.string("name") ?? "",
+                        "net": net as Any? as Any,
+                        "net_name": net.flatMap { entry.index.net(id: $0)?.name } as Any? as Any]
+            }.sorted { ($0.string("name") ?? "") < ($1.string("name") ?? "") }
+            return ["id": id, "name": item.string("name") ?? "", "members": members,
+                    "drawn": marksByBus[id.lowercased()] ?? []]
+        }.sorted { ($0.string("name") ?? "", $0.string("id") ?? "") < ($1.string("name") ?? "", $1.string("id") ?? "") }
+    }
+
+    @Sendable private static func listNetTies(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        guard let block = blockJSON(entry) else {
+            throw HorizontalDispatchError.notFound("The project has no block.")
+        }
+        var drawnByTie = [String: [JSONDictionary]]()
+        for sheet in (try? selectedSheets(entry, [:])) ?? [] {
+            for (id, item) in sheet.json.dictionaryMap("net_ties") {
+                guard let tie = item.string("net_tie")?.lowercased() else { continue }
+                drawnByTie[tie, default: []].append(["id": id, "sheet": sheet.id, "sheet_index": sheet.index])
+            }
+        }
+        return block.dictionaryMap("net_ties").map { id, item -> JSONDictionary in
+            let primary = item.string("net_primary")?.lowercased()
+            let secondary = item.string("net_secondary")?.lowercased()
+            return [
+                "id": id,
+                "primary": primary as Any? as Any,
+                "primary_name": primary.flatMap { entry.index.net(id: $0)?.name } as Any? as Any,
+                "secondary": secondary as Any? as Any,
+                "secondary_name": secondary.flatMap { entry.index.net(id: $0)?.name } as Any? as Any,
+                "drawn": drawnByTie[id.lowercased()] ?? []
+            ]
+        }.sorted { ($0.string("primary_name") ?? "", $0.string("id") ?? "") < ($1.string("primary_name") ?? "", $1.string("id") ?? "") }
     }
 
     @Sendable private static func listHoles(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {

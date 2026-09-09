@@ -132,7 +132,7 @@ def _tool(fn: Callable[..., Any]) -> Callable[..., Any]:
                        inspect.Parameter("plan_digest", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=str | None)]
     wrapper.__signature__ = signature.replace(parameters=parameters, return_annotation=output)
     wrapper.__annotations__ = {p.name: p.annotation for p in parameters} | {"return": output}
-    resource_writes = {"open_project", "new_project", "save", "reload_project", "analysis_snapshot", "release_analysis_snapshot", "analyze_transfer", "analyze_noise", "analyze_headroom", "analyze_adc_filter", "cancel_analysis", "discard_analysis"}
+    resource_writes = {"open_project", "new_project", "save", "undo", "reload_project", "analysis_snapshot", "release_analysis_snapshot", "analyze_transfer", "analyze_noise", "analyze_headroom", "analyze_adc_filter", "cancel_analysis", "discard_analysis"}
     registered = mcp.tool(annotations=ToolAnnotations(read_only_hint=fn.__name__ not in _mutations | resource_writes | {"export", "highlight", "select", "zoom_to", "close_project", "export_analysis"},
                                                destructive_hint=fn.__name__ in _mutations,
                                                idempotent_hint=fn.__name__ not in _mutations | resource_writes | {"export_analysis"},
@@ -580,6 +580,46 @@ def list_power_symbols(path: str | None = None, net: str | None = None, sheet: i
     shape a symbol draws with — gnd, dot, antenna or earth — belongs to the net, not the symbol, so every symbol
     on one net looks the same."""
     return _resolve(path).power_symbols(net=net, sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id)
+
+
+@_tool
+def undo(path: str | None = None, redo: bool = False) -> dict[str, Any]:
+    """Take back the last step on an open document's undo stack — the same stack the app's Edit menu drives, so an
+    edit made here and one made by hand undo alike, newest first. Pass redo to put one back. can_undo and can_redo
+    in open_project name what is on top, so you can tell whether your own edit is still there before reaching for
+    this. Live documents only: a disk edit committed as a transaction, and taking that back means applying the
+    inverse rather than popping a stack that does not exist."""
+    return _resolve(path).undo(redo=redo)
+
+
+@_tool
+def list_board_texts(path: str | None = None, layer: int | None = None) -> list[dict[str, Any]]:
+    """Free text on the board layers, with the ids the board text ops take. A text marked from_smash belongs to
+    the package named in its package field — Horizon pulled it out of that package, so it moves and dies with the
+    component rather than being edited on its own."""
+    return _resolve(path).board_texts(layer=layer)
+
+
+@_tool
+def list_dimensions(path: str | None = None) -> list[dict[str, Any]]:
+    """Dimensions on the board: the two points each measures between, its mode, and measures_mm — what it actually
+    reads, worked out for the mode, so you do not have to know which axis a horizontal dimension uses."""
+    return _resolve(path).dimensions()
+
+
+@_tool
+def list_buses(path: str | None = None) -> list[dict[str, Any]]:
+    """Buses in this block, the nets their members carry, and where each bus is labelled or ripped on the sheets.
+    A bus is a drawing convenience — the nets in it stay separate nets; ripping a member off is what lets one be
+    wired on its own."""
+    return _resolve(path).buses()
+
+
+@_tool
+def list_net_ties(path: str | None = None) -> list[dict[str, Any]]:
+    """Net ties in this block: which two nets each joins on the board while keeping them apart in the schematic,
+    and where each is drawn. That separation is the whole point of a tie — a single-point ground join, say."""
+    return _resolve(path).net_ties()
 
 
 @_tool

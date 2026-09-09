@@ -1372,12 +1372,23 @@ final class HorizontalProjectEditorTests: XCTestCase {
 
     /// A mounting hole and a plated one differ by whether they carry a net,
     /// and both take their size from a padstack rather than a made-up number.
-    func testHolesArePlacedFromAPadstack() throws {
-        let padstack = HorizontalPoolItemFactory.newPadstack(type: .hole)
+    /// A padstack that actually drills. An empty one defines no hole, which is
+    /// what place_hole refuses.
+    @discardableResult
+    private func drillingPadstack() throws -> HorizontalPoolPadstack {
+        var padstack = HorizontalPoolItemFactory.newPadstack(type: .hole)
+        let holeID = HorizontalPoolItemFactory.newUUID()
+        padstack.holes = [holeID: HorizontalPadstackHole(id: holeID, diameter: 800_000, length: 0,
+                                                          shape: .round, plated: true, parameterClass: "")]
         _ = try HorizontalPoolItemFactory.write(
             .padstack(padstack),
             to: packageURL.appendingPathComponent("pool/padstacks/cache/\(padstack.uuid).json"))
         _ = try result("reload_project")
+        return padstack
+    }
+
+    func testHolesArePlacedFromAPadstack() throws {
+        let padstack = try drillingPadstack()
 
         let placed = try apply([["op": "place_hole", "x_mm": 5, "y_mm": 5, "padstack": padstack.uuid]])
         let change = try XCTUnwrap((placed["changes"] as? [[String: Any]])?.first)
@@ -1398,6 +1409,17 @@ final class HorizontalProjectEditorTests: XCTestCase {
 
         XCTAssertNotNil(try call("apply", ["ops": [["op": "place_hole", "x_mm": 1, "y_mm": 1]]])["error"],
                         "nothing invents a diameter")
+
+        // A padstack that drills nothing would write an entry that parses to
+        // nothing and is pruned by the app's next save.
+        let empty = HorizontalPoolItemFactory.newPadstack(type: .hole)
+        _ = try HorizontalPoolItemFactory.write(
+            .padstack(empty),
+            to: packageURL.appendingPathComponent("pool/padstacks/cache/\(empty.uuid).json"))
+        _ = try result("reload_project")
+        let hollow = try call("apply", ["ops": [["op": "place_hole", "x_mm": 1, "y_mm": 1, "padstack": empty.uuid]]])
+        XCTAssertTrue(((hollow["error"] as? [String: Any])?["message"] as? String ?? "").contains("no hole"),
+                      "\(hollow)")
         _ = try apply([["op": "remove_hole", "hole": id]])
         XCTAssertEqual((try result("list_holes") as? [[String: Any]])?.count, 1)
     }
@@ -1444,5 +1466,194 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual(after.map { $0["index"] as? Int }, [1, 2, 3], "no two sheets share a page number")
 
         XCTAssertNotNil(try call("apply", ["ops": [["op": "set_sheet_index", "sheet": 1, "index": 0]]])["error"])
+    }
+
+    /// Board text and dimensions: the documentation layer of a board.
+    func testBoardTextAndDimensions() throws {
+        let placed = try apply([["op": "place_board_text", "text": "REV B", "layer": 20,
+                                 "x_mm": 5, "y_mm": 40, "size_mm": 2]])
+        let change = try XCTUnwrap((placed["changes"] as? [[String: Any]])?.first)
+        XCTAssertEqual((placed["project"] as? [String: Any])?["diagnostics"] as? [String], [])
+        let id = try XCTUnwrap(change["id"] as? String)
+
+        let texts = try XCTUnwrap(try result("list_board_texts") as? [[String: Any]])
+        XCTAssertEqual(texts.count, 1)
+        XCTAssertEqual(texts[0]["text"] as? String, "REV B")
+        XCTAssertEqual(texts[0]["layer"] as? Int, 20)
+        XCTAssertEqual(texts[0]["size_mm"] as? Double, 2)
+        XCTAssertEqual(texts[0]["from_smash"] as? Bool, false)
+        XCTAssertEqual((try result("list_board_texts", ["layer": 0]) as? [[String: Any]])?.count, 0)
+
+        _ = try apply([["op": "place_board_text", "id": id, "text": "REV C"]])
+        XCTAssertEqual((try result("list_board_texts") as? [[String: Any]])?.first?["text"] as? String, "REV C")
+        XCTAssertEqual((try result("list_board_texts") as? [[String: Any]])?.first?["layer"] as? Int, 20,
+                       "changing the text keeps the layer")
+
+        // A dimension reports what it measures, worked out for its mode.
+        let dimension = try apply([["op": "place_dimension",
+                                    "from": ["x_mm": 0, "y_mm": 0], "to": ["x_mm": 30, "y_mm": 40],
+                                    "mode": "horizontal"]])
+        XCTAssertEqual((dimension["project"] as? [String: Any])?["diagnostics"] as? [String], [])
+        let dimensions = try XCTUnwrap(try result("list_dimensions") as? [[String: Any]])
+        XCTAssertEqual(dimensions.count, 1)
+        XCTAssertEqual(dimensions[0]["mode"] as? String, "horizontal")
+        XCTAssertEqual(dimensions[0]["measures_mm"] as? Double, 30, "a horizontal dimension measures x")
+
+        _ = try apply([["op": "place_dimension", "from": ["x_mm": 0, "y_mm": 0], "to": ["x_mm": 30, "y_mm": 40]]])
+        let distance = try XCTUnwrap((try result("list_dimensions") as? [[String: Any]])?
+            .first { $0["mode"] as? String == "distance" })
+        XCTAssertEqual(distance["measures_mm"] as? Double ?? 0, 50, accuracy: 0.001, "3-4-5")
+
+        for ops in [[["op": "place_board_text", "text": "x", "x_mm": 1, "y_mm": 1]],
+                    [["op": "place_board_text", "layer": 20, "x_mm": 1, "y_mm": 1]],
+                    [["op": "place_dimension", "from": ["x_mm": 1, "y_mm": 1], "to": ["x_mm": 1, "y_mm": 1]]],
+                    [["op": "place_dimension", "from": ["x_mm": 1, "y_mm": 1], "to": ["x_mm": 2, "y_mm": 2], "mode": "diagonal"]],
+                    [["op": "remove_dimension", "dimension": UUID().uuidString]]] {
+            XCTAssertNotNil(try call("apply", ["ops": ops])["error"], "\(ops)")
+        }
+        _ = try apply([["op": "remove_board_text", "id": id]])
+        XCTAssertEqual((try result("list_board_texts") as? [[String: Any]])?.count, 0)
+    }
+
+    /// A curve is a vertex with a centre, and a straight edge is one without —
+    /// half a centre is neither.
+    func testArcsInPolygonsAndTracks() throws {
+        let curved = try apply([["op": "place_polygon", "layer": 100, "vertices": [
+            ["x_mm": 0, "y_mm": 0],
+            ["x_mm": 20, "y_mm": 0, "arc_center_x_mm": 10, "arc_center_y_mm": 0],
+            ["x_mm": 20, "y_mm": 20]
+        ]]])
+        XCTAssertEqual((curved["project"] as? [String: Any])?["diagnostics"] as? [String], [])
+        let polygon = try XCTUnwrap((try result("list_polygons") as? [[String: Any]])?.first)
+        let vertices = try XCTUnwrap(polygon["vertices"] as? [[String: Any]])
+        XCTAssertEqual(vertices.map { $0["type"] as? String }, ["line", "arc", "line"])
+
+        for bad in [[["x_mm": 0, "y_mm": 0, "arc_center_x_mm": 1], ["x_mm": 1, "y_mm": 1], ["x_mm": 2, "y_mm": 2]],
+                    [["x_mm": 0, "y_mm": 0, "arc_reverse": true], ["x_mm": 1, "y_mm": 1], ["x_mm": 2, "y_mm": 2]]] {
+            XCTAssertNotNil(try call("apply", ["ops": [["op": "place_polygon", "layer": 100, "vertices": bad]]])["error"],
+                            "\(bad)")
+        }
+
+        // A curved track keeps its centre as a coordinate.
+        try placedDivider()
+        let track = try apply([["op": "place_track", "from": ["component": "R1", "pad": "1"],
+                                "to": ["x_mm": 20, "y_mm": 20], "layer": 0, "width_mm": 0.2,
+                                "arc_center": ["x_mm": 15, "y_mm": 12]]])
+        XCTAssertEqual((track["changes"] as? [[String: Any]])?.first?["curved"] as? Bool, true)
+        let straight = try apply([["op": "place_track", "from": ["component": "R1", "pad": "2"],
+                                   "to": ["x_mm": 25, "y_mm": 25], "layer": 0, "width_mm": 0.2]])
+        XCTAssertEqual((straight["changes"] as? [[String: Any]])?.first?["curved"] as? Bool, false)
+    }
+
+    /// A bus bundles nets for drawing; ripping a member off is what lets one be
+    /// wired on its own.
+    func testBusesCarryMembersAndAreDrawn() throws {
+        _ = try apply([
+            ["op": "ensure_net", "name": "D0"], ["op": "ensure_net", "name": "D1"],
+            ["op": "add_bus", "name": "DATA"]
+        ])
+        let added = try apply([["op": "add_bus_member", "bus": "DATA", "name": "0", "net": "D0"],
+                               ["op": "add_bus_member", "bus": "DATA", "name": "1", "net": "D1"]])
+        XCTAssertEqual((added["project"] as? [String: Any])?["diagnostics"] as? [String], [])
+
+        let buses = try XCTUnwrap(try result("list_buses") as? [[String: Any]])
+        XCTAssertEqual(buses.count, 1)
+        XCTAssertEqual(buses[0]["name"] as? String, "DATA")
+        let members = try XCTUnwrap(buses[0]["members"] as? [[String: Any]])
+        XCTAssertEqual(members.map { $0["name"] as? String }, ["0", "1"])
+        XCTAssertEqual(members.map { $0["net_name"] as? String }, ["D0", "D1"])
+
+        _ = try apply([["op": "place_bus_label", "bus": "DATA", "x_mm": 10, "y_mm": 10],
+                       ["op": "place_bus_ripper", "bus": "DATA", "member": "0", "x_mm": 20, "y_mm": 10]])
+        let drawn = try XCTUnwrap((try result("list_buses") as? [[String: Any]])?.first?["drawn"] as? [[String: Any]])
+        XCTAssertEqual(Set(drawn.compactMap { $0["kind"] as? String }), ["label", "ripper"])
+        let ripper = try XCTUnwrap(drawn.first { $0["kind"] as? String == "ripper" })
+        XCTAssertNotNil(ripper["member"] as? String)
+
+        XCTAssertNotNil(try call("apply", ["ops": [["op": "place_bus_ripper", "bus": "DATA", "member": "9", "x_mm": 1, "y_mm": 1]]])["error"])
+        XCTAssertNotNil(try call("apply", ["ops": [["op": "add_bus", "name": " "]]])["error"])
+
+        // Removing the bus takes its labels and rippers with it.
+        let removed = try apply([["op": "remove_bus", "bus": "DATA"]])
+        XCTAssertEqual((removed["changes"] as? [[String: Any]])?.first?["labels_and_rippers"] as? Int, 2)
+        XCTAssertEqual((try result("list_buses") as? [[String: Any]])?.count, 0)
+    }
+
+    /// A tie joins two nets on the board and keeps them apart on the sheet.
+    func testNetTiesJoinTwoNets() throws {
+        _ = try apply([["op": "ensure_net", "name": "AGND"], ["op": "ensure_net", "name": "DGND"]])
+        let tied = try apply([["op": "add_net_tie", "primary": "AGND", "secondary": "DGND"]])
+        let change = try XCTUnwrap((tied["changes"] as? [[String: Any]])?.first)
+        XCTAssertEqual(change["created"] as? Bool, true)
+        XCTAssertEqual((tied["project"] as? [String: Any])?["diagnostics"] as? [String], [])
+        let id = try XCTUnwrap(change["net_tie"] as? String)
+
+        let ties = try XCTUnwrap(try result("list_net_ties") as? [[String: Any]])
+        XCTAssertEqual(ties.count, 1)
+        XCTAssertEqual(ties[0]["primary_name"] as? String, "AGND")
+        XCTAssertEqual(ties[0]["secondary_name"] as? String, "DGND")
+        XCTAssertEqual((ties[0]["drawn"] as? [[String: Any]])?.count, 0)
+
+        _ = try apply([["op": "place_net_tie", "net_tie": id,
+                        "from": ["x_mm": 10, "y_mm": 10], "to": ["x_mm": 15, "y_mm": 10]]])
+        XCTAssertEqual(((try result("list_net_ties") as? [[String: Any]])?.first?["drawn"] as? [[String: Any]])?.count, 1)
+
+        // The same pair again is the same tie, and a net cannot tie to itself.
+        XCTAssertEqual((try apply([["op": "add_net_tie", "primary": "DGND", "secondary": "AGND"]])["changes"] as? [[String: Any]])?.first?["created"] as? Bool, false)
+        XCTAssertNotNil(try call("apply", ["ops": [["op": "add_net_tie", "primary": "AGND", "secondary": "AGND"]]])["error"])
+
+        let removed = try apply([["op": "remove_net_tie", "net_tie": id]])
+        XCTAssertEqual((removed["changes"] as? [[String: Any]])?.first?["symbols"] as? Int, 1)
+        XCTAssertEqual((try result("list_net_ties") as? [[String: Any]])?.count, 0)
+    }
+
+    /// The app's save path prunes anything its model did not parse — every
+    /// patcher keeps only the ids the model knows. So an object written here
+    /// that the model cannot read would be deleted the next time the user
+    /// pressed Save, silently. This asserts the model sees each new kind.
+    func testEverythingWrittenSurvivesTheAppsOwnModel() throws {
+        let padstack = try drillingPadstack()
+        try placedDivider()
+
+        _ = try apply([
+            ["op": "place_board_text", "text": "REV B", "layer": 20, "x_mm": 5, "y_mm": 40],
+            ["op": "place_dimension", "from": ["x_mm": 0, "y_mm": 0], "to": ["x_mm": 30, "y_mm": 0]],
+            ["op": "place_hole", "x_mm": 3, "y_mm": 3, "padstack": padstack.uuid],
+            ["op": "place_keepout", "vertices": square(8), "layer": 0],
+            ["op": "place_polygon", "layer": 100, "vertices": [
+                ["x_mm": 0, "y_mm": 0],
+                ["x_mm": 40, "y_mm": 0, "arc_center_x_mm": 20, "arc_center_y_mm": 0],
+                ["x_mm": 40, "y_mm": 40]]],
+            ["op": "place_track", "from": ["component": "R1", "pad": "1"], "to": ["x_mm": 22, "y_mm": 22],
+             "layer": 0, "width_mm": 0.2, "arc_center": ["x_mm": 18, "y_mm": 14]],
+            ["op": "add_bus", "name": "DATA"],
+            ["op": "add_bus_member", "bus": "DATA", "name": "0", "net": "VCC"],
+            ["op": "place_bus_label", "bus": "DATA", "x_mm": 30, "y_mm": 30],
+            ["op": "place_bus_ripper", "bus": "DATA", "member": "0", "x_mm": 35, "y_mm": 30],
+            ["op": "ensure_net", "name": "DGND"],
+            ["op": "add_net_tie", "primary": "GND", "secondary": "DGND"]
+        ])
+        let tie = try XCTUnwrap((try result("list_net_ties") as? [[String: Any]])?.first?["id"] as? String)
+        _ = try apply([["op": "place_net_tie", "net_tie": tie,
+                        "from": ["x_mm": 50, "y_mm": 10], "to": ["x_mm": 55, "y_mm": 10]]])
+
+        // Load the files the way the app does, not through the dispatcher's
+        // own view of them.
+        let project = try HorizontalProject.load(from: packageURL)
+        XCTAssertEqual(project.diagnostics.map(\.message), [])
+        let board = try XCTUnwrap(project.board)
+        XCTAssertEqual(board.texts.filter { $0.text == "REV B" }.count, 1, "board text")
+        XCTAssertEqual(board.dimensions.count, 1, "dimension")
+        XCTAssertEqual(board.holes.count, 1, "board hole")
+        XCTAssertEqual(board.keepouts.count, 1, "keepout")
+        XCTAssertTrue(board.polygons.contains { polygon in
+            polygon.polygonVertices.contains { $0.type == .arc }
+        }, "polygon arc")
+        XCTAssertTrue(board.tracks.contains { $0.center != nil }, "curved track")
+
+        let sheet = try XCTUnwrap(project.schematic?.sheets.first)
+        XCTAssertEqual(sheet.busLabels.count, 1, "bus label")
+        XCTAssertEqual(sheet.busRipperLines.isEmpty, false, "bus ripper")
+        XCTAssertEqual(sheet.netTies.count, 1, "net tie symbol")
     }
 }

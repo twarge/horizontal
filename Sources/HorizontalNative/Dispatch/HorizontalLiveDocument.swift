@@ -35,6 +35,14 @@ final class HorizontalLiveDocument {
     var applyArchive: (HorizontalProjectArchive, String) throws -> Void
     /// Whether the document has changes its file does not have yet.
     var isEdited: () -> Bool
+    /// What Undo would take back, and what Redo would put back — the action
+    /// names the app shows in its Edit menu, or nil when there is nothing.
+    var undoActionName: () -> String?
+    var redoActionName: () -> String?
+    /// Takes back the last step on the document's undo stack, or puts one back.
+    /// Returns what it did, or nil when there was nothing to do.
+    var undo: () -> String?
+    var redo: () -> String?
     /// Writes the document to its file, the way the Save command does. An edit
     /// made through this channel is one undoable step in an open document and
     /// nothing more until this runs.
@@ -62,6 +70,10 @@ final class HorizontalLiveDocument {
             throw HorizontalDispatchError.failed("This document does not accept edits.")
         }
         isEdited = { false }
+        undoActionName = { nil }
+        redoActionName = { nil }
+        undo = { nil }
+        redo = { nil }
         save = {
             throw HorizontalDispatchError.failed("This document does not know how to save itself.")
         }

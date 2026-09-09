@@ -343,6 +343,46 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             "operation_id": str(uuid.uuid4())})
         self.assertTrue(nothing.is_error)
 
+    async def test_undo_buses_ties_and_arcs_are_advertised(self):
+        tools = {t.name: t for t in await server.mcp.list_tools()}
+        for name in ("list_board_texts", "list_dimensions", "list_buses", "list_net_ties"):
+            self.assertTrue(tools[name].annotations.read_only_hint, name)
+        # Undo is a document command, not a guarded edit batch: it plans no ops
+        # and so takes no revision.
+        self.assertFalse(tools["undo"].annotations.read_only_hint)
+        self.assertNotIn("expected_revision", tools["undo"].input_schema.get("required", []))
+
+        mapping = tools["apply_ops"].input_schema["properties"]["ops"]["items"]["discriminator"]["mapping"]
+        for op in ("place_board_text", "place_dimension", "add_bus", "add_bus_member",
+                   "place_bus_label", "place_bus_ripper", "add_net_tie", "place_net_tie"):
+            self.assertIn(op, mapping)
+
+        self.assertEqual((await self.call("list_buses", project_ref=self.ref))["data"], [])
+        self.assertEqual((await self.call("list_net_ties", project_ref=self.ref))["data"], [])
+        self.assertEqual((await self.call("list_dimensions", project_ref=self.ref))["data"], [])
+
+        # A disk context has no undo stack, and says what to do instead.
+        undone = await server.mcp.call_tool("undo", {"project_ref": self.ref})
+        self.assertTrue(undone.is_error)
+        self.assertIn("inverse", undone.structured_content["error"]["message"])
+
+        current = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        await self.call("apply_ops", project_ref=self.ref, expected_revision=current, operation_id="notes",
+                        ops=[{"op": "place_board_text", "text": "REV B", "layer": 20, "x_mm": 1, "y_mm": 1},
+                             {"op": "place_dimension", "from": {"x_mm": 0, "y_mm": 0},
+                              "to": {"x_mm": 10, "y_mm": 0}, "mode": "horizontal"}])
+        self.assertEqual((await self.call("list_board_texts", project_ref=self.ref))["data"][0]["text"], "REV B")
+        self.assertEqual((await self.call("list_dimensions", project_ref=self.ref))["data"][0]["measures_mm"], 10)
+
+        # Half an arc centre is neither a line nor a curve; the schema says so.
+        after = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        bad = await server.mcp.call_tool("apply_ops", {
+            "project_ref": self.ref, "expected_revision": after, "operation_id": str(uuid.uuid4()),
+            "ops": [{"op": "place_polygon", "layer": 100, "vertices": [
+                {"x_mm": 0, "y_mm": 0, "arc_center_x_mm": 1},
+                {"x_mm": 1, "y_mm": 1}, {"x_mm": 2, "y_mm": 2}]}]})
+        self.assertTrue(bad.is_error)
+
     async def test_worker_restart_rebinds_a_disk_read(self):
         project = server._projects[self.ref]
         before = project.summary["instance_id"]

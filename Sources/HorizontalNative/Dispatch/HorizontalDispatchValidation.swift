@@ -10,7 +10,8 @@ enum HorizontalDispatchValidation {
         guard unknown.isEmpty else { throw HorizontalDispatchError.invalidParams("Unknown parameters: \(unknown.sorted().joined(separator: ", ")).") }
         let integers: Set<String> = ["handle", "sheet", "max_pixels", "limit", "layer"]
         let numbers: Set<String> = ["dpi", "margin_mm", "deadline_unix_ms"]
-        let booleans: Set<String> = ["include_metadata", "include_unconnected", "include_no_populate", "dry_run", "mirrored"]
+        let booleans: Set<String> = ["include_metadata", "include_unconnected", "include_no_populate", "dry_run",
+                                     "mirrored", "redo"]
         let objects: Set<String> = ["region", "options"]
         let arrays: Set<String> = ["ops", "items", "pool_items", "components", "nets", "layers", "sections"]
         for (key, value) in params {
