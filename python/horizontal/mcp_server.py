@@ -583,6 +583,21 @@ def list_power_symbols(path: str | None = None, net: str | None = None, sheet: i
 
 
 @_tool
+def list_holes(path: str | None = None) -> list[dict[str, Any]]:
+    """Holes through the board: where each is, how big, and whether it is plated. Horizon plates a hole by giving
+    it a net — one without is a mounting hole. A hole's size comes from the padstack it references, so place_hole
+    takes a padstack rather than a diameter."""
+    return _resolve(path).holes()
+
+
+@_tool
+def list_keepouts(path: str | None = None) -> list[dict[str, Any]]:
+    """Areas copper may not enter, with the polygon bounding each. A keepout with all_copper_layers applies to
+    every copper layer; otherwise it applies to the layer its polygon is on."""
+    return _resolve(path).keepouts()
+
+
+@_tool
 def list_planes(path: str | None = None, net: str | None = None) -> list[dict[str, Any]]:
     """Copper pours on the board: the net each carries, its layer and priority, and whether it has been filled.
     poured false means the plane is defined and empty — place_plane defines, pour_planes fills."""

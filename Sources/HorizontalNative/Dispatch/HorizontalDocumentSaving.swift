@@ -44,6 +44,18 @@ enum HorizontalDocumentSaving {
         document(for: url)?.updateChangeCount(.changeDone)
     }
 
+    /// The undo manager Undo actually routes to for this document.
+    ///
+    /// A view reads `\.undoManager` from the environment, which is nil unless
+    /// the view is in a focused document scene — so an edit arriving while the
+    /// app is in the background lands on whatever fallback the view holds, and
+    /// the user cannot undo it. The document's own manager is the one the Undo
+    /// command uses, whether or not anyone is looking at the window.
+    @MainActor
+    static func undoManager(url: URL) -> UndoManager? {
+        document(for: url)?.undoManager
+    }
+
     /// Writes the document at `url` to its file. A document with nothing to
     /// write is left alone rather than rewritten, so a save does not churn
     /// timestamps a build might be watching.
