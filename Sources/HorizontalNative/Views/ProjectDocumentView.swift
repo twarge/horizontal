@@ -1166,6 +1166,32 @@ struct ProjectWorkspaceView: View {
         let documentURL = live.url
         live.isEdited = { HorizontalDocumentSaving.isEdited(url: documentURL) }
         live.save = { try HorizontalDocumentSaving.save(url: documentURL) }
+        // The document's own undo stack, which is the one an edit made through
+        // this channel now registers on and the one the Edit menu drives.
+        live.undoActionName = {
+            let manager = HorizontalDocumentSaving.undoManager(url: documentURL)
+            return manager?.canUndo == true ? manager?.undoActionName : nil
+        }
+        live.redoActionName = {
+            let manager = HorizontalDocumentSaving.undoManager(url: documentURL)
+            return manager?.canRedo == true ? manager?.redoActionName : nil
+        }
+        live.undo = {
+            guard let manager = HorizontalDocumentSaving.undoManager(url: documentURL), manager.canUndo else {
+                return nil
+            }
+            let name = manager.undoActionName
+            manager.undo()
+            return name
+        }
+        live.redo = {
+            guard let manager = HorizontalDocumentSaving.undoManager(url: documentURL), manager.canRedo else {
+                return nil
+            }
+            let name = manager.redoActionName
+            manager.redo()
+            return name
+        }
         #endif
         live.visibleBounds = { pane in
             canvasCommandActionsByPane[pane]?.visibleWorldBounds?()

@@ -476,6 +476,117 @@ class RemoveBlockSymbol(Input):
     sheet: StrictStr | StrictInt | None = None
 
 
+class ArcVertex(Input):
+    """A polygon corner. Giving an arc centre curves the edge to the next one."""
+    x_mm: float
+    y_mm: float
+    arc_center_x_mm: float | None = None
+    arc_center_y_mm: float | None = None
+    arc_reverse: bool | None = None
+
+    @model_validator(mode="after")
+    def whole_arc(self):
+        if (self.arc_center_x_mm is None) != (self.arc_center_y_mm is None):
+            raise ValueError("an arc needs both arc_center_x_mm and arc_center_y_mm")
+        if self.arc_reverse is not None and self.arc_center_x_mm is None:
+            raise ValueError("arc_reverse without an arc centre")
+        return self
+
+
+class PlaceBoardText(Input):
+    op: Literal["place_board_text"]
+    text: str | None = None
+    id: str | None = None
+    layer: StrictInt | None = None
+    x_mm: float | None = None
+    y_mm: float | None = None
+    angle_deg: float | None = None
+    mirror: bool | None = None
+    size_mm: float | None = None
+    width_mm: float | None = None
+    origin: Literal["baseline", "center", "bottom"] | None = None
+    font: Literal["simplex", "complex", "complex_italic", "complex_small",
+                  "complex_small_italic", "duplex", "triplex", "triplex_italic"] | None = None
+
+
+class RemoveBoardText(Input):
+    op: Literal["remove_board_text"]
+    id: StrictStr
+
+
+class PlaceDimension(Input):
+    op: Literal["place_dimension"]
+    from_: Vertex = Field(alias="from")
+    to: Vertex
+    mode: Literal["distance", "horizontal", "vertical"] | None = None
+    label_distance_mm: float | None = None
+    size_mm: float | None = None
+
+
+class RemoveDimension(Input):
+    op: Literal["remove_dimension"]
+    dimension: StrictStr
+
+
+class AddBus(Input):
+    op: Literal["add_bus"]
+    name: StrictStr
+    id: str | None = None
+
+
+class RemoveBus(Input):
+    op: Literal["remove_bus"]
+    bus: StrictStr
+
+
+class AddBusMember(Input):
+    op: Literal["add_bus_member"]
+    bus: StrictStr
+    name: StrictStr
+    net: StrictStr
+    id: str | None = None
+
+
+class PlaceBusLabel(Input):
+    op: Literal["place_bus_label"]
+    bus: StrictStr
+    sheet: StrictStr | StrictInt | None = None
+    x_mm: float
+    y_mm: float
+    orientation: Orientation | None = None
+    size_mm: float | None = None
+
+
+class PlaceBusRipper(Input):
+    op: Literal["place_bus_ripper"]
+    bus: StrictStr
+    member: StrictStr
+    sheet: StrictStr | StrictInt | None = None
+    x_mm: float
+    y_mm: float
+    orientation: Orientation | None = None
+
+
+class AddNetTie(Input):
+    op: Literal["add_net_tie"]
+    primary: StrictStr
+    secondary: StrictStr
+    id: str | None = None
+
+
+class RemoveNetTie(Input):
+    op: Literal["remove_net_tie"]
+    net_tie: StrictStr
+
+
+class PlaceNetTie(Input):
+    op: Literal["place_net_tie"]
+    net_tie: StrictStr
+    sheet: StrictStr | StrictInt | None = None
+    from_: Vertex = Field(alias="from")
+    to: Vertex
+
+
 class PlaceHole(Input):
     op: Literal["place_hole"]
     x_mm: float
@@ -492,7 +603,7 @@ class RemoveHole(Input):
 
 class PlaceKeepout(Input):
     op: Literal["place_keepout"]
-    vertices: list[Vertex] = Field(min_length=3)
+    vertices: list[ArcVertex] = Field(min_length=3)
     layer: StrictInt | None = None
     keepout_class: str | None = None
     exposed_copper_only: bool | None = None
@@ -560,7 +671,7 @@ class Vertex(Input):
 class PlacePolygon(Input):
     op: Literal["place_polygon"]
     layer: StrictInt
-    vertices: list[Vertex] = Field(min_length=3)
+    vertices: list[ArcVertex] = Field(min_length=3)
 
 
 class RemovePolygon(Input):
@@ -572,7 +683,7 @@ class PlacePlane(Input):
     op: Literal["place_plane"]
     net: StrictStr
     layer: StrictInt
-    vertices: list[Vertex] = Field(min_length=3)
+    vertices: list[ArcVertex] = Field(min_length=3)
     priority: StrictInt | None = None
 
 
@@ -589,6 +700,7 @@ class PlaceTrack(Input):
     # Optional only when the board states a track_width rule that covers it.
     width_mm: float | None = None
     net: str | None = None
+    arc_center: Vertex | None = None
 
 
 class TrackOp(Input):
@@ -638,5 +750,8 @@ EditOperation = Annotated[EnsureComponent | RemoveComponent | SetValue | SetRefd
                           AddBlockInstance | RemoveBlockInstance | ConnectBlockPort |
                           PlaceBlockSymbol | RemoveBlockSymbol | SetStackup |
                           AddRule | SetRule | RemoveRule |
-                          PlaceHole | RemoveHole | PlaceKeepout | RemoveKeepout | SetSheetIndex | CopyLayout,
+                          PlaceHole | RemoveHole | PlaceKeepout | RemoveKeepout | SetSheetIndex |
+                          PlaceBoardText | RemoveBoardText | PlaceDimension | RemoveDimension |
+                          AddBus | RemoveBus | AddBusMember | PlaceBusLabel | PlaceBusRipper |
+                          AddNetTie | RemoveNetTie | PlaceNetTie | CopyLayout,
                           Field(discriminator="op")]

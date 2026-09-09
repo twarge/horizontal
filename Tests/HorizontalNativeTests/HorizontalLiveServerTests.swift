@@ -247,8 +247,65 @@ final class HorizontalLiveServerTests: XCTestCase {
         XCTAssertTrue((error["message"] as? String ?? "").contains("still does not match"), "\(error)")
     }
 
+    /// Undo through the channel drives the document's own stack — the one the
+    /// Edit menu drives — so an edit made here and one made by hand undo alike.
+    func testUndoDrivesTheDocumentsOwnStack() throws {
+        let document = try registerTemplateDocument()
+        var stack = ["Apply 1 Edit"]
+        var redoStack = [String]()
+        document.undoActionName = { stack.last }
+        document.redoActionName = { redoStack.last }
+        document.undo = {
+            guard let name = stack.popLast() else { return nil }
+            redoStack.append(name)
+            return name
+        }
+        document.redo = {
+            guard let name = redoStack.popLast() else { return nil }
+            stack.append(name)
+            return name
+        }
+        let handle = try XCTUnwrap(self.handle)
+        func call(_ params: JSONDictionary) -> JSONDictionary {
+            HorizontalDispatch.call(["jsonrpc": "2.0", "id": 1, "method": "undo", "params": params])
+        }
+
+        // The summary says what is on top, so a caller can tell whether its own
+        // edit is still there before reaching for undo.
+        let info = try XCTUnwrap((HorizontalDispatch.call(["jsonrpc": "2.0", "id": 2, "method": "project_info",
+                                                            "params": ["handle": handle]])["result"]) as? JSONDictionary)
+        XCTAssertEqual(info["can_undo"] as? String, "Apply 1 Edit")
+        XCTAssertNil(info["can_redo"] as? String)
+
+        let undone = try XCTUnwrap(call(["handle": handle])["result"] as? JSONDictionary)
+        XCTAssertEqual(undone["undone"] as? String, "Apply 1 Edit")
+        XCTAssertEqual(undone["can_redo"] as? String, "Apply 1 Edit")
+        XCTAssertNil(undone["can_undo"] as? String)
+
+        // Nothing left to undo is said rather than reported as a success.
+        let empty = try XCTUnwrap(call(["handle": handle])["error"] as? JSONDictionary)
+        XCTAssertTrue((empty["message"] as? String ?? "").contains("nothing to undo"), "\(empty)")
+
+        let redone = try XCTUnwrap(call(["handle": handle, "redo": true])["result"] as? JSONDictionary)
+        XCTAssertEqual(redone["redone"] as? String, "Apply 1 Edit")
+        XCTAssertNil(redone["undone"] as? String)
+        XCTAssertNotNil(try XCTUnwrap(call(["handle": handle, "redo": true])["error"]))
+    }
+
     /// A disk context has nothing held back: its edits committed with their
     /// transaction. Saying so beats an error a caller has to special-case.
+    /// A disk edit is a committed transaction, not a step on a stack, so undo
+    /// says what to do instead rather than pretending.
+    func testUndoingADiskContextExplainsItself() throws {
+        let session = HorizontalDispatchSession()
+        let entry = try session.open(url: packageURL)
+        XCTAssertThrowsError(try HorizontalDispatchMethods.handler(named: "undo")?(session, ["handle": entry.handle])) { error in
+            let message = (error as? HorizontalDispatchError)?.message ?? ""
+            XCTAssertTrue(message.contains("no undo stack"), message)
+            XCTAssertTrue(message.contains("inverse"), message)
+        }
+    }
+
     func testSavingADiskContextIsNotAnError() throws {
         let session = HorizontalDispatchSession()
         let entry = try session.open(url: packageURL)

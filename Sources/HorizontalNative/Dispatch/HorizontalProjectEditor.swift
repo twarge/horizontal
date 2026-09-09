@@ -13,6 +13,14 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case setNoPopulate = "set_no_populate"
     case setGroupTag = "set_group_tag"
     case ensureNet = "ensure_net"
+    case addBus = "add_bus"
+    case removeBus = "remove_bus"
+    case addBusMember = "add_bus_member"
+    case placeBusLabel = "place_bus_label"
+    case placeBusRipper = "place_bus_ripper"
+    case addNetTie = "add_net_tie"
+    case removeNetTie = "remove_net_tie"
+    case placeNetTie = "place_net_tie"
     case addNetClass = "add_net_class"
     case renameNetClass = "rename_net_class"
     case renameNet = "rename_net"
@@ -54,6 +62,10 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case removeHole = "remove_hole"
     case placeKeepout = "place_keepout"
     case removeKeepout = "remove_keepout"
+    case placeBoardText = "place_board_text"
+    case removeBoardText = "remove_board_text"
+    case placeDimension = "place_dimension"
+    case removeDimension = "remove_dimension"
     case setSheetIndex = "set_sheet_index"
     case placeComponent = "place_component"
     case removePlacement = "remove_placement"
@@ -69,6 +81,14 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .setNoPopulate: "Mark a component do-not-populate or not."
         case .setGroupTag: "Set the group and tag names Horizon uses to copy placement between identical sub-circuits."
         case .ensureNet: "Create a net if no net has that id or name; returns its id."
+        case .addBus: "Create a bus — a named bundle the nets in it travel as one line on a sheet."
+        case .removeBus: "Remove a bus, its members, and the labels and rippers drawn for it."
+        case .addBusMember: "Put a net in a bus under a member name."
+        case .placeBusLabel: "Label a bus on a sheet, the way a net label names a net."
+        case .placeBusRipper: "Take one member off a bus at a point, so it can be wired on its own."
+        case .addNetTie: "Tie two nets together — joined on the board, kept apart in the schematic, which is what a tie is for."
+        case .removeNetTie: "Remove a net tie and the symbols drawn for it."
+        case .placeNetTie: "Draw a net tie on a sheet, between a point on each of its two nets."
         case .addNetClass: "Create a net class. Its electrical parameters live in the board rules; board_rules shows them."
         case .renameNetClass: "Rename a net class."
         case .renameNet: "Rename a net."
@@ -110,6 +130,10 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .removeHole: "Remove a board hole."
         case .placeKeepout: "Mark an area where copper may not go, on one layer or all of them."
         case .removeKeepout: "Remove a keepout and the polygon bounding it."
+        case .placeBoardText: "Write a text on a board layer — silkscreen, assembly, fabrication notes — or change one that is there."
+        case .removeBoardText: "Remove a board text. A text a package carries belongs to that package."
+        case .placeDimension: "Measure between two points on the board, the way the dimension tool does."
+        case .removeDimension: "Remove a dimension."
         case .setSheetIndex: "Renumber a schematic sheet, swapping with whatever holds that page number."
         case .placeComponent: "Place a component's package on the board, or move it if it is placed."
         case .removePlacement: "Take a component's package off the board, keeping its copper as junctions."
@@ -136,6 +160,32 @@ enum HorizontalEditOperationKind: String, CaseIterable {
             return ["component": component, "group": "Group name, or null.", "tag": "Tag name, or null."]
         case .ensureNet:
             return ["id": "Net id to use (optional).", "name": "Net name.", "net_class": "Net class name or id (optional).", "is_power": "Power net (optional)."]
+        case .addBus:
+            return ["name": "Bus name.", "id": "Bus id to use (optional)."]
+        case .removeBus:
+            return ["bus": "Bus name or id."]
+        case .addBusMember:
+            return ["bus": "Bus name or id.", "name": "Member name within the bus.", "net": "Net name or id it carries.",
+                    "id": "Member id to use (optional)."]
+        case .placeBusLabel:
+            return ["bus": "Bus name or id.", "sheet": "Sheet index, name or uuid (optional; default the first sheet).",
+                    "x_mm": "X position.", "y_mm": "Y position.",
+                    "orientation": "right, left, up or down (optional; default right).",
+                    "size_mm": "Cap height (optional; default 1.5)."]
+        case .placeBusRipper:
+            return ["bus": "Bus name or id.", "member": "Member name or id to take off.",
+                    "sheet": "Sheet index, name or uuid (optional; default the first sheet).",
+                    "x_mm": "X position.", "y_mm": "Y position.",
+                    "orientation": "up, down, left or right (optional; default up)."]
+        case .addNetTie:
+            return ["primary": "The net kept as the primary one.", "secondary": "The net tied to it.",
+                    "id": "Net tie id to use (optional)."]
+        case .removeNetTie:
+            return ["net_tie": "Net tie id."]
+        case .placeNetTie:
+            return ["net_tie": "Net tie id, from list_net_ties.",
+                    "sheet": "Sheet index, name or uuid (optional; default the first sheet).",
+                    "from": "{\"x_mm\", \"y_mm\"} on the primary net.", "to": "{\"x_mm\", \"y_mm\"} on the secondary."]
         case .addNetClass:
             return ["name": "Net class name.", "id": "Net class id to use (optional)."]
         case .renameNetClass:
@@ -246,12 +296,31 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "exposed_copper_only": "Only exposed copper is kept out (optional)."]
         case .removeKeepout:
             return ["keepout": "Keepout id, from list_keepouts."]
+        case .placeBoardText:
+            return ["text": "The text to write. Optional when changing placement only.",
+                    "id": "Board text id to change (optional; a new text otherwise). list_board_texts returns them.",
+                    "layer": "Board layer number. board_info lists them; 20 is top silkscreen.",
+                    "x_mm": "X position.", "y_mm": "Y position.",
+                    "angle_deg": "Rotation (optional).", "mirror": "Mirror the text (optional).",
+                    "size_mm": "Cap height (optional; default 1.5).", "width_mm": "Stroke width (optional; default 0, Horizon's automatic width).",
+                    "origin": "baseline, center or bottom (optional; default center).",
+                    "font": "simplex, complex, complex_italic, complex_small, complex_small_italic, duplex, triplex or triplex_italic (optional)."]
+        case .removeBoardText:
+            return ["id": "Board text id, from list_board_texts."]
+        case .placeDimension:
+            return ["from": "{\"x_mm\", \"y_mm\"} of the first point.", "to": "{\"x_mm\", \"y_mm\"} of the second.",
+                    "mode": "distance, horizontal or vertical (optional; default distance).",
+                    "label_distance_mm": "How far the label sits off the line (optional; default 1).",
+                    "size_mm": "Label cap height (optional; default 1.5)."]
+        case .removeDimension:
+            return ["dimension": "Dimension id, from list_dimensions."]
         case .setSheetIndex:
             return ["sheet": "Sheet index, name or uuid.", "index": "The page number to give it."]
         case .placeTrack:
             let endpoint = "One of {\"component\", \"pad\"}, {\"junction\"} or {\"x_mm\", \"y_mm\"}. A point becomes a junction."
             return ["from": endpoint, "to": endpoint, "layer": "Copper layer number; 0 is the top. board_info lists them.",
                     "width_mm": "Track width. Optional only when the board states a track_width rule for the net's class on that layer.",
+                    "arc_center": "{\"x_mm\", \"y_mm\"} to curve the segment around that point instead of running straight (optional).",
                     "net": "Net name or id (optional; taken from the ends when they name one)."]
         case .removeTrack:
             return ["track": "Track id, from list_tracks."]
@@ -292,7 +361,11 @@ struct HorizontalEditOperation {
         let unknown = Set(json.keys).subtracting(Set(kind.params.keys).union(["op"]))
         guard unknown.isEmpty else { throw HorizontalDispatchError.invalidParams("Unknown \(name) fields: \(unknown.sorted().joined(separator: ", ")).") }
         for (key, value) in json where key != "op" {
-            if key == "vertices" {
+            if key == "mode" {
+                guard let mode = value as? String, ["distance", "horizontal", "vertical"].contains(mode) else {
+                    throw HorizontalDispatchError.invalidParams("mode must be distance, horizontal or vertical.")
+                }
+            } else if key == "vertices" {
                 guard let vertices = value as? [Any], vertices.count >= 3, vertices.allSatisfy({ $0 is JSONDictionary }) else {
                     throw HorizontalDispatchError.invalidParams("vertices must be three or more {\"x_mm\", \"y_mm\"} points.")
                 }
@@ -302,12 +375,14 @@ struct HorizontalEditOperation {
                 guard value is JSONDictionary else {
                     throw HorizontalDispatchError.invalidParams("fields must be an object of rule fields to merge.")
                 }
-            } else if ["from", "to"].contains(key) {
-                // A track endpoint is an object; everything else here is scalar.
+            } else if ["from", "to", "arc_center"].contains(key) {
+                // A track endpoint and an arc centre are objects; everything
+                // else here is scalar.
                 guard let endpoint = value as? JSONDictionary, !endpoint.isEmpty else {
-                    throw HorizontalDispatchError.invalidParams("\(key) must be an object naming a pad, a junction or a point.")
+                    throw HorizontalDispatchError.invalidParams("\(key) must be an object.")
                 }
-            } else if ["x_mm", "y_mm", "angle_deg", "size_mm", "width_mm", "copper_mm", "substrate_mm"].contains(key) {
+            } else if ["x_mm", "y_mm", "angle_deg", "size_mm", "width_mm", "copper_mm", "substrate_mm",
+                       "label_distance_mm"].contains(key) {
                 try HorizontalDispatchValidation.number(value, key: key)
             } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs", "exposed_copper_only"].contains(key) {
                 try HorizontalDispatchValidation.boolean(value, key: key)
@@ -534,6 +609,22 @@ final class HorizontalProjectEditor {
             let (id, created) = try ensureNet(params)
             change["net"] = id
             change["created"] = created
+        case .addBus:
+            change.merge(try addBus(params)) { _, new in new }
+        case .removeBus:
+            change.merge(try removeBus(params)) { _, new in new }
+        case .addBusMember:
+            change.merge(try addBusMember(params)) { _, new in new }
+        case .placeBusLabel:
+            change.merge(try placeBusMark(params, kind: .label)) { _, new in new }
+        case .placeBusRipper:
+            change.merge(try placeBusMark(params, kind: .ripper)) { _, new in new }
+        case .addNetTie:
+            change.merge(try addNetTie(params)) { _, new in new }
+        case .removeNetTie:
+            change.merge(try removeNetTie(params)) { _, new in new }
+        case .placeNetTie:
+            change.merge(try placeNetTie(params)) { _, new in new }
         case .addNetClass:
             change.merge(try addNetClass(params)) { _, new in new }
         case .renameNetClass:
@@ -650,6 +741,14 @@ final class HorizontalProjectEditor {
             change.merge(try placeKeepout(params)) { _, new in new }
         case .removeKeepout:
             change.merge(try removeKeepout(params)) { _, new in new }
+        case .placeBoardText:
+            change.merge(try placeBoardText(params)) { _, new in new }
+        case .removeBoardText:
+            change.merge(try removeBoardEntry(params, key: "texts", selector: "id", label: "board text")) { _, new in new }
+        case .placeDimension:
+            change.merge(try placeDimension(params)) { _, new in new }
+        case .removeDimension:
+            change.merge(try removeBoardEntry(params, key: "dimensions", selector: "dimension", label: "dimension")) { _, new in new }
         case .setSheetIndex:
             change.merge(try setSheetIndex(params)) { _, new in new }
         case .placeTrack:
@@ -1452,7 +1551,7 @@ final class HorizontalProjectEditor {
 
     /// A junction on a schematic sheet, at a point, carrying a net. Net labels
     /// and power symbols both sit on one; a point that already has one joins it.
-    private func ensureSheetJunction(_ sheetID: String, x: Double, y: Double, net: String) throws -> String {
+    private func ensureSheetJunction(_ sheetID: String, x: Double, y: Double, net: String?) throws -> String {
         let point = [Self.nanometres(x), Self.nanometres(y)]
         let sheets = try sheetsInOrder()
         let existing = sheets.first { $0.id == sheetID }?.json.dictionaryMap("junctions")
@@ -1462,7 +1561,8 @@ final class HorizontalProjectEditor {
             var junctions = sheet["junctions"] as? JSONDictionary ?? [:]
             var item = junctions[id] as? JSONDictionary ?? [:]
             item["position"] = point
-            item["net"] = net
+            // A bus label's junction carries no net: the bus is not one net.
+            if let net { item["net"] = net } else { item.removeValue(forKey: "net") }
             junctions[id] = item
             sheet["junctions"] = junctions
         }
@@ -1812,6 +1912,21 @@ final class HorizontalProjectEditor {
                 "place_hole needs \"padstack\": a hole padstack uuid. search_pool with kind padstack finds one, and import_pool_part brings it in."
             )
         }
+        // A board hole is whatever its padstack drills. A padstack that defines
+        // no hole yields no hole — the entry would be written, parse to
+        // nothing, and be pruned by the app's next save without a word. Better
+        // to refuse than to hand back an id for something that is not there.
+        guard let definition = pool.padstack(padstack) else {
+            throw HorizontalDispatchError.notFound(
+                "No padstack \(padstack) in the project pool. import_pool_part or pool_write brings one in."
+            )
+        }
+        guard !definition.dictionaryMap("holes").isEmpty else {
+            throw HorizontalDispatchError.invalidParams(
+                "The padstack \(definition.string("name") ?? padstack) defines no hole, so it would drill nothing. "
+                    + "search_pool with kind padstack finds one whose padstack_type is hole or mechanical."
+            )
+        }
         var item: JSONDictionary = [
             "placement": ["shift": [Self.nanometres(x), Self.nanometres(y)],
                           "angle": Self.horizonAngle(params.double("angle_deg") ?? 0), "mirror": false],
@@ -1896,6 +2011,340 @@ final class HorizontalProjectEditor {
         }
         return ["sheet": id, "index": index, "was": was,
                 "swapped_with": occupant?.id as Any? as Any]
+    }
+
+    // MARK: - Board text and dimensions
+
+    private func placeBoardText(_ params: JSONDictionary) throws -> JSONDictionary {
+        let texts = try board()["texts"] as? JSONDictionary ?? [:]
+        let existing = try params.string("id").map { reference -> (id: String, json: JSONDictionary) in
+            guard let key = texts.keys.first(where: { $0.caseInsensitiveCompare(reference) == .orderedSame }),
+                  let item = texts[key] as? JSONDictionary else {
+                throw HorizontalDispatchError.notFound("No board text \(reference). list_board_texts returns the ids.")
+            }
+            return (key, item)
+        }
+        // A text a package carries was extracted from it by Smash; it moves and
+        // dies with the package rather than on its own.
+        if let existing, existing.json.bool("from_smash") == true {
+            throw HorizontalDispatchError.invalidParams(
+                "\(existing.id) is a package's own text, not free text on the board. Change the component instead."
+            )
+        }
+        var item = existing?.json ?? ["from_smash": false, "origin": "center", "font": "simplex",
+                                      "width": 0, "size": 1_500_000]
+        if let text = params.string("text") {
+            guard !text.isEmpty else { throw HorizontalDispatchError.invalidParams("place_board_text needs a non-empty \"text\".") }
+            item["text"] = text
+        } else if existing == nil {
+            throw HorizontalDispatchError.invalidParams("place_board_text needs \"text\" for a text that is not on the board yet.")
+        }
+        if let layer = params.int("layer") {
+            item["layer"] = layer
+        } else if existing == nil {
+            throw HorizontalDispatchError.invalidParams("place_board_text needs \"layer\"; board_info lists them.")
+        }
+        for (key, allowed) in [("origin", Self.textOrigins), ("font", Self.textFonts)] {
+            guard let value = params.string(key) else { continue }
+            guard allowed.contains(value) else {
+                throw HorizontalDispatchError.invalidParams("\(key) must be one of \(allowed.joined(separator: ", ")).")
+            }
+            item[key] = value
+        }
+        for (key, field) in [("size_mm", "size"), ("width_mm", "width")] {
+            guard let millimetres = params.double(key) else { continue }
+            guard millimetres >= 0 else { throw HorizontalDispatchError.invalidParams("\(key) cannot be negative.") }
+            item[field] = Self.nanometres(millimetres)
+        }
+        guard (item["size"] as? Int ?? 0) > 0 else { throw HorizontalDispatchError.invalidParams("size_mm must be more than zero.") }
+
+        var placement = item["placement"] as? JSONDictionary ?? ["angle": 0, "mirror": false, "shift": [0, 0]]
+        if let x = params.double("x_mm"), let y = params.double("y_mm") {
+            placement["shift"] = [Self.nanometres(x), Self.nanometres(y)]
+        } else if existing == nil {
+            throw HorizontalDispatchError.invalidParams("place_board_text needs \"x_mm\" and \"y_mm\" the first time.")
+        }
+        if let degrees = params.double("angle_deg") { placement["angle"] = Self.horizonAngle(degrees) }
+        if let mirror = params.bool("mirror") { placement["mirror"] = mirror }
+        item["placement"] = placement
+
+        let id = existing?.id ?? UUID().uuidString.lowercased()
+        try updateBoard { board in
+            var texts = board["texts"] as? JSONDictionary ?? [:]
+            texts[id] = item
+            board["texts"] = texts
+        }
+        return ["id": id, "text": item.string("text") as Any, "layer": item.int("layer") as Any? as Any,
+                "created": existing == nil]
+    }
+
+    private func placeDimension(_ params: JSONDictionary) throws -> JSONDictionary {
+        func point(_ key: String) throws -> [Int] {
+            guard let value = params[key] as? JSONDictionary,
+                  let x = value.double("x_mm"), let y = value.double("y_mm") else {
+                throw HorizontalDispatchError.invalidParams("place_dimension needs \"\(key)\" as {\"x_mm\", \"y_mm\"}.")
+            }
+            let unknown = Set(value.keys).subtracting(["x_mm", "y_mm"])
+            guard unknown.isEmpty else {
+                throw HorizontalDispatchError.invalidParams("Unknown \(key) fields: \(unknown.sorted().joined(separator: ", ")).")
+            }
+            return [Self.nanometres(x), Self.nanometres(y)]
+        }
+        let p0 = try point("from"), p1 = try point("to")
+        guard p0 != p1 else { throw HorizontalDispatchError.invalidParams("A dimension measures between two different points.") }
+        let size = params.double("size_mm") ?? 1.5
+        guard size > 0 else { throw HorizontalDispatchError.invalidParams("size_mm must be more than zero.") }
+        let id = UUID().uuidString.lowercased()
+        let mode = params.string("mode") ?? "distance"
+        try updateBoard { board in
+            var dimensions = board["dimensions"] as? JSONDictionary ?? [:]
+            dimensions[id] = ["p0": p0, "p1": p1, "mode": mode,
+                              "label_distance": Self.nanometres(params.double("label_distance_mm") ?? 1),
+                              "label_size": Self.nanometres(size)]
+            board["dimensions"] = dimensions
+        }
+        return ["dimension": id, "mode": mode,
+                "from": ["x_mm": Double(p0[0]) / 1_000_000, "y_mm": Double(p0[1]) / 1_000_000],
+                "to": ["x_mm": Double(p1[0]) / 1_000_000, "y_mm": Double(p1[1]) / 1_000_000]]
+    }
+
+    // MARK: - Buses and net ties
+
+    private enum BusMark { case label, ripper }
+
+    private func buses() -> JSONDictionary { block["buses"] as? JSONDictionary ?? [:] }
+
+    private func busID(_ params: JSONDictionary, key: String = "bus") throws -> String {
+        guard let reference = params.string(key), !reference.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("\(key) is required; list_buses returns them.")
+        }
+        let all = buses()
+        if let match = all.keys.first(where: { $0.caseInsensitiveCompare(reference) == .orderedSame }) { return match }
+        let named = all.filter { ($0.value as? JSONDictionary)?.string("name")?.caseInsensitiveCompare(reference) == .orderedSame }
+        guard named.count <= 1 else {
+            throw HorizontalDispatchError.ambiguous("More than one bus is called \(reference); use its id.",
+                                                    candidates: named.keys.sorted())
+        }
+        guard let match = named.first else { throw HorizontalDispatchError.notFound("No bus \(reference).") }
+        return match.key
+    }
+
+    private func addBus(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard let name = params.string("name"), !name.trimmingCharacters(in: .whitespaces).isEmpty else {
+            throw HorizontalDispatchError.invalidParams("add_bus needs a \"name\".")
+        }
+        var all = buses()
+        if let existing = all.first(where: { ($0.value as? JSONDictionary)?.string("name") == name }) {
+            return ["bus": existing.key, "name": name, "created": false]
+        }
+        let id = params.string("id")?.lowercased() ?? UUID().uuidString.lowercased()
+        guard all[id] == nil else { throw HorizontalDispatchError.invalidParams("A bus \(id) already exists.") }
+        all[id] = ["name": name, "members": [String: Any]()]
+        block["buses"] = all
+        return ["bus": id, "name": name, "created": true,
+                "note": "Empty until add_bus_member puts nets in it."]
+    }
+
+    private func removeBus(_ params: JSONDictionary) throws -> JSONDictionary {
+        let id = try busID(params)
+        var all = buses()
+        all.removeValue(forKey: id)
+        block["buses"] = all
+        // Labels and rippers reference the bus; leaving them would point at
+        // nothing.
+        var marks = 0
+        for sheet in try sheetsInOrder() {
+            for key in ["bus_labels", "bus_rippers"] {
+                let doomed = sheet.json.dictionaryMap(key).filter { $0.value.string("bus")?.lowercased() == id.lowercased() }
+                guard !doomed.isEmpty else { continue }
+                marks += doomed.count
+                try updateSheet(sheet.id) { item in
+                    var map = item[key] as? JSONDictionary ?? [:]
+                    for id in doomed.keys { map.removeValue(forKey: id) }
+                    item[key] = map
+                }
+            }
+            try collectSheetJunctions(sheet.id)
+        }
+        return ["bus": id, "labels_and_rippers": marks]
+    }
+
+    private func addBusMember(_ params: JSONDictionary) throws -> JSONDictionary {
+        let id = try busID(params)
+        guard let name = params.string("name"), !name.trimmingCharacters(in: .whitespaces).isEmpty else {
+            throw HorizontalDispatchError.invalidParams("add_bus_member needs a \"name\".")
+        }
+        let net = try netID(params)
+        var all = buses()
+        guard var bus = all[id] as? JSONDictionary else { throw HorizontalDispatchError.notFound("No bus \(id).") }
+        var members = bus["members"] as? JSONDictionary ?? [:]
+        if let existing = members.first(where: { ($0.value as? JSONDictionary)?.string("name") == name }) {
+            var member = existing.value as? JSONDictionary ?? [:]
+            member["net"] = net
+            members[existing.key] = member
+            bus["members"] = members
+            all[id] = bus
+            block["buses"] = all
+            return ["bus": id, "member": existing.key, "name": name, "net": net, "created": false]
+        }
+        let memberID = params.string("id")?.lowercased() ?? UUID().uuidString.lowercased()
+        members[memberID] = ["name": name, "net": net]
+        bus["members"] = members
+        all[id] = bus
+        block["buses"] = all
+        return ["bus": id, "member": memberID, "name": name, "net": net, "created": true]
+    }
+
+    private func busMemberID(_ reference: String, in busID: String) throws -> (id: String, net: String?) {
+        guard let bus = buses()[busID] as? JSONDictionary else {
+            throw HorizontalDispatchError.notFound("No bus \(busID).")
+        }
+        let members = bus.dictionaryMap("members")
+        if let match = members.first(where: { $0.key.caseInsensitiveCompare(reference) == .orderedSame }) {
+            return (match.key, match.value.string("net")?.lowercased())
+        }
+        let named = members.filter { $0.value.string("name")?.caseInsensitiveCompare(reference) == .orderedSame }
+        guard named.count <= 1 else {
+            throw HorizontalDispatchError.ambiguous("More than one member is called \(reference); use its id.",
+                                                    candidates: named.keys.sorted())
+        }
+        guard let match = named.first else {
+            throw HorizontalDispatchError.notFound(
+                "No member \(reference) on that bus. Members: \(members.values.compactMap { $0.string("name") }.sorted().joined(separator: ", "))."
+            )
+        }
+        return (match.key, match.value.string("net")?.lowercased())
+    }
+
+    private func placeBusMark(_ params: JSONDictionary, kind: BusMark) throws -> JSONDictionary {
+        let bus = try busID(params)
+        let sheetID = try sheetID(params)
+        guard let x = params.double("x_mm"), let y = params.double("y_mm") else {
+            throw HorizontalDispatchError.invalidParams("A bus label or ripper needs \"x_mm\" and \"y_mm\".")
+        }
+        let defaultOrientation = kind == .label ? "right" : "up"
+        let orientation = try markOption(params, key: "orientation", allowed: Self.markOrientations, default: defaultOrientation)
+        var member: (id: String, net: String?)?
+        if kind == .ripper {
+            guard let reference = params.string("member") else {
+                throw HorizontalDispatchError.invalidParams("place_bus_ripper needs \"member\": which net comes off the bus.")
+            }
+            member = try busMemberID(reference, in: bus)
+        }
+        // A ripper's junction carries the member's net, because that is what
+        // comes off the bus there; a label's carries none.
+        let junction = try ensureSheetJunction(sheetID, x: x, y: y, net: member?.net ?? nil)
+        let id = UUID().uuidString.lowercased()
+        let key = kind == .label ? "bus_labels" : "bus_rippers"
+        try updateSheet(sheetID) { sheet in
+            var map = sheet[key] as? JSONDictionary ?? [:]
+            var item: JSONDictionary = ["junction": junction, "bus": bus, "orientation": orientation]
+            if kind == .label {
+                item["size"] = Self.nanometres(params.double("size_mm") ?? 1.5)
+            } else if let member {
+                item["bus_member"] = member.id
+            }
+            map[id] = item
+            sheet[key] = map
+        }
+        var change: JSONDictionary = [kind == .label ? "bus_label" : "bus_ripper": id,
+                                      "bus": bus, "sheet": sheetID, "junction": junction,
+                                      "orientation": orientation]
+        if let member {
+            change["member"] = member.id
+            change["net"] = member.net as Any? as Any
+        }
+        return change
+    }
+
+    private func netTies() -> JSONDictionary { block["net_ties"] as? JSONDictionary ?? [:] }
+
+    private func addNetTie(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard let primaryReference = params.string("primary"), let secondaryReference = params.string("secondary") else {
+            throw HorizontalDispatchError.invalidParams("add_net_tie needs \"primary\" and \"secondary\".")
+        }
+        let primary = try netID(reference: primaryReference)
+        let secondary = try netID(reference: secondaryReference)
+        guard primary != secondary else {
+            throw HorizontalDispatchError.invalidParams("A net tie joins two different nets.")
+        }
+        var all = netTies()
+        if let existing = all.first(where: { item in
+            guard let tie = item.value as? JSONDictionary else { return false }
+            let ends = Set([tie.string("net_primary")?.lowercased(), tie.string("net_secondary")?.lowercased()].compactMap { $0 })
+            return ends == Set([primary, secondary])
+        }) {
+            return ["net_tie": existing.key, "primary": primary, "secondary": secondary, "created": false]
+        }
+        let id = params.string("id")?.lowercased() ?? UUID().uuidString.lowercased()
+        guard all[id] == nil else { throw HorizontalDispatchError.invalidParams("A net tie \(id) already exists.") }
+        all[id] = ["net_primary": primary, "net_secondary": secondary]
+        block["net_ties"] = all
+        return ["net_tie": id, "primary": primary, "secondary": secondary, "created": true,
+                "note": "Joined on the board, kept apart in the schematic. place_net_tie draws it on a sheet."]
+    }
+
+    private func netTieID(_ params: JSONDictionary) throws -> String {
+        guard let reference = params.string("net_tie"), !reference.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("net_tie is required; list_net_ties returns them.")
+        }
+        guard let match = netTies().keys.first(where: { $0.caseInsensitiveCompare(reference) == .orderedSame }) else {
+            throw HorizontalDispatchError.notFound("No net tie \(reference).")
+        }
+        return match
+    }
+
+    private func removeNetTie(_ params: JSONDictionary) throws -> JSONDictionary {
+        let id = try netTieID(params)
+        var all = netTies()
+        all.removeValue(forKey: id)
+        block["net_ties"] = all
+        var symbols = 0
+        for sheet in try sheetsInOrder() {
+            let doomed = sheet.json.dictionaryMap("net_ties").filter { $0.value.string("net_tie")?.lowercased() == id.lowercased() }
+            guard !doomed.isEmpty else { continue }
+            symbols += doomed.count
+            try updateSheet(sheet.id) { item in
+                var map = item["net_ties"] as? JSONDictionary ?? [:]
+                for key in doomed.keys { map.removeValue(forKey: key) }
+                item["net_ties"] = map
+            }
+            try collectSheetJunctions(sheet.id)
+        }
+        return ["net_tie": id, "symbols": symbols]
+    }
+
+    private func placeNetTie(_ params: JSONDictionary) throws -> JSONDictionary {
+        let id = try netTieID(params)
+        let sheetID = try sheetID(params)
+        guard let tie = netTies()[id] as? JSONDictionary,
+              let primary = tie.string("net_primary")?.lowercased(),
+              let secondary = tie.string("net_secondary")?.lowercased() else {
+            throw HorizontalDispatchError.notFound("Net tie \(id) names no nets.")
+        }
+        func point(_ key: String) throws -> (x: Double, y: Double) {
+            guard let value = params[key] as? JSONDictionary,
+                  let x = value.double("x_mm"), let y = value.double("y_mm") else {
+                throw HorizontalDispatchError.invalidParams("place_net_tie needs \"\(key)\" as {\"x_mm\", \"y_mm\"}.")
+            }
+            return (x, y)
+        }
+        let fromPoint = try point("from"), toPoint = try point("to")
+        // Each end sits on its own net's junction: that is what keeps the two
+        // nets apart on the sheet while the tie joins them on the board.
+        let from = try ensureSheetJunction(sheetID, x: fromPoint.x, y: fromPoint.y, net: primary)
+        let to = try ensureSheetJunction(sheetID, x: toPoint.x, y: toPoint.y, net: secondary)
+        guard from != to else {
+            throw HorizontalDispatchError.invalidParams("A net tie's two ends cannot be the same point.")
+        }
+        let symbolID = UUID().uuidString.lowercased()
+        try updateSheet(sheetID) { sheet in
+            var map = sheet["net_ties"] as? JSONDictionary ?? [:]
+            map[symbolID] = ["net_tie": id, "from": from, "to": to]
+            sheet["net_ties"] = map
+        }
+        return ["net_tie": id, "symbol": symbolID, "sheet": sheetID,
+                "from": from, "to": to, "primary": primary, "secondary": secondary]
     }
 
     // MARK: - Board rules
@@ -2356,6 +2805,17 @@ final class HorizontalProjectEditor {
         }
         let from = try resolveTrackEnd(params, key: "from")
         let to = try resolveTrackEnd(params, key: "to")
+        var centre: [Int]?
+        if let arc = params["arc_center"] as? JSONDictionary {
+            guard let x = arc.double("x_mm"), let y = arc.double("y_mm") else {
+                throw HorizontalDispatchError.invalidParams("arc_center needs \"x_mm\" and \"y_mm\".")
+            }
+            let unknown = Set(arc.keys).subtracting(["x_mm", "y_mm"])
+            guard unknown.isEmpty else {
+                throw HorizontalDispatchError.invalidParams("Unknown arc_center fields: \(unknown.sorted().joined(separator: ", ")).")
+            }
+            centre = [Self.nanometres(x), Self.nanometres(y)]
+        }
         guard from.json["pad"] as? String != to.json["pad"] as? String || from.json["junc"] as? String != to.json["junc"] as? String else {
             throw HorizontalDispatchError.invalidParams("A track needs two different ends.")
         }
@@ -2402,11 +2862,15 @@ final class HorizontalProjectEditor {
             var tracks = board["tracks"] as? JSONDictionary ?? [:]
             // Field set and defaults mirror Track::serialize, including pinning
             // width_from_net_class false so the width given here is the width used.
-            tracks[id] = ["from": from.json, "to": to.json, "width": Self.nanometres(widthMM),
-                          "layer": layer, "width_from_net_class": false, "locked": false, "net": net]
+            var track: JSONDictionary = ["from": from.json, "to": to.json, "width": Self.nanometres(widthMM),
+                                         "layer": layer, "width_from_net_class": false, "locked": false, "net": net]
+            // A curved track keeps its centre as a coordinate, not a junction.
+            if let centre { track["center"] = centre }
+            tracks[id] = track
             board["tracks"] = tracks
         }
         var change: JSONDictionary = ["track": id, "net": net, "layer": layer, "width_mm": widthMM,
+                                      "curved": centre != nil,
                                       "junctions_created": [from, to].compactMap { $0.newJunction?.id }]
         if params.double("width_mm") == nil { change["width_from"] = "track_width rule" }
         return change
@@ -2607,12 +3071,29 @@ final class HorizontalProjectEditor {
             guard let point = value as? JSONDictionary, let x = point.double("x_mm"), let y = point.double("y_mm") else {
                 throw HorizontalDispatchError.invalidParams("Vertex \(index) needs \"x_mm\" and \"y_mm\".")
             }
-            let unknown = Set(point.keys).subtracting(["x_mm", "y_mm"])
+            let known: Set<String> = ["x_mm", "y_mm", "arc_center_x_mm", "arc_center_y_mm", "arc_reverse"]
+            let unknown = Set(point.keys).subtracting(known)
             guard unknown.isEmpty else {
-                throw HorizontalDispatchError.invalidParams("Unknown vertex fields: \(unknown.sorted().joined(separator: ", ")). Arcs are the app's.")
+                throw HorizontalDispatchError.invalidParams("Unknown vertex fields: \(unknown.sorted().joined(separator: ", ")).")
             }
-            return ["type": "line", "position": [Self.nanometres(x), Self.nanometres(y)],
-                    "arc_center": [0, 0], "arc_reverse": false]
+            // A vertex curves to the NEXT one around a centre. Horizon stores
+            // the centre on the vertex the arc leaves, and both coordinates are
+            // needed or the centre is meaningless.
+            let centreX = point.double("arc_center_x_mm")
+            let centreY = point.double("arc_center_y_mm")
+            guard (centreX == nil) == (centreY == nil) else {
+                throw HorizontalDispatchError.invalidParams(
+                    "Vertex \(index) gives half an arc centre; an arc needs both arc_center_x_mm and arc_center_y_mm."
+                )
+            }
+            if point["arc_reverse"] != nil, centreX == nil {
+                throw HorizontalDispatchError.invalidParams("Vertex \(index) sets arc_reverse without an arc centre.")
+            }
+            let isArc = centreX != nil
+            return ["type": isArc ? "arc" : "line",
+                    "position": [Self.nanometres(x), Self.nanometres(y)],
+                    "arc_center": [Self.nanometres(centreX ?? 0), Self.nanometres(centreY ?? 0)],
+                    "arc_reverse": point.bool("arc_reverse") ?? false]
         }
     }
 

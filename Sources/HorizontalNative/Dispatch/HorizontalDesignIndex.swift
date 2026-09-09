@@ -603,6 +603,11 @@ final class HorizontalDispatchPoolIndex {
         }.sorted { ($0.string("name") ?? "", $0.string("id") ?? "") < ($1.string("name") ?? "", $1.string("id") ?? "") }
     }
 
+    /// A padstack's own JSON, for checking what it actually defines.
+    func padstack(_ id: String) -> JSONDictionary? {
+        padstacks[id.lowercased()]
+    }
+
     func unit(_ id: String) -> Unit? {
         units[id.lowercased()]
     }

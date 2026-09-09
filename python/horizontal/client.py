@@ -126,7 +126,7 @@ class Project:
             _request_deadline.reset(token)
 
     def _perform_call(self, method: str, **params: Any) -> Any:
-        reads = {"project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "list_texts", "list_symbols", "list_block_instances", "list_net_lines", "list_net_labels", "list_power_symbols", "list_planes", "list_polygons", "list_holes", "list_keepouts", "list_tracks", "list_vias", "board_rules", "search_pool", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status"}
+        reads = {"project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "list_texts", "list_symbols", "list_block_instances", "list_net_lines", "list_net_labels", "list_power_symbols", "list_planes", "list_polygons", "list_holes", "list_keepouts", "list_board_texts", "list_dimensions", "list_buses", "list_net_ties", "list_tracks", "list_vias", "board_rules", "search_pool", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status"}
         deadline = _request_deadline.get() or (time.monotonic() + self.session.transport.timeout)
         if self._generation != self.session.generation:
             self._rebind()
@@ -244,6 +244,26 @@ class Project:
         """Power symbols on the sheets, with the net each marks."""
         params = {k: v for k, v in {"net": net, "sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id}.items() if v is not None}
         return self._call("list_power_symbols", **params)
+
+    def undo(self, redo: bool = False) -> dict[str, Any]:
+        """Take back the last step on an open document's undo stack, or put one back."""
+        return self._call("undo", redo=redo)
+
+    def board_texts(self, layer: int | None = None) -> list[dict[str, Any]]:
+        """Free text on the board layers."""
+        return self._call("list_board_texts", **({"layer": layer} if layer is not None else {}))
+
+    def dimensions(self) -> list[dict[str, Any]]:
+        """Dimensions on the board, with what each measures."""
+        return self._call("list_dimensions")
+
+    def buses(self) -> list[dict[str, Any]]:
+        """Buses, their members, and where each is drawn."""
+        return self._call("list_buses")
+
+    def net_ties(self) -> list[dict[str, Any]]:
+        """Net ties, and where each is drawn."""
+        return self._call("list_net_ties")
 
     def holes(self) -> list[dict[str, Any]]:
         """Holes through the board, plated or not."""

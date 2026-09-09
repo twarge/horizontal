@@ -56,6 +56,9 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `list_net_labels`, `list_power_symbols` | what names a net on a page, with the ids their remove ops take |
 | `list_block_instances` | the blocks this block uses, their wired ports, and where each is drawn |
 | `autoroute` | best-effort automatic routing of one net's airwires |
+| `list_board_texts`, `list_dimensions` | board text and dimensions; a dimension reports `measures_mm`, worked out for its mode |
+| `list_buses`, `list_net_ties` | buses with their members, net ties with the nets they join, and where each is drawn |
+| `undo` | takes back the last step on the document's own undo stack, or puts one back |
 | `list_holes`, `list_keepouts` | holes through the board and the areas copper may not enter |
 | `list_planes`, `list_polygons` | copper pours (and whether each is actually filled) and board polygons; layer 100 is the outline |
 | `board_rules` | the design rules as data — one entry per rule, not per kind — the net classes they select, and the stackup |
@@ -134,6 +137,11 @@ designator or id, nets by name or id, pins by name (`EN`), by gate and pin
 | `place_text`, `remove_text` | Free text on a sheet: write one, or change the text, position, rotation, size, origin or font of one `list_texts` named. A text Horizon extracted from a symbol with Smash belongs to that symbol and is refused |
 | `place_component`, `remove_placement` | Board placement in millimetres and degrees; a placed package moves, an unplaced one gets a package entry the loader completes from the part |
 | `place_track`, `remove_track`, `set_track_width` | One straight copper segment per op, between pads, junctions or points; a point becomes a junction, and a junction nothing holds any more is removed with the copper that held it |
+| `place_board_text`, `remove_board_text` | Free text on a board layer — silkscreen, assembly, fabrication notes |
+| `place_dimension`, `remove_dimension` | A measurement between two points, in distance, horizontal or vertical mode |
+| `add_bus`, `add_bus_member`, `remove_bus` | A named bundle the nets in it travel as one line. The nets stay separate nets; the bus is how they are drawn |
+| `place_bus_label`, `place_bus_ripper` | Naming a bus on a sheet, and taking one member off it so that net can be wired alone |
+| `add_net_tie`, `remove_net_tie`, `place_net_tie` | Two nets joined on the board and kept apart in the schematic — a single-point ground join, say |
 | `place_hole`, `remove_hole` | A hole through the board, its size taken from a padstack. A hole with a net is plated onto it; one without is a mounting hole |
 | `place_keepout`, `remove_keepout` | An area copper may not enter, on one layer or on all of them |
 | `set_sheet_index` | Renumber a sheet, swapping with whatever held that page number |
@@ -243,6 +251,22 @@ completes a few percent and reports the rest — the harness in
 `/tmp/router-harness.txt`. What it does write has been checked clear of the
 board's clearances; what it cannot route stays an airwire, is listed in
 `unrouted` with what blocked it, and `place_track` draws those by hand.
+
+### Curves
+
+A polygon vertex with an `arc_center_x_mm` and `arc_center_y_mm` curves the edge
+to the next vertex around that point; one without is a straight corner, and half
+a centre is refused as neither. `place_track` takes the same idea as an
+`arc_center` object. Everything else drawn through this surface is straight.
+
+### Undo
+
+`undo` drives the document's own undo stack — the one the app's Edit menu
+drives — so an edit made here and one made by hand undo alike, newest first.
+`can_undo` and `can_redo` in `project_info` name what is on top, which is how a
+caller tells whether its own edit is still there before reaching for it. A disk
+context has no stack: its edits committed as transactions, and taking one back
+means applying the inverse, which `undo` says rather than pretending.
 
 ### What the app shows of an automation edit
 
