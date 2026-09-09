@@ -12098,12 +12098,15 @@ extension SchematicCanvasView {
             pickNet(afterAnotherPrompt: true)
             return
         }
-        let picked: (String?) -> Void = { picked in
-            guard let picked else { return }
-            if picked == Self.newBusMemberOptionID {
+        // Named apart from its parameter on purpose: a local whose closure
+        // takes an argument of the same name compiles here and has broken CI's
+        // older Swift before.
+        let takeChoice: (String?) -> Void = { choice in
+            guard let choice else { return }
+            if choice == Self.newBusMemberOptionID {
                 pickNet(afterAnotherPrompt: true)
             } else {
-                use(ChosenBusMember(id: picked, creation: []))
+                use(ChosenBusMember(id: choice, creation: []))
             }
         }
         var options = bus.members.map { HorizontalSelectionPropertyOption(id: $0.id, title: $0.name) }
@@ -12114,14 +12117,14 @@ extension SchematicCanvasView {
             message: "Which net comes off the bus here?",
             options: options.map { HorizontalSchematicObjectPrompt.Option(id: $0.id, name: $0.title) }
         ) {
-            picked(id)
+            takeChoice(id)
         }
         #else
         promptAfterAnother(
             HorizontalCanvasPromptRequest(
                 title: "Bus Member",
                 confirmTitle: "Choose",
-                content: .optionPicker(options: options, selected: bus.members.first?.id, completion: picked)
+                content: .optionPicker(options: options, selected: bus.members.first?.id, completion: takeChoice)
             )
         )
         #endif
