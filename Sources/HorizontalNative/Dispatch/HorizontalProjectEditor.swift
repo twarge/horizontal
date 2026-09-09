@@ -35,6 +35,9 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case placeBlockSymbol = "place_block_symbol"
     case removeBlockSymbol = "remove_block_symbol"
     case setStackup = "set_stackup"
+    case addRule = "add_rule"
+    case setRule = "set_rule"
+    case removeRule = "remove_rule"
     case addSheet = "add_sheet"
     case renameSheet = "rename_sheet"
     case removeSheet = "remove_sheet"
@@ -82,6 +85,9 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .connectBlockPort: "Connect a block instance's port to a net in the block that uses it. Ports are how a sub-block reaches the design around it."
         case .placeBlockSymbol: "Draw a block instance on a sheet, using the symbol that block defines for itself."
         case .removeBlockSymbol: "Take a block instance's symbol off its sheet. The instance stays."
+        case .addRule: "Add a board design rule of a kind, with the defaults the app's own rules editor would give it."
+        case .setRule: "Change fields of a board design rule. The board is refused if the change makes the rules invalid."
+        case .removeRule: "Remove a board design rule."
         case .setStackup: "Set how many inner copper layers the board has, and the copper and dielectric thicknesses."
         case .addSheet: "Add a schematic sheet."
         case .renameSheet: "Rename a schematic sheet."
@@ -187,6 +193,14 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "angle_deg": "Rotation (optional).", "mirror": "Mirror the symbol (optional)."]
         case .removeBlockSymbol:
             return ["instance": "Block instance id or refdes.", "sheet": "Sheet index, name or uuid (optional; default every sheet)."]
+        case .addRule:
+            return ["kind": "Rule kind, e.g. clearance_copper or track_width. board_rules lists the kinds.",
+                    "id": "Rule id to use, for a kind that holds several (optional)."]
+        case .setRule:
+            return ["kind": "Rule kind.", "id": "Rule id, for a kind that holds several. board_rules returns them.",
+                    "fields": "Object of fields to merge into the rule. board_rules shows what a rule of that kind holds."]
+        case .removeRule:
+            return ["kind": "Rule kind.", "id": "Rule id, for a kind that holds several."]
         case .setStackup:
             return ["inner_layers": "How many inner copper layers (0 to 30).",
                     "copper_mm": "Copper thickness per layer (optional; default 0.035).",
@@ -258,6 +272,10 @@ struct HorizontalEditOperation {
                 }
             } else if ["layer", "index", "priority", "inner_layers"].contains(key) {
                 try HorizontalDispatchValidation.number(value, key: key, integer: true)
+            } else if key == "fields" {
+                guard value is JSONDictionary else {
+                    throw HorizontalDispatchError.invalidParams("fields must be an object of rule fields to merge.")
+                }
             } else if ["from", "to"].contains(key) {
                 // A track endpoint is an object; everything else here is scalar.
                 guard let endpoint = value as? JSONDictionary, !endpoint.isEmpty else {
@@ -576,6 +594,12 @@ final class HorizontalProjectEditor {
             change.merge(try placeBlockSymbol(params)) { _, new in new }
         case .removeBlockSymbol:
             change.merge(try removeBlockSymbol(params)) { _, new in new }
+        case .addRule:
+            change.merge(try addRule(params)) { _, new in new }
+        case .setRule:
+            change.merge(try setRule(params)) { _, new in new }
+        case .removeRule:
+            change.merge(try removeRule(params)) { _, new in new }
         case .setStackup:
             change.merge(try setStackup(params)) { _, new in new }
         case .addSheet:
@@ -1722,6 +1746,164 @@ final class HorizontalProjectEditor {
         return ["block_instance": id, "symbols": removed]
     }
 
+    // MARK: - Board rules
+
+    /// The context the app's own rules editor works in: the board's layers and
+    /// the block's net classes.
+    private func ruleContext() -> HorizontalBoardRuleContext {
+        let netClasses = HorizontalDesignIndex.schematics(of: project).first(where: \.block.isTop)?.schematic.netClasses
+            ?? project.schematic?.netClasses
+            ?? []
+        return HorizontalBoardRuleContext(board: project.board, netClasses: netClasses)
+    }
+
+    private func ruleKind(_ params: JSONDictionary) throws -> HorizontalBoardRuleKind {
+        guard let raw = params.string("kind"), !raw.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("A rule needs a \"kind\"; board_rules lists them.")
+        }
+        guard let kind = HorizontalBoardRuleKind(rawValue: raw) else {
+            throw HorizontalDispatchError.invalidParams(
+                "Unknown rule kind \(raw). Known: \(HorizontalBoardRuleKind.visibleCases.map(\.rawValue).sorted().joined(separator: ", "))."
+            )
+        }
+        return kind
+    }
+
+    /// Runs the app's own rules validator over a proposed rules object and
+    /// refuses anything that would make the board's rules invalid.
+    ///
+    /// This is what makes writing rules safe enough to offer at all. A
+    /// clearance rule written wrong is worse than no rule — it would let check
+    /// pass on a board that should fail — so nothing is committed that the
+    /// editor's own validator calls an error.
+    private func validatedRules(_ rules: JSONDictionary) throws -> JSONDictionary {
+        let context = ruleContext()
+        var problems = [String]()
+        for kind in HorizontalBoardRuleKind.visibleCases {
+            for message in HorizontalBoardRulesValidator.validate(rules: rules, selectedKind: kind, context: context)
+            where message.level == .error {
+                problems.append("\(message.title): \(message.detail)")
+            }
+        }
+        guard problems.isEmpty else {
+            throw HorizontalDispatchError.invalidParams(
+                "That would leave the board's rules invalid, so nothing was written: \(Set(problems).sorted().joined(separator: "; "))"
+            )
+        }
+        return rules
+    }
+
+    private func updateRules(_ body: (inout JSONDictionary) throws -> Void) throws {
+        var rules = try board()["rules"] as? JSONDictionary ?? [:]
+        try body(&rules)
+        let checked = try validatedRules(rules)
+        try updateBoard { $0["rules"] = checked }
+    }
+
+    /// One rule, addressed the way Horizon stores them: a kind that can hold
+    /// several keys them by uuid, the rest hold the rule directly.
+    private func ruleAddress(_ params: JSONDictionary, kind: HorizontalBoardRuleKind, mustExist: Bool) throws -> String? {
+        guard kind.isMulti else {
+            if params.string("id") != nil {
+                throw HorizontalDispatchError.invalidParams("\(kind.rawValue) holds one rule, so it takes no \"id\".")
+            }
+            return nil
+        }
+        let family = (try board()["rules"] as? JSONDictionary ?? [:]).dictionary(kind.rawValue) ?? [:]
+        guard let reference = params.string("id") else {
+            guard !mustExist else {
+                throw HorizontalDispatchError.invalidParams(
+                    "\(kind.rawValue) can hold several rules, so it needs an \"id\". board_rules returns them."
+                )
+            }
+            return UUID().uuidString.lowercased()
+        }
+        if let match = family.keys.first(where: { $0.caseInsensitiveCompare(reference) == .orderedSame }) {
+            return match
+        }
+        guard !mustExist else {
+            throw HorizontalDispatchError.notFound("No \(kind.rawValue) rule \(reference).")
+        }
+        return reference.lowercased()
+    }
+
+    private func addRule(_ params: JSONDictionary) throws -> JSONDictionary {
+        let kind = try ruleKind(params)
+        let id = try ruleAddress(params, kind: kind, mustExist: false)
+        var created: JSONDictionary = [:]
+        try updateRules { rules in
+            let existingCount = kind.isMulti ? (rules.dictionary(kind.rawValue)?.count ?? 0) : 0
+            // The defaults the app's own rules editor would give it, so a rule
+            // added here is the rule a person would have got.
+            created = kind.defaultRule(context: ruleContext(), order: existingCount)
+            if kind.isMulti {
+                var family = rules.dictionary(kind.rawValue) ?? [:]
+                guard let id else { return }
+                guard family[id] == nil else {
+                    throw HorizontalDispatchError.invalidParams("A \(kind.rawValue) rule \(id) already exists.")
+                }
+                family[id] = created
+                rules[kind.rawValue] = family
+            } else {
+                guard rules[kind.rawValue] == nil else {
+                    throw HorizontalDispatchError.invalidParams("\(kind.rawValue) already has its rule; set_rule changes it.")
+                }
+                rules[kind.rawValue] = created
+            }
+        }
+        return ["kind": kind.rawValue, "rule_id": id as Any? as Any, "rule": created, "created": true]
+    }
+
+    private func setRule(_ params: JSONDictionary) throws -> JSONDictionary {
+        let kind = try ruleKind(params)
+        let id = try ruleAddress(params, kind: kind, mustExist: true)
+        guard let fields = params["fields"] as? JSONDictionary, !fields.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("set_rule needs \"fields\": what to change.")
+        }
+        var merged: JSONDictionary = [:]
+        try updateRules { rules in
+            if kind.isMulti {
+                var family = rules.dictionary(kind.rawValue) ?? [:]
+                guard let id, var rule = family[id] as? JSONDictionary else {
+                    throw HorizontalDispatchError.notFound("No \(kind.rawValue) rule to change.")
+                }
+                // Merged, not replaced: a caller changing one clearance should
+                // not have to restate the rest of the rule to keep it.
+                for (key, value) in fields { rule[key] = value }
+                merged = rule
+                family[id] = rule
+                rules[kind.rawValue] = family
+            } else {
+                guard var rule = rules.dictionary(kind.rawValue) else {
+                    throw HorizontalDispatchError.notFound("The board has no \(kind.rawValue) rule; add_rule makes one.")
+                }
+                for (key, value) in fields { rule[key] = value }
+                merged = rule
+                rules[kind.rawValue] = rule
+            }
+        }
+        return ["kind": kind.rawValue, "rule_id": id as Any? as Any, "rule": merged,
+                "changed": fields.keys.sorted()]
+    }
+
+    private func removeRule(_ params: JSONDictionary) throws -> JSONDictionary {
+        let kind = try ruleKind(params)
+        let id = try ruleAddress(params, kind: kind, mustExist: true)
+        try updateRules { rules in
+            if kind.isMulti, let id {
+                var family = rules.dictionary(kind.rawValue) ?? [:]
+                family.removeValue(forKey: id)
+                if family.isEmpty { rules.removeValue(forKey: kind.rawValue) } else { rules[kind.rawValue] = family }
+            } else {
+                guard rules[kind.rawValue] != nil else {
+                    throw HorizontalDispatchError.notFound("The board has no \(kind.rawValue) rule.")
+                }
+                rules.removeValue(forKey: kind.rawValue)
+            }
+        }
+        return ["kind": kind.rawValue, "rule_id": id as Any? as Any, "removed": true]
+    }
+
     // MARK: - Stackup
 
     private func setStackup(_ params: JSONDictionary) throws -> JSONDictionary {
@@ -2081,12 +2263,11 @@ final class HorizontalProjectEditor {
     /// The default width the board's `track_width` rules state for a net's
     /// class on a layer, in millimetres, or nil when they state none.
     private func ruledTrackWidth(net: String, layer: Int) -> Double? {
-        guard let rules = (try? board())?.dictionary("rules") else { return nil }
+        guard let family = (try? board())?.dictionary("rules")?.dictionary("track_width") else { return nil }
         let netClass = nets()[net]?.string("net_class")?.lowercased()
         var best: Double?
-        for (_, value) in rules {
-            guard let rule = value as? JSONDictionary, rule.string("rule") == "track_width",
-                  rule.bool("enabled") ?? true else { continue }
+        for (_, value) in family {
+            guard let rule = value as? JSONDictionary, rule.bool("enabled") ?? true else { continue }
             let match = rule.dictionary("match")
             let mode = match?.string("mode") ?? "all"
             switch mode {

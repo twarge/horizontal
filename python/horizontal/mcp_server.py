@@ -637,7 +637,12 @@ def board_rules(path: str | None = None, kind: str | None = None) -> dict[str, A
     """The board's design rules as data, with the net classes they select and the stackup they apply to — what a
     route has to respect and what check validates. Rules are given as the file states them, because twenty rule
     kinds have twenty shapes and a normalized form would lose the detail that matters. A board that declares no
-    rules says so: nothing then constrains a route, and place_track will insist on an explicit width."""
+    rules says so: nothing then constrains a route, and place_track will insist on an explicit width.
+
+    Horizon keys rules by kind; a kind listed in multi_kinds holds several, each with its own id, and the rest
+    hold one. add_rule, set_rule and remove_rule take the same kind and id, and every write is checked by the
+    app's own rules validator before it commits — a change that would leave the rules invalid is refused with
+    what was wrong, because a clearance rule written wrong is worse than no rule at all."""
     return _resolve(path).board_rules(kind=kind)
 
 

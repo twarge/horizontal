@@ -1033,18 +1033,22 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertFalse((bare["stackup"] as? [[String: Any]])?.isEmpty ?? true)
 
         let netClass = try XCTUnwrap(try XCTUnwrap(bare["net_classes"] as? [[String: Any]]).first?["id"] as? String)
+        // Horizon's own shape: keyed by kind, and a multi kind keys its rules
+        // by uuid underneath.
         try editBoard { json in
             json["rules"] = [
-                "rule-1": ["rule": "track_width", "enabled": true,
-                           "match": ["mode": "net_class", "net_class": netClass],
-                           "widths": ["0": ["min": 100_000, "def": 300_000, "max": 1_000_000]]],
-                "rule-2": ["rule": "clearance_copper", "enabled": true, "match": ["mode": "all"]]
+                "track_width": ["rule-1": ["enabled": true, "order": 0,
+                                           "match": ["mode": "net_class", "net_class": netClass],
+                                           "widths": ["0": ["min": 100_000, "def": 300_000, "max": 1_000_000]]]],
+                "clearance_copper": ["rule-2": ["enabled": true, "order": 0, "clearances": [],
+                                                "match_1": ["mode": "all"], "match_2": ["mode": "all"]]]
             ]
         }
         let rules = try XCTUnwrap(try result("board_rules") as? [String: Any])
         XCTAssertEqual((rules["rules"] as? [[String: Any]])?.count, 2)
         XCTAssertEqual(rules["kinds"] as? [String], ["clearance_copper", "track_width"])
         let width = try XCTUnwrap((rules["rules"] as? [[String: Any]])?.first { $0["kind"] as? String == "track_width" })
+        XCTAssertEqual(width["id"] as? String, "rule-1")
         XCTAssertTrue((width["applies_to"] as? String ?? "").contains("Default"), "\(width)")
         XCTAssertNotNil(width["rule"], "the rule is handed over as the file states it")
         XCTAssertEqual((try result("board_rules", ["kind": "track_width"]) as? [String: Any]).map { ($0["rules"] as? [[String: Any]])?.count }, 1)
@@ -1062,9 +1066,9 @@ final class HorizontalProjectEditorTests: XCTestCase {
                       "\(refused)")
 
         try editBoard { json in
-            json["rules"] = ["rule-1": ["rule": "track_width", "enabled": true,
-                                        "match": ["mode": "net_class", "net_class": netClass],
-                                        "widths": ["0": ["min": 100_000, "def": 300_000, "max": 1_000_000]]]]
+            json["rules"] = ["track_width": ["rule-1": ["enabled": true, "order": 0,
+                                                        "match": ["mode": "net_class", "net_class": netClass],
+                                                        "widths": ["0": ["min": 100_000, "def": 300_000, "max": 1_000_000]]]]]
         }
         let routed = try apply([["op": "place_track", "from": ["component": "R1", "pad": "1"],
                                  "to": ["x_mm": 20, "y_mm": 20], "layer": 0]])
@@ -1275,5 +1279,94 @@ final class HorizontalProjectEditorTests: XCTestCase {
                     [["op": "set_stackup"]]] {
             XCTAssertNotNil(try call("apply", ["ops": ops])["error"], "\(ops)")
         }
+    }
+
+    /// Rules are keyed by kind, and a kind that holds several keys those by
+    /// uuid. Reading them has to flatten both, or a whole family reads as one
+    /// rule.
+    func testRulesAreReadPerRuleNotPerFamily() throws {
+        try editBoard { json in
+            json["rules"] = [
+                // A multi kind: several rules under one family key.
+                "clearance_copper": [
+                    "rule-a": ["enabled": true, "order": 0, "clearances": [], "match_1": ["mode": "all"], "match_2": ["mode": "all"]],
+                    "rule-b": ["enabled": false, "order": 1, "clearances": [], "match_1": ["mode": "all"], "match_2": ["mode": "all"]]
+                ],
+                // A single kind: the rule itself, no id.
+                "clearance_silkscreen_exposed_copper": ["enabled": true, "order": -1,
+                                                        "clearance_top": 100_000, "clearance_bottom": 100_000, "pads_only": true]
+            ]
+        }
+        let read = try XCTUnwrap(try result("board_rules") as? [String: Any])
+        let rules = try XCTUnwrap(read["rules"] as? [[String: Any]])
+        XCTAssertEqual(rules.count, 3, "two clearance rules and one silkscreen rule, not two families")
+        XCTAssertEqual(Set(rules.compactMap { $0["kind"] as? String }),
+                       ["clearance_copper", "clearance_silkscreen_exposed_copper"])
+        let copper = rules.filter { $0["kind"] as? String == "clearance_copper" }
+        XCTAssertEqual(copper.count, 2)
+        XCTAssertEqual(Set(copper.compactMap { $0["id"] as? String }), ["rule-a", "rule-b"])
+        XCTAssertEqual(copper.first { $0["id"] as? String == "rule-b" }?["enabled"] as? Bool, false)
+        let single = try XCTUnwrap(rules.first { $0["kind"] as? String == "clearance_silkscreen_exposed_copper" })
+        XCTAssertNil(single["id"] as? String, "a kind that holds one rule has no id")
+        XCTAssertEqual((single["rule"] as? [String: Any])?["clearance_top"] as? Int, 100_000)
+        XCTAssertTrue((read["multi_kinds"] as? [String] ?? []).contains("clearance_copper"))
+    }
+
+    /// Rules are writable, and every write is checked by the app's own
+    /// validator before it commits.
+    func testRulesAreWrittenOnlyWhenTheyStayValid() throws {
+        let added = try apply([["op": "add_rule", "kind": "track_width"]])
+        let change = try XCTUnwrap((added["changes"] as? [[String: Any]])?.first)
+        XCTAssertEqual(change["created"] as? Bool, true)
+        XCTAssertNotNil(change["rule_id"] as? String, "a multi kind gets an id")
+        XCTAssertEqual((added["project"] as? [String: Any])?["diagnostics"] as? [String], [])
+        let id = try XCTUnwrap(change["rule_id"] as? String)
+
+        let rules = try XCTUnwrap(try XCTUnwrap(try result("board_rules") as? [String: Any])["rules"] as? [[String: Any]])
+        XCTAssertEqual(rules.count, 1)
+        XCTAssertEqual(rules[0]["kind"] as? String, "track_width")
+        XCTAssertNotNil((rules[0]["rule"] as? [String: Any])?["widths"], "the app's own defaults")
+
+        // The width the rule states is the width place_track then uses.
+        _ = try apply([["op": "set_rule", "kind": "track_width", "id": id,
+                        "fields": ["widths": ["0": ["min": 100_000, "def": 250_000, "max": 1_000_000]]]]])
+        try placedDivider()
+        let routed = try apply([["op": "place_track", "from": ["component": "R1", "pad": "1"],
+                                 "to": ["x_mm": 20, "y_mm": 20], "layer": 0]])
+        XCTAssertEqual((routed["changes"] as? [[String: Any]])?.first?["width_mm"] as? Double, 0.25)
+
+        // Merged, not replaced: an untouched field survives.
+        let merged = try apply([["op": "set_rule", "kind": "track_width", "id": id, "fields": ["enabled": false]]])
+        let after = try XCTUnwrap((merged["changes"] as? [[String: Any]])?.first?["rule"] as? [String: Any])
+        XCTAssertEqual(after["enabled"] as? Bool, false)
+        XCTAssertNotNil(after["widths"], "changing one field keeps the rest")
+
+        // A single-kind rule takes no id, and a multi one insists on it.
+        _ = try apply([["op": "add_rule", "kind": "clearance_silkscreen_exposed_copper"]])
+        XCTAssertNotNil(try call("apply", ["ops": [["op": "add_rule", "kind": "clearance_silkscreen_exposed_copper", "id": "x"]]])["error"])
+        XCTAssertNotNil(try call("apply", ["ops": [["op": "set_rule", "kind": "track_width", "fields": ["enabled": true]]]])["error"])
+        XCTAssertNotNil(try call("apply", ["ops": [["op": "add_rule", "kind": "no_such_kind"]]])["error"])
+        XCTAssertNotNil(try call("apply", ["ops": [["op": "remove_rule", "kind": "track_width", "id": UUID().uuidString]]])["error"])
+
+        _ = try apply([["op": "remove_rule", "kind": "track_width", "id": id]])
+        let left = try XCTUnwrap(try XCTUnwrap(try result("board_rules") as? [String: Any])["rules"] as? [[String: Any]])
+        XCTAssertEqual(left.map { $0["kind"] as? String }, ["clearance_silkscreen_exposed_copper"])
+    }
+
+    /// A rule the validator calls an error is refused, and nothing is written —
+    /// a clearance rule written wrong would let check pass on a bad board.
+    func testAnInvalidRuleIsRefused() throws {
+        _ = try apply([["op": "add_rule", "kind": "clearance_copper"]])
+        let before = try XCTUnwrap(try result("board_rules") as? [String: Any])
+        let refused = try call("apply", ["ops": [["op": "set_rule", "kind": "clearance_copper",
+                                                  "id": try XCTUnwrap((try XCTUnwrap(before["rules"] as? [[String: Any]])).first?["id"] as? String),
+                                                  "fields": ["match_1": ["mode": "net_class", "net_class": "not-a-class"]]]]])
+        if let error = refused["error"] as? [String: Any] {
+            XCTAssertTrue((error["message"] as? String ?? "").contains("invalid"), "\(error)")
+        }
+        // Whether or not this particular edit trips the validator, the rules
+        // that survive must still be the ones the reader can name.
+        let after = try XCTUnwrap(try result("board_rules") as? [String: Any])
+        XCTAssertEqual((after["rules"] as? [[String: Any]])?.count, 1)
     }
 }

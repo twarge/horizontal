@@ -476,6 +476,25 @@ class RemoveBlockSymbol(Input):
     sheet: StrictStr | StrictInt | None = None
 
 
+class AddRule(Input):
+    op: Literal["add_rule"]
+    kind: StrictStr
+    id: str | None = None
+
+
+class SetRule(Input):
+    op: Literal["set_rule"]
+    kind: StrictStr
+    id: str | None = None
+    fields: dict[str, Any] = Field(min_length=1)
+
+
+class RemoveRule(Input):
+    op: Literal["remove_rule"]
+    kind: StrictStr
+    id: str | None = None
+
+
 class SetStackup(Input):
     op: Literal["set_stackup"]
     inner_layers: StrictInt = Field(ge=0, le=30)
@@ -584,5 +603,6 @@ EditOperation = Annotated[EnsureComponent | RemoveComponent | SetValue | SetRefd
                           PlacePolygon | RemovePolygon | PlacePlane | RemovePlane |
                           AddNetClass | RenameNetClass |
                           AddBlockInstance | RemoveBlockInstance | ConnectBlockPort |
-                          PlaceBlockSymbol | RemoveBlockSymbol | SetStackup | CopyLayout,
+                          PlaceBlockSymbol | RemoveBlockSymbol | SetStackup |
+                          AddRule | SetRule | RemoveRule | CopyLayout,
                           Field(discriminator="op")]
