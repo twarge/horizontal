@@ -1214,6 +1214,14 @@ struct ProjectWorkspaceView: View {
         )
         liveUndoTarget.registerUndo(from: previous, actionName: actionName, undoManager: activeUndoManager)
         installLiveSnapshot(HorizontalLiveSnapshot(archive: archive, project: reloaded))
+        #if os(macOS)
+        // The undo registration above may have gone to the view's fallback
+        // manager rather than the document's — it does whenever the app is not
+        // frontmost, which is every automation edit — and the document system
+        // only learns of a change through its own. Telling it directly is what
+        // makes Save work, and what makes closing the window ask.
+        HorizontalDocumentSaving.markEdited(url: project.url)
+        #endif
     }
 
     private func installLiveSnapshot(_ snapshot: HorizontalLiveSnapshot) {

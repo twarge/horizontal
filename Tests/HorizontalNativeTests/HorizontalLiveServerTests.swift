@@ -214,6 +214,8 @@ final class HorizontalLiveServerTests: XCTestCase {
         let saved = try save()
         XCTAssertEqual(saved["saved"] as? Bool, true)
         XCTAssertEqual(saved["had_unsaved_changes"] as? Bool, true)
+        XCTAssertEqual(saved["source"] as? String, "live")
+        XCTAssertEqual(saved["verified"] as? Bool, true, "the file is checked, not the document's own flag")
         XCTAssertEqual(saved["path"] as? String, packageURL.path)
         XCTAssertEqual(saves, 1)
         XCTAssertEqual(try summary()["unsaved_changes"] as? Bool, false)
@@ -223,11 +225,26 @@ final class HorizontalLiveServerTests: XCTestCase {
         XCTAssertEqual(try save()["saved"] as? Bool, false)
         XCTAssertEqual(saves, 2)
 
+
         document.isReadOnly = { true }
         edited = true
         let refused = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 3, "method": "save", "params": ["handle": handle]])
         XCTAssertEqual((refused["error"] as? JSONDictionary)?["code"] as? Int, -32007)
         XCTAssertEqual(saves, 2, "a read-only document is never written")
+
+        // A save that leaves the file disagreeing with the document is the
+        // failure this whole path exists to catch, and it is reported rather
+        // than dressed up as success.
+        document.isReadOnly = { false }
+        document.save = { }  // says it saved; writes nothing
+        var stale = document.archive()
+        try stale.replaceRegularFileData(relativePath: "top_block.json",
+                                         with: Data(#"{"type":"block","uuid":"x","nets":{}}"#.utf8))
+        try document.applyArchive(stale, "Diverge")
+        HorizontalDispatchSession.shared.syncLiveEntries()
+        let unverified = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 4, "method": "save", "params": ["handle": handle]])
+        let error = try XCTUnwrap(unverified["error"] as? JSONDictionary)
+        XCTAssertTrue((error["message"] as? String ?? "").contains("still does not match"), "\(error)")
     }
 
     /// A disk context has nothing held back: its edits committed with their
@@ -240,7 +257,7 @@ final class HorizontalLiveServerTests: XCTestCase {
         _ = response
         let result = try XCTUnwrap(try HorizontalDispatchMethods.handler(named: "save")?(session, ["handle": entry.handle]) as? JSONDictionary)
         XCTAssertEqual(result["saved"] as? Bool, false)
-        XCTAssertEqual(result["durability"] as? String, "disk")
+        XCTAssertEqual(result["source"] as? String, "disk")
         XCTAssertNotNil(result["note"])
     }
 }

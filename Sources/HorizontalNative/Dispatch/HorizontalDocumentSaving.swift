@@ -30,6 +30,20 @@ enum HorizontalDocumentSaving {
         document(for: url)?.isDocumentEdited ?? false
     }
 
+    /// Records that the document at `url` has changes its file does not.
+    ///
+    /// An edit arriving through the live channel goes onto the undo stack of
+    /// whichever undo manager the view can reach, and when the app is not
+    /// frontmost — which is the automation case — that is a fallback manager
+    /// the document system knows nothing about. Without this the document
+    /// never learns it changed: Save stays disabled, closing the window offers
+    /// no prompt, and an automation client's edit can be thrown away without
+    /// anyone being asked.
+    @MainActor
+    static func markEdited(url: URL) {
+        document(for: url)?.updateChangeCount(.changeDone)
+    }
+
     /// Writes the document at `url` to its file. A document with nothing to
     /// write is left alone rather than rewritten, so a save does not churn
     /// timestamps a build might be watching.
