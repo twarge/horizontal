@@ -61,7 +61,7 @@ enum HorizontalProjectJSONApplicator {
         patchNewBoardVias(&json, vias: board.vias, junctions: board.junctions, padstackID: board.viaTemplate?.padstackID)
         patchPlanes(&json, planes: board.planes)
         patchKeepouts(&json, keepouts: board.keepouts)
-        patchDimensions(&json, dimensions: board.dimensions)
+        patchDimensions(&json, dimensions: board.dimensions, removing: board.removedDimensionIDs)
         // Packages smashed in-memory but whose from-smash texts weren't
         // materialized (e.g. the board was opened without a resolvable pool):
         // their `texts` map entries and package `texts[]` must be preserved
@@ -1308,17 +1308,34 @@ enum HorizontalProjectJSONApplicator {
         json["keepouts"] = map
     }
 
-    private static func patchDimensions(_ json: inout JSONDictionary, dimensions: [HorizontalDimension]) {
-        guard var map = json["dimensions"] as? JSONDictionary else {
-            return
-        }
-        // Preserve unknown source entries. See note in patchPolygons.
-
-        for dimension in dimensions {
-            guard let itemKey = matchingKey(dimension.id, in: map),
-                  var item = map[itemKey] as? JSONDictionary else {
-                continue
+    private static func patchDimensions(
+        _ json: inout JSONDictionary,
+        dimensions: [HorizontalDimension],
+        removing removedIDs: Set<String> = []
+    ) {
+        // A slash marks a panel's copy of another board's dimension; it belongs
+        // to that board's file, not this one.
+        let ownDimensions = dimensions.filter { !$0.id.contains("/") }
+        // Defaulted rather than guarded: a board that has never carried a
+        // dimension has no `dimensions` key, and returning there would drop the
+        // first one drawn. Unknown source entries are preserved and deletions
+        // come through `removedIDs` — see the note in patchPolygons for why
+        // absence from the model cannot be read as deletion.
+        var map = json["dimensions"] as? JSONDictionary ?? [:]
+        for id in removedIDs {
+            if let itemKey = matchingKey(id, in: map) {
+                map.removeValue(forKey: itemKey)
             }
+        }
+
+        for dimension in ownDimensions {
+            let itemKey = matchingKey(dimension.id, in: map) ?? dimension.id
+            var item = map[itemKey] as? JSONDictionary ?? [:]
+            // A dimension just drawn has no entry to update, so its geometry is
+            // written too, not only the label properties an existing one needs.
+            item["p0"] = jsonPoint(dimension.p0)
+            item["p1"] = jsonPoint(dimension.p1)
+            item["label_distance"] = jsonNumber(dimension.labelDistance)
             item["label_size"] = jsonNumber(dimension.labelSize)
             item["mode"] = dimension.mode.rawValue
             map[itemKey] = item

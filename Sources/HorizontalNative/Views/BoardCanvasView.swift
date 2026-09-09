@@ -3911,6 +3911,11 @@ struct BoardCanvasView: View {
         drawGraphicsState = nil
         invalidateSelectableCache()
         registerUndoSnapshot(state.originalBoard, actionName: "Draw Dimension")
+        // Through the same funnel as every other commit: setting `editedBoard`
+        // alone draws the dimension and tells the document nothing, so it
+        // would be gone at the next save.
+        publishConnectivityResolvedEdit(board)
+        publishSelectionContext()
     }
 
     private func beginDrawPlane() {
@@ -5385,7 +5390,12 @@ struct BoardCanvasView: View {
             case .keepout:
                 changed = removeElement(from: &board.keepouts, matching: ref) || changed
             case .dimension:
-                changed = removeElement(from: &board.dimensions, matching: ref) || changed
+                // patchDimensions preserves unknown entries, so the removal is
+                // flagged rather than inferred from absence.
+                if removeElement(from: &board.dimensions, matching: ref) {
+                    board.removedDimensionIDs.insert(ref.id)
+                    changed = true
+                }
             case .boardDecal:
                 changed = removeElement(from: &board.decals, matching: ref) || changed
             case .connectionLine:
