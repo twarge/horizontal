@@ -103,6 +103,13 @@ enum HorizontalRouteWalkaround {
         static let cornerPenalty = 100_000.0
     }
 
+    /// How far inside its own boundary a hull is considered solid. Every entry
+    /// elbow ends *on* the ring, so testing against the hull itself would call
+    /// every approach a collision; testing against a hull a whisker smaller
+    /// asks the question that matters — does the elbow cut through — and one
+    /// micrometre is far below any clearance it could mask.
+    private static let boundaryEpsilon = 1000.0
+
     /// Both ways around `hull`, from `from` to `to`.
     ///
     /// The obstacle's ring is already a legal 45° path — consecutive corners are
@@ -111,7 +118,18 @@ enum HorizontalRouteWalkaround {
     /// ring corners are the two ways round, and the caller picks by cost or by
     /// which one collides with less.
     ///
-    /// Returns an empty array when the hull has no ring to walk.
+    /// Which corners those elbows land on is the whole difficulty. Picking the
+    /// corner nearest the approach is the obvious choice and the wrong one: the
+    /// elbow to it frequently cuts straight across the hull the detour exists to
+    /// avoid, so the route either gets rejected downstream or — worse — is
+    /// reported complete while sitting on top of a pad. So every corner the
+    /// approach can actually reach without crossing the hull is a candidate, and
+    /// the cheapest pairing wins. The ring has at most eight corners, so this is
+    /// a small exhaustive search rather than a heuristic.
+    ///
+    /// Returns an empty array when the hull has no ring to walk, or when no
+    /// corner can be reached without cutting through it — being told the way is
+    /// blocked beats being handed a route that is not clear.
     static func detours(
         around hull: HorizontalOctagon,
         from: HorizontalPoint,
@@ -121,27 +139,108 @@ enum HorizontalRouteWalkaround {
         let ring = hull.vertices
         guard ring.count >= 3 else { return [] }
 
-        let entry = nearestCorner(in: ring, to: from)
-        let exit = nearestCorner(in: ring, to: to)
+        let solid = hull.inflated(by: -boundaryEpsilon)
+        let entries = reachableCorners(in: ring, from: from, without: solid, diagonalFirst: diagonalFirst)
+        let exits = reachableCorners(in: ring, from: to, without: solid, diagonalFirst: diagonalFirst)
+        guard let entry = entries.first, let exit = exits.first else { return [] }
 
-        return [true, false].compactMap { anticlockwise in
-            let arc = arc(in: ring, from: entry, to: exit, anticlockwise: anticlockwise)
-            var points = HorizontalRoute45.elbow(from: from, to: arc[0], diagonalFirst: diagonalFirst)
-            for corner in arc.dropFirst() {
-                points.append(corner)
-            }
-            points.append(contentsOf:
-                HorizontalRoute45.elbow(from: arc[arc.count - 1], to: to, diagonalFirst: diagonalFirst)
-                    .dropFirst())
-
-            let simplified = HorizontalRoute45.simplified(points)
-            return Detour(
-                isAnticlockwise: anticlockwise,
-                points: simplified,
-                length: HorizontalRoute45.length(of: simplified),
-                corners: HorizontalRoute45.corners(of: simplified)
-            )
+        // ONE pair of corners, shared by both arcs. Letting each direction pick
+        // its own would let them converge on the same side of the obstacle, and
+        // the finder's "that side failed, try the other" would then be choosing
+        // between the same route twice.
+        let pair = cheapestPair(in: ring, from: from, to: to, entries: entries, exits: exits,
+                                fallback: (entry, exit), diagonalFirst: diagonalFirst)
+        return [true, false].map { anticlockwise in
+            detour(in: ring, from: from, to: to, entry: pair.entry, exit: pair.exit,
+                   anticlockwise: anticlockwise, diagonalFirst: diagonalFirst)
         }
+    }
+
+    /// The entry/exit pairing whose two approach elbows are shortest. Both arcs
+    /// are built from it, so the choice is about how the route reaches the ring,
+    /// not which way it then goes round.
+    private static func cheapestPair(
+        in ring: [HorizontalPoint], from: HorizontalPoint, to: HorizontalPoint,
+        entries: [Int], exits: [Int], fallback: (entry: Int, exit: Int), diagonalFirst: Bool
+    ) -> (entry: Int, exit: Int) {
+        var best = fallback
+        var bestCost = Double.greatestFiniteMagnitude
+        for entry in entries {
+            let approach = HorizontalRoute45.length(
+                of: HorizontalRoute45.elbow(from: from, to: ring[entry], diagonalFirst: diagonalFirst))
+            for exit in exits {
+                let departure = HorizontalRoute45.length(
+                    of: HorizontalRoute45.elbow(from: ring[exit], to: to, diagonalFirst: diagonalFirst))
+                let cost = approach + departure
+                if cost < bestCost {
+                    bestCost = cost
+                    best = (entry, exit)
+                }
+            }
+        }
+        return best
+    }
+
+    private static func detour(
+        in ring: [HorizontalPoint], from: HorizontalPoint, to: HorizontalPoint,
+        entry: Int, exit: Int, anticlockwise: Bool, diagonalFirst: Bool
+    ) -> Detour {
+        let arc = arc(in: ring, from: entry, to: exit, anticlockwise: anticlockwise)
+        var points = HorizontalRoute45.elbow(from: from, to: arc[0], diagonalFirst: diagonalFirst)
+        for corner in arc.dropFirst() {
+            points.append(corner)
+        }
+        points.append(contentsOf:
+            HorizontalRoute45.elbow(from: arc[arc.count - 1], to: to, diagonalFirst: diagonalFirst)
+                .dropFirst())
+
+        let simplified = HorizontalRoute45.simplified(points)
+        return Detour(
+            isAnticlockwise: anticlockwise,
+            points: simplified,
+            length: HorizontalRoute45.length(of: simplified),
+            corners: HorizontalRoute45.corners(of: simplified)
+        )
+    }
+
+    /// The ring corners an approach can elbow onto without crossing `solid`,
+    /// nearest first so the cheapest pairing is usually found early.
+    private static func reachableCorners(
+        in ring: [HorizontalPoint], from point: HorizontalPoint,
+        without solid: HorizontalOctagon, diagonalFirst: Bool
+    ) -> [Int] {
+        let byDistance = ring.indices
+            .sorted { lhs, rhs in squaredDistance(ring[lhs], point) < squaredDistance(ring[rhs], point) }
+        // An approach that starts inside the hull cannot leave it without
+        // crossing it — this happens whenever the elbow corner of the colliding
+        // segment lands on the obstacle. Filtering there would reject every
+        // corner and report the way blocked when it is not; the collision check
+        // downstream still has the final say.
+        guard !solid.contains(point) else { return byDistance }
+        let clear = byDistance.filter { index in
+            !crosses(HorizontalRoute45.elbow(from: point, to: ring[index], diagonalFirst: diagonalFirst), solid)
+        }
+        return clear.isEmpty ? byDistance : clear
+    }
+
+    /// Whether a 45°-constrained polyline enters `solid`.
+    ///
+    /// Exact rather than conservative: a segment running in one of the eight
+    /// routing directions is its own octagon hull — every one of the eight
+    /// support values is achieved by an endpoint — so the separating-axis test
+    /// decides it outright.
+    private static func crosses(_ points: [HorizontalPoint], _ solid: HorizontalOctagon) -> Bool {
+        guard points.count > 1 else { return false }
+        for index in 1..<points.count {
+            guard let segment = HorizontalOctagon(points: [points[index - 1], points[index]]) else { continue }
+            if segment.intersects(solid) { return true }
+        }
+        return false
+    }
+
+    private static func squaredDistance(_ a: HorizontalPoint, _ b: HorizontalPoint) -> Double {
+        let dx = a.x - b.x, dy = a.y - b.y
+        return dx * dx + dy * dy
     }
 
     /// The cheaper of the two ways round, or nil when there is no ring.
@@ -158,21 +257,6 @@ enum HorizontalRouteWalkaround {
             .min { lhs, rhs in
                 lhs.cost != rhs.cost ? lhs.cost < rhs.cost : (lhs.isAnticlockwise && !rhs.isAnticlockwise)
             }
-    }
-
-    private static func nearestCorner(in ring: [HorizontalPoint], to point: HorizontalPoint) -> Int {
-        var bestIndex = 0
-        var bestDistance = Double.greatestFiniteMagnitude
-        for (index, corner) in ring.enumerated() {
-            let dx = corner.x - point.x
-            let dy = corner.y - point.y
-            let distance = dx * dx + dy * dy
-            if distance < bestDistance {
-                bestDistance = distance
-                bestIndex = index
-            }
-        }
-        return bestIndex
     }
 
     /// The run of ring corners from `start` to `end`, inclusive, in one
