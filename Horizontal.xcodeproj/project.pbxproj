@@ -75,6 +75,10 @@
 			membershipExceptions = (
 				HorizontalNativeApp.swift,
 				HorizontalNativeAppDelegate.swift,
+				Intents/HorizontalAppShortcuts.swift,
+				Intents/HorizontalDesignObjectEntity.swift,
+				Intents/HorizontalIntents.swift,
+				Intents/HorizontalIntentTarget.swift,
 			);
 			target = 1A0000000000000000000210 /* HorizontalQuickLookPreview */;
 		};
@@ -83,6 +87,10 @@
 			membershipExceptions = (
 				HorizontalNativeApp.swift,
 				HorizontalNativeAppDelegate.swift,
+				Intents/HorizontalAppShortcuts.swift,
+				Intents/HorizontalDesignObjectEntity.swift,
+				Intents/HorizontalIntents.swift,
+				Intents/HorizontalIntentTarget.swift,
 			);
 			target = 1A0000000000000000000220 /* HorizontalQuickLookThumbnail */;
 		};

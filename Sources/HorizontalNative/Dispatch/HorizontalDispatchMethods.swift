@@ -313,6 +313,13 @@ enum HorizontalDispatchMethods {
             handler: { session, params in try liveSelection(session, params, highlight: true) }
         ),
         .init(
+            name: "show_panes",
+            summary: "Show these panes in the app's window and hide the rest. Live channel only.",
+            params: ["handle": "Live project handle.",
+                     "panes": "Pane names to show: schematic, board, threeD, parts, library."],
+            handler: showPanes
+        ),
+        .init(
             name: "export",
             summary: "Run the app's exporters. Sections: schematic_pdf, bom, gerber, odb, pick_and_place, board_step, board_drawing, board_dxf.",
             params: [
@@ -982,6 +989,34 @@ enum HorizontalDispatchMethods {
             } else {
                 live.setSelection(netIDs, componentIDs)
             }
+            output.value = selectionJSON(live.selection(), entry: input.value)
+        }
+        return output.value
+    }
+
+    @Sendable private static func showPanes(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let live = try liveDocument(entry)
+        let known = HorizontalPane.allCases.map(\.rawValue).joined(separator: ", ")
+        guard let requested = params["panes"] as? [Any], !requested.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("show_panes needs \"panes\": one or more of \(known).")
+        }
+        var panes = Set<HorizontalPane>()
+        for value in requested {
+            let name = "\(value)"
+            let match = HorizontalPane.allCases.first {
+                $0.rawValue.caseInsensitiveCompare(name) == .orderedSame
+                    || $0.title.caseInsensitiveCompare(name) == .orderedSame
+            }
+            guard let pane = match else {
+                throw HorizontalDispatchError.invalidParams("No pane \(name). Panes: \(known).")
+            }
+            panes.insert(pane)
+        }
+        let input = HorizontalUnsafeSendableBox(entry)
+        let output = HorizontalUnsafeSendableBox<JSONDictionary>([:])
+        MainActor.assumeIsolated {
+            live.setPanes(panes)
             output.value = selectionJSON(live.selection(), entry: input.value)
         }
         return output.value

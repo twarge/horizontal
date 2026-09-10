@@ -53,6 +53,10 @@ final class HorizontalLiveDocument {
     var frame: (HorizontalPane, HorizontalRect) -> Void
     /// Shows a sheet (block id, sheet id) in the schematic pane.
     var showSheet: (String?, String) -> Void
+    /// Shows exactly these panes and hides the rest. `frame` and `showSheet`
+    /// reveal a pane as a side effect of going somewhere in it; this is how a
+    /// caller says which panes it wants to see without moving either.
+    var setPanes: (Set<HorizontalPane>) -> Void
     /// The sheet the schematic pane shows, if any.
     var currentSheet: () -> String?
 
@@ -77,6 +81,7 @@ final class HorizontalLiveDocument {
         save = {
             throw HorizontalDispatchError.failed("This document does not know how to save itself.")
         }
+        setPanes = { _ in }
         visibleBounds = { _ in nil }
         frame = { _, _ in }
         showSheet = { _, _ in }
