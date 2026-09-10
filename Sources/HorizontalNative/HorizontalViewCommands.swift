@@ -244,6 +244,15 @@ struct HorizontalViewCommands: Commands {
     @FocusedValue(\.horizonSchematicAvailable) private var schematicAvailable
     @FocusedValue(\.horizonDocumentViewActions) private var documentViewActions
 
+    /// Locked means the document is read-only, which is not the same as a
+    /// command being inapplicable to whatever canvas has focus. Menu items are
+    /// hidden for the first and merely disabled for the second, so switching
+    /// panes still greys things out rather than making the menus jump about.
+    /// Nil is "no document focused", which is not locked either.
+    private var isLocked: Bool {
+        readOnlyOperation == true
+    }
+
     var body: some Commands {
         CommandGroup(after: .newItem) {
             Divider()
@@ -295,184 +304,194 @@ struct HorizontalViewCommands: Commands {
             // ⌘C/⌘V/⌘D are handled by the canvas key monitor (so they beat the
             // system Edit-menu Copy/Paste on the canvas while text fields keep
             // theirs); these stay as clickable, shortcut-free affordances.
+            // Copy survives the lock: it takes nothing out of the document.
             Button("Copy") {
                 canvasCommandActions?.dispatch(.copySelection)
             }
             .disabled(canvasCommandActions?.canCopySelection != true)
 
-            Button("Paste") {
-                canvasCommandActions?.dispatch(.pasteSelection)
-            }
-            .disabled(canvasCommandActions?.canPasteSelection != true)
+            if !isLocked {
+                Button("Paste") {
+                    canvasCommandActions?.dispatch(.pasteSelection)
+                }
+                .disabled(canvasCommandActions?.canPasteSelection != true)
 
-            Button("Duplicate") {
-                canvasCommandActions?.dispatch(.duplicateSelection)
-            }
-            .disabled(canvasCommandActions?.canDuplicateSelection != true)
+                Button("Duplicate") {
+                    canvasCommandActions?.dispatch(.duplicateSelection)
+                }
+                .disabled(canvasCommandActions?.canDuplicateSelection != true)
 
-            Button("Delete") {
-                canvasCommandActions?.dispatch(.deleteSelection)
-            }
-            .disabled(canvasCommandActions?.canDeleteSelection != true)
+                Button("Delete") {
+                    canvasCommandActions?.dispatch(.deleteSelection)
+                }
+                .disabled(canvasCommandActions?.canDeleteSelection != true)
 
-            Divider()
-            Button("Move") {
-                canvasCommandActions?.dispatch(.moveSelection)
-            }
-            .disabled(canvasCommandActions?.canMoveSelection != true)
+                Divider()
+                Button("Move") {
+                    canvasCommandActions?.dispatch(.moveSelection)
+                }
+                .disabled(canvasCommandActions?.canMoveSelection != true)
 
-            Button("Rotate") {
-                canvasCommandActions?.dispatch(.rotateSelection)
-            }
-            .disabled(canvasCommandActions?.canRotateSelection != true)
+                Button("Rotate") {
+                    canvasCommandActions?.dispatch(.rotateSelection)
+                }
+                .disabled(canvasCommandActions?.canRotateSelection != true)
 
-            Button("Mirror / Flip") {
-                canvasCommandActions?.dispatch(.mirrorSelection)
-            }
-            .disabled(canvasCommandActions?.canMirrorSelection != true)
+                Button("Mirror / Flip") {
+                    canvasCommandActions?.dispatch(.mirrorSelection)
+                }
+                .disabled(canvasCommandActions?.canMirrorSelection != true)
 
-            Divider()
-            Button("Move Net Segment to Existing Net") {
-                canvasCommandActions?.dispatch(.moveNetSegmentToExistingNet)
-            }
-            .disabled(canvasCommandActions?.canMoveNetSegmentToExistingNet != true)
+                Divider()
+                Button("Move Net Segment to Existing Net") {
+                    canvasCommandActions?.dispatch(.moveNetSegmentToExistingNet)
+                }
+                .disabled(canvasCommandActions?.canMoveNetSegmentToExistingNet != true)
 
-            Button("Move Net Segment to New Net") {
-                canvasCommandActions?.dispatch(.moveNetSegmentToNewNet)
-            }
-            .disabled(canvasCommandActions?.canMoveNetSegmentToNewNet != true)
+                Button("Move Net Segment to New Net") {
+                    canvasCommandActions?.dispatch(.moveNetSegmentToNewNet)
+                }
+                .disabled(canvasCommandActions?.canMoveNetSegmentToNewNet != true)
 
-            Button("Edit Symbol Pin Names") {
-                canvasCommandActions?.dispatch(.editSymbolPinNames)
-            }
-            .disabled(canvasCommandActions?.canEditSymbolPinNames != true)
+                Button("Edit Symbol Pin Names") {
+                    canvasCommandActions?.dispatch(.editSymbolPinNames)
+                }
+                .disabled(canvasCommandActions?.canEditSymbolPinNames != true)
 
-            Divider()
-            Button("Commit Interaction") {
-                canvasCommandActions?.dispatch(.commitInteraction)
-            }
-            .disabled(canvasCommandActions?.canCommitInteraction != true)
+                // An interaction cannot start while locked, so there is never
+                // one to commit or cancel.
+                Divider()
+                Button("Commit Interaction") {
+                    canvasCommandActions?.dispatch(.commitInteraction)
+                }
+                .disabled(canvasCommandActions?.canCommitInteraction != true)
 
-            Button("Cancel Interaction") {
-                canvasCommandActions?.dispatch(.cancelInteraction)
+                Button("Cancel Interaction") {
+                    canvasCommandActions?.dispatch(.cancelInteraction)
+                }
+                .disabled(canvasCommandActions?.canCancelInteraction != true)
             }
-            .disabled(canvasCommandActions?.canCancelInteraction != true)
         }
 
         CommandMenu("Design") {
-            Button("Draw Track") {
-                canvasCommandActions?.dispatch(.drawTrack)
-            }
-            .disabled(canvasCommandActions?.canDrawTrack != true)
-
-            Button("Draw Net Line") {
-                canvasCommandActions?.dispatch(.drawNetLine)
-            }
-            .disabled(canvasCommandActions?.canDrawNetLine != true)
-
-            Button("Power Nets…") {
-                if let powerNetsAction {
-                    powerNetsAction()
-                } else {
-                    canvasCommandActions?.dispatch(.placePowerSymbol)
+            // Everything that changes the design goes when the document
+            // is locked. What is left reveals a part in its pool and
+            // filters which airwires are drawn — neither touches the file.
+            if !isLocked {
+                Button("Draw Track") {
+                    canvasCommandActions?.dispatch(.drawTrack)
                 }
-            }
-            .disabled(canvasCommandActions?.canPlacePowerSymbol != true)
+                .disabled(canvasCommandActions?.canDrawTrack != true)
 
-            Button("Place Bus Label…") {
-                canvasCommandActions?.dispatch(.placeBusLabel)
-            }
-            .disabled(canvasCommandActions?.canPlaceBusLabel != true)
-
-            Button("Place Bus Ripper…") {
-                canvasCommandActions?.dispatch(.placeBusRipper)
-            }
-            .disabled(canvasCommandActions?.canPlaceBusRipper != true)
-
-            Button("Tie Nets…") {
-                canvasCommandActions?.dispatch(.tieNets)
-            }
-            .disabled(canvasCommandActions?.canTieNets != true)
-
-            Divider()
-            Button("Draw Dimension") {
-                canvasCommandActions?.dispatch(.drawDimension)
-            }
-            .disabled(canvasCommandActions?.canDrawDimension != true)
-            Button("Add Text…") {
-                canvasCommandActions?.dispatch(.addText)
-            }
-            .disabled(canvasCommandActions?.canAddText != true)
-
-            ForEach(HorizontalDrawingPrimitive.allCases) { primitive in
-                Button("Draw \(primitive.title)") {
-                    canvasCommandActions?.dispatch(.drawGraphics(primitive))
+                Button("Draw Net Line") {
+                    canvasCommandActions?.dispatch(.drawNetLine)
                 }
-                .disabled(canvasCommandActions?.canDrawGraphics != true)
-            }
+                .disabled(canvasCommandActions?.canDrawNetLine != true)
 
-            Button("Draw Plane") {
-                canvasCommandActions?.dispatch(.drawPlane)
-            }
-            .disabled(canvasCommandActions?.canDrawPlane != true)
-
-            Button("Round Off Vertex") {
-                canvasCommandActions?.dispatch(.roundOffVertex)
-            }
-            .disabled(canvasCommandActions?.canRoundOffVertex != true)
-
-            Divider()
-            Button("Place Pad…") {
-                canvasCommandActions?.dispatch(.placePad)
-            }
-            .disabled(canvasCommandActions?.canPlacePad != true)
-            Menu("Place Shape") {
-                ForEach(HorizontalPadstackShapeForm.allCases, id: \.self) { form in
-                    Button(form.displayName) {
-                        canvasCommandActions?.dispatch(.placeShape(form))
+                Button("Power Nets…") {
+                    if let powerNetsAction {
+                        powerNetsAction()
+                    } else {
+                        canvasCommandActions?.dispatch(.placePowerSymbol)
                     }
                 }
-            }
-            .disabled(canvasCommandActions?.canPlaceShape != true)
-            Menu("Place Hole") {
-                Button("Round") {
-                    canvasCommandActions?.dispatch(.placeHole(.round))
-                }
-                Button("Slot") {
-                    canvasCommandActions?.dispatch(.placeHole(.slot))
-                }
-            }
-            .disabled(canvasCommandActions?.canPlaceHole != true)
-            Button("Place Pin") {
-                canvasCommandActions?.dispatch(.placePin)
-            }
-            .disabled(canvasCommandActions?.canPlacePin != true)
-            Button("Place Reference and Value") {
-                canvasCommandActions?.dispatch(.placeRefdesAndValue)
-            }
-            .disabled(canvasCommandActions?.canPlaceRefdesAndValue != true)
-            Button("Place Dot") {
-                canvasCommandActions?.dispatch(.placeDot)
-            }
-            .disabled(canvasCommandActions?.canPlaceDot != true)
-            Button("Autoplace Next Pin") {
-                canvasCommandActions?.dispatch(.autoplaceNextPin)
-            }
-            .disabled(canvasCommandActions?.canAutoplacePins != true)
-            Button("Autoplace All Pins") {
-                canvasCommandActions?.dispatch(.autoplaceAllPins)
-            }
-            .disabled(canvasCommandActions?.canAutoplacePins != true)
-            Button("Resize Symbol") {
-                canvasCommandActions?.dispatch(.resizeSymbol)
-            }
-            .disabled(canvasCommandActions?.canResizeSymbol != true)
+                .disabled(canvasCommandActions?.canPlacePowerSymbol != true)
 
-            Divider()
-            Button("Disconnect") {
-                canvasCommandActions?.dispatch(.disconnect)
+                Button("Place Bus Label…") {
+                    canvasCommandActions?.dispatch(.placeBusLabel)
+                }
+                .disabled(canvasCommandActions?.canPlaceBusLabel != true)
+
+                Button("Place Bus Ripper…") {
+                    canvasCommandActions?.dispatch(.placeBusRipper)
+                }
+                .disabled(canvasCommandActions?.canPlaceBusRipper != true)
+
+                Button("Tie Nets…") {
+                    canvasCommandActions?.dispatch(.tieNets)
+                }
+                .disabled(canvasCommandActions?.canTieNets != true)
+
+                Divider()
+                Button("Draw Dimension") {
+                    canvasCommandActions?.dispatch(.drawDimension)
+                }
+                .disabled(canvasCommandActions?.canDrawDimension != true)
+                Button("Add Text…") {
+                    canvasCommandActions?.dispatch(.addText)
+                }
+                .disabled(canvasCommandActions?.canAddText != true)
+
+                ForEach(HorizontalDrawingPrimitive.allCases) { primitive in
+                    Button("Draw \(primitive.title)") {
+                        canvasCommandActions?.dispatch(.drawGraphics(primitive))
+                    }
+                    .disabled(canvasCommandActions?.canDrawGraphics != true)
+                }
+
+                Button("Draw Plane") {
+                    canvasCommandActions?.dispatch(.drawPlane)
+                }
+                .disabled(canvasCommandActions?.canDrawPlane != true)
+
+                Button("Round Off Vertex") {
+                    canvasCommandActions?.dispatch(.roundOffVertex)
+                }
+                .disabled(canvasCommandActions?.canRoundOffVertex != true)
+
+                Divider()
+                Button("Place Pad…") {
+                    canvasCommandActions?.dispatch(.placePad)
+                }
+                .disabled(canvasCommandActions?.canPlacePad != true)
+                Menu("Place Shape") {
+                    ForEach(HorizontalPadstackShapeForm.allCases, id: \.self) { form in
+                        Button(form.displayName) {
+                            canvasCommandActions?.dispatch(.placeShape(form))
+                        }
+                    }
+                }
+                .disabled(canvasCommandActions?.canPlaceShape != true)
+                Menu("Place Hole") {
+                    Button("Round") {
+                        canvasCommandActions?.dispatch(.placeHole(.round))
+                    }
+                    Button("Slot") {
+                        canvasCommandActions?.dispatch(.placeHole(.slot))
+                    }
+                }
+                .disabled(canvasCommandActions?.canPlaceHole != true)
+                Button("Place Pin") {
+                    canvasCommandActions?.dispatch(.placePin)
+                }
+                .disabled(canvasCommandActions?.canPlacePin != true)
+                Button("Place Reference and Value") {
+                    canvasCommandActions?.dispatch(.placeRefdesAndValue)
+                }
+                .disabled(canvasCommandActions?.canPlaceRefdesAndValue != true)
+                Button("Place Dot") {
+                    canvasCommandActions?.dispatch(.placeDot)
+                }
+                .disabled(canvasCommandActions?.canPlaceDot != true)
+                Button("Autoplace Next Pin") {
+                    canvasCommandActions?.dispatch(.autoplaceNextPin)
+                }
+                .disabled(canvasCommandActions?.canAutoplacePins != true)
+                Button("Autoplace All Pins") {
+                    canvasCommandActions?.dispatch(.autoplaceAllPins)
+                }
+                .disabled(canvasCommandActions?.canAutoplacePins != true)
+                Button("Resize Symbol") {
+                    canvasCommandActions?.dispatch(.resizeSymbol)
+                }
+                .disabled(canvasCommandActions?.canResizeSymbol != true)
+
+                Divider()
+                Button("Disconnect") {
+                    canvasCommandActions?.dispatch(.disconnect)
+                }
+                .disabled(canvasCommandActions?.canDisconnect != true)
             }
-            .disabled(canvasCommandActions?.canDisconnect != true)
             Button("Show in Pool Manager") {
                 canvasCommandActions?.dispatch(.showInPoolManager)
             }
@@ -482,27 +501,28 @@ struct HorizontalViewCommands: Commands {
             }
             .disabled(canvasCommandActions?.canShowInProjectPoolManager != true)
 
-            Divider()
-            Button("Flip Track Posture") {
-                canvasCommandActions?.dispatch(.flipTrackPosture)
-            }
-            .disabled(canvasCommandActions?.canFlipTrackPosture != true)
+            if !isLocked {
+                Divider()
+                Button("Flip Track Posture") {
+                    canvasCommandActions?.dispatch(.flipTrackPosture)
+                }
+                .disabled(canvasCommandActions?.canFlipTrackPosture != true)
 
-            Button("Set Track Width…") {
-                canvasCommandActions?.dispatch(.enterTrackWidth)
-            }
-            .disabled(canvasCommandActions?.canEnterTrackWidth != true)
+                Button("Set Track Width…") {
+                    canvasCommandActions?.dispatch(.enterTrackWidth)
+                }
+                .disabled(canvasCommandActions?.canEnterTrackWidth != true)
 
-            Button("Toggle Via") {
-                canvasCommandActions?.dispatch(.toggleVia)
-            }
-            .disabled(canvasCommandActions?.canToggleVia != true)
+                Button("Toggle Via") {
+                    canvasCommandActions?.dispatch(.toggleVia)
+                }
+                .disabled(canvasCommandActions?.canToggleVia != true)
 
-            Button("Track Settings…") {
-                canvasCommandActions?.dispatch(.showToolSettings)
+                Button("Track Settings…") {
+                    canvasCommandActions?.dispatch(.showToolSettings)
+                }
+                .disabled(canvasCommandActions?.canShowToolSettings != true)
             }
-            .disabled(canvasCommandActions?.canShowToolSettings != true)
-
             Divider()
             Button("Filter Airwires…") {
                 canvasCommandActions?.dispatch(.filterAirwires)
@@ -536,11 +556,15 @@ struct HorizontalViewCommands: Commands {
             }
             .disabled(highlightNetAction == nil)
 
-            Button("Update All Planes") {
-                updateAllPlanesAction?()
+            // Pouring rewrites the board's fills, so it goes with the lock.
+            // Clearing below does not: it empties what is drawn, nothing more.
+            if !isLocked {
+                Button("Update All Planes") {
+                    updateAllPlanesAction?()
+                }
+                .keyboardShortcut("q", modifiers: [])
+                .disabled(updateAllPlanesAction == nil || boardAvailable != true)
             }
-            .keyboardShortcut("q", modifiers: [])
-            .disabled(updateAllPlanesAction == nil || boardAvailable != true || readOnlyOperation == true)
 
             // Empties every plane's renderFragments so the board draws without
             // plane fills; Q recomputes them. This is the plane-fill control —
