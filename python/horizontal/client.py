@@ -177,6 +177,10 @@ class Project:
         """Highlight components and nets in the app's canvases; empty clears. Live documents only."""
         return self._call("highlight", components=list(components or []), nets=list(nets or []))
 
+    def show_panes(self, panes: list[str]) -> dict[str, Any]:
+        """Show these panes in the app's window and hide the rest. Live documents only."""
+        return self._call("show_panes", panes=list(panes))
+
     @property
     def title(self) -> str:
         return self.summary["title"]

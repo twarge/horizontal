@@ -13,7 +13,7 @@ enum HorizontalDispatchValidation {
         let booleans: Set<String> = ["include_metadata", "include_unconnected", "include_no_populate", "dry_run",
                                      "mirrored", "redo"]
         let objects: Set<String> = ["region", "options"]
-        let arrays: Set<String> = ["ops", "items", "pool_items", "components", "nets", "layers", "sections"]
+        let arrays: Set<String> = ["ops", "items", "pool_items", "components", "nets", "layers", "sections", "panes"]
         for (key, value) in params {
             if integers.contains(key) { try number(value, key: key, integer: true) }
             else if numbers.contains(key) { try number(value, key: key) }

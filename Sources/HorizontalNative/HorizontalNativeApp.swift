@@ -14,6 +14,14 @@ struct HorizontalNativeApp: App {
 
     init() {
         HorizontalDebugConsoleFilter.installIfNeeded()
+        #if os(macOS)
+        // App Shortcuts match a spoken parameter against values the app has
+        // published, so the workspace tells us whenever the open document's
+        // components and nets change.
+        HorizontalIntentParameterPublishing.publish = {
+            HorizontalAppShortcuts.updateAppShortcutParameters()
+        }
+        #endif
     }
 
     var body: some Scene {

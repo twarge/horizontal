@@ -56,6 +56,9 @@ final class HorizontalLiveServerTests: XCTestCase {
             selection.highlightedNetIDs = nets
             selection.highlightedComponentIDs = components
         }
+        document.setPanes = { panes in
+            selection.panes = panes.map(\.rawValue).sorted()
+        }
         handle = HorizontalDispatchSession.shared.registerLive(document)
         return document
     }
@@ -249,6 +252,38 @@ final class HorizontalLiveServerTests: XCTestCase {
 
     /// Undo through the channel drives the document's own stack — the one the
     /// Edit menu drives — so an edit made here and one made by hand undo alike.
+    /// `show_panes` says which panes to show and hides the rest — the one
+    /// thing `frame` and `show_sheet` could only do as a side effect of going
+    /// somewhere. It is what the app's Siri shortcut runs, so it has to answer
+    /// with what is showing now.
+    func testShowPanesSaysWhichPanesAreUp() throws {
+        _ = try registerTemplateDocument()
+        let handle = try XCTUnwrap(self.handle)
+        func call(_ panes: Any) -> JSONDictionary {
+            HorizontalDispatch.call(["jsonrpc": "2.0", "id": 1, "method": "show_panes",
+                                     "params": ["handle": handle, "panes": panes]])
+        }
+
+        let both = try XCTUnwrap(call(["schematic", "board"])["result"] as? JSONDictionary)
+        XCTAssertEqual(both["panes"] as? [String], ["board", "schematic"])
+
+        // Showing one hides the other: this replaces what is up rather than
+        // adding to it, which is what "show me the board" means.
+        let board = try XCTUnwrap(call(["board"])["result"] as? JSONDictionary)
+        XCTAssertEqual(board["panes"] as? [String], ["board"])
+
+        // A pane can be named the way the app titles it, since that is what a
+        // person says.
+        XCTAssertEqual((try XCTUnwrap(call(["Schematic"])["result"] as? JSONDictionary))["panes"] as? [String],
+                       ["schematic"])
+
+        // Nothing to show is a request with no meaning, and an unknown pane
+        // names the ones there are rather than doing nothing quietly.
+        XCTAssertNotNil(call([String]())["error"])
+        let unknown = try XCTUnwrap(call(["gerber"])["error"] as? JSONDictionary)
+        XCTAssertTrue((unknown["message"] as? String ?? "").contains("schematic"), unknown["message"] as? String ?? "")
+    }
+
     func testUndoDrivesTheDocumentsOwnStack() throws {
         let document = try registerTemplateDocument()
         var stack = ["Apply 1 Edit"]

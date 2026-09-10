@@ -772,6 +772,16 @@ def select(path: str | None = None, components: list[str] | None = None, nets: l
 
 
 @_tool
+def show_panes(panes: list[str], path: str | None = None) -> dict[str, Any]:
+    """Show these panes in the app's window and hide the rest: schematic, board, threeD, parts, library.
+    Replaces what is showing rather than adding to it. Needs the project open in Horizontal."""
+    project = _resolve(path)
+    if not project.is_live:
+        raise ValueError("The project is not open in Horizontal, so there are no panes to show.")
+    return project.show_panes(panes)
+
+
+@_tool
 def list_ops(path: str | None = None) -> list[dict[str, Any]]:
     """The edit operations apply_ops accepts, with their parameters. They cover the block, the schematic, board
     placement and manual copper routing; nothing here autoroutes."""

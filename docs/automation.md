@@ -59,6 +59,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `list_board_texts`, `list_dimensions` | board text and dimensions; a dimension reports `measures_mm`, worked out for its mode |
 | `list_buses`, `list_net_ties` | buses with their members, net ties with the nets they join, and where each is drawn |
 | `undo` | takes back the last step on the document's own undo stack, or puts one back |
+| `show_panes` | shows these panes in the app's window and hides the rest; `frame` and `show_sheet` only reveal a pane on the way to somewhere in it |
 | `list_holes`, `list_keepouts` | holes through the board and the areas copper may not enter |
 | `list_planes`, `list_polygons` | copper pours (and whether each is actually filled) and board polygons; layer 100 is the outline |
 | `board_rules` | the design rules as data — one entry per rule, not per kind — the net classes they select, and the stackup |
@@ -385,6 +386,47 @@ a frame request through their command actions, and `CanvasViewport.framing`
 computes the zoom and pan. `render_viewport` renders that visible rectangle
 through the drawing exporters, cropped to the region, so it is the exporter's
 style rather than a screenshot of the Metal canvas.
+
+`show_panes` is the one view verb that goes nowhere: it says which panes to
+show and hides the rest, replacing what is up rather than adding to it. `frame`
+and `show_sheet` reveal a pane on the way to somewhere in it, which is not the
+same request as "show me the board".
+
+## Siri and Shortcuts
+
+The app vends four App Intents over exactly these verbs, so a spoken request
+and an agent's call are one code path — `Sources/HorizontalNative/Intents`:
+Highlight, Clear Highlight, Show Panes and Zoom To. Each resolves the document
+in front through `NSDocumentController`, then calls `highlight`, `show_panes`
+or `zoom_to` against the handle the workspace registered. macOS only, because
+registering a document as live is macOS only; the iPad workspace has no live
+channel for an intent to reach.
+
+`HorizontalDesignObjectEntity` is what an intent is pointed at: one entity for
+both components and nets, because "highlight R18" and "highlight ground" are
+the same request with a different subject. Its id is the name rather than a
+uuid, since the verbs behind it take names and a name is what the user says —
+the cost being that renaming something breaks a saved shortcut that named it,
+which is at least legible when it happens. Matching ignores case, spaces and
+the separators nobody pronounces, so "R 18", "r18" and "R18" are one component
+and "gndanalog" finds `GND_ANALOG`; an exact match is never widened, so "GND"
+does not also offer `GND_ANALOG`.
+
+The part that needs maintaining is the publishing. An App Shortcut phrase with
+a parameter in it is matched against values the app has published, not against
+whatever the query could return if asked — so "Highlight R18 in Horizontal"
+only resolves once `updateAppShortcutParameters()` has run for a document that
+has an R18. The workspace calls it when a document opens or closes, when a
+whole-project edit lands, and when the netlist signature moves, which is when
+components and nets change. It reaches the provider through
+`HorizontalIntentParameterPublishing`, a hook the app installs at launch: the
+QuickLook extensions compile the workspace but not the intents, so nothing
+shared may name them.
+
+The weak point is speech, not plumbing. A reference designator is a letter and
+a number said quickly, and transcription is inconsistent about it; the matching
+above absorbs the common shapes, but "highlight ground" will always be a surer
+request than "highlight R18".
 
 ## Python
 

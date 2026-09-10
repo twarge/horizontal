@@ -1208,6 +1208,9 @@ struct ProjectWorkspaceView: View {
             visiblePanes.insert(pane)
             canvasCommandActionsByPane[pane]?.frameWorldRect?(rect)
         }
+        live.setPanes = { panes in
+            visiblePanes = panes
+        }
         live.showSheet = { blockID, sheetID in
             visiblePanes.insert(.schematic)
             navigatorSelection = blockID.map { .sheet(blockID: $0, sheetID: sheetID) } ?? .standaloneSheet(sheetID)
@@ -1221,6 +1224,7 @@ struct ProjectWorkspaceView: View {
             }
         }
         liveHandle = HorizontalDispatchSession.shared.registerLive(live)
+        publishIntentParameters()
     }
 
     private func unregisterLiveDocument() {
@@ -1229,6 +1233,20 @@ struct ProjectWorkspaceView: View {
         }
         HorizontalDispatchSession.shared.unregisterLive(handle: liveHandle)
         self.liveHandle = nil
+        publishIntentParameters()
+    }
+
+    /// Tells the system which refdeses and net names its spoken phrases can
+    /// contain now.
+    ///
+    /// An App Shortcut phrase with a parameter is matched against values the
+    /// app has published, not against whatever the query could return if it
+    /// were asked — so "Highlight R18 in Horizontal" only resolves once this
+    /// has run for a document that has an R18. It is cheap and idempotent, so
+    /// it runs whenever the answer could have changed: a document opening,
+    /// closing, or being edited into having different components.
+    private func publishIntentParameters() {
+        HorizontalIntentParameterPublishing.parametersDidChange()
     }
 
     /// An edited archive from the live channel becomes the document: the
@@ -1273,6 +1291,9 @@ struct ProjectWorkspaceView: View {
         boardSyncRevision += 1
         schematicEditRevision += 1
         selectionDetailsByPane = [:]
+        // A whole-project replacement can add, rename or remove the very
+        // things a spoken phrase names.
+        publishIntentParameters()
     }
 
     private func rebaseProjectURLs(_ reloaded: inout HorizontalProject, onto current: HorizontalProject) {
@@ -2630,6 +2651,9 @@ struct ProjectWorkspaceView: View {
             // connections and airwires come with the reload behind it.
             refreshBoardPlaceableObjects(from: sheet)
             scheduleBoardNetlistSync()
+            // The signature moves when components or nets do, which is
+            // exactly when the names a phrase can carry have changed.
+            publishIntentParameters()
         }
     }
 
