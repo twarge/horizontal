@@ -1563,48 +1563,52 @@ struct ProjectWorkspaceView: View {
                     }
                 } tools: {
                     SelectionToolButton(settings: $selectionToolSettings)
-                    DrawingToolButtonGroup { primitive in
-                        schematicDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
-                    }
-                    .disabled(isReadOnly)
-                    DrawNetLineToolButton {
-                        schematicDrawNetLineCommand = HorizontalDrawNetLineCommand()
-                    }
-                    .disabled(isReadOnly)
-                    PlacePowerSymbolToolButton {
-                        powerNetsPopoverPresented.toggle()
-                    }
-                    .popover(isPresented: $powerNetsPopoverPresented, arrowEdge: .trailing) {
-                        HorizontalPowerNetsPopover(
-                            nets: powerNetSummaries,
-                            isReadOnly: isReadOnly,
-                            onCommand: { canvasCommandActionsByPane[.schematic]?.dispatch(.managePowerNet($0)) },
-                            onDismiss: { powerNetsPopoverPresented = false }
-                        )
-                    }
-                    .disabled(isReadOnly || selectedSchematic == nil)
-                    PlaceBusLabelToolButton {
-                        canvasCommandActionsByPane[.schematic]?.dispatch(.placeBusLabel)
-                    }
-                    .disabled(canvasCommandActionsByPane[.schematic]?.canPlaceBusLabel != true)
-                    PlaceBusRipperToolButton {
-                        canvasCommandActionsByPane[.schematic]?.dispatch(.placeBusRipper)
-                    }
-                    .disabled(canvasCommandActionsByPane[.schematic]?.canPlaceBusRipper != true)
-                    TieNetsToolButton {
-                        canvasCommandActionsByPane[.schematic]?.dispatch(.tieNets)
-                    }
-                    .disabled(canvasCommandActionsByPane[.schematic]?.canTieNets != true)
-                    AddTextToolButton {
-                        canvasCommandActionsByPane[.schematic]?.dispatch(.addText)
-                    }
-                    .disabled(isReadOnly || selectedSchematic == nil)
-                    if let selectedSchematic {
-                        NetClassToolButton(
-                            netClasses: schematicNetClassesBinding(for: selectedSchematic),
-                            usedNetClassIDs: usedNetClassIDs(for: selectedSchematic)
-                        )
-                        .disabled(isReadOnly)
+                    // Locked, the tools that would change the design are not
+                    // shown at all. A rail of dimmed buttons says "this app is
+                    // broken" where an absent one says "this document is
+                    // read-only", which is what the lock means. Same rule the
+                    // canvas context menus already follow.
+                    if !isReadOnly {
+                        DrawingToolButtonGroup { primitive in
+                            schematicDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
+                        }
+                        DrawNetLineToolButton {
+                            schematicDrawNetLineCommand = HorizontalDrawNetLineCommand()
+                        }
+                        PlacePowerSymbolToolButton {
+                            powerNetsPopoverPresented.toggle()
+                        }
+                        .popover(isPresented: $powerNetsPopoverPresented, arrowEdge: .trailing) {
+                            HorizontalPowerNetsPopover(
+                                nets: powerNetSummaries,
+                                isReadOnly: isReadOnly,
+                                onCommand: { canvasCommandActionsByPane[.schematic]?.dispatch(.managePowerNet($0)) },
+                                onDismiss: { powerNetsPopoverPresented = false }
+                            )
+                        }
+                        .disabled(selectedSchematic == nil)
+                        PlaceBusLabelToolButton {
+                            canvasCommandActionsByPane[.schematic]?.dispatch(.placeBusLabel)
+                        }
+                        .disabled(canvasCommandActionsByPane[.schematic]?.canPlaceBusLabel != true)
+                        PlaceBusRipperToolButton {
+                            canvasCommandActionsByPane[.schematic]?.dispatch(.placeBusRipper)
+                        }
+                        .disabled(canvasCommandActionsByPane[.schematic]?.canPlaceBusRipper != true)
+                        TieNetsToolButton {
+                            canvasCommandActionsByPane[.schematic]?.dispatch(.tieNets)
+                        }
+                        .disabled(canvasCommandActionsByPane[.schematic]?.canTieNets != true)
+                        AddTextToolButton {
+                            canvasCommandActionsByPane[.schematic]?.dispatch(.addText)
+                        }
+                        .disabled(selectedSchematic == nil)
+                        if let selectedSchematic {
+                            NetClassToolButton(
+                                netClasses: schematicNetClassesBinding(for: selectedSchematic),
+                                usedNetClassIDs: usedNetClassIDs(for: selectedSchematic)
+                            )
+                        }
                     }
                 }
             }
@@ -1721,44 +1725,51 @@ struct ProjectWorkspaceView: View {
                     .disabled(project.board == nil)
                     BoardRulesToolButton(action: showBoardRulesWindow)
                         .disabled(project.board == nil)
-                    BoardUpdatePlanesToolButton(
-                        action: updateAllBoardPlanes,
-                        isUpdating: isPouringPlanes,
-                        progress: planePourProgress,
-                        needsUpdate: planesNeedUpdate
-                    )
-                    .disabled(isReadOnly || project.board?.planes.isEmpty != false)
-                    BoardSyncToolButton(action: syncBoardWithSchematicData)
-                        .disabled(isReadOnly || project.board == nil)
+                    // Pouring and the netlist sync both rewrite the board, so
+                    // they go with the drawing tools below rather than staying
+                    // as dimmed buttons. The stackup and rules buttons above
+                    // stay: locked, they are how the board is read.
+                    if !isReadOnly {
+                        BoardUpdatePlanesToolButton(
+                            action: updateAllBoardPlanes,
+                            isUpdating: isPouringPlanes,
+                            progress: planePourProgress,
+                            needsUpdate: planesNeedUpdate
+                        )
+                        .disabled(project.board?.planes.isEmpty != false)
+                        BoardSyncToolButton(action: syncBoardWithSchematicData)
+                            .disabled(project.board == nil)
+                    }
                     SelectionToolButton(settings: $selectionToolSettings)
-                    DrawTrackToolButton {
-                        boardDrawTrackCommand = HorizontalDrawTrackCommand()
-                    }
-                    .disabled(isReadOnly || project.board == nil)
-                    TrackSettingsToolButton(presented: $boardToolSettingsPresented)
-                        .disabled(isReadOnly || project.board == nil)
-                        .popover(isPresented: $boardToolSettingsPresented, arrowEdge: .bottom) {
-                            HorizontalBoardToolSettingsView(
-                                settings: boardToolSettings,
-                                viaTemplate: project.board?.viaTemplate
-                            )
+                    if !isReadOnly {
+                        DrawTrackToolButton {
+                            boardDrawTrackCommand = HorizontalDrawTrackCommand()
                         }
-                    DrawingToolButtonGroup(primitives: HorizontalDrawingPrimitive.polygonRail) { primitive in
-                        boardDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
+                        .disabled(project.board == nil)
+                        TrackSettingsToolButton(presented: $boardToolSettingsPresented)
+                            .disabled(project.board == nil)
+                            .popover(isPresented: $boardToolSettingsPresented, arrowEdge: .bottom) {
+                                HorizontalBoardToolSettingsView(
+                                    settings: boardToolSettings,
+                                    viaTemplate: project.board?.viaTemplate
+                                )
+                            }
+                        DrawingToolButtonGroup(primitives: HorizontalDrawingPrimitive.polygonRail) { primitive in
+                            boardDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
+                        }
+                        DrawPlaneToolButton {
+                            canvasCommandActionsByPane[.board]?.dispatch(.drawPlane)
+                        }
+                        .disabled(project.board == nil)
+                        DrawDimensionToolButton {
+                            canvasCommandActionsByPane[.board]?.dispatch(.drawDimension)
+                        }
+                        .disabled(canvasCommandActionsByPane[.board]?.canDrawDimension != true)
+                        AddTextToolButton {
+                            canvasCommandActionsByPane[.board]?.dispatch(.addText)
+                        }
+                        .disabled(project.board == nil)
                     }
-                    .disabled(isReadOnly)
-                    DrawPlaneToolButton {
-                        canvasCommandActionsByPane[.board]?.dispatch(.drawPlane)
-                    }
-                    .disabled(isReadOnly || project.board == nil)
-                    DrawDimensionToolButton {
-                        canvasCommandActionsByPane[.board]?.dispatch(.drawDimension)
-                    }
-                    .disabled(canvasCommandActionsByPane[.board]?.canDrawDimension != true)
-                    AddTextToolButton {
-                        canvasCommandActionsByPane[.board]?.dispatch(.addText)
-                    }
-                    .disabled(isReadOnly || project.board == nil)
                 }
             }
         case .threeD:

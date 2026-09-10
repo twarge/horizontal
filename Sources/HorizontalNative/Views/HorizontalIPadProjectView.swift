@@ -414,9 +414,15 @@ struct HorizontalIPadProjectView: View {
     /// toggles the preference (the same one Settings offers). Release builds
     /// force read-only with no preference to flip, so there the lock is a
     /// disabled indicator rather than a control.
+    /// The lock in the toolbar. Until now it toggled a setting nothing here
+    /// read: neither canvas was given it, so a locked document stayed fully
+    /// editable on iPad.
+    private var isReadOnly: Bool {
+        appearanceSettings.isReadOnlyOperationEnabled
+    }
+
     private var readOnlyLockButton: some View {
-        let isReadOnly = appearanceSettings.isReadOnlyOperationEnabled
-        return Button {
+        Button {
             appearanceSettings.readOnlyOperationBinding().wrappedValue = !isReadOnly
         } label: {
             Label(
@@ -649,7 +655,7 @@ struct HorizontalIPadProjectView: View {
             parts: project.poolParts,
             poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
             safeAreaInsets: safeAreaInsets,
-            isReadOnly: project.schematic == nil,
+            isReadOnly: isReadOnly || project.schematic == nil,
             onPlacePart: { part in
                 guard project.schematic != nil else { return }
                 placePartRequest = HorizontalPartPlacementRequest(part: part)
@@ -681,6 +687,7 @@ struct HorizontalIPadProjectView: View {
                     fitSafeAreaInsets: safeAreaInsets,
                     highlightedNetIDs: highlightedNetIDs,
                     selectionToolSettings: selectionToolSettings,
+                    isReadOnly: isReadOnly,
                     onSelectedNetChange: { selectedNetIDs = $0 },
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
                     onSheetChange: { applyEditedSchematicSheet($0) },
@@ -706,37 +713,41 @@ struct HorizontalIPadProjectView: View {
                 GridControlsPanel(title: "Schematic Grid", grid: .constant(sheet.grid), isEditable: false)
             } tools: {
                 SelectionToolButton(settings: $selectionToolSettings)
-                DrawingToolButtonGroup { primitive in
-                    schematicDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
-                }
-                DrawNetLineToolButton {
-                    schematicDrawNetLineCommand = HorizontalDrawNetLineCommand()
-                }
-                PlacePowerSymbolToolButton {
-                    powerNetsPopoverPresented.toggle()
-                }
-                .popover(isPresented: $powerNetsPopoverPresented) {
-                    HorizontalPowerNetsPopover(
-                        nets: project.schematic?.powerNetSummaries() ?? [],
-                        isReadOnly: false,
-                        onCommand: { schematicCanvasActions?.dispatch(.managePowerNet($0)) },
-                        onDismiss: { powerNetsPopoverPresented = false }
-                    )
-                }
-                PlaceBusLabelToolButton {
-                    schematicCanvasActions?.dispatch(.placeBusLabel)
-                }
-                .disabled(schematicCanvasActions?.canPlaceBusLabel != true)
-                PlaceBusRipperToolButton {
-                    schematicCanvasActions?.dispatch(.placeBusRipper)
-                }
-                .disabled(schematicCanvasActions?.canPlaceBusRipper != true)
-                TieNetsToolButton {
-                    schematicCanvasActions?.dispatch(.tieNets)
-                }
-                .disabled(schematicCanvasActions?.canTieNets != true)
-                AddTextToolButton {
-                    schematicCanvasActions?.dispatch(.addText)
+                // Locked: the tools that would change the design are gone, not
+                // dimmed. Same rule as the macOS rail.
+                if !isReadOnly {
+                    DrawingToolButtonGroup { primitive in
+                        schematicDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
+                    }
+                    DrawNetLineToolButton {
+                        schematicDrawNetLineCommand = HorizontalDrawNetLineCommand()
+                    }
+                    PlacePowerSymbolToolButton {
+                        powerNetsPopoverPresented.toggle()
+                    }
+                    .popover(isPresented: $powerNetsPopoverPresented) {
+                        HorizontalPowerNetsPopover(
+                            nets: project.schematic?.powerNetSummaries() ?? [],
+                            isReadOnly: isReadOnly,
+                            onCommand: { schematicCanvasActions?.dispatch(.managePowerNet($0)) },
+                            onDismiss: { powerNetsPopoverPresented = false }
+                        )
+                    }
+                    PlaceBusLabelToolButton {
+                        schematicCanvasActions?.dispatch(.placeBusLabel)
+                    }
+                    .disabled(schematicCanvasActions?.canPlaceBusLabel != true)
+                    PlaceBusRipperToolButton {
+                        schematicCanvasActions?.dispatch(.placeBusRipper)
+                    }
+                    .disabled(schematicCanvasActions?.canPlaceBusRipper != true)
+                    TieNetsToolButton {
+                        schematicCanvasActions?.dispatch(.tieNets)
+                    }
+                    .disabled(schematicCanvasActions?.canTieNets != true)
+                    AddTextToolButton {
+                        schematicCanvasActions?.dispatch(.addText)
+                    }
                 }
             }
         } else {
@@ -761,6 +772,7 @@ struct HorizontalIPadProjectView: View {
                     fitSafeAreaInsets: safeAreaInsets,
                     highlightedNetIDs: highlightedNetIDs,
                     selectionToolSettings: selectionToolSettings,
+                    isReadOnly: isReadOnly,
                     onSelectedNetChange: { selectedNetIDs = $0 },
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
                     onBoardChange: { applyEditedBoard($0) },
@@ -793,33 +805,35 @@ struct HorizontalIPadProjectView: View {
                 GridControlsPanel(title: "Board Grid", grid: boardGridBinding())
             } tools: {
                 SelectionToolButton(settings: $selectionToolSettings)
-                DrawTrackToolButton {
-                    boardDrawTrackCommand = HorizontalDrawTrackCommand()
-                }
-                TrackSettingsToolButton(presented: $boardToolSettingsPresented)
-                    .popover(isPresented: $boardToolSettingsPresented, arrowEdge: .bottom) {
-                        HorizontalBoardToolSettingsView(settings: boardToolSettings, viaTemplate: board.viaTemplate)
-                            .frame(minWidth: 320, minHeight: 320)
+                if !isReadOnly {
+                    DrawTrackToolButton {
+                        boardDrawTrackCommand = HorizontalDrawTrackCommand()
                     }
-                DrawingToolButtonGroup(primitives: HorizontalDrawingPrimitive.polygonRail) { primitive in
-                    boardDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
-                }
-                DrawPlaneToolButton {
-                    boardCanvasActions?.dispatch(.drawPlane)
-                }
-                BoardUpdatePlanesToolButton(
-                    action: updateAllBoardPlanes,
-                    isUpdating: isPouringPlanes,
-                    progress: planePourProgress,
-                    needsUpdate: planesNeedUpdate
-                )
-                .disabled(board.planes.isEmpty)
-                DrawDimensionToolButton {
-                    boardCanvasActions?.dispatch(.drawDimension)
-                }
-                .disabled(boardCanvasActions?.canDrawDimension != true)
-                AddTextToolButton {
-                    boardCanvasActions?.dispatch(.addText)
+                    TrackSettingsToolButton(presented: $boardToolSettingsPresented)
+                        .popover(isPresented: $boardToolSettingsPresented, arrowEdge: .bottom) {
+                            HorizontalBoardToolSettingsView(settings: boardToolSettings, viaTemplate: board.viaTemplate)
+                                .frame(minWidth: 320, minHeight: 320)
+                        }
+                    DrawingToolButtonGroup(primitives: HorizontalDrawingPrimitive.polygonRail) { primitive in
+                        boardDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
+                    }
+                    DrawPlaneToolButton {
+                        boardCanvasActions?.dispatch(.drawPlane)
+                    }
+                    BoardUpdatePlanesToolButton(
+                        action: updateAllBoardPlanes,
+                        isUpdating: isPouringPlanes,
+                        progress: planePourProgress,
+                        needsUpdate: planesNeedUpdate
+                    )
+                    .disabled(board.planes.isEmpty)
+                    DrawDimensionToolButton {
+                        boardCanvasActions?.dispatch(.drawDimension)
+                    }
+                    .disabled(boardCanvasActions?.canDrawDimension != true)
+                    AddTextToolButton {
+                        boardCanvasActions?.dispatch(.addText)
+                    }
                 }
             }
         } else {
@@ -1106,7 +1120,7 @@ struct HorizontalIPadProjectView: View {
                 board: project.board,
                 netClasses: project.schematic?.netClasses ?? [],
                 initialRules: (try? HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive)) ?? [:],
-                isReadOnly: false,
+                isReadOnly: isReadOnly,
                 onRulesChange: { applyEditedBoardRules($0) },
                 onChecksRun: { _ in }
             )
