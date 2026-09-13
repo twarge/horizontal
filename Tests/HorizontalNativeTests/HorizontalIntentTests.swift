@@ -1,4 +1,5 @@
-#if os(macOS)
+import Foundation
+import HorizontalProjectIO
 import XCTest
 @testable import HorizontalNative
 
@@ -7,8 +8,9 @@ import XCTest
 /// The intents themselves are thin — each resolves the document in front and
 /// calls the dispatch method the automation channel already exposes, which has
 /// its own tests. What is new here, and what a spoken request actually depends
-/// on, is how a name said out loud turns into one of the design's objects, and
-/// how an id a saved shortcut kept turns back into one.
+/// on, is how a name said out loud turns into one of the design's objects, how
+/// an id a saved shortcut kept turns back into one, and which document counts
+/// as the one in front when there is no window system to ask.
 final class HorizontalIntentTests: XCTestCase {
     private let design = [
         HorizontalDesignObjectEntity(kind: .component, name: "R18", detail: "1 kΩ"),
@@ -103,5 +105,42 @@ final class HorizontalIntentTests: XCTestCase {
             XCTAssertEqual("\(error)", "\(HorizontalIntentError.noProjectOpen)")
         }
     }
+
+    /// With more than one document open and no window system to ask — the
+    /// iPad — the one whose scene most recently came to the front is the one
+    /// an intent acts on; and when that document closes, the choice falls
+    /// back rather than dangling. (On the Mac the document controller is
+    /// asked first; in a test process it has no documents and defers.)
+    @MainActor
+    func testTheDocumentMostRecentlyInFrontIsTheOneActedOn() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("horizontal-intent-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = HorizontalDispatchSession.shared
+        var handles: [Int] = []
+        defer {
+            for handle in handles {
+                session.unregisterLive(handle: handle)
+            }
+        }
+        for name in ["First", "Second"] {
+            let url = root.appendingPathComponent("\(name).horizontal")
+            try HorizontalProjectArchive.newProject().write(to: url)
+            let project = try HorizontalProject.load(from: url)
+            let archive = try HorizontalProjectArchive.snapshot(from: url)
+            let document = HorizontalLiveDocument(url: url, title: name, project: project, archive: archive)
+            handles.append(session.registerLive(document))
+        }
+
+        XCTAssertEqual(try HorizontalIntentTarget.current().handle, handles[0], "nothing noted: the first one registered")
+        session.noteLiveDocumentInFront(handle: handles[1])
+        XCTAssertEqual(try HorizontalIntentTarget.current().handle, handles[1])
+        session.noteLiveDocumentInFront(handle: handles[1] + 1_000)
+        XCTAssertEqual(try HorizontalIntentTarget.current().handle, handles[1],
+                       "a handle that is not a live document changes nothing")
+
+        session.unregisterLive(handle: handles.removeLast())
+        XCTAssertEqual(try HorizontalIntentTarget.current().handle, handles[0])
+    }
 }
-#endif

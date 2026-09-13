@@ -1,4 +1,3 @@
-#if os(macOS)
 import AppIntents
 import Foundation
 
@@ -100,4 +99,3 @@ struct HorizontalDesignObjectQuery: EntityStringQuery {
         text.lowercased().filter { !$0.isWhitespace && $0 != "_" && $0 != "-" }
     }
 }
-#endif

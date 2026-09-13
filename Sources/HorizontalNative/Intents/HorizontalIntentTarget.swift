@@ -1,6 +1,7 @@
+import Foundation
 #if os(macOS)
 import AppKit
-import Foundation
+#endif
 
 /// Which open document an App Intent acts on, and the verbs it acts with.
 ///
@@ -9,8 +10,10 @@ import Foundation
 /// registered when it opened the document. So "highlight R18" from Siri and
 /// `highlight` from an agent are one code path, and stay that way.
 ///
-/// macOS only, because registering a document as live is macOS only — the
-/// iPad workspace has no live channel to reach.
+/// On the Mac the document in front is whatever the document controller says
+/// it is. The iPad has no document controller, so its workspace tells the
+/// dispatch session which document's scene most recently came to the front,
+/// and that is what an intent acts on there.
 @MainActor
 enum HorizontalIntentTarget {
     struct Target {
@@ -20,22 +23,52 @@ enum HorizontalIntentTarget {
 
     /// The document in front, or the only one open.
     ///
-    /// `currentDocument` is what the user would call "the project I am looking
-    /// at"; with one document open the answer is the same either way, and with
-    /// none there is nothing an intent can do that is not a lie.
+    /// With one document open the answer is the same however it is asked;
+    /// with none there is nothing an intent can do that is not a lie.
     static func current() throws -> Target {
-        let live = HorizontalDispatchSession.shared
-            .perform { $0.openEntries }
-            .compactMap { entry in entry.live.map { Target(handle: entry.handle, document: $0) } }
+        let (live, front) = HorizontalDispatchSession.shared.perform { session in
+            (session.openEntries.compactMap { entry in entry.live.map { Target(handle: entry.handle, document: $0) } },
+             session.frontLiveDocumentHandle)
+        }
         guard !live.isEmpty else {
             throw HorizontalIntentError.noProjectOpen
         }
-        if live.count > 1,
-           let front = NSDocumentController.shared.currentDocument?.fileURL?.standardizedFileURL,
-           let match = live.first(where: { $0.document.url.standardizedFileURL == front }) {
+        guard live.count > 1 else {
+            return live[0]
+        }
+        #if os(macOS)
+        // `currentDocument` is what the user would call "the project I am
+        // looking at".
+        if let frontURL = NSDocumentController.shared.currentDocument?.fileURL?.standardizedFileURL,
+           let match = live.first(where: { $0.document.url.standardizedFileURL == frontURL }) {
+            return match
+        }
+        #endif
+        if let front, let match = live.first(where: { $0.handle == front }) {
             return match
         }
         return live[0]
+    }
+
+    /// `current()`, but willing to wait for a document the app is still
+    /// bringing back. An intent that opens the app runs while its windows are
+    /// being restored, and a document is not registered until its view has
+    /// appeared and loaded — on the iPad in particular, Siri launching the
+    /// app cold would otherwise be told nothing is open. Gives up after
+    /// `timeout` with the same error `current()` throws.
+    static func current(waitingUpTo timeout: Duration) async throws -> Target {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while true {
+            do {
+                return try current()
+            } catch {
+                guard clock.now < deadline else {
+                    throw error
+                }
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
     }
 
     /// Calls a dispatch method against `handle` and returns its result, or
@@ -43,6 +76,10 @@ enum HorizontalIntentTarget {
     /// has to fix the request, which here is the person who asked.
     @discardableResult
     static func call(_ method: String, handle: Int, params: JSONDictionary = [:]) throws -> JSONDictionary {
+        // The live channel does this before every request. An intent is a
+        // request from the same place, and a component placed a moment ago
+        // has to be nameable now, not after the next channel request.
+        HorizontalDispatchSession.shared.syncLiveEntries()
         var params = params
         params["handle"] = handle
         let response = HorizontalDispatch.call(
@@ -86,4 +123,3 @@ enum HorizontalIntentError: Swift.Error, CustomLocalizedStringResourceConvertibl
         }
     }
 }
-#endif

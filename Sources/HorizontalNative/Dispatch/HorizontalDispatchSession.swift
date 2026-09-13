@@ -10,6 +10,8 @@ final class HorizontalDispatchSession: @unchecked Sendable {
     private let lock = NSRecursiveLock()
     private var entries: [Int: HorizontalDispatchProjectEntry] = [:]
     private var nextHandle = 1
+    /// See `frontLiveDocumentHandle`.
+    private var frontLiveHandle: Int?
 
     func perform<T>(_ body: (HorizontalDispatchSession) throws -> T) rethrows -> T {
         lock.lock()
@@ -31,6 +33,17 @@ final class HorizontalDispatchSession: @unchecked Sendable {
     /// the live listener runs.
     var liveDocumentCount: Int {
         perform { session in session.entries.values.filter { $0.live != nil }.count }
+    }
+
+    /// The live document whose scene most recently came to the front, by
+    /// handle — what stands in for a document controller on the iPad, which
+    /// has none to ask. Nil until a document says so, and nil again once that
+    /// document unregisters.
+    var frontLiveDocumentHandle: Int? {
+        guard let handle = frontLiveHandle, entries[handle]?.live != nil else {
+            return nil
+        }
+        return handle
     }
 
     /// Opens the project at `url`, or returns the entry already holding it.
@@ -130,8 +143,13 @@ final class HorizontalDispatchSession: @unchecked Sendable {
                 project: Self.withEditorConnectivity(document.currentProject())
             )
             entry.live = document
+            #if os(macOS)
+            // The record is for other processes on this machine to find, and
+            // the iPad has none; nor does a document opened there carry access
+            // to the directory beside it, where the record would go.
             entry.holder = HorizontalProjectHolder(projectURL: entry.url, name: Self.holderName,
                                                    endpoint: HorizontalLiveServer.endpoint())
+            #endif
             entry.liveRevision = document.revision()
             entry.snapshot = HorizontalDispatchSnapshot(archive: document.archive(), baseURL: entry.project.baseURL)
             session.nextHandle += 1
@@ -153,6 +171,19 @@ final class HorizontalDispatchSession: @unchecked Sendable {
         }
     }
 
+    /// Records that `handle`'s scene is the one in front — the iPad
+    /// workspace's answer to `NSDocumentController.currentDocument`. A handle
+    /// that is not a live document is ignored rather than remembered.
+    @MainActor
+    func noteLiveDocumentInFront(handle: Int) {
+        perform { session in
+            guard session.entries[handle]?.live != nil else {
+                return
+            }
+            session.frontLiveHandle = handle
+        }
+    }
+
     @MainActor
     func unregisterLive(handle: Int) {
         perform { session in
@@ -161,6 +192,9 @@ final class HorizontalDispatchSession: @unchecked Sendable {
             }
             session.entries[handle]?.holder = nil
             session.entries.removeValue(forKey: handle)
+            if session.frontLiveHandle == handle {
+                session.frontLiveHandle = nil
+            }
             HorizontalLiveServer.documentsDidChange(count: session.liveDocumentCount)
         }
     }
