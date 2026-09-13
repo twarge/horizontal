@@ -1,4 +1,3 @@
-#if os(macOS)
 import AppIntents
 
 /// The phrases that work without the user setting anything up.
@@ -49,4 +48,3 @@ struct HorizontalAppShortcuts: AppShortcutsProvider {
         )
     }
 }
-#endif

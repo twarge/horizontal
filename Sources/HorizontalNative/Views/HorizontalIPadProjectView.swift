@@ -38,6 +38,17 @@ struct HorizontalIPadProjectView: View {
     @State private var powerNetsPopoverPresented = false
     @State private var selectedNetIDs = Set<String>()
     @State private var highlightedNetIDs = Set<String>()
+    @State private var selectedComponentIDs = Set<String>()
+    @State private var highlightedComponentIDs = Set<String>()
+    /// The top-level sheet the schematic pane shows; nil means the first.
+    /// Nothing in the iPad's own chrome changes it yet — an intent's zoom-to
+    /// does, when what it frames is on another sheet.
+    @State private var schematicSheetID: String?
+    /// Counts schematic edits, for the live document's revision.
+    @State private var schematicEditRevision = 0
+    /// The dispatch session's handle for this document while it is registered
+    /// live, which is what lets an App Intent reach it.
+    @State private var liveHandle: Int?
     @State private var loadError: String?
     @State private var isLoading = false
 
@@ -82,6 +93,7 @@ struct HorizontalIPadProjectView: View {
 
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
 
     init(document: Binding<HorizontalProjectDocument>, fileURL: URL?) {
         self._document = document
@@ -118,12 +130,33 @@ struct HorizontalIPadProjectView: View {
     /// Shows an item, or a search, in the Pools pane, bringing it up first.
     private func revealInPools(_ request: HorizontalPoolRevealRequest) {
         libraryRevealRequest = request
+        showPane(.library)
+    }
+
+    /// Brings `pane` on screen: beside the others where there is room, in
+    /// place of the one showing on a compact width. The pane picker's rule.
+    private func showPane(_ pane: HorizontalPane) {
         if isCompact {
-            visiblePanes = [.library]
+            visiblePanes = [pane]
         } else {
-            visiblePanes.insert(.library)
+            visiblePanes.insert(pane)
         }
-        focusedPane = .library
+        focusedPane = pane
+    }
+
+    /// Shows exactly `panes`. A compact width holds one canvas, so several
+    /// asked for there come down to the focused one when it is among them and
+    /// the first in pane order otherwise.
+    private func showPanes(_ panes: Set<HorizontalPane>) {
+        guard !panes.isEmpty else {
+            return
+        }
+        guard isCompact, panes.count > 1 else {
+            visiblePanes = panes
+            return
+        }
+        let firstAsked = HorizontalPane.allCases.first { panes.contains($0) }
+        visiblePanes = [panes.contains(focusedPane) ? focusedPane : (firstAsked ?? focusedPane)]
     }
 
     private var projectBody: some View {
@@ -194,6 +227,15 @@ struct HorizontalIPadProjectView: View {
             viewStateSaveTask?.cancel()
             viewStateSaveTask = nil
             saveViewState()
+            unregisterLiveDocument()
+        }
+        // The scene that most recently became active holds the document an
+        // intent means by "the one in front"; with two windows open, Siri has
+        // nothing else to go on.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, let liveHandle {
+                HorizontalDispatchSession.shared.noteLiveDocumentInFront(handle: liveHandle)
+            }
         }
         .onChange(of: horizontalSizeClass) { _, sizeClass in
             // A compact width (iPhone, or a narrow Split View slice) has no room for
@@ -672,7 +714,7 @@ struct HorizontalIPadProjectView: View {
     @ViewBuilder
     private func schematicView(for project: HorizontalProject, safeAreaInsets: EdgeInsets) -> some View {
         if let schematic = project.schematic,
-           let sheet = schematic.sheets.first {
+           let sheet = currentSchematicSheet(in: schematic) {
             PaneOverlayContainer(
                 pane: .schematic,
                 safeAreaInsets: safeAreaInsets,
@@ -686,10 +728,13 @@ struct HorizontalIPadProjectView: View {
                     displayOptions: schematicDisplayOptions,
                     fitSafeAreaInsets: safeAreaInsets,
                     highlightedNetIDs: highlightedNetIDs,
+                    highlightedComponentIDs: highlightedComponentIDs,
                     selectionToolSettings: selectionToolSettings,
                     isReadOnly: isReadOnly,
                     onSelectedNetChange: { selectedNetIDs = $0 },
+                    onSelectedComponentChange: { selectedComponentIDs = $0 },
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
+                    onHighlightComponentCommand: { highlightedComponentIDs = $0 },
                     onSheetChange: { applyEditedSchematicSheet($0) },
                     onApplyProjectEdit: { operations, actionName in
                         applyProjectEdit(operations, actionName: actionName)
@@ -771,10 +816,13 @@ struct HorizontalIPadProjectView: View {
                     displayOptions: boardDisplayOptions,
                     fitSafeAreaInsets: safeAreaInsets,
                     highlightedNetIDs: highlightedNetIDs,
+                    highlightedComponentIDs: highlightedComponentIDs,
                     selectionToolSettings: selectionToolSettings,
                     isReadOnly: isReadOnly,
                     onSelectedNetChange: { selectedNetIDs = $0 },
+                    onSelectedComponentChange: { selectedComponentIDs = $0 },
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
+                    onHighlightComponentCommand: { highlightedComponentIDs = $0 },
                     onBoardChange: { applyEditedBoard($0) },
                     onPlaneEdit: { applyBoardPlaneEdit($0, actionName: $1) },
                     onUpdateAllPlanes: updateAllBoardPlanes,
@@ -939,6 +987,10 @@ struct HorizontalIPadProjectView: View {
             project = reloaded
             boardEditRevision += 1
             boardSyncRevision += 1
+            schematicEditRevision += 1
+            // A project-level edit is how a part gets placed, which is a new
+            // name a spoken phrase can carry.
+            publishIntentParameters()
         } catch {
             loadError = "Couldn't \(actionName.lowercased()): \(HorizontalCanvasProjectEdit.message(for: error))"
         }
@@ -969,6 +1021,7 @@ struct HorizontalIPadProjectView: View {
             }
         }
         project = updated
+        schematicEditRevision += 1
         do {
             try HorizontalProjectJSONApplicator.apply(
                 schematicSheet: sheet,
@@ -981,6 +1034,9 @@ struct HorizontalIPadProjectView: View {
         }
         if previousSignature != sheet.netlistSignature {
             scheduleBoardNetlistSync()
+            // The signature moves when components or nets do, which is
+            // exactly when the names a phrase can carry have changed.
+            publishIntentParameters()
         }
     }
 
@@ -1165,6 +1221,7 @@ struct HorizontalIPadProjectView: View {
     private func loadProject() {
         isLoading = true
         loadError = nil
+        unregisterLiveDocument()
         project = nil
         poolItemSession = nil
 
@@ -1203,8 +1260,12 @@ struct HorizontalIPadProjectView: View {
             threeDCameraState = nil
             selectedNetIDs.removeAll()
             highlightedNetIDs.removeAll()
+            selectedComponentIDs.removeAll()
+            highlightedComponentIDs.removeAll()
+            schematicSheetID = nil
             selectionDetailsByPane.removeAll()
             restoreViewState(for: loadedProject)
+            registerLiveDocument(loadedProject)
         } catch {
             loadError = error.localizedDescription
         }
@@ -1281,6 +1342,111 @@ struct HorizontalIPadProjectView: View {
         }
         state.showsSelectionSidebar = rightPane == .inspector
         HorizontalFileViewStateStore.shared.save(state, for: fileURL, projectID: project?.uuid)
+    }
+
+    // MARK: - Live document
+
+    /// Exposes this document to the dispatch layer the way the macOS
+    /// workspace does (docs/automation.md). On the iPad nothing serves the
+    /// live channel, so the one caller is an App Intent — "highlight C111 in
+    /// Horizontal" — and what it reaches is wired: the model, highlight and
+    /// selection, the panes, framing, and the sheet. The editing verbs have
+    /// no caller here and keep their refusing defaults.
+    private func registerLiveDocument(_ loaded: HorizontalProject) {
+        guard liveHandle == nil else {
+            return
+        }
+        let live = HorizontalLiveDocument(url: loaded.url, title: loaded.displayTitle, project: loaded, archive: document.archive)
+        live.currentProject = { project ?? loaded }
+        live.revision = { "\(boardEditRevision):\(boardSyncRevision):\(schematicEditRevision)" }
+        live.archive = { document.archive }
+        live.isReadOnly = { isReadOnly }
+        live.selection = {
+            HorizontalLiveSelection(
+                netIDs: selectedNetIDs,
+                componentIDs: selectedComponentIDs,
+                highlightedNetIDs: highlightedNetIDs,
+                highlightedComponentIDs: highlightedComponentIDs,
+                panes: visiblePanes.map(\.rawValue)
+            )
+        }
+        live.setHighlight = { nets, components in
+            highlightedNetIDs = nets
+            highlightedComponentIDs = components
+        }
+        live.setSelection = { nets, components in
+            selectedNetIDs = nets
+            selectedComponentIDs = components
+        }
+        live.visibleBounds = { pane in
+            canvasActions(for: pane)?.visibleWorldBounds?()
+        }
+        live.frame = { pane, rect in
+            if visiblePanes.contains(pane), let actions = canvasActions(for: pane) {
+                actions.frameWorldRect?(rect)
+                return
+            }
+            // A hidden pane has no canvas here (unlike the Mac, which keeps
+            // one): bring it up, then frame once it has come up and laid
+            // out — the same wait zoom_to gives a sheet swap.
+            showPane(pane)
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                canvasActions(for: pane)?.frameWorldRect?(rect)
+            }
+        }
+        live.setPanes = { panes in
+            showPanes(panes)
+        }
+        live.showSheet = { _, sheetID in
+            showPane(.schematic)
+            // The iPad shows the top block's schematic; a sheet from another
+            // block has nowhere to go and leaves the current one alone.
+            if project?.schematic?.sheets.contains(where: { $0.id == sheetID }) == true {
+                schematicSheetID = sheetID
+            }
+        }
+        live.currentSheet = {
+            guard let schematic = project?.schematic else {
+                return nil
+            }
+            return currentSchematicSheet(in: schematic)?.id
+        }
+        let handle = HorizontalDispatchSession.shared.registerLive(live)
+        liveHandle = handle
+        // The document that just came up is the one in front.
+        HorizontalDispatchSession.shared.noteLiveDocumentInFront(handle: handle)
+        publishIntentParameters()
+    }
+
+    private func unregisterLiveDocument() {
+        guard let liveHandle else {
+            return
+        }
+        HorizontalDispatchSession.shared.unregisterLive(handle: liveHandle)
+        self.liveHandle = nil
+        publishIntentParameters()
+    }
+
+    /// Tells the system which refdeses and net names a spoken phrase can
+    /// carry now. Same rule as the macOS workspace: whenever a document opens
+    /// or closes, or is edited into having different components or nets.
+    private func publishIntentParameters() {
+        HorizontalIntentParameterPublishing.parametersDidChange()
+    }
+
+    private func canvasActions(for pane: HorizontalPane) -> HorizontalCanvasCommandActions? {
+        switch pane {
+        case .schematic: schematicCanvasActions
+        case .board: boardCanvasActions
+        default: nil
+        }
+    }
+
+    /// The sheet the schematic pane shows: the one an intent asked for, while
+    /// it is still there, else the first.
+    private func currentSchematicSheet(in schematic: HorizontalSchematic) -> HorizontalSchematicSheet? {
+        schematic.sheets.first { $0.id == schematicSheetID } ?? schematic.sheets.first
     }
 
     private func projectURLForLoading() throws -> URL {

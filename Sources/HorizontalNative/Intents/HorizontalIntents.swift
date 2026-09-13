@@ -1,4 +1,3 @@
-#if os(macOS)
 import AppIntents
 import Foundation
 
@@ -54,7 +53,9 @@ struct HighlightDesignObjectIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let target = try HorizontalIntentTarget.current()
+        // Opening the app may be what is bringing its documents back; give
+        // the one in front a moment to register before deciding none is open.
+        let target = try await HorizontalIntentTarget.current(waitingUpTo: .seconds(3))
         let key = object.kind == .component ? "components" : "nets"
         _ = try HorizontalIntentTarget.call("highlight", handle: target.handle, params: [key: [object.name]])
         return .result(dialog: "Highlighted \(object.name).")
@@ -93,7 +94,7 @@ struct ShowPanesIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let target = try HorizontalIntentTarget.current()
+        let target = try await HorizontalIntentTarget.current(waitingUpTo: .seconds(3))
         _ = try HorizontalIntentTarget.call(
             "show_panes", handle: target.handle, params: ["panes": choice.panes.map(\.rawValue)]
         )
@@ -122,7 +123,7 @@ struct ZoomToDesignObjectIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let target = try HorizontalIntentTarget.current()
+        let target = try await HorizontalIntentTarget.current(waitingUpTo: .seconds(3))
         var params: JSONDictionary = object.kind == .component ? ["refdes": object.name] : ["net": object.name]
         if pane != .automatic {
             params["pane"] = pane.rawValue
@@ -134,4 +135,3 @@ struct ZoomToDesignObjectIntent: AppIntent {
         return .result(dialog: "Zoomed to \(object.name)\(framed).")
     }
 }
-#endif

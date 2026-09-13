@@ -397,10 +397,21 @@ same request as "show me the board".
 The app vends four App Intents over exactly these verbs, so a spoken request
 and an agent's call are one code path — `Sources/HorizontalNative/Intents`:
 Highlight, Clear Highlight, Show Panes and Zoom To. Each resolves the document
-in front through `NSDocumentController`, then calls `highlight`, `show_panes`
-or `zoom_to` against the handle the workspace registered. macOS only, because
-registering a document as live is macOS only; the iPad workspace has no live
-channel for an intent to reach.
+in front, then calls `highlight`, `show_panes` or `zoom_to` against the handle
+the workspace registered. On the Mac the document in front is whatever
+`NSDocumentController` says it is. The iPad has no document controller, so its
+workspace tells the dispatch session which document's scene most recently
+became active, and that is the one an intent acts on there.
+
+The iPad registers its document the way the Mac does, but wires only what an
+intent reaches: the model, highlight and selection, the panes, framing, and the
+sheet. Nothing on the iPad serves the live channel, so the editing verbs have
+no caller there and keep their refusing defaults, and no holder record is
+written beside the project. Zoom To can switch sheets within the top block's
+schematic, which is the one the iPad shows. An intent that opens the app also
+waits a few seconds for a document the app is still restoring before saying
+nothing is open, because Siri launching the app cold is the usual case on the
+iPad.
 
 `HorizontalDesignObjectEntity` is what an intent is pointed at: one entity for
 both components and nets, because "highlight R18" and "highlight ground" are
