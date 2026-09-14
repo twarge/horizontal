@@ -48,35 +48,15 @@ struct HorizontalNativeApp: App {
         }
 
         // The opening screen: title, Create Document, and the document browser
-        // for existing projects, replacing the bare Files browser as the launch
-        // experience.
+        // for existing projects. The background is the system's own; a
+        // gradient of the board's colours read as a dark, odd backdrop behind
+        // the browser's light sheet.
         DocumentGroupLaunchScene("Horizontal") {
             NewDocumentButton("Create Document")
-        } background: {
-            HorizontalLaunchBackground()
         }
         #endif
     }
 }
-
-#if os(iOS)
-/// Backdrop for the launch scene: the dark copper-on-substrate palette of the
-/// board canvas, so the opening screen reads as this app rather than a stock
-/// document browser.
-private struct HorizontalLaunchBackground: View {
-    var body: some View {
-        LinearGradient(
-            colors: [
-                Color(red: 0.09, green: 0.24, blue: 0.20),
-                Color(red: 0.03, green: 0.08, blue: 0.10)
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-        .ignoresSafeArea()
-    }
-}
-#endif
 
 #if DEBUG && os(macOS)
 private final class HorizontalDebugConsoleFilter: @unchecked Sendable {
