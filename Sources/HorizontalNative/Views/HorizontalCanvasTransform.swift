@@ -17,6 +17,8 @@ struct HorizontalCanvasTransform {
     var fitInsets: HorizontalCanvasInsets = .defaultFit
     var zoom: CGFloat = 1
     var pan: CGSize = .zero
+    /// Seen from the other side: x runs from the content's right edge.
+    var mirrored = false
     var minimumLineWidth: CGFloat = 0
 
     private var fitScale: CGFloat {
@@ -48,7 +50,7 @@ struct HorizontalCanvasTransform {
 
     func point(_ point: HorizontalPoint) -> CGPoint {
         let origin = origin
-        let x = origin.x + (point.x - bounds.minX) * scale
+        let x = origin.x + (mirrored ? bounds.maxX - point.x : point.x - bounds.minX) * scale
         let y = origin.y + (bounds.maxY - point.y) * scale
         return CGPoint(x: x, y: y)
     }
@@ -59,8 +61,9 @@ struct HorizontalCanvasTransform {
         }
 
         let origin = origin
+        let dx = Double((point.x - origin.x) / scale)
         return HorizontalPoint(
-            x: bounds.minX + Double((point.x - origin.x) / scale),
+            x: mirrored ? bounds.maxX - dx : bounds.minX + dx,
             y: bounds.maxY - Double((point.y - origin.y) / scale)
         )
     }

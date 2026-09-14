@@ -76,9 +76,8 @@
 				HorizontalNativeApp.swift,
 				HorizontalNativeAppDelegate.swift,
 				Intents/HorizontalAppShortcuts.swift,
-				Intents/HorizontalDesignObjectEntity.swift,
 				Intents/HorizontalIntents.swift,
-				Intents/HorizontalIntentTarget.swift,
+				Voice/HorizontalSpeechListener.swift,
 			);
 			target = 1A0000000000000000000210 /* HorizontalQuickLookPreview */;
 		};
@@ -88,9 +87,8 @@
 				HorizontalNativeApp.swift,
 				HorizontalNativeAppDelegate.swift,
 				Intents/HorizontalAppShortcuts.swift,
-				Intents/HorizontalDesignObjectEntity.swift,
 				Intents/HorizontalIntents.swift,
-				Intents/HorizontalIntentTarget.swift,
+				Voice/HorizontalSpeechListener.swift,
 			);
 			target = 1A0000000000000000000220 /* HorizontalQuickLookThumbnail */;
 		};
@@ -403,6 +401,7 @@
 				"INFOPLIST_FILE[sdk=iphonesimulator*]" = App/iOSInfo.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Horizontal;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Horizontal listens for spoken commands such as “highlight C12” or “show the board” while the microphone button is on.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -453,6 +452,7 @@
 				"INFOPLIST_FILE[sdk=iphonesimulator*]" = App/iOSInfo.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Horizontal;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Horizontal listens for spoken commands such as “highlight C12” or “show the board” while the microphone button is on.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (

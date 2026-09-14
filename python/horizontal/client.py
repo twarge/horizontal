@@ -181,6 +181,32 @@ class Project:
         """Show these panes in the app's window and hide the rest. Live documents only."""
         return self._call("show_panes", panes=list(panes))
 
+    def show_sheet(self, sheet: int | None = None, name: str | None = None, sheet_id: str | None = None, block_id: str | None = None) -> dict[str, Any]:
+        """Show a schematic sheet, by index, name or id. Live documents only."""
+        params: dict[str, Any] = {}
+        if sheet is not None:
+            params["sheet"] = sheet
+        if name is not None:
+            params["name"] = name
+        if sheet_id is not None:
+            params["sheet_id"] = sheet_id
+        if block_id is not None:
+            params["block_id"] = block_id
+        return self._call("show_sheet", **params)
+
+    def show_layers(self, preset: str) -> dict[str, Any]:
+        """Show a board layer view: top_placement, top_silkscreen, top_routing, bottom_placement,
+        bottom_silkscreen, bottom_routing, top_view, bottom_view (mirrored), flip_view, placement, silkscreen,
+        routing (the side that is up), all, copper_only or clean. Live documents only."""
+        return self._call("show_layers", preset=preset)
+
+    def zoom(self, factor: float = 2, pane: str | None = None) -> dict[str, Any]:
+        """Zoom a pane's view about its centre: 2 is twice as close, 0.5 twice as far. Live documents only."""
+        params: dict[str, Any] = {"factor": factor}
+        if pane is not None:
+            params["pane"] = pane
+        return self._call("zoom", **params)
+
     @property
     def title(self) -> str:
         return self.summary["title"]
@@ -498,7 +524,8 @@ class Project:
     # Live documents only: the app's canvases.
 
     def zoom_to(self, refdes: str | None = None, net: str | None = None, pane: str | None = None, margin_mm: float = 3) -> dict[str, Any]:
-        """Frame a component or net in the app's board or schematic pane."""
+        """Frame a component or net in the app's board or schematic pane; pane "all" frames it in every
+        pane that is showing and can show it, the 3D view included."""
         params: dict[str, Any] = {"margin_mm": margin_mm}
         if refdes is not None:
             params["refdes"] = refdes

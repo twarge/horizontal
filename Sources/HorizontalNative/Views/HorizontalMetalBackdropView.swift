@@ -1213,6 +1213,7 @@ struct HorizontalMetalBackdropView {
             uniforms.boundsMax = SIMD2(Float(currentBounds.maxX), Float(currentBounds.maxY))
             uniforms.pan = SIMD2(Float(viewport.pan.width), Float(viewport.pan.height))
             uniforms.zoom = Float(max(viewport.zoom, 0.01))
+            uniforms.mirrored = viewport.mirrored ? 1 : 0
             uniforms.fitInsets = SIMD4(
                 Float(currentFitInsets.top),
                 Float(currentFitInsets.leading),
@@ -1667,6 +1668,8 @@ private struct HorizontalMetalBackdropUniforms {
     var showOrigin: Float = 0
     var originPadding: Float = 0
     var originColor = SIMD4<Float>(0, 0, 0, 0)
+    /// 1 when the view is seen from the other side (x runs the other way).
+    var mirrored: Float = 0
 }
 
 private struct HorizontalMetalLineShaderPrimitive {
@@ -1966,6 +1969,7 @@ struct HorizontalMetalBackdropUniforms {
     float showOrigin;
     float originPadding;
     float4 originColor;
+    float mirrored;
 };
 
 struct BackdropVertexOut {
@@ -2077,8 +2081,9 @@ float2 horizon_screen_origin(constant HorizontalMetalBackdropUniforms& uniforms,
 }
 
 float2 horizon_world_to_screen(float2 world, constant HorizontalMetalBackdropUniforms& uniforms, float scale, float2 screenOrigin) {
+    float fromLeft = uniforms.mirrored > 0.5 ? (uniforms.boundsMax.x - world.x) : (world.x - uniforms.boundsMin.x);
     return float2(
-        screenOrigin.x + (world.x - uniforms.boundsMin.x) * scale,
+        screenOrigin.x + fromLeft * scale,
         screenOrigin.y + (uniforms.boundsMax.y - world.y) * scale
     );
 }
@@ -2337,7 +2342,8 @@ fragment float4 horizon_backdrop_fragment(
     float2 screenOrigin = (viewportSize - contentSize) * 0.5 + uniforms.pan;
 
     float2 world;
-    world.x = uniforms.boundsMin.x + (screen.x - screenOrigin.x) / scale;
+    float dx = (screen.x - screenOrigin.x) / scale;
+    world.x = uniforms.mirrored > 0.5 ? (uniforms.boundsMax.x - dx) : (uniforms.boundsMin.x + dx);
     world.y = uniforms.boundsMax.y - (screen.y - screenOrigin.y) / scale;
 
     float4 color = uniforms.backgroundColor;

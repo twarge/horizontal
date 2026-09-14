@@ -320,6 +320,27 @@ enum HorizontalDispatchMethods {
             handler: showPanes
         ),
         .init(
+            name: "show_sheet",
+            summary: "Show a schematic sheet in the app's schematic pane. Live channel only.",
+            params: ["handle": "Live project handle.", "sheet": "Sheet index.", "sheet_id": "Sheet UUID.",
+                     "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet."],
+            handler: showSheet
+        ),
+        .init(
+            name: "show_layers",
+            summary: "Show a board layer view: top or bottom placement, silkscreen or routing, all layers, copper only, or the clean view. Live channel only.",
+            params: ["handle": "Live project handle.",
+                     "preset": "One of " + HorizontalBoardLayerPreset.allCases.map(\.rawValue).joined(separator: ", ") + "."],
+            handler: showLayers
+        ),
+        .init(
+            name: "zoom",
+            summary: "Zoom a pane's view in or out about its centre. Live channel only.",
+            params: ["handle": "Live project handle.", "factor": "How much closer: 2 is twice as close, 0.5 twice as far. Default 2.",
+                     "pane": "board, schematic or threeD; omitted, the pane the user is working in."],
+            handler: zoomBy
+        ),
+        .init(
             name: "export",
             summary: "Run the app's exporters. Sections: schematic_pdf, bom, gerber, odb, pick_and_place, board_step, board_drawing, board_dxf.",
             params: [
@@ -367,7 +388,7 @@ enum HorizontalDispatchMethods {
                 "handle": "Live project handle.",
                 "refdes": "Component to frame.",
                 "net": "Net to frame (alternative to refdes).",
-                "pane": "board or schematic (default: board when the component is placed there, else schematic).",
+                "pane": "board or schematic to frame in; omitted, the board when the component is placed there, else the schematic. \"all\" frames it in every pane that is showing and can show it, the 3D view included, or in the default pane when none can.",
                 "margin_mm": "Space around the target (default 3)."
             ],
             handler: zoomTo
@@ -994,6 +1015,61 @@ enum HorizontalDispatchMethods {
         return output.value
     }
 
+    /// The view verb for magnification: closer or further, keeping the centre.
+    @Sendable private static func zoomBy(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let live = try liveDocument(entry)
+        let factor = params.double("factor") ?? 2
+        guard factor.isFinite, factor > 0 else {
+            throw HorizontalDispatchError.invalidParams("factor must be a positive number: 2 is twice as close, 0.5 twice as far.")
+        }
+        var pane: HorizontalPane?
+        if let name = params.string("pane") {
+            guard let known = HorizontalPane(rawValue: name) ?? HorizontalPane.allCases.first(where: { $0.title.caseInsensitiveCompare(name) == .orderedSame }) else {
+                throw HorizontalDispatchError.invalidParams("No pane \(name). Panes: \(HorizontalPane.allCases.map(\.rawValue).joined(separator: ", ")).")
+            }
+            pane = known
+        }
+        let box = HorizontalUnsafeSendableBox((pane, factor))
+        MainActor.assumeIsolated {
+            live.zoomBy(box.value.0, box.value.1)
+        }
+        return ["factor": factor, "pane": pane?.rawValue as Any]
+    }
+
+    /// The view verb for layers: which of the board's layer views is up.
+    @Sendable private static func showLayers(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let live = try liveDocument(entry)
+        let known = HorizontalBoardLayerPreset.allCases.map(\.rawValue).joined(separator: ", ")
+        guard let name = params.string("preset") else {
+            throw HorizontalDispatchError.invalidParams("show_layers needs \"preset\": one of \(known).")
+        }
+        guard let preset = HorizontalBoardLayerPreset(rawValue: name.lowercased()) else {
+            throw HorizontalDispatchError.invalidParams("No layer preset \(name). Presets: \(known).")
+        }
+        let box = HorizontalUnsafeSendableBox(preset)
+        MainActor.assumeIsolated {
+            live.setLayerPreset(box.value)
+        }
+        return ["preset": preset.rawValue]
+    }
+
+    /// The view verb for sheets: `zoom_to` swaps sheets on the way to a
+    /// component, `show_sheet` swaps them because the caller asked to see one.
+    @Sendable private static func showSheet(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let live = try liveDocument(entry)
+        guard let sheet = try HorizontalDispatchValidation.sheet(params, index: entry.index) else {
+            throw HorizontalDispatchError.invalidParams("show_sheet needs a sheet: \"sheet\" (index), \"name\" or \"sheet_id\".")
+        }
+        let box = HorizontalUnsafeSendableBox(sheet)
+        MainActor.assumeIsolated {
+            live.showSheet(box.value.blockID, box.value.id)
+        }
+        return sheetJSON(sheet)
+    }
+
     @Sendable private static func showPanes(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         let live = try liveDocument(entry)
@@ -1122,17 +1198,17 @@ enum HorizontalDispatchMethods {
         switch name.lowercased() {
         case "board": return .board
         case "schematic": return .schematic
-        default: throw HorizontalDispatchError.invalidParams("pane must be board or schematic.")
+        default: throw HorizontalDispatchError.invalidParams("pane must be board, schematic, or all.")
         }
     }
 
     /// The rectangle a component or net occupies in a pane, for zoom-to.
-    private static func targetRect(_ params: JSONDictionary, entry: HorizontalDispatchProjectEntry) throws -> (rect: HorizontalRect, pane: HorizontalPane, sheetID: String?, blockID: String?, label: String) {
+    private static func targetRect(_ params: JSONDictionary, entry: HorizontalDispatchProjectEntry, pane override: HorizontalPane?) throws -> (rect: HorizontalRect, pane: HorizontalPane, sheetID: String?, blockID: String?, label: String, side: HorizontalBoardSide?) {
         let index = entry.index
         let margin = (params.double("margin_mm") ?? 3) * 1_000_000
         if let refdes = params.string("refdes") {
             let component = try HorizontalDispatchValidation.component(refdes, index: index)
-            let wanted = try pane(params, default: component.boardPlacement != nil ? .board : .schematic)
+            let wanted = try override ?? pane(params, default: component.boardPlacement != nil ? .board : .schematic)
             if wanted == .board {
                 guard let placement = component.boardPlacement, let board = entry.project.board else {
                     throw HorizontalDispatchError.notFound("\(component.refdes) is not placed on the board.")
@@ -1153,17 +1229,17 @@ enum HorizontalDispatchMethods {
                 if rect.isEmpty {
                     rect = HorizontalRect(center: placement.position, size: 2_000_000)
                 }
-                return (expand(rect, by: margin), .board, nil, nil, component.refdes)
+                return (expand(rect, by: margin), .board, nil, nil, component.refdes, placement.bottom ? .bottom : .top)
             }
             guard let symbol = component.symbolPlacements.first else {
                 throw HorizontalDispatchError.notFound("\(component.refdes) has no symbol on any sheet.")
             }
             let rect = HorizontalRect(center: symbol.position, size: 20_000_000)
-            return (expand(rect, by: margin), .schematic, symbol.sheetID, symbol.blockID, component.refdes)
+            return (expand(rect, by: margin), .schematic, symbol.sheetID, symbol.blockID, component.refdes, nil)
         }
         if let netName = params.string("net") {
             let net = try HorizontalDispatchValidation.net(netName, index: index)
-            let wanted = try pane(params, default: .board)
+            let wanted = try override ?? pane(params, default: .board)
             if wanted == .board, let board = entry.project.board {
                 var points: [HorizontalPoint] = []
                 for pad in board.packagePads where pad.netID?.lowercased() == net.id {
@@ -1184,7 +1260,7 @@ enum HorizontalDispatchMethods {
                 if rect.isEmpty {
                     rect = HorizontalRect(center: first, size: 2_000_000)
                 }
-                return (expand(rect, by: margin), .board, nil, nil, net.name)
+                return (expand(rect, by: margin), .board, nil, nil, net.name, nil)
             }
             // Schematic: the sheet holding the most of the net's pins.
             var bySheet = [String: [HorizontalPoint]]()
@@ -1205,7 +1281,7 @@ enum HorizontalDispatchMethods {
             if rect.isEmpty {
                 rect = HorizontalRect(center: first, size: 20_000_000)
             }
-            return (expand(rect, by: margin + 10_000_000), .schematic, sheet?.id, sheet?.blockID, net.name)
+            return (expand(rect, by: margin + 10_000_000), .schematic, sheet?.id, sheet?.blockID, net.name, nil)
         }
         throw HorizontalDispatchError.invalidParams("Pass \"refdes\" or \"net\".")
     }
@@ -1219,7 +1295,70 @@ enum HorizontalDispatchMethods {
     @Sendable private static func zoomTo(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         let live = try liveDocument(entry)
-        let target = try targetRect(params, entry: entry)
+        if let wanted = params.string("pane")?.lowercased(), wanted == "all" || wanted == "visible" {
+            return try zoomToVisiblePanes(params, entry: entry, live: live)
+        }
+        return frame(try targetRect(params, entry: entry, pane: nil), live: live)
+    }
+
+    /// Frames the target in every pane that is showing and can show it — the
+    /// schematic on its sheet, the board, and the 3D view on the board's
+    /// rectangle — or, when none of the showing panes can, in the one pane the
+    /// default rule picks, revealing it. This is what a person means by "zoom
+    /// to C50" with more than one view open.
+    private static func zoomToVisiblePanes(_ params: JSONDictionary, entry: HorizontalDispatchProjectEntry, live: HorizontalLiveDocument) throws -> Any {
+        let visible = HorizontalUnsafeSendableBox<Set<HorizontalPane>>([])
+        MainActor.assumeIsolated {
+            visible.value = Set(live.selection().panes.compactMap(HorizontalPane.init(rawValue:)))
+        }
+        var framed: [JSONDictionary] = []
+        var label = ""
+        var boardRect: HorizontalRect?
+        for pane in [HorizontalPane.schematic, .board] where visible.value.contains(pane) {
+            guard let target = try? targetRect(params, entry: entry, pane: pane) else {
+                continue
+            }
+            framed.append(frame(target, live: live))
+            label = target.label
+            if pane == .board {
+                boardRect = target.rect
+            }
+        }
+        if visible.value.contains(.threeD) {
+            if boardRect == nil, let target = try? targetRect(params, entry: entry, pane: .board) {
+                boardRect = target.rect
+                label = target.label
+            }
+            if let boardRect {
+                let box = HorizontalUnsafeSendableBox(boardRect)
+                MainActor.assumeIsolated {
+                    live.frame(.threeD, box.value)
+                }
+                framed.append(["pane": HorizontalPane.threeD.rawValue, "region": HorizontalDispatchJSON.rect(boardRect)])
+            }
+        }
+        if framed.isEmpty {
+            // Nothing showing can show it; the default rule says where it is,
+            // and throws the real reason when it is nowhere. The "all" it was
+            // asked with is not a pane that rule knows.
+            var plain = params
+            plain["pane"] = nil
+            let target = try targetRect(plain, entry: entry, pane: nil)
+            framed.append(frame(target, live: live))
+            label = target.label
+        }
+        var result: JSONDictionary = ["target": label, "panes": framed.compactMap { $0["pane"] as? String }, "framed": framed]
+        result["pane"] = framed.first?["pane"]
+        if framed.contains(where: { $0["sheet_changed"] as? Bool == true }) {
+            result["sheet_changed"] = true
+        }
+        return result
+    }
+
+    /// Frames one target in its pane, showing another sheet first when the
+    /// schematic is on one.
+    private static func frame(_ target: (rect: HorizontalRect, pane: HorizontalPane, sheetID: String?, blockID: String?, label: String, side: HorizontalBoardSide?),
+                              live: HorizontalLiveDocument) -> JSONDictionary {
         let input = HorizontalUnsafeSendableBox(target)
         let output = HorizontalUnsafeSendableBox<JSONDictionary>([:])
         MainActor.assumeIsolated {
@@ -1239,6 +1378,12 @@ enum HorizontalDispatchMethods {
                     live.frame(.schematic, rect)
                 }
             } else {
+                if target.pane == .board, let side = target.side {
+                    // A part on the far side of the board is behind the view;
+                    // a sided view turns over to it first.
+                    live.showBoardSide(side)
+                    result["side"] = side.rawValue
+                }
                 live.frame(target.pane, target.rect)
             }
             output.value = result

@@ -142,7 +142,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         # project by saying so rather than by doing nothing. show_panes is the
         # one the app's own Siri shortcut runs.
         tools = {t.name: t for t in await server.mcp.list_tools()}
-        for name in ("highlight", "select", "zoom_to", "show_panes"):
+        for name in ("highlight", "select", "zoom_to", "show_panes", "show_sheet", "show_layers", "zoom"):
             self.assertIn(name, tools)
         self.assertIn("panes", tools["show_panes"].input_schema["required"])
         refused = await server.mcp.call_tool("show_panes", {"project_ref": self.ref, "panes": ["board"]})

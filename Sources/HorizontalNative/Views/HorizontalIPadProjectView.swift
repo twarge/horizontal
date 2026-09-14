@@ -49,6 +49,7 @@ struct HorizontalIPadProjectView: View {
     /// The dispatch session's handle for this document while it is registered
     /// live, which is what lets an App Intent reach it.
     @State private var liveHandle: Int?
+    @StateObject private var voiceControl = HorizontalVoiceControl()
     @State private var loadError: String?
     @State private var isLoading = false
 
@@ -184,6 +185,9 @@ struct HorizontalIPadProjectView: View {
         .navigationTitle(documentTitle)
         .navigationBarTitleDisplayMode(.inline)
         .modifier(NavigationDocumentModifier(url: fileURL))
+        .overlay(alignment: .bottom) {
+            HorizontalVoiceTranscriptOverlay(control: voiceControl)
+        }
         .toolbar {
             // One ToolbarItem so everything shares a single glass island — separate
             // items each get their own capsule. (The pane picker never appears without
@@ -423,6 +427,9 @@ struct HorizontalIPadProjectView: View {
     private func toolbarIsland(for project: HorizontalProject) -> some View {
         HStack(spacing: 14) {
             readOnlyLockButton
+            if HorizontalVoiceControl.isAvailable {
+                HorizontalVoiceControlButton(control: voiceControl)
+            }
             Button {
                 settingsSheetPresented = true
             } label: {
@@ -988,9 +995,6 @@ struct HorizontalIPadProjectView: View {
             boardEditRevision += 1
             boardSyncRevision += 1
             schematicEditRevision += 1
-            // A project-level edit is how a part gets placed, which is a new
-            // name a spoken phrase can carry.
-            publishIntentParameters()
         } catch {
             loadError = "Couldn't \(actionName.lowercased()): \(HorizontalCanvasProjectEdit.message(for: error))"
         }
@@ -1034,9 +1038,6 @@ struct HorizontalIPadProjectView: View {
         }
         if previousSignature != sheet.netlistSignature {
             scheduleBoardNetlistSync()
-            // The signature moves when components or nets do, which is
-            // exactly when the names a phrase can carry have changed.
-            publishIntentParameters()
         }
     }
 
@@ -1211,6 +1212,7 @@ struct HorizontalIPadProjectView: View {
                 materialColors: appearanceSettings.boardSceneMaterialColors,
                 silkscreenClipping: appearanceSettings.silkscreenClipping,
                 revision: boardEditRevision,
+                highlightedComponentIDs: highlightedComponentIDs,
                 cameraState: $threeDCameraState
             )
         } else {
@@ -1348,10 +1350,11 @@ struct HorizontalIPadProjectView: View {
 
     /// Exposes this document to the dispatch layer the way the macOS
     /// workspace does (docs/automation.md). On the iPad nothing serves the
-    /// live channel, so the one caller is an App Intent — "highlight C111 in
-    /// Horizontal" — and what it reaches is wired: the model, highlight and
-    /// selection, the panes, framing, and the sheet. The editing verbs have
-    /// no caller here and keep their refusing defaults.
+    /// live channel, so the callers are the app's own voice control —
+    /// "highlight C111" — and the Show Panes intent, and what they reach is
+    /// wired: the model, highlight and selection, the panes, framing, and the
+    /// sheet. The editing verbs have no caller here and keep their refusing
+    /// defaults.
     private func registerLiveDocument(_ loaded: HorizontalProject) {
         guard liveHandle == nil else {
             return
@@ -1382,6 +1385,16 @@ struct HorizontalIPadProjectView: View {
             canvasActions(for: pane)?.visibleWorldBounds?()
         }
         live.frame = { pane, rect in
+            if pane == .threeD {
+                // The 3D pane has no world rectangle to frame; it has a
+                // camera, and the rectangle is on the board.
+                if let board = project?.board {
+                    threeDCameraState = horizonSceneCameraState(
+                        framing: rect, board: board, current: threeDCameraState, projection: .perspective
+                    )
+                }
+                return
+            }
             if visiblePanes.contains(pane), let actions = canvasActions(for: pane) {
                 actions.frameWorldRect?(rect)
                 return
@@ -1397,6 +1410,52 @@ struct HorizontalIPadProjectView: View {
         }
         live.setPanes = { panes in
             showPanes(panes)
+        }
+        live.setLayerPreset = { preset in
+            // A side-less preset ("show silkscreen") takes the side that is
+            // up; the view presets also turn the board over and put the tools
+            // on that side's copper.
+            let side = boardDisplayOptions.visibleSide ?? (boardViewport.mirrored ? .bottom : .top)
+            let resolved = preset.resolved(for: side)
+            boardDisplayOptions.applyLayerPreset(resolved)
+            if let mirrors = resolved.mirrorsView {
+                boardViewport.mirrored = mirrors
+            }
+            if let side = resolved.side {
+                boardDrawingLayer = side.copperLayer
+            }
+            showPane(.board)
+        }
+        live.showBoardSide = { side in
+            // Framing a part on the far side: a sided view turns over to it,
+            // keeping its mode (silkscreen stays silkscreen); the all-layers
+            // view belongs to no side and stays.
+            guard let current = boardDisplayOptions.visibleSide, current != side else {
+                return
+            }
+            let mode: HorizontalBoardLayerPreset = !boardDisplayOptions.pads && boardDisplayOptions.packages ? .silkscreen
+                : (!boardDisplayOptions.packages ? .routing : .placement)
+            boardDisplayOptions.applyLayerPreset(mode.resolved(for: side))
+            if boardViewport.mirrored {
+                // Seen from below and turning to the top: stop mirroring.
+                boardViewport.mirrored = side == .bottom
+            }
+            boardDrawingLayer = side.copperLayer
+        }
+        live.zoomBy = { pane, factor in
+            let candidates: [HorizontalPane?] = [pane, focusedPane, .board, .schematic, .threeD]
+            guard let target = candidates.compactMap({ $0 }).first(where: { visiblePanes.contains($0) }) else {
+                return
+            }
+            if target == .threeD {
+                if let board = project?.board {
+                    threeDCameraState = horizonSceneCameraState(
+                        zooming: threeDCameraState, by: factor, board: board, projection: .perspective
+                    )
+                }
+                return
+            }
+            canvasActions(for: target)?.zoomBy?(factor)
         }
         live.showSheet = { _, sheetID in
             showPane(.schematic)
@@ -1416,24 +1475,18 @@ struct HorizontalIPadProjectView: View {
         liveHandle = handle
         // The document that just came up is the one in front.
         HorizontalDispatchSession.shared.noteLiveDocumentInFront(handle: handle)
-        publishIntentParameters()
+        voiceControl.attach(handle: handle)
     }
 
     private func unregisterLiveDocument() {
         guard let liveHandle else {
             return
         }
+        voiceControl.detach()
         HorizontalDispatchSession.shared.unregisterLive(handle: liveHandle)
         self.liveHandle = nil
-        publishIntentParameters()
     }
 
-    /// Tells the system which refdeses and net names a spoken phrase can
-    /// carry now. Same rule as the macOS workspace: whenever a document opens
-    /// or closes, or is edited into having different components or nets.
-    private func publishIntentParameters() {
-        HorizontalIntentParameterPublishing.parametersDidChange()
-    }
 
     private func canvasActions(for pane: HorizontalPane) -> HorizontalCanvasCommandActions? {
         switch pane {

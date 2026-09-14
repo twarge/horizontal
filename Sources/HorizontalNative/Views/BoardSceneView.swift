@@ -180,6 +180,60 @@ private func horizonSceneBoardDimensions(for board: HorizontalBoard) -> (width: 
     return (width, depth)
 }
 
+/// The camera moved toward or away from what it looks at by `factor` — 2 is
+/// twice as close — about the board's centre, since the camera does not
+/// record what it was looking at. Orthographic cameras scale instead.
+func horizonSceneCameraState(zooming current: HorizontalSceneCameraState?, by factor: Double, board: HorizontalBoard,
+                             projection: HorizontalBoardSceneProjection) -> HorizontalSceneCameraState {
+    let start = current.flatMap { $0.isValid ? $0 : nil } ?? horizonSceneCameraState(for: .defaultPerspective, board: board)
+    guard factor > 0, let transform = start.sceneKitTransform else {
+        return start
+    }
+    let node = SCNNode()
+    node.transform = transform
+    let position = SIMD3<Double>(Double(node.position.x), Double(node.position.y), Double(node.position.z))
+    let moved = position / factor
+    node.position = SCNVector3(horizonSceneScalar(moved.x), horizonSceneScalar(moved.y), horizonSceneScalar(moved.z))
+    let orthographicScale = start.orthographicScale.map { $0 / factor }
+    return HorizontalSceneCameraState(transform: node.transform,
+                                      orthographicScale: projection == .orthogonal ? (orthographicScale ?? horizonSceneDefaultOrthographicScale(for: board) / factor) : nil)
+}
+
+/// A camera looking at `rect` — a rectangle on the board, in board units —
+/// from the direction the camera looks now, or from the default perspective
+/// when there is no camera yet, from far enough that the rectangle fills a
+/// good part of the view. What "zoom to C50" means in the 3D pane.
+func horizonSceneCameraState(
+    framing rect: HorizontalRect,
+    board: HorizontalBoard,
+    current: HorizontalSceneCameraState?,
+    projection: HorizontalBoardSceneProjection
+) -> HorizontalSceneCameraState {
+    let bodyBounds = board.physicalBounds.isEmpty ? board.bounds : board.physicalBounds
+    let target = BoardSceneFactory.scenePosition(rect.center, center: bodyBounds.center, y: BoardSceneFactory.boardTopHeight)
+    let sizeMM = max(rect.width, rect.height) / BoardSceneFactory.unitsPerMillimeter
+    let distance = max(sizeMM * 2.2, 6)
+    // The camera's own +Z axis points back at it from what it looks at, so
+    // keeping that axis keeps the view's direction and only moves the camera.
+    var direction = SIMD3<Double>(-1, 1, 1) / 3.0.squareRoot()
+    var up = SIMD3<Double>(0, 1, 0)
+    if let current, current.isValid, let transform = current.sceneKitTransform {
+        let backward = SIMD3<Double>(Double(transform.m31), Double(transform.m32), Double(transform.m33))
+        let length = (backward * backward).sum().squareRoot()
+        if length > 0.0001 {
+            direction = backward / length
+            up = SIMD3<Double>(Double(transform.m21), Double(transform.m22), Double(transform.m23))
+        }
+    }
+    let focus = SIMD3<Double>(Double(target.x), Double(target.y), Double(target.z))
+    let position = focus + direction * distance
+    let node = SCNNode()
+    node.position = SCNVector3(horizonSceneScalar(position.x), horizonSceneScalar(position.y), horizonSceneScalar(position.z))
+    node.look(at: target, up: SCNVector3(horizonSceneScalar(up.x), horizonSceneScalar(up.y), horizonSceneScalar(up.z)), localFront: SCNVector3(0, 0, -1))
+    let orthographicScale: Double? = projection == .orthogonal ? max(sizeMM * 0.8, 2) : nil
+    return HorizontalSceneCameraState(transform: node.transform, orthographicScale: orthographicScale)
+}
+
 /// What the 3D view is doing behind the picture it shows.
 enum BoardSceneBuildState: Equatable {
     case idle
@@ -202,6 +256,9 @@ struct BoardSceneView: View {
     /// is rebuilt in the background once edits settle; the old one stays
     /// up until the new one is ready.
     var revision: Int = 0
+    /// Components to mark in the scene, by id — the same set the canvases
+    /// highlight, so "highlight C50" is one highlight in every view.
+    var highlightedComponentIDs: Set<String> = []
     @Binding var cameraState: HorizontalSceneCameraState?
     @State private var buildState: BoardSceneBuildState = .idle
 
@@ -225,6 +282,7 @@ struct BoardSceneView: View {
             ignoresSceneMouseEvents: ignoresSceneMouseEvents,
             silkscreenClipping: silkscreenClipping,
             revision: revision,
+            highlightedComponentIDs: highlightedComponentIDs,
             cameraState: $cameraState,
             buildState: $buildState
         )
@@ -653,6 +711,101 @@ final class BoardSceneNodes: @unchecked Sendable {
         container.addChildNode(node)
     }
 
+    /// Marks the packages of `componentIDs` with a translucent box around each
+    /// model or placeholder, and unmarks the rest. The boxes are children of
+    /// the package nodes, so they explode, hide and show with them; the models
+    /// themselves are not touched, because their materials are shared by every
+    /// instance of the same model.
+    func applyHighlight(componentIDs: Set<String>) {
+        let wanted = Set(componentIDs.map { $0.lowercased() })
+        var packageIDs = Set<String>()
+        for package in board.packages {
+            if let componentID = package.componentID, wanted.contains(componentID.lowercased()) {
+                packageIDs.insert(package.id.lowercased())
+            }
+        }
+        // A light per highlighted part lets it light its neighbours, but
+        // SceneKit pays per light per fragment, so "highlight the capacitors"
+        // gets boxes for all and lights for the first few.
+        var lightsLeft = Self.highlightLightBudget
+        for group in [modelGroup, noPopulateModelGroup, placeholderModelGroup] {
+            group.enumerateChildNodes { node, _ in
+                guard let name = node.name, let packageID = Self.packageID(fromNodeName: name) else {
+                    return
+                }
+                let existing = node.childNode(withName: Self.highlightNodeName, recursively: false)
+                if packageIDs.contains(packageID) {
+                    if existing == nil {
+                        node.addChildNode(Self.highlightBox(around: node, lit: lightsLeft > 0))
+                    }
+                    lightsLeft -= 1
+                } else {
+                    existing?.removeFromParentNode()
+                }
+            }
+        }
+    }
+
+    private static let highlightLightBudget = 6
+    private static let highlightColor = Color(red: 1.0, green: 0.16, blue: 0.10)
+
+    private static let highlightNodeName = "highlight"
+
+    /// "package-<id>-model" and "package-<id>-placeholder" → the id. The id is
+    /// a UUID with dashes of its own, so the split is at the last one.
+    private static func packageID(fromNodeName name: String) -> String? {
+        guard name.hasPrefix("package-") else {
+            return nil
+        }
+        let rest = name.dropFirst("package-".count)
+        guard let dash = rest.lastIndex(of: "-") else {
+            return nil
+        }
+        return String(rest[..<dash]).lowercased()
+    }
+
+    /// A red, self-lit box around the part, and — when `lit` — a red lamp
+    /// above it that falls on the board and the parts beside it. The box is
+    /// unlit by the scene (`constant`) so it reads red whatever the lighting;
+    /// the earlier amber under the scene's warm light came out brown.
+    private static func highlightBox(around node: SCNNode, lit: Bool) -> SCNNode {
+        let (low, high) = node.boundingBox
+        let width = max(Double(high.x - low.x), 0.6) + 0.5
+        let height = max(Double(high.y - low.y), 0.4) + 0.5
+        let length = max(Double(high.z - low.z), 0.6) + 0.5
+        let box = SCNBox(width: width, height: height, length: length, chamferRadius: 0.12)
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.diffuse.contents = horizonScenePlatformColor(highlightColor.opacity(0.45))
+        material.emission.contents = horizonScenePlatformColor(highlightColor.opacity(0.6))
+        material.isDoubleSided = true
+        material.writesToDepthBuffer = false
+        material.blendMode = .alpha
+        box.materials = [material]
+        let boxNode = SCNNode(geometry: box)
+        boxNode.name = highlightNodeName
+        boxNode.position = SCNVector3(
+            horizonSceneScalar(Double(low.x + high.x) / 2),
+            horizonSceneScalar(Double(low.y + high.y) / 2),
+            horizonSceneScalar(Double(low.z + high.z) / 2)
+        )
+        boxNode.renderingOrder = 10
+        if lit {
+            let light = SCNLight()
+            light.type = .omni
+            light.color = horizonScenePlatformColor(highlightColor)
+            light.intensity = 1400
+            light.attenuationStartDistance = 0.5
+            light.attenuationEndDistance = max(width, length) * 4 + 8
+            light.castsShadow = false
+            let lampNode = SCNNode()
+            lampNode.light = light
+            lampNode.position = SCNVector3(0, horizonSceneScalar(height / 2 + 1.5), 0)
+            boxNode.addChildNode(lampNode)
+        }
+        return boxNode
+    }
+
     func applyDisplayOptions(
         _ options: BoardDisplayOptions,
         backgroundColor: Color,
@@ -955,6 +1108,7 @@ private struct BoardSceneHostView: NSViewRepresentable {
     var ignoresSceneMouseEvents: Bool
     var silkscreenClipping: HorizontalSilkscreenClipping? = nil
     var revision: Int = 0
+    var highlightedComponentIDs: Set<String> = []
     @Binding var cameraState: HorizontalSceneCameraState?
     @Binding var buildState: BoardSceneBuildState
 
@@ -1041,6 +1195,10 @@ private struct BoardSceneHostView: NSViewRepresentable {
                 nsView.pointOfView = nodes.cameraNode
             }
         }
+        if sceneSwapped || coordinator.lastHighlighted != highlightedComponentIDs {
+            nodes.applyHighlight(componentIDs: highlightedComponentIDs)
+            coordinator.lastHighlighted = highlightedComponentIDs
+        }
         let projectionChanged = coordinator.lastAppliedProjection != displayOptions.threeDProjection
         coordinator.lastAppliedProjection = displayOptions.threeDProjection
         nsView.onCameraStateChange = coordinator.updateCameraState
@@ -1065,6 +1223,7 @@ private struct BoardSceneHostView: NSViewRepresentable {
         let sceneCache = BoardSceneSceneCache()
         var lastReportedState: HorizontalSceneCameraState?
         var lastAppliedProjection: HorizontalBoardSceneProjection?
+        var lastHighlighted: Set<String>?
         var lastAppliedOptionsKey: BoardSceneAppliedOptionsKey?
         /// The view's values as of its last update, for a build that lands later.
         var latest: BoardSceneHostView?
@@ -1458,6 +1617,7 @@ private struct BoardSceneHostView: UIViewRepresentable {
     var ignoresSceneMouseEvents: Bool
     var silkscreenClipping: HorizontalSilkscreenClipping? = nil
     var revision: Int = 0
+    var highlightedComponentIDs: Set<String> = []
     @Binding var cameraState: HorizontalSceneCameraState?
     @Binding var buildState: BoardSceneBuildState
 
@@ -1534,6 +1694,10 @@ private struct BoardSceneHostView: UIViewRepresentable {
         if cameraSwapped {
             uiView.pointOfView = nodes.cameraNode
         }
+        if sceneSwapped || coordinator.lastHighlighted != highlightedComponentIDs {
+            nodes.applyHighlight(componentIDs: highlightedComponentIDs)
+            coordinator.lastHighlighted = highlightedComponentIDs
+        }
         let projectionChanged = coordinator.lastAppliedProjection != displayOptions.threeDProjection
         coordinator.lastAppliedProjection = displayOptions.threeDProjection
         uiView.onCameraStateChange = coordinator.updateCameraState
@@ -1548,6 +1712,7 @@ private struct BoardSceneHostView: UIViewRepresentable {
         let sceneCache = BoardSceneSceneCache()
         var lastReportedState: HorizontalSceneCameraState?
         var lastAppliedProjection: HorizontalBoardSceneProjection?
+        var lastHighlighted: Set<String>?
         var latest: BoardSceneHostView?
 
         init(cameraState: Binding<HorizontalSceneCameraState?>) {
@@ -3218,6 +3383,7 @@ enum BoardSceneFactory {
             ? surfaceY - clearance - height / 2 - layerSeparation
             : surfaceY + clearance + height / 2 + layerSeparation
         let node = SCNNode(geometry: geometry)
+        node.name = "package-\(package.id)-placeholder"
         node.position = scenePosition(packageCenter, center: center, y: yPosition)
         return node
     }

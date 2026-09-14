@@ -1669,7 +1669,7 @@ struct BoardLayerControls: View {
             // The view presets rearrange the 2D view; from the 3D pane they
             // would change the other window's layers.
             if !includesThreeDControls {
-                BoardDisplayPresetButtons(displayOptions: $displayOptions)
+                BoardDisplayPresetButtons(displayOptions: $displayOptions, selectedLayer: $selectedLayer)
                     .padding(.horizontal, 12)
                     .padding(.bottom, 10)
 
@@ -1989,6 +1989,9 @@ struct BoardLayerRow: View {
 
 struct BoardDisplayPresetButtons: View {
     @Binding var displayOptions: BoardDisplayOptions
+    /// The drawing layer follows the preset's side, so choosing the bottom
+    /// view puts the tools on bottom copper.
+    @Binding var selectedLayer: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -2002,16 +2005,16 @@ struct BoardDisplayPresetButtons: View {
 
             presetRow(
                 title: "Top",
-                silkscreen: { displayOptions.topSilkscreenView() },
-                placement: { displayOptions.topPlacementView() },
-                routing: { displayOptions.topRoutingView() }
+                silkscreen: { displayOptions.topSilkscreenView(); selectedLayer = HorizontalBoardLayers.topCopper },
+                placement: { displayOptions.topPlacementView(); selectedLayer = HorizontalBoardLayers.topCopper },
+                routing: { displayOptions.topRoutingView(); selectedLayer = HorizontalBoardLayers.topCopper }
             )
 
             presetRow(
                 title: "Bottom",
-                silkscreen: { displayOptions.bottomSilkscreenView() },
-                placement: { displayOptions.bottomPlacementView() },
-                routing: { displayOptions.bottomRoutingView() }
+                silkscreen: { displayOptions.bottomSilkscreenView(); selectedLayer = HorizontalBoardLayers.bottomCopper },
+                placement: { displayOptions.bottomPlacementView(); selectedLayer = HorizontalBoardLayers.bottomCopper },
+                routing: { displayOptions.bottomRoutingView(); selectedLayer = HorizontalBoardLayers.bottomCopper }
             )
         }
         .controlSize(.small)

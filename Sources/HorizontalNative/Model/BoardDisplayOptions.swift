@@ -637,3 +637,126 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         }
     }
 }
+
+/// The layer views a request can ask for by name — the presets the board rail
+/// offers, plus all layers, copper only and the clean view — so a spoken "show
+/// the top layer" and an agent's `show_layers` mean the same thing. The bare
+/// side ("the top layer") is the placement view: copper and courtyard, which
+/// is what one looks at when working on that side.
+enum HorizontalBoardSide: String {
+    case top
+    case bottom
+
+    var other: HorizontalBoardSide { self == .top ? .bottom : .top }
+
+    /// The copper the drawing tools should be on when this side is up.
+    var copperLayer: Int { self == .top ? HorizontalBoardLayers.topCopper : HorizontalBoardLayers.bottomCopper }
+}
+
+enum HorizontalBoardLayerPreset: String, CaseIterable {
+    case topPlacement = "top_placement"
+    case topSilkscreen = "top_silkscreen"
+    case topRouting = "top_routing"
+    case bottomPlacement = "bottom_placement"
+    case bottomSilkscreen = "bottom_silkscreen"
+    case bottomRouting = "bottom_routing"
+    /// The placement view of a side, seen from that side: the bottom view
+    /// mirrors the board, the way turning it over does.
+    case topView = "top_view"
+    case bottomView = "bottom_view"
+    /// The other side's view from whichever is up.
+    case flipView = "flip_view"
+    /// A mode with the side left to context: the side that is up now.
+    case placement
+    case silkscreen
+    case routing
+    case all
+    case copperOnly = "copper_only"
+    case clean
+
+    /// The preset as a message names it: "showing the top layer".
+    var spokenTitle: String {
+        switch self {
+        case .topPlacement: "the top layer"
+        case .topSilkscreen: "the top silkscreen"
+        case .topRouting: "top routing"
+        case .bottomPlacement: "the bottom layer"
+        case .bottomSilkscreen: "the bottom silkscreen"
+        case .bottomRouting: "bottom routing"
+        case .topView: "the top of the board"
+        case .bottomView: "the bottom of the board"
+        case .flipView: "the other side"
+        case .placement: "placement"
+        case .silkscreen: "the silkscreen"
+        case .routing: "routing"
+        case .all: "all layers"
+        case .copperOnly: "copper only"
+        case .clean: "the clean view"
+        }
+    }
+
+    /// The side this preset is about, or nil when it is about neither.
+    var side: HorizontalBoardSide? {
+        switch self {
+        case .topPlacement, .topSilkscreen, .topRouting, .topView: .top
+        case .bottomPlacement, .bottomSilkscreen, .bottomRouting, .bottomView: .bottom
+        default: nil
+        }
+    }
+
+    /// Whether the preset leaves the view mirrored — the bottom view — or
+    /// not, or says nothing about it (nil).
+    var mirrorsView: Bool? {
+        switch self {
+        case .bottomView: true
+        case .topView: false
+        default: nil
+        }
+    }
+
+    /// The preset with its side decided: a side-less one takes `side`, the
+    /// flip takes the other side, and the rest are what they were.
+    func resolved(for side: HorizontalBoardSide) -> HorizontalBoardLayerPreset {
+        switch self {
+        case .placement: side == .top ? .topPlacement : .bottomPlacement
+        case .silkscreen: side == .top ? .topSilkscreen : .bottomSilkscreen
+        case .routing: side == .top ? .topRouting : .bottomRouting
+        case .flipView: side == .top ? .bottomView : .topView
+        default: self
+        }
+    }
+}
+
+extension BoardDisplayOptions {
+    /// Named so as not to overload `apply(_:)`, whose argument is the rail's
+    /// own four-preset enum; a bare `.topPlacement` would otherwise be
+    /// ambiguous between the two. Side-less presets have to be `resolved`
+    /// first; unresolved, they are read as the top side.
+    mutating func applyLayerPreset(_ preset: HorizontalBoardLayerPreset) {
+        switch preset.resolved(for: .top) {
+        case .topPlacement, .topView: topPlacementView()
+        case .topSilkscreen: topSilkscreenView()
+        case .topRouting: topRoutingView()
+        case .bottomPlacement, .bottomView: bottomPlacementView()
+        case .bottomSilkscreen: bottomSilkscreenView()
+        case .bottomRouting: bottomRoutingView()
+        case .all: showAll()
+        case .copperOnly: copperOnly()
+        case .clean: cleanView()
+        case .placement, .silkscreen, .routing, .flipView: break
+        }
+    }
+
+    /// The side the view is about, read from what is visible: one side's
+    /// copper or silkscreen showing and not the other's. Nil when both or
+    /// neither show — the all-layers view, say — which no side owns.
+    var visibleSide: HorizontalBoardSide? {
+        let top = isLayerVisible(HorizontalBoardLayers.topCopper) || isLayerVisible(HorizontalBoardLayers.topSilkscreen)
+        let bottom = isLayerVisible(HorizontalBoardLayers.bottomCopper) || isLayerVisible(HorizontalBoardLayers.bottomSilkscreen)
+        switch (top, bottom) {
+        case (true, false): return .top
+        case (false, true): return .bottom
+        default: return nil
+        }
+    }
+}

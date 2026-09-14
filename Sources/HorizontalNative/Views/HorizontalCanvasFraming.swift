@@ -9,6 +9,19 @@ final class HorizontalLiveCanvasTransform {
     var transform: HorizontalCanvasTransform?
 }
 
+extension HorizontalRect {
+    /// The same centre, `factor` times the size.
+    func scaled(by factor: Double) -> HorizontalRect {
+        let center = center
+        let halfWidth = width * factor / 2
+        let halfHeight = height * factor / 2
+        return HorizontalRect(points: [
+            HorizontalPoint(x: center.x - halfWidth, y: center.y - halfHeight),
+            HorizontalPoint(x: center.x + halfWidth, y: center.y + halfHeight),
+        ])
+    }
+}
+
 extension CanvasViewport {
     /// The viewport that shows `rect` filling `fill` of the canvas described
     /// by `transform` (its bounds, size and insets), centered. What the live
@@ -31,10 +44,11 @@ extension CanvasViewport {
         let zoom = min(max(wanted / fitScale, CanvasViewport.minimumZoom), CanvasViewport.maximumZoom)
         let scale = fitScale * zoom
         let center = target.center
+        let fromLeft = transform.mirrored ? bounds.maxX - center.x : center.x - bounds.minX
         let pan = CGSize(
-            width: CGFloat(bounds.width) * scale / 2 - CGFloat(center.x - bounds.minX) * scale,
+            width: CGFloat(bounds.width) * scale / 2 - CGFloat(fromLeft) * scale,
             height: CGFloat(bounds.height) * scale / 2 - CGFloat(bounds.maxY - center.y) * scale
         )
-        return CanvasViewport(zoom: zoom, pan: pan)
+        return CanvasViewport(zoom: zoom, pan: pan, mirrored: transform.mirrored)
     }
 }

@@ -118,6 +118,7 @@ struct CursorReadoutLayer: View {
             fitInsets: fitInsets,
             zoom: effectiveZoom,
             pan: effectivePan,
+            mirrored: effectiveViewport.mirrored,
             minimumLineWidth: minimumLineWidth
         )
         // Batches are empty when there's no cursor; the backdrop stays mounted
@@ -162,6 +163,7 @@ struct CursorReadoutLayer: View {
                             fitInsets: fitInsets,
                             zoom: effectiveZoom,
                             pan: effectivePan,
+                            mirrored: effectiveViewport.mirrored,
                             minimumLineWidth: minimumLineWidth
                         )
                         drawCursor(

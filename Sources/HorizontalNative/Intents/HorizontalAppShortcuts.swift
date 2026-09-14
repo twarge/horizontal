@@ -4,47 +4,44 @@ import AppIntents
 ///
 /// Every phrase has to carry the app's name — that is the framework's rule,
 /// not a choice — so they read "in Horizontal" rather than as bare commands.
-/// A phrase with a parameter in it is only matched against values the app has
-/// published, which is why `HorizontalDesignObjectQuery.suggestedEntities`
-/// returns the open document's components and nets and why the workspace
-/// re-publishes them when the document changes.
+/// The one parameter is an enum, so the phrases match without the app having
+/// published anything; a phrase with an entity in it would match only values
+/// the app had pushed to Siri beforehand, which is why the design's own names
+/// are heard by the app instead — and why Siri's other job here is to turn
+/// that listening on.
 struct HorizontalAppShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
-        AppShortcut(
-            intent: HighlightDesignObjectIntent(),
-            phrases: [
-                "Highlight \(\.$object) in \(.applicationName)",
-                "Show me \(\.$object) in \(.applicationName)",
-            ],
-            shortTitle: "Highlight",
-            systemImageName: "highlighter"
-        )
-        AppShortcut(
-            intent: ClearHighlightIntent(),
-            phrases: [
-                "Clear the highlight in \(.applicationName)",
-                "Clear \(.applicationName)'s highlight",
-            ],
-            shortTitle: "Clear Highlight",
-            systemImageName: "xmark.circle"
-        )
         AppShortcut(
             intent: ShowPanesIntent(),
             phrases: [
                 "Show the \(\.$choice) in \(.applicationName)",
+                "Show me the \(\.$choice) in \(.applicationName)",
                 "Open the \(\.$choice) in \(.applicationName)",
+                "Switch to the \(\.$choice) in \(.applicationName)",
             ],
             shortTitle: "Show Panes",
             systemImageName: "rectangle.split.2x1"
         )
         AppShortcut(
-            intent: ZoomToDesignObjectIntent(),
+            intent: StartListeningIntent(),
             phrases: [
-                "Zoom to \(\.$object) in \(.applicationName)",
-                "Find \(\.$object) in \(.applicationName)",
+                "Start listening in \(.applicationName)",
+                "Listen in \(.applicationName)",
+                "Start voice control in \(.applicationName)",
+                "Turn on voice control in \(.applicationName)",
             ],
-            shortTitle: "Zoom To",
-            systemImageName: "magnifyingglass"
+            shortTitle: "Start Listening",
+            systemImageName: "mic"
+        )
+        AppShortcut(
+            intent: StopListeningIntent(),
+            phrases: [
+                "Stop listening in \(.applicationName)",
+                "Stop voice control in \(.applicationName)",
+                "Turn off voice control in \(.applicationName)",
+            ],
+            shortTitle: "Stop Listening",
+            systemImageName: "mic.slash"
         )
     }
 }

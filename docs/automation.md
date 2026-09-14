@@ -59,7 +59,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `list_board_texts`, `list_dimensions` | board text and dimensions; a dimension reports `measures_mm`, worked out for its mode |
 | `list_buses`, `list_net_ties` | buses with their members, net ties with the nets they join, and where each is drawn |
 | `undo` | takes back the last step on the document's own undo stack, or puts one back |
-| `show_panes` | shows these panes in the app's window and hides the rest; `frame` and `show_sheet` only reveal a pane on the way to somewhere in it |
+| `show_panes`, `show_sheet`, `show_layers`, `zoom` | show these panes in the app's window and hide the rest; show a schematic sheet by index, name or id; show a board layer view (`top_placement`, `top_silkscreen`, `top_routing`, the bottom three, `top_view` and `bottom_view` — the side seen from that side, mirrored for the bottom — `flip_view`, the side-less `placement`, `silkscreen`, `routing` for whichever side is up, `all`, `copper_only`, `clean`); zoom a pane's view about its centre by a factor. `zoom_to` reveals a pane or a sheet only on the way to something in it, and turns a sided board view over to a part on the far side |
 | `list_holes`, `list_keepouts` | holes through the board and the areas copper may not enter |
 | `list_planes`, `list_polygons` | copper pours (and whether each is actually filled) and board polygons; layer 100 is the outline |
 | `board_rules` | the design rules as data — one entry per rule, not per kind — the net classes they select, and the stackup |
@@ -75,7 +75,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `export` | the app's exporters into a directory outside the project |
 | `render_sheet`, `render_board` | PNG, base64 or written to a path, via the PDF exporters and Core Graphics; `region` renders part of a sheet or board |
 | `list_groups` | Horizon groups (sub-circuit instances) with members by tag and placement |
-| `zoom_to`, `render_viewport` | Live channel: frame a component or net in a pane; render what a pane shows |
+| `zoom_to`, `render_viewport` | Live channel: frame a component or net in a pane, or with `pane: "all"` in every showing pane that can show it, the 3D view included; render what a pane shows |
 
 Coordinates come back in millimetres; angles in degrees (Horizon stores
 1/65536 turns).
@@ -392,52 +392,100 @@ show and hides the rest, replacing what is up rather than adding to it. `frame`
 and `show_sheet` reveal a pane on the way to somewhere in it, which is not the
 same request as "show me the board".
 
-## Siri and Shortcuts
+## Voice, Siri and Shortcuts
 
-The app vends four App Intents over exactly these verbs, so a spoken request
-and an agent's call are one code path — `Sources/HorizontalNative/Intents`:
-Highlight, Clear Highlight, Show Panes and Zoom To. Each resolves the document
-in front, then calls `highlight`, `show_panes` or `zoom_to` against the handle
-the workspace registered. On the Mac the document in front is whatever
-`NSDocumentController` says it is. The iPad has no document controller, so its
-workspace tells the dispatch session which document's scene most recently
-became active, and that is the one an intent acts on there.
+Spoken commands are heard by the app itself. The toolbar microphone (or
+Listen for a Command, ⌥⌘L, on the Mac) opens the input and transcribes it on
+the device with the Speech framework; each settled utterance is read as a
+command and run against the document the window registered, through exactly
+the verbs above — `highlight`, `select`, `show_panes`, `show_sheet`, `zoom_to`,
+`undo`. So "highlight R18" said aloud and `highlight` from an agent are one
+code path, and stay that way. The code is `Sources/HorizontalNative/Voice`:
+`HorizontalVoiceControl` owns the switch and the transcript,
+`HorizontalSpeechListener` owns the microphone and the analyzer,
+`HorizontalVoiceCommandParser` reads a sentence, `HorizontalVoiceCommandRunner`
+carries it out and says what happened, and `HorizontalCommandTarget` is the
+document and the verbs.
 
-The iPad registers its document the way the Mac does, but wires only what an
-intent reaches: the model, highlight and selection, the panes, framing, and the
-sheet. Nothing on the iPad serves the live channel, so the editing verbs have
-no caller there and keep their refusing defaults, and no holder record is
-written beside the project. Zoom To can switch sheets within the top block's
-schematic, which is the one the iPad shows. An intent that opens the app also
-waits a few seconds for a document the app is still restoring before saying
-nothing is open, because Siri launching the app cold is the usual case on the
-iPad.
+The reason it is the app and not Siri: Siri only hears the names an app has
+published to it beforehand, publishing means pushing every reference designator
+and net name to the system whenever the design changes, and Siri then hears
+"C123" as a letter run into a number. The app hands the design's names to the
+transcriber as *contextual strings*, so it knows "C123" and "GND_ANALOG" are
+words before it hears them, and needs nothing published anywhere.
 
-`HorizontalDesignObjectEntity` is what an intent is pointed at: one entity for
-both components and nets, because "highlight R18" and "highlight ground" are
-the same request with a different subject. Its id is the name rather than a
-uuid, since the verbs behind it take names and a name is what the user says —
-the cost being that renaming something breaks a saved shortcut that named it,
-which is at least legible when it happens. Matching ignores case, spaces and
-the separators nobody pronounces, so "R 18", "r18" and "R18" are one component
-and "gndanalog" finds `GND_ANALOG`; an exact match is never widened, so "GND"
-does not also offer `GND_ANALOG`.
+The grammar is a verb and a thing. Verbs, each with the phrasings speech
+produces for them: highlight (also "show me", "light up"), select, zoom to
+(also "go to", "find", "where is", optionally "on the board" or "in the
+schematic"), show and hide for panes ("show the board", "show 3D", "show both",
+"show everything", "hide the 3D view"), layer views ("show the top layer",
+"bottom silkscreen", "top routing", "all layers", "copper only", "the clean
+view"), the board's sides ("show the bottom", "show the board bottom", "view
+from the bottom", "flip the board"), zoom steps ("zoom in", "zoom out", "zoom
+way out", "zoom in on the board"), sheets ("sheet 3", "the ADC sheet", "next
+sheet", "last page"), clear ("clear the highlight", "clear the selection",
+"deselect"), undo and redo.
 
-The part that needs maintaining is the publishing. An App Shortcut phrase with
-a parameter in it is matched against values the app has published, not against
-whatever the query could return if asked — so "Highlight R18 in Horizontal"
-only resolves once `updateAppShortcutParameters()` has run for a document that
-has an R18. The workspace calls it when a document opens or closes, when a
-whole-project edit lands, and when the netlist signature moves, which is when
-components and nets change. It reaches the provider through
-`HorizontalIntentParameterPublishing`, a hook the app installs at launch: the
-QuickLook extensions compile the workspace but not the intents, so nothing
-shared may name them.
+Layers and sides are two different things. "The bottom layer" is that side's
+layers — the bottom placement view, copper and courtyard — seen from where you
+are. "The bottom" or "the bottom of the board" is the side itself: the same
+placement view, but seen from below, so the board canvas mirrors, the way a
+board does when you turn it over; `CanvasViewport.mirrored` runs x the other
+way and everything that maps world to view — the transform, the framing, the
+Metal shader — honours it. Every preset also moves the drawing layer to its
+side's copper, from the rail's buttons as much as from a spoken request. A
+mode said without a side — "show silkscreen", "show routing" — takes the side
+that is up, read from which side's copper or silkscreen is visible. And
+framing a part on the far side of a sided view turns the view over to it,
+keeping the mode; the all-layers view belongs to no side and stays.
 
-The weak point is speech, not plumbing. A reference designator is a letter and
-a number said quickly, and transcription is inconsistent about it; the matching
-above absorbs the common shapes, but "highlight ground" will always be a surer
-request than "highlight R18".
+Zoom means every view. With no pane named, `zoom_to` is called with `pane:
+"all"`, which frames the thing in every pane that is showing and can show it:
+the schematic on the thing's sheet, the board, and the 3D view, where the
+camera moves to look at the thing's footprint from the direction it was
+already looking. When none of the showing panes can show it, the default rule
+picks one and reveals it. Highlight is every view too: the 3D scene marks each
+highlighted component's model with a red, self-lit box and hangs a red lamp
+over it that falls on the board and the parts beside it (the first six
+highlighted parts get lamps; every one gets a box), so "highlight C50" is one
+highlight in the schematic, the board and the 3D board. The thing is resolved by
+`HorizontalSpokenMatcher`: a reference designator however it was said ("R18",
+"R 18", "resistor 18", "cap123"), a kind alone for all of it ("highlight the
+capacitors"), or a net name as people say it — "3.3 volts", "3.3V" and "3V3"
+are one rail, a sign before a rail is the P or N of its name, "ground" is GND
+and "analog ground" AGND, and the words a name abbreviates (chip select,
+clock, reset, enable, transmit, receive, input, output) read as the
+abbreviation. Several matches are read back as a question ("123 could be C123,
+R123"); a name nobody has is said back with its kind ("there is no capacitor 7
+in Sherlock"). Transcription pads a command with words that were not said —
+"zoom to xyz C 50" — so when the whole of what follows the verb names nothing,
+the longest run of its words that names something exactly is taken instead. A
+settled fragment too short to be a command — "highlight", then a pause — waits
+for the next one.
+
+Siri keeps three intents, all general, none with anything to publish: Show
+Panes — "show the board in Horizontal", "show me the schematic and 3D in
+Horizontal", "open everything in Horizontal", with `HorizontalPaneChoice`
+holding each canvas and every combination — and Start Listening and Stop
+Listening, "start listening in Horizontal", which open the app and turn its
+own microphone on for the document in front. Each workspace attaches its voice
+control to the dispatch session by the handle of its document, which is how
+the intent finds the right one.
+On the Mac the document it acts on is whatever `NSDocumentController` says
+is in front; the iPad has no document controller, so its workspace tells the
+dispatch session which document's scene most recently became active, and an
+intent that opens the app waits a few seconds for a document the app is still
+restoring before saying nothing is open.
+
+The microphone needs `NSMicrophoneUsageDescription` (set in the project) and,
+on the Mac, the `com.apple.security.device.audio-input` entitlement. The
+speech model is downloaded on first use if the device lacks it. One build
+gotcha for the intent: the iOS build's `AppIntentsSSUTraining` step, which
+compiles Siri's phrase model into `Metadata.appintents/nlu`, is planned by
+Xcode 27 only when the app bundle does not already exist, and the metadata
+extractor rewrites that folder every build — so an incremental build ships
+without the phrase model. Clean Build Folder before a build you will test
+Siri against.
 
 ## Python
 
