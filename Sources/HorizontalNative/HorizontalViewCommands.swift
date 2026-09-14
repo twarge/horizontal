@@ -99,6 +99,11 @@ struct HorizontalCanvasCommandActions {
     var frameWorldRect: ((HorizontalRect) -> Void)? = nil
     /// Zooms the view about its centre; 2 is twice as close.
     var zoomBy: ((Double) -> Void)? = nil
+    /// Selects these components — the board's packages, the schematic's
+    /// symbols — and nothing else, so a selection made in one view lands in
+    /// the others. A no-op when they are already the selection, which is
+    /// what keeps the canvases' reports from looping back into them.
+    var selectComponents: ((Set<String>) -> Void)? = nil
     var dispatch: (HorizontalCanvasCommand) -> Void
 }
 

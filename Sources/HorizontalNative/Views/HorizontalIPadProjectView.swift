@@ -827,7 +827,7 @@ struct HorizontalIPadProjectView: View {
                     selectionToolSettings: selectionToolSettings,
                     isReadOnly: isReadOnly,
                     onSelectedNetChange: { selectedNetIDs = $0 },
-                    onSelectedComponentChange: { selectedComponentIDs = $0 },
+                    onSelectedComponentChange: selectComponents,
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
                     onHighlightComponentCommand: { highlightedComponentIDs = $0 },
                     onSheetChange: { applyEditedSchematicSheet($0) },
@@ -915,7 +915,7 @@ struct HorizontalIPadProjectView: View {
                     selectionToolSettings: selectionToolSettings,
                     isReadOnly: isReadOnly,
                     onSelectedNetChange: { selectedNetIDs = $0 },
-                    onSelectedComponentChange: { selectedComponentIDs = $0 },
+                    onSelectedComponentChange: selectComponents,
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
                     onHighlightComponentCommand: { highlightedComponentIDs = $0 },
                     onBoardChange: { applyEditedBoard($0) },
@@ -1304,9 +1304,9 @@ struct HorizontalIPadProjectView: View {
                 selectedComponentIDs: selectedComponentIDs,
                 onSelectComponent: { componentID, extend in
                     if let componentID {
-                        selectedComponentIDs = extend ? selectedComponentIDs.union([componentID]) : [componentID]
+                        selectComponents(extend ? selectedComponentIDs.union([componentID]) : [componentID])
                     } else if !extend {
-                        selectedComponentIDs.removeAll()
+                        selectComponents([])
                     }
                 },
                 cameraState: $threeDCameraState
@@ -1475,7 +1475,7 @@ struct HorizontalIPadProjectView: View {
         }
         live.setSelection = { nets, components in
             selectedNetIDs = nets
-            selectedComponentIDs = components
+            selectComponents(components)
         }
         live.visibleBounds = { pane in
             canvasActions(for: pane)?.visibleWorldBounds?()
@@ -1587,6 +1587,15 @@ struct HorizontalIPadProjectView: View {
         self.liveHandle = nil
     }
 
+
+    /// One selection for every view: see the macOS workspace's
+    /// `selectComponents`. A canvas already showing the set ignores it.
+    private func selectComponents(_ componentIDs: Set<String>) {
+        selectedComponentIDs = componentIDs
+        for pane in [HorizontalPane.board, .schematic] {
+            canvasActions(for: pane)?.selectComponents?(componentIDs)
+        }
+    }
 
     private func canvasActions(for pane: HorizontalPane) -> HorizontalCanvasCommandActions? {
         switch pane {

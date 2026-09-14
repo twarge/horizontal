@@ -2225,11 +2225,18 @@ struct ProjectWorkspaceView: View {
         selectedNetIDs = netIDs
     }
 
+    /// One selection for every view. A canvas reports what was selected in
+    /// it, a click in the 3D view or the live channel asks for a set, and
+    /// either way the other canvases are told; a canvas already showing that
+    /// selection ignores the request, which is what stops the round trip.
     private func selectComponents(_ componentIDs: Set<String>) {
         if componentIDs != selectedComponentIDs {
             highlightedComponentIDs.removeAll()
         }
         selectedComponentIDs = componentIDs
+        for pane in [HorizontalPane.board, .schematic] {
+            canvasCommandActionsByPane[pane]?.selectComponents?(componentIDs)
+        }
     }
 
     private func highlightSelectedNet() {

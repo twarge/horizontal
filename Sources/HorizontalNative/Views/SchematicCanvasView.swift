@@ -7134,6 +7134,19 @@ struct SchematicCanvasView: View {
             }
             viewport = CanvasViewport.framing(transform.visibleBounds.scaled(by: 1 / factor), in: transform, fill: 1)
         }
+        actions.selectComponents = { componentIDs in
+            let wanted = Set(componentIDs.map(normalizedID))
+            guard wanted != selectedComponentIDs, moveState == nil else {
+                return
+            }
+            clearNetSegmentSelection()
+            selectedObjects = schematicSelectableScene().refs().filter { ref in
+                ref.type == .schematicSymbol && componentID(for: ref).map { wanted.contains(normalizedID($0)) } == true
+            }
+            selectedUnplacedObjectID = nil
+            hoveredObject = nil
+            publishSelectionContext()
+        }
         return actions
     }
 

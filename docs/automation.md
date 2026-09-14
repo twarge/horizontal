@@ -452,10 +452,14 @@ fragment shader ask for a light-indices buffer it never binds and Metal aborts
 the app on the next draw (`BoardSceneRenderSmokeTests` renders a real project
 offscreen under Metal API validation to keep that from coming back) — so
 "highlight C50" is one highlight in the schematic, the board and the 3D board.
-Selection is every view as well: the canvases' selected components wear a blue
-box in 3D, and a click on a part in the 3D view (shift or command to extend,
-empty space to clear) or a tap on the iPad selects it the way a click on the
-board does. The thing is resolved by
+Selection is one thing in every view: the workspace holds it, and every
+change — a click on the board, on a symbol in the schematic, on a part in the
+3D view (shift or command to extend, empty space to clear), a tap on the iPad,
+or `select` from the channel — goes through one function that tells the other
+canvases. The board selects the components' packages, the schematic their
+symbols, the 3D view wears a blue box on each; a canvas already showing the set
+ignores the request, which is what keeps a canvas's own report from looping
+back into it. The thing is resolved by
 `HorizontalSpokenMatcher`: a reference designator however it was said ("R18",
 "R 18", "resistor 18", "cap123"), a kind alone for all of it ("highlight the
 capacitors"), or a net name as people say it — "3.3 volts", "3.3V" and "3V3"
