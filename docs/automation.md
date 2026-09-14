@@ -471,8 +471,13 @@ R123"); a name nobody has is said back with its kind ("there is no capacitor 7
 in Sherlock"). Transcription pads a command with words that were not said —
 "zoom to xyz C 50" — so when the whole of what follows the verb names nothing,
 the longest run of its words that names something exactly is taken instead. A
-settled fragment too short to be a command — "highlight", then a pause — waits
-for the next one.
+verb is read in whatever form it came out — "highlights C113", "highlighting",
+"selected", "went to", "lit up" — and the words a transcriber puts between the
+verb and the name, or a speaker says there while thinking of it ("highlight
+what C113", "zoom to, like, U3", "um"), are passed over. A settled fragment
+that is not yet a command — "highlight", "highlight what", then a pause —
+waits for the next one; a whole command said after such a fragment is read on
+its own.
 
 The conversation remembers. After "highlight C50", a bare verb or a pronoun
 means C50 — "zoom", "zoom to fit", "zoom to it", "select that" — and a bare

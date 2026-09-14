@@ -236,6 +236,40 @@ final class HorizontalVoiceCommandTests: XCTestCase {
         XCTAssertEqual(parse("highlight xyz abc"), .nothingNamed(said: "xyz abc", family: nil), "noise alone is still nothing")
     }
 
+    /// Transcription bends a verb — "highlights", "highlighting", "selected"
+    /// — and drops a word of its own between the verb and the name. Both are
+    /// read as what was meant.
+    func testAVerbIsReadInAnyInflectionAndPastAFillerWord() {
+        XCTAssertEqual(parse("highlights C123"), .highlight([object("C123")]))
+        XCTAssertEqual(parse("Highlighting C123"), .highlight([object("C123")]))
+        XCTAssertEqual(parse("highlighted C123"), .highlight([object("C123")]))
+        XCTAssertEqual(parse("selects R12"), .select([object("R12")]))
+        XCTAssertEqual(parse("selecting the capacitors"), .select([object("C123"), object("C124")]))
+        XCTAssertEqual(parse("zooms to U3"), .zoom([object("U3")], pane: nil))
+        XCTAssertEqual(parse("zooming in"), .zoomBy(2, pane: nil))
+        XCTAssertEqual(parse("zoomed out"), .zoomBy(0.5, pane: nil))
+        XCTAssertEqual(parse("shows the board"), .showPanes([.board]))
+        XCTAssertEqual(parse("showing sheet 2"), .showSheet(.number(2)))
+        XCTAssertEqual(parse("finds R12"), .zoom([object("R12")], pane: nil))
+        XCTAssertEqual(parse("found R12"), .zoom([object("R12")], pane: nil))
+        XCTAssertEqual(parse("goes to TP5"), .zoom([object("TP5")], pane: nil))
+        XCTAssertEqual(parse("went to TP5"), .zoom([object("TP5")], pane: nil))
+        XCTAssertEqual(parse("lights up test point 5"), .highlight([object("TP5")]))
+        XCTAssertEqual(parse("lit up test point 5"), .highlight([object("TP5")]))
+        XCTAssertEqual(parse("hides the 3D view"), .hidePanes([.threeD]))
+        XCTAssertEqual(parse("clears the highlight"), .clearHighlight)
+
+        XCTAssertEqual(parse("highlight what C123"), .highlight([object("C123")]))
+        XCTAssertEqual(parse("highlight what? C123"), .highlight([object("C123")]))
+        XCTAssertEqual(parse("highlights what C123"), .highlight([object("C123")]))
+        XCTAssertEqual(parse("highlight um what C123"), .highlight([object("C123")]))
+        XCTAssertEqual(parse("select uh R12"), .select([object("R12")]))
+        XCTAssertEqual(parse("zoom to like U3"), .zoom([object("U3")], pane: nil))
+        XCTAssertEqual(parse("highlight what connects C123 and R12"), .among(.highlight, [object("C123"), object("R12")]), "a question is still a question")
+        XCTAssertEqual(parse("highlight what"), .unrecognized, "a verb and a filler: the name may still be coming")
+        XCTAssertEqual(parse("highlights"), .unrecognized)
+    }
+
     /// The conversation remembers. After a thing is named, a bare verb or a
     /// pronoun means it; a bare name means the last verb; and with nothing
     /// remembered, "zoom" fits the whole view and "it" is a question back.
@@ -589,6 +623,30 @@ final class HorizontalVoiceCommandTests: XCTestCase {
         XCTAssertTrue(control.message?.contains("VCC") == true, "a bare verb means it too: \(control.message ?? "")")
         control.run("what is the weather like today")
         XCTAssertEqual(control.message, "“what is the weather like today” — Not a command I know. Try “highlight C12”, “zoom to ground”, “show the board” or “sheet 2”.")
+
+        // A verb that settled with only a filler after it — "highlight what"
+        // — and a bent verb are both halves of a command, and wait for the
+        // name.
+        control.run("highlight what")
+        XCTAssertEqual(control.message, "“what is the weather like today” — Not a command I know. Try “highlight C12”, “zoom to ground”, “show the board” or “sheet 2”.", "nothing new said yet")
+        control.run("VCC")
+        XCTAssertEqual(control.message, "“highlight what VCC” — Highlighted VCC.")
+        control.run("Highlight, um, what")
+        control.run("VCC")
+        XCTAssertEqual(control.message, "“Highlight, um, what VCC” — Highlighted VCC.")
+        control.run("highlights")
+        XCTAssertEqual(control.message, "“highlights” — Highlighted VCC.", "a bare verb, bent or not, still takes the last thing")
+
+        // With nothing named yet, a bent bare verb is half a sentence too.
+        let fresh = HorizontalVoiceControl()
+        fresh.target = { live.target }
+        fresh.run("highlights")
+        XCTAssertNil(fresh.message)
+        fresh.run("VCC")
+        XCTAssertEqual(fresh.message, "“highlights VCC” — Highlighted VCC.")
+        fresh.run("select what")
+        fresh.run("show the board")
+        XCTAssertEqual(fresh.message, "“show the board” — Showing the board.", "a whole command is not spoiled by the fragment before it")
     }
 
     /// The whole path from sound to command, spoken by `say`. Needs the

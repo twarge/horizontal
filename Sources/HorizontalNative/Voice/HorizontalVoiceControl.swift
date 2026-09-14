@@ -181,9 +181,20 @@ final class HorizontalVoiceControl: ObservableObject {
             previousSubject: previousSubject,
             previousVerb: previousVerb
         )
-        let command = HorizontalVoiceCommandParser.parse(heard, vocabulary: vocabulary)
-        if case .unrecognized = command, pending.isEmpty, text.split(separator: " ").count <= 2 {
-            // Too short to be sure it is not the first half of a command.
+        var command = HorizontalVoiceCommandParser.parse(heard, vocabulary: vocabulary)
+        var said = heard
+        if !pending.isEmpty, !Self.isAnswer(command) {
+            // The fragment did not lead into this; on its own it may be whole.
+            let alone = HorizontalVoiceCommandParser.parse(text, vocabulary: vocabulary)
+            if Self.isAnswer(alone) {
+                command = alone
+                said = text
+            }
+        }
+        if case .unrecognized = command, pending.isEmpty,
+           text.split(separator: " ").count <= 2 || HorizontalVoiceCommandParser.beginsWithVerb(text) {
+            // Too short to be sure it is not the first half of a command, or
+            // a verb with the name still to come: "highlight what".
             pending = text
             pendingSince = .now
             return
@@ -191,7 +202,16 @@ final class HorizontalVoiceControl: ObservableObject {
         pending = ""
         pendingSince = nil
         remember(command)
-        show("“\(heard)” — \(HorizontalVoiceCommandRunner.run(command, in: target))")
+        show("“\(said)” — \(HorizontalVoiceCommandRunner.run(command, in: target))")
+    }
+
+    /// Whether `command` is one to carry out, as against a reading that found
+    /// no command or no thing.
+    private static func isAnswer(_ command: HorizontalVoiceCommand) -> Bool {
+        switch command {
+        case .unrecognized, .nothingNamed, .noSubject: false
+        default: true
+        }
     }
 
     /// Keeps what a command named, and the verb, for the sentences after it.
