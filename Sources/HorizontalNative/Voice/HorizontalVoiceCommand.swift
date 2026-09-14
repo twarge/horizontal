@@ -219,11 +219,77 @@ enum HorizontalVoiceCommandParser {
         // A full stop ends a sentence; the one in 3.3 does not.
         s = s.replacingOccurrences(of: "\\.(?!\\d)", with: " ", options: .regularExpression)
         var words = s.split(whereSeparator: \.isWhitespace).map(String.init)
+            .filter { !hesitations.contains($0) }
         // "and" twice, or at either end, is punctuation that became a word.
         words = words.enumerated().filter { index, word in word != "and" || (index > 0 && words[index - 1] != "and") }.map(\.element)
         while words.first == "and" { words.removeFirst() }
         while words.last == "and" { words.removeLast() }
+        // "So, highlight C12", "okay zoom in": what leads in is not the command.
+        while let first = words.first, openers.contains(first) { words.removeFirst() }
+        // The verb in the one form the grammar knows: "highlights",
+        // "highlighting", "highlighted" are all "highlight".
+        if let first = words.first, let base = verbLemmas[first] {
+            words[0] = base
+        }
         return words.joined(separator: " ")
+    }
+
+    /// Sounds a speaker makes between words and a transcriber writes down.
+    /// Never part of a name, so they go wherever they are.
+    private static let hesitations: Set<String> = ["um", "umm", "uh", "uhh", "er", "erm", "hmm", "hm", "ah", "mm"]
+    /// Words that lead into a command without being part of it.
+    private static let openers: Set<String> = ["so", "now", "then", "okay", "ok", "well", "yeah", "yes", "and", "please", "also"]
+    /// Words a transcriber puts between the verb and the name, or a speaker
+    /// says there while thinking of it: "highlight what C113", "zoom to like
+    /// U3". Only the front of what follows the verb is read this way, and
+    /// "what connects" stays, being a question.
+    private static let fillers: Set<String> = openers.union(["what", "like", "here", "erm", "the thing", "that thing"])
+
+    /// Every form speech gives a verb — "highlights", "highlighting",
+    /// "highlighted", "went", "lit", "shown" — mapped back to the one the
+    /// grammar knows. Only a transcript's first word is read this way: that
+    /// is where the verb is, and "displays" or "switches" later in a sentence
+    /// may well be parts. The regular forms are made by rule, with the
+    /// consonant both doubled and not ("fitting", "opening") since a wrong
+    /// form here matches nothing and costs nothing; the irregular ones are
+    /// listed.
+    private static let verbLemmas: [String: String] = {
+        let irregular: [String: [String]] = [
+            "go": ["went", "gone"], "find": ["found"], "light": ["lit"], "choose": ["chose", "chosen"],
+            "show": ["shown"], "hide": ["hid", "hidden"], "take": ["took", "taken"], "bring": ["brought"],
+            "give": ["gave", "given"], "get": ["got", "gotten"], "undo": ["undid", "undone"],
+            "redo": ["redid", "redone"], "put": ["put"], "let": ["let"], "fit": ["fit"], "reset": ["reset"],
+        ]
+        let phrases = showVerbs + hideVerbs + zoomVerbs + selectVerbs + highlightVerbs
+        let bases = Set(phrases.compactMap { $0.split(separator: " ").first.map(String.init) })
+            .union(["zoom", "fit", "frame", "clear", "remove", "cancel", "reset", "unhighlight", "deselect", "unselect", "undo", "redo", "flip", "turn"])
+            .filter { $0.allSatisfy(\.isLetter) }
+        var lemmas: [String: String] = [:]
+        for base in bases {
+            var forms = irregular[base] ?? []
+            let last = base.last!
+            let stem = base.hasSuffix("e") && !base.hasSuffix("ee") ? String(base.dropLast()) : base
+            let esEnding = ["s", "x", "z", "o"].contains(String(last)) || base.hasSuffix("sh") || base.hasSuffix("ch")
+            forms.append(esEnding ? base + "es" : base + "s")
+            forms.append(contentsOf: [stem + "ing", stem + "ed"])
+            if last.isLetter, !"aeiouwxy".contains(last) {
+                forms.append(contentsOf: [base + String(last) + "ing", base + String(last) + "ed"])
+            }
+            for form in forms where form != base {
+                lemmas[form] = base
+            }
+        }
+        return lemmas
+    }()
+
+    /// Whether `transcript` opens with a verb the grammar knows, whatever
+    /// follows it: a settled fragment that was no command yet — "highlight
+    /// what", "select the, um" — is the first half of one.
+    static func beginsWithVerb(_ transcript: String) -> Bool {
+        let text = tidy(transcript)
+        guard !text.isEmpty else { return false }
+        let verbs = showVerbs + hideVerbs + zoomVerbs + selectVerbs + highlightVerbs
+        return remainder(after: verbs, in: text) != nil || ["zoom", "fit", "frame"].contains(text.split(separator: " ").first.map(String.init) ?? "")
     }
 
     /// What follows the longest of `verbs` that begins `text`, or nil when
@@ -246,6 +312,25 @@ enum HorizontalVoiceCommandParser {
             words.removeFirst()
         }
         return words.joined(separator: " ")
+    }
+
+    /// `text` without the articles and fillers at its front, and whether a
+    /// filler was there: "what C113" is "C113", said with a word in the way;
+    /// "what" alone is nothing, said with the name still to come.
+    private static func withoutLeadingNoise(_ text: String) -> (rest: String, hadFiller: Bool) {
+        var words = text.split(separator: " ").map(String.init)
+        var hadFiller = false
+        while let first = words.first {
+            if articles.contains(first) {
+                words.removeFirst()
+                continue
+            }
+            guard fillers.contains(first) else { break }
+            if first == "what", words.count > 1, ["connects", "joins", "links", "is", "are"].contains(words[1]) { break }
+            words.removeFirst()
+            hadFiller = true
+        }
+        return (words.joined(separator: " "), hadFiller)
     }
 
     // MARK: - Clearing
@@ -499,7 +584,7 @@ enum HorizontalVoiceCommandParser {
     /// search the way a kind said before it does.
     private static func resolve(_ said: String, vocabulary: HorizontalVoiceVocabulary, many: Bool,
                                 make: ([HorizontalDesignObject]) -> HorizontalVoiceCommand) -> HorizontalVoiceCommand {
-        let name = withoutArticles(said)
+        let (name, hadFiller) = withoutLeadingNoise(said)
         let verb: HorizontalVoiceVerb = {
             switch make([HorizontalDesignObject(kind: .component, name: "")]) {
             case .select: return .select
@@ -507,6 +592,12 @@ enum HorizontalVoiceCommandParser {
             default: return .highlight
             }
         }()
+        // "Highlight what", "select the, um": a verb with a word in the way
+        // and no name yet is half a sentence, not the bare verb that means
+        // the last thing again.
+        if name.isEmpty, hadFiller {
+            return .unrecognized
+        }
         if pronouns.contains(name) || name.isEmpty && !vocabulary.previousSubject.isEmpty {
             return previous(verb, vocabulary: vocabulary)
         }
@@ -529,7 +620,7 @@ enum HorizontalVoiceCommandParser {
             return objects.count >= 2 ? .among(verb, objects) : .nothingNamed(said: name, family: nil)
         }
         if name.contains(" and "), !name.hasPrefix("between") {
-            let parts = name.components(separatedBy: " and ").map { withoutArticles($0) }.filter { !$0.isEmpty }
+            let parts = name.components(separatedBy: " and ").map { withoutLeadingNoise($0).rest }.filter { !$0.isEmpty }
             if parts.count > 1 {
                 var union: [HorizontalDesignObject] = []
                 var whole = true
