@@ -111,22 +111,27 @@ enum HorizontalCommandTarget {
         return components + nets
     }
 
-    /// The nets with a pin on both `a` and `b` — what "the nets between C48
-    /// and C50" means. Either may itself be a net, in which case it is the
-    /// answer when the other is on it.
-    static func netsBetween(_ a: HorizontalDesignObject, _ b: HorizontalDesignObject, in target: Target) -> [HorizontalDesignObject] {
+    /// The nets that connect `objects` to each other — a pin on at least two
+    /// of them — which is what "the nets between C48 and C50" means for two
+    /// and "the nets connecting them" for more. A net among the objects
+    /// counts as touching itself.
+    static func netsAmong(_ objects: [HorizontalDesignObject], in target: Target) -> [HorizontalDesignObject] {
         let index = HorizontalDesignIndex(project: target.document.currentProject())
-        func netIDs(of object: HorizontalDesignObject) -> Set<String>? {
+        var touches: [String: Int] = [:]
+        for object in objects {
+            let netIDs: Set<String>
             switch object.kind {
             case .component:
-                return index.component(refdes: object.name).map { Set($0.pins.compactMap(\.netID)) }
+                netIDs = index.component(refdes: object.name).map { Set($0.pins.compactMap(\.netID)) } ?? []
             case .net:
-                return index.sortedNets.first { $0.name == object.name }.map { [$0.id] }
+                netIDs = index.sortedNets.first { $0.name == object.name }.map { [$0.id] } ?? []
+            }
+            for netID in netIDs {
+                touches[netID, default: 0] += 1
             }
         }
-        guard let first = netIDs(of: a), let second = netIDs(of: b) else { return [] }
         return index.sortedNets
-            .filter { first.contains($0.id) && second.contains($0.id) && !$0.name.isEmpty }
+            .filter { touches[$0.id, default: 0] >= 2 && !$0.name.isEmpty }
             .map { HorizontalDesignObject(kind: .net, name: $0.name, detail: $0.netClassName ?? "") }
     }
 
@@ -161,12 +166,12 @@ enum HorizontalCommandTarget {
         try select([], in: target)
     }
 
-    /// Frames one object and returns the panes it was framed in. With no pane
-    /// asked for, that is every pane that is showing and can show it — the
-    /// 3D view included — because "zoom to C50" with three views open means
-    /// all three.
-    static func frame(_ object: HorizontalDesignObject, pane: HorizontalPane?, in target: Target) throws -> [HorizontalPane] {
-        var params: JSONDictionary = object.kind == .component ? ["refdes": object.name] : ["net": object.name]
+    /// Frames these objects together and returns the panes they were framed
+    /// in. With no pane asked for, that is every pane that is showing and can
+    /// show them — the 3D view included — because "zoom to C50" with three
+    /// views open means all three.
+    static func frame(_ objects: [HorizontalDesignObject], pane: HorizontalPane?, in target: Target) throws -> [HorizontalPane] {
+        var params: JSONDictionary = ["components": names(objects, .component), "nets": names(objects, .net)]
         params["pane"] = pane?.rawValue ?? "all"
         let result = try call("zoom_to", handle: target.handle, params: params)
         let names = (result["panes"] as? [String]) ?? [result.string("pane")].compactMap { $0 }

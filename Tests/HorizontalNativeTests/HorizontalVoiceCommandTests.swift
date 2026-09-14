@@ -194,10 +194,10 @@ final class HorizontalVoiceCommandTests: XCTestCase {
         XCTAssertEqual(parse("please highlight ground"), .highlight([object("GND")]))
         XCTAssertEqual(parse("light up test point 5"), .highlight([object("TP5")]))
         XCTAssertEqual(parse("select R12"), .select([object("R12")]))
-        XCTAssertEqual(parse("Zoom to U3"), .zoom(object("U3"), pane: nil))
-        XCTAssertEqual(parse("go to C124 on the board"), .zoom(object("C124"), pane: .board))
-        XCTAssertEqual(parse("find the LED red net in the schematic"), .zoom(object("LED Red"), pane: .schematic))
-        XCTAssertEqual(parse("where is R12?"), .zoom(object("R12"), pane: nil))
+        XCTAssertEqual(parse("Zoom to U3"), .zoom([object("U3")], pane: nil))
+        XCTAssertEqual(parse("go to C124 on the board"), .zoom([object("C124")], pane: .board))
+        XCTAssertEqual(parse("find the LED red net in the schematic"), .zoom([object("LED Red")], pane: .schematic))
+        XCTAssertEqual(parse("where is R12?"), .zoom([object("R12")], pane: nil))
         XCTAssertEqual(parse("clear the highlight"), .clearHighlight)
         XCTAssertEqual(parse("clear"), .clearHighlight)
         XCTAssertEqual(parse("unhighlight"), .clearHighlight)
@@ -214,8 +214,7 @@ final class HorizontalVoiceCommandTests: XCTestCase {
         XCTAssertEqual(parse("highlight the capacitors"), .highlight([object("C123"), object("C124")]))
         XCTAssertEqual(parse("select all capacitors"), .select([object("C123"), object("C124")]))
         XCTAssertEqual(parse("highlight 123"), .ambiguous([object("C123"), object("R123")], said: "123"))
-        XCTAssertEqual(parse("zoom to the capacitors"), .ambiguous([object("C123"), object("C124")], said: "capacitors"),
-                       "framing wants one thing")
+        XCTAssertEqual(parse("zoom to the capacitors"), .zoom([object("C123"), object("C124")], pane: nil), "several are framed together")
         XCTAssertEqual(parse("highlight capacitor 7"), .nothingNamed(said: "7", family: .capacitor))
         XCTAssertEqual(parse("highlight the ground net"), .highlight([object("GND")]), "a wide kind after the name scopes it")
         XCTAssertEqual(parse("highlight the nets"), .highlight(parts.filter { $0.kind == .net }), "a wide kind alone is all of it")
@@ -229,10 +228,10 @@ final class HorizontalVoiceCommandTests: XCTestCase {
     /// in there exactly: the longest run of words that names something wins,
     /// and a run that names several is still a question back.
     func testANameIsFoundInsideANoisySentence() {
-        XCTAssertEqual(parse("zoom to xyz C 123"), .zoom(object("C123"), pane: nil))
+        XCTAssertEqual(parse("zoom to xyz C 123"), .zoom([object("C123")], pane: nil))
         XCTAssertEqual(parse("highlight um R 12 okay"), .highlight([object("R12")]))
         XCTAssertEqual(parse("select the blah capacitor 124"), .select([object("C124")]))
-        XCTAssertEqual(parse("zoom to the thing near test point 5 on the board"), .zoom(object("TP5"), pane: .board))
+        XCTAssertEqual(parse("zoom to the thing near test point 5 on the board"), .zoom([object("TP5")], pane: .board))
         XCTAssertEqual(parse("highlight xyz 123"), .ambiguous([object("C123"), object("R123")], said: "xyz 123"))
         XCTAssertEqual(parse("highlight xyz abc"), .nothingNamed(said: "xyz abc", family: nil), "noise alone is still nothing")
     }
@@ -247,12 +246,12 @@ final class HorizontalVoiceCommandTests: XCTestCase {
         func parse(_ sentence: String) -> HorizontalVoiceCommand {
             HorizontalVoiceCommandParser.parse(sentence, vocabulary: remembered)
         }
-        XCTAssertEqual(parse("zoom"), .zoom(object("C123"), pane: nil))
-        XCTAssertEqual(parse("zoom to fit"), .zoom(object("C123"), pane: nil))
-        XCTAssertEqual(parse("zoom to it"), .zoom(object("C123"), pane: nil))
-        XCTAssertEqual(parse("zoom to it on the board"), .zoom(object("C123"), pane: .board))
-        XCTAssertEqual(parse("zoom in on it"), .zoom(object("C123"), pane: nil))
-        XCTAssertEqual(parse("fit"), .zoom(object("C123"), pane: nil))
+        XCTAssertEqual(parse("zoom"), .zoom([object("C123")], pane: nil))
+        XCTAssertEqual(parse("zoom to fit"), .zoom([object("C123")], pane: nil))
+        XCTAssertEqual(parse("zoom to it"), .zoom([object("C123")], pane: nil))
+        XCTAssertEqual(parse("zoom to it on the board"), .zoom([object("C123")], pane: .board))
+        XCTAssertEqual(parse("zoom in on it"), .zoom([object("C123")], pane: nil))
+        XCTAssertEqual(parse("fit"), .zoom([object("C123")], pane: nil))
         XCTAssertEqual(parse("highlight it"), .highlight([object("C123")]))
         XCTAssertEqual(parse("select that"), .select([object("C123")]))
         XCTAssertEqual(parse("select"), .select([object("C123")]), "a bare verb takes the last thing")
@@ -264,8 +263,12 @@ final class HorizontalVoiceCommandTests: XCTestCase {
         XCTAssertEqual(parse("zoom in"), .zoomBy(2, pane: nil), "a step is still a step")
 
         remembered.previousSubject = [object("C123"), object("C124")]
-        XCTAssertEqual(parse("zoom"), .severalToFrame([object("C123"), object("C124")]))
+        XCTAssertEqual(parse("zoom"), .zoom([object("C123"), object("C124")], pane: nil), "several remembered are framed together")
         XCTAssertEqual(parse("highlight them"), .highlight([object("C123"), object("C124")]))
+        XCTAssertEqual(parse("highlight the nets connecting them"), .among(.highlight, [object("C123"), object("C124")]))
+        XCTAssertEqual(parse("highlight nets between them"), .among(.highlight, [object("C123"), object("C124")]))
+        XCTAssertEqual(parse("select what connects them"), .among(.select, [object("C123"), object("C124")]))
+        XCTAssertEqual(self.parse("highlight the nets between them"), .noSubject(.highlight), "nothing remembered")
 
         XCTAssertEqual(self.parse("zoom"), .zoomBy(0, pane: nil), "nothing remembered: fit the view")
         XCTAssertEqual(self.parse("zoom to fit"), .zoomBy(0, pane: nil))
@@ -277,16 +280,19 @@ final class HorizontalVoiceCommandTests: XCTestCase {
     /// "The nets between C48 and C50" is what the two share; "C48 and C50"
     /// is both of them.
     func testTwoThingsCanBeNamedTogether() {
-        XCTAssertEqual(parse("highlight the nets between C123 and R123"), .between(.highlight, object("C123"), object("R123")))
-        XCTAssertEqual(parse("highlight the net between capacitor 123 and R 123"), .between(.highlight, object("C123"), object("R123")))
-        XCTAssertEqual(parse("highlight what connects C123 and R12"), .between(.highlight, object("C123"), object("R12")))
-        XCTAssertEqual(parse("select the connections from C123 to R12"), .between(.select, object("C123"), object("R12")))
-        XCTAssertEqual(parse("zoom to the net between C123 and TP5"), .between(.zoom, object("C123"), object("TP5")))
+        XCTAssertEqual(parse("highlight the nets between C123 and R123"), .among(.highlight, [object("C123"), object("R123")]))
+        XCTAssertEqual(parse("highlight the net between capacitor 123 and R 123"), .among(.highlight, [object("C123"), object("R123")]))
+        XCTAssertEqual(parse("highlight what connects C123 and R12"), .among(.highlight, [object("C123"), object("R12")]))
+        XCTAssertEqual(parse("select the connections from C123 to R12"), .among(.select, [object("C123"), object("R12")]))
+        XCTAssertEqual(parse("zoom to the net between C123 and TP5"), .among(.zoom, [object("C123"), object("TP5")]))
         XCTAssertEqual(parse("highlight the nets between C123 and C9"), .nothingNamed(said: "c9", family: nil), "a side nobody has is said back")
         XCTAssertEqual(parse("highlight C123 and R12"), .highlight([object("C123"), object("R12")]))
         XCTAssertEqual(parse("select C123, R12 and TP5"), .select([object("C123"), object("R12"), object("TP5")]))
         XCTAssertEqual(parse("highlight the capacitors and R12"), .highlight([object("C123"), object("C124"), object("R12")]))
-        XCTAssertEqual(parse("zoom to C123 and R12"), .severalToFrame([object("C123"), object("R12")]), "framing takes one")
+        XCTAssertEqual(parse("zoom to C123 and R12"), .zoom([object("C123"), object("R12")], pane: nil), "framed together")
+        XCTAssertEqual(parse("zoom to C123, R12, and TP5"), .zoom([object("C123"), object("R12"), object("TP5")], pane: nil))
+        XCTAssertEqual(parse("highlight the nets between C123, R123 and TP5"), .among(.highlight, [object("C123"), object("R123"), object("TP5")]))
+        XCTAssertEqual(parse("highlight the nets among C123 and R12"), .among(.highlight, [object("C123"), object("R12")]))
     }
 
     /// Board layer views by name. "The bottom layer" is that side's layers;
@@ -329,7 +335,7 @@ final class HorizontalVoiceCommandTests: XCTestCase {
         XCTAssertEqual(parse("zoom in on the board"), .zoomBy(2, pane: .board))
         XCTAssertEqual(parse("zoom out of the 3D view"), .zoomBy(0.5, pane: .threeD))
         XCTAssertEqual(parse("closer"), .zoomBy(2, pane: nil))
-        XCTAssertEqual(parse("zoom in on C123"), .zoom(object("C123"), pane: nil))
+        XCTAssertEqual(parse("zoom in on C123"), .zoom([object("C123")], pane: nil))
     }
 
     /// The presets know their side, whether they mirror, and how a side-less
@@ -503,7 +509,7 @@ final class HorizontalVoiceCommandTests: XCTestCase {
 
         // Nothing here is placed anywhere, so framing is refused with the
         // dispatch method's own message.
-        XCTAssertTrue(HorizontalVoiceCommandRunner.run(.zoom(vcc, pane: nil), in: target).contains("VCC"))
+        XCTAssertTrue(HorizontalVoiceCommandRunner.run(.zoom([vcc], pane: nil), in: target).contains("VCC"))
         XCTAssertEqual(HorizontalVoiceCommandRunner.run(.showLayers(.topPlacement), in: target), "Showing the top layer.")
         XCTAssertEqual(live.layerPresets(), [.topPlacement])
         XCTAssertEqual(HorizontalVoiceCommandRunner.run(.showLayers(.all), in: target), "Showing all layers.")

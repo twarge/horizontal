@@ -478,11 +478,15 @@ The conversation remembers. After "highlight C50", a bare verb or a pronoun
 means C50 — "zoom", "zoom to fit", "zoom to it", "select that" — and a bare
 name means the last verb again — "R12" is highlight R12. With nothing
 remembered, "zoom" and "zoom to fit" fit the whole view (`zoom` with a factor
-of 0), and "zoom to it" says there is nothing to zoom to yet. Two things can be
-named together: "highlight C48 and C50" (a comma reads as "and") is both, and
-"highlight the nets between C48 and C50" — also "what connects", "the
-connections from … to …" — is every net with a pin on both, found in the
-design index; zoom takes one thing, so several are a question back.
+of 0), and "zoom to it" says there is nothing to zoom to yet. Several things can be
+named together, for any verb: "zoom to C48, C49 and C50" (a comma reads as
+"and") frames the three together — `zoom_to` takes `components` and `nets`
+lists and frames their union, on the schematic the sheet holding the most of
+them — and "highlight the nets between C48 and C50", "the nets connecting
+them", "what connects C48, C49 and C50" is every net with a pin on at least
+two of the parts named, found in the design index. "Them" after a list is
+that list, so "zoom to C48, C49 and C50" then "highlight the nets connecting
+them" is the natural two-step.
 
 Siri keeps three intents, all general, none with anything to publish: Show
 Panes — "show the board in Horizontal", "show me the schematic and 3D in
