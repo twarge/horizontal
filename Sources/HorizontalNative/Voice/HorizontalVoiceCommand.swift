@@ -22,6 +22,15 @@ enum HorizontalSheetRequest: Equatable {
     }
 }
 
+/// The verbs that take a thing, remembered so the next sentence can lean on
+/// them: "highlight C50", then "zoom" means C50, and then "R12" means
+/// highlight R12.
+enum HorizontalVoiceVerb: Equatable {
+    case highlight
+    case select
+    case zoom
+}
+
 /// What a spoken sentence asks for, once it has been read.
 enum HorizontalVoiceCommand: Equatable {
     case highlight([HorizontalDesignObject])
@@ -42,14 +51,41 @@ enum HorizontalVoiceCommand: Equatable {
     case nothingNamed(said: String, family: HorizontalObjectFamily?)
     /// The verb was clear, and several things answer to the name.
     case ambiguous([HorizontalDesignObject], said: String)
+    /// The nets shared by two parts: "the nets between C48 and C50".
+    case between(HorizontalVoiceVerb, HorizontalDesignObject, HorizontalDesignObject)
+    /// A verb that wants a thing, with nothing said and nothing remembered.
+    case noSubject(HorizontalVoiceVerb)
+    /// "Zoom" after several things were named: framing takes one.
+    case severalToFrame([HorizontalDesignObject])
     /// Not a command — or not yet a whole one, if more is coming.
     case unrecognized
 }
 
-/// What the parser knows about the design: what can be named.
+/// Why one side of "between A and B" did not come to one thing, as the command
+/// that says so.
+enum HorizontalVoiceCommandFailure: Error {
+    case nothingNamed(said: String, family: HorizontalObjectFamily?)
+    case ambiguous([HorizontalDesignObject], said: String)
+}
+
+private extension HorizontalVoiceCommand {
+    init(_ failure: HorizontalVoiceCommandFailure) {
+        switch failure {
+        case .nothingNamed(let said, let family): self = .nothingNamed(said: said, family: family)
+        case .ambiguous(let found, let said): self = .ambiguous(found, said: said)
+        }
+    }
+}
+
+/// What the parser knows about the design — what can be named — and about the
+/// conversation: what was named last, and what was done to it.
 struct HorizontalVoiceVocabulary {
     var objects: [HorizontalDesignObject] = []
     var sheetNames: [String] = []
+    /// The thing or things the last command named, for "zoom" and "it".
+    var previousSubject: [HorizontalDesignObject] = []
+    /// The verb of the last command that named something, for a bare name.
+    var previousVerb: HorizontalVoiceVerb?
 }
 
 /// Reads a transcript as a command.
@@ -68,6 +104,7 @@ enum HorizontalVoiceCommandParser {
         if text == "redo" || text.hasPrefix("redo ") { return .redo }
         if let cleared = clearing(text) { return cleared }
         if let step = zoomStep(in: text) { return step }
+        if let fit = fitRequest(in: text, vocabulary: vocabulary) { return fit }
 
         let shown = remainder(after: showVerbs + zoomVerbs, in: text)
         if let request = sheetRequest(in: withoutArticles(shown ?? text)) {
@@ -92,7 +129,64 @@ enum HorizontalVoiceCommandParser {
         if let rest = remainder(after: highlightVerbs, in: text) {
             return resolve(rest, vocabulary: vocabulary, many: true) { .highlight($0) }
         }
+        // A name on its own, after a verb was used: the same verb again.
+        // "Highlight C123", then "R12", is two highlights.
+        if let verb = vocabulary.previousVerb {
+            let again = resolve(text, vocabulary: vocabulary, many: verb != .zoom) { command(verb, $0) }
+            switch again {
+            case .highlight, .select, .zoom, .ambiguous, .severalToFrame:
+                return again
+            default:
+                break
+            }
+        }
         return .unrecognized
+    }
+
+    private static func command(_ verb: HorizontalVoiceVerb, _ objects: [HorizontalDesignObject]) -> HorizontalVoiceCommand {
+        switch verb {
+        case .highlight: .highlight(objects)
+        case .select: .select(objects)
+        case .zoom: objects.count == 1 ? .zoom(objects[0], pane: nil) : .severalToFrame(objects)
+        }
+    }
+
+    /// What the last thing named means to `verb` now.
+    private static func previous(_ verb: HorizontalVoiceVerb, vocabulary: HorizontalVoiceVocabulary, pane: HorizontalPane? = nil) -> HorizontalVoiceCommand {
+        let subject = vocabulary.previousSubject
+        guard !subject.isEmpty else { return .noSubject(verb) }
+        switch verb {
+        case .zoom: return subject.count == 1 ? .zoom(subject[0], pane: pane) : .severalToFrame(subject)
+        default: return command(verb, subject)
+        }
+    }
+
+    private static let pronouns: Set<String> = ["it", "that", "this", "them", "those", "these", "the same", "same", "again", "that one", "this one"]
+
+    // MARK: - Fit
+
+    /// "Zoom", "zoom to fit", "fit", "zoom to it": the last thing named, when
+    /// there is one, else the whole view. "Zoom to everything", "zoom to the
+    /// whole board": the whole view regardless.
+    static func fitRequest(in text: String, vocabulary: HorizontalVoiceVocabulary) -> HorizontalVoiceCommand? {
+        let (core, pane) = paneSuffix(in: text)
+        let words = core.split(separator: " ").map(String.init)
+        guard let first = words.first, ["zoom", "fit", "frame"].contains(first) else { return nil }
+        let rest = words.dropFirst().filter { !["to", "the", "a", "on", "in", "view", "screen", "window"].contains($0) }
+        let wholeWords: Set<String> = ["everything", "all", "whole", "entire", "board", "schematic", "design", "page", "sheet"]
+        if !rest.isEmpty, rest.allSatisfy(wholeWords.contains) {
+            let where_: HorizontalPane? = pane ?? (rest.contains("board") ? .board : rest.contains("schematic") || rest.contains("sheet") || rest.contains("page") ? .schematic : nil)
+            return .zoomBy(0, pane: where_)
+        }
+        let remainder = rest.joined(separator: " ")
+        if remainder.isEmpty || remainder == "fit" || remainder == "fit fit" {
+            // "Zoom", "fit", "zoom to fit": the last thing, else the whole view.
+            return vocabulary.previousSubject.isEmpty ? .zoomBy(0, pane: pane) : previous(.zoom, vocabulary: vocabulary, pane: pane)
+        }
+        if pronouns.contains(remainder) {
+            return previous(.zoom, vocabulary: vocabulary, pane: pane)
+        }
+        return nil
     }
 
     // MARK: - Words
@@ -122,10 +216,17 @@ enum HorizontalVoiceCommandParser {
             s = s.replacingOccurrences(of: " \(noise) ", with: " ")
             s = s.replacingOccurrences(of: " \(noise), ", with: " ")
         }
-        s = s.replacingOccurrences(of: "[,!?;:]+", with: " ", options: .regularExpression)
+        // A comma between things is an "and": "C123, R12 and TP5".
+        s = s.replacingOccurrences(of: ",", with: " and ")
+        s = s.replacingOccurrences(of: "[!?;:]+", with: " ", options: .regularExpression)
         // A full stop ends a sentence; the one in 3.3 does not.
         s = s.replacingOccurrences(of: "\\.(?!\\d)", with: " ", options: .regularExpression)
-        return s.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        var words = s.split(whereSeparator: \.isWhitespace).map(String.init)
+        // "and" twice, or at either end, is punctuation that became a word.
+        words = words.enumerated().filter { index, word in word != "and" || (index > 0 && words[index - 1] != "and") }.map(\.element)
+        while words.first == "and" { words.removeFirst() }
+        while words.last == "and" { words.removeLast() }
+        return words.joined(separator: " ")
     }
 
     /// What follows the longest of `verbs` that begins `text`, or nil when
@@ -402,6 +503,45 @@ enum HorizontalVoiceCommandParser {
     private static func resolve(_ said: String, vocabulary: HorizontalVoiceVocabulary, many: Bool,
                                 make: ([HorizontalDesignObject]) -> HorizontalVoiceCommand) -> HorizontalVoiceCommand {
         let name = withoutArticles(said)
+        let verb: HorizontalVoiceVerb = {
+            switch make([HorizontalDesignObject(kind: .component, name: "")]) {
+            case .select: return .select
+            case .zoom: return .zoom
+            default: return .highlight
+            }
+        }()
+        if pronouns.contains(name) || name.isEmpty && !vocabulary.previousSubject.isEmpty {
+            return previous(verb, vocabulary: vocabulary)
+        }
+        // "The nets between C48 and C50": what the two share. "C48 and C50":
+        // both. Either side is resolved on its own, and has to be one thing.
+        if let pair = betweenPair(in: name) {
+            switch (one(pair.a, vocabulary: vocabulary), one(pair.b, vocabulary: vocabulary)) {
+            case (.success(let a), .success(let b)):
+                return .between(verb, a, b)
+            case (.failure(let problem), _), (_, .failure(let problem)):
+                return HorizontalVoiceCommand(problem)
+            }
+        }
+        if name.contains(" and "), !name.hasPrefix("between") {
+            let parts = name.components(separatedBy: " and ").map { withoutArticles($0) }.filter { !$0.isEmpty }
+            if parts.count > 1 {
+                var union: [HorizontalDesignObject] = []
+                var whole = true
+                for part in parts {
+                    let found = HorizontalSpokenMatcher.matches(part, in: vocabulary.objects)
+                    let bareKind = HorizontalSpokenMatcher.parseFamily(part)?.rest.isEmpty == true
+                    guard found.count == 1 || (found.count > 1 && bareKind && many) else {
+                        whole = false
+                        break
+                    }
+                    union.append(contentsOf: found.filter { !union.contains($0) })
+                }
+                if whole, !union.isEmpty {
+                    return many || union.count == 1 ? make(union) : .severalToFrame(union)
+                }
+            }
+        }
         var words = name.split(separator: " ").map(String.init)
         var trailing: HorizontalObjectFamily?
         if let last = words.last,
@@ -439,6 +579,41 @@ enum HorizontalVoiceCommandParser {
                 return make(found)
             }
             return .ambiguous(found, said: subject.isEmpty ? name : subject)
+        }
+    }
+
+    /// "the nets between A and B", "net from A to B", "what connects A and B",
+    /// "connections between A and B": the two things, as said.
+    static func betweenPair(in text: String) -> (a: String, b: String)? {
+        let pattern = "^(?:what connects |what joins |the |all |)(?:nets?|connections?|wires?|signals?|traces?|links?)?\\s*(?:between|from|connecting|linking|joining|shared by)\\s+(.+?)\\s+(?:and|to|with)\\s+(.+)$"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let aRange = Range(match.range(at: 1), in: text), let bRange = Range(match.range(at: 2), in: text) else {
+            // "what connects A and B" with no keyword between the things.
+            if let regex = try? NSRegularExpression(pattern: "^what (?:connects|joins|links) (.+?) (?:and|to|with) (.+)$"),
+               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+               let aRange = Range(match.range(at: 1), in: text), let bRange = Range(match.range(at: 2), in: text) {
+                return (String(text[aRange]), String(text[bRange]))
+            }
+            return nil
+        }
+        return (String(text[aRange]), String(text[bRange]))
+    }
+
+    /// Exactly one thing for `said`, or the command that says why not.
+    private static func one(_ said: String, vocabulary: HorizontalVoiceVocabulary) -> Result<HorizontalDesignObject, HorizontalVoiceCommandFailure> {
+        let name = withoutArticles(said)
+        var found = HorizontalSpokenMatcher.matches(name, in: vocabulary.objects)
+        if found.isEmpty {
+            let words = name.split(separator: " ").map(String.init)
+            if words.count > 1, let run = HorizontalSpokenMatcher.exactMatches(inAnyRunOf: words, in: vocabulary.objects) {
+                found = run.matches
+            }
+        }
+        switch found.count {
+        case 1: return .success(found[0])
+        case 0: return .failure(.nothingNamed(said: name, family: HorizontalSpokenMatcher.parseFamily(name)?.family))
+        default: return .failure(.ambiguous(found, said: name))
         }
     }
 

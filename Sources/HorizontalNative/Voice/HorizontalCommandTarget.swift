@@ -111,6 +111,25 @@ enum HorizontalCommandTarget {
         return components + nets
     }
 
+    /// The nets with a pin on both `a` and `b` — what "the nets between C48
+    /// and C50" means. Either may itself be a net, in which case it is the
+    /// answer when the other is on it.
+    static func netsBetween(_ a: HorizontalDesignObject, _ b: HorizontalDesignObject, in target: Target) -> [HorizontalDesignObject] {
+        let index = HorizontalDesignIndex(project: target.document.currentProject())
+        func netIDs(of object: HorizontalDesignObject) -> Set<String>? {
+            switch object.kind {
+            case .component:
+                return index.component(refdes: object.name).map { Set($0.pins.compactMap(\.netID)) }
+            case .net:
+                return index.sortedNets.first { $0.name == object.name }.map { [$0.id] }
+            }
+        }
+        guard let first = netIDs(of: a), let second = netIDs(of: b) else { return [] }
+        return index.sortedNets
+            .filter { first.contains($0.id) && second.contains($0.id) && !$0.name.isEmpty }
+            .map { HorizontalDesignObject(kind: .net, name: $0.name, detail: $0.netClassName ?? "") }
+    }
+
     /// The schematic sheets of `target`, in page order.
     static func sheets(in target: Target) -> [HorizontalDesignSheet] {
         HorizontalDesignIndex(project: target.document.currentProject()).sheets
@@ -159,7 +178,8 @@ enum HorizontalCommandTarget {
         try call("show_layers", handle: target.handle, params: ["preset": preset.rawValue])
     }
 
-    /// Zooms a pane's view — the one the user is working in, when unsaid.
+    /// Zooms a pane's view — the one the user is working in, when unsaid. A
+    /// factor of 0 fits the whole view.
     static func zoom(by factor: Double, pane: HorizontalPane?, in target: Target) throws {
         var params: JSONDictionary = ["factor": factor]
         if let pane {

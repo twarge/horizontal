@@ -96,6 +96,10 @@ final class HorizontalVoiceControl: ObservableObject {
     /// with the name still to come — kept to prepend to the next one.
     private var pending = ""
     private var pendingSince: ContinuousClock.Instant?
+    /// What the last command named and what it did, so "zoom" after
+    /// "highlight C50" means C50, and "R12" after it means highlight R12.
+    private var previousSubject: [HorizontalDesignObject] = []
+    private var previousVerb: HorizontalVoiceVerb?
 
     func toggle() {
         if isListening {
@@ -118,6 +122,8 @@ final class HorizontalVoiceControl: ObservableObject {
         message = nil
         status = "Getting ready…"
         pending = ""
+        previousSubject = []
+        previousVerb = nil
         let stream = engine.start(contextualStrings: Self.contextualStrings(for: target))
         session = Task { [weak self] in
             for await event in stream {
@@ -171,7 +177,9 @@ final class HorizontalVoiceControl: ObservableObject {
         let heard = [pending, text].filter { !$0.isEmpty }.joined(separator: " ")
         let vocabulary = HorizontalVoiceVocabulary(
             objects: HorizontalCommandTarget.nameableObjects(in: target),
-            sheetNames: HorizontalCommandTarget.sheets(in: target).map(\.name)
+            sheetNames: HorizontalCommandTarget.sheets(in: target).map(\.name),
+            previousSubject: previousSubject,
+            previousVerb: previousVerb
         )
         let command = HorizontalVoiceCommandParser.parse(heard, vocabulary: vocabulary)
         if case .unrecognized = command, pending.isEmpty, text.split(separator: " ").count <= 2 {
@@ -182,7 +190,33 @@ final class HorizontalVoiceControl: ObservableObject {
         }
         pending = ""
         pendingSince = nil
+        remember(command)
         show("“\(heard)” — \(HorizontalVoiceCommandRunner.run(command, in: target))")
+    }
+
+    /// Keeps what a command named, and the verb, for the sentences after it.
+    private func remember(_ command: HorizontalVoiceCommand) {
+        switch command {
+        case .highlight(let objects):
+            previousSubject = objects
+            previousVerb = .highlight
+        case .select(let objects):
+            previousSubject = objects
+            previousVerb = .select
+        case .zoom(let object, _):
+            previousSubject = [object]
+            previousVerb = .zoom
+        case .between(let verb, let a, let b):
+            if let target = target() {
+                let nets = HorizontalCommandTarget.netsBetween(a, b, in: target)
+                if !nets.isEmpty {
+                    previousSubject = nets
+                    previousVerb = verb
+                }
+            }
+        default:
+            break
+        }
     }
 
     private func show(_ text: String) {

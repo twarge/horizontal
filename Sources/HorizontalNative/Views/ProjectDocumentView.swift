@@ -1266,6 +1266,10 @@ struct ProjectWorkspaceView: View {
             }
             if target == .threeD {
                 if let board = project.board {
+                    if factor <= 0 {
+                        threeDCameraState = horizonSceneCameraState(for: .defaultPerspective, board: board)
+                        return
+                    }
                     threeDCameraState = horizonSceneCameraState(
                         zooming: threeDCameraState, by: factor, board: board, projection: boardDisplayOptions.threeDProjection
                     )
@@ -1849,6 +1853,17 @@ struct ProjectWorkspaceView: View {
                             silkscreenClipping: appearanceSettings.silkscreenClipping,
                             revision: boardEditRevision,
                             highlightedComponentIDs: highlightedComponentIDs,
+                            selectedComponentIDs: selectedComponentIDs,
+                            onSelectComponent: { componentID, extend in
+                                // A click in 3D selects the way a click on
+                                // the board does: one part, or one more with
+                                // shift or command, and empty space clears.
+                                if let componentID {
+                                    selectComponents(extend ? selectedComponentIDs.union([componentID]) : [componentID])
+                                } else if !extend {
+                                    selectComponents([])
+                                }
+                            },
                             cameraState: $threeDCameraState
                         )
                     } else {

@@ -201,7 +201,7 @@ class Project:
         return self._call("show_layers", preset=preset)
 
     def zoom(self, factor: float = 2, pane: str | None = None) -> dict[str, Any]:
-        """Zoom a pane's view about its centre: 2 is twice as close, 0.5 twice as far. Live documents only."""
+        """Zoom a pane's view about its centre: 2 is twice as close, 0.5 twice as far, 0 fits everything. Live documents only."""
         params: dict[str, Any] = {"factor": factor}
         if pane is not None:
             params["pane"] = pane

@@ -66,8 +66,8 @@ final class HorizontalLiveDocument {
     /// other side — what framing a bottom-side part does when the top is up.
     /// The all-layers view belongs to no side and is left alone.
     var showBoardSide: (HorizontalBoardSide) -> Void
-    /// Zooms a pane's view by `factor` about its centre; 2 is twice as close.
-    /// Nil pane means the one the user is working in.
+    /// Zooms a pane's view by `factor` about its centre; 2 is twice as close,
+    /// 0 fits everything. Nil pane means the one the user is working in.
     var zoomBy: (HorizontalPane?, Double) -> Void
 
     init(url: URL, title: String, project: HorizontalProject, archive: HorizontalProjectArchive) {

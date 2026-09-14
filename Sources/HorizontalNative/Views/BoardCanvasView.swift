@@ -2432,7 +2432,12 @@ struct BoardCanvasView: View {
             viewport = CanvasViewport.framing(rect, in: transform)
         }
         actions.zoomBy = { factor in
-            guard let transform = liveCanvasTransform.transform, factor > 0 else {
+            guard let transform = liveCanvasTransform.transform, factor >= 0 else {
+                return
+            }
+            if factor == 0 {
+                // Fit: everything, seen from the side it was being seen from.
+                viewport = CanvasViewport(mirrored: viewport.mirrored)
                 return
             }
             viewport = CanvasViewport.framing(transform.visibleBounds.scaled(by: 1 / factor), in: transform, fill: 1)

@@ -803,8 +803,8 @@ def show_layers(preset: str, path: str | None = None) -> dict[str, Any]:
 
 @_tool
 def zoom(path: str | None = None, factor: float = 2, pane: str | None = None) -> dict[str, Any]:
-    """Zoom a pane's view in the app about its centre: 2 is twice as close, 0.5 twice as far; pane board, schematic
-    or threeD, else the one the user is working in. Needs the project open in Horizontal."""
+    """Zoom a pane's view in the app about its centre: 2 is twice as close, 0.5 twice as far, 0 fits everything; pane
+    board, schematic or threeD, else the one the user is working in. Needs the project open in Horizontal."""
     project = _resolve(path)
     if not project.is_live:
         raise ValueError("The project is not open in Horizontal, so there is no view to zoom.")

@@ -50,7 +50,34 @@ enum HorizontalVoiceCommandRunner {
             return preset == .flipView ? "Turned the board over." : "Showing \(preset.spokenTitle)."
         case .zoomBy(let factor, let pane):
             try HorizontalCommandTarget.zoom(by: factor, pane: pane, in: target)
+            if factor <= 0 {
+                return pane.map { "Fit \(list([$0]))." } ?? "Fit the view."
+            }
             return factor > 1 ? "Zoomed in." : "Zoomed out."
+        case .between(let verb, let a, let b):
+            let nets = HorizontalCommandTarget.netsBetween(a, b, in: target)
+            guard !nets.isEmpty else {
+                return "Nothing connects \(a.name) and \(b.name)."
+            }
+            switch verb {
+            case .highlight:
+                try HorizontalCommandTarget.highlight(nets, in: target)
+                return "Highlighted \(list(nets)) between \(a.name) and \(b.name)."
+            case .select:
+                try HorizontalCommandTarget.select(nets, in: target)
+                return "Selected \(list(nets))."
+            case .zoom:
+                guard nets.count == 1 else {
+                    return "\(a.name) and \(b.name) share \(list(nets)). Zoom to which one?"
+                }
+                let framed = try HorizontalCommandTarget.frame(nets[0], pane: nil, in: target)
+                return framed.isEmpty ? "Zoomed to \(nets[0].name)." : "Zoomed to \(nets[0].name) in \(list(Set(framed)))."
+            }
+        case .noSubject(let verb):
+            let what = verb == .zoom ? "zoom to" : (verb == .select ? "select" : "highlight")
+            return "Nothing to \(what) yet. Name something first."
+        case .severalToFrame(let objects):
+            return "That is \(list(objects)). Zoom to which one?"
         case .showSheet(let request):
             let sheet = try HorizontalCommandTarget.showSheet(request, in: target)
             return sheet.name.isEmpty ? "Sheet \(sheet.index)." : "Sheet \(sheet.index), \(sheet.name)."
