@@ -43,6 +43,10 @@ struct HorizontalNativeApp: App {
                 document: configuration.$document,
                 fileURL: configuration.fileURL
             )
+            // One view per file: a document opened after another is closed
+            // starts from nothing rather than from the last one's state, and
+            // the title it names is its own.
+            .id(configuration.fileURL)
             .environmentObject(appearanceSettings)
             .preferredColorScheme(appearanceSettings.preferredColorScheme)
         }
