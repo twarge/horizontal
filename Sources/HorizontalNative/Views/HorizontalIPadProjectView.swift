@@ -1301,6 +1301,14 @@ struct HorizontalIPadProjectView: View {
                 silkscreenClipping: appearanceSettings.silkscreenClipping,
                 revision: boardEditRevision,
                 highlightedComponentIDs: highlightedComponentIDs,
+                selectedComponentIDs: selectedComponentIDs,
+                onSelectComponent: { componentID, extend in
+                    if let componentID {
+                        selectedComponentIDs = extend ? selectedComponentIDs.union([componentID]) : [componentID]
+                    } else if !extend {
+                        selectedComponentIDs.removeAll()
+                    }
+                },
                 cameraState: $threeDCameraState
             )
         } else {
@@ -1537,6 +1545,10 @@ struct HorizontalIPadProjectView: View {
             }
             if target == .threeD {
                 if let board = project?.board {
+                    if factor <= 0 {
+                        threeDCameraState = horizonSceneCameraState(for: .defaultPerspective, board: board)
+                        return
+                    }
                     threeDCameraState = horizonSceneCameraState(
                         zooming: threeDCameraState, by: factor, board: board, projection: .perspective
                     )

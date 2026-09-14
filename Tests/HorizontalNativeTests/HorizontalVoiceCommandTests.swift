@@ -237,6 +237,58 @@ final class HorizontalVoiceCommandTests: XCTestCase {
         XCTAssertEqual(parse("highlight xyz abc"), .nothingNamed(said: "xyz abc", family: nil), "noise alone is still nothing")
     }
 
+    /// The conversation remembers. After a thing is named, a bare verb or a
+    /// pronoun means it; a bare name means the last verb; and with nothing
+    /// remembered, "zoom" fits the whole view and "it" is a question back.
+    func testABareVerbOrAPronounMeansTheLastThingNamed() {
+        var remembered = vocabulary
+        remembered.previousSubject = [object("C123")]
+        remembered.previousVerb = .highlight
+        func parse(_ sentence: String) -> HorizontalVoiceCommand {
+            HorizontalVoiceCommandParser.parse(sentence, vocabulary: remembered)
+        }
+        XCTAssertEqual(parse("zoom"), .zoom(object("C123"), pane: nil))
+        XCTAssertEqual(parse("zoom to fit"), .zoom(object("C123"), pane: nil))
+        XCTAssertEqual(parse("zoom to it"), .zoom(object("C123"), pane: nil))
+        XCTAssertEqual(parse("zoom to it on the board"), .zoom(object("C123"), pane: .board))
+        XCTAssertEqual(parse("zoom in on it"), .zoom(object("C123"), pane: nil))
+        XCTAssertEqual(parse("fit"), .zoom(object("C123"), pane: nil))
+        XCTAssertEqual(parse("highlight it"), .highlight([object("C123")]))
+        XCTAssertEqual(parse("select that"), .select([object("C123")]))
+        XCTAssertEqual(parse("select"), .select([object("C123")]), "a bare verb takes the last thing")
+        XCTAssertEqual(parse("R12"), .highlight([object("R12")]), "a bare name takes the last verb")
+        XCTAssertEqual(parse("capacitor 124"), .highlight([object("C124")]))
+        XCTAssertEqual(parse("123"), .ambiguous([object("C123"), object("R123")], said: "123"))
+        XCTAssertEqual(parse("zoom to everything"), .zoomBy(0, pane: nil), "the whole view, whatever was named")
+        XCTAssertEqual(parse("zoom to the whole board"), .zoomBy(0, pane: .board))
+        XCTAssertEqual(parse("zoom in"), .zoomBy(2, pane: nil), "a step is still a step")
+
+        remembered.previousSubject = [object("C123"), object("C124")]
+        XCTAssertEqual(parse("zoom"), .severalToFrame([object("C123"), object("C124")]))
+        XCTAssertEqual(parse("highlight them"), .highlight([object("C123"), object("C124")]))
+
+        XCTAssertEqual(self.parse("zoom"), .zoomBy(0, pane: nil), "nothing remembered: fit the view")
+        XCTAssertEqual(self.parse("zoom to fit"), .zoomBy(0, pane: nil))
+        XCTAssertEqual(self.parse("zoom to it"), .noSubject(.zoom))
+        XCTAssertEqual(self.parse("highlight it"), .noSubject(.highlight))
+        XCTAssertEqual(self.parse("R12"), .unrecognized, "no verb yet: a name alone waits")
+    }
+
+    /// "The nets between C48 and C50" is what the two share; "C48 and C50"
+    /// is both of them.
+    func testTwoThingsCanBeNamedTogether() {
+        XCTAssertEqual(parse("highlight the nets between C123 and R123"), .between(.highlight, object("C123"), object("R123")))
+        XCTAssertEqual(parse("highlight the net between capacitor 123 and R 123"), .between(.highlight, object("C123"), object("R123")))
+        XCTAssertEqual(parse("highlight what connects C123 and R12"), .between(.highlight, object("C123"), object("R12")))
+        XCTAssertEqual(parse("select the connections from C123 to R12"), .between(.select, object("C123"), object("R12")))
+        XCTAssertEqual(parse("zoom to the net between C123 and TP5"), .between(.zoom, object("C123"), object("TP5")))
+        XCTAssertEqual(parse("highlight the nets between C123 and C9"), .nothingNamed(said: "c9", family: nil), "a side nobody has is said back")
+        XCTAssertEqual(parse("highlight C123 and R12"), .highlight([object("C123"), object("R12")]))
+        XCTAssertEqual(parse("select C123, R12 and TP5"), .select([object("C123"), object("R12"), object("TP5")]))
+        XCTAssertEqual(parse("highlight the capacitors and R12"), .highlight([object("C123"), object("C124"), object("R12")]))
+        XCTAssertEqual(parse("zoom to C123 and R12"), .severalToFrame([object("C123"), object("R12")]), "framing takes one")
+    }
+
     /// Board layer views by name. "The bottom layer" is that side's layers;
     /// "the bottom", "the board bottom", "bottom view" is the side itself,
     /// seen from below — so it mirrors — and a mode alone takes the side that
@@ -525,6 +577,10 @@ final class HorizontalVoiceCommandTests: XCTestCase {
 
         control.run("show the board")
         XCTAssertEqual(control.message, "“show the board” — Showing the board.")
+        control.run("select it")
+        XCTAssertEqual(control.message, "“select it” — Selected VCC.", "the last thing named is remembered across sentences")
+        control.run("zoom")
+        XCTAssertTrue(control.message?.contains("VCC") == true, "a bare verb means it too: \(control.message ?? "")")
         control.run("what is the weather like today")
         XCTAssertEqual(control.message, "“what is the weather like today” — Not a command I know. Try “highlight C12”, “zoom to ground”, “show the board” or “sheet 2”.")
     }

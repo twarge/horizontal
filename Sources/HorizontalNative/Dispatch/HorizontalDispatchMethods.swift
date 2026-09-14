@@ -336,7 +336,7 @@ enum HorizontalDispatchMethods {
         .init(
             name: "zoom",
             summary: "Zoom a pane's view in or out about its centre. Live channel only.",
-            params: ["handle": "Live project handle.", "factor": "How much closer: 2 is twice as close, 0.5 twice as far. Default 2.",
+            params: ["handle": "Live project handle.", "factor": "How much closer: 2 is twice as close, 0.5 twice as far, 0 fits everything. Default 2.",
                      "pane": "board, schematic or threeD; omitted, the pane the user is working in."],
             handler: zoomBy
         ),
@@ -1020,8 +1020,8 @@ enum HorizontalDispatchMethods {
         let entry = try session.entry(for: params)
         let live = try liveDocument(entry)
         let factor = params.double("factor") ?? 2
-        guard factor.isFinite, factor > 0 else {
-            throw HorizontalDispatchError.invalidParams("factor must be a positive number: 2 is twice as close, 0.5 twice as far.")
+        guard factor.isFinite, factor >= 0 else {
+            throw HorizontalDispatchError.invalidParams("factor must be a number: 2 is twice as close, 0.5 twice as far, 0 fits everything.")
         }
         var pane: HorizontalPane?
         if let name = params.string("pane") {

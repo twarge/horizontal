@@ -445,10 +445,17 @@ the schematic on the thing's sheet, the board, and the 3D view, where the
 camera moves to look at the thing's footprint from the direction it was
 already looking. When none of the showing panes can show it, the default rule
 picks one and reveals it. Highlight is every view too: the 3D scene marks each
-highlighted component's model with a red, self-lit box and hangs a red lamp
-over it that falls on the board and the parts beside it (the first six
-highlighted parts get lamps; every one gets a box), so "highlight C50" is one
-highlight in the schematic, the board and the 3D board. The thing is resolved by
+highlighted component's model with a red, self-lit box inside a faint red halo
+— the spill of light on the board and the parts beside it, drawn rather than
+lit, because adding an `SCNLight` at runtime, even one, makes SceneKit's
+fragment shader ask for a light-indices buffer it never binds and Metal aborts
+the app on the next draw (`BoardSceneRenderSmokeTests` renders a real project
+offscreen under Metal API validation to keep that from coming back) — so
+"highlight C50" is one highlight in the schematic, the board and the 3D board.
+Selection is every view as well: the canvases' selected components wear a blue
+box in 3D, and a click on a part in the 3D view (shift or command to extend,
+empty space to clear) or a tap on the iPad selects it the way a click on the
+board does. The thing is resolved by
 `HorizontalSpokenMatcher`: a reference designator however it was said ("R18",
 "R 18", "resistor 18", "cap123"), a kind alone for all of it ("highlight the
 capacitors"), or a net name as people say it — "3.3 volts", "3.3V" and "3V3"
@@ -462,6 +469,16 @@ in Sherlock"). Transcription pads a command with words that were not said —
 the longest run of its words that names something exactly is taken instead. A
 settled fragment too short to be a command — "highlight", then a pause — waits
 for the next one.
+
+The conversation remembers. After "highlight C50", a bare verb or a pronoun
+means C50 — "zoom", "zoom to fit", "zoom to it", "select that" — and a bare
+name means the last verb again — "R12" is highlight R12. With nothing
+remembered, "zoom" and "zoom to fit" fit the whole view (`zoom` with a factor
+of 0), and "zoom to it" says there is nothing to zoom to yet. Two things can be
+named together: "highlight C48 and C50" (a comma reads as "and") is both, and
+"highlight the nets between C48 and C50" — also "what connects", "the
+connections from … to …" — is every net with a pin on both, found in the
+design index; zoom takes one thing, so several are a question back.
 
 Siri keeps three intents, all general, none with anything to publish: Show
 Panes — "show the board in Horizontal", "show me the schematic and 3D in

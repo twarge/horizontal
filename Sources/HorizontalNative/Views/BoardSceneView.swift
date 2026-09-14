@@ -259,6 +259,11 @@ struct BoardSceneView: View {
     /// Components to mark in the scene, by id — the same set the canvases
     /// highlight, so "highlight C50" is one highlight in every view.
     var highlightedComponentIDs: Set<String> = []
+    /// Components to mark as selected, by id — the canvases' selection.
+    var selectedComponentIDs: Set<String> = []
+    /// A click or tap on a part: its component id, and whether the click
+    /// extends the selection (shift or command). Nil id is empty space.
+    var onSelectComponent: ((String?, Bool) -> Void)? = nil
     @Binding var cameraState: HorizontalSceneCameraState?
     @State private var buildState: BoardSceneBuildState = .idle
 
@@ -283,6 +288,8 @@ struct BoardSceneView: View {
             silkscreenClipping: silkscreenClipping,
             revision: revision,
             highlightedComponentIDs: highlightedComponentIDs,
+            selectedComponentIDs: selectedComponentIDs,
+            onSelectComponent: onSelectComponent,
             cameraState: $cameraState,
             buildState: $buildState
         )
@@ -724,21 +731,39 @@ final class BoardSceneNodes: @unchecked Sendable {
                 packageIDs.insert(package.id.lowercased())
             }
         }
-        // A light per highlighted part lets it light its neighbours, but
-        // SceneKit pays per light per fragment, so "highlight the capacitors"
-        // gets boxes for all and lights for the first few.
-        var lightsLeft = Self.highlightLightBudget
+        mark(packageIDs: packageIDs, name: Self.highlightNodeName) { node in
+            Self.markBox(around: node, color: Self.highlightColor, alpha: 0.45, pad: 0.5, order: 10, halo: true)
+        }
+    }
+
+    /// Marks the packages of `componentIDs` as selected: a blue box, thinner
+    /// than the highlight's and without its halo, so both can show at once.
+    func applySelection(componentIDs: Set<String>) {
+        let wanted = Set(componentIDs.map { $0.lowercased() })
+        var packageIDs = Set<String>()
+        for package in board.packages {
+            if let componentID = package.componentID, wanted.contains(componentID.lowercased()) {
+                packageIDs.insert(package.id.lowercased())
+            }
+        }
+        mark(packageIDs: packageIDs, name: Self.selectionNodeName) { node in
+            Self.markBox(around: node, color: Self.selectionColor, alpha: 0.34, pad: 0.3, order: 11, halo: false)
+        }
+    }
+
+    /// Gives every package node in `packageIDs` a child named `name`, made by
+    /// `make`, and takes it away from every other package node.
+    private func mark(packageIDs: Set<String>, name: String, make: (SCNNode) -> SCNNode) {
         for group in [modelGroup, noPopulateModelGroup, placeholderModelGroup] {
             group.enumerateChildNodes { node, _ in
-                guard let name = node.name, let packageID = Self.packageID(fromNodeName: name) else {
+                guard let nodeName = node.name, let packageID = Self.packageID(fromNodeName: nodeName) else {
                     return
                 }
-                let existing = node.childNode(withName: Self.highlightNodeName, recursively: false)
+                let existing = node.childNode(withName: name, recursively: false)
                 if packageIDs.contains(packageID) {
                     if existing == nil {
-                        node.addChildNode(Self.highlightBox(around: node, lit: lightsLeft > 0))
+                        node.addChildNode(make(node))
                     }
-                    lightsLeft -= 1
                 } else {
                     existing?.removeFromParentNode()
                 }
@@ -746,14 +771,28 @@ final class BoardSceneNodes: @unchecked Sendable {
         }
     }
 
-    private static let highlightLightBudget = 6
+    /// The component a scene node belongs to — the node hit under a click or
+    /// a tap, walked up to its package node — by id, as the canvases know it.
+    func componentID(containing node: SCNNode) -> String? {
+        var current: SCNNode? = node
+        while let candidate = current {
+            if let name = candidate.name, let packageID = Self.packageID(fromNodeName: name) {
+                return board.packages.first { $0.id.lowercased() == packageID }?.componentID
+            }
+            current = candidate.parent
+        }
+        return nil
+    }
+
     private static let highlightColor = Color(red: 1.0, green: 0.16, blue: 0.10)
+    private static let selectionColor = Color(red: 0.25, green: 0.56, blue: 1.0)
+    private static let selectionNodeName = "selection"
 
     private static let highlightNodeName = "highlight"
 
     /// "package-<id>-model" and "package-<id>-placeholder" → the id. The id is
     /// a UUID with dashes of its own, so the split is at the last one.
-    private static func packageID(fromNodeName name: String) -> String? {
+    static func packageID(fromNodeName name: String) -> String? {
         guard name.hasPrefix("package-") else {
             return nil
         }
@@ -764,46 +803,57 @@ final class BoardSceneNodes: @unchecked Sendable {
         return String(rest[..<dash]).lowercased()
     }
 
-    /// A red, self-lit box around the part, and — when `lit` — a red lamp
-    /// above it that falls on the board and the parts beside it. The box is
-    /// unlit by the scene (`constant`) so it reads red whatever the lighting;
-    /// the earlier amber under the scene's warm light came out brown.
-    private static func highlightBox(around node: SCNNode, lit: Bool) -> SCNNode {
-        let (low, high) = node.boundingBox
-        let width = max(Double(high.x - low.x), 0.6) + 0.5
-        let height = max(Double(high.y - low.y), 0.4) + 0.5
-        let length = max(Double(high.z - low.z), 0.6) + 0.5
+    /// A self-lit box around the part in `color`, and — with `halo` — a larger,
+    /// fainter sphere around that, the spill of light on the board and the
+    /// parts beside it. The box is unlit by the scene (`constant`) so it reads
+    /// as its colour whatever the lighting; an earlier amber under the scene's
+    /// warm light came out brown.
+    ///
+    /// No SCNLight: adding one at runtime, even one, makes SceneKit's fragment
+    /// shader ask for a light-indices buffer it never binds, and Metal aborts
+    /// the app on the next draw (BoardSceneRenderSmokeTests reproduces it).
+    private static func markBox(around node: SCNNode, color: Color, alpha: Double, pad: Double, order: Int, halo: Bool) -> SCNNode {
+        var (low, high) = node.boundingBox
+        // An empty subtree reports no box at all; a NaN or infinite one would
+        // become a degenerate SCNBox, which Metal refuses to draw.
+        let extents = [low.x, low.y, low.z, high.x, high.y, high.z].map { Double($0) }
+        if extents.contains(where: { !$0.isFinite }) || high.x < low.x || high.y < low.y || high.z < low.z {
+            low = SCNVector3(-0.5, 0, -0.5)
+            high = SCNVector3(0.5, 0.6, 0.5)
+        }
+        let width = max(Double(high.x - low.x), 0.6) + pad
+        let height = max(Double(high.y - low.y), 0.4) + pad
+        let length = max(Double(high.z - low.z), 0.6) + pad
         let box = SCNBox(width: width, height: height, length: length, chamferRadius: 0.12)
-        let material = SCNMaterial()
-        material.lightingModel = .constant
-        material.diffuse.contents = horizonScenePlatformColor(highlightColor.opacity(0.45))
-        material.emission.contents = horizonScenePlatformColor(highlightColor.opacity(0.6))
-        material.isDoubleSided = true
-        material.writesToDepthBuffer = false
-        material.blendMode = .alpha
-        box.materials = [material]
+        box.materials = [Self.glowMaterial(color, alpha: alpha)]
         let boxNode = SCNNode(geometry: box)
-        boxNode.name = highlightNodeName
+        boxNode.name = halo ? highlightNodeName : selectionNodeName
         boxNode.position = SCNVector3(
             horizonSceneScalar(Double(low.x + high.x) / 2),
             horizonSceneScalar(Double(low.y + high.y) / 2),
             horizonSceneScalar(Double(low.z + high.z) / 2)
         )
-        boxNode.renderingOrder = 10
-        if lit {
-            let light = SCNLight()
-            light.type = .omni
-            light.color = horizonScenePlatformColor(highlightColor)
-            light.intensity = 1400
-            light.attenuationStartDistance = 0.5
-            light.attenuationEndDistance = max(width, length) * 4 + 8
-            light.castsShadow = false
-            let lampNode = SCNNode()
-            lampNode.light = light
-            lampNode.position = SCNVector3(0, horizonSceneScalar(height / 2 + 1.5), 0)
-            boxNode.addChildNode(lampNode)
+        boxNode.renderingOrder = order
+        if halo {
+            let sphere = SCNSphere(radius: max(width, length) * 0.9 + 1.5)
+            sphere.segmentCount = 24
+            sphere.materials = [Self.glowMaterial(color, alpha: 0.12)]
+            let haloNode = SCNNode(geometry: sphere)
+            haloNode.renderingOrder = order - 1
+            boxNode.addChildNode(haloNode)
         }
         return boxNode
+    }
+
+    private static func glowMaterial(_ color: Color, alpha: Double) -> SCNMaterial {
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.diffuse.contents = horizonScenePlatformColor(color.opacity(alpha))
+        material.emission.contents = horizonScenePlatformColor(color.opacity(min(alpha * 1.3, 1)))
+        material.isDoubleSided = true
+        material.writesToDepthBuffer = false
+        material.blendMode = .alpha
+        return material
     }
 
     func applyDisplayOptions(
@@ -1109,6 +1159,8 @@ private struct BoardSceneHostView: NSViewRepresentable {
     var silkscreenClipping: HorizontalSilkscreenClipping? = nil
     var revision: Int = 0
     var highlightedComponentIDs: Set<String> = []
+    var selectedComponentIDs: Set<String> = []
+    var onSelectComponent: ((String?, Bool) -> Void)? = nil
     @Binding var cameraState: HorizontalSceneCameraState?
     @Binding var buildState: BoardSceneBuildState
 
@@ -1199,9 +1251,19 @@ private struct BoardSceneHostView: NSViewRepresentable {
             nodes.applyHighlight(componentIDs: highlightedComponentIDs)
             coordinator.lastHighlighted = highlightedComponentIDs
         }
+        if sceneSwapped || coordinator.lastSelected != selectedComponentIDs {
+            nodes.applySelection(componentIDs: selectedComponentIDs)
+            coordinator.lastSelected = selectedComponentIDs
+        }
         let projectionChanged = coordinator.lastAppliedProjection != displayOptions.threeDProjection
         coordinator.lastAppliedProjection = displayOptions.threeDProjection
         nsView.onCameraStateChange = coordinator.updateCameraState
+        nsView.onPick = { [weak coordinator] node, extend in
+            guard let latest = coordinator?.latest, let onSelectComponent = latest.onSelectComponent else {
+                return
+            }
+            onSelectComponent(node.flatMap { nodes.componentID(containing: $0) }, extend)
+        }
         if sceneSwapped || projectionChanged || cameraState != coordinator.lastReportedState {
             nsView.applyCameraState(cameraState)
             coordinator.lastReportedState = cameraState
@@ -1224,6 +1286,7 @@ private struct BoardSceneHostView: NSViewRepresentable {
         var lastReportedState: HorizontalSceneCameraState?
         var lastAppliedProjection: HorizontalBoardSceneProjection?
         var lastHighlighted: Set<String>?
+        var lastSelected: Set<String>?
         var lastAppliedOptionsKey: BoardSceneAppliedOptionsKey?
         /// The view's values as of its last update, for a build that lands later.
         var latest: BoardSceneHostView?
@@ -1267,6 +1330,26 @@ private struct BoardSceneHostView: NSViewRepresentable {
         weak var panningCameraNode: SCNNode?
         var ignoresSceneMouseEvents = false
         var onCameraStateChange: ((HorizontalSceneCameraState?) -> Void)?
+        /// A click that did not drag: the node under it (nil for empty space)
+        /// and whether shift or command was down.
+        var onPick: ((SCNNode?, Bool) -> Void)?
+        private var clickStart: NSPoint?
+
+        /// Called from mouseUp: a click is a press and release within a few
+        /// points; anything further was a drag, which is the camera's.
+        private func finishClick(with event: NSEvent) {
+            guard let start = clickStart else {
+                return
+            }
+            clickStart = nil
+            let end = convert(event.locationInWindow, from: nil)
+            guard hypot(end.x - start.x, end.y - start.y) < 4 else {
+                return
+            }
+            let extend = event.modifierFlags.contains(.shift) || event.modifierFlags.contains(.command)
+            let node = hitTest(end, options: [.searchMode: SCNHitTestSearchMode.closest.rawValue, .ignoreHiddenNodes: true]).first?.node
+            onPick?(node, extend)
+        }
 
         private var requestedBackgroundColor: Color = HorizontalDefaultTheme.background
         private var requestedDisplayOptions = BoardDisplayOptions()
@@ -1389,6 +1472,7 @@ private struct BoardSceneHostView: NSViewRepresentable {
             guard !ignoresSceneMouseEvents else {
                 return
             }
+            clickStart = convert(event.locationInWindow, from: nil)
             super.mouseDown(with: event)
         }
 
@@ -1429,10 +1513,12 @@ private struct BoardSceneHostView: NSViewRepresentable {
 
         override func mouseUp(with event: NSEvent) {
             guard !ignoresSceneMouseEvents else {
+                clickStart = nil
                 return
             }
             super.mouseUp(with: event)
             reportCameraState()
+            finishClick(with: event)
         }
 
         override func rightMouseUp(with event: NSEvent) {
@@ -1618,6 +1704,8 @@ private struct BoardSceneHostView: UIViewRepresentable {
     var silkscreenClipping: HorizontalSilkscreenClipping? = nil
     var revision: Int = 0
     var highlightedComponentIDs: Set<String> = []
+    var selectedComponentIDs: Set<String> = []
+    var onSelectComponent: ((String?, Bool) -> Void)? = nil
     @Binding var cameraState: HorizontalSceneCameraState?
     @Binding var buildState: BoardSceneBuildState
 
@@ -1628,6 +1716,7 @@ private struct BoardSceneHostView: UIViewRepresentable {
     func makeUIView(context: Context) -> TouchSceneView {
         let view = TouchSceneView()
         view.allowsCameraControl = true
+        view.enablePicking()
         view.autoenablesDefaultLighting = true
         view.backgroundColor = horizonScenePlatformColor(
             horizonSceneEffectiveBackgroundColor(backgroundColor, displayOptions: displayOptions)
@@ -1698,9 +1787,19 @@ private struct BoardSceneHostView: UIViewRepresentable {
             nodes.applyHighlight(componentIDs: highlightedComponentIDs)
             coordinator.lastHighlighted = highlightedComponentIDs
         }
+        if sceneSwapped || coordinator.lastSelected != selectedComponentIDs {
+            nodes.applySelection(componentIDs: selectedComponentIDs)
+            coordinator.lastSelected = selectedComponentIDs
+        }
         let projectionChanged = coordinator.lastAppliedProjection != displayOptions.threeDProjection
         coordinator.lastAppliedProjection = displayOptions.threeDProjection
         uiView.onCameraStateChange = coordinator.updateCameraState
+        uiView.onPick = { [weak coordinator] node, extend in
+            guard let latest = coordinator?.latest, let onSelectComponent = latest.onSelectComponent else {
+                return
+            }
+            onSelectComponent(node.flatMap { nodes.componentID(containing: $0) }, extend)
+        }
         if sceneSwapped || cameraSwapped || projectionChanged || cameraState != coordinator.lastReportedState {
             uiView.applyCameraState(cameraState)
             coordinator.lastReportedState = cameraState
@@ -1713,6 +1812,7 @@ private struct BoardSceneHostView: UIViewRepresentable {
         var lastReportedState: HorizontalSceneCameraState?
         var lastAppliedProjection: HorizontalBoardSceneProjection?
         var lastHighlighted: Set<String>?
+        var lastSelected: Set<String>?
         var latest: BoardSceneHostView?
 
         init(cameraState: Binding<HorizontalSceneCameraState?>) {
@@ -1750,6 +1850,31 @@ private struct BoardSceneHostView: UIViewRepresentable {
 
     final class TouchSceneView: SCNView {
         var onCameraStateChange: ((HorizontalSceneCameraState?) -> Void)?
+        /// A tap: the node under it (nil for empty space). Extending a
+        /// selection is the second value; a tap never does.
+        var onPick: ((SCNNode?, Bool) -> Void)?
+        private var tapRecognizer: UITapGestureRecognizer?
+
+        /// Installs the tap once; SceneKit's own camera gestures keep working
+        /// because a tap that becomes a pan or a pinch is not a tap.
+        func enablePicking() {
+            guard tapRecognizer == nil else {
+                return
+            }
+            let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+            recognizer.cancelsTouchesInView = false
+            addGestureRecognizer(recognizer)
+            tapRecognizer = recognizer
+        }
+
+        @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended else {
+                return
+            }
+            let point = recognizer.location(in: self)
+            let node = hitTest(point, options: [.searchMode: SCNHitTestSearchMode.closest.rawValue, .ignoreHiddenNodes: true]).first?.node
+            onPick?(node, false)
+        }
 
         func applyCameraState(_ state: HorizontalSceneCameraState?) {
             guard let state,
