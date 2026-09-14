@@ -178,25 +178,58 @@ struct HorizontalIPadProjectView: View {
         } inspector: {
             rightPaneContent
         }
-        // DocumentGroup supplies the navigation bar but leaves its title menu empty
-        // unless the content names the document, which is why the bar showed a bare
-        // chevron. `navigationDocument` also gives the menu the file's icon and the
-        // usual Rename/Move/Share entries.
-        .navigationTitle(documentTitle)
+        // DocumentGroup supplies the navigation bar, and with `navigationDocument`
+        // the title too: the file's name, the icon, and the Rename/Move/Share
+        // menu. The name is the document's own and follows a rename. Naming it
+        // here as well, from the URL handed over at open time, fought that: the
+        // bar showed the right name and then went back to the one this view
+        // had been given.
         .navigationBarTitleDisplayMode(.inline)
         .modifier(NavigationDocumentModifier(url: fileURL))
         .overlay(alignment: .bottom) {
             HorizontalVoiceTranscriptOverlay(control: voiceControl)
         }
         .toolbar {
-            // One ToolbarItem so everything shares a single glass island — separate
-            // items each get their own capsule. (The pane picker never appears without
-            // a schematic or board, so this one condition covers every control.)
+            // The pane picker never appears without a schematic or board, so
+            // this one condition covers every control.
             if let project, project.board != nil || project.schematic != nil {
-                ToolbarItem(placement: .topBarTrailing) {
-                    toolbarIsland(for: project)
+                if isCompact {
+                    // A phone's top bar is the back button and the title menu,
+                    // and the trailing space left beside a title of any length
+                    // is less than the controls need. iOS folds a trailing item
+                    // that does not fit into an overflow menu, where the whole
+                    // island came out as one submenu named after its first
+                    // button — "Listen for a Command" and nothing else. The
+                    // bottom bar has the full width, so the controls go there,
+                    // each in its own capsule with the picker in the middle.
+                    if HorizontalVoiceControl.isAvailable {
+                        ToolbarItem(placement: .bottomBar) {
+                            HorizontalVoiceControlButton(control: voiceControl)
+                                .labelStyle(.iconOnly)
+                        }
+                        .sharedBackgroundVisibility(toolbarBackgroundVisibility)
+                        ToolbarSpacer(.flexible, placement: .bottomBar)
+                    }
+                    if availablePanes(for: project).count > 1 {
+                        ToolbarItem(placement: .bottomBar) {
+                            panePicker(for: project)
+                                .labelStyle(.iconOnly)
+                        }
+                        .sharedBackgroundVisibility(toolbarBackgroundVisibility)
+                        ToolbarSpacer(.flexible, placement: .bottomBar)
+                    }
+                    ToolbarItem(placement: .bottomBar) {
+                        compactMoreMenu(for: project)
+                    }
+                    .sharedBackgroundVisibility(toolbarBackgroundVisibility)
+                } else {
+                    // One ToolbarItem so everything shares a single glass island —
+                    // separate items each get their own capsule.
+                    ToolbarItem(placement: .topBarTrailing) {
+                        regularToolbarIsland(for: project)
+                    }
+                    .sharedBackgroundVisibility(toolbarBackgroundVisibility)
                 }
-                .sharedBackgroundVisibility(appearanceSettings.isToolbarTransparent ? .hidden : .automatic)
             }
         }
         .sheet(isPresented: $settingsSheetPresented) {
@@ -293,19 +326,6 @@ struct HorizontalIPadProjectView: View {
             return
         }
         loadProject()
-    }
-
-    /// Name shown in the DocumentGroup navigation bar. The file on disk wins; a
-    /// document opened from an in-memory archive falls back to its suggested filename,
-    /// then to the project's own name.
-    private var documentTitle: String {
-        if let fileURL {
-            return fileURL.deletingPathExtension().lastPathComponent
-        }
-        if let suggested = document.archive.suggestedFilename {
-            return (suggested as NSString).deletingPathExtension
-        }
-        return project?.name ?? "Horizontal"
     }
 
     /// The active right-slide-over pane — the selection inspector or the export panel
@@ -442,65 +462,52 @@ struct HorizontalIPadProjectView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// All the top-bar controls in one view, so the single ToolbarItem hosting
-    /// it renders them as one shared glass island — spacing alone separates the
-    /// controls.
-    @ViewBuilder
-    private func toolbarIsland(for project: HorizontalProject) -> some View {
-        if isCompact {
-            compactToolbarIsland(for: project)
-        } else {
-            regularToolbarIsland(for: project)
-        }
+    private var toolbarBackgroundVisibility: Visibility {
+        appearanceSettings.isToolbarTransparent ? .hidden : .automatic
     }
 
     /// A phone's bar has room for what is used while looking at the canvas —
-    /// the microphone and the pane picker — and folds the rest into a menu.
-    private func compactToolbarIsland(for project: HorizontalProject) -> some View {
-        HStack(spacing: 12) {
-            if HorizontalVoiceControl.isAvailable {
-                HorizontalVoiceControlButton(control: voiceControl)
-            }
-            if availablePanes(for: project).count > 1 {
-                panePicker(for: project)
-            }
-            Menu {
-                Button {
-                    rightPane = rightPane == .inspector ? nil : .inspector
-                } label: {
-                    Label("Inspector", systemImage: "sidebar.trailing")
-                }
-                Button {
-                    rightPane = rightPane == .export ? nil : .export
-                } label: {
-                    Label("Export", systemImage: "square.and.arrow.up")
-                }
-                if project.board != nil {
-                    Button {
-                        rulesSheetPresented = true
-                    } label: {
-                        Label("Board Rules", systemImage: "checklist")
-                    }
-                }
-                Divider()
-                Button {
-                    settingsSheetPresented = true
-                } label: {
-                    Label("Settings", systemImage: "gear")
-                }
-                Button {
-                    appearanceSettings.readOnlyOperationBinding().wrappedValue = !isReadOnly
-                } label: {
-                    Label(isReadOnly ? "Allow Editing" : "Make Read-Only", systemImage: isReadOnly ? "lock.open" : "lock.fill")
-                }
-                .disabled(HorizontalOperationDefaults.isReadOnlyOperationForced)
+    /// the microphone and the pane picker — and folds the rest into this menu.
+    private func compactMoreMenu(for project: HorizontalProject) -> some View {
+        Menu {
+            Button {
+                rightPane = rightPane == .inspector ? nil : .inspector
             } label: {
-                Label("More", systemImage: "ellipsis.circle")
+                Label("Inspector", systemImage: "sidebar.trailing")
             }
+            Button {
+                rightPane = rightPane == .export ? nil : .export
+            } label: {
+                Label("Export", systemImage: "square.and.arrow.up")
+            }
+            if project.board != nil {
+                Button {
+                    rulesSheetPresented = true
+                } label: {
+                    Label("Board Rules", systemImage: "checklist")
+                }
+            }
+            Divider()
+            Button {
+                settingsSheetPresented = true
+            } label: {
+                Label("Settings", systemImage: "gear")
+            }
+            Button {
+                appearanceSettings.readOnlyOperationBinding().wrappedValue = !isReadOnly
+            } label: {
+                Label(isReadOnly ? "Allow Editing" : "Make Read-Only", systemImage: isReadOnly ? "lock.open" : "lock.fill")
+            }
+            .disabled(HorizontalOperationDefaults.isReadOnlyOperationForced)
+        } label: {
+            Label("More", systemImage: "ellipsis.circle")
+                .labelStyle(.iconOnly)
         }
-        .labelStyle(.iconOnly)
     }
 
+    /// All the top-bar controls in one view, so the single ToolbarItem hosting
+    /// it renders them as one shared glass island — spacing alone separates the
+    /// controls.
     private func regularToolbarIsland(for project: HorizontalProject) -> some View {
         HStack(spacing: 14) {
             readOnlyLockButton
