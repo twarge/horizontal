@@ -37,7 +37,8 @@ enum HorizontalVoiceCommand: Equatable {
     case select([HorizontalDesignObject])
     case clearHighlight
     case clearSelection
-    case zoom(HorizontalDesignObject, pane: HorizontalPane?)
+    /// One thing framed, or several framed together.
+    case zoom([HorizontalDesignObject], pane: HorizontalPane?)
     case showPanes(Set<HorizontalPane>)
     case hidePanes(Set<HorizontalPane>)
     case showSheet(HorizontalSheetRequest)
@@ -51,12 +52,11 @@ enum HorizontalVoiceCommand: Equatable {
     case nothingNamed(said: String, family: HorizontalObjectFamily?)
     /// The verb was clear, and several things answer to the name.
     case ambiguous([HorizontalDesignObject], said: String)
-    /// The nets shared by two parts: "the nets between C48 and C50".
-    case between(HorizontalVoiceVerb, HorizontalDesignObject, HorizontalDesignObject)
+    /// The nets connecting these parts to each other: "the nets between C48
+    /// and C50", "the nets connecting them" after three were named.
+    case among(HorizontalVoiceVerb, [HorizontalDesignObject])
     /// A verb that wants a thing, with nothing said and nothing remembered.
     case noSubject(HorizontalVoiceVerb)
-    /// "Zoom" after several things were named: framing takes one.
-    case severalToFrame([HorizontalDesignObject])
     /// Not a command — or not yet a whole one, if more is coming.
     case unrecognized
 }
@@ -121,7 +121,7 @@ enum HorizontalVoiceCommandParser {
         }
         if let rest = remainder(after: zoomVerbs, in: text) {
             let (name, pane) = paneSuffix(in: rest)
-            return resolve(name, vocabulary: vocabulary, many: false) { .zoom($0[0], pane: pane) }
+            return resolve(name, vocabulary: vocabulary, many: true) { .zoom($0, pane: pane) }
         }
         if let rest = remainder(after: selectVerbs, in: text) {
             return resolve(rest, vocabulary: vocabulary, many: true) { .select($0) }
@@ -132,9 +132,9 @@ enum HorizontalVoiceCommandParser {
         // A name on its own, after a verb was used: the same verb again.
         // "Highlight C123", then "R12", is two highlights.
         if let verb = vocabulary.previousVerb {
-            let again = resolve(text, vocabulary: vocabulary, many: verb != .zoom) { command(verb, $0) }
+            let again = resolve(text, vocabulary: vocabulary, many: true) { command(verb, $0) }
             switch again {
-            case .highlight, .select, .zoom, .ambiguous, .severalToFrame:
+            case .highlight, .select, .zoom, .ambiguous:
                 return again
             default:
                 break
@@ -143,11 +143,11 @@ enum HorizontalVoiceCommandParser {
         return .unrecognized
     }
 
-    private static func command(_ verb: HorizontalVoiceVerb, _ objects: [HorizontalDesignObject]) -> HorizontalVoiceCommand {
+    private static func command(_ verb: HorizontalVoiceVerb, _ objects: [HorizontalDesignObject], pane: HorizontalPane? = nil) -> HorizontalVoiceCommand {
         switch verb {
         case .highlight: .highlight(objects)
         case .select: .select(objects)
-        case .zoom: objects.count == 1 ? .zoom(objects[0], pane: nil) : .severalToFrame(objects)
+        case .zoom: .zoom(objects, pane: pane)
         }
     }
 
@@ -155,10 +155,7 @@ enum HorizontalVoiceCommandParser {
     private static func previous(_ verb: HorizontalVoiceVerb, vocabulary: HorizontalVoiceVocabulary, pane: HorizontalPane? = nil) -> HorizontalVoiceCommand {
         let subject = vocabulary.previousSubject
         guard !subject.isEmpty else { return .noSubject(verb) }
-        switch verb {
-        case .zoom: return subject.count == 1 ? .zoom(subject[0], pane: pane) : .severalToFrame(subject)
-        default: return command(verb, subject)
-        }
+        return command(verb, subject, pane: pane)
     }
 
     private static let pronouns: Set<String> = ["it", "that", "this", "them", "those", "these", "the same", "same", "again", "that one", "this one"]
@@ -513,15 +510,23 @@ enum HorizontalVoiceCommandParser {
         if pronouns.contains(name) || name.isEmpty && !vocabulary.previousSubject.isEmpty {
             return previous(verb, vocabulary: vocabulary)
         }
-        // "The nets between C48 and C50": what the two share. "C48 and C50":
-        // both. Either side is resolved on its own, and has to be one thing.
-        if let pair = betweenPair(in: name) {
-            switch (one(pair.a, vocabulary: vocabulary), one(pair.b, vocabulary: vocabulary)) {
-            case (.success(let a), .success(let b)):
-                return .between(verb, a, b)
-            case (.failure(let problem), _), (_, .failure(let problem)):
-                return HorizontalVoiceCommand(problem)
+        // "The nets between C48 and C50", "the nets connecting them": what
+        // those parts share. Each part is resolved on its own and has to be
+        // one thing; a pronoun is the parts named last. "C48 and C50" alone
+        // is both parts.
+        if let parts = amongParts(in: name) {
+            if parts.count == 1, pronouns.contains(parts[0]) {
+                let subject = vocabulary.previousSubject
+                return subject.count >= 2 ? .among(verb, subject) : (subject.isEmpty ? .noSubject(verb) : .among(verb, subject))
             }
+            var objects: [HorizontalDesignObject] = []
+            for part in parts {
+                switch one(part, vocabulary: vocabulary) {
+                case .success(let object): objects.append(object)
+                case .failure(let problem): return HorizontalVoiceCommand(problem)
+                }
+            }
+            return objects.count >= 2 ? .among(verb, objects) : .nothingNamed(said: name, family: nil)
         }
         if name.contains(" and "), !name.hasPrefix("between") {
             let parts = name.components(separatedBy: " and ").map { withoutArticles($0) }.filter { !$0.isEmpty }
@@ -538,7 +543,7 @@ enum HorizontalVoiceCommandParser {
                     union.append(contentsOf: found.filter { !union.contains($0) })
                 }
                 if whole, !union.isEmpty {
-                    return many || union.count == 1 ? make(union) : .severalToFrame(union)
+                    return make(union)
                 }
             }
         }
@@ -582,22 +587,34 @@ enum HorizontalVoiceCommandParser {
         }
     }
 
-    /// "the nets between A and B", "net from A to B", "what connects A and B",
-    /// "connections between A and B": the two things, as said.
-    static func betweenPair(in text: String) -> (a: String, b: String)? {
-        let pattern = "^(?:what connects |what joins |the |all |)(?:nets?|connections?|wires?|signals?|traces?|links?)?\\s*(?:between|from|connecting|linking|joining|shared by)\\s+(.+?)\\s+(?:and|to|with)\\s+(.+)$"
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-              let aRange = Range(match.range(at: 1), in: text), let bRange = Range(match.range(at: 2), in: text) else {
-            // "what connects A and B" with no keyword between the things.
-            if let regex = try? NSRegularExpression(pattern: "^what (?:connects|joins|links) (.+?) (?:and|to|with) (.+)$"),
-               let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-               let aRange = Range(match.range(at: 1), in: text), let bRange = Range(match.range(at: 2), in: text) {
-                return (String(text[aRange]), String(text[bRange]))
+    /// "the nets between A and B", "nets from A to B", "what connects A, B and
+    /// C", "the connections among them": the things named, as said — or one
+    /// pronoun, for the things named last.
+    static func amongParts(in text: String) -> [String]? {
+        let patterns = [
+            "^(?:what connects |what joins |the |all |)(?:nets?|connections?|wires?|signals?|traces?|links?)?\\s*(?:between|from|connecting|linking|joining|shared by|among|amongst)\\s+(.+)$",
+            "^what (?:connects|joins|links) (.+)$",
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                  let range = Range(match.range(at: 1), in: text) else {
+                continue
             }
-            return nil
+            let rest = String(text[range])
+            if pronouns.contains(rest) {
+                return [rest]
+            }
+            var parts = rest.components(separatedBy: " and ")
+            if parts.count == 1 {
+                parts = rest.components(separatedBy: " to ")
+            }
+            if parts.count == 1 {
+                parts = rest.components(separatedBy: " with ")
+            }
+            return parts.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         }
-        return (String(text[aRange]), String(text[bRange]))
+        return nil
     }
 
     /// Exactly one thing for `said`, or the command that says why not.

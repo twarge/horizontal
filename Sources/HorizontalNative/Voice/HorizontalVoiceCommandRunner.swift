@@ -28,9 +28,9 @@ enum HorizontalVoiceCommandRunner {
         case .clearSelection:
             try HorizontalCommandTarget.clearSelection(in: target)
             return "Selection cleared."
-        case .zoom(let object, let pane):
-            let framed = try HorizontalCommandTarget.frame(object, pane: pane, in: target)
-            return framed.isEmpty ? "Zoomed to \(object.name)." : "Zoomed to \(object.name) in \(list(Set(framed)))."
+        case .zoom(let objects, let pane):
+            let framed = try HorizontalCommandTarget.frame(objects, pane: pane, in: target)
+            return framed.isEmpty ? "Zoomed to \(list(objects))." : "Zoomed to \(list(objects)) in \(list(Set(framed)))."
         case .showPanes(let panes):
             try HorizontalCommandTarget.showPanes(panes, in: target)
             return "Showing \(list(panes))."
@@ -54,30 +54,25 @@ enum HorizontalVoiceCommandRunner {
                 return pane.map { "Fit \(list([$0]))." } ?? "Fit the view."
             }
             return factor > 1 ? "Zoomed in." : "Zoomed out."
-        case .between(let verb, let a, let b):
-            let nets = HorizontalCommandTarget.netsBetween(a, b, in: target)
+        case .among(let verb, let parts):
+            let nets = HorizontalCommandTarget.netsAmong(parts, in: target)
             guard !nets.isEmpty else {
-                return "Nothing connects \(a.name) and \(b.name)."
+                return "Nothing connects \(list(parts))."
             }
             switch verb {
             case .highlight:
                 try HorizontalCommandTarget.highlight(nets, in: target)
-                return "Highlighted \(list(nets)) between \(a.name) and \(b.name)."
+                return "Highlighted \(list(nets)) between \(list(parts))."
             case .select:
                 try HorizontalCommandTarget.select(nets, in: target)
                 return "Selected \(list(nets))."
             case .zoom:
-                guard nets.count == 1 else {
-                    return "\(a.name) and \(b.name) share \(list(nets)). Zoom to which one?"
-                }
-                let framed = try HorizontalCommandTarget.frame(nets[0], pane: nil, in: target)
-                return framed.isEmpty ? "Zoomed to \(nets[0].name)." : "Zoomed to \(nets[0].name) in \(list(Set(framed)))."
+                let framed = try HorizontalCommandTarget.frame(nets, pane: nil, in: target)
+                return framed.isEmpty ? "Zoomed to \(list(nets))." : "Zoomed to \(list(nets)) in \(list(Set(framed)))."
             }
         case .noSubject(let verb):
             let what = verb == .zoom ? "zoom to" : (verb == .select ? "select" : "highlight")
             return "Nothing to \(what) yet. Name something first."
-        case .severalToFrame(let objects):
-            return "That is \(list(objects)). Zoom to which one?"
         case .showSheet(let request):
             let sheet = try HorizontalCommandTarget.showSheet(request, in: target)
             return sheet.name.isEmpty ? "Sheet \(sheet.index)." : "Sheet \(sheet.index), \(sheet.name)."

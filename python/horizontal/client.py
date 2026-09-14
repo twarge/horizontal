@@ -523,7 +523,8 @@ class Project:
 
     # Live documents only: the app's canvases.
 
-    def zoom_to(self, refdes: str | None = None, net: str | None = None, pane: str | None = None, margin_mm: float = 3) -> dict[str, Any]:
+    def zoom_to(self, refdes: str | None = None, net: str | None = None, pane: str | None = None, margin_mm: float = 3,
+                components: list[str] | None = None, nets: list[str] | None = None) -> dict[str, Any]:
         """Frame a component or net in the app's board or schematic pane; pane "all" frames it in every
         pane that is showing and can show it, the 3D view included."""
         params: dict[str, Any] = {"margin_mm": margin_mm}
@@ -533,6 +534,10 @@ class Project:
             params["net"] = net
         if pane is not None:
             params["pane"] = pane
+        if components:
+            params["components"] = list(components)
+        if nets:
+            params["nets"] = list(nets)
         return self._call("zoom_to", **params)
 
     def render_viewport(self, pane: str = "board", dpi: float = 150, max_pixels: int = 4096, output_path: str | Path | None = None) -> bytes | Path:

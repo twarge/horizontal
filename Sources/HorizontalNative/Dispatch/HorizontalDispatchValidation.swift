@@ -45,7 +45,9 @@ enum HorizontalDispatchValidation {
         }
         if method == "get_net" { try exactlyOne(params, keys: ["name", "id"]) }
         if method == "get_component" { try exactlyOne(params, keys: ["refdes", "id"]) }
-        if method == "zoom_to" { try exactlyOne(params, keys: ["refdes", "net"]) }
+        if method == "zoom_to", ["refdes", "net", "components", "nets"].allSatisfy({ params[$0] == nil }) {
+            throw HorizontalDispatchError.invalidParams("zoom_to needs refdes or net, or components and nets.")
+        }
     }
 
     static func number(_ value: Any, key: String, integer: Bool = false) throws {

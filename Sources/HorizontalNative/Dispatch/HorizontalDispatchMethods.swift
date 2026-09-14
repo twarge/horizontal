@@ -386,7 +386,9 @@ enum HorizontalDispatchMethods {
             summary: "Frame a component or net in the app's board or schematic pane. Live channel only.",
             params: [
                 "handle": "Live project handle.",
-                "refdes": "Component to frame.",
+                "refdes": "Component to frame. Or \"components\": several, framed together.",
+                "components": "Reference designators to frame together.",
+                "nets": "Net names to frame together.",
                 "net": "Net to frame (alternative to refdes).",
                 "pane": "board or schematic to frame in; omitted, the board when the component is placed there, else the schematic. \"all\" frames it in every pane that is showing and can show it, the 3D view included, or in the default pane when none can.",
                 "margin_mm": "Space around the target (default 3)."
@@ -1202,88 +1204,145 @@ enum HorizontalDispatchMethods {
         }
     }
 
-    /// The rectangle a component or net occupies in a pane, for zoom-to.
-    private static func targetRect(_ params: JSONDictionary, entry: HorizontalDispatchProjectEntry, pane override: HorizontalPane?) throws -> (rect: HorizontalRect, pane: HorizontalPane, sheetID: String?, blockID: String?, label: String, side: HorizontalBoardSide?) {
+    typealias ZoomTarget = (rect: HorizontalRect, pane: HorizontalPane, sheetID: String?, blockID: String?, label: String, side: HorizontalBoardSide?)
+    private typealias ZoomPiece = (rect: HorizontalRect, sheetID: String?, blockID: String?, label: String, side: HorizontalBoardSide?)
+
+    /// The rectangle the request's components and nets occupy in a pane, for
+    /// zoom-to: one thing (`refdes`, `net`) or several (`components`, `nets`),
+    /// framed together. On the schematic several things may sit on different
+    /// sheets, so the sheet holding the most of them is the one framed. A
+    /// thing the pane cannot show is skipped when another can be; only when
+    /// none can is the first reason thrown.
+    private static func targetRect(_ params: JSONDictionary, entry: HorizontalDispatchProjectEntry, pane override: HorizontalPane?) throws -> ZoomTarget {
         let index = entry.index
         let margin = (params.double("margin_mm") ?? 3) * 1_000_000
-        if let refdes = params.string("refdes") {
-            let component = try HorizontalDispatchValidation.component(refdes, index: index)
-            let wanted = try override ?? pane(params, default: component.boardPlacement != nil ? .board : .schematic)
-            if wanted == .board {
-                guard let placement = component.boardPlacement, let board = entry.project.board else {
-                    throw HorizontalDispatchError.notFound("\(component.refdes) is not placed on the board.")
-                }
-                // The package's pads on the board, or a box around its origin.
-                let packageID: String? = board.packages.first { $0.componentID?.lowercased() == component.id }?.id.lowercased()
-                var points: [HorizontalPoint] = []
-                if let packageID {
-                    let prefix = packageID + "/"
-                    for pad in board.packagePads where pad.id.lowercased().hasPrefix(prefix) {
-                        points.append(contentsOf: pad.vertices)
-                    }
-                }
-                if points.isEmpty {
-                    points = [placement.position]
-                }
-                var rect = HorizontalRect(points: points)
-                if rect.isEmpty {
-                    rect = HorizontalRect(center: placement.position, size: 2_000_000)
-                }
-                return (expand(rect, by: margin), .board, nil, nil, component.refdes, placement.bottom ? .bottom : .top)
-            }
-            guard let symbol = component.symbolPlacements.first else {
-                throw HorizontalDispatchError.notFound("\(component.refdes) has no symbol on any sheet.")
-            }
-            let rect = HorizontalRect(center: symbol.position, size: 20_000_000)
-            return (expand(rect, by: margin), .schematic, symbol.sheetID, symbol.blockID, component.refdes, nil)
+        let refdesList = (params["components"] as? [Any])?.map { "\($0)" } ?? params.string("refdes").map { [$0] } ?? []
+        let netList = (params["nets"] as? [Any])?.map { "\($0)" } ?? params.string("net").map { [$0] } ?? []
+        guard !refdesList.isEmpty || !netList.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("Pass \"refdes\" or \"net\", or \"components\" and \"nets\".")
         }
-        if let netName = params.string("net") {
-            let net = try HorizontalDispatchValidation.net(netName, index: index)
-            let wanted = try override ?? pane(params, default: .board)
-            if wanted == .board, let board = entry.project.board {
-                var points: [HorizontalPoint] = []
-                for pad in board.packagePads where pad.netID?.lowercased() == net.id {
+        let wanted: HorizontalPane
+        if let override {
+            wanted = override
+        } else if let first = refdesList.first {
+            let component = try HorizontalDispatchValidation.component(first, index: index)
+            wanted = try pane(params, default: component.boardPlacement != nil ? .board : .schematic)
+        } else {
+            wanted = try pane(params, default: .board)
+        }
+        var pieces: [ZoomPiece] = []
+        var firstError: Error?
+        for refdes in refdesList {
+            do {
+                pieces.append(try componentPiece(refdes, in: wanted, entry: entry, margin: margin))
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+        for name in netList {
+            do {
+                pieces.append(try netPiece(name, in: wanted, entry: entry, margin: margin))
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+        guard !pieces.isEmpty else {
+            throw firstError ?? HorizontalDispatchError.notFound("Nothing to frame.")
+        }
+        if wanted == .schematic {
+            let groups = Dictionary(grouping: pieces) { "\($0.blockID ?? "")/\($0.sheetID ?? "")" }
+            if let best = groups.max(by: { $0.value.count == $1.value.count ? $0.key > $1.key : $0.value.count < $1.value.count }) {
+                pieces = best.value
+            }
+        }
+        var rect = pieces[0].rect
+        for piece in pieces.dropFirst() {
+            rect = HorizontalRect(points: [
+                HorizontalPoint(x: min(rect.minX, piece.rect.minX), y: min(rect.minY, piece.rect.minY)),
+                HorizontalPoint(x: max(rect.maxX, piece.rect.maxX), y: max(rect.maxY, piece.rect.maxY)),
+            ])
+        }
+        let sides = Set(pieces.compactMap(\.side))
+        return (rect, wanted, pieces[0].sheetID, pieces[0].blockID, pieces.map(\.label).joined(separator: ", "),
+                sides.count == 1 ? sides.first : nil)
+    }
+
+    private static func componentPiece(_ refdes: String, in wanted: HorizontalPane, entry: HorizontalDispatchProjectEntry, margin: Double) throws -> ZoomPiece {
+        let index = entry.index
+        let component = try HorizontalDispatchValidation.component(refdes, index: index)
+        if wanted == .board {
+            guard let placement = component.boardPlacement, let board = entry.project.board else {
+                throw HorizontalDispatchError.notFound("\(component.refdes) is not placed on the board.")
+            }
+            // The package's pads on the board, or a box around its origin.
+            let packageID: String? = board.packages.first { $0.componentID?.lowercased() == component.id }?.id.lowercased()
+            var points: [HorizontalPoint] = []
+            if let packageID {
+                let prefix = packageID + "/"
+                for pad in board.packagePads where pad.id.lowercased().hasPrefix(prefix) {
                     points.append(contentsOf: pad.vertices)
                 }
-                for segment in board.tracks where segment.netID?.lowercased() == net.id {
-                    points.append(segment.from)
-                    points.append(segment.to)
-                }
-                for segment in board.airwires where segment.netID?.lowercased() == net.id {
-                    points.append(segment.from)
-                    points.append(segment.to)
-                }
-                guard let first = points.first else {
-                    throw HorizontalDispatchError.notFound("\(net.name) has nothing on the board.")
-                }
-                var rect = HorizontalRect(points: points)
-                if rect.isEmpty {
-                    rect = HorizontalRect(center: first, size: 2_000_000)
-                }
-                return (expand(rect, by: margin), .board, nil, nil, net.name, nil)
             }
-            // Schematic: the sheet holding the most of the net's pins.
-            var bySheet = [String: [HorizontalPoint]]()
-            for pin in net.pins {
-                guard let component = index.component(id: pin.componentID) else {
-                    continue
-                }
-                for placement in component.symbolPlacements {
-                    bySheet["\(placement.blockID ?? "")/\(placement.sheetID)", default: []].append(placement.position)
-                }
+            if points.isEmpty {
+                points = [placement.position]
             }
-            guard let best = bySheet.sorted(by: { $0.value.count == $1.value.count ? $0.key < $1.key : $0.value.count > $1.value.count }).first, let first = best.value.first else {
-                throw HorizontalDispatchError.notFound("\(net.name) has no symbols on any sheet.")
-            }
-            let points: [HorizontalPoint] = best.value
-            let sheet = index.sheets.first { "\($0.blockID ?? "")/\($0.id)" == best.key }
             var rect = HorizontalRect(points: points)
             if rect.isEmpty {
-                rect = HorizontalRect(center: first, size: 20_000_000)
+                rect = HorizontalRect(center: placement.position, size: 2_000_000)
             }
-            return (expand(rect, by: margin + 10_000_000), .schematic, sheet?.id, sheet?.blockID, net.name, nil)
+            return (expand(rect, by: margin), nil, nil, component.refdes, placement.bottom ? .bottom : .top)
         }
-        throw HorizontalDispatchError.invalidParams("Pass \"refdes\" or \"net\".")
+        guard let symbol = component.symbolPlacements.first else {
+            throw HorizontalDispatchError.notFound("\(component.refdes) has no symbol on any sheet.")
+        }
+        let rect = HorizontalRect(center: symbol.position, size: 20_000_000)
+        return (expand(rect, by: margin), symbol.sheetID, symbol.blockID, component.refdes, nil)
+    }
+
+    private static func netPiece(_ netName: String, in wanted: HorizontalPane, entry: HorizontalDispatchProjectEntry, margin: Double) throws -> ZoomPiece {
+        let index = entry.index
+        let net = try HorizontalDispatchValidation.net(netName, index: index)
+        if wanted == .board, let board = entry.project.board {
+            var points: [HorizontalPoint] = []
+            for pad in board.packagePads where pad.netID?.lowercased() == net.id {
+                points.append(contentsOf: pad.vertices)
+            }
+            for segment in board.tracks where segment.netID?.lowercased() == net.id {
+                points.append(segment.from)
+                points.append(segment.to)
+            }
+            for segment in board.airwires where segment.netID?.lowercased() == net.id {
+                points.append(segment.from)
+                points.append(segment.to)
+            }
+            guard let first = points.first else {
+                throw HorizontalDispatchError.notFound("\(net.name) has nothing on the board.")
+            }
+            var rect = HorizontalRect(points: points)
+            if rect.isEmpty {
+                rect = HorizontalRect(center: first, size: 2_000_000)
+            }
+            return (expand(rect, by: margin), nil, nil, net.name, nil)
+        }
+        // Schematic: the sheet holding the most of the net's pins.
+        var bySheet = [String: [HorizontalPoint]]()
+        for pin in net.pins {
+            guard let component = index.component(id: pin.componentID) else {
+                continue
+            }
+            for placement in component.symbolPlacements {
+                bySheet["\(placement.blockID ?? "")/\(placement.sheetID)", default: []].append(placement.position)
+            }
+        }
+        guard let best = bySheet.sorted(by: { $0.value.count == $1.value.count ? $0.key < $1.key : $0.value.count > $1.value.count }).first, let first = best.value.first else {
+            throw HorizontalDispatchError.notFound("\(net.name) has no symbols on any sheet.")
+        }
+        let sheet = index.sheets.first { "\($0.blockID ?? "")/\($0.id)" == best.key }
+        var rect = HorizontalRect(points: best.value)
+        if rect.isEmpty {
+            rect = HorizontalRect(center: first, size: 20_000_000)
+        }
+        return (expand(rect, by: margin + 10_000_000), sheet?.id, sheet?.blockID, net.name, nil)
     }
 
     private static func expand(_ rect: HorizontalRect, by margin: Double) -> HorizontalRect {
@@ -1357,8 +1416,7 @@ enum HorizontalDispatchMethods {
 
     /// Frames one target in its pane, showing another sheet first when the
     /// schematic is on one.
-    private static func frame(_ target: (rect: HorizontalRect, pane: HorizontalPane, sheetID: String?, blockID: String?, label: String, side: HorizontalBoardSide?),
-                              live: HorizontalLiveDocument) -> JSONDictionary {
+    private static func frame(_ target: ZoomTarget, live: HorizontalLiveDocument) -> JSONDictionary {
         let input = HorizontalUnsafeSendableBox(target)
         let output = HorizontalUnsafeSendableBox<JSONDictionary>([:])
         MainActor.assumeIsolated {

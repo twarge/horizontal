@@ -203,12 +203,12 @@ final class HorizontalVoiceControl: ObservableObject {
         case .select(let objects):
             previousSubject = objects
             previousVerb = .select
-        case .zoom(let object, _):
-            previousSubject = [object]
+        case .zoom(let objects, _):
+            previousSubject = objects
             previousVerb = .zoom
-        case .between(let verb, let a, let b):
+        case .among(let verb, let parts):
             if let target = target() {
-                let nets = HorizontalCommandTarget.netsBetween(a, b, in: target)
+                let nets = HorizontalCommandTarget.netsAmong(parts, in: target)
                 if !nets.isEmpty {
                     previousSubject = nets
                     previousVerb = verb

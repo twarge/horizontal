@@ -880,13 +880,14 @@ def render_board(path: str | None = None, layers: list[str] | None = None, mirro
 
 
 @_tool
-def zoom_to(path: str | None = None, refdes: str | None = None, net: str | None = None, pane: str | None = None, margin_mm: float = 3) -> dict[str, Any]:
+def zoom_to(path: str | None = None, refdes: str | None = None, net: str | None = None, pane: str | None = None, margin_mm: float = 3,
+            components: list[str] | None = None, nets: list[str] | None = None) -> dict[str, Any]:
     """Frame a component (refdes) or a net in the app's board or schematic pane; pane "all" frames it in every pane
     that is showing and can show it, the 3D view included. Needs the project open in Horizontal."""
     project = _resolve(path)
     if not project.is_live:
         raise ValueError("The project is not open in Horizontal, so there is no pane to zoom.")
-    return project.zoom_to(refdes=refdes, net=net, pane=pane, margin_mm=margin_mm)
+    return project.zoom_to(refdes=refdes, net=net, pane=pane, margin_mm=margin_mm, components=components, nets=nets)
 
 
 @_tool
