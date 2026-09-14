@@ -252,13 +252,17 @@ struct CanvasViewport: Codable, Equatable {
 
     var zoom: CGFloat = 1
     var pan: CGSize = .zero
+    /// Seen from the other side: x runs the other way, as it does when a
+    /// board is turned over. Pan and zoom mean what they always did.
+    var mirrored = false
 
-    init(zoom: CGFloat = 1, pan: CGSize = .zero) {
+    init(zoom: CGFloat = 1, pan: CGSize = .zero, mirrored: Bool = false) {
         self.zoom = Self.clamp(zoom)
         self.pan = CGSize(
             width: pan.width.isFinite ? pan.width : 0,
             height: pan.height.isFinite ? pan.height : 0
         )
+        self.mirrored = mirrored
     }
 
     init(from decoder: Decoder) throws {
@@ -266,9 +270,11 @@ struct CanvasViewport: Codable, Equatable {
         let zoom = try container.decodeIfPresent(Double.self, forKey: .zoom) ?? 1
         let panWidth = try container.decodeIfPresent(Double.self, forKey: .panWidth) ?? 0
         let panHeight = try container.decodeIfPresent(Double.self, forKey: .panHeight) ?? 0
+        let mirrored = try container.decodeIfPresent(Bool.self, forKey: .mirrored) ?? false
         self.init(
             zoom: CGFloat(zoom),
-            pan: CGSize(width: CGFloat(panWidth), height: CGFloat(panHeight))
+            pan: CGSize(width: CGFloat(panWidth), height: CGFloat(panHeight)),
+            mirrored: mirrored
         )
     }
 
@@ -277,12 +283,16 @@ struct CanvasViewport: Codable, Equatable {
         try container.encode(Double(zoom), forKey: .zoom)
         try container.encode(Double(pan.width), forKey: .panWidth)
         try container.encode(Double(pan.height), forKey: .panHeight)
+        if mirrored {
+            try container.encode(mirrored, forKey: .mirrored)
+        }
     }
 
     private enum CodingKeys: String, CodingKey {
         case zoom
         case panWidth
         case panHeight
+        case mirrored
     }
 
     mutating func fit() {
@@ -338,9 +348,9 @@ struct CanvasViewport: Codable, Equatable {
             return
         }
 
-        let oldTransform = HorizontalCanvasTransform(bounds: bounds, size: size, fitInsets: fitInsets, zoom: oldZoom, pan: pan)
+        let oldTransform = HorizontalCanvasTransform(bounds: bounds, size: size, fitInsets: fitInsets, zoom: oldZoom, pan: pan, mirrored: mirrored)
         let anchoredWorldPoint = oldTransform.worldPoint(anchor)
-        let newTransform = HorizontalCanvasTransform(bounds: bounds, size: size, fitInsets: fitInsets, zoom: newZoom, pan: pan)
+        let newTransform = HorizontalCanvasTransform(bounds: bounds, size: size, fitInsets: fitInsets, zoom: newZoom, pan: pan, mirrored: mirrored)
         let newAnchor = newTransform.point(anchoredWorldPoint)
 
         zoom = newZoom
@@ -564,6 +574,7 @@ struct InteractiveCanvasView: View {
                     fitInsets: fitInsets,
                     zoom: effectiveZoom,
                     pan: effectivePan,
+                    mirrored: effectiveViewport.mirrored,
                     minimumLineWidth: minimumLineWidth
                 )
                 let scaleBarScreenLines = metalScaleBarScreenLines(
@@ -1348,7 +1359,8 @@ struct InteractiveCanvasView: View {
             size: size,
             fitInsets: fitInsets,
             zoom: viewport.zoom,
-            pan: viewport.pan
+            pan: viewport.pan,
+            mirrored: viewport.mirrored
         )
     }
 

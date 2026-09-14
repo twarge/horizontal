@@ -7123,6 +7123,12 @@ struct SchematicCanvasView: View {
             }
             viewport = CanvasViewport.framing(rect, in: transform)
         }
+        actions.zoomBy = { factor in
+            guard let transform = liveCanvasTransform.transform, factor > 0 else {
+                return
+            }
+            viewport = CanvasViewport.framing(transform.visibleBounds.scaled(by: 1 / factor), in: transform, fill: 1)
+        }
         return actions
     }
 

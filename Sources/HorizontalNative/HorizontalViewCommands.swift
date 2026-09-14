@@ -12,6 +12,10 @@ private struct HorizontalFindActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
 
+private struct HorizontalListenActionKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
 private struct HorizontalDistractionFreeModeKey: FocusedValueKey {
     typealias Value = Binding<Bool>
 }
@@ -93,6 +97,8 @@ struct HorizontalCanvasCommandActions {
     var visibleWorldBounds: (() -> HorizontalRect?)? = nil
     /// Frames a world rectangle in the canvas, for the live channel's zoom-to.
     var frameWorldRect: ((HorizontalRect) -> Void)? = nil
+    /// Zooms the view about its centre; 2 is twice as close.
+    var zoomBy: ((Double) -> Void)? = nil
     var dispatch: (HorizontalCanvasCommand) -> Void
 }
 
@@ -152,6 +158,11 @@ extension FocusedValues {
     var horizonFindAction: (() -> Void)? {
         get { self[HorizontalFindActionKey.self] }
         set { self[HorizontalFindActionKey.self] = newValue }
+    }
+
+    var horizonListenAction: (() -> Void)? {
+        get { self[HorizontalListenActionKey.self] }
+        set { self[HorizontalListenActionKey.self] = newValue }
     }
 
     var horizonDistractionFreeMode: Binding<Bool>? {
@@ -233,6 +244,7 @@ struct HorizontalViewCommands: Commands {
     @FocusedBinding(\.horizonWindowToolbarHidden) private var windowToolbarHidden
     @FocusedValue(\.horizonHighlightNetAction) private var highlightNetAction
     @FocusedValue(\.horizonFindAction) private var findAction
+    @FocusedValue(\.horizonListenAction) private var listenAction
     @FocusedValue(\.horizonToggleRightSidebarAction) private var toggleRightSidebarAction
     @FocusedValue(\.horizonUpdateAllPlanesAction) private var updateAllPlanesAction
     @FocusedValue(\.horizonPowerNetsAction) private var powerNetsAction
@@ -283,6 +295,14 @@ struct HorizontalViewCommands: Commands {
             }
             .keyboardShortcut("f", modifiers: .command)
             .disabled(findAction == nil)
+
+            // Voice control: the verbs the automation channel has, spoken.
+            // Toggles listening; the toolbar microphone shows the state.
+            Button("Listen for a Command") {
+                listenAction?()
+            }
+            .keyboardShortcut("l", modifiers: [.command, .option])
+            .disabled(listenAction == nil)
 
             Divider()
             // Canvas-level commands. The Horizon-style single-key shortcuts are

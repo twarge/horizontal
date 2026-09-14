@@ -596,6 +596,7 @@ struct ProjectWorkspaceView: View {
     @State private var schematicEditRevision = 0
     /// The live channel's handle for this document (docs/automation.md).
     @State private var liveHandle: Int?
+    @StateObject private var voiceControl = HorizontalVoiceControl()
     @StateObject private var liveUndoTarget = HorizontalUndoTarget<HorizontalLiveSnapshot>()
     /// The board's netlist reload from the schematic, waiting for edits to
     /// settle or running; see `scheduleBoardNetlistSync`.
@@ -759,6 +760,7 @@ struct ProjectWorkspaceView: View {
             .focusedSceneValue(\.horizonDocumentViewActions, documentViewActions)
             .focusedSceneValue(\.horizonCanvasCommandActions, activeCanvasCommandActions)
             .focusedSceneValue(\.horizonFindAction, activateFind)
+            .focusedSceneValue(\.horizonListenAction, HorizontalVoiceControl.isAvailable ? { voiceControl.toggle() } : nil)
             .focusedSceneValue(\.horizonDistractionFreeMode, $isDistractionFree)
             .focusedSceneValue(\.horizonWindowToolbarHidden, $isWindowToolbarHidden)
     }
@@ -933,6 +935,9 @@ struct ProjectWorkspaceView: View {
                 }
             }
             .animation(.snappy(duration: 0.18), value: rightSidebarPane)
+            .overlay(alignment: .bottom) {
+                HorizontalVoiceTranscriptOverlay(control: voiceControl)
+            }
         }
         // Must leave room for the navigator sidebar inside the window minimum
         // (980). This was also 980, so the detail alone claimed the whole
@@ -993,6 +998,10 @@ struct ProjectWorkspaceView: View {
                     isPresented: $findIsPresented,
                     activationID: findActivationID
                 )
+
+                if HorizontalVoiceControl.isAvailable {
+                    HorizontalVoiceControlButton(control: voiceControl)
+                }
 
                 Button {
                     toggleRightSidebar(.selection)
@@ -1206,7 +1215,64 @@ struct ProjectWorkspaceView: View {
         }
         live.frame = { pane, rect in
             visiblePanes.insert(pane)
+            if pane == .threeD {
+                // The 3D pane has no world rectangle to frame; it has a
+                // camera, and the rectangle is on the board.
+                if let board = project.board {
+                    threeDCameraState = horizonSceneCameraState(
+                        framing: rect, board: board, current: threeDCameraState,
+                        projection: boardDisplayOptions.threeDProjection
+                    )
+                }
+                return
+            }
             canvasCommandActionsByPane[pane]?.frameWorldRect?(rect)
+        }
+        live.setLayerPreset = { preset in
+            // A side-less preset ("show silkscreen") takes the side that is
+            // up; the view presets also turn the board over and put the tools
+            // on that side's copper.
+            let side = boardDisplayOptions.visibleSide ?? (boardViewport.mirrored ? .bottom : .top)
+            let resolved = preset.resolved(for: side)
+            boardDisplayOptions.applyLayerPreset(resolved)
+            if let mirrors = resolved.mirrorsView {
+                boardViewport.mirrored = mirrors
+            }
+            if let side = resolved.side {
+                boardDrawingLayer = side.copperLayer
+            }
+            visiblePanes.insert(.board)
+        }
+        live.showBoardSide = { side in
+            // Framing a part on the far side: a sided view turns over to it,
+            // keeping its mode (silkscreen stays silkscreen); the all-layers
+            // view belongs to no side and stays.
+            guard let current = boardDisplayOptions.visibleSide, current != side else {
+                return
+            }
+            let mode: HorizontalBoardLayerPreset = !boardDisplayOptions.pads && boardDisplayOptions.packages ? .silkscreen
+                : (!boardDisplayOptions.packages ? .routing : .placement)
+            boardDisplayOptions.applyLayerPreset(mode.resolved(for: side))
+            if boardViewport.mirrored {
+                // Seen from below and turning to the top: stop mirroring.
+                boardViewport.mirrored = side == .bottom
+            }
+            boardDrawingLayer = side.copperLayer
+        }
+        live.zoomBy = { pane, factor in
+            let candidates: [HorizontalPane?] = [pane, activeCanvasCommandPane, .board, .schematic, .threeD]
+            guard let target = candidates.compactMap({ $0 }).first(where: { visiblePanes.contains($0) }) else {
+                return
+            }
+            if target == .threeD {
+                if let board = project.board {
+                    threeDCameraState = horizonSceneCameraState(
+                        zooming: threeDCameraState, by: factor, board: board, projection: boardDisplayOptions.threeDProjection
+                    )
+                }
+                return
+            }
+            canvasCommandActionsByPane[target]?.zoomBy?(factor)
         }
         live.setPanes = { panes in
             visiblePanes = panes
@@ -1223,31 +1289,22 @@ struct ProjectWorkspaceView: View {
                 return nil
             }
         }
-        liveHandle = HorizontalDispatchSession.shared.registerLive(live)
-        publishIntentParameters()
+        let handle = HorizontalDispatchSession.shared.registerLive(live)
+        liveHandle = handle
+        // Spoken commands act on this window's document, not whichever is
+        // in front when the words land.
+        voiceControl.attach(handle: handle)
     }
 
     private func unregisterLiveDocument() {
         guard let liveHandle else {
             return
         }
+        voiceControl.detach()
         HorizontalDispatchSession.shared.unregisterLive(handle: liveHandle)
         self.liveHandle = nil
-        publishIntentParameters()
     }
 
-    /// Tells the system which refdeses and net names its spoken phrases can
-    /// contain now.
-    ///
-    /// An App Shortcut phrase with a parameter is matched against values the
-    /// app has published, not against whatever the query could return if it
-    /// were asked — so "Highlight R18 in Horizontal" only resolves once this
-    /// has run for a document that has an R18. It is cheap and idempotent, so
-    /// it runs whenever the answer could have changed: a document opening,
-    /// closing, or being edited into having different components.
-    private func publishIntentParameters() {
-        HorizontalIntentParameterPublishing.parametersDidChange()
-    }
 
     /// An edited archive from the live channel becomes the document: the
     /// model reloads from it, URLs are pointed back at the real project (the
@@ -1291,9 +1348,6 @@ struct ProjectWorkspaceView: View {
         boardSyncRevision += 1
         schematicEditRevision += 1
         selectionDetailsByPane = [:]
-        // A whole-project replacement can add, rename or remove the very
-        // things a spoken phrase names.
-        publishIntentParameters()
     }
 
     private func rebaseProjectURLs(_ reloaded: inout HorizontalProject, onto current: HorizontalProject) {
@@ -1794,6 +1848,7 @@ struct ProjectWorkspaceView: View {
                             ignoresSceneMouseEvents: panesWithPointerInsideToolbar.contains(.threeD),
                             silkscreenClipping: appearanceSettings.silkscreenClipping,
                             revision: boardEditRevision,
+                            highlightedComponentIDs: highlightedComponentIDs,
                             cameraState: $threeDCameraState
                         )
                     } else {
@@ -2662,9 +2717,6 @@ struct ProjectWorkspaceView: View {
             // connections and airwires come with the reload behind it.
             refreshBoardPlaceableObjects(from: sheet)
             scheduleBoardNetlistSync()
-            // The signature moves when components or nets do, which is
-            // exactly when the names a phrase can carry have changed.
-            publishIntentParameters()
         }
     }
 

@@ -782,6 +782,36 @@ def show_panes(panes: list[str], path: str | None = None) -> dict[str, Any]:
 
 
 @_tool
+def show_sheet(path: str | None = None, sheet: int | None = None, name: str | None = None, sheet_id: str | None = None, block_id: str | None = None) -> dict[str, Any]:
+    """Show a schematic sheet in the app's schematic pane, by index, name or id. Needs the project open in Horizontal."""
+    project = _resolve(path)
+    if not project.is_live:
+        raise ValueError("The project is not open in Horizontal, so there is no sheet to show.")
+    return project.show_sheet(sheet=sheet, name=name, sheet_id=sheet_id, block_id=block_id)
+
+
+@_tool
+def show_layers(preset: str, path: str | None = None) -> dict[str, Any]:
+    """Show a board layer view in the app: top_placement, top_silkscreen, top_routing, bottom_placement,
+    bottom_silkscreen, bottom_routing, top_view, bottom_view (mirrored), flip_view, placement, silkscreen, routing
+    (the side that is up), all, copper_only or clean. Needs the project open in Horizontal."""
+    project = _resolve(path)
+    if not project.is_live:
+        raise ValueError("The project is not open in Horizontal, so there are no layers to show.")
+    return project.show_layers(preset)
+
+
+@_tool
+def zoom(path: str | None = None, factor: float = 2, pane: str | None = None) -> dict[str, Any]:
+    """Zoom a pane's view in the app about its centre: 2 is twice as close, 0.5 twice as far; pane board, schematic
+    or threeD, else the one the user is working in. Needs the project open in Horizontal."""
+    project = _resolve(path)
+    if not project.is_live:
+        raise ValueError("The project is not open in Horizontal, so there is no view to zoom.")
+    return project.zoom(factor=factor, pane=pane)
+
+
+@_tool
 def list_ops(path: str | None = None) -> list[dict[str, Any]]:
     """The edit operations apply_ops accepts, with their parameters. They cover the block, the schematic, board
     placement and manual copper routing; nothing here autoroutes."""
@@ -851,7 +881,8 @@ def render_board(path: str | None = None, layers: list[str] | None = None, mirro
 
 @_tool
 def zoom_to(path: str | None = None, refdes: str | None = None, net: str | None = None, pane: str | None = None, margin_mm: float = 3) -> dict[str, Any]:
-    """Frame a component (refdes) or a net in the app's board or schematic pane. Needs the project open in Horizontal."""
+    """Frame a component (refdes) or a net in the app's board or schematic pane; pane "all" frames it in every pane
+    that is showing and can show it, the 3D view included. Needs the project open in Horizontal."""
     project = _resolve(path)
     if not project.is_live:
         raise ValueError("The project is not open in Horizontal, so there is no pane to zoom.")

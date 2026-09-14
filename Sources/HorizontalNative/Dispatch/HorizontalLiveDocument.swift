@@ -59,6 +59,16 @@ final class HorizontalLiveDocument {
     var setPanes: (Set<HorizontalPane>) -> Void
     /// The sheet the schematic pane shows, if any.
     var currentSheet: () -> String?
+    /// Applies a board layer view — top placement, bottom silkscreen, all
+    /// layers — to the board pane, showing the pane if it is hidden.
+    var setLayerPreset: (HorizontalBoardLayerPreset) -> Void
+    /// Turns the board view to `side` when the view is a sided one and on the
+    /// other side — what framing a bottom-side part does when the top is up.
+    /// The all-layers view belongs to no side and is left alone.
+    var showBoardSide: (HorizontalBoardSide) -> Void
+    /// Zooms a pane's view by `factor` about its centre; 2 is twice as close.
+    /// Nil pane means the one the user is working in.
+    var zoomBy: (HorizontalPane?, Double) -> Void
 
     init(url: URL, title: String, project: HorizontalProject, archive: HorizontalProjectArchive) {
         self.url = url
@@ -86,5 +96,8 @@ final class HorizontalLiveDocument {
         frame = { _, _ in }
         showSheet = { _, _ in }
         currentSheet = { nil }
+        setLayerPreset = { _ in }
+        showBoardSide = { _ in }
+        zoomBy = { _, _ in }
     }
 }

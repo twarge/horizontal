@@ -3,112 +3,36 @@ import HorizontalProjectIO
 import XCTest
 @testable import HorizontalNative
 
-/// The parts of the App Intents surface that do not need Siri to check.
-///
-/// The intents themselves are thin — each resolves the document in front and
-/// calls the dispatch method the automation channel already exposes, which has
-/// its own tests. What is new here, and what a spoken request actually depends
-/// on, is how a name said out loud turns into one of the design's objects, how
-/// an id a saved shortcut kept turns back into one, and which document counts
-/// as the one in front when there is no window system to ask.
+/// The parts of the App Intents surface that do not need Siri to check: which
+/// document counts as the one in front when there is no window system to ask,
+/// what the pane choices mean, and that the one intent left does what it says
+/// against a registered document.
 final class HorizontalIntentTests: XCTestCase {
-    private let design = [
-        HorizontalDesignObjectEntity(kind: .component, name: "R18", detail: "1 kΩ"),
-        HorizontalDesignObjectEntity(kind: .component, name: "R180", detail: "10 kΩ"),
-        HorizontalDesignObjectEntity(kind: .component, name: "U1", detail: "OPA2188"),
-        HorizontalDesignObjectEntity(kind: .net, name: "GND", detail: "default"),
-        HorizontalDesignObjectEntity(kind: .net, name: "GND_ANALOG", detail: "default"),
-        HorizontalDesignObjectEntity(kind: .net, name: "3V3", detail: "power"),
-    ]
-
-    private func names(_ query: String) -> [String] {
-        HorizontalDesignObjectQuery.matches(query, in: design).map(\.name)
-    }
-
-    /// Speech-to-text does not agree with itself about a reference designator,
-    /// so the shapes it produces all have to land on the same component.
-    func testAReferenceDesignatorIsFoundHoweverItWasSaid() {
-        XCTAssertEqual(names("R18"), ["R18"])
-        XCTAssertEqual(names("r18"), ["R18"])
-        XCTAssertEqual(names("R 18"), ["R18"])
-        XCTAssertEqual(names("  r 1 8 "), ["R18"])
-    }
-
-    /// An exact match is not widened. R18 and R180 both contain "r18", and
-    /// asking which one when the user said the whole name is a bad question.
-    func testAnExactMatchWinsOverOneThatMerelyContainsIt() {
-        XCTAssertEqual(names("R18"), ["R18"])
-        XCTAssertEqual(Set(names("R1")), ["R18", "R180"], "an inexact one offers both")
-    }
-
-    /// Net names carry separators nobody says out loud.
-    func testNetNamesMatchWithoutTheirSeparators() {
-        XCTAssertEqual(names("GND"), ["GND"], "the exact net, not both grounds")
-        XCTAssertEqual(Set(names("gndanalog")), ["GND_ANALOG"])
-        // "gnd_" is exact once the separator is dropped, so it is still one
-        // net; a query that matches neither name whole offers both.
-        XCTAssertEqual(names("gnd_"), ["GND"])
-        XCTAssertEqual(Set(names("nd")), ["GND", "GND_ANALOG"])
-        XCTAssertEqual(names("3v3"), ["3V3"])
-    }
-
-    func testAnEmptyQueryOffersEverythingAndAnUnknownOneOffersNothing() {
-        XCTAssertEqual(names("").count, design.count)
-        XCTAssertEqual(names("   ").count, design.count)
-        XCTAssertEqual(names("C99"), [])
-    }
-
-    /// A saved shortcut stores the id and hands it back later, possibly after
-    /// the document it came from was closed — so the id has to be enough to
-    /// rebuild the entity on its own.
-    func testAnIdentifierRoundTripsWithoutTheDocument() throws {
-        for entity in design {
-            let rebuilt = try XCTUnwrap(HorizontalDesignObjectEntity(id: entity.id))
-            XCTAssertEqual(rebuilt.kind, entity.kind)
-            XCTAssertEqual(rebuilt.name, entity.name)
-        }
-        XCTAssertEqual(HorizontalDesignObjectEntity(kind: .component, name: "R18").id, "component:R18")
-        XCTAssertEqual(HorizontalDesignObjectEntity(kind: .net, name: "GND").id, "net:GND")
-    }
-
-    /// A net whose name contains a colon still round-trips, because the split
-    /// takes only the first one.
-    func testAnIdentifierKeepsAColonInTheName() throws {
-        let entity = HorizontalDesignObjectEntity(kind: .net, name: "BUS:D0")
-        let rebuilt = try XCTUnwrap(HorizontalDesignObjectEntity(id: entity.id))
-        XCTAssertEqual(rebuilt.name, "BUS:D0")
-        XCTAssertEqual(rebuilt.kind, .net)
-    }
-
-    func testAMalformedIdentifierIsRefusedRatherThanGuessed() {
-        XCTAssertNil(HorizontalDesignObjectEntity(id: ""))
-        XCTAssertNil(HorizontalDesignObjectEntity(id: "R18"))
-        XCTAssertNil(HorizontalDesignObjectEntity(id: "component:"))
-        XCTAssertNil(HorizontalDesignObjectEntity(id: "gate:R18"))
-    }
-
-    /// "Both" is the case that exists because of how people ask.
+    /// Every canvas alone and every combination, because "show me the schematic
+    /// and the board" is one request.
     func testThePaneChoicesMapToPanes() {
         XCTAssertEqual(HorizontalPaneChoice.schematic.panes, [.schematic])
         XCTAssertEqual(HorizontalPaneChoice.board.panes, [.board])
-        XCTAssertEqual(HorizontalPaneChoice.both.panes, [.schematic, .board])
+        XCTAssertEqual(HorizontalPaneChoice.threeD.panes, [.threeD])
+        XCTAssertEqual(HorizontalPaneChoice.schematicAndBoard.panes, [.schematic, .board])
+        XCTAssertEqual(HorizontalPaneChoice.schematicAndThreeD.panes, [.schematic, .threeD])
+        XCTAssertEqual(HorizontalPaneChoice.boardAndThreeD.panes, [.board, .threeD])
+        XCTAssertEqual(HorizontalPaneChoice.everything.panes, [.schematic, .board, .threeD])
+        XCTAssertEqual(Set(HorizontalPaneChoice.allCases.map(\.panes)).count, HorizontalPaneChoice.allCases.count,
+                       "no two choices mean the same thing")
     }
 
-    /// With nothing open a query still has to answer. Siri and Shortcuts run
-    /// these whenever they like, app running or not.
+    /// With nothing open a request has nothing to act on, and says so.
     @MainActor
-    func testNamingObjectsWithNothingOpenIsEmptyRatherThanAnError() {
-        // No live document is registered by this test, so the frontmost lookup
-        // finds nothing — the same state as the app sitting at its launch
-        // screen.
-        XCTAssertThrowsError(try HorizontalIntentTarget.current()) { error in
-            XCTAssertEqual("\(error)", "\(HorizontalIntentError.noProjectOpen)")
+    func testWithNothingOpenThereIsNoTarget() {
+        XCTAssertThrowsError(try HorizontalCommandTarget.current()) { error in
+            XCTAssertEqual("\(error)", "\(HorizontalCommandError.noProjectOpen)")
         }
     }
 
     /// With more than one document open and no window system to ask — the
     /// iPad — the one whose scene most recently came to the front is the one
-    /// an intent acts on; and when that document closes, the choice falls
+    /// a request acts on; and when that document closes, the choice falls
     /// back rather than dangling. (On the Mac the document controller is
     /// asked first; in a test process it has no documents and defers.)
     @MainActor
@@ -133,14 +57,95 @@ final class HorizontalIntentTests: XCTestCase {
             handles.append(session.registerLive(document))
         }
 
-        XCTAssertEqual(try HorizontalIntentTarget.current().handle, handles[0], "nothing noted: the first one registered")
+        XCTAssertEqual(try HorizontalCommandTarget.current().handle, handles[0], "nothing noted: the first one registered")
         session.noteLiveDocumentInFront(handle: handles[1])
-        XCTAssertEqual(try HorizontalIntentTarget.current().handle, handles[1])
+        XCTAssertEqual(try HorizontalCommandTarget.current().handle, handles[1])
         session.noteLiveDocumentInFront(handle: handles[1] + 1_000)
-        XCTAssertEqual(try HorizontalIntentTarget.current().handle, handles[1],
+        XCTAssertEqual(try HorizontalCommandTarget.current().handle, handles[1],
                        "a handle that is not a live document changes nothing")
+        XCTAssertEqual(HorizontalCommandTarget.target(handle: handles[0])?.handle, handles[0],
+                       "a workspace that knows its handle gets its own document")
+        XCTAssertNil(HorizontalCommandTarget.target(handle: handles[1] + 1_000))
 
         session.unregisterLive(handle: handles.removeLast())
-        XCTAssertEqual(try HorizontalIntentTarget.current().handle, handles[0])
+        XCTAssertEqual(try HorizontalCommandTarget.current().handle, handles[0])
+    }
+
+    /// "Start listening in Horizontal": the intent reaches the voice control
+    /// of the document in front, which the workspace attached by handle, and
+    /// says so when there is none.
+    @MainActor
+    func testStartListeningReachesTheAttachedControl() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("horizontal-intent-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("Untitled.horizontal")
+        try HorizontalProjectArchive.newProject().write(to: url)
+        let project = try HorizontalProject.load(from: url)
+        let archive = try HorizontalProjectArchive.snapshot(from: url)
+        let document = HorizontalLiveDocument(url: url, title: "Untitled", project: project, archive: archive)
+        let session = HorizontalDispatchSession.shared
+        let handle = session.registerLive(document)
+        defer { session.unregisterLive(handle: handle) }
+
+        do {
+            _ = try await StartListeningIntent().perform()
+            XCTFail("no workspace has attached a control")
+        } catch let error as HorizontalCommandError {
+            XCTAssertEqual(error.message, "Voice control is not available for Untitled.")
+        }
+
+        final class SilentEngine: HorizontalSpeechEngine {
+            var started = 0
+            func start(contextualStrings: [String]) -> AsyncStream<HorizontalSpeechEvent> {
+                started += 1
+                return AsyncStream { $0.yield(.listening) }
+            }
+            func stop() {}
+        }
+        let engine = SilentEngine()
+        HorizontalVoiceControl.makeEngine = { engine }
+        defer { HorizontalVoiceControl.makeEngine = nil }
+        let control = HorizontalVoiceControl()
+        control.attach(handle: handle)
+        defer { control.detach() }
+        XCTAssertTrue(HorizontalVoiceControl.control(forHandle: handle) === control)
+
+        _ = try await StartListeningIntent().perform()
+        XCTAssertTrue(control.isListening)
+        XCTAssertEqual(engine.started, 1)
+        _ = try await StopListeningIntent().perform()
+        XCTAssertFalse(control.isListening)
+    }
+
+    /// The intent, run the way Shortcuts runs it — perform() on a value with
+    /// its parameter set — against a document registered the way the
+    /// workspace registers it.
+    @MainActor
+    func testShowPanesActsOnTheLiveDocument() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("horizontal-intent-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("Untitled.horizontal")
+        try HorizontalProjectArchive.newProject().write(to: url)
+        let project = try HorizontalProject.load(from: url)
+        let archive = try HorizontalProjectArchive.snapshot(from: url)
+        let document = HorizontalLiveDocument(url: url, title: "Untitled", project: project, archive: archive)
+        var selection = HorizontalLiveSelection(panes: ["schematic"])
+        document.selection = { selection }
+        document.setPanes = { panes in selection.panes = panes.map(\.rawValue).sorted() }
+        let session = HorizontalDispatchSession.shared
+        let handle = session.registerLive(document)
+        defer { session.unregisterLive(handle: handle) }
+
+        let show = ShowPanesIntent()
+        show.choice = .boardAndThreeD
+        _ = try await show.perform()
+        XCTAssertEqual(selection.panes, ["board", "threeD"])
+        show.choice = .everything
+        _ = try await show.perform()
+        XCTAssertEqual(selection.panes, ["board", "schematic", "threeD"])
     }
 }

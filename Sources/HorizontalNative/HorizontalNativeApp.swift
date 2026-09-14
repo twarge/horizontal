@@ -14,12 +14,10 @@ struct HorizontalNativeApp: App {
 
     init() {
         HorizontalDebugConsoleFilter.installIfNeeded()
-        // App Shortcuts match a spoken parameter against values the app has
-        // published, so the workspace tells us whenever the open document's
-        // components and nets change.
-        HorizontalIntentParameterPublishing.publish = {
-            HorizontalAppShortcuts.updateAppShortcutParameters()
-        }
+        // Voice control hears through the microphone, which only the app has.
+        // The workspace compiles into the QuickLook extensions too, so it
+        // reaches the engine through this hook rather than by name.
+        HorizontalVoiceControl.makeEngine = { HorizontalSpeechListener() }
     }
 
     var body: some Scene {
