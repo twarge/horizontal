@@ -167,7 +167,7 @@ struct HorizontalIPadProjectView: View {
         // (the duplicate document title) beneath it.
         // The sidebar pushes the canvases aside on iPad so it never covers the board;
         // compact widths keep the overlay, where a 340pt column would crush the canvas.
-        HorizontalInspectorSidebar(isPresented: rightPane != nil, pushesContent: !isCompact) {
+        HorizontalInspectorSidebar(isPresented: rightPane != nil && !isCompact, pushesContent: true) {
             VStack(spacing: 0) {
                 if let project {
                     paneSplit(for: project)
@@ -201,6 +201,16 @@ struct HorizontalIPadProjectView: View {
         }
         .sheet(isPresented: $settingsSheetPresented) {
             settingsSheet
+        }
+        // On a phone the inspector and the export panel slide up over the
+        // canvas instead of beside it; at the medium detent the canvas
+        // behind stays live, so a selection can be inspected and changed.
+        .sheet(item: compactRightPane) { _ in
+            rightPaneContent
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+                .presentationContentInteraction(.scrolls)
         }
         .fullScreenCover(isPresented: $rulesSheetPresented) {
             if let project {
@@ -300,6 +310,17 @@ struct HorizontalIPadProjectView: View {
 
     /// The active right-slide-over pane — the selection inspector or the export panel
     /// (mutually exclusive, like the macOS workspace's single right sidebar).
+    /// The right-hand pane as a sheet: set only on a compact width, so the
+    /// sidebar and the sheet never both show, and either way `rightPane` is
+    /// the one state behind both.
+    private var compactRightPane: Binding<HorizontalIPadRightPane?> {
+        Binding {
+            isCompact ? rightPane : nil
+        } set: { pane in
+            rightPane = pane
+        }
+    }
+
     @ViewBuilder
     private var rightPaneContent: some View {
         switch rightPane {
@@ -424,7 +445,63 @@ struct HorizontalIPadProjectView: View {
     /// All the top-bar controls in one view, so the single ToolbarItem hosting
     /// it renders them as one shared glass island — spacing alone separates the
     /// controls.
+    @ViewBuilder
     private func toolbarIsland(for project: HorizontalProject) -> some View {
+        if isCompact {
+            compactToolbarIsland(for: project)
+        } else {
+            regularToolbarIsland(for: project)
+        }
+    }
+
+    /// A phone's bar has room for what is used while looking at the canvas —
+    /// the microphone and the pane picker — and folds the rest into a menu.
+    private func compactToolbarIsland(for project: HorizontalProject) -> some View {
+        HStack(spacing: 12) {
+            if HorizontalVoiceControl.isAvailable {
+                HorizontalVoiceControlButton(control: voiceControl)
+            }
+            if availablePanes(for: project).count > 1 {
+                panePicker(for: project)
+            }
+            Menu {
+                Button {
+                    rightPane = rightPane == .inspector ? nil : .inspector
+                } label: {
+                    Label("Inspector", systemImage: "sidebar.trailing")
+                }
+                Button {
+                    rightPane = rightPane == .export ? nil : .export
+                } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                }
+                if project.board != nil {
+                    Button {
+                        rulesSheetPresented = true
+                    } label: {
+                        Label("Board Rules", systemImage: "checklist")
+                    }
+                }
+                Divider()
+                Button {
+                    settingsSheetPresented = true
+                } label: {
+                    Label("Settings", systemImage: "gear")
+                }
+                Button {
+                    appearanceSettings.readOnlyOperationBinding().wrappedValue = !isReadOnly
+                } label: {
+                    Label(isReadOnly ? "Allow Editing" : "Make Read-Only", systemImage: isReadOnly ? "lock.open" : "lock.fill")
+                }
+                .disabled(HorizontalOperationDefaults.isReadOnlyOperationForced)
+            } label: {
+                Label("More", systemImage: "ellipsis.circle")
+            }
+        }
+        .labelStyle(.iconOnly)
+    }
+
+    private func regularToolbarIsland(for project: HorizontalProject) -> some View {
         HStack(spacing: 14) {
             readOnlyLockButton
             if HorizontalVoiceControl.isAvailable {
@@ -573,8 +650,7 @@ struct HorizontalIPadProjectView: View {
     /// workspace's `workspaceDetail`.)
     private func paneSplit(for project: HorizontalProject) -> some View {
         GeometryReader { proxy in
-            let panes = orderedVisiblePanes.filter { availablePanes(for: project).contains($0) }
-            let shownPanes = panes.isEmpty ? [defaultPane(for: project)] : panes
+            let shownPanes = shownPanes(for: project)
 
             ResizablePaneSplitView(
                 panes: shownPanes,
@@ -594,6 +670,18 @@ struct HorizontalIPadProjectView: View {
             }
             .ignoresSafeArea(.container, edges: .all)
         }
+    }
+
+    /// The panes the split shows. A phone has room for one canvas: the focused
+    /// pane when it is showing, else the first. Decided per frame rather than
+    /// only when the size class changes, because the restored view state may
+    /// name two panes and the observer fires only on a change.
+    private func shownPanes(for project: HorizontalProject) -> [HorizontalPane] {
+        let panes = orderedVisiblePanes.filter { availablePanes(for: project).contains($0) }
+        if isCompact {
+            return [panes.contains(focusedPane) ? focusedPane : (panes.first ?? defaultPane(for: project))]
+        }
+        return panes.isEmpty ? [defaultPane(for: project)] : panes
     }
 
     /// Splits the window's safe-area insets across the panes: every pane clears the top
@@ -1575,9 +1663,11 @@ private struct NavigationDocumentModifier: ViewModifier {
 /// we export to /tmp and let the picker copy the folder out.)
 /// Which pane the iPad right-side slide-over is showing (one at a time, mirroring the
 /// macOS workspace's single right sidebar).
-enum HorizontalIPadRightPane {
+enum HorizontalIPadRightPane: Identifiable {
     case inspector
     case export
+
+    var id: Self { self }
 }
 
 /// Right-side slide-over export panel (the iPad analogue of the macOS export
