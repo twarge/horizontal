@@ -7145,7 +7145,11 @@ struct SchematicCanvasView: View {
             }
             selectedUnplacedObjectID = nil
             hoveredObject = nil
-            publishSelectionContext()
+            // No report back: the workspace asked for this, so it knows. A
+            // report would carry whatever this canvas could show of it — an
+            // empty set, when the symbol is on another sheet or the part is
+            // not placed — and the workspace would take that as the new
+            // selection and clear every other view.
         }
         return actions
     }
