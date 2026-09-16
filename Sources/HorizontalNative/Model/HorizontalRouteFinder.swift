@@ -2,10 +2,21 @@ import Foundation
 
 /// Routes a track around whatever is in the way, on one layer.
 ///
-/// Completes step 3 of `docs/push-shove-router.md`: walkaround handles one
-/// obstacle, this handles the board. It shoves nothing — every existing object
-/// stays where it is — which makes it useful on its own and is the base the
-/// shove is built on.
+/// Completes step 3 of `docs/push-shove-router.md`. It shoves nothing — every
+/// existing object stays where it is — which makes it useful on its own and is
+/// the base the shove is built on.
+///
+/// Three stages, each cheap when the previous one suffices:
+///
+///  1. The plain elbow. On an open board that is the answer, and it costs one
+///     collision test.
+///  2. A grid search (`HorizontalRouteGridSearch`) when something is in the
+///     way. Bounded, deterministic and complete at its resolution, it finds a
+///     clear path if one exists — but as a staircase of grid steps.
+///  3. Pulling that staircase taut: replacing runs of steps with the longest
+///     clear elbows, then dropping any corner whose removal is still clear.
+///     Every shortcut is checked against the board, so this shortens a route
+///     but never makes it illegal.
 ///
 /// Two design commitments carried from the study:
 ///
@@ -16,12 +27,36 @@ import Foundation
 ///    versions of a board can be compared.
 enum HorizontalRouteFinder {
     struct Budget {
-        /// How many obstacles the router will detour around before giving up.
+        /// How many grid nodes the search may expand before giving up.
         /// Interactive means the answer has to come back this frame; an
-        /// unbounded correct answer is a wrong answer.
-        var maxDetours = 12
-        /// Guards against two obstacles that each push the route into the other.
-        var maxIterations = 48
+        /// unbounded correct answer is a wrong answer. Twelve thousand is a few
+        /// tens of milliseconds on a dense board, and a route that needs more
+        /// than that is one the user would rather place by hand anyway.
+        var maxExpansions = 12_000
+
+        /// The finest grid pitch. Fifty micrometres is well below any clearance
+        /// a fabricator quotes, so at that pitch a channel the track fits
+        /// through always holds a grid line.
+        var finestPitch = 50_000.0
+
+        /// How many cells a side of the search window is allowed before the
+        /// pitch coarsens. Keeps the cell count — and with it the worst case —
+        /// bounded; a route across the board is drawn coarser than one between
+        /// neighbours and nobody can tell.
+        var cellsPerSide = 384.0
+
+        /// The least the search window extends beyond the endpoints. A route
+        /// has to be able to leave the endpoints' bounding box, or nothing
+        /// could go around a component that spans it.
+        var minimumMargin = 3_000_000.0
+
+        /// Whether a search that finds no way through gets a second, harder
+        /// try: a wider window when the first one ran into its own edge, a
+        /// finer grid when the start turned out to be enclosed. One retry,
+        /// because it costs a few times what the first attempt did and a
+        /// third would buy almost nothing. On a dense real board the retry
+        /// rescues about a tenth of the routes the first attempt gives up on.
+        var retriesOnFailure = true
 
         static let interactive = Budget()
     }
@@ -41,12 +76,6 @@ enum HorizontalRouteFinder {
         var outcome: Outcome
 
         var isComplete: Bool { outcome == .complete }
-    }
-
-    /// Where a route first crosses something it must not.
-    private struct Collision {
-        var segment: Int
-        var obstacle: Int
     }
 
     /// Routes from `from` to `to` on `layer`, avoiding everything the index
@@ -82,100 +111,159 @@ enum HorizontalRouteFinder {
         let exempt = endpointObstacles(
             from: from, to: to, layer: layer, net: net, width: width,
             index: index, clearances: clearances)
+        let collider = HorizontalRouteCollider(
+            index: index, clearances: clearances, layer: layer, net: net, width: width,
+            exempt: exempt)
 
-        var waypoints = HorizontalRoute45.elbow(from: from, to: to, diagonalFirst: diagonalFirst)
-        var detoursTaken = 0
-        /// Obstacles already routed around, and which way. Meeting one a second
-        /// time means the first choice did not work, so the other side is tried
-        /// before giving up.
-        var attempted: [Int: Set<Bool>] = [:]
-
-        for _ in 0..<budget.maxIterations {
-            guard let collision = firstCollision(
-                along: waypoints, layer: layer, net: net, width: width,
-                index: index, clearances: clearances, exempt: exempt
-            ) else {
-                return Result(
-                    points: tightened(
-                        HorizontalRoute45.simplified(waypoints),
-                        layer: layer, net: net, width: width,
-                        index: index, clearances: clearances,
-                        diagonalFirst: diagonalFirst, exempt: exempt),
-                    outcome: .complete)
+        // The plain elbow, in the route's posture or failing that the other: a
+        // clear elbow beats any detour, and it is what the tool draws without
+        // the router, so an open board routes exactly as before.
+        for posture in [diagonalFirst, !diagonalFirst] {
+            let direct = HorizontalRoute45.elbow(from: from, to: to, diagonalFirst: posture)
+            if collider.isClear(direct) {
+                return Result(points: direct, outcome: .complete)
             }
-
-            guard detoursTaken < budget.maxDetours else {
-                return Result(points: HorizontalRoute45.simplified(waypoints),
-                              outcome: .exhausted(obstacle: collision.obstacle))
-            }
-
-            let obstacle = index.obstacles[collision.obstacle]
-            let clearance = clearances.clearance(
-                .track, net: net, obstacle.objectClass, net: obstacle.netCode, on: layer)
-            // Inflate by the clearance AND the moving track's half width, so the
-            // route's centre line staying outside this hull means its copper
-            // keeps the full distance.
-            let hull = obstacle.hull.inflated(by: clearance + width / 2)
-
-            let start = waypoints[collision.segment]
-            let end = waypoints[collision.segment + 1]
-            let options = HorizontalRouteWalkaround.detours(
-                around: hull, from: start, to: end, diagonalFirst: diagonalFirst)
-            guard !options.isEmpty else {
-                return Result(points: HorizontalRoute45.simplified(waypoints),
-                              outcome: .blocked(obstacle: collision.obstacle))
-            }
-
-            let alreadyTried = attempted[collision.obstacle] ?? []
-            let remaining = options.filter { !alreadyTried.contains($0.isAnticlockwise) }
-            guard let chosen = remaining.min(by: { lhs, rhs in
-                lhs.cost != rhs.cost
-                    ? lhs.cost < rhs.cost
-                    : (lhs.isAnticlockwise && !rhs.isAnticlockwise)
-            }) else {
-                // Both sides of this obstacle have been tried and neither got
-                // through. Saying so is the honest answer.
-                return Result(points: HorizontalRoute45.simplified(waypoints),
-                              outcome: .blocked(obstacle: collision.obstacle))
-            }
-            attempted[collision.obstacle, default: []].insert(chosen.isAnticlockwise)
-            detoursTaken += 1
-
-            // Splice the detour in place of the segment it replaces. Its first
-            // and last points are that segment's own endpoints.
-            waypoints.replaceSubrange(collision.segment...(collision.segment + 1),
-                                      with: chosen.points)
         }
 
-        let stuck = firstCollision(
-            along: waypoints, layer: layer, net: net, width: width,
-            index: index, clearances: clearances, exempt: exempt)
-        return Result(
-            points: HorizontalRoute45.simplified(waypoints),
-            outcome: .exhausted(obstacle: stuck?.obstacle ?? -1))
+        let direct = HorizontalRoute45.elbow(from: from, to: to, diagonalFirst: diagonalFirst)
+        var outcome = HorizontalRouteGridSearch.search(
+            from: from, to: to, collider: collider, diagonalFirst: diagonalFirst, budget: budget)
+
+        if budget.retriesOnFailure, case .unreachable(_, let reachedWindowEdge) = outcome {
+            // The first window was sized for the common case.
+            var harder = budget
+            harder.retriesOnFailure = false
+            if reachedWindowEdge {
+                // The search spilled to the window's edge, so the way round
+                // may lie beyond it: a far detour, which a coarser grid draws
+                // as well as a fine one. The window doubles and the pitch is
+                // left to coarsen with it, so the flood of whatever enclosed
+                // the first attempt costs a quarter as much the second time;
+                // the budget still doubles, because the flood comes first and
+                // the route after it.
+                let extent = max(abs(to.x - from.x), abs(to.y - from.y))
+                harder.minimumMargin = 2 * max(budget.minimumMargin, extent / 2)
+                harder.maxExpansions *= 2
+            } else {
+                // The start is enclosed at this pitch, and the only hope is a
+                // channel too narrow for the grid to have seen. Halving the
+                // pitch quadruples the cells in the same enclosure, and all of
+                // them have to be flooded before the channel is found.
+                harder.finestPitch /= 2
+                harder.cellsPerSide *= 2
+                harder.maxExpansions *= 3
+            }
+            outcome = HorizontalRouteGridSearch.search(
+                from: from, to: to, collider: collider, diagonalFirst: diagonalFirst, budget: harder)
+        }
+
+        switch outcome {
+        case .found(let staircase):
+            let pulled = pulled(
+                HorizontalRoute45.simplified(staircase), collider: collider, diagonalFirst: diagonalFirst)
+            let tight = tightened(pulled, collider: collider, diagonalFirst: diagonalFirst)
+            return Result(points: tight, outcome: .complete)
+        case .unreachable(let blocker, _):
+            return Result(points: direct, outcome: .blocked(obstacle: blocker))
+        case .exhausted(let blocker):
+            return Result(points: direct, outcome: .exhausted(obstacle: blocker))
+        }
     }
 
-    /// Pulls a route taut: drops any corner the route does not need.
+    // MARK: - Pulling a route taut
+
+    /// Replaces runs of grid steps with the longest clear elbow from each
+    /// anchor: from a point on the path, find the furthest later point an
+    /// elbow reaches without touching anything, jump there, repeat.
     ///
-    /// A detour walks the obstacle's whole corner ring, because that is the
-    /// closed-form answer and it is guaranteed legal. It is also far more
-    /// corners than the route needs — the ring has up to eight, and usually two
-    /// of them do the job. Left alone the result is a legal route that looks
-    /// like a staircase, which is what a user notices first.
+    /// The furthest point is found by galloping — doubling the stride while the
+    /// elbow stays clear, then bisecting — which assumes that what is visible
+    /// from an anchor is a prefix of the path. It is not always; the result is
+    /// then a clear route with a corner it did not need, which `tightened`
+    /// takes out. What it never is, is illegal: every jump taken was tested.
+    static func pulled(
+        _ path: [HorizontalPoint],
+        collider: HorizontalRouteCollider,
+        diagonalFirst: Bool
+    ) -> [HorizontalPoint] {
+        guard path.count > 2 else { return path }
+        let last = path.count - 1
+        var result = [path[0]]
+        var anchor = 0
+
+        while anchor < last {
+            // The next point is always reachable: it is one grid step, or the
+            // arrival elbow, both already checked by the search.
+            var reachable = anchor + 1
+            var reachableElbow: [HorizontalPoint]?
+
+            var stride = 2
+            var probe = anchor + stride
+            var firstBlocked = last + 1
+            while probe <= last {
+                if let elbow = clearElbow(from: path[anchor], to: path[probe],
+                                          collider: collider, diagonalFirst: diagonalFirst) {
+                    reachable = probe
+                    reachableElbow = elbow
+                    stride *= 2
+                    probe = anchor + stride
+                } else {
+                    firstBlocked = probe
+                    break
+                }
+            }
+
+            var low = reachable + 1
+            var high = firstBlocked - 1
+            while low <= high {
+                let middle = (low + high) / 2
+                if let elbow = clearElbow(from: path[anchor], to: path[middle],
+                                          collider: collider, diagonalFirst: diagonalFirst) {
+                    reachable = middle
+                    reachableElbow = elbow
+                    low = middle + 1
+                } else {
+                    high = middle - 1
+                }
+            }
+
+            if let reachableElbow {
+                result.append(contentsOf: reachableElbow.dropFirst())
+            } else {
+                result.append(path[reachable])
+            }
+            anchor = reachable
+        }
+        return HorizontalRoute45.simplified(result)
+    }
+
+    /// The elbow between two points if either posture of it is clear, the
+    /// route's own posture preferred.
+    private static func clearElbow(
+        from: HorizontalPoint,
+        to: HorizontalPoint,
+        collider: HorizontalRouteCollider,
+        diagonalFirst: Bool
+    ) -> [HorizontalPoint]? {
+        for posture in [diagonalFirst, !diagonalFirst] {
+            let elbow = HorizontalRoute45.elbow(from: from, to: to, diagonalFirst: posture)
+            if collider.isClear(elbow) {
+                return elbow
+            }
+        }
+        return nil
+    }
+
+    /// Drops any corner the route does not need.
     ///
-    /// So each interior corner is tested for removal: if joining its neighbours
+    /// Each interior corner is tested for removal: if joining its neighbours
     /// directly is still clear of everything, the corner goes. Only shortcuts
     /// that are checked against the board are taken, so tightening can shorten a
     /// route but never make it illegal.
-    private static func tightened(
+    static func tightened(
         _ points: [HorizontalPoint],
-        layer: Int,
-        net: Int,
-        width: Double,
-        index: HorizontalRouterIndex,
-        clearances: HorizontalRouterClearances,
-        diagonalFirst: Bool,
-        exempt: Set<Int>
+        collider: HorizontalRouteCollider,
+        diagonalFirst: Bool
     ) -> [HorizontalPoint] {
         guard points.count > 2 else { return points }
         var result = points
@@ -189,17 +277,19 @@ enum HorizontalRouteFinder {
             passes += 1
             var index0 = 1
             while index0 < result.count - 1 {
-                let shortcut = HorizontalRoute45.elbow(
+                guard let shortcut = clearElbow(
                     from: result[index0 - 1], to: result[index0 + 1],
-                    diagonalFirst: diagonalFirst)
+                    collider: collider, diagonalFirst: diagonalFirst
+                ) else {
+                    index0 += 1
+                    continue
+                }
                 var candidate = Array(result[..<(index0 - 1)])
                 candidate.append(contentsOf: shortcut)
                 candidate.append(contentsOf: result[(index0 + 2)...])
                 let simplified = HorizontalRoute45.simplified(candidate)
 
-                if HorizontalRoute45.corners(of: simplified) < HorizontalRoute45.corners(of: result),
-                   firstCollision(along: simplified, layer: layer, net: net, width: width,
-                                  index: index, clearances: clearances, exempt: exempt) == nil {
+                if HorizontalRoute45.corners(of: simplified) < HorizontalRoute45.corners(of: result) {
                     result = simplified
                     changed = true
                 } else {
@@ -209,6 +299,8 @@ enum HorizontalRouteFinder {
         }
         return result
     }
+
+    // MARK: - Endpoints
 
     /// Obstacles containing either endpoint — the pads a route connects.
     private static func endpointObstacles(
@@ -235,53 +327,5 @@ enum HorizontalRouteFinder {
             }
         }
         return exempt
-    }
-
-    /// The first place the route crosses something, walking it in order.
-    ///
-    /// Order matters: detouring around the earliest obstacle first keeps the
-    /// route's shape stable as the cursor moves, instead of re-deciding the
-    /// whole path when a later obstacle happens to become the cheapest.
-    private static func firstCollision(
-        along waypoints: [HorizontalPoint],
-        layer: Int,
-        net: Int,
-        width: Double,
-        index: HorizontalRouterIndex,
-        clearances: HorizontalRouterClearances,
-        exempt: Set<Int>
-    ) -> Collision? {
-        guard waypoints.count > 1 else { return nil }
-        let broad = clearances.broadPhaseClearance(forTrackOn: net, layer: layer) + width / 2
-
-        for segment in 0..<(waypoints.count - 1) {
-            let a = waypoints[segment]
-            let b = waypoints[segment + 1]
-            guard a != b else { continue }
-
-            // A segment running in one of the eight directions is EXACTLY its own
-            // octagon — the eight half-planes pin it to the line and to its own
-            // extent — so this collision test is a decision rather than an
-            // approximation. That is only true because routes are 45°.
-            let swept = HorizontalOctagon(from: a, to: b, width: 0)
-            let query = swept.inflated(by: broad)
-
-            var hit: Int?
-            index.forEachObstacle(overlapping: query.boundingBox, on: layer) { position, obstacle in
-                guard hit == nil, !exempt.contains(position) else { return }
-                let clearance = clearances.clearance(
-                    .track, net: net, obstacle.objectClass, net: obstacle.netCode, on: layer)
-                guard clearance > 0 || obstacle.netCode != net || net < 0 else { return }
-                // `overlaps`, not `intersects`: a route exactly at its clearance
-                // is legal, and a detour rides that boundary by construction.
-                if obstacle.hull.inflated(by: clearance + width / 2).overlaps(swept) {
-                    hit = position
-                }
-            }
-            if let hit {
-                return Collision(segment: segment, obstacle: hit)
-            }
-        }
-        return nil
     }
 }

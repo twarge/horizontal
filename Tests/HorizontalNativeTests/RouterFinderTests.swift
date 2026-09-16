@@ -257,3 +257,119 @@ extension RouterFinderTests {
         XCTAssertEqual(violations(result, blocker), 0)
     }
 }
+
+/// The cases a greedy walk cannot solve, and the reason the finder is a search.
+///
+/// Walking around one obstacle at a time commits to each decision before
+/// seeing the next. On a real board the way past a component is a SEQUENCE of
+/// decisions, and the first version of this router — which did exactly that —
+/// completed two percent of pad-to-pad routes on a real board. Each test here
+/// is a shape that defeats a greedy walk outright and that a search gets
+/// through, and each re-derives the verdict rather than trusting the report.
+extension RouterFinderTests {
+    private func p3(_ x: Double, _ y: Double) -> HorizontalPoint { HorizontalPoint(x: x, y: y) }
+
+    /// A row of pads with no gap a track fits through: the route has to go
+    /// around the whole row, not between any two of its members. A greedy walk
+    /// detours around one pad, lands on its neighbour, and gives up.
+    func testItRoutesAroundAWallOfPads() {
+        var wall: [HorizontalRouterWorld.Track] = []
+        for column in 0..<10 {
+            let x = 3_000_000 + Double(column) * 400_000
+            wall.append(track(Int64(column), p3(x, -2_000_000), p3(x, 2_000_000)))
+        }
+        let index = index(wall)
+        let result = route(from: p3(0, 0), to: p3(10_000_000, 0), index)
+
+        XCTAssertTrue(result.isComplete, "there is open board above and below the wall")
+        assertLegal45(result.points)
+        XCTAssertEqual(violations(result, index), 0)
+        let swing = result.points.map { abs($0.y) }.max() ?? 0
+        XCTAssertGreaterThan(swing, 2_000_000, "it must clear the whole row, not thread it")
+    }
+
+    /// The start is inside a U that opens AWAY from the target. Every step
+    /// towards the target is blocked; the way out is to go the other way first.
+    /// A greedy walk never does.
+    func testItEscapesAUTrap() {
+        let trap = index([
+            // The closed side, between the start and the target.
+            track(1, p3(2_000_000, -3_000_000), p3(2_000_000, 3_000_000)),
+            // The two arms, reaching back past the start.
+            track(2, p3(-4_000_000, 3_000_000), p3(2_000_000, 3_000_000)),
+            track(3, p3(-4_000_000, -3_000_000), p3(2_000_000, -3_000_000)),
+        ])
+        let result = route(from: p3(0, 0), to: p3(6_000_000, 0), trap)
+
+        XCTAssertTrue(result.isComplete, "the U is open at its back")
+        assertLegal45(result.points)
+        XCTAssertEqual(violations(result, trap), 0)
+        let furthestBack = result.points.map(\.x).min() ?? 0
+        XCTAssertLessThan(furthestBack, -4_000_000, "it has to leave through the open back")
+    }
+
+    /// Two long walls with one channel through them, just wide enough for the
+    /// track and its clearance. The only route is through the channel, and the
+    /// grid has to be fine enough to find it.
+    func testItThreadsANarrowChannel() {
+        // Between the walls' centre lines the track needs half a wall, a
+        // clearance, its own width, a clearance and half a wall again — 100 +
+        // 150 + 200 + 150 + 100 µm — so its centre may sit anywhere in a band
+        // as wide as the spare room given here.
+        let half = (width / 2 + clearance + width + clearance + width / 2 + 100_000) / 2
+        let walls = index([
+            track(1, p3(5_000_000, half), p3(5_000_000, 40_000_000)),
+            track(2, p3(5_000_000, -40_000_000), p3(5_000_000, -half)),
+        ])
+        let result = route(from: p3(0, 1_500_000), to: p3(10_000_000, -1_500_000), walls)
+
+        XCTAssertTrue(result.isComplete, "the channel is wide enough and the walls too long to go around")
+        assertLegal45(result.points)
+        XCTAssertEqual(violations(result, walls), 0)
+        let crossing = result.points.filter { abs($0.x - 5_000_000) < 600_000 }
+        XCTAssertFalse(crossing.isEmpty)
+        for point in crossing {
+            XCTAssertLessThan(abs(point.y), half, "it crossed the wall line outside the channel")
+        }
+    }
+
+    /// Whatever the search did to find it, the route it hands back is a few
+    /// elbows, not the staircase of grid steps it was found as.
+    func testASearchedRouteIsPulledTaut() {
+        let blockers = index([
+            track(1, p3(3_000_000, -2_000_000), p3(3_000_000, 2_000_000)),
+            track(2, p3(7_000_000, -1_000_000), p3(7_000_000, 3_000_000)),
+        ])
+        let result = route(from: p3(0, 0), to: p3(10_000_000, 0), blockers)
+
+        XCTAssertTrue(result.isComplete)
+        XCTAssertEqual(violations(result, blockers), 0)
+        let corners = HorizontalRoute45.corners(of: result.points)
+        XCTAssertLessThanOrEqual(corners, 8, "two obstacles should not cost \(corners) corners: \(result.points)")
+    }
+
+    /// The budget is honoured: an enormous unreachable window comes back with
+    /// `exhausted`, not a hang.
+    func testAnUnreachableTargetComesBackWithinItsBudget() {
+        let box = index([
+            track(1, p3(8_000_000, -2_000_000), p3(12_000_000, -2_000_000)),
+            track(2, p3(8_000_000, 2_000_000), p3(12_000_000, 2_000_000)),
+            track(3, p3(12_000_000, -2_000_000), p3(12_000_000, 2_000_000)),
+            track(4, p3(8_000_000, -2_000_000), p3(8_000_000, 2_000_000)),
+        ])
+        var budget = HorizontalRouteFinder.Budget()
+        budget.maxExpansions = 500
+        let result = HorizontalRouteFinder.route(
+            from: p3(0, 0), to: p3(10_000_000, 0), layer: 0, net: 1, width: width,
+            index: box, clearances: clearances, budget: budget)
+
+        XCTAssertFalse(result.isComplete)
+        if case .exhausted(let obstacle) = result.outcome {
+            XCTAssertTrue(box.obstacles.indices.contains(obstacle), "it should still name what was in the way")
+        } else if case .blocked = result.outcome {
+            // Also acceptable: the search may exhaust the reachable region first.
+        } else {
+            XCTFail("unreachable")
+        }
+    }
+}

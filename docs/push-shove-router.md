@@ -3,6 +3,76 @@
 A design study. No code yet — this is the specification work that has to happen
 before any, and the licensing constraint that shapes it.
 
+## A search, not a walk (September 2026)
+
+The walkaround router completed two percent of pad-to-pad routes on the real
+board, and every failure fell back to the plain elbow, so in the app it looked
+as if it ignored obstacles altogether. The diagnosis, from a harness that
+classified the failures: of 122 failures, 94 had both endpoints reachable at
+that width. The rules were not the limit; the greedy walk was. It detoured
+around one obstacle at a time and committed to each side before seeing the
+next, and the way past a dense component is a sequence of such decisions.
+
+`HorizontalRouteFinder` now runs a **search**. When the plain elbow is not clear
+it hands the request to `HorizontalRouteGridSearch`: A* over an octilinear grid
+whose moves are the eight routing directions, so every path it returns is a
+legal 45° route, and whose every move is tested exactly against the obstacle
+hulls, so every path it returns is clear. The grid is anchored on the start
+point, so grid points stay on integer nanometres, and the target is reached by
+an elbow from whichever node first sees it clear. What comes back is a
+staircase; the finder pulls it taut — from each anchor the furthest later point
+a clear elbow reaches, found by galloping and bisection — and then drops any
+corner whose removal is still clear. Each shortcut is tested, so the pulling
+shortens a route but never makes it illegal.
+
+Things learned making it fast enough, all measured on the real board in a
+release build (`swift test -c release`; the unoptimised test build is fifty
+times slower and its timings mean nothing):
+
+- **The heuristic is over-weighted, by 1.5.** Plain A* expands every node whose
+  estimate is below the true cost, and in a dense field where the route is
+  much longer than the crow flies that is an ellipse of thousands of cells.
+  Weighting makes the search greedy towards the target; the pulling pass
+  recovers most of what that costs in route quality.
+- **The spatial index was queried once per node, and that was most of the
+  cost.** Its cells were sized to the average obstacle, which on a board with
+  long tracks is millimetres, so a query in a dense area sorted hundreds of
+  pads. Cells are now sized for the query (a quarter of a millimetre) with
+  obstacles spread over every cell they touch, and the search queries once per
+  8×8 block of grid cells and then screens the block's list per node by a
+  distance lower bound — an obstacle further from the node than the longest
+  move cannot be touched by any move — so most nodes test a handful of hulls
+  exactly and many test none.
+- **The octagon is a `SIMD8<Double>`, not an array.** An array-backed octagon
+  heap-allocated on every inflate, in the innermost loop.
+- **A target nothing can arrive at is checked first.** If no step of one cell
+  in any direction can end on the target, no grid path can, and the search
+  would otherwise flood its whole window to discover that.
+- **One retry, wider or finer.** When the search empties its heap it says
+  whether the region it explored reached the window's edge. If it did, the way
+  round may lie beyond: the window doubles, the pitch coarsens with it (a far
+  detour needs no fine grid) and the budget doubles. If it did not, the start
+  is enclosed at that pitch and only a channel narrower than the grid could
+  help: the pitch halves, the cells quadruple, the budget triples. On the real
+  board the retry rescues about a tenth of what the first attempt gives up on.
+
+The measured result on Randi Short, top copper, 0.2 mm tracks, 125 sampled
+pad pairs one to twenty millimetres apart: **53% complete, none with a
+violation**, against 2% before. A completed route takes about 2 ms at the
+median and 4 ms at the ninetieth percentile; a request that fails takes up to
+about 12 ms, because failing means flooding the reachable region. The other
+47% are, as far as a much finer grid and a much wider window can tell, not
+routable at that width on that layer: the board is dense and already routed,
+and the target pad's neighbours leave no gap or the start sits in a pocket of
+finished copper. The harness now asserts a completion floor as well as the
+violation invariant, and samples its pads in a sorted order — the board hands
+them back in dictionary order, which differs from one process to the next,
+and a sample that differs run to run turns every number into noise.
+
+The walkaround (`HorizontalRouteWalkaround`) stays in the tree. The finder no
+longer calls it, but it is tested, it is the piece a shove is built from, and
+its tangent-selection lesson below still stands.
+
 ## Tangent selection (September 2026)
 
 The detour entry used to be the ring corner *nearest* the approach. That is the
@@ -296,10 +366,13 @@ treatment the pour got:
    45° path, so a detour is that arc with an elbow at each end. Choice between
    them is by cost with a deterministic tie-break, since a router that picks
    differently run to run cannot be used to compare two versions of a board.
-   Recursion over successive obstacles is in `HorizontalRouteFinder.swift`:
+   Recursion over successive obstacles WAS in `HorizontalRouteFinder.swift`:
    detour around the earliest collision, re-check, repeat under a budget, and
-   try an obstacle's other side before declaring it blocked. It shoves nothing,
-   so it is usable as it stands.
+   try an obstacle's other side before declaring it blocked. That greedy walk
+   completed two percent of real routes and was replaced by the grid search
+   described at the top of this document (`HorizontalRouteGridSearch.swift`);
+   the finder now tries the plain elbow, then the search, then pulls the
+   result taut. It shoves nothing, so it is usable as it stands.
 
    `HorizontalBoardTrackRouterSession` is the seam to the board: it extracts and
    indexes the world ONCE when a drawing gesture starts — about a millisecond,
@@ -330,22 +403,24 @@ treatment the pour got:
    start on a pad. It samples pad-to-pad requests on Randi Short and reports
    completion rate, violations, corner counts and what blocked.
 
-   Its first run is the honest picture: **117 routes tried, 2 completed, 115
-   blocked** — by pads (70), vias (23) and tracks (22). The cause it identified:
-   a detour picks its entry onto the obstacle's corner ring by PROXIMITY and
-   then elbows to it, and that elbow cuts straight through the hull it is meant
-   to avoid, so both sides fail and the route gives up. **Tangent selection is
-   the fix and is the next piece of work.** The harness is recorded as an
-   expected failure so the suite stays honest — it goes green when the router
-   actually works.
+   Its first run was the honest picture: **117 routes tried, 2 completed, 115
+   blocked** — by pads (70), vias (23) and tracks (22). Tangent selection fixed
+   the violations but not the completion; the grid search did, and the harness
+   now asserts a floor on it (see the top of this document).
 
    **Still honest about quality:** the routes are legal and no longer staircases,
    but they are not yet pretty. The optimiser the study describes — pad exits,
    corner merging beyond simple removal — is not built.
 
-   **Still to do:** the shove itself (steps 4–5), and removing the inert
+   When the router finds no way through, the tool now draws NO preview and a
+   click lays nothing — it used to fall back to the plain elbow, which cut
+   through everything and looked exactly like a router ignoring obstacles.
+
+   **Still to do:** the shove itself (steps 4–5); removing the inert
    `#if canImport(HorizontalPushShoveRouter)` blocks that remain in
-   `BoardCanvasView` from the vendored engine.
+   `BoardCanvasView` from the vendored engine; and telling the user WHAT is in
+   the way when a route fails — the finder names the obstacle and the session
+   maps it to a board object, but the tool does not yet highlight it.
 
    Two things this uncovered. A route riding an inflated hull's boundary is
    exactly at its clearance and therefore legal, so the collision test needs

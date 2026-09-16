@@ -157,22 +157,23 @@ final class HorizontalRouterIndex {
         var minY = Double.greatestFiniteMagnitude
         var maxX = -Double.greatestFiniteMagnitude
         var maxY = -Double.greatestFiniteMagnitude
-        var totalSpan = 0.0
         for obstacle in obstacles {
             minX = min(minX, obstacle.box.minX)
             minY = min(minY, obstacle.box.minY)
             maxX = max(maxX, obstacle.box.maxX)
             maxY = max(maxY, obstacle.box.maxY)
-            totalSpan += max(obstacle.box.width, obstacle.box.height)
         }
 
-        // Size cells to the average obstacle rather than to the board: too small
-        // and a track is written into hundreds of cells, too large and every
-        // query returns most of the board.
-        let averageSpan = totalSpan / Double(obstacles.count)
+        // Size cells for the QUERIES, not for the obstacles. A query is a
+        // track-sized neighbourhood, a fraction of a millimetre across, and it
+        // has to gather few candidates. Sizing cells to the average obstacle
+        // made them millimetres wide on a board with long tracks, and every
+        // query in a dense area then sorted hundreds of pads it had no interest
+        // in. A long obstacle is instead written into every cell it touches,
+        // which is cheap once at build time and costs a query nothing.
         let span = max(maxX - minX, maxY - minY)
-        let targetCells = 128.0
-        cellSize = max(max(averageSpan, 1), span / targetCells)
+        let targetCells = 256.0
+        cellSize = max(200_000, span / targetCells)
         originX = minX
         originY = minY
         columns = max(1, min(512, Int(((maxX - minX) / cellSize).rounded(.up)) + 1))
@@ -182,9 +183,10 @@ final class HorizontalRouterIndex {
         for (index, obstacle) in obstacles.enumerated() {
             let range = cellRange(for: obstacle.box)
             let touched = (range.maxColumn - range.minColumn + 1) * (range.maxRow - range.minRow + 1)
-            // 32 cells is where bucketing stops paying for itself and the
-            // obstacle is cheaper to test on every query than to spread.
-            if touched > 32 {
+            // Past a few thousand cells — a track the length of the board, on
+            // the diagonal — bucketing stops paying for itself and the obstacle
+            // is cheaper to test on every query than to spread.
+            if touched > 4096 {
                 oversized.append(Int32(index))
                 continue
             }
