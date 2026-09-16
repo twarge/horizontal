@@ -51,7 +51,8 @@ struct HorizontalSettingsView: View {
 
             // Off is the standard chrome on both platforms: the system toolbar
             // background on macOS, the glass island behind the top-bar buttons
-            // on iPad. On, the canvas runs up underneath it.
+            // on iPad. On, that background goes away. The canvas runs up
+            // underneath the toolbar either way; only the background changes.
             Section("Toolbar") {
                 Toggle("Transparent Toolbar", isOn: appearanceSettings.transparentToolbarBinding())
                 Text(transparentToolbarDescription)
