@@ -176,7 +176,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "autoroute",
-            summary: "Try to route a net's airwires automatically, on one layer. Best effort and usually not enough: on a dense board it completes a small minority, because it walks around one obstacle at a time rather than searching. What it does complete is checked clear before it is written; what it cannot is reported and left as an airwire for place_track.",
+            summary: "Try to route a net's airwires automatically, on one layer. Each airwire is searched for a clear 45° path around everything already on the layer; nothing is moved and no via is placed, so on a dense board some airwires have no such path. What it does complete is checked clear before it is written; what it cannot is reported, with what blocked it, and left as an airwire for place_track.",
             params: ["handle": "Project handle.", "net": "Net name or id to route.",
                      "layer": "Copper layer number (optional; default 0, the top).",
                      "width_mm": "Track width (optional; the net class's track_width rule, else required).",
@@ -1980,12 +1980,13 @@ enum HorizontalDispatchMethods {
 
     /// Best-effort automatic routing of one net's airwires.
     ///
-    /// The finder walks around one obstacle at a time and gives up after trying
-    /// both ways past each, so on a real board it completes a few percent of
-    /// requests. That is the honest state of it. What it does complete is
-    /// verified clear by the finder before it is reported complete, so a route
-    /// written here respects the board's clearances; everything else stays an
-    /// airwire and is named in the result.
+    /// Each airwire goes to the finder, which searches for a clear 45° path
+    /// around everything on the layer (`docs/push-shove-router.md`). Nothing is
+    /// shoved and no via is placed, so on a dense board an airwire whose ends
+    /// are boxed in by finished copper has no such path and stays an airwire,
+    /// named in the result with what blocked it. What the finder does complete
+    /// it has verified clear, so a route written here respects the board's
+    /// clearances.
     @Sendable private static func autoroute(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         guard let board = entry.project.board else {

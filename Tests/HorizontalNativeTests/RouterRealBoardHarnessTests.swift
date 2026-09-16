@@ -65,12 +65,16 @@ final class RouterRealBoardHarnessTests: XCTestCase {
         let layer = HorizontalBoardLayers.topCopper
         let width = 200_000.0
 
-        // Pad centres on the top layer, with their nets.
+        // Pad centres on the top layer, with their nets. Sorted, because the
+        // board hands its pads back in dictionary order, which differs from
+        // one process to the next — and a sample that differs run to run
+        // turns every number below into noise.
         var pads: [(point: HorizontalPoint, net: String?)] = []
         for pad in board.packagePads where pad.layer == layer {
             let centre = HorizontalRect(points: pad.renderVertices(arcPrecision: 16)).center
             pads.append((centre, pad.netID))
         }
+        pads.sort { $0.point.x != $1.point.x ? $0.point.x < $1.point.x : $0.point.y < $1.point.y }
         try XCTSkipIf(pads.count < 20, "board has too few top-layer pads to sample")
 
         // Deterministic sample of pairs a few millimetres apart — the length of
@@ -146,21 +150,26 @@ final class RouterRealBoardHarnessTests: XCTestCase {
         """
         try? report.write(toFile: "/tmp/router-harness.txt", atomically: true, encoding: .utf8)
 
-        // The invariant, and it now holds: tangent selection replaced the
-        // nearest-corner entry that used to elbow straight through the hull a
-        // detour existed to avoid, and with it went every violation. What a
-        // route reports is what it is.
+        // The invariant: what a route reports is what it is.
         XCTAssertEqual(violating, 0, "a route reported complete must actually be clear")
-        XCTAssertLessThan(worstMilliseconds, 250, "no single route should take a quarter second")
+        // A hang guard, not a budget: tests build unoptimised, and the search
+        // runs fifty times faster in a release build than here. The budget —
+        // single-digit milliseconds for a route that completes — is measured
+        // with `swift test -c release` and recorded in the design study.
+        XCTAssertLessThan(worstMilliseconds, 1_000, "no single route should take a second, even unoptimised")
         XCTAssertGreaterThan(attempted, 20, "the sample should be big enough to mean something")
 
-        // Completion is REPORTED, not asserted. On a dense board the finder
-        // walks around one obstacle at a time and gives up after trying both
-        // ways past each, so it completes a small minority of pad-to-pad
-        // requests — a few percent, and it varies with the random sample. That
-        // is an algorithmic ceiling, not a defect: getting past it means a real
-        // search rather than a greedy walk. Pinning a number here would only
-        // record today's sample. See docs/push-shove-router.md.
-        XCTAssertGreaterThanOrEqual(completed, 0)
+        // Completion has a floor now that a search backs it. This board is
+        // dense and already routed, and about half the sampled pad pairs have
+        // no legal path at this width on this layer at all — the target pad's
+        // neighbours leave no gap, or the start sits in a pocket of finished
+        // copper — so the ceiling is well under 100%. What the greedy walk
+        // managed was two percent; a search that fell back to that would be
+        // the router the user complained about, and this is what catches it.
+        // The sample is deterministic (see the sort above), so the number is a
+        // measurement rather than a lottery.
+        XCTAssertGreaterThan(
+            completed * 100 / max(attempted, 1), 35,
+            "a search should complete a substantial share of routable pairs; see /tmp/router-harness.txt")
     }
 }

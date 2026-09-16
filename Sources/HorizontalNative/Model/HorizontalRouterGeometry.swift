@@ -96,38 +96,46 @@ private extension Double {
 ///    test over those eight is not an approximation but a decision.
 ///
 /// The extents are, in order: +x, +(x+y), +y, +(-x+y), -x, -(x+y), -y, -(-x+y).
+///
+/// They live in a `SIMD8`, not an array, and that is a performance decision
+/// rather than a stylistic one: the router tests thousands of these per mouse
+/// move, and an array-backed octagon heap-allocates on every inflate. A SIMD8 is
+/// sixty-four bytes on the stack, and every test below is a handful of vector
+/// operations with no allocation at all.
 struct HorizontalOctagon: Equatable, Sendable {
     /// Support value per `HorizontalDirection45`, indexed by its raw value.
-    private(set) var extents: [Double]
+    private(set) var extents: SIMD8<Double>
 
-    private init(extents: [Double]) {
+    private init(extents: SIMD8<Double>) {
         self.extents = extents
     }
 
-    /// Projection of `point` onto direction `d`'s (unnormalised) normal.
+    /// Projection of `point` onto every direction's (unnormalised) normal.
     ///
     /// Diagonal normals are deliberately left unnormalised — `(1, 1)` rather than
     /// `(1, 1)/√2` — so every projection of an integer-nanometre coordinate stays
     /// an exact integer. The √2 reappears in `inflated(by:)`, which is the only
     /// place it can be handled honestly.
     @inline(__always)
+    static func supports(_ point: HorizontalPoint) -> SIMD8<Double> {
+        let x = point.x
+        let y = point.y
+        return SIMD8(x, x + y, y, -x + y, -x, -x - y, -y, x - y)
+    }
+
+    /// Projection of `point` onto direction `d`'s (unnormalised) normal.
+    @inline(__always)
     static func support(_ point: HorizontalPoint, _ direction: HorizontalDirection45) -> Double {
-        let step = direction.step
-        return point.x * step.x + point.y * step.y
+        supports(point)[direction.rawValue]
     }
 
     /// The smallest octagon containing every point. Empty input yields nil rather
     /// than a degenerate octagon that would silently collide with nothing.
     init?(points: [HorizontalPoint]) {
         guard let first = points.first else { return nil }
-        var extents = HorizontalDirection45.allCases.map { Self.support(first, $0) }
+        var extents = Self.supports(first)
         for point in points.dropFirst() {
-            for direction in HorizontalDirection45.allCases {
-                let value = Self.support(point, direction)
-                if value > extents[direction.rawValue] {
-                    extents[direction.rawValue] = value
-                }
-            }
+            extents = pointwiseMax(extents, Self.supports(point))
         }
         self.extents = extents
     }
@@ -135,14 +143,24 @@ struct HorizontalOctagon: Equatable, Sendable {
     /// The octagon covering a track segment of the given width — its two
     /// endpoints, each grown by half the width.
     init(from: HorizontalPoint, to: HorizontalPoint, width: Double) {
-        // Safe because the point list is never empty.
-        self = HorizontalOctagon(points: [from, to])!.inflated(by: max(width, 0) / 2)
+        self.extents = pointwiseMax(Self.supports(from), Self.supports(to))
+        if width > 0 {
+            self = inflated(by: width / 2)
+        }
     }
 
     /// The octagon circumscribing a circle — a via, or a round pad.
     init(center: HorizontalPoint, radius: Double) {
-        self = HorizontalOctagon(points: [center])!.inflated(by: max(radius, 0))
+        self.extents = Self.supports(center)
+        if radius > 0 {
+            self = inflated(by: radius)
+        }
     }
+
+    /// Which extents belong to diagonal directions, as a vector mask so that
+    /// inflating is one multiply-add rather than a loop.
+    private static let diagonalFaces = SIMD8<Double>(0, 1, 0, 1, 0, 1, 0, 1)
+    private static let axialFaces = SIMD8<Double>(1, 0, 1, 0, 1, 0, 1, 0)
 
     /// Grows the octagon by `distance` in every direction, as a Minkowski sum
     /// with a disc of that radius.
@@ -156,37 +174,51 @@ struct HorizontalOctagon: Equatable, Sendable {
     /// where the board has a violation — the one error worth biasing against.
     func inflated(by distance: Double) -> HorizontalOctagon {
         guard distance != 0 else { return self }
-        let axial = distance
         let diagonal = (distance * 2.0.squareRoot()).rounded(.up)
-        var grown = extents
-        for direction in HorizontalDirection45.allCases {
-            grown[direction.rawValue] += direction.isDiagonal ? diagonal : axial
-        }
-        return HorizontalOctagon(extents: grown)
+        return HorizontalOctagon(
+            extents: extents + Self.axialFaces * distance + Self.diagonalFaces * diagonal)
     }
 
     func contains(_ point: HorizontalPoint) -> Bool {
-        for direction in HorizontalDirection45.allCases
-        where Self.support(point, direction) > extents[direction.rawValue] {
-            return false
-        }
-        return true
+        !any(Self.supports(point) .> extents)
+    }
+
+    /// Per-lane factor that turns a margin in support units into a distance:
+    /// the diagonal normals are √2 long, so a margin along one of them is √2
+    /// times the distance it represents.
+    private static let laneScale = SIMD8<Double>(
+        1, 1 / 2.0.squareRoot(), 1, 1 / 2.0.squareRoot(),
+        1, 1 / 2.0.squareRoot(), 1, 1 / 2.0.squareRoot())
+
+    /// A lower bound on how far a point — given by its `supports` — lies
+    /// outside this octagon: the largest margin by which it clears any face.
+    ///
+    /// Never an overestimate. The octagon lies inside each of its eight
+    /// half-planes, so the point's distance to the octagon is at least its
+    /// distance to any one of them. Zero or negative means the point is on or
+    /// inside. The router uses this to skip obstacles a step from a node
+    /// cannot reach, without a per-step test.
+    @inline(__always)
+    func separation(from supports: SIMD8<Double>) -> Double {
+        ((supports - extents) * Self.laneScale).max()
+    }
+
+    /// The extents re-ordered so that lane `d` holds the extent along `d`'s
+    /// OPPOSITE direction — what the separating-axis tests pair this octagon's
+    /// lanes with.
+    private var opposites: SIMD8<Double> {
+        SIMD8(lowHalf: extents.highHalf, highHalf: extents.lowHalf)
     }
 
     /// Whether two octagons share any point, touching included.
     ///
     /// Both shapes have the same eight face normals, so the separating-axis
     /// theorem over exactly those eight is a decision rather than an
-    /// approximation: if none of them separates the two, they overlap.
+    /// approximation: if none of them separates the two, they overlap. The pair
+    /// separates along a direction when this octagon's extent along it falls
+    /// short of where the other one begins.
     func intersects(_ other: HorizontalOctagon) -> Bool {
-        for direction in HorizontalDirection45.allCases {
-            // The pair separates when this octagon's extent along `direction`
-            // falls short of where the other one begins.
-            if extents[direction.rawValue] + other.extents[direction.opposite.rawValue] < 0 {
-                return false
-            }
-        }
-        return true
+        !any((extents + other.opposites) .< 0)
     }
 
     /// The octagon's corners, anticlockwise from the +x face.
@@ -235,12 +267,7 @@ struct HorizontalOctagon: Equatable, Sendable {
     /// boundary by construction, so testing with `intersects` would report every
     /// detour as colliding with the very thing it was drawn to avoid.
     func overlaps(_ other: HorizontalOctagon) -> Bool {
-        for direction in HorizontalDirection45.allCases {
-            if extents[direction.rawValue] + other.extents[direction.opposite.rawValue] <= 0 {
-                return false
-            }
-        }
-        return true
+        !any((extents + other.opposites) .<= 0)
     }
 
     /// The axis-aligned bounds, for handing to a spatial index.
@@ -260,10 +287,6 @@ struct HorizontalOctagon: Equatable, Sendable {
     /// True when the extents describe no region at all, which can only happen if
     /// a caller builds one by hand with contradictory values.
     var isEmpty: Bool {
-        for direction in HorizontalDirection45.allCases
-        where extents[direction.rawValue] + extents[direction.opposite.rawValue] < 0 {
-            return true
-        }
-        return false
+        any((extents + opposites) .< 0)
     }
 }

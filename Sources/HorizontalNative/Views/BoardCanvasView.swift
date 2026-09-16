@@ -4060,12 +4060,13 @@ struct BoardCanvasView: View {
     /// drawn. With it on, the route bends around existing copper instead —
     /// nothing is shoved, so everything already on the board stays put.
     ///
-    /// A route the router could NOT complete is discarded rather than drawn.
-    /// Its partial path collides with whatever stopped it, so showing it makes
-    /// the router look like it ignores pads, and committing it would lay copper
-    /// that violates the board's own rules. Falling back to the plain elbow
-    /// leaves the user with the tool's ordinary behaviour, which is honest: the
-    /// router had nothing better to offer here.
+    /// With it on and no clear route to be had, this returns NOTHING: the
+    /// preview disappears and a click lays no copper. The router's partial
+    /// path collides with whatever stopped it, and the plain elbow this used
+    /// to fall back to collides with everything in between — either one on
+    /// screen looks like the router ignoring obstacles, and either one
+    /// committed is copper that violates the board's own rules. An empty
+    /// preview says what is true: there is no way through from here.
     private func trackSpecs(
         from: HorizontalPoint,
         to: HorizontalPoint,
@@ -4076,12 +4077,8 @@ struct BoardCanvasView: View {
             let result = session.route(
                 from: from, to: to, layer: state.layer, netID: netID,
                 width: state.width, diagonalFirst: state.bendMode == .xy)
-            if result.isComplete {
-                let specs = BoardTrackRouting.specs(alongPath: result.points)
-                if !specs.isEmpty {
-                    return specs
-                }
-            }
+            guard result.isComplete else { return [] }
+            return BoardTrackRouting.specs(alongPath: result.points)
         }
         return BoardTrackRouting.route(
             from: from, to: to,
