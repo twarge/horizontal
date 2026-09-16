@@ -888,11 +888,24 @@ struct ProjectWorkspaceView: View {
     }
 
     /// Canvas content always runs up underneath the toolbar, whether or not the
-    /// toolbar is transparent. The Transparent Toolbar preference only decides
-    /// whether there is a background between the canvas and the toolbar items
-    /// (`toolbarBackdrop`); it never moves the canvas down, so the layout is the
-    /// same in both states. The overlays inside each pane (tool rails, info
-    /// buttons) pad themselves down by the top safe-area inset to clear the bar.
+    /// toolbar is transparent; the preference never moves the canvas down, so
+    /// the layout is the same in both states. The overlays inside each pane
+    /// (tool rails, info buttons) pad themselves down by the top safe-area
+    /// inset to clear the bar.
+    ///
+    /// The pane split sits inside a scroll view that cannot scroll: its content
+    /// is exactly the viewport, toolbar strip included. That is what gives the
+    /// standard toolbar its background. On macOS 26 and later the title bar
+    /// draws nothing of its own over full-size content; the only system-drawn
+    /// toolbar background is the scroll-edge effect, and it renders only over a
+    /// scroll view's own content — not over a sibling beneath a transparent
+    /// scroll view, and not in the hard style unless the content is real. Being
+    /// the system's effect, it follows the Liquid Glass and Reduce Transparency
+    /// settings and looks the same whether the window is active or not, like
+    /// Mail's toolbar. The canvases take their wheel and pinch events through a
+    /// local event monitor before the scroll view could see them, and scrolling
+    /// is disabled besides. Transparent toolbar: the effect is hidden and the
+    /// canvas shows through.
     private var workspaceDetail: some View {
         GeometryReader { proxy in
             // The right sidebar is a real column: opening it pushes the pane
@@ -901,9 +914,16 @@ struct ProjectWorkspaceView: View {
             let canvasInsets = proxy.safeAreaInsets
 
             HStack(spacing: 0) {
-                splitContent(safeAreaInsets: canvasInsets)
-                    .ignoresSafeArea(.container, edges: [.top, .leading])
-                    .frame(maxWidth: .infinity)
+                ScrollView(.vertical) {
+                    splitContent(safeAreaInsets: canvasInsets)
+                        .frame(height: proxy.size.height + canvasInsets.top)
+                }
+                .scrollDisabled(true)
+                .scrollIndicators(.hidden)
+                .scrollEdgeEffectStyle(.hard, for: .top)
+                .scrollEdgeEffectHidden(appearanceSettings.isToolbarTransparent, for: .top)
+                .ignoresSafeArea(.container, edges: [.top, .leading])
+                .frame(maxWidth: .infinity)
 
                 if let rightSidebarPane {
                     rightSidebarView(rightSidebarPane, safeAreaInsets: canvasInsets)
@@ -919,9 +939,6 @@ struct ProjectWorkspaceView: View {
                 }
             }
             .animation(.snappy(duration: 0.18), value: rightSidebarPane)
-            .overlay(alignment: .top) {
-                toolbarBackdrop(height: canvasInsets.top)
-            }
             .overlay(alignment: .bottom) {
                 HorizontalVoiceTranscriptOverlay(control: voiceControl)
             }
@@ -933,27 +950,6 @@ struct ProjectWorkspaceView: View {
         // what remains, and the split view divides evenly once panes go below
         // their preferred minimum.
         .frame(minWidth: 660)
-    }
-
-    /// The standard toolbar's background: the system title-bar material between
-    /// the canvases and the toolbar items, so the canvas shows through it
-    /// blurred, as content does under any native toolbar. The title bar draws
-    /// no background of its own over full-size content on macOS 26 and later
-    /// (the toolbar is glass; only scroll views get a scroll-edge effect), so
-    /// the workspace paints it. Spans the right sidebar too, which also runs
-    /// under the toolbar. Nothing when the toolbar is transparent — the canvas
-    /// shows through unblurred — or hidden, when there is no top inset to fill.
-    @ViewBuilder
-    private func toolbarBackdrop(height: CGFloat) -> some View {
-        if !appearanceSettings.isToolbarTransparent, height > 0 {
-            VStack(spacing: 0) {
-                ToolbarBackdropMaterial()
-                    .frame(height: height)
-                Spacer(minLength: 0)
-            }
-            .ignoresSafeArea(.container, edges: [.top, .leading, .trailing])
-            .allowsHitTesting(false)
-        }
     }
 
     @ViewBuilder
@@ -4834,9 +4830,10 @@ private struct NavigatorColorRow: View {
 /// Standard window chrome by default; the Transparent Toolbar preference makes
 /// the title bar see-through. The canvas runs underneath the toolbar in both
 /// states. On macOS 26 and later the title bar draws no background of its own
-/// over full-size content either way, so the opaque look comes from the
-/// workspace's own `toolbarBackdrop` strip; `titlebarAppearsTransparent` still
-/// governs the title-bar material on earlier systems.
+/// over full-size content either way; the standard toolbar's background is the
+/// scroll-edge effect of the workspace's scroll view (see `workspaceDetail`).
+/// `titlebarAppearsTransparent` still governs the title-bar material on
+/// earlier systems.
 ///
 /// `.fullSizeContentView` stays on either way. It is what keeps the toolbar
 /// laid out across the split columns — sidebar toggle over the navigator, title
@@ -4887,25 +4884,6 @@ private struct WindowChromeConfigurator: NSViewRepresentable {
             }
         }
     }
-}
-
-/// AppKit's own title-bar material, blended within the window so it blurs the
-/// canvas beneath it rather than the desktop behind the window. SwiftUI's
-/// `.bar` material is the obvious spelling, but on macOS 26 and later it
-/// renders as an opaque white band over the Metal canvas, and the SwiftUI
-/// materials that do blend within the window (`.regularMaterial` and thinner)
-/// take far more of the canvas colour than a system toolbar does. Liquid Glass
-/// (`glassEffect`) barely blurs and flattens the toolbar items' own glass.
-private struct ToolbarBackdropMaterial: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .titlebar
-        view.blendingMode = .withinWindow
-        view.state = .followsWindowActiveState
-        return view
-    }
-
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
 
 private struct WindowSizeObserver: NSViewRepresentable {
