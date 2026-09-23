@@ -864,6 +864,8 @@ struct ProjectWorkspaceView: View {
                 project: project,
                 selection: $navigatorSelection,
                 searchText: $navigatorSearchText,
+                highlightedNetIDs: highlightedNetIDs,
+                highlightColor: appearanceSettings.palette(for: .schematic, colorScheme: colorScheme).junction,
                 allowsSheetEditing: !isReadOnly,
                 onRenameSheet: { schematicURL, sheetID, name in
                     renameSheet(sheetID: sheetID, to: name, schematicURL: schematicURL)
@@ -1541,7 +1543,9 @@ struct ProjectWorkspaceView: View {
                 ) {
                     if let selectedSchematic {
                         WindowAttachedCanvasHost(
-                            loadID: "schematic-\(selectedSchematic.url.path)-\(selectedSchematic.sheet.id)",
+                            // By file, not by sheet: flipping pages updates the
+                            // canvas in place, where each page's scene is cached.
+                            loadID: "schematic-\(selectedSchematic.url.path)",
                             backgroundColor: appearanceSettings.palette(for: .schematic, colorScheme: colorScheme).background,
                             loadingLabel: "Loading Schematic..."
                         ) {
@@ -1561,6 +1565,7 @@ struct ProjectWorkspaceView: View {
                                 onSelectedComponentChange: selectComponents,
                                 onHighlightNetCommand: highlightSelectedNet,
                                 onHighlightComponentCommand: highlightSelectedComponents,
+                                onSelectionClearedBySheetChange: clearSelectionKeepingHighlight,
                                 onSheetChange: { sheet in
                                     applyEditedSchematicSheet(sheet, schematicURL: selectedSchematic.url)
                                 },
@@ -2234,13 +2239,24 @@ struct ProjectWorkspaceView: View {
     /// either way the other canvases are told; a canvas already showing that
     /// selection ignores the request, which is what stops the round trip.
     private func selectComponents(_ componentIDs: Set<String>) {
-        if componentIDs != selectedComponentIDs {
+        selectComponents(componentIDs, keepingHighlight: false)
+    }
+
+    private func selectComponents(_ componentIDs: Set<String>, keepingHighlight: Bool) {
+        if componentIDs != selectedComponentIDs, !keepingHighlight {
             highlightedComponentIDs.removeAll()
         }
         selectedComponentIDs = componentIDs
         for pane in [HorizontalPane.board, .schematic] {
             canvasCommandActionsByPane[pane]?.selectComponents?(componentIDs)
         }
+    }
+
+    /// A schematic page change drops the page's selection, but a highlight
+    /// is by net and component, so it follows onto the next page.
+    private func clearSelectionKeepingHighlight() {
+        selectedNetIDs = []
+        selectComponents([], keepingHighlight: true)
     }
 
     private func highlightSelectedNet() {
@@ -3603,6 +3619,11 @@ struct ProjectNavigatorView: View {
     var project: HorizontalProject
     @Binding var selection: ProjectNavigatorSelection?
     @Binding var searchText: String
+    /// Sheets drawing any of these nets are marked, so a highlighted net can
+    /// be followed from page to page.
+    var highlightedNetIDs: Set<String> = []
+    /// The schematic canvas's highlight colour, so the mark matches it.
+    var highlightColor = Color.accentColor
     var allowsSheetEditing = false
     /// (schematic URL, sheet ID, new name)
     var onRenameSheet: (URL, String, String) -> Void = { _, _, _ in }
@@ -3619,7 +3640,20 @@ struct ProjectNavigatorView: View {
         var id: String { sheetID }
     }
 
+    /// Net IDs are per block, so a sheet of another block never matches.
+    private var sheetIDsWithHighlightedNet: Set<String> {
+        guard !highlightedNetIDs.isEmpty else {
+            return []
+        }
+        let netIDs = Set(highlightedNetIDs.map { $0.lowercased() })
+        let sheets = project.schematics.isEmpty
+            ? project.schematic?.sheets ?? []
+            : project.schematics.flatMap(\.schematic.sheets)
+        return Set(sheets.filter { $0.containsAnyNet(netIDs) }.map(\.id))
+    }
+
     var body: some View {
+        let sheetIDsWithHighlightedNet = sheetIDsWithHighlightedNet
         List(selection: $selection) {
             if !project.schematics.isEmpty {
                 Section("Blocks") {
@@ -3640,7 +3674,9 @@ struct ProjectNavigatorView: View {
                             if matchesSearch("sheet", sheet.name, navigatorTitle(for: schematic.block)) || blockMatches || !isSearching {
                                 NavigatorRow(
                                     icon: "rectangle.grid.1x2",
-                                    title: sheet.name
+                                    title: sheet.name,
+                                    marksHighlightedNet: sheetIDsWithHighlightedNet.contains(sheet.id),
+                                    highlightColor: highlightColor
                                 )
                                 .padding(.leading, 18)
                                 .tag(ProjectNavigatorSelection.sheet(blockID: schematic.block.uuid, sheetID: sheet.id))
@@ -3666,7 +3702,9 @@ struct ProjectNavigatorView: View {
                     ForEach(schematic.sheets.filter { matchesSearch("sheet", $0.name) }) { sheet in
                         NavigatorRow(
                             icon: "rectangle.grid.1x2",
-                            title: sheet.name
+                            title: sheet.name,
+                            marksHighlightedNet: sheetIDsWithHighlightedNet.contains(sheet.id),
+                            highlightColor: highlightColor
                         )
                         .tag(ProjectNavigatorSelection.standaloneSheet(sheet.id))
                         .contextMenu {
@@ -4754,23 +4792,38 @@ private struct NavigatorRow: View {
     var icon: String
     var title: String
     var detail: String?
+    /// A sheet that draws the highlighted net.
+    var marksHighlightedNet = false
+    var highlightColor = Color.accentColor
 
     var body: some View {
         Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .lineLimit(1)
-                if let detail {
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .fontWeight(marksHighlightedNet ? .semibold : nil)
                         .lineLimit(1)
+                    if let detail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                if marksHighlightedNet {
+                    Spacer(minLength: 0)
+                    Circle()
+                        .fill(highlightColor)
+                        .frame(width: 7, height: 7)
+                        .accessibilityHidden(true)
                 }
             }
         } icon: {
             Image(systemName: icon)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(marksHighlightedNet ? AnyShapeStyle(highlightColor) : AnyShapeStyle(.secondary))
         }
+        .help(marksHighlightedNet ? "Contains the highlighted net" : "")
+        .accessibilityValue(marksHighlightedNet ? "Contains the highlighted net" : "")
     }
 }
 

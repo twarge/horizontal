@@ -4559,6 +4559,76 @@ extension HorizontalSchematicSheet {
 }
 
 extension HorizontalSchematicSheet {
+    /// A hash of everything the canvas draws and hit-tests. The canvas keeps
+    /// the scenes of pages it has left; this tells it whether a page changed
+    /// while it was away. Linear in the sheet, so it is taken on a page
+    /// switch, never per frame.
+    var renderFingerprint: Int {
+        var hasher = Hasher()
+        hasher.combine(id)
+        hasher.combine(name)
+        hasher.combine(junctions)
+        hasher.combine(junctionNetIDs)
+        hasher.combine(netDetails)
+        hasher.combine(netLines)
+        hasher.combine(drawingLines)
+        hasher.combine(drawingArcs)
+        hasher.combine(busLabels)
+        hasher.combine(busRipperLines)
+        hasher.combine(busRipperTexts)
+        hasher.combine(blockSymbolLines)
+        hasher.combine(blockSymbolPorts)
+        hasher.combine(blockSymbolTexts)
+        hasher.combine(netTies)
+        hasher.combine(symbols)
+        hasher.combine(symbolLines)
+        hasher.combine(symbolPins)
+        hasher.combine(symbolPinCircles)
+        hasher.combine(symbolPolygons)
+        hasher.combine(symbolTexts)
+        hasher.combine(noPopulateMarks)
+        hasher.combine(frameLines)
+        hasher.combine(framePolygons)
+        hasher.combine(frameTexts)
+        hasher.combine(texts)
+        hasher.combine(drawingPolygons)
+        hasher.combine(editablePins)
+        hasher.combine(netLabels)
+        hasher.combine(powerSymbols)
+        hasher.combine(powerSymbolLines)
+        hasher.combine(powerSymbolCircles)
+        hasher.combine(powerSymbolTexts)
+        hasher.combine(unplacedObjects)
+        hasher.combine(bounds.minX)
+        hasher.combine(bounds.minY)
+        hasher.combine(bounds.maxX)
+        hasher.combine(bounds.maxY)
+        return hasher.finalize()
+    }
+
+    /// Whether any of `netIDs` is drawn on this sheet: a wire, a pin, a
+    /// label, a power symbol, a block port or a junction. Pass them
+    /// lowercased; the model's net IDs are lowercased as they are parsed.
+    func containsAnyNet(_ netIDs: Set<String>) -> Bool {
+        guard !netIDs.isEmpty else {
+            return false
+        }
+        func matches(_ netID: String?) -> Bool {
+            guard let netID else {
+                return false
+            }
+            return netIDs.contains(netID)
+        }
+        return netLines.contains { matches($0.netID) }
+            || netLabels.contains { matches($0.netID) }
+            || powerSymbols.contains { matches($0.netID) }
+            || symbolPins.contains { matches($0.netID) }
+            || blockSymbolPorts.contains { matches($0.netID) }
+            || junctionNetIDs.values.contains { matches($0) }
+    }
+}
+
+extension HorizontalSchematicSheet {
     /// A hash of what the board's netlist depends on: which components are
     /// on the sheet and what they are, where their pins connect, and the
     /// nets' identities. Moving a symbol or drawing a line to nowhere does
