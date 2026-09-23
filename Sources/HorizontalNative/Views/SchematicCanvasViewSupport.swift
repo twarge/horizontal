@@ -176,7 +176,9 @@ struct SchematicMetalLineBatch {
     var metadata = SchematicMetalSceneMetadata()
 }
 
-final class SchematicSelectableCache: ObservableObject {
+/// One sheet's render and hit-test caches. Every entry is single-slot: the
+/// key names the sheet, revision and display state it was built for.
+final class SchematicSheetRenderCache {
     private let selectableSceneCache = HorizontalCanvasSelectableSceneCache<SchematicSelectableCacheKey>()
     private var renderAnalysisKey: SchematicSelectableCacheKey?
     private var renderAnalysisValue: SchematicRenderAnalysis?
@@ -335,5 +337,176 @@ final class SchematicSelectableCache: ObservableObject {
         movePreviewValue = nil
         selectionDetailsKey = nil
         selectionDetailsValue = .empty
+    }
+}
+
+/// The render and hit-test caches of every sheet this canvas has shown, so
+/// flipping back to a page reuses its scene rather than rebuilding it. A page
+/// that changed while it was away (an undo, the live channel, a reload) is
+/// told apart by its content fingerprint and built again.
+final class SchematicSelectableCache: ObservableObject {
+    private struct Entry {
+        var cache = SchematicSheetRenderCache()
+        /// The content the caches were built from, taken when the canvas
+        /// left the sheet; nil while it is the one being drawn.
+        var fingerprint: Int?
+        var selectableRevision: Int
+        var metalRevision: Int
+    }
+
+    /// Sheets kept warm. A page's scene is a few megabytes at most.
+    private static let capacity = 32
+
+    private var entries: [String: Entry] = [:]
+    private var recency: [String] = []
+    private var activeSheet: HorizontalSchematicSheet?
+    /// Revisions are unique across sheets, so a cache key (and the Metal
+    /// buffer key hashed from it) never repeats for different content.
+    private var nextRevision = 1
+
+    /// Called at the top of every body pass with the sheet being drawn.
+    func activate(_ sheet: HorizontalSchematicSheet) {
+        defer { activeSheet = sheet }
+        guard sheet.id != activeSheet?.id else {
+            return
+        }
+        if let previous = activeSheet, entries[previous.id] != nil {
+            entries[previous.id]?.fingerprint = previous.renderFingerprint
+        }
+        if let entry = entries[sheet.id], let fingerprint = entry.fingerprint {
+            if fingerprint != sheet.renderFingerprint {
+                entries[sheet.id] = nil
+            } else {
+                entries[sheet.id]?.fingerprint = nil
+            }
+        }
+        touch(sheet.id)
+    }
+
+    func selectableRevision(for sheetID: String) -> Int {
+        entry(for: sheetID).selectableRevision
+    }
+
+    func metalRevision(for sheetID: String) -> Int {
+        entry(for: sheetID).metalRevision
+    }
+
+    func selectableScene(
+        key: SchematicSelectableCacheKey,
+        build: () -> [HorizontalSelectable]
+    ) -> HorizontalCanvasSelectableScene {
+        cache(for: key.sheetID).selectableScene(key: key, build: build)
+    }
+
+    func selectables(
+        key: SchematicSelectableCacheKey,
+        build: () -> [HorizontalSelectable]
+    ) -> [HorizontalSelectable] {
+        cache(for: key.sheetID).selectables(key: key, build: build)
+    }
+
+    func snapTargets(
+        key: SchematicSelectableCacheKey,
+        build: () -> [HorizontalPoint]
+    ) -> [HorizontalPoint] {
+        cache(for: key.sheetID).snapTargets(key: key, build: build)
+    }
+
+    func renderAnalysis(
+        key: SchematicSelectableCacheKey,
+        build: () -> SchematicRenderAnalysis
+    ) -> SchematicRenderAnalysis {
+        cache(for: key.sheetID).renderAnalysis(key: key, build: build)
+    }
+
+    func metalLines(
+        key: SchematicMetalLineCacheKey,
+        build: () -> ([HorizontalMetalLinePrimitive], [HorizontalSelectableRef: [SchematicMetalPrimitiveSpan]], [HorizontalSelectableRef: [HorizontalMetalLinePrimitive]])
+    ) -> ([HorizontalMetalLinePrimitive], [HorizontalSelectableRef: [SchematicMetalPrimitiveSpan]], [HorizontalSelectableRef: [HorizontalMetalLinePrimitive]]) {
+        cache(for: key.sheetID).metalLines(key: key, build: build)
+    }
+
+    func metalTriangles(
+        key: SchematicMetalLineCacheKey,
+        build: () -> ([HorizontalMetalTrianglePrimitive], [HorizontalSelectableRef: [SchematicMetalPrimitiveSpan]], [HorizontalSelectableRef: [HorizontalMetalTrianglePrimitive]])
+    ) -> ([HorizontalMetalTrianglePrimitive], [HorizontalSelectableRef: [SchematicMetalPrimitiveSpan]], [HorizontalSelectableRef: [HorizontalMetalTrianglePrimitive]]) {
+        cache(for: key.sheetID).metalTriangles(key: key, build: build)
+    }
+
+    func metalHighlight(
+        key: SchematicMetalHighlightCacheKey,
+        build: () -> SchematicMetalLineBatch
+    ) -> SchematicMetalLineBatch {
+        cache(for: key.selectableKey.sheetID).metalHighlight(key: key, build: build)
+    }
+
+    func metalSelection(
+        key: SchematicMetalSelectionCacheKey,
+        build: () -> SchematicMetalLineBatch
+    ) -> SchematicMetalLineBatch {
+        cache(for: key.selectableKey.sheetID).metalSelection(key: key, build: build)
+    }
+
+    func movePreview(
+        key: SchematicMovePreviewCacheKey,
+        build: () -> HorizontalSchematicSheet
+    ) -> HorizontalSchematicSheet {
+        cache(for: key.selectableKey.sheetID).movePreview(key: key, build: build)
+    }
+
+    func selectionDetails(
+        key: SchematicSelectionDetailsCacheKey,
+        build: () -> HorizontalSelectionDetailState
+    ) -> HorizontalSelectionDetailState {
+        cache(for: key.selectableKey.sheetID).selectionDetails(key: key, build: build)
+    }
+
+    /// The sheet was edited: everything built for it goes.
+    func invalidate(sheetID: String) {
+        var entry = entry(for: sheetID)
+        entry.cache.invalidate()
+        entry.selectableRevision = takeRevision()
+        entry.metalRevision = takeRevision()
+        entries[sheetID] = entry
+    }
+
+    /// An interaction changed hit-testing but not the drawn scene.
+    func invalidateInteraction(sheetID: String) {
+        var entry = entry(for: sheetID)
+        entry.cache.invalidateInteraction()
+        entry.selectableRevision = takeRevision()
+        entries[sheetID] = entry
+    }
+
+    private func cache(for sheetID: String) -> SchematicSheetRenderCache {
+        entry(for: sheetID).cache
+    }
+
+    private func entry(for sheetID: String) -> Entry {
+        if let entry = entries[sheetID] {
+            return entry
+        }
+        let entry = Entry(selectableRevision: takeRevision(), metalRevision: takeRevision())
+        entries[sheetID] = entry
+        touch(sheetID)
+        return entry
+    }
+
+    private func takeRevision() -> Int {
+        defer { nextRevision &+= 1 }
+        return nextRevision
+    }
+
+    private func touch(_ sheetID: String) {
+        recency.removeAll { $0 == sheetID }
+        recency.append(sheetID)
+        while recency.count > Self.capacity {
+            let evicted = recency.removeFirst()
+            if evicted == activeSheet?.id {
+                recency.append(evicted)
+                continue
+            }
+            entries[evicted] = nil
+        }
     }
 }

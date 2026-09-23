@@ -214,6 +214,10 @@ struct SchematicCanvasView: View {
     var onSelectedComponentChange: (Set<String>) -> Void = { _ in }
     var onHighlightNetCommand: (Set<String>) -> Void = { _ in }
     var onHighlightComponentCommand: (Set<String>) -> Void = { _ in }
+    /// The page changed, so its selection went. Unlike an ordinary selection
+    /// change this keeps the highlight, which is by net and spans pages. Nil
+    /// reports it through `onSelectedNetChange` / `onSelectedComponentChange`.
+    var onSelectionClearedBySheetChange: (() -> Void)? = nil
     var onSheetChange: (HorizontalSchematicSheet) -> Void = { _ in }
     /// Applies edit operations to the whole project, under the given undo
     /// action name. Buses, their members and net ties are block objects a
@@ -300,6 +304,7 @@ struct SchematicCanvasView: View {
         onSelectedComponentChange: @escaping (Set<String>) -> Void = { _ in },
         onHighlightNetCommand: @escaping (Set<String>) -> Void = { _ in },
         onHighlightComponentCommand: @escaping (Set<String>) -> Void = { _ in },
+        onSelectionClearedBySheetChange: (() -> Void)? = nil,
         onSheetChange: @escaping (HorizontalSchematicSheet) -> Void = { _ in },
         onApplyProjectEdit: (([JSONDictionary], String) -> Void)? = nil,
         onNetClassChange: @escaping (String, String?) -> Void = { _, _ in },
@@ -335,6 +340,7 @@ struct SchematicCanvasView: View {
         self.onSelectedComponentChange = onSelectedComponentChange
         self.onHighlightNetCommand = onHighlightNetCommand
         self.onHighlightComponentCommand = onHighlightComponentCommand
+        self.onSelectionClearedBySheetChange = onSelectionClearedBySheetChange
         self.onSheetChange = onSheetChange
         self.onApplyProjectEdit = onApplyProjectEdit
         self.onNetClassChange = onNetClassChange
@@ -529,6 +535,7 @@ struct SchematicCanvasView: View {
     @State private var promptRequest: HorizontalCanvasPromptRequest?
 
     var body: some View {
+        let _ = selectableCache.activate(sheet)
         let _ = BoardLoadTimer.beginSchematic2DLoad(id: schematic2DProfileID, summary: schematic2DProfileSummary)
         let schematic2DBodyStart = BoardLoadTimer.tickBodyStart()
         defer { BoardLoadTimer.tickBodyEnd(schematic2DBodyStart) }
@@ -827,9 +834,14 @@ struct SchematicCanvasView: View {
             drawGraphicsState = nil
             lastCursorWorldPoint = nil
             clearNetSegmentSelection()
-            invalidateSelectableCache()
+            // No invalidation: the page's scene is cached by sheet, so a
+            // page shown before comes back without a rebuild.
             configureUndoTarget()
-            publishSelectionContext()
+            if let onSelectionClearedBySheetChange {
+                onSelectionClearedBySheetChange()
+            } else {
+                publishSelectionContext()
+            }
         }
         .onChange(of: syncRevision) { _, _ in
             adoptExternallyUpdatedSheet()
@@ -7433,7 +7445,7 @@ struct SchematicCanvasView: View {
     private var selectableCacheKey: SchematicSelectableCacheKey {
         SchematicSelectableCacheKey(
             sheetID: sheet.id,
-            revision: selectableCacheRevision,
+            revision: selectableCache.selectableRevision(for: sheet.id),
             displayOptions: displayOptions,
             counts: [
                 sheet.junctions.count,
@@ -7470,12 +7482,12 @@ struct SchematicCanvasView: View {
     private func invalidateSelectableCache() {
         selectableCacheRevision &+= 1
         metalCacheRevision &+= 1
-        selectableCache.invalidate()
+        selectableCache.invalidate(sheetID: sheet.id)
     }
 
     private func invalidateSchematicInteractionCache() {
         selectableCacheRevision &+= 1
-        selectableCache.invalidateInteraction()
+        selectableCache.invalidateInteraction(sheetID: sheet.id)
     }
 
     private func schematicSelectableScene() -> HorizontalCanvasSelectableScene {
@@ -7534,7 +7546,7 @@ struct SchematicCanvasView: View {
         let supportsPins = editorProfile.supportsPins
         let key = SchematicMetalLineCacheKey(
             sheetID: sheet.id,
-            revision: metalCacheRevision,
+            revision: selectableCache.metalRevision(for: sheet.id),
             displayOptions: displayOptions,
             counts: selectableCacheKey.counts,
             frameColor: frameColor,
