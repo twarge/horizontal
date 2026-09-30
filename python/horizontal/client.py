@@ -126,7 +126,7 @@ class Project:
             _request_deadline.reset(token)
 
     def _perform_call(self, method: str, **params: Any) -> Any:
-        reads = {"project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "list_texts", "list_symbols", "list_block_instances", "list_net_lines", "list_net_labels", "list_power_symbols", "list_planes", "list_polygons", "list_holes", "list_keepouts", "list_board_texts", "list_dimensions", "list_buses", "list_net_ties", "list_tracks", "list_vias", "board_rules", "search_pool", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status"}
+        reads = {"project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "list_texts", "list_symbols", "list_block_instances", "list_net_lines", "list_junctions", "list_net_labels", "list_power_symbols", "list_planes", "list_polygons", "list_holes", "list_keepouts", "list_board_texts", "list_dimensions", "list_buses", "list_net_ties", "list_tracks", "list_vias", "board_rules", "search_pool", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status"}
         deadline = _request_deadline.get() or (time.monotonic() + self.session.transport.timeout)
         if self._generation != self.session.generation:
             self._rebind()
@@ -256,6 +256,12 @@ class Project:
         """Symbol instances on the sheets, with the ids the schematic ops take."""
         params = {k: v for k, v in {"sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id}.items() if v is not None}
         return self._call("list_symbols", **params)
+
+    def junctions(self, net: str | None = None, sheet: int | None = None, sheet_id: str | None = None,
+                  name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
+        """Schematic junction identities, coordinates and nets for wire endpoints."""
+        params = {k: v for k, v in {"net": net, "sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id}.items() if v is not None}
+        return self._call("list_junctions", **params)
 
     def net_lines(self, net: str | None = None, sheet: int | None = None, sheet_id: str | None = None,
                   name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
@@ -509,11 +515,16 @@ class Project:
         dpi: float = 150,
         max_pixels: int = 4096,
         output_path: str | Path | None = None,
+        *, layer_ids: list[int] | None = None,
     ) -> bytes | Path:
         """The board drawing as PNG bytes, or the path written; `region` as for render_sheet."""
         params: dict[str, Any] = {"dpi": dpi, "max_pixels": max_pixels, "mirrored": mirrored}
-        if layers:
+        if layers is not None and layer_ids is not None:
+            raise ValueError("Use layers or layer_ids, not both.")
+        if layers is not None:
             params["layers"] = list(layers)
+        if layer_ids is not None:
+            params["layer_ids"] = list(layer_ids)
         if region is not None:
             params["region"] = region
         if output_path is not None:

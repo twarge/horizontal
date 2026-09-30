@@ -477,6 +477,7 @@ final class HorizontalDispatchPoolIndex {
     /// Symbol uuids per unit, sorted, so a gate can be drawn without the
     /// caller naming the symbol that draws its unit.
     private var symbolsByUnit: [String: [String]] = [:]
+    private var symbolPins: [String: Set<String>] = [:]
     private var parts: [String: JSONDictionary] = [:]
     private var packages: [String: JSONDictionary] = [:]
     private var padstacks: [String: JSONDictionary] = [:]
@@ -541,10 +542,15 @@ final class HorizontalDispatchPoolIndex {
                 continue
             }
             symbolsByUnit[unitID, default: []].append(uuid)
+            symbolPins[uuid] = Set(json.dictionaryMap("pins").keys.map { $0.lowercased() })
         }
         for unitID in symbolsByUnit.keys {
             symbolsByUnit[unitID]?.sort()
         }
+    }
+
+    func symbolHasPin(_ symbol: String, pin: String) -> Bool {
+        symbolPins[symbol.lowercased()]?.contains(pin.lowercased()) == true
     }
 
     /// The symbols in the project pool that draw `unitID`.

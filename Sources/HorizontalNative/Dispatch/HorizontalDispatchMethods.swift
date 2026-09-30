@@ -136,6 +136,13 @@ enum HorizontalDispatchMethods {
             handler: listSymbols
         ),
         .init(
+            name: "list_junctions",
+            summary: "Schematic junctions with stable ids, positions, nets, and sheet identities for wire endpoints.",
+            params: ["handle": "Project handle.", "net": "Optional net name or id.", "sheet": "Sheet index.",
+                     "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID."],
+            handler: listJunctions
+        ),
+        .init(
             name: "list_net_lines",
             summary: "The wires drawn on the schematic sheets, with the ids and endpoints they connect. An endpoint is a symbol pin, a junction, a bus ripper or a block port; the pin ones name the component and gate.",
             params: ["handle": "Project handle.", "net": "Only wires on this net, by name or id (optional).",
@@ -372,7 +379,8 @@ enum HorizontalDispatchMethods {
             summary: "Render the board drawing to PNG, whole or a region of it.",
             params: [
                 "handle": "Project handle.",
-                "layers": "Layer names or numbers to include (default: the exporter's defaults). Use board_info to list them.",
+                "layers": "Names or numeric strings from board_info.drawing_layers. Mutually exclusive with layer_ids; empty uses defaults.",
+                "layer_ids": "Integer IDs from board_info.drawing_layers. Mutually exclusive with layers; empty uses defaults.",
                 "mirrored": "View from the bottom (default false).",
                 "region": "Optional {min_x_mm, min_y_mm, max_x_mm, max_y_mm} to render only that part of the board.",
                 "dpi": "Resolution (default 150).",
@@ -952,6 +960,8 @@ enum HorizontalDispatchMethods {
                 var json = operation.params
                 if operation.kind == .ensureComponent { json["id"] = change["component"] }
                 if operation.kind == .ensureNet { json["id"] = change["net"] }
+                if operation.kind == .drawNetLine { json["id"] = change["net_line"] }
+                if operation.kind == .placeJunction { json["id"] = change["junction"] }
                 return json
             }
             return ["applied": editor.changes.count, "changes": editor.changes, "normalized_ops": normalized,
@@ -1166,10 +1176,11 @@ enum HorizontalDispatchMethods {
 
     @Sendable private static func renderBoard(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
-        let layers = (params["layers"] as? [Any])?.map { "\($0)" }
+        let layers = params["layers"] as? [String]
         let image = try HorizontalDispatchRender.renderBoard(
             project: try entry.snapshot?.materializedProject() ?? entry.project,
             layerNames: layers,
+            layerIDs: params["layer_ids"] as? [Int],
             mirrored: params.bool("mirrored") ?? false,
             region: try regionParam(params),
             dpi: params.double("dpi") ?? 150,
@@ -1849,13 +1860,31 @@ enum HorizontalDispatchMethods {
         return ["kind": "unknown"]
     }
 
+    @Sendable private static func listJunctions(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let wanted = try netFilter(entry, params)
+        return try selectedSheets(entry, params).flatMap { sheet -> [JSONDictionary] in
+            let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: blockJSON(entry) ?? [:])
+            return sheet.json.dictionaryMap("junctions").compactMap { id, item -> JSONDictionary? in
+                let net = connectivity.net(at: ["junc": id])
+                guard wanted == nil || wanted == net else { return nil }
+                let position = item["position"] as? [Any] ?? []
+                return ["id": id, "sheet": sheet.id, "sheet_index": sheet.index,
+                        "net": net as Any, "net_name": net.flatMap { entry.index.net(id: $0)?.name } as Any,
+                        "x_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(position.first ?? 0)),
+                        "y_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(position.count > 1 ? position[1] : 0))]
+            }.sorted { ($0.string("id") ?? "") < ($1.string("id") ?? "") }
+        }
+    }
+
     @Sendable private static func listNetLines(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         let wanted = try netFilter(entry, params)
         return try selectedSheets(entry, params).flatMap { sheet -> [JSONDictionary] in
             let symbols = sheet.json.dictionaryMap("symbols").reduce(into: [String: JSONDictionary]()) { $0[$1.key.lowercased()] = $1.value }
+            let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: blockJSON(entry) ?? [:])
             return sheet.json.dictionaryMap("net_lines").compactMap { id, item -> JSONDictionary? in
-                let netID = item.string("net")?.lowercased()
+                let netID = item.dictionary("from").flatMap { connectivity.net(at: $0) }
                 guard wanted == nil || wanted == netID else { return nil }
                 return [
                     "id": id,
@@ -2244,7 +2273,7 @@ enum HorizontalDispatchMethods {
         // ended up, so the two are joined by id.
         let resolved = Dictionary(uniqueKeysWithValues: (entry.project.board?.tracks ?? []).map { ($0.id.lowercased(), $0) })
         let matched = try boardJSON(entry).dictionaryMap("tracks").compactMap { id, item -> JSONDictionary? in
-            let netID = item.string("net")?.lowercased()
+            let netID = resolved[id.lowercased()]?.netID?.lowercased()
             guard wanted == nil || wanted == netID else { return nil }
             let trackLayer = item.int("layer")
             guard layer == nil || layer == trackLayer else { return nil }
@@ -2274,7 +2303,7 @@ enum HorizontalDispatchMethods {
         let resolved = Dictionary(uniqueKeysWithValues: (entry.project.board?.vias ?? []).map { ($0.id.lowercased(), $0) })
         let matched = try boardJSON(entry).dictionaryMap("vias").compactMap { id, item -> JSONDictionary? in
             let via = resolved[id.lowercased()]
-            let netID = (item.string("net_set") ?? via?.netID)?.lowercased()
+            let netID = via?.netID?.lowercased()
             guard wanted == nil || wanted == netID else { return nil }
             var json: JSONDictionary = [
                 "id": id,

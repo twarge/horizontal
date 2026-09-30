@@ -300,6 +300,11 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual(before["tracks"] as? Int, 2)
         let mid = try XCTUnwrap(try result("get_net", ["name": "MID"]) as? [String: Any])
         XCTAssertEqual(mid["track_count"] as? Int, 2, "the source tracks take MID from R1 and R2's pads: \(mid)")
+        let beforeRead = try Data(contentsOf: boardURL)
+        let queried = try XCTUnwrap(try result("list_tracks", ["net": "MID"]) as? JSONDictionary)
+        XCTAssertEqual(queried.int("total"), 2)
+        XCTAssertTrue(queried.dictionaryArray("tracks").allSatisfy { $0.string("net") == mid["id"] as? String && $0.string("net_name") == "MID" })
+        XCTAssertEqual(try Data(contentsOf: boardURL), beforeRead)
 
         let copied = try apply([["op": "copy_group_layout", "source": "a", "target": "b", "x_mm": 30, "y_mm": 10, "angle_deg": 90]])
         let change = try XCTUnwrap((copied["changes"] as? [[String: Any]])?.first)

@@ -79,6 +79,10 @@ enum HorizontalDispatchMutation {
         }
         if dryRun {
             result["dry_run"] = true
+            result["status"] = "preview"
+            result["written"] = [String]()
+            result.removeValue(forKey: "after_revision")
+            result.removeValue(forKey: "durability")
             if !holders.isEmpty { result["blocked_by"] = holders.map(\.summary) }
             return result
         }

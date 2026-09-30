@@ -69,6 +69,53 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(conflict.is_error)
         self.assertEqual(conflict.structured_content["error"]["code"], "STALE_REVISION")
 
+    async def test_boolean_preview_is_replayable_without_rewriting(self):
+        for mirror in (False, True):
+            current = await self.call("board_info", project_ref=self.ref)
+            preview = await self.call("apply_ops", project_ref=self.ref,
+                                      expected_revision=current["meta"]["revision"], operation_id=str(uuid.uuid4()), dry_run=True,
+                                      ops=[{"op": "place_text", "text": "mirror", "x_mm": 1, "y_mm": 2, "mirror": mirror}])
+            data = preview["data"]
+            self.assertIs(data["normalized_ops"][0]["mirror"], mirror)
+            self.assertEqual(data["status"], "preview")
+            self.assertEqual(data["written"], [])
+            self.assertTrue(data["would_write"])
+            committed = await self.call("apply_ops", project_ref=self.ref, operation_id=str(uuid.uuid4()),
+                                        expected_revision=data["before_revision"], plan_digest=data["plan_digest"],
+                                        ops=data["normalized_ops"])
+            self.assertEqual(committed["data"]["status"], "committed")
+
+    async def test_layer_ids_and_actionable_layer_errors(self):
+        info = await self.call("board_info", project_ref=self.ref)
+        layer = info["data"]["drawing_layers"][0]
+        result = await server.mcp.call_tool("render_board", {"project_ref": self.ref, "layer_ids": [layer["layer"]]})
+        self.assertFalse(result.is_error, result.content)
+        invalid = await server.mcp.call_tool("render_board", {"project_ref": self.ref, "layers": ["imaginary layer"]})
+        self.assertTrue(invalid.is_error)
+        self.assertEqual(invalid.structured_content["error"]["details"]["valid_layers"], info["data"]["drawing_layers"])
+        for args in ({"layers": [], "layer_ids": []}, {"layer_ids": [True]}, {"layer_ids": ["0"]}):
+            invalid = await server.mcp.call_tool("render_board", {"project_ref": self.ref, **args})
+            self.assertTrue(invalid.is_error)
+
+    async def test_typed_junction_wire_preview_and_retarget(self):
+        net = "11111111-0000-4000-8000-000000000001"
+        junctions = [str(uuid.uuid4()) for _ in range(3)]
+        ops = [{"op": "ensure_net", "id": net, "name": "WIRE"}]
+        ops += [{"op": "place_junction", "id": id, "net": net, "x_mm": i, "y_mm": 0} for i, id in enumerate(junctions)]
+        ops += [{"op": "draw_net_line", "from": {"kind": "junction", "junction": junctions[0]},
+                 "to": {"kind": "junction", "junction": junctions[1]}}]
+        preview = (await self.call("apply_ops", project_ref=self.ref, expected_revision=self.opened["data"]["revision"],
+                                   operation_id="preview-wire", dry_run=True, ops=ops))["data"]
+        self.assertEqual((await self.call("list_junctions", project_ref=self.ref))["data"], [])
+        committed = await self.call("apply_ops", project_ref=self.ref, expected_revision=preview["before_revision"],
+                                    operation_id="commit-wire", ops=preview["normalized_ops"], plan_digest=preview["plan_digest"])
+        line_id = preview["normalized_ops"][-1]["id"]
+        self.assertEqual((await self.call("list_net_lines", project_ref=self.ref))["data"][0]["id"], line_id)
+        await self.call("apply_ops", project_ref=self.ref, expected_revision=committed["data"]["after_revision"],
+                        operation_id="retarget-wire", ops=[{"op": "set_net_line_endpoint", "line": line_id, "end": "to",
+                                                          "endpoint": {"kind": "junction", "junction": junctions[2]}}])
+        self.assertEqual((await self.call("list_net_lines", project_ref=self.ref))["data"][0]["to"]["junction"], junctions[2])
+
     async def test_pinned_snapshot_and_render_metadata(self):
         pinned = await self.call("analysis_snapshot", project_ref=self.ref)
         frozen_ref = pinned["data"]["project_ref"]

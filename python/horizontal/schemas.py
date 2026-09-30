@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Any, Generic, Literal, TypeVar
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_serializer, model_validator
 
 
 class Input(BaseModel):
@@ -127,13 +127,21 @@ class EditResult(Record):
     before_revision: str
     after_snapshot_id: str
     plan_digest: str
-    normalized_ops: list[dict[str, Any]] = Field(default_factory=list)
+    normalized_ops: list[EditOperation] = Field(default_factory=list)
     changes: list[dict[str, Any]] = Field(default_factory=list)
     dry_run: bool = False
     after_revision: str | None = None
     operation_id: str | None = None
     durability: Literal["disk", "unsaved_document"] | None = None
     written: list[str] = Field(default_factory=list)
+    would_write: list[str] = Field(default_factory=list)
+    status: Literal["preview", "committed"] | None = None
+
+    @field_serializer("normalized_ops")
+    def serialize_normalized_ops(self, operations):
+        # Validate the full operation contract without adding optional defaults
+        # to the replay payload: defaults would change its plan digest.
+        return [op.model_dump(mode="json", by_alias=True, exclude_unset=True) for op in operations]
 
 
 class Region(Input):
@@ -380,12 +388,65 @@ class RemoveText(Input):
     sheet: StrictStr | StrictInt | None = None
 
 
-class DrawNetLine(ComponentOp):
-    op: Literal["draw_net_line"]
+class SchematicPinEnd(Input):
+    kind: Literal["pin"]
+    symbol: StrictStr
     pin: StrictStr
-    to_component: StrictStr
-    to_pin: StrictStr
+
+
+class SchematicJunctionEnd(Input):
+    kind: Literal["junction"]
+    junction: StrictStr
+
+
+SchematicEnd = Annotated[SchematicPinEnd | SchematicJunctionEnd, Field(discriminator="kind")]
+
+
+class DrawNetLine(Input):
+    op: Literal["draw_net_line"]
+    id: str | None = None
+    component: StrictStr | None = None
+    pin: StrictStr | None = None
+    to_component: StrictStr | None = None
+    to_pin: StrictStr | None = None
     sheet: StrictStr | StrictInt | None = None
+    from_: SchematicEnd | None = Field(default=None, alias="from")
+    to: SchematicEnd | None = None
+
+    @model_validator(mode="after")
+    def endpoint_form(self):
+        legacy = [self.component, self.pin, self.to_component, self.to_pin]
+        if self.from_ is not None or self.to is not None:
+            if self.from_ is None or self.to is None or any(v is not None for v in legacy):
+                raise ValueError("Use from/to endpoints or all four legacy component/pin fields.")
+        elif any(v is None for v in legacy):
+            raise ValueError("Both wire endpoints are required.")
+        return self
+
+
+class PlaceJunction(Input):
+    op: Literal["place_junction"]
+    id: str | None = None
+    net: StrictStr
+    sheet: StrictStr | StrictInt | None = None
+    x_mm: float
+    y_mm: float
+
+
+class SetNetLineEndpoint(Input):
+    op: Literal["set_net_line_endpoint"]
+    line: StrictStr
+    end: Literal["from", "to"]
+    endpoint: SchematicEnd
+    sheet: StrictStr | StrictInt | None = None
+
+
+class RemapPart(ComponentOp):
+    op: Literal["remap_part"]
+    part: StrictStr
+    pin_map: dict[StrictStr, StrictStr] = Field(min_length=1)
+    symbols: dict[StrictStr, StrictStr] | None = None
+    pad_map: dict[StrictStr, StrictStr] | None = None
 
 
 class TrackEnd(Input):
@@ -741,7 +802,7 @@ class CopyLayout(Input):
 
 EditOperation = Annotated[EnsureComponent | RemoveComponent | SetValue | SetRefdes | SetPart | SetPopulation |
                           SetGroup | EnsureNet | RenameNet | SetNetClass | RetireNet | Connect | Disconnect |
-                          Place | PlaceSymbol | RemoveSymbol | DrawNetLine | PlaceText | RemoveText |
+                          Place | PlaceSymbol | RemoveSymbol | DrawNetLine | PlaceJunction | SetNetLineEndpoint | RemapPart | PlaceText | RemoveText |
                           PlaceTrack | RemoveTrack | SetTrackWidth | PlaceVia | RemoveVia |
                           PlacePowerSymbol | PlaceNetLabel | RemoveSheetMark |
                           AddSheet | RenameSheet | RemoveSheet |
@@ -755,3 +816,6 @@ EditOperation = Annotated[EnsureComponent | RemoveComponent | SetValue | SetRefd
                           AddBus | RemoveBus | AddBusMember | PlaceBusLabel | PlaceBusRipper |
                           AddNetTie | RemoveNetTie | PlaceNetTie | CopyLayout,
                           Field(discriminator="op")]
+
+
+EditResult.model_rebuild()

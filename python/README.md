@@ -49,3 +49,61 @@ from pinned schematic evidence. Analyses run in bounded subprocess jobs and
 can export plots, numerical data, model assumptions, schematic crops and a
 replayable request. See [API 2 and analysis](../docs/mcp-analysis.md) for the
 workflow, supported models, and recovery guarantees.
+
+# MCP edit contracts
+
+Live commits update the open document and remain unsaved until `save`. Its
+`verified: true` response checks that disk matches the document snapshot; it
+does not establish that a canvas frame has been presented.
+Use `source="live"` when an edit must reach the open window; automatic source
+selection can fall back to disk if the live document cannot be discovered.
+The sandboxed app needs access to the containing project folder to publish its
+live connection record (see [live discovery](../docs/automation.md#finding-the-channel-from-outside-the-container)).
+
+Dry runs return `status: "preview"`, `written: []`, and `would_write` paths.
+`applied` is the legacy count of staged changes in a preview. Feed
+`normalized_ops` back unchanged with `before_revision` as `expected_revision`
+and the returned `plan_digest`; boolean fields remain JSON booleans. A commit
+returns `status: "committed"` and `durability: "disk"` or
+`"unsaved_document"`. Use a fresh `operation_id` for the commit.
+
+`board_info.drawing_layers` lists the renderable layer IDs and names for that
+project. `render_board` accepts either `layers=["Top Copper"]` (using the
+actual advertised names) or `layer_ids=[0]`, never both. Omitted or empty
+selectors use exporter defaults. Invalid choices return `valid_layers` in the
+structured error. `list_tracks` and its net filter use resolved connectivity,
+including original tracks with no stored net field; a null net means the
+model could not assign a unique net.
+
+Schematic editing supports:
+
+- `list_junctions`: IDs, sheet IDs, positions, and resolved nets. Junction and
+  wire queries derive nets from connected pins and labels when native Horizon
+  files omit cached net fields. Floating or conflicting segments return null;
+  coincident coordinates do not join separate junctions.
+- `place_junction`: `{op, id?, sheet?, net, x_mm, y_mm}`. Coincident junctions
+  are reused only on the same net. Supply an ID when another operation in the
+  same batch needs to refer to it.
+- `draw_net_line`: `{op, id?, sheet?, from, to}`. Each endpoint is
+  `{kind: "pin", symbol: "symbol-instance-uuid", pin: "pin-uuid"}` or
+  `{kind: "junction", junction: "junction-uuid"}`. Both ends must be on the
+  same sheet and logical net. The older `component`, `pin`, `to_component`,
+  `to_pin` form remains supported; do not mix forms. Use `connect` first to
+  establish a pin's block connection. `list_symbols` provides instance IDs.
+- `set_net_line_endpoint`: `{op, line, end: "from" | "to", endpoint, sheet?}`
+  preserves the existing wire ID and net. Both ends must resolve to pins or
+  junctions whose current logical nets agree with the wire.
+- `remap_part`: `{op, component, part, pin_map, symbols?, pad_map?}`. `part`
+  must be imported. `pin_map` maps explicit old `gateUUID/pinUUID` paths to
+  target paths, covering every connected or wired pin. `symbols` selects a
+  pool symbol for each target gate if its unit has several choices. Drawn
+  gates map one-to-one. Routed pad references follow the logical mapping;
+  use `pad_map` (old pad UUID to target pad UUID) when more than one target
+  pad maps to a pin. It must agree with `pin_map`. Unmapped connected pins or
+  routed pads reject the whole transaction. The operation preserves symbol,
+  wire, track and package instance IDs and placement, while changing the
+  component's part/entity and endpoints. Pool/library items remain unchanged.
+
+These operations work inside `apply_ops` (Python: `Project.apply`) and share
+its revision checks, dry run, transaction, and single live undo step. A new
+pin can be connected and drawn in the same batch after `remap_part`.
