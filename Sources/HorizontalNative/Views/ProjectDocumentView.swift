@@ -84,7 +84,7 @@ struct ProjectDocumentView: View {
                 appearanceSettings.isToolbarTransparent && !isPoolItemWindow ? .hidden : .visible,
                 for: .windowToolbar
             )
-            .task(id: configuration.fileURL) {
+            .task(id: Self.documentIdentity(configuration.fileURL)) {
                 await loadProject()
             }
             // Unlocking mid-session (the toolbar lock or the Settings toggle):
@@ -129,7 +129,7 @@ struct ProjectDocumentView: View {
                 selectedComponentIDs: $selectedComponentIDs,
                 highlightedComponentIDs: $highlightedComponentIDs
             )
-                .id(project.url)
+                .id(Self.documentIdentity(project.url))
                 .navigationTitle(project.displayTitle)
         case .pool(let poolURL):
             HorizontalPoolBrowserView(root: .pool(poolURL))
@@ -146,6 +146,13 @@ struct ProjectDocumentView: View {
     private func highlightSelectedNet() {
         highlightedNetIDs = selectedNetIDs
         highlightedComponentIDs = selectedComponentIDs
+    }
+
+    /// AppKit can change a saved document URL's spelling (for example /tmp
+    /// and /private/tmp) without changing the document. Rebuilding its
+    /// workspace then detaches the live/undo closures from the visible state.
+    static func documentIdentity(_ url: URL?) -> URL? {
+        url?.resolvingSymlinksInPath().standardizedFileURL
     }
 
     private func loadProject() async {
@@ -188,6 +195,7 @@ struct ProjectDocumentView: View {
             )
         }
 
+        let loadingDocument = document
         do {
             let archiveTask: Task<HorizontalProjectArchive, Error>? = appearanceSettings.isReadOnlyOperationEnabled
                 ? nil
@@ -200,12 +208,14 @@ struct ProjectDocumentView: View {
                 try HorizontalProject.load(from: url)
             }
             let project = try await projectTask.value
-            if let archive = try await archiveTask?.value,
-               document.archive != archive {
-                document.archive = archive
+            let archive = try await archiveTask?.value
+            guard !Task.isCancelled else { return }
+            if let archive {
+                guard document.completeLoading(with: archive, from: loadingDocument) else { return }
             }
             state = .loaded(project)
         } catch {
+            guard !Task.isCancelled else { return }
             state = .failed(error.localizedDescription)
         }
     }
@@ -594,6 +604,8 @@ struct ProjectWorkspaceView: View {
     /// Bumped by every schematic mutation, for the live channel's change
     /// detection (the board has its own two counters).
     @State private var schematicEditRevision = 0
+    /// External replacements only: a canvas's own edit must not cancel its tool.
+    @State private var schematicSyncRevision = 0
     /// The live channel's handle for this document (docs/automation.md).
     @State private var liveHandle: Int?
     @StateObject private var voiceControl = HorizontalVoiceControl()
@@ -1357,6 +1369,7 @@ struct ProjectWorkspaceView: View {
         boardEditRevision += 1
         boardSyncRevision += 1
         schematicEditRevision += 1
+        schematicSyncRevision += 1
         selectionDetailsByPane = [:]
     }
 
@@ -1569,6 +1582,16 @@ struct ProjectWorkspaceView: View {
                                 onSheetChange: { sheet in
                                     applyEditedSchematicSheet(sheet, schematicURL: selectedSchematic.url)
                                 },
+                                onDeleteSelection: { sheet in
+                                    deleteSchematicSelection(sheet, schematicURL: selectedSchematic.url)
+                                },
+                                onCopySelection: { sheet, refs, anchor in
+                                    copySchematicSelection(refs, from: sheet, anchor: anchor, selectedSchematic: selectedSchematic)
+                                },
+                                onPreparePaste: { clipboard, point, actionName in
+                                    prepareSchematicPaste(clipboard, at: point, actionName: actionName, selectedSchematic: selectedSchematic)
+                                },
+                                onClipboardError: { projectEditError = HorizontalCanvasProjectEdit.message(for: $0) },
                                 onApplyProjectEdit: { operations, actionName in
                                     applyProjectEdit(operations, actionName: actionName)
                                 },
@@ -1603,7 +1626,8 @@ struct ProjectWorkspaceView: View {
                                 drawingToolCommand: schematicDrawingToolCommand,
                                 drawNetLineCommand: schematicDrawNetLineCommand,
                                 placePartRequest: pendingPartPlacement,
-                                poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }
+                                poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
+                                syncRevision: schematicSyncRevision
                             )
                         }
                     } else {
@@ -2726,6 +2750,61 @@ struct ProjectWorkspaceView: View {
         }
     }
 
+    private func copySchematicSelection(
+        _ refs: [HorizontalSelectableRef], from sheet: HorizontalSchematicSheet, anchor: HorizontalPoint, selectedSchematic: SelectedSchematic
+    ) -> HorizontalSchematicClipboard? {
+        do {
+            // Locked .hprj documents may have loaded only their entry file.
+            // Copy is read-only, but still needs the component/pool snapshot.
+            var archive = document.archive
+            if isReadOnly, let path = project.blockFilename, archive.regularFileData(relativePath: path) == nil {
+                archive = try HorizontalProjectArchive.completeProject(from: project.url)
+            }
+            return try HorizontalSchematicClipboardEditor.copy(
+                refs, from: sheet, schematicURL: selectedSchematic.url, anchor: anchor,
+                archive: archive, project: project
+            )
+        } catch {
+            projectEditError = HorizontalCanvasProjectEdit.message(for: error)
+            return nil
+        }
+    }
+
+    private func prepareSchematicPaste(
+        _ clipboard: HorizontalSchematicClipboard, at point: HorizontalPoint, actionName: String,
+        selectedSchematic: SelectedSchematic
+    ) -> HorizontalSchematicPastePlacement? {
+        guard !isReadOnly else { return nil }
+        do {
+            let paste = try HorizontalSchematicClipboardEditor.prepare(
+                clipboard, at: point, sheetID: selectedSchematic.sheet.id, schematicURL: selectedSchematic.url,
+                archive: document.archive, project: project
+            )
+            return HorizontalSchematicPastePlacement(paste: paste) { transform in
+                do { try applyLiveArchive(paste.placedArchive(transform, in: document.archive), actionName: actionName) }
+                catch { projectEditError = HorizontalCanvasProjectEdit.message(for: error) }
+            }
+        } catch {
+            projectEditError = HorizontalCanvasProjectEdit.message(for: error)
+            return nil
+        }
+    }
+
+    private func deleteSchematicSelection(_ sheet: HorizontalSchematicSheet, schematicURL: URL) {
+        guard !isReadOnly else { return }
+        do {
+            let archive = try HorizontalCanvasProjectEdit.archive(
+                deletingSelectionFrom: sheet,
+                schematicURL: schematicURL,
+                to: document.archive,
+                in: project
+            )
+            try applyLiveArchive(archive, actionName: "Delete")
+        } catch {
+            projectEditError = HorizontalCanvasProjectEdit.message(for: error)
+        }
+    }
+
     private func applyEditedSchematicSheet(_ sheet: HorizontalSchematicSheet, schematicURL: URL) {
         guard !isReadOnly else {
             return
@@ -2820,7 +2899,7 @@ struct ProjectWorkspaceView: View {
             recordDiagnostic("Could not sync board with schematic data: \(error.localizedDescription)")
             return
         }
-        guard boardEditRevision == revisionAtStart else {
+        guard !Task.isCancelled, boardEditRevision == revisionAtStart else {
             // The board moved on while the snapshot loaded: go again from it.
             boardNetlistSyncRequested = true
             return

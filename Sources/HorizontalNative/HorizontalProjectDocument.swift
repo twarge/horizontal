@@ -24,10 +24,54 @@ struct HorizontalProjectDocument: FileDocument {
     /// archive against the bytes it last handed the document.
     static let didWriteNotification = Notification.Name("HorizontalProjectDocumentDidWrite")
 
-    var archive: HorizontalProjectArchive
+    // Expanding a .hprj's sibling files is loading, not an edit. Assigning the
+    // expanded archive through DocumentGroup's binding marks the file dirty
+    // and starts an unnecessary autosave/quit save, which can wait on Quick
+    // Look's outstanding coordinated reads for a minute.
+    //
+    // Copies share only this loading state. Every real archive assignment
+    // replaces the storage, preserving value semantics for edits, undo, and
+    // the snapshots FileDocument writes on background threads.
+    private var contents: Contents
+
+    var archive: HorizontalProjectArchive {
+        get { contents.archive }
+        set { contents = Contents(newValue) }
+    }
+
+    private final class Contents: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: HorizontalProjectArchive
+
+        init(_ archive: HorizontalProjectArchive) {
+            value = archive
+        }
+
+        var archive: HorizontalProjectArchive {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+
+        func completeLoading(with archive: HorizontalProjectArchive) {
+            lock.lock()
+            defer { lock.unlock() }
+            value = archive
+        }
+    }
+
+    /// Installs the rest of an existing project's files without writing back
+    /// through the document binding. A load begun before an edit must not
+    /// replace that edit when its background work finishes.
+    @discardableResult
+    func completeLoading(with archive: HorizontalProjectArchive, from original: Self) -> Bool {
+        guard contents === original.contents else { return false }
+        contents.completeLoading(with: archive)
+        return true
+    }
 
     init(rawProjectData: Data = Data()) {
-        archive = HorizontalProjectArchive(regularFileData: rawProjectData)
+        contents = Contents(HorizontalProjectArchive(regularFileData: rawProjectData))
     }
 
     /// The document `DocumentGroup` hands out for File > New (macOS) and Create
@@ -64,12 +108,15 @@ struct HorizontalProjectDocument: FileDocument {
     }
 
     init(configuration: ReadConfiguration) throws {
-        archive = try BoardLoadTimer.measureStandalone("FileDocument read configuration") {
+        contents = try Contents(BoardLoadTimer.measureStandalone("FileDocument read configuration") {
             try HorizontalProjectArchive(fileWrapper: configuration.file)
-        }
+        })
     }
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        // Use one immutable value throughout a background write, even if
+        // initial project loading finishes while the write is running.
+        let archive = self.archive
         // Read-only operation protects the user's EXISTING projects from this
         // app's still-maturing editors. Writing a file that does not exist yet —
         // Create Document on iPadOS, File > New's first save, Save As to a new

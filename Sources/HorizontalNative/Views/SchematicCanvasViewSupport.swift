@@ -462,6 +462,13 @@ final class SchematicSelectableCache: ObservableObject {
     }
 
     /// The sheet was edited: everything built for it goes.
+    func invalidateAll() {
+        entries.removeAll()
+        recency.removeAll()
+        activeSheet = nil
+        // Keep nextRevision monotonic so existing GPU buffers cannot match.
+    }
+
     func invalidate(sheetID: String) {
         var entry = entry(for: sheetID)
         entry.cache.invalidate()
