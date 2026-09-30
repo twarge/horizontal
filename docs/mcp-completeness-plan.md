@@ -1,5 +1,13 @@
 # MCP completeness: survey and plan
 
+September field-feedback follow-up: the API now supports `list_junctions`,
+`place_junction`, pin/junction forms of `draw_net_line`,
+`set_net_line_endpoint`, and atomic `remap_part` with explicit logical and
+physical identity maps. See [the edit contract](../python/README.md#mcp-edit-contracts).
+Track queries resolve derived connectivity; import previews use `would_write`
+and empty `written`; normalized operations preserve boolean identity; render
+layers accept explicit integer IDs with project-specific discovery.
+
 Surveyed September 8, 2026, against the working tree that adds holder records,
 pool search and import, schematic symbols, wires and text. The reliability and
 analysis work is [its own plan](mcp-improvements-plan.md) and is not repeated

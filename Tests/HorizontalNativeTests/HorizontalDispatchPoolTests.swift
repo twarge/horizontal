@@ -138,8 +138,17 @@ final class HorizontalDispatchPoolTests: XCTestCase {
     }
 
     func testImportedPartBecomesUsableAndDrawable() throws {
+        let before = try HorizontalProjectArchive.snapshot(from: packageURL)
+        let revision = try result("project_info") as! JSONDictionary
         let dry = try XCTUnwrap(try result("import_pool_part", ["part": "part-1", "dry_run": true]) as? [String: Any])
         XCTAssertEqual(dry["dry_run"] as? Bool, true)
+        XCTAssertEqual(dry["status"] as? String, "preview")
+        XCTAssertEqual(dry["written"] as? [String], [])
+        XCTAssertFalse((dry["would_write"] as? [String] ?? []).isEmpty)
+        XCTAssertNil(dry["durability"])
+        XCTAssertNil(dry["after_revision"])
+        XCTAssertEqual(before, try HorizontalProjectArchive.snapshot(from: packageURL))
+        XCTAssertEqual(revision.string("revision"), (try result("project_info") as? JSONDictionary)?.string("revision"))
         XCTAssertEqual((try result("list_parts") as? [[String: Any]])?.count, 0, "a dry run writes nothing")
 
         let imported = try XCTUnwrap(try result("import_pool_part", ["part": "part-1"]) as? [String: Any])

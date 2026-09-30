@@ -51,6 +51,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `list_nets`, `get_net`, `netlist` | nets with class and flags; one net with its pins, routing counts, and airwire geometry; the whole netlist |
 | `bom` | grouped the way the BOM exporter groups |
 | `list_symbols` | symbol instances on the sheets: component, gate, placement, and the instance id the schematic ops take |
+| `list_junctions` | schematic junction IDs, positions, resolved nets and sheet identities for wire endpoints |
 | `list_net_lines` | the wires on the sheets, with what each end connects — a symbol pin, a junction, a bus ripper or a block port |
 | `list_tracks`, `list_vias` | copper, filtered by net or layer; a track end is a pad (naming the component) or a junction. Both wrap their answer in `total`/`truncated`, because a board has thousands |
 | `list_net_labels`, `list_power_symbols` | what names a net on a page, with the ids their remove ops take |
@@ -87,8 +88,8 @@ that one. A package on the board is `package_instance` — the key a track's
 `pad` endpoint names — while `package_id` is the pool package it draws.
 
 Every write has a read that names what it wrote. `list_symbols`,
-`list_net_lines` and `list_texts` cover the schematic ops; `list_tracks` and
-`list_vias` cover copper no op writes yet. A write without its read is a
+`list_junctions`, `list_net_lines` and `list_texts` cover the schematic ops;
+`list_tracks` and `list_vias` cover copper. A write without its read is a
 write-only surface: an agent could create a thing and never find it again. Pin names resolve from the placed symbols, and from the
 project pool's units for gates without a symbol on any sheet.
 
@@ -131,7 +132,9 @@ designator or id, nets by name or id, pins by name (`EN`), by gate and pin
 | `ensure_net`, `rename_net`, `set_net_class`, `retire_net` | Nets; retiring drops the connections and power symbols on it |
 | `connect`, `disconnect` | Pin connections; `create_net` makes the net when it is missing |
 | `place_symbol`, `remove_symbol` | Schematic placement: draw a gate on a sheet with the symbol for its unit, move it, or take it off with the net lines that ended on it |
-| `draw_net_line` | The wire between two pins the block already ties to one net; it records that connection rather than making one, and refuses pins on different nets |
+| `draw_net_line` | A wire between typed pin or junction endpoints on one sheet and logical net; retains the legacy pin-to-pin form |
+| `place_junction`, `set_net_line_endpoint` | Create a schematic junction or retarget one end of an existing wire, preserving its identity and net |
+| `remap_part` | Substitute an imported part with explicit gate/pin and optional pad maps, preserving connections, symbols, wires and copper atomically |
 | `place_power_symbol`, `remove_power_symbol` | The ground or supply marker that says a point is on that net. Placing one marks the net as a power net, because that is what it means; the shape (`gnd`, `dot`, `antenna`, `earth`) belongs to the net, so every symbol on it matches |
 | `place_net_label`, `remove_net_label` | Names a net on the page — and, placed on more than one sheet, is how a net spans pages |
 | `add_sheet`, `rename_sheet`, `remove_sheet` | Pages. A sheet with anything drawn on it is refused rather than deleted quietly, and a schematic keeps at least one |
@@ -365,6 +368,13 @@ tries the discovery files first and falls back to the records; `open_project`
 with `source="live"` uses it, and `live_state` takes an optional project path
 for the same reason.
 
+The sandboxed app needs access to the project's containing folder to publish
+that record. Opening only a `.horizontal` package may not grant this access.
+Use the app's Grant Access action for the containing project folder when needed.
+For edits that must appear in an existing window, request `source="live"` and
+check the returned source. Automatic discovery can fall back to disk when it
+cannot find a live document; a disk commit does not refresh an open canvas.
+
 The token is therefore at rest beside the project, in a file this process
 writes mode 0600 — the same protection `live.json` has, in a place a client
 can actually read. Anyone who can read that file as the owning user can drive
@@ -538,6 +548,20 @@ not take the interpreter down. Both transports speak the same JSON-RPC.
 
 ## MCP
 
+Live archive replacements invalidate the board and schematic drawing caches
+without replacing their canvases. The schematic uses a separate external
+replacement revision, so normal mouse-driven edits keep their active tool.
+Undo/redo uses the same refresh path. A superseded asynchronous 3D build is
+discarded before it can replace the current scene.
+Changed Metal scenes request an immediate draw even for an inactive window.
+Canonical document identities preserve the workspace when saving changes a
+file URL's spelling. Save verification checks file contents; canvas refresh is
+verified separately in mounted-view tests and a visible app regression.
+
+See [the Python/MCP edit contracts](../python/README.md#mcp-edit-contracts)
+for layer discovery, preview versus persistence fields, resolved track nets,
+pin/junction wire endpoints, and explicit part/gate/pin remapping.
+
 `.mcp.json` at the repository root launches `uv run --project python
 horizontal-mcp` for Claude Code. Each tool takes the project path; setting
 `HORIZONTAL_PROJECT` makes it optional, which is what the Sherlock repository's
@@ -590,9 +614,8 @@ the method table, project summary, checks, renders, and export path rules.
 
 ## What comes next
 
-1. **Track and drawing ops.** The vocabulary covers the netlist, package
-   placement, and group layout copy; freehand copper, planes, and schematic
-   drawing edits still go through the app.
+1. **Further schematic endpoint forms.** Wire creation and retargeting support
+   pins and junctions; block-port and bus-ripper endpoints remain future work.
 2. **A true canvas capture** for `render_viewport`, which today renders the
    visible region in the exporter's style rather than the Metal canvas.
 3. **atopile follow-ups**: 3D models and rounded-rectangle pad shapes in

@@ -20,12 +20,12 @@ from contextvars import ContextVar
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal, get_type_hints
+from typing import Annotated, Any, Literal, get_type_hints
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 from mcp.types import CallToolResult, TextContent, ImageContent, ToolAnnotations
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, StrictInt, ValidationError
 
 from ._native import (HorizontalError, find_live, find_live_for, find_cli, find_dylib, LiveTransport,
                       project_holders, transport_error)
@@ -566,6 +566,13 @@ def autoroute(net: str, path: str | None = None, layer: int = 0, width_mm: float
 
 
 @_tool
+def list_junctions(path: str | None = None, net: str | None = None, sheet: int | None = None,
+                   sheet_id: str | None = None, name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
+    """Schematic junction IDs, positions, and nets. Use these IDs in typed wire endpoints."""
+    return _resolve(path).junctions(net=net, sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id)
+
+
+@_tool
 def list_net_labels(path: str | None = None, net: str | None = None, sheet: int | None = None,
                     sheet_id: str | None = None, name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
     """Net labels on the schematic sheets: which net each names, where it sits, and the id remove_net_label takes.
@@ -873,9 +880,16 @@ def render_sheet(path: str | None = None, sheet: int | None = None, name: str | 
 
 
 @_tool
-def render_board(path: str | None = None, layers: list[str] | None = None, mirrored: bool = False, region: Region | None = None, dpi: float = 110) -> dict[str, Any]:
+def render_board(path: str | None = None,
+                 layers: Annotated[list[str] | None, Field(description="Names from board_info.drawing_layers; use layers or layer_ids. Empty uses defaults.")] = None,
+                 mirrored: bool = False, region: Region | None = None, dpi: float = 110,
+                 layer_ids: Annotated[list[StrictInt] | None, Field(description="Integer IDs from board_info.drawing_layers, e.g. [0, -100]. Empty uses defaults.")] = None) -> dict[str, Any]:
     """Render the board drawing as a PNG image. Pass layer names from board_info to choose layers; mirrored views it from the bottom; region {min_x_mm, min_y_mm, max_x_mm, max_y_mm} renders only that part."""
     params = {k: v for k, v in {"layers": layers, "region": region.model_dump() if region else None}.items() if v is not None}
+    if layers is not None and layer_ids is not None:
+        raise ValueError("Use layers or layer_ids, not both.")
+    if layer_ids is not None:
+        params["layer_ids"] = layer_ids
     return _resolve(path)._call("render_board", mirrored=mirrored, dpi=dpi, max_pixels=2400, **params)
 
 

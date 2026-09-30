@@ -399,7 +399,8 @@ struct HorizontalExportSettings: Hashable {
         pdfLayerIDs(for: board).map { layer in
             HorizontalExportLayerSetting(
                 layer: layer,
-                name: HorizontalBoardLayers.name(for: layer),
+                name: board?.userLayers.first(where: { $0.id == layer })?.name
+                    ?? HorizontalBoardLayers.name(for: layer),
                 enabled: defaultPDFLayerEnabled(for: layer),
                 filename: "",
                 mode: HorizontalBoardLayers.isOutline(layer) ? .outline : .fill,

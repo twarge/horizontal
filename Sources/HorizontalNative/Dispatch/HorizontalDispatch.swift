@@ -187,13 +187,11 @@ enum HorizontalDispatchJSON {
             return dictionary.mapValues { sanitized($0) }
         case let array as [Any]:
             return array.map { sanitized($0) }
-        case let double as Double:
-            return double.isFinite ? double : NSNull()
-        case let float as Float:
-            return float.isFinite ? Double(float) : NSNull()
-        case let cgFloat as CGFloat:
-            return cgFloat.isFinite ? Double(cgFloat) : NSNull()
-        case is String, is Int, is Bool, is NSNull, is Int64, is Int32, is UInt, is NSNumber:
+        // Keep the NSNumber: Double casts turn JSON booleans into 0/1 and
+        // round integers above 2^53, making normalized edits unreplayable.
+        case let number as NSNumber:
+            return number.doubleValue.isFinite ? number : NSNull()
+        case is String, is NSNull:
             return value
         case let url as URL:
             return url.path

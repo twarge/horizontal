@@ -36,6 +36,29 @@ final class HorizontalDispatchReliabilityTests: XCTestCase {
         (try result("project_info") as! JSONDictionary)["revision"] as! String
     }
 
+    func testSnapshotPoolEnumerationAcceptsAPathAlias() throws {
+        let alias = url.deletingLastPathComponent().appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: url)
+        var archive = try HorizontalProjectArchive.snapshot(from: url)
+        let stagedPath = "pool/entities/new-import/item.json"
+        try archive.replaceRegularFileData(relativePath: stagedPath, with: Data("{\"unsaved\":true}".utf8))
+        let snapshot = HorizontalDispatchSnapshot(archive: archive, baseURL: alias)
+        let canonical = url.resolvingSymlinksInPath()
+        let expected = archive.regularFilePaths.filter { $0.hasSuffix(".json") }
+        XCTAssertEqual(snapshot.jsonFiles(under: alias).count, expected.count)
+        XCTAssertEqual(snapshot.jsonFiles(under: canonical).count, expected.count)
+        for file in snapshot.jsonFiles(under: canonical) { XCTAssertNotNil(snapshot.json(at: file)) }
+        for root in [alias, canonical] {
+            let directory = root.appendingPathComponent("pool/entities/new-import")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+            let files = snapshot.jsonFiles(under: directory)
+            XCTAssertEqual(files.count, 1)
+            XCTAssertEqual(snapshot.json(at: root.appendingPathComponent(stagedPath))?["unsaved"] as? Bool, true)
+        }
+        XCTAssertTrue(snapshot.jsonFiles(under: alias.deletingLastPathComponent()).isEmpty)
+        XCTAssertTrue(snapshot.jsonFiles(under: canonical.appendingPathComponent("nonexistent")).isEmpty)
+    }
+
     func testUnnamedUUIDLookupAndStrictSelectors() throws {
         let net = UUID().uuidString.lowercased()
         _ = try result("apply", ["expected_revision": revision(), "operation_id": UUID().uuidString,
@@ -99,6 +122,20 @@ final class HorizontalDispatchReliabilityTests: XCTestCase {
         XCTAssertEqual((response["error"] as? JSONDictionary)?["code"] as? Int, -32003)
         // Reads remain on the old snapshot until explicit reload.
         XCTAssertEqual(current, try revision())
+    }
+
+    func testResponseSerializationPreservesBooleanAndIntegerIdentity() throws {
+        let original = Data(#"{"flags":[true,false],"integer":9007199254740993,"zero":0,"one":1}"#.utf8)
+        let value = try JSONHelper.loadDictionary(from: original)
+        let encoded = HorizontalDispatch.serialize(value, pretty: false)
+        let decoded = try JSONHelper.loadDictionary(from: Data(encoded.utf8))
+        XCTAssertTrue(encoded.contains("true"))
+        XCTAssertTrue(encoded.contains("false"))
+        XCTAssertEqual((decoded["integer"] as? NSNumber)?.int64Value, 9_007_199_254_740_993)
+        XCTAssertEqual((decoded["zero"] as? NSNumber)?.objCType.pointee, NSNumber(value: 0).objCType.pointee)
+        XCTAssertNoThrow(try HorizontalDispatchValidation.boolean((decoded["flags"] as! [Any])[0], key: "flag"))
+        XCTAssertThrowsError(try HorizontalDispatchValidation.boolean(decoded["one"]!, key: "one"))
+        XCTAssertTrue(HorizontalDispatchJSON.sanitized(Double.infinity) is NSNull)
     }
 
     func testElectricalNotation() {

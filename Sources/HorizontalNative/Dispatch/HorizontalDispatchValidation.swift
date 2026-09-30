@@ -13,7 +13,7 @@ enum HorizontalDispatchValidation {
         let booleans: Set<String> = ["include_metadata", "include_unconnected", "include_no_populate", "dry_run",
                                      "mirrored", "redo"]
         let objects: Set<String> = ["region", "options"]
-        let arrays: Set<String> = ["ops", "items", "pool_items", "components", "nets", "layers", "sections", "panes"]
+        let arrays: Set<String> = ["ops", "items", "pool_items", "components", "nets", "layers", "layer_ids", "sections", "panes"]
         for (key, value) in params {
             if integers.contains(key) { try number(value, key: key, integer: true) }
             else if numbers.contains(key) { try number(value, key: key) }
@@ -25,7 +25,10 @@ enum HorizontalDispatchValidation {
                 if ["ops", "items", "pool_items"].contains(key), !array.allSatisfy({ $0 is JSONDictionary }) {
                     throw HorizontalDispatchError.invalidParams("\(key) entries must be objects.")
                 }
-                if !["ops", "items", "pool_items"].contains(key), !array.allSatisfy({ $0 is String }) {
+                if key == "layer_ids" {
+                    for item in array { try number(item, key: "layer_ids entry", integer: true) }
+                }
+                if !["ops", "items", "pool_items", "layer_ids"].contains(key), !array.allSatisfy({ $0 is String }) {
                     throw HorizontalDispatchError.invalidParams("\(key) entries must be strings.")
                 }
             } else if !(value is String) { throw HorizontalDispatchError.invalidParams("\(key) must be a string.") }
@@ -42,6 +45,9 @@ enum HorizontalDispatchValidation {
             guard region.double("min_x_mm")! < region.double("max_x_mm")!, region.double("min_y_mm")! < region.double("max_y_mm")! else {
                 throw HorizontalDispatchError.invalidParams("region must have positive width and height.")
             }
+        }
+        if method == "render_board", params["layers"] != nil, params["layer_ids"] != nil {
+            throw HorizontalDispatchError.invalidParams("Use layers or layer_ids, not both.")
         }
         if method == "get_net" { try exactlyOne(params, keys: ["name", "id"]) }
         if method == "get_component" { try exactlyOne(params, keys: ["refdes", "id"]) }

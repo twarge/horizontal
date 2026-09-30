@@ -52,6 +52,7 @@ enum HorizontalDispatchRender {
     static func renderBoard(
         project: HorizontalProject,
         layerNames: [String]?,
+        layerIDs: [Int]? = nil,
         mirrored: Bool,
         region: HorizontalRect? = nil,
         dpi: Double,
@@ -60,19 +61,12 @@ enum HorizontalDispatchRender {
         guard let board = project.board else {
             throw HorizontalDispatchError.notFound("The project has no board.")
         }
-        if let layerNames {
-            let valid = Self.boardDrawingLayers(project: project)
-            let names = Set(valid.flatMap { [$0["name"] as? String ?? "", String(describing: $0["layer"] ?? "")] }.map { $0.lowercased() })
-            let missing = layerNames.filter { !names.contains($0.lowercased()) }
-            guard missing.isEmpty else { throw HorizontalDispatchError.invalidParams("Unknown board layers: \(missing.joined(separator: ", ")).") }
-        }
+        let selected = try resolveBoardLayers(project: project, names: layerNames, ids: layerIDs)
         let pdfURL = try exportPDF(project: project, section: .boardDrawing) { settings in
             settings.boardDrawing.mirrored = mirrored
-            if let layerNames, !layerNames.isEmpty {
-                let wanted = Set(layerNames.map { $0.lowercased() })
+            if let selected {
                 for index in settings.boardDrawing.layers.indices {
-                    let layer = settings.boardDrawing.layers[index]
-                    settings.boardDrawing.layers[index].enabled = wanted.contains(layer.name.lowercased()) || wanted.contains(String(layer.layer))
+                    settings.boardDrawing.layers[index].enabled = selected.contains(settings.boardDrawing.layers[index].layer)
                 }
             }
         }
@@ -81,6 +75,35 @@ enum HorizontalDispatchRender {
         // onto the page inside a 36-point margin; mirror this to crop.
         let crop = region.map { pageRect(for: $0, bounds: boardPageBounds(board), margin: 36) }
         return try rasterize(pdfURL: pdfURL, page: 1, dpi: dpi, maxPixels: maxPixels, crop: crop)
+    }
+
+    /// The exporter's per-project list is also the selector contract.
+    static func resolveBoardLayers(project: HorizontalProject, names: [String]?, ids: [Int]?) throws -> Set<Int>? {
+        guard names == nil || ids == nil else {
+            throw HorizontalDispatchError.invalidParams("Use layers or layer_ids, not both.")
+        }
+        let valid = boardDrawingLayers(project: project)
+        var selected = Set<Int>()
+        var unknown = [String]()
+        for name in names ?? [] {
+            let matches = valid.filter {
+                ($0.string("name")?.caseInsensitiveCompare(name) == .orderedSame)
+                    || $0.int("layer").map(String.init) == name
+                    || $0.int("layer").map { HorizontalBoardLayers.name(for: $0).caseInsensitiveCompare(name) == .orderedSame } == true
+            }
+            if matches.count == 1, let id = matches[0].int("layer") { selected.insert(id) }
+            else { unknown.append(name) }
+        }
+        let validIDs = Set(valid.compactMap { $0.int("layer") })
+        for id in ids ?? [] {
+            if validIDs.contains(id) { selected.insert(id) } else { unknown.append(String(id)) }
+        }
+        guard unknown.isEmpty else {
+            throw HorizontalDispatchError(code: .invalidParams,
+                message: "Unknown or ambiguous board layers: \(unknown.joined(separator: ", ")). Use board_info.drawing_layers.",
+                details: ["requested": unknown, "valid_layers": valid])
+        }
+        return selected.isEmpty ? nil : selected
     }
 
     // MARK: - Page mapping (mirrors the PDF exporter)

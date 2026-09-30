@@ -107,6 +107,27 @@ final class HorizontalDispatchTests: XCTestCase {
         XCTAssertNotNil(closed["error"])
     }
 
+    func testEveryAdvertisedDrawingLayerResolvesByNameAndID() throws {
+        let url = try writtenTemplate()
+        var project = try HorizontalProject.load(from: url)
+        // Include project-specific names, not only fixed copper names.
+        project.board?.userLayers.append(HorizontalBoardUserLayer(id: HorizontalBoardLayers.firstUserLayer,
+            colorLayer: HorizontalBoardLayers.firstUserLayer, name: "Assembly review", type: "user", position: nil))
+        project.board?.stackupLayers.insert(HorizontalBoardStackupLayer(layer: -1, copperThickness: 35_000, substrateThickness: 800_000), at: 1)
+        let layers = HorizontalDispatchRender.boardDrawingLayers(project: project)
+        XCTAssertTrue(layers.contains { $0.string("name") == "Assembly review" })
+        for layer in layers {
+            let id = try XCTUnwrap(layer.int("layer")), name = try XCTUnwrap(layer.string("name"))
+            XCTAssertEqual(try HorizontalDispatchRender.resolveBoardLayers(project: project, names: [name], ids: nil), [id])
+            XCTAssertEqual(try HorizontalDispatchRender.resolveBoardLayers(project: project, names: nil, ids: [id]), [id])
+        }
+        XCTAssertNil(try HorizontalDispatchRender.resolveBoardLayers(project: project, names: [], ids: nil))
+        XCTAssertEqual(try HorizontalDispatchRender.resolveBoardLayers(project: project,
+            names: [HorizontalBoardLayers.name(for: HorizontalBoardLayers.firstUserLayer)], ids: nil),
+            [HorizontalBoardLayers.firstUserLayer])
+        XCTAssertThrowsError(try HorizontalDispatchRender.resolveBoardLayers(project: project, names: [], ids: []))
+    }
+
     func testCheckOnTheTemplatePasses() throws {
         let handle = try openTemplate()
         let check = try XCTUnwrap(try result("check", ["handle": handle]) as? [String: Any])
