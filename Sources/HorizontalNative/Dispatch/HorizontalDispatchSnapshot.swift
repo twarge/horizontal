@@ -38,14 +38,8 @@ final class HorizontalDispatchSnapshot {
     deinit { if let temporaryURL { try? FileManager.default.removeItem(at: temporaryURL) } }
 
     func data(at url: URL) -> Data? {
-        let prefix = baseURL.path.hasSuffix("/") ? baseURL.path : baseURL.path + "/"
-        if url.path.hasPrefix(prefix) {
-            return archive.regularFileData(relativePath: String(url.path.dropFirst(prefix.count)))
-        }
-        let path = url.resolvingSymlinksInPath().standardizedFileURL.path
-        let base = baseURL.resolvingSymlinksInPath().standardizedFileURL.path + "/"
-        guard path.hasPrefix(base) else { return nil }
-        return archive.regularFileData(relativePath: String(path.dropFirst(base.count)))
+        guard let path = relativePath(for: url) else { return nil }
+        return archive.regularFileData(relativePath: path)
     }
 
     func json(at url: URL) -> JSONDictionary? {
@@ -53,8 +47,35 @@ final class HorizontalDispatchSnapshot {
     }
 
     func jsonFiles(under url: URL) -> [URL] {
-        files.map { baseURL.appendingPathComponent($0) }.filter {
-            $0.path.hasPrefix(url.standardizedFileURL.path + "/") && $0.pathExtension == "json"
+        guard let directory = relativePath(for: url) else { return [] }
+        let prefix = directory.isEmpty ? "" : directory + "/"
+        return files.filter { $0.hasPrefix(prefix) && $0.hasSuffix(".json") }
+            .map { baseURL.appendingPathComponent($0) }
+    }
+
+    private func relativePath(for url: URL) -> String? {
+        let base = baseURL.standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        if path == base { return "" }
+        let prefix = base.hasSuffix("/") ? base : base + "/"
+        if path.hasPrefix(prefix) { return String(path.dropFirst(prefix.count)) }
+
+        // Unsaved imports can introduce directories that do not exist on disk.
+        // Resolve the ancestors as well: Foundation may leave an entire missing
+        // path unresolved, including aliases such as /tmp versus /private/tmp.
+        let canonicalBase = baseURL.resolvingSymlinksInPath().standardizedFileURL.path
+        let canonicalPrefix = canonicalBase.hasSuffix("/") ? canonicalBase : canonicalBase + "/"
+        var ancestor = url.standardizedFileURL
+        var suffix: [String] = []
+        while true {
+            let resolved = ancestor.resolvingSymlinksInPath().standardizedFileURL.path
+            if resolved == canonicalBase { return suffix.reversed().joined(separator: "/") }
+            if resolved.hasPrefix(canonicalPrefix) {
+                return ([String(resolved.dropFirst(canonicalPrefix.count))] + suffix.reversed()).joined(separator: "/")
+            }
+            guard ancestor.path != "/" else { return nil }
+            suffix.append(ancestor.lastPathComponent)
+            ancestor.deleteLastPathComponent()
         }
     }
 

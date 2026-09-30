@@ -28,6 +28,9 @@ struct SchematicCanvasView: View {
         /// ref instead of registering a "Move" undo — the placement is one
         /// undoable step ("Add Text"), finalized only when real content is typed.
         var editTextRefOnCommit: String? = nil
+        var pastePlacement: HorizontalSchematicPastePlacement? = nil
+        var pasteTransform = HorizontalPlacementTransform.identity
+        var selectionBeforePaste: [HorizontalSelectableRef] = []
     }
 
     #if os(macOS)
@@ -219,6 +222,12 @@ struct SchematicCanvasView: View {
     /// reports it through `onSelectedNetChange` / `onSelectedComponentChange`.
     var onSelectionClearedBySheetChange: (() -> Void)? = nil
     var onSheetChange: (HorizontalSchematicSheet) -> Void = { _ in }
+    /// Component deletion also changes the board and placement lists. The
+    /// project host commits the edited sheet with those changes in one undo.
+    var onDeleteSelection: ((HorizontalSchematicSheet) -> Void)? = nil
+    var onCopySelection: ((HorizontalSchematicSheet, [HorizontalSelectableRef], HorizontalPoint) -> HorizontalSchematicClipboard?)? = nil
+    var onPreparePaste: ((HorizontalSchematicClipboard, HorizontalPoint, String) -> HorizontalSchematicPastePlacement?)? = nil
+    var onClipboardError: (Error) -> Void = { _ in }
     /// Applies edit operations to the whole project, under the given undo
     /// action name. Buses, their members and net ties are block objects a
     /// sheet only draws; the sheet model carries neither half of them, and the
@@ -306,6 +315,10 @@ struct SchematicCanvasView: View {
         onHighlightComponentCommand: @escaping (Set<String>) -> Void = { _ in },
         onSelectionClearedBySheetChange: (() -> Void)? = nil,
         onSheetChange: @escaping (HorizontalSchematicSheet) -> Void = { _ in },
+        onDeleteSelection: ((HorizontalSchematicSheet) -> Void)? = nil,
+        onCopySelection: ((HorizontalSchematicSheet, [HorizontalSelectableRef], HorizontalPoint) -> HorizontalSchematicClipboard?)? = nil,
+        onPreparePaste: ((HorizontalSchematicClipboard, HorizontalPoint, String) -> HorizontalSchematicPastePlacement?)? = nil,
+        onClipboardError: @escaping (Error) -> Void = { _ in },
         onApplyProjectEdit: (([JSONDictionary], String) -> Void)? = nil,
         onNetClassChange: @escaping (String, String?) -> Void = { _, _ in },
         onComponentRefdesChange: @escaping (String, String) -> Void = { _, _ in },
@@ -342,6 +355,10 @@ struct SchematicCanvasView: View {
         self.onHighlightComponentCommand = onHighlightComponentCommand
         self.onSelectionClearedBySheetChange = onSelectionClearedBySheetChange
         self.onSheetChange = onSheetChange
+        self.onDeleteSelection = onDeleteSelection
+        self.onCopySelection = onCopySelection
+        self.onPreparePaste = onPreparePaste
+        self.onClipboardError = onClipboardError
         self.onApplyProjectEdit = onApplyProjectEdit
         self.onNetClassChange = onNetClassChange
         self.onComponentRefdesChange = onComponentRefdesChange
@@ -771,7 +788,12 @@ struct SchematicCanvasView: View {
                 schematicTargetItemMenuEntries(for: ref)
             },
             onTargetMenuCommand: { ref, command in
-                setSelectedObject(ref)
+                switch command {
+                case .copySelection, .duplicateSelection:
+                    if !selectedObjects.contains(ref) { setSelectedObject(ref) }
+                default:
+                    setSelectedObject(ref)
+                }
                 dispatchCanvasCommand(command)
             },
             onUnplacedObjectSelection: { object in
@@ -1006,6 +1028,11 @@ struct SchematicCanvasView: View {
 
     private var canvasCommandActionsSignature: Int {
         var hasher = Hasher()
+        // The actions capture this view's source sheet. Even with an empty
+        // selection on both pages, switching sheets must replace them before
+        // the workspace echoes a component selection back into the canvas.
+        hasher.combine(sourceSheet.id)
+        hasher.combine(syncRevision)
         hasher.combine(isReadOnly)
         hasher.combine(selectedObjects)
         hasher.combine(selectedUnplacedObjectID)
@@ -2352,6 +2379,59 @@ struct SchematicCanvasView: View {
         publishSelectionContext()
     }
 
+    private var canCopySchematicSelection: Bool {
+        !editorProfile.isPoolMode && onCopySelection != nil && moveState == nil
+            && placePartState == nil && drawNetLineState == nil && drawGraphicsState == nil
+            && selectedObjects.contains(where: HorizontalSchematicClipboardEditor.supports)
+    }
+
+    private func schematicClipboardSelection() -> HorizontalSchematicClipboard? {
+        guard canCopySchematicSelection else { return nil }
+        let anchor = lastCursorWorldPoint ?? schematicSelectionCenter() ?? .zero
+        return onCopySelection?(sheet, uniqueRefs(selectedObjects), anchor)
+    }
+
+    private func copySchematicSelection() {
+        guard let clipboard = schematicClipboardSelection() else { return }
+        do { try clipboard.writeToPasteboard() } catch { onClipboardError(error) }
+    }
+
+    private func pasteSchematicSelection() {
+        do {
+            if let clipboard = try HorizontalSchematicClipboard.readFromPasteboard() {
+                beginSchematicPaste(clipboard, actionName: "Paste")
+            }
+        } catch { onClipboardError(error) }
+    }
+
+    private func duplicateSchematicSelection() {
+        guard !isReadOnly, let clipboard = schematicClipboardSelection() else { return }
+        beginSchematicPaste(clipboard, actionName: "Duplicate")
+    }
+
+    private func beginSchematicPaste(_ clipboard: HorizontalSchematicClipboard, actionName: String) {
+        guard !isReadOnly, !editorProfile.isPoolMode,
+              moveState == nil, placePartState == nil, placePinState == nil,
+              placePowerSymbolState == nil, resizeSymbolState == nil,
+              drawNetLineState == nil, drawGraphicsState == nil else { return }
+        let cursor = snapSchematicPointToGrid(lastCursorWorldPoint ?? clipboard.anchor)
+        guard let placement = onPreparePaste?(clipboard, cursor, actionName) else { return }
+        let before = editedSheet
+        let previousSelection = selectedObjects
+        editedSheet = placement.paste.sheet
+        selectedObjects = placement.paste.refs
+        selectedUnplacedObjectID = nil
+        hoveredObject = nil
+        moveState = MoveState(
+            startPoint: cursor, lastPoint: cursor, originalSheet: placement.paste.sheet,
+            undoSheet: sourceSheet, editedSheetBeforeMove: before, tracksCursor: true,
+            snapTargets: nil, pastePlacement: placement, selectionBeforePaste: previousSelection
+        )
+        invalidateSelectableCache()
+        publishSelectionContext()
+        publishCanvasCommandActions()
+    }
+
     private func updateMove(to point: HorizontalPoint) {
         guard !isReadOnly,
               var state = moveState else {
@@ -2378,6 +2458,17 @@ struct SchematicCanvasView: View {
     private func commitMove() {
         guard !isReadOnly,
               let state = moveState else {
+            return
+        }
+        if let placement = state.pastePlacement {
+            let transform = HorizontalPlacementTransform(shift: state.lastPoint - state.startPoint, angle: 0, mirrored: false)
+                .accumulated(with: state.pasteTransform)
+            moveState = nil
+            editedSheet = state.editedSheetBeforeMove
+            invalidateSelectableCache()
+            placement.commit(transform)
+            publishSelectionContext()
+            publishCanvasCommandActions()
             return
         }
         // The place-text-then-edit flow rides the move machinery: on commit we
@@ -2425,14 +2516,20 @@ struct SchematicCanvasView: View {
         }
 
         editedSheet = state.editedSheetBeforeMove
+        if state.pastePlacement != nil { selectedObjects = state.selectionBeforePaste }
         invalidateSelectableCache()
         moveState = nil
         HorizontalMoveRateDiagnostics.endMove(committed: false)
         publishSelectionContext()
+        publishCanvasCommandActions()
     }
 
     private func schematicMovePreviewSheet(for state: MoveState) -> HorizontalSchematicSheet {
         let totalDelta = state.lastPoint - state.startPoint
+        if let placement = state.pastePlacement {
+            return placement.paste.preview(HorizontalPlacementTransform(shift: totalDelta, angle: 0, mirrored: false)
+                .accumulated(with: state.pasteTransform))
+        }
         guard totalDelta != .zero else {
             return state.originalSheet
         }
@@ -3002,6 +3099,16 @@ struct SchematicCanvasView: View {
             return
         }
 
+        if !editorProfile.isPoolMode,
+           previousSheet.symbols.count != draft.symbols.count,
+           let onDeleteSelection {
+            selectedObjects = []
+            hoveredObject = nil
+            adoptExternallyUpdatedSheet()
+            onDeleteSelection(draft)
+            return
+        }
+
         registerUndoSnapshot(previousSheet, actionName: "Delete")
         editedSheet = draft
         selectedObjects = []
@@ -3391,6 +3498,22 @@ struct SchematicCanvasView: View {
         if var state = moveState {
             let currentPreview = schematicMovePreviewSheet(for: state)
             guard let center = schematicSelectionCenter(in: currentPreview) else {
+                return
+            }
+
+            if let placement = state.pastePlacement {
+                let pivot = lastCursorWorldPoint ?? center
+                let linear = HorizontalPlacementTransform(shift: .zero,
+                    angle: actionName == "Mirror" ? 0 : Self.quarterTurnAngle, mirrored: actionName == "Mirror")
+                let aroundPivot = HorizontalPlacementTransform(shift: pivot - linear.applying(to: pivot),
+                                                               angle: linear.angle, mirrored: linear.mirrored)
+                let translation = HorizontalPlacementTransform(shift: state.lastPoint - state.startPoint, angle: 0, mirrored: false)
+                state.pasteTransform = aroundPivot.accumulated(with: translation.accumulated(with: state.pasteTransform))
+                state.originalSheet = placement.paste.preview(state.pasteTransform)
+                state.startPoint = state.lastPoint
+                moveState = state
+                editedSheet = state.originalSheet
+                invalidateSelectableCache()
                 return
             }
 
@@ -7234,6 +7357,9 @@ struct SchematicCanvasView: View {
                 }
             }
         )
+        handlers.copySelection = canCopySchematicSelection ? { copySchematicSelection() } : nil
+        handlers.pasteSelection = !editorProfile.isPoolMode && onPreparePaste != nil ? { pasteSchematicSelection() } : nil
+        handlers.duplicateSelection = canCopySchematicSelection && onPreparePaste != nil ? { duplicateSchematicSelection() } : nil
         if editorProfile.isPoolMode {
             // No nets in a symbol or frame: the net tools and the pin-name
             // editor (which edits a placed component) do not apply.
@@ -7371,18 +7497,16 @@ struct SchematicCanvasView: View {
         )
     }
 
-    /// Per-object right-click action menu (macOS). Only text gets a rich menu
-    /// (Select + "Edit…"); every other ref returns empty so it keeps the existing
-    /// plain disambiguation/select menu (driven by `targetMenuItems`). The macOS
-    /// `showContextMenu` path uses a non-empty result here to build the submenu and
-    /// routes "Edit…" through `onTargetMenuCommand` (which selects then dispatches).
+    /// Copy/Duplicate preserve a group when its member is right-clicked.
     private func schematicTargetItemMenuEntries(for ref: HorizontalSelectableRef) -> [HorizontalTargetItemMenuEntry] {
         #if os(macOS)
-        guard !isReadOnly, ref.type == .text else { return [] }
-        return [
-            .select(title: "Select"),
-            .command(title: "Edit…", .editText),
-        ]
+        var entries: [HorizontalTargetItemMenuEntry] = [.select(title: "Select")]
+        if !isReadOnly, ref.type == .text { entries.append(.command(title: "Edit…", .editText)) }
+        if onCopySelection != nil, HorizontalSchematicClipboardEditor.supports(ref) {
+            entries.append(.command(title: "Copy", .copySelection))
+            if !isReadOnly, onPreparePaste != nil { entries.append(.command(title: "Duplicate", .duplicateSelection)) }
+        }
+        return entries.count > 1 ? entries : []
         #else
         return []
         #endif
@@ -12923,13 +13047,19 @@ extension SchematicCanvasView {
     /// undo of one, a unit change) without tearing the canvas down: the draft
     /// and any in-flight interaction are dropped; selection and viewport stay.
     private func adoptExternallyUpdatedSheet() {
+        #if os(macOS)
+        textRenderDebounce?.cancel()
+        editingTextState = nil
+        #endif
         editedSheet = nil
         moveState = nil
         placePartState = nil
         placePinState = nil
+        placePowerSymbolState = nil
         resizeSymbolState = nil
         drawNetLineState = nil
         drawGraphicsState = nil
+        selectableCache.invalidateAll()
         invalidateSelectableCache()
         publishSelectionContext()
     }

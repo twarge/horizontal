@@ -134,7 +134,7 @@ struct HorizontalMetalBackdropView {
         coordinator.loadProfileLabel = loadProfileLabel
         coordinator.marksLoadProfileFirstDraw = marksLoadProfileFirstDraw
         let profileStart = BoardLoadTimer.timingStart()
-        coordinator.update(
+        let sceneChanged = coordinator.update(
             bounds: bounds,
             // The driver's viewport is the freshest (the SwiftUI `viewport`
             // here is the throttled chrome value, up to a gesture-frame stale);
@@ -187,7 +187,10 @@ struct HorizontalMetalBackdropView {
         #else
         view.setNeedsDisplay()
         #endif
-        if !bufferPatches.isEmpty {
+        // Paused MTKViews may defer needs-display draws while their window is
+        // inactive. Submit a new scene now, just as we already do for move
+        // patches, so a live edit cannot wait for a pointer/zoom/window event.
+        if sceneChanged || !bufferPatches.isEmpty {
             HorizontalMoveRateDiagnostics.mark(.metalForcedDraw)
             view.draw()
         }
@@ -258,6 +261,9 @@ struct HorizontalMetalBackdropView {
         private var compositeBatchBuffers = [HorizontalMetalCompositeBatchBuffers]()
         private var compositeBatchStorageByGroup = [Int: HorizontalMetalCompositeBatchBuffers]()
         private var currentCompositeBatchKey: Int?
+        /// Last scene submitted to a drawable, used to distinguish model
+        /// updates from presentation in mounted-canvas regression tests.
+        private(set) var presentedContentKey: Int?
         private var compositeRenderTextures = [MTLTexture]()
         private var currentCompositeTextureSize = CGSize.zero
         private var currentBounds = HorizontalRect.empty
@@ -331,7 +337,10 @@ struct HorizontalMetalBackdropView {
             layerOpacityExemptCompositeGroups: Set<Int>,
             backingScale: Float,
             viewportSize: SIMD2<Float>
-        ) {
+        ) -> Bool {
+            let sceneChanged = currentTriangleKey != triangleKey || currentLineKey != lineKey
+                || currentHandleKey != handleKey || currentAnchoredRectKey != anchoredRectKey
+                || currentScreenTriangleKey != screenTriangleKey || currentScreenLineKey != screenLineKey
             let profilesMovePatch = !bufferPatches.isEmpty
             if profilesMovePatch {
                 HorizontalMoveRateDiagnostics.mark(.metalUpdate)
@@ -422,6 +431,7 @@ struct HorizontalMetalBackdropView {
                     }
                 }
             }
+            return sceneChanged
         }
 
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
@@ -593,6 +603,7 @@ struct HorizontalMetalBackdropView {
                 encoder.endEncoding()
             }
             HorizontalMoveProfiler.measure("metal.draw.commit", enabled: profilesMovePatchDraw) {
+                presentedContentKey = currentCompositeBatchKey
                 if presentsInTransaction {
                     // presentsWithTransaction requires presenting on the main
                     // thread after the command buffer is scheduled, rather than

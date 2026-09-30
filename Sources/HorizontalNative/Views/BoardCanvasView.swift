@@ -3869,6 +3869,10 @@ struct BoardCanvasView: View {
     /// is a redraw, not a reload, and losing them is exactly what the old
     /// rebuild-by-identity did.
     private func adoptExternallyUpdatedBoard() {
+        #if os(macOS)
+        textRenderDebounce?.cancel()
+        editingTextState = nil
+        #endif
         editedBoard = nil
         moveState = nil
         drawGraphicsState = nil
@@ -3879,9 +3883,7 @@ struct BoardCanvasView: View {
         roundOffVertexState = nil
         packagePlacementState = nil
         invalidateSelectableCache()
-        // Plane fills are geometry, and a net change is a colour change, so the
-        // Metal scene has to be rebuilt rather than patched in place.
-        metalSceneRevision &+= 1
+        // invalidateSelectableCache also rebuilds the Metal scene.
         publishSelectionContext()
     }
 
