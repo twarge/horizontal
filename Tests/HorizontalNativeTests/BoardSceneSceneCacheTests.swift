@@ -96,4 +96,14 @@ final class BoardSceneSceneCacheTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(600))
         XCTAssertEqual(cache.builtRevision, 0)
     }
+
+    func testSupersededBuildIsNeverPublished() async {
+        let cache = BoardSceneSceneCache()
+        var published = [Int]()
+        // Both requests run before a background completion can reenter MainActor.
+        _ = cache.nodes(for: board(polygonCount: 40), revision: 1) { _ in published.append(cache.builtRevision ?? -1) }
+        _ = cache.nodes(for: board(polygonCount: 1), revision: 2) { _ in published.append(cache.builtRevision ?? -1) }
+        await waitForBuilds(cache)
+        XCTAssertEqual(published, [2])
+    }
 }

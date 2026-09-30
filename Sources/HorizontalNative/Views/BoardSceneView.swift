@@ -409,9 +409,15 @@ final class BoardSceneSceneCache {
                 guard let self else {
                     return
                 }
+                self.buildKey = nil
+                guard self.requestedKey == requestedKey else {
+                    // A live edit or undo arrived during the build. Never
+                    // present its predecessor over the newer document.
+                    self.startBuild()
+                    return
+                }
                 self.key = requestedKey
                 self.nodes = built
-                self.buildKey = nil
                 self.onReady?(built)
                 // Edits that arrived while building: one more pass, now.
                 if self.requestedKey != requestedKey {
