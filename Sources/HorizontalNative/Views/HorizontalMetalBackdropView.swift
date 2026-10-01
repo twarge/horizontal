@@ -264,6 +264,23 @@ struct HorizontalMetalBackdropView {
         /// Last scene submitted to a drawable, used to distinguish model
         /// updates from presentation in mounted-canvas regression tests.
         private(set) var presentedContentKey: Int?
+
+        /// Read the resident geometry for mounted-canvas regression checks.
+        /// A scene key alone cannot detect a stale or displaced move preview.
+        func residentLineEndpoints(compositeGroup: Int) -> [(from: SIMD2<Float>, to: SIMD2<Float>)] {
+            let buffer: MTLBuffer?
+            let count: Int
+            if compositeGroup == 0 {
+                buffer = lineBuffer
+                count = linePrimitiveCount
+            } else {
+                buffer = compositeBatchStorageByGroup[compositeGroup]?.lineBuffer
+                count = compositeBatchStorageByGroup[compositeGroup]?.lineCount ?? 0
+            }
+            guard let buffer else { return [] }
+            let lines = buffer.contents().bindMemory(to: HorizontalMetalLineShaderPrimitive.self, capacity: count)
+            return (0..<count).map { (lines[$0].from, lines[$0].to) }
+        }
         private var compositeRenderTextures = [MTLTexture]()
         private var currentCompositeTextureSize = CGSize.zero
         private var currentBounds = HorizontalRect.empty
@@ -285,6 +302,7 @@ struct HorizontalMetalBackdropView {
         private var currentLayerOpacity: Float = 1
         private var currentLayerOpacityExemptCompositeGroups: Set<Int> = []
         private var moveProfilerDrawActiveUntilNanoseconds: UInt64 = 0
+        private var hadBufferPatches = false
 
         override init() {
             let device = MTLCreateSystemDefaultDevice()
@@ -338,6 +356,17 @@ struct HorizontalMetalBackdropView {
             backingScale: Float,
             viewportSize: SIMD2<Float>
         ) -> Bool {
+            // SwiftUI can deliver the new base scene before removing the move
+            // patches. Once the preview ends, restore that base even if its
+            // keys already match; otherwise patched positions remain resident.
+            if hadBufferPatches && bufferPatches.isEmpty {
+                currentTriangleKey = nil
+                currentLineKey = nil
+                currentHandleKey = nil
+                currentAnchoredRectKey = nil
+                currentCompositeBatchKey = nil
+            }
+            hadBufferPatches = !bufferPatches.isEmpty
             let sceneChanged = currentTriangleKey != triangleKey || currentLineKey != lineKey
                 || currentHandleKey != handleKey || currentAnchoredRectKey != anchoredRectKey
                 || currentScreenTriangleKey != screenTriangleKey || currentScreenLineKey != screenLineKey

@@ -7571,6 +7571,7 @@ struct SchematicCanvasView: View {
         SchematicSelectableCacheKey(
             sheetID: sheet.id,
             revision: selectableCache.selectableRevision(for: sheet.id),
+            editRevision: selectableCacheRevision,
             displayOptions: displayOptions,
             counts: [
                 sheet.junctions.count,
@@ -7672,6 +7673,7 @@ struct SchematicCanvasView: View {
         let key = SchematicMetalLineCacheKey(
             sheetID: sheet.id,
             revision: selectableCache.metalRevision(for: sheet.id),
+            editRevision: metalCacheRevision,
             displayOptions: displayOptions,
             counts: selectableCacheKey.counts,
             frameColor: frameColor,

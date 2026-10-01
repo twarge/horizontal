@@ -3232,7 +3232,7 @@ struct HorizontalMultitouchView: UIViewRepresentable {
 #endif
 
 #if canImport(AppKit)
-private struct TrackpadCanvasMonitor: NSViewRepresentable {
+struct TrackpadCanvasMonitor: NSViewRepresentable {
     var onPan: (CGSize) -> Void
     var onMagnify: (CGFloat, CGPoint, CGSize) -> Void
     var onZoomStep: (CGFloat, CGPoint, CGSize) -> Void
@@ -3374,8 +3374,16 @@ private struct TrackpadCanvasMonitor: NSViewRepresentable {
             }
 
             window.acceptsMouseMovedEvents = true
-            monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify, .mouseMoved, .leftMouseDragged, .leftMouseDown, .leftMouseUp, .rightMouseDown, .flagsChanged, .keyDown]) { [weak self] event in
-                self?.handle(event) ?? event
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify, .mouseMoved, .leftMouseDragged, .leftMouseDown, .leftMouseUp, .rightMouseDown, .flagsChanged, .keyDown], handler: makeEventHandler())
+        }
+
+        func makeEventHandler() -> (NSEvent) -> NSEvent? {
+            { [weak self] event in
+                guard let self else { return event }
+                // A nil result means the canvas consumed the event. Coalescing
+                // it back to `event` sends handled arrows on to AppKit, which
+                // can scroll the view or beep in the default key handler.
+                return self.handle(event)
             }
         }
 
