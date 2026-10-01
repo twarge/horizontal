@@ -126,8 +126,10 @@ struct HorizontalMetalScreenTrianglePrimitive: Hashable {
     var cx: Float
     var cy: Float
     var color: HorizontalMetalRGBA
+    /// When set, vertices are pixel offsets from this world-space anchor.
+    var worldAnchor: HorizontalPoint?
 
-    init(a: CGPoint, b: CGPoint, c: CGPoint, color: HorizontalMetalRGBA) {
+    init(a: CGPoint, b: CGPoint, c: CGPoint, color: HorizontalMetalRGBA, worldAnchor: HorizontalPoint? = nil) {
         self.ax = Float(a.x)
         self.ay = Float(a.y)
         self.bx = Float(b.x)
@@ -135,6 +137,7 @@ struct HorizontalMetalScreenTrianglePrimitive: Hashable {
         self.cx = Float(c.x)
         self.cy = Float(c.y)
         self.color = color
+        self.worldAnchor = worldAnchor
     }
 }
 
