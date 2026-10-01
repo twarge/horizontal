@@ -393,7 +393,9 @@ enum HorizontalSchematicClipboardEditor {
         var item = source
         if let position = item.point("position") { item["position"] = pointJSON(transform.applying(to: position)) }
         if let placement = HorizontalPlacementTransform(json: item.dictionary("placement")) {
-            let mapped = transform.accumulated(with: placement)
+            let mapped = table == "symbols" || table == "block_symbols"
+                ? transform.accumulatedSchematic(with: placement)
+                : transform.accumulated(with: placement)
             var json = item.dictionary("placement") ?? [:]
             json["shift"] = pointJSON(mapped.shift)
             json["angle"] = mapped.angle
@@ -508,7 +510,7 @@ struct HorizontalSchematicPaste {
         func circle(_ circle: inout HorizontalCircle) { circle.center = transform.applying(to: circle.center) }
         for (id, point) in result.junctions where includes(id) { result.junctions[id] = transform.applying(to: point) }
         update(&result.symbols) { symbol in
-            let placement = transform.accumulated(with: HorizontalPlacementTransform(shift: symbol.position, angle: symbol.angle, mirrored: symbol.mirrored))
+            let placement = transform.accumulatedSchematic(with: HorizontalPlacementTransform(shift: symbol.position, angle: symbol.angle, mirrored: symbol.mirrored))
             symbol.position = placement.shift
             symbol.angle = placement.angle
             symbol.mirrored = placement.mirrored
