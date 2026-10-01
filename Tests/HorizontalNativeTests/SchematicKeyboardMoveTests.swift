@@ -7,11 +7,14 @@ import XCTest
 
 @MainActor
 final class SchematicKeyboardMoveTests: XCTestCase {
-    private final class State {
+    @MainActor private final class State {
         var source: HorizontalSchematicSheet
         var committed: HorizontalSchematicSheet?
         var actions: HorizontalCanvasCommandActions?
         var flushLayout: (() -> Void)?
+        var displayOptions = SchematicDisplayOptions()
+        var revealNetsAfterSelection = false
+        let undo = UndoManager()
         init(_ sheet: HorizontalSchematicSheet) { source = sheet }
     }
 
@@ -23,17 +26,22 @@ final class SchematicKeyboardMoveTests: XCTestCase {
         @State private var selectedComponents: Set<String> = []
         @State private var selectedNets: Set<String> = []
         @State private var viewport = CanvasViewport()
+        @State private var displayOptions: SchematicDisplayOptions
         init(state: State) {
             self.state = state
             _sheet = SwiftUI.State(initialValue: state.source)
+            _displayOptions = SwiftUI.State(initialValue: state.displayOptions)
         }
         var body: some View {
             let _ = (actions, details, selectedComponents, selectedNets)
-            SchematicCanvasView(sheet: sheet, viewport: $viewport,
+            SchematicCanvasView(sheet: sheet, viewport: $viewport, displayOptions: displayOptions, undoManager: state.undo,
                 onSelectedNetChange: { selectedNets = $0 },
                 onSelectedComponentChange: { selectedComponents = $0; actions?.selectComponents?($0) },
                 onSheetChange: { state.committed = $0; sheet = $0; state.flushLayout?() },
-                onSelectionDetailsChange: { details = $0 },
+                onSelectionDetailsChange: {
+                    details = $0
+                    if state.revealNetsAfterSelection && $0.hasSelection { displayOptions.nets = true }
+                },
                 onCanvasCommandActionsChange: { state.actions = $0; actions = $0 })
         }
     }
@@ -42,6 +50,11 @@ final class SchematicKeyboardMoveTests: XCTestCase {
         let deadline = Date().addingTimeInterval(3)
         while !predicate(), Date() < deadline { try? await Task.sleep(for: .milliseconds(30)) }
         return predicate()
+    }
+
+    private func assertSettles(_ predicate: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        let result = await settle(predicate)
+        XCTAssertTrue(result, file: file, line: line)
     }
 
     private func fixture() -> HorizontalSchematicSheet {
@@ -205,6 +218,73 @@ final class SchematicKeyboardMoveTests: XCTestCase {
         let textArrow = try event(124, "\u{f703}")
         XCTAssertTrue(handle(textArrow) === textArrow, "Text fields retain normal cursor movement")
         XCTAssertEqual(moves.count, 5)
+    }
+
+    func testPinLabelPreviewExtendsWireAndCommitUndoAndCancelPreservePin() async throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
+        _ = NSApplication.shared
+        var sheet = fixture()
+        let anchor = sheet.symbolPins[0].from
+        sheet.symbolPins[0].netID = "net"
+        sheet.junctions = ["label-junction": anchor]
+        sheet.junctionNetIDs = ["label-junction": "net"]
+        sheet.netLabels = [.init(id: "label", text: "SIGNAL", position: anchor, size: 1_000_000,
+                                orientation: "left", netID: "net", junctionID: "label-junction")]
+        sheet.netLines = [.init(id: "wire", from: anchor, to: anchor, width: 0, layer: nil, netID: "net",
+                               schematicFrom: .pin("symbol/a"), schematicTo: .junction("label-junction"))]
+        let state = State(sheet)
+        state.undo.groupsByEvent = false
+        state.displayOptions.symbols = false
+        state.displayOptions.junctions = false
+        state.displayOptions.nets = false
+        state.revealNetsAfterSelection = true
+        let hosted = NSHostingView(rootView: Canvas(state: state)
+            .environmentObject(HorizontalAppearanceSettings(defaults: UserDefaults(suiteName: UUID().uuidString)!)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosted
+        window.orderFront(nil)
+        defer { window.close() }
+        await assertSettles { state.actions != nil && self.renderer(in: hosted)?.presentedContentKey != nil }
+        state.actions?.dispatch(.selectAll)
+        await assertSettles { state.actions?.canMoveSelection == true }
+        let renderer = try XCTUnwrap(renderer(in: hosted))
+        let handle = try XCTUnwrap(monitor(in: hosted)).makeEventHandler()
+        func key(_ code: UInt16, _ characters: String) throws {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: characters,
+                charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
+            XCTAssertNil(handle(event))
+        }
+        try key(126, "\u{f700}")
+        let destination = anchor + HorizontalPoint(x: 0, y: 1_250_000)
+        await assertSettles {
+            guard let wire = renderer.residentLineEndpoints(compositeGroup: 5).first else { return false }
+            return abs(Double(wire.from.y) - anchor.y) < 2 && abs(Double(wire.to.y) - destination.y) < 2
+        }
+        state.undo.beginUndoGrouping()
+        try key(36, "\r")
+        state.undo.endUndoGrouping()
+        await assertSettles { state.committed?.netLabels.first?.position == destination }
+        XCTAssertEqual(state.committed?.symbolPins, sheet.symbolPins)
+        XCTAssertEqual(state.committed?.netLines.first?.from, anchor)
+        XCTAssertEqual(state.committed?.netLines.first?.to, destination)
+        XCTAssertTrue(state.undo.canUndo)
+        state.undo.undo()
+        await assertSettles { state.committed?.netLabels.first?.position == anchor }
+        XCTAssertEqual(state.committed?.netLines.first?.length, 0)
+        XCTAssertEqual(state.committed?.symbolPins, sheet.symbolPins)
+        state.committed = nil
+        try key(126, "\u{f700}")
+        await assertSettles { state.actions?.canCancelInteraction == true }
+        state.actions?.dispatch(.cancelInteraction)
+        await assertSettles { state.actions?.canCancelInteraction == false }
+        XCTAssertNil(state.committed, "Cancel must not publish a sheet edit")
+        await assertSettles {
+            guard let wire = renderer.residentLineEndpoints(compositeGroup: 5).first else { return false }
+            return abs(Double(wire.from.y) - anchor.y) < 2 && abs(Double(wire.to.y) - anchor.y) < 2
+        }
     }
 }
 #endif

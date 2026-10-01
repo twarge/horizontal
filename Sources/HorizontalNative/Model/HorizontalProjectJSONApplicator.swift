@@ -191,7 +191,7 @@ enum HorizontalProjectJSONApplicator {
         patchSchematicDrawingArcs(&sheetJSON, arcs: sheet.drawingArcs, junctions: sheet.junctions)
         patchTexts(&sheetJSON, key: "texts", texts: sheet.texts)
         patchNewTexts(&sheetJSON, key: "texts", texts: sheet.texts)
-        patchSchematicNetLabels(&sheetJSON, labels: sheet.netLabels)
+        patchSchematicNetLabels(&sheetJSON, labels: sheet.netLabels, junctions: sheet.junctions)
         patchSchematicBusLabels(&sheetJSON, labels: sheet.busLabels)
         patchSchematicNetTies(&sheetJSON, netTies: sheet.netTies)
         patchSchematicPowerSymbols(&sheetJSON, powerSymbols: sheet.powerSymbols, fallbackPowerSymbolIDs: schematicPowerSymbolIDs(in: sheet))
@@ -507,10 +507,10 @@ enum HorizontalProjectJSONApplicator {
         for line in sheet.netLines {
             let key = matchingKey(line.id, in: map) ?? line.id
             var item = map[key] as? JSONDictionary ?? [:]
-            if let fromEndpoint = schematicNetLineEndpoint(at: line.from, netID: line.netID, in: sheet) {
+            if let fromEndpoint = schematicNetLineEndpoint(at: line.from, netID: line.netID, preferred: line.schematicFrom, in: sheet) {
                 item["from"] = fromEndpoint
             }
-            if let toEndpoint = schematicNetLineEndpoint(at: line.to, netID: line.netID, in: sheet) {
+            if let toEndpoint = schematicNetLineEndpoint(at: line.to, netID: line.netID, preferred: line.schematicTo, in: sheet) {
                 item["to"] = toEndpoint
             }
             if let netID = line.netID {
@@ -547,8 +547,22 @@ enum HorizontalProjectJSONApplicator {
     private static func schematicNetLineEndpoint(
         at point: HorizontalPoint,
         netID: String?,
+        preferred: HorizontalSchematicEndpoint? = nil,
         in sheet: HorizontalSchematicSheet
     ) -> JSONDictionary? {
+        let pointKey = jsonPointKey(point)
+        switch preferred {
+        case .junction(let id):
+            if let position = sheet.junctions[id], jsonPointKey(position) == pointKey { return preferred?.json }
+        case .pin(let path):
+            if sheet.symbolPins.contains(where: {
+                schematicSymbolPinPath(fromGeometryID: $0.id) == path && jsonPointKey($0.from) == pointKey && netsMatch($0.netID, netID)
+            }) { return preferred?.json }
+        case .port, .busRipper:
+            // These endpoints are resolved by the loader; retain their native references.
+            return preferred?.json
+        case nil: break
+        }
         if let junctionID = junctionID(at: point, in: sheet.junctions) {
             return schematicJunctionEndpoint(junctionID)
         }
@@ -1503,7 +1517,7 @@ enum HorizontalProjectJSONApplicator {
         return (packageID, uuid)
     }
 
-    private static func patchSchematicNetLabels(_ json: inout JSONDictionary, labels: [HorizontalSchematicNetLabel]) {
+    private static func patchSchematicNetLabels(_ json: inout JSONDictionary, labels: [HorizontalSchematicNetLabel], junctions: [String: HorizontalPoint]) {
         guard var map = json["net_labels"] as? JSONDictionary else {
             return
         }
@@ -1515,6 +1529,11 @@ enum HorizontalProjectJSONApplicator {
                 continue
             }
             item["size"] = jsonNumber(label.size)
+            if let id = label.junctionID, junctions[id].map(jsonPointKey) == jsonPointKey(label.position) {
+                item["junction"] = id
+            } else if let id = junctionID(at: label.position, in: junctions) {
+                item["junction"] = id
+            }
             if let netID = label.netID {
                 item["last_net"] = netID
             } else {

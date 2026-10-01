@@ -320,6 +320,37 @@ struct HorizontalRect: Equatable {
     }
 }
 
+enum HorizontalSchematicEndpoint: Hashable {
+    case junction(String)
+    case pin(String)
+    case port(String)
+    case busRipper(String)
+
+    init?(json: JSONDictionary) {
+        if let id = json.string("junc") { self = .junction(id.lowercased()) }
+        else if let id = json.string("pin") { self = .pin(id.lowercased()) }
+        else if let id = json.string("port") { self = .port(id.lowercased()) }
+        else if let id = json.string("bus_ripper") { self = .busRipper(id.lowercased()) }
+        else { return nil }
+    }
+
+    var json: JSONDictionary {
+        var result: JSONDictionary = ["junc": NSNull(), "pin": NSNull(), "port": NSNull(), "bus_ripper": NSNull()]
+        switch self {
+        case .junction(let id): result["junc"] = id
+        case .pin(let id): result["pin"] = id
+        case .port(let id): result["port"] = id
+        case .busRipper(let id): result["bus_ripper"] = id
+        }
+        return result
+    }
+
+    var isPin: Bool {
+        if case .pin = self { return true }
+        return false
+    }
+}
+
 struct HorizontalSegment: Identifiable, Hashable {
     var id: String
     var from: HorizontalPoint
@@ -329,6 +360,8 @@ struct HorizontalSegment: Identifiable, Hashable {
     var center: HorizontalPoint? = nil
     var reverse: Bool = false
     var netID: String? = nil
+    var schematicFrom: HorizontalSchematicEndpoint? = nil
+    var schematicTo: HorizontalSchematicEndpoint? = nil
 }
 
 extension HorizontalSegment {
@@ -673,6 +706,8 @@ struct HorizontalSchematicNetLabel: Identifiable, Hashable {
     var size: Double
     var orientation: String
     var netID: String? = nil
+    var junctionID: String? = nil
+    var showsPort: Bool = false
 
     var points: [HorizontalPoint] {
         [position, position + labelShift(size: size, orientation: orientation)]
