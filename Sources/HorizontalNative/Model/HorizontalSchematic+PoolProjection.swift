@@ -67,27 +67,28 @@ extension HorizontalSchematicSheet {
         textPlacements: [String: HorizontalPlacementTransform] = [:]
     ) {
         let isIdentity = transform == .identity
-        junctions = drawing.junctions.mapValues(transform.applying)
+        let geometry = transform.schematicGeometry
+        junctions = drawing.junctions.mapValues(geometry.applying)
         drawingLines = drawing.boardLines().map { segment in
             var segment = segment
             segment.id = Self.editorLinePrefix + segment.id
-            segment.from = transform.applying(to: segment.from)
-            segment.to = transform.applying(to: segment.to)
+            segment.from = geometry.applying(to: segment.from)
+            segment.to = geometry.applying(to: segment.to)
             return segment
         }
         drawingArcs = drawing.boardArcs().map { arc in
             var arc = arc
             arc.id = Self.editorArcPrefix + arc.id
             // A mirrored arc sweeps the other way round: swap its ends.
-            let from = transform.applying(to: transform.mirrored ? arc.to : arc.from)
-            let to = transform.applying(to: transform.mirrored ? arc.from : arc.to)
+            let from = geometry.applying(to: transform.mirrored ? arc.to : arc.from)
+            let to = geometry.applying(to: transform.mirrored ? arc.from : arc.to)
             arc.from = from
             arc.to = to
-            arc.center = transform.applying(to: arc.center)
+            arc.center = geometry.applying(to: arc.center)
             return arc
         }
         drawingPolygons = drawing.boardPolygons().map { polygon in
-            var polygon = isIdentity ? polygon : polygon.transformed(transform.applying, flipsArcReverse: transform.mirrored)
+            var polygon = isIdentity ? polygon : polygon.transformed(geometry.applying, flipsArcReverse: transform.mirrored)
             polygon.id = Self.editorPolygonPrefix + polygon.id
             return polygon
         }

@@ -88,6 +88,24 @@ struct HorizontalPlacementTransform: Hashable {
         )
     }
 
+    /// Schematic files rotate local geometry before mirroring it. Convert that
+    /// placement to the mirror-before-rotation convention used by our general
+    /// geometry and board transforms; keep the stored schematic angle intact.
+    var schematicGeometry: HorizontalPlacementTransform {
+        HorizontalPlacementTransform(shift: shift, angle: mirrored ? -angle : angle, mirrored: mirrored)
+    }
+
+    /// Apply a world-space edit to a schematic file placement, returning a
+    /// placement in the same file convention for saving and subsequent edits.
+    func accumulatedSchematic(with child: HorizontalPlacementTransform) -> HorizontalPlacementTransform {
+        let geometry = accumulated(with: child.schematicGeometry)
+        return HorizontalPlacementTransform(
+            shift: geometry.shift,
+            angle: geometry.mirrored ? -geometry.angle : geometry.angle,
+            mirrored: geometry.mirrored
+        )
+    }
+
     func accumulatedText(with child: HorizontalPlacementTransform) -> HorizontalPlacementTransform {
         // Horizon treats a text placement as an anchor in the placed object's
         // local frame. Its file-format convention transforms that anchor by
@@ -97,7 +115,7 @@ struct HorizontalPlacementTransform: Hashable {
         // composition. In particular, a 90-degree mirrored symbol would put its
         // orientation-specific labels on the opposite side if the generic
         // transform were reused here.
-        let anchor = applyingTextAnchor(to: child.shift)
+        let anchor = schematicGeometry.applying(to: child.shift)
         let accumulatedMirror = mirrored != child.mirrored
         let childAngle = child.angle
         let effectiveAngle = (accumulatedMirror ? 32_768 - childAngle : childAngle)
@@ -107,40 +125,6 @@ struct HorizontalPlacementTransform: Hashable {
             angle: effectiveAngle,
             mirrored: accumulatedMirror
         )
-    }
-
-    private func applyingTextAnchor(to point: HorizontalPoint) -> HorizontalPoint {
-        var x = point.x
-        var y = point.y
-
-        switch Self.wrap(angle) {
-        case 0:
-            break
-        case 16_384:
-            let nx = -y
-            y = x
-            x = nx
-        case 32_768:
-            x = -x
-            y = -y
-        case 49_152:
-            let nx = y
-            y = -x
-            x = nx
-        default:
-            let radians = Double(angle) / 65_536.0 * Double.pi * 2
-            let cosA = cos(radians)
-            let sinA = sin(radians)
-            let rx = x * cosA - y * sinA
-            let ry = x * sinA + y * cosA
-            x = rx
-            y = ry
-        }
-
-        if mirrored {
-            x = -x
-        }
-        return HorizontalPoint(x: x + shift.x, y: y + shift.y)
     }
 
     func rectangle(width: Double, height: Double) -> [HorizontalPoint] {

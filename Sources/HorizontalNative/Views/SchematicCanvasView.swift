@@ -5955,7 +5955,8 @@ struct SchematicCanvasView: View {
             moveSchematicSymbol(ref: ref, by: delta, sheet: &sheet)
         case ("angle", .angle(let angle)):
             let newAngle = wrappedAngle(angle)
-            let angleDelta = newAngle - wrappedAngle(sheet.symbols[index].angle)
+            let delta = newAngle - wrappedAngle(sheet.symbols[index].angle)
+            let angleDelta = sheet.symbols[index].mirrored ? -delta : delta
             let origin = sheet.symbols[index].position
             sheet.symbols[index].angle = newAngle
             rotateSchematicSymbolGeometry(symbolID: ref.id, around: origin, by: angleDelta, sheet: &sheet)

@@ -1174,7 +1174,7 @@ struct HorizontalSchematic {
         packageCache: inout [String: JSONDictionary]
     ) -> SchematicSymbolArtwork {
         let junctions = symbolResource.junctions
-        let transformedJunctions = junctions.mapValues(symbolTransform.applying)
+        let transformedJunctions = junctions.mapValues(symbolTransform.schematicGeometry.applying)
         let pinArtwork = parseSymbolPins(
             from: symbolResource.pins,
             symbolInstanceID: symbolInstanceID,
@@ -1286,15 +1286,15 @@ struct HorizontalSchematic {
                 symbolID: symbolInstanceID,
                 firstLine: HorizontalSegment(
                     id: "\(symbolInstanceID)/nopopulate/0",
-                    from: symbolTransform.applying(to: min),
-                    to: symbolTransform.applying(to: max),
+                    from: symbolTransform.schematicGeometry.applying(to: min),
+                    to: symbolTransform.schematicGeometry.applying(to: max),
                     width: lineWidth,
                     layer: nil
                 ),
                 secondLine: HorizontalSegment(
                     id: "\(symbolInstanceID)/nopopulate/1",
-                    from: symbolTransform.applying(to: topLeft),
-                    to: symbolTransform.applying(to: bottomRight),
+                    from: symbolTransform.schematicGeometry.applying(to: topLeft),
+                    to: symbolTransform.schematicGeometry.applying(to: bottomRight),
                     width: lineWidth,
                     layer: nil
                 )
@@ -1447,7 +1447,7 @@ struct HorizontalSchematic {
             }
 
             let points = arcPolyline(from: from, to: to, centerHint: center)
-                .map(symbolTransform.applying)
+                .map(symbolTransform.schematicGeometry.applying)
             return zip(points, points.dropFirst()).enumerated().map { index, pair in
                 HorizontalSegment(
                     id: "\(symbolInstanceID)/arc/\(id)/\(index)",
@@ -1523,7 +1523,7 @@ struct HorizontalSchematic {
                 continue
             }
 
-            let transformedPosition = symbolTransform.applying(to: position)
+            let transformedPosition = symbolTransform.schematicGeometry.applying(to: position)
             let pinID = normalizedID(id)
             let pinPath = normalizedUUIDPath("\(symbolInstanceID)/\(pinID)")
             pinPositions[pinPath] = transformedPosition
@@ -1568,7 +1568,7 @@ struct HorizontalSchematic {
                 HorizontalSegment(
                     id: "\(symbolInstanceID)/pin/\(id)",
                     from: transformedPosition,
-                    to: symbolTransform.applying(to: inner),
+                    to: symbolTransform.schematicGeometry.applying(to: inner),
                     width: 0,
                     layer: nil,
                     netID: pinNetID
@@ -2081,7 +2081,7 @@ struct HorizontalSchematic {
         map.compactMap { id, item in
             let vertices = parsePolygonVertices(
                 from: item.dictionaryArray("vertices"),
-                transform: symbolTransform.applying
+                transform: symbolTransform.schematicGeometry.applying
             )
             guard vertices.count >= 2 else {
                 return nil
@@ -2777,7 +2777,7 @@ struct HorizontalSchematic {
             }
 
             let localJunctions = parseJunctions(from: symbolJSON)
-            let transformedJunctions = localJunctions.mapValues(symbolTransform.applying)
+            let transformedJunctions = localJunctions.mapValues(symbolTransform.schematicGeometry.applying)
             result.lines.append(contentsOf: parseSymbolLines(
                 from: symbolJSON.dictionaryMap("lines"),
                 symbolInstanceID: blockSymbolID,
@@ -2864,7 +2864,7 @@ struct HorizontalSchematic {
             }
 
             let portID = normalizedID(id)
-            let position = symbolTransform.applying(to: localPosition)
+            let position = symbolTransform.schematicGeometry.applying(to: localPosition)
             let orientation = pinOrientationForPlacement(item.string("orientation"), transform: symbolTransform)
             let length = item.double("length") ?? 0
             let netID = item.string("net").map(normalizedID)

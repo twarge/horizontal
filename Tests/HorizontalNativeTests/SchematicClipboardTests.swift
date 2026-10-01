@@ -112,6 +112,12 @@ final class SchematicClipboardTests: XCTestCase {
         XCTAssertEqual(sheet.netLabels, preview.netLabels)
         XCTAssertEqual(sheet.texts, preview.texts)
         XCTAssertEqual(sheet.powerSymbols, preview.powerSymbols)
+        for pin in preview.symbolPins where pin.id.contains("/pin/") {
+            let reopenedPin = try XCTUnwrap(sheet.symbolPins.first { $0.id == pin.id })
+            XCTAssertEqual(reopenedPin.from, pin.from)
+            XCTAssertEqual(reopenedPin.to, pin.to)
+        }
+        XCTAssertEqual(sheet.netLines.sorted { $0.id < $1.id }, preview.netLines.sorted { $0.id < $1.id })
         let original = try schematic(source.archive).dictionaryMap("sheets")[source.sheet.id]!
         let unchanged = try schematic(placed).dictionaryMap("sheets")[source.sheet.id]!
         XCTAssertEqual(original as NSDictionary, unchanged as NSDictionary)

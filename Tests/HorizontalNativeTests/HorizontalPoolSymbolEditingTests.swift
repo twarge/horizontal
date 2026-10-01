@@ -263,10 +263,10 @@ extension HorizontalPoolSymbolEditingTests {
         var sheet = symbol.makeSheet(context: context, unit: unit)
         XCTAssertTrue(sheet.placeableObjects.isEmpty, "no pin placing in a view")
         // Geometry is shown as placed in the view: the line from (0,0)→(1.25,0)
-        // mirrored first (Horizon's order) then rotated 90° lands on (0,−1.25).
+        // rotated 90° then mirrored (Horizon's order) lands on (0,+1.25).
         let line = try XCTUnwrap(sheet.drawingLines.first)
         XCTAssertEqual(Int(line.to.x.rounded()), 0)
-        XCTAssertEqual(Int(line.to.y.rounded()), -1_250_000)
+        XCTAssertEqual(Int(line.to.y.rounded()), 1_250_000)
         XCTAssertTrue(sheet.symbolPins.contains { $0.id == "s1/pin/p1" }, "pins bake in the view too")
 
         // Drag the refdes text somewhere in the view.

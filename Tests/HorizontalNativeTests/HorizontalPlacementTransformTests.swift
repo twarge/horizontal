@@ -140,4 +140,26 @@ final class HorizontalPlacementTransformTests: XCTestCase {
             assertClose(placed.shift, anchor.x, anchor.y, "angle \(angle)")
         }
     }
+
+    func testWorldEditsPreserveSchematicPlacementThroughComposition() {
+        let point = HorizontalPoint(x: 2, y: 3)
+        let shift = HorizontalPoint(x: 10, y: 20)
+        // Include a non-cardinal angle to exercise the trigonometric path too.
+        for angle in [0, 8_192, 16_384, 32_768, 49_152] {
+            for mirrored in [false, true] {
+                let symbol = tf(shift: shift, angle: angle, mirrored: mirrored)
+                let rotated = tf(angle: angle).applying(to: point)
+                let expected = HorizontalPoint(x: (mirrored ? -rotated.x : rotated.x) + shift.x,
+                                               y: rotated.y + shift.y)
+                assertClose(symbol.schematicGeometry.applying(to: point), expected.x, expected.y)
+                XCTAssertEqual(symbol.schematicGeometry.applying(to: point),
+                               symbol.accumulatedText(with: tf(shift: point)).shift)
+                for edit in [tf(angle: 16_384), tf(mirrored: true), tf(shift: shift, angle: 49_152, mirrored: true)] {
+                    let placed = edit.accumulatedSchematic(with: symbol)
+                    let moved = edit.applying(to: expected)
+                    assertClose(placed.schematicGeometry.applying(to: point), moved.x, moved.y)
+                }
+            }
+        }
+    }
 }
