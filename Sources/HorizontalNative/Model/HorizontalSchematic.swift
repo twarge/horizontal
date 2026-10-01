@@ -190,6 +190,7 @@ struct HorizontalSchematic {
     var bounds: HorizontalRect
 
     private struct SchematicBlockInfo {
+        var connectivityJSON: JSONDictionary = [:]
         var components: [String: SchematicComponentInfo] = [:]
         var nets: [String: SchematicNetInfo] = [:]
         var buses: [String: SchematicBusInfo] = [:]
@@ -836,26 +837,15 @@ struct HorizontalSchematic {
                 )
             }
             let netLines = BoardLoadTimer.measure("schematic sheets: net lines") {
-                resolveSchematicNetLineIDs(
-                    parseNetLines(
-                        from: sheet.dictionaryMap("net_lines"),
-                        junctions: junctions,
-                        junctionNetIDs: junctionNetIDs,
-                        symbolPositions: symbolsByID,
-                        symbolPinPositions: artwork.pinPositions,
-                        busRipperPositions: busArtwork.ripperConnectorPositions,
-                        blockPortPositions: blockSymbolArtwork.portPositions
-                    ),
-                    anchors: schematicNetAnchors(
-                        junctions: junctions,
-                        junctionNetIDs: junctionNetIDs,
-                        netLabels: netLabels,
-                        netBearingSegments: artwork.pins
-                            + busArtwork.ripperLines
-                            + blockSymbolArtwork.ports
-                            + powerSymbols.lines,
-                        netBearingCircles: artwork.pinCircles + powerSymbols.circles
-                    )
+                parseNetLines(
+                    from: sheet.dictionaryMap("net_lines"),
+                    junctions: junctions,
+                    symbolPositions: symbolsByID,
+                    symbolPinPositions: artwork.pinPositions,
+                    busRipperPositions: busArtwork.ripperConnectorPositions,
+                    blockPortPositions: blockSymbolArtwork.portPositions,
+                    connectivity: HorizontalSchematicNetConnectivity(sheet: sheet, block: blockInfo.connectivityJSON,
+                                                                    requiresKnownNet: false)
                 )
             }
             let netTies = BoardLoadTimer.measure("schematic sheets: net ties") {
@@ -2215,11 +2205,11 @@ struct HorizontalSchematic {
     private static func parseNetLines(
         from map: [String: JSONDictionary],
         junctions: [String: HorizontalPoint],
-        junctionNetIDs: [String: String],
         symbolPositions: [String: HorizontalPoint],
         symbolPinPositions: [String: HorizontalPoint],
         busRipperPositions: [String: HorizontalPoint],
-        blockPortPositions: [String: HorizontalPoint]
+        blockPortPositions: [String: HorizontalPoint],
+        connectivity: HorizontalSchematicNetConnectivity
     ) -> [HorizontalSegment] {
         map.compactMap { id, item in
             guard let from = schematicEndpointPoint(
@@ -2245,96 +2235,10 @@ struct HorizontalSchematic {
                                      schematicFrom: HorizontalSchematicEndpoint(json: item.dictionary("from") ?? [:]),
                                      schematicTo: HorizontalSchematicEndpoint(json: item.dictionary("to") ?? [:]))
                 .withNetID(
-                    item.string("net").map(normalizedID)
-                        ?? schematicEndpointNetID(item.dictionary("from"), junctionNetIDs: junctionNetIDs)
-                        ?? schematicEndpointNetID(item.dictionary("to"), junctionNetIDs: junctionNetIDs)
+                    item.dictionary("from").flatMap { connectivity.net(at: $0) }
+                        ?? item.dictionary("to").flatMap { connectivity.net(at: $0) }
                 )
         }
-    }
-
-    private static func schematicNetAnchors(
-        junctions: [String: HorizontalPoint],
-        junctionNetIDs: [String: String],
-        netLabels: [HorizontalSchematicNetLabel],
-        netBearingSegments: [HorizontalSegment],
-        netBearingCircles: [HorizontalCircle]
-    ) -> [String: Set<String>] {
-        var anchors = [String: Set<String>]()
-
-        func add(_ point: HorizontalPoint, netID: String?) {
-            guard let netID else {
-                return
-            }
-            anchors[pointKey(point), default: []].insert(normalizedID(netID))
-        }
-
-        for (junctionID, point) in junctions {
-            add(point, netID: junctionNetIDs[junctionID])
-        }
-        for label in netLabels {
-            add(label.position, netID: label.netID)
-        }
-        for segment in netBearingSegments {
-            add(segment.from, netID: segment.netID)
-            add(segment.to, netID: segment.netID)
-        }
-        for circle in netBearingCircles {
-            add(circle.center, netID: circle.netID)
-        }
-
-        return anchors
-    }
-
-    private static func resolveSchematicNetLineIDs(
-        _ netLines: [HorizontalSegment],
-        anchors: [String: Set<String>]
-    ) -> [HorizontalSegment] {
-        var result = netLines
-        var neighbors = [String: Set<String>]()
-        var lineIndicesByPoint = [String: [Int]]()
-
-        for (index, line) in result.enumerated() {
-            let fromKey = pointKey(line.from)
-            let toKey = pointKey(line.to)
-            neighbors[fromKey, default: []].insert(toKey)
-            neighbors[toKey, default: []].insert(fromKey)
-            lineIndicesByPoint[fromKey, default: []].append(index)
-            lineIndicesByPoint[toKey, default: []].append(index)
-        }
-
-        var visited = Set<String>()
-        for startKey in neighbors.keys where !visited.contains(startKey) {
-            var stack = [startKey]
-            var componentLineIndices = Set<Int>()
-            var componentNetIDs = Set<String>()
-            visited.insert(startKey)
-
-            while let key = stack.popLast() {
-                componentNetIDs.formUnion(anchors[key] ?? [])
-                for index in lineIndicesByPoint[key] ?? [] {
-                    componentLineIndices.insert(index)
-                    if let netID = result[index].netID {
-                        componentNetIDs.insert(normalizedID(netID))
-                    }
-                }
-
-                for nextKey in neighbors[key] ?? [] where !visited.contains(nextKey) {
-                    visited.insert(nextKey)
-                    stack.append(nextKey)
-                }
-            }
-
-            guard componentNetIDs.count == 1,
-                  let netID = componentNetIDs.first else {
-                continue
-            }
-
-            for index in componentLineIndices where result[index].netID == nil {
-                result[index].netID = netID
-            }
-        }
-
-        return result
     }
 
     private static func parseTexts(
@@ -3309,25 +3213,6 @@ struct HorizontalSchematic {
         return nil
     }
 
-    private static func schematicEndpointNetID(
-        _ endpoint: JSONDictionary?,
-        junctionNetIDs: [String: String]
-    ) -> String? {
-        guard let endpoint else {
-            return nil
-        }
-
-        if let netID = endpoint.string("net").map(normalizedID) {
-            return netID
-        }
-
-        if let junctionID = endpoint.string("junc") {
-            return junctionNetIDs[junctionID]
-        }
-
-        return nil
-    }
-
     private static func parseBlockInfo(from blockURL: URL, poolURL: URL?) throws -> SchematicBlockInfo {
         let json = try JSONHelper.loadDictionary(from: blockURL)
         var packageCache = [String: JSONDictionary]()
@@ -3468,6 +3353,7 @@ struct HorizontalSchematic {
             }
         }
         return SchematicBlockInfo(
+            connectivityJSON: json,
             components: components,
             nets: nets,
             buses: buses,

@@ -18,9 +18,10 @@ struct HorizontalSchematicNetConnectivity {
         Self.endpointID(endpoint).flatMap { netsByEndpoint[$0] }
     }
 
-    init(sheet: JSONDictionary, block: JSONDictionary) {
+    init(sheet: JSONDictionary, block: JSONDictionary, requiresKnownNet: Bool = true) {
         var neighbors = [String: Set<String>]()
         var seeds = [String: Set<String>]()
+        var cachedWireNets = [String: Set<String>]()
         func seed(_ endpoint: JSONDictionary, _ net: String?) {
             guard let id = Self.endpointID(endpoint) else { return }
             if neighbors[id] == nil { neighbors[id] = [] }
@@ -62,7 +63,9 @@ struct HorizontalSchematicNetConnectivity {
                   let a = Self.endpointID(from), let b = Self.endpointID(to) else { continue }
             neighbors[a, default: []].insert(b)
             neighbors[b, default: []].insert(a)
-            seed(from, line.string("net"))
+            if let net = line.string("net"), net != HorizontalProjectEditor.nullUUID {
+                cachedWireNets[a, default: []].insert(net.lowercased())
+            }
         }
         let knownNets = Set(block.dictionaryMap("nets").keys.map { $0.lowercased() })
         var visited = Set<String>()
@@ -70,13 +73,19 @@ struct HorizontalSchematicNetConnectivity {
             var pending = [start]
             var connected = Set<String>()
             var nets = Set<String>()
+            var wireNets = Set<String>()
             visited.insert(start)
             while let id = pending.popLast() {
                 connected.insert(id)
                 nets.formUnion(seeds[id] ?? [])
+                wireNets.formUnion(cachedWireNets[id] ?? [])
                 for next in neighbors[id] ?? [] where visited.insert(next).inserted { pending.append(next) }
             }
-            guard nets.count == 1, let net = nets.first, knownNets.contains(net) else { continue }
+            // Wire net fields are cached artwork metadata. Pin, junction and
+            // label connectivity can change without updating those fields.
+            if nets.isEmpty { nets = wireNets }
+            guard nets.count == 1, let net = nets.first,
+                  !requiresKnownNet || knownNets.contains(net) else { continue }
             for id in connected { netsByEndpoint[id] = net }
         }
     }
