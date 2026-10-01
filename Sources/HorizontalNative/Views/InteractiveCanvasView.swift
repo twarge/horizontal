@@ -520,6 +520,7 @@ struct InteractiveCanvasView: View {
     @State private var primaryDragIntent: PrimaryDragIntent?
     @State private var gridDivisor = 1
     @State private var pointerInsideSelectionPopover = false
+    @State private var hoveredWarningIDs: Set<String> = []
     /// Current keyboard modifiers, published by the macOS NSEvent flags monitor so
     /// the SwiftUI select gestures can read them (SwiftUI drags carry no modifiers).
     @State private var currentInputModifiers: HorizontalCanvasInputModifiers = []
@@ -917,7 +918,7 @@ struct InteractiveCanvasView: View {
                         supportsTrackVias: supportsTrackVias,
                         hasKeyboardFocus: hasKeyboardFocus,
                         onRequestKeyboardFocus: onRequestKeyboardFocus,
-                        ignoresCanvasMouseEvents: ignoresCanvasMouseEvents || pointerInsideSelectionPopover,
+                        ignoresCanvasMouseEvents: ignoresCanvasMouseEvents || pointerInsideSelectionPopover || !hoveredWarningIDs.isEmpty,
                         mouseExclusionInsets: mouseExclusionInsets
                     )
                     .allowsHitTesting(false)
@@ -1021,8 +1022,12 @@ struct InteractiveCanvasView: View {
                     let point = transform.point(warning.position)
                     if point.x >= 0 && point.y >= 0 && point.x <= proxy.size.width && point.y <= proxy.size.height {
                         HorizontalCanvasWarningMarker(warning: warning)
+                            .onHover { inside in
+                                if inside { hoveredWarningIDs.insert(warning.id) }
+                                else { hoveredWarningIDs.remove(warning.id) }
+                            }
+                            .onDisappear { hoveredWarningIDs.remove(warning.id) }
                             .position(x: point.x + 12, y: point.y - 12)
-                            .onHover { pointerInsideSelectionPopover = $0 }
                     }
                 }
 
