@@ -1,4 +1,5 @@
 import XCTest
+import HorizontalProjectIO
 @testable import HorizontalNative
 
 final class SchematicWarningsTests: XCTestCase {
@@ -58,6 +59,43 @@ final class SchematicWarningsTests: XCTestCase {
         XCTAssertEqual(warnings.count, 1)
         XCTAssertEqual(warnings.first?.position, .init(x: 200, y: 0))
         XCTAssertEqual(Set(warnings.first?.messages ?? []), ["Label missing", "Power sym missing"])
+    }
+
+    func testStaleGroundWireMetadataDoesNotMakeReferenceNetAPowerSegment() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("stale-wire-\(UUID().uuidString).horizontal")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var archive = HorizontalProjectArchive.newProject()
+        var block = try HorizontalSchematicClipboardEditor.read("top_block.json", archive: archive)
+        block["nets"] = ["gnd": ["name": "GND", "is_power": true],
+                         "vref": ["name": "VREF 2V5", "is_power": false, "power_symbol_style": "gnd"]]
+        try HorizontalSchematicClipboardEditor.write(block, path: "top_block.json", archive: &archive)
+        var schematic = try HorizontalSchematicClipboardEditor.read("top_schematic.json", archive: archive)
+        let id = try XCTUnwrap(schematic.dictionaryMap("sheets").keys.first)
+        schematic["sheets"] = [id: [
+            "name": "Sheet", "index": 1,
+            "junctions": ["a": ["position": [0, 0], "net": "vref"],
+                          "b": ["position": [2_000_000, 0]],
+                          "c": ["position": [4_000_000, 0]],
+                          "ground": ["position": [0, 0], "net": "gnd"]],
+            "net_lines": ["wire": ["from": ["junc": "a"], "to": ["junc": "b"], "net": "gnd"],
+                          "continuation": ["from": ["junc": "b"], "to": ["junc": "c"], "net": "gnd"]],
+            "net_labels": ["label": ["junction": "a", "last_net": "vref", "size": 1_000_000]],
+            "power_symbols": ["power": ["junction": "ground", "net": "gnd", "orientation": "down"]]
+        ]]
+        try HorizontalSchematicClipboardEditor.write(schematic, path: "top_schematic.json", archive: &archive)
+        try archive.write(to: root)
+        let baseline = try HorizontalProjectArchive.snapshot(from: root)
+        let project = try HorizontalProject.load(from: root)
+        let sheet = try XCTUnwrap(project.schematic?.sheets.first)
+        XCTAssertEqual(sheet.netDetails["vref"]?.isPower, false)
+        XCTAssertEqual(Set(sheet.netLines.compactMap(\.netID)), ["vref"])
+        XCTAssertFalse(messages(sheet).contains("Power sym missing"))
+        XCTAssertEqual(try HorizontalProjectArchive.snapshot(from: root), baseline, "Loading must not modify project files")
+        try HorizontalProjectJSONApplicator.apply(schematicSheet: sheet, schematicURL: project.schematic!.url, in: project, to: &archive)
+        let saved = try HorizontalSchematicClipboardEditor.read("top_schematic.json", archive: archive)
+        XCTAssertTrue(saved.dictionaryMap("sheets")[id]!.dictionaryMap("net_lines").values.allSatisfy { $0.string("net") == "vref" })
+        let reloaded = try XCTUnwrap(HorizontalProject.loadSnapshot(of: archive).schematic?.sheets.first)
+        XCTAssertFalse(messages(reloaded).contains("Power sym missing"))
     }
 
     func testUnnamedDisconnectedNetAndDuplicateNamesWarn() {
