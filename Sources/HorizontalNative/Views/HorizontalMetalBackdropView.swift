@@ -763,7 +763,8 @@ struct HorizontalMetalBackdropView {
                     a: SIMD2(triangle.ax, triangle.ay),
                     b: SIMD2(triangle.bx, triangle.by),
                     c: SIMD2(triangle.cx, triangle.cy),
-                    color: triangle.color.simd
+                    color: triangle.color.simd,
+                    anchor: triangle.worldAnchor.map { SIMD4(Float($0.x), Float($0.y), 1, 0) } ?? .zero
                 )
             }
             screenTriangleBuffer = screenTriangleBufferStorage.replace(device: device, primitives: shaderPrimitives)
@@ -1770,6 +1771,7 @@ private struct HorizontalMetalScreenTriangleShaderPrimitive {
     var b: SIMD2<Float>
     var c: SIMD2<Float>
     var color: SIMD4<Float>
+    var anchor: SIMD4<Float>
 }
 
 private final class HorizontalMetalBufferStorage<Element> {
@@ -2067,6 +2069,7 @@ struct HorizontalMetalScreenTrianglePrimitive {
     float2 b;
     float2 c;
     float4 color;
+    float4 anchor;
 };
 
 struct TriangleVertexOut {
@@ -2208,8 +2211,14 @@ vertex TriangleVertexOut horizon_screen_triangle_vertex(
         triangle.c
     };
 
+    float2 screenPosition = vertices[cornerIndex];
+    if (triangle.anchor.z != 0.0) {
+        float scale = horizon_scale(uniforms);
+        float2 origin = horizon_screen_origin(uniforms, scale);
+        screenPosition += horizon_world_to_screen(triangle.anchor.xy, uniforms, scale, origin);
+    }
     TriangleVertexOut out;
-    out.position = horizon_screen_to_clip(vertices[cornerIndex], uniforms);
+    out.position = horizon_screen_to_clip(screenPosition, uniforms);
     out.color = triangle.color;
     return out;
 }

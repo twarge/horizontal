@@ -514,6 +514,7 @@ struct InteractiveCanvasView: View {
     /// once the drag travels the activation threshold in any direction.
     private enum PrimaryDragIntent: Equatable {
         case selection
+        case warning
         case moveCandidate(origin: CGPoint)
         case moving
     }
@@ -521,6 +522,7 @@ struct InteractiveCanvasView: View {
     @State private var gridDivisor = 1
     @State private var pointerInsideSelectionPopover = false
     @State private var hoveredWarningIDs: Set<String> = []
+    @State private var presentedWarning: HorizontalCanvasWarning?
     /// Current keyboard modifiers, published by the macOS NSEvent flags monitor so
     /// the SwiftUI select gestures can read them (SwiftUI drags carry no modifiers).
     @State private var currentInputModifiers: HorizontalCanvasInputModifiers = []
@@ -588,12 +590,14 @@ struct InteractiveCanvasView: View {
                 // CursorReadoutLayer (its own Metal overlay), so they no longer
                 // contribute here and a cursor move no longer rebuilds this body.
                 let selectionDragMetalBatch = metalSelectionDragBatch(transform: transform)
+                let warningTriangles = HorizontalCanvasWarningGeometry.triangles(for: warnings)
                 let topOverlayLines = metalTopOverlayLines + selectionDragMetalBatch.worldLines
-                let topOverlayScreenTriangles = metalTopOverlayScreenTriangles + selectionDragMetalBatch.screenTriangles
+                let topOverlayScreenTriangles = metalTopOverlayScreenTriangles + selectionDragMetalBatch.screenTriangles + warningTriangles
                 let topOverlayScreenLines = metalTopOverlayScreenLines + scaleBarScreenLines
                     + selectionDragMetalBatch.screenLines
                 let topOverlayLineKey = metalTopOverlayLineKey &* 31 &+ selectionDragMetalBatch.worldLines.hashValue
-                let topOverlayScreenTriangleKey = metalTopOverlayScreenTriangleKey &* 31 &+ selectionDragMetalBatch.screenTriangles.hashValue
+                let topOverlayScreenTriangleKey = (metalTopOverlayScreenTriangleKey &* 31 &+ selectionDragMetalBatch.screenTriangles.hashValue)
+                    &* 31 &+ warningTriangles.hashValue
                 let topOverlayScreenLineKey = (metalTopOverlayScreenLineKey &* 31 &+ scaleBarScreenLines.hashValue)
                     &+ selectionDragMetalBatch.screenLines.hashValue
                 #if canImport(MetalKit)
@@ -1018,17 +1022,50 @@ struct InteractiveCanvasView: View {
                     #endif
                 }
 
-                ForEach(warnings) { warning in
-                    let point = transform.point(warning.position)
-                    if point.x >= 0 && point.y >= 0 && point.x <= proxy.size.width && point.y <= proxy.size.height {
-                        HorizontalCanvasWarningMarker(warning: warning)
-                            .onHover { inside in
-                                if inside { hoveredWarningIDs.insert(warning.id) }
-                                else { hoveredWarningIDs.remove(warning.id) }
+                if usesMetalBackdrop {
+                    // Virtual accessibility children do not add per-marker layout
+                    // or hover views to the live Metal viewport.
+                    Color.clear
+                        .allowsHitTesting(false)
+                        .accessibilityElement(children: .contain)
+                        .accessibilityChildren {
+                            ForEach(warnings) { warning in
+                                Button(warning.messages.joined(separator: ". ")) { presentedWarning = warning }
                             }
-                            .onDisappear { hoveredWarningIDs.remove(warning.id) }
-                            .position(x: point.x + 12, y: point.y - 12)
+                        }
+                } else {
+                    ForEach(warnings) { warning in
+                        let point = transform.point(warning.position)
+                        if point.x >= 0 && point.y >= 0 && point.x <= proxy.size.width && point.y <= proxy.size.height {
+                            HorizontalCanvasWarningMarker(warning: warning)
+                                .onHover { inside in
+                                    if inside { hoveredWarningIDs.insert(warning.id) }
+                                    else { hoveredWarningIDs.remove(warning.id) }
+                                }
+                                .onDisappear { hoveredWarningIDs.remove(warning.id) }
+                                .position(x: point.x + HorizontalCanvasWarningGeometry.offset.x,
+                                          y: point.y + HorizontalCanvasWarningGeometry.offset.y)
+                        }
                     }
+                }
+
+                if let warning = presentedWarning {
+                    let point = transform.point(warning.position)
+                    Color.clear
+                        .frame(width: HorizontalCanvasWarningGeometry.hitSize, height: HorizontalCanvasWarningGeometry.hitSize)
+                        .popover(isPresented: Binding(
+                            get: { presentedWarning != nil },
+                            set: { if !$0 { presentedWarning = nil } }
+                        )) {
+                            HorizontalCanvasWarningMessages(warning: warning)
+                        }
+                        .position(x: point.x + HorizontalCanvasWarningGeometry.offset.x,
+                                  y: point.y + HorizontalCanvasWarningGeometry.offset.y)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                        .onChange(of: warnings) { _, updated in
+                            presentedWarning = updated.first { $0.id == warning.id }
+                        }
                 }
 
                 if showsSelectionDetails, selectionDetails.hasSelection {
@@ -1614,6 +1651,10 @@ struct InteractiveCanvasView: View {
     ) {
         if primaryDragIntent == nil {
             let transform = currentTransform(size: size, fitInsets: fitInsets)
+            if HorizontalCanvasWarningGeometry.hitTest(start, warnings: warnings, transform: transform) != nil {
+                primaryDragIntent = .warning
+                return
+            }
             let unitsPerPoint = worldUnitsPerScreenPoint(transform: transform, size: size)
             primaryDragIntent = hitsSelection(transform.worldPoint(start), unitsPerPoint)
                 ? .moveCandidate(origin: start)
@@ -1630,6 +1671,8 @@ struct InteractiveCanvasView: View {
                 onCommand(.moveSelection)
                 primaryDragIntent = .moving
             }
+        case .warning:
+            return
         case .moving, .selection, nil:
             break
         }
@@ -1660,6 +1703,8 @@ struct InteractiveCanvasView: View {
             primaryDragIntent = nil
         }
         switch primaryDragIntent {
+        case .warning:
+            break
         case .moving:
             reportCursorWorldPoint(current, size: size, fitInsets: fitInsets)
             onCommand(.commitInteraction)
@@ -1701,6 +1746,10 @@ struct InteractiveCanvasView: View {
             }
         }
         let transform = currentTransform(size: size, fitInsets: fitInsets)
+        if let warning = HorizontalCanvasWarningGeometry.hitTest(location, warnings: warnings, transform: transform) {
+            presentedWarning = warning
+            return
+        }
         let worldPoint = snappedCursor(at: location, transform: transform).point
         let unitsPerPoint = worldUnitsPerScreenPoint(transform: transform, size: size)
         // The click-time disambiguation popup is macOS-only (NSMenu); on iOS
