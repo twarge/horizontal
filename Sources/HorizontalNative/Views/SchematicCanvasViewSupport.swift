@@ -4,6 +4,9 @@ import SwiftUI
 struct SchematicSelectableCacheKey: Hashable {
     var sheetID: String
     var revision: Int
+    // The revision captured with this SwiftUI view's sheet. The shared cache
+    // can already be invalidated while an older view is still rendering.
+    var editRevision: Int = 0
     var displayOptions: SchematicDisplayOptions
     var counts: [Int]
 }
@@ -37,6 +40,7 @@ struct SchematicRenderAnalysis {
 struct SchematicMetalLineCacheKey: Hashable {
     var sheetID: String
     var revision: Int
+    var editRevision: Int = 0
     var displayOptions: SchematicDisplayOptions
     var counts: [Int]
     var frameColor: HorizontalMetalRGBA
