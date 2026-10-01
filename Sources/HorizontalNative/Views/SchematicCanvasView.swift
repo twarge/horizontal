@@ -664,6 +664,9 @@ struct SchematicCanvasView: View {
                 self.schematicSelectables()
             }
         }
+        let warnings = editorProfile.isPoolMode || moveState != nil ? [] : selectableCache.warnings(key: selectableCacheKey) {
+            HorizontalSchematicWarnings.evaluate(sheet, allSheets: schematicSheets)
+        }
 
         return InteractiveCanvasView(
             bounds: sheet.bounds,
@@ -710,6 +713,7 @@ struct SchematicCanvasView: View {
             placesUnplacedObjectsOnTrailingEdge: appearanceSettings.shouldSwapViewControlsAndUnplacedReferences,
             selectionToolSettings: selectionToolSettings,
             selectionSelectables: measuredSelectionSelectables,
+            warnings: warnings,
             handlesSelectionDeletion: canDeleteSelection,
             undoManager: undoManager,
             ignoresCanvasMouseEvents: ignoresCanvasMouseEvents,
@@ -2332,7 +2336,9 @@ struct SchematicCanvasView: View {
     }
 
     private func beginMove(tracksCursor: Bool = true, editTextRefOnCommit: String? = nil) {
-        let originalSheet = sheet
+        var originalSheet = sheet
+        let undoSheet = originalSheet
+        let editedSheetBeforeMove = editedSheet
         let moveSelection = expandedSchematicMoveSelection(selectedObjects, in: originalSheet)
         guard let start = HorizontalCanvasModeSupport.moveStartPoint(
             modeName: "schematic",
@@ -2347,10 +2353,15 @@ struct SchematicCanvasView: View {
             return
         }
         selectedObjects = moveSelection
+        let fixedConnectionPointKeys = schematicFixedConnectionPointKeys(in: originalSheet)
+        SchematicMovePlanner.preparePinLabels(selected: selectedObjects, fixedPointKeys: fixedConnectionPointKeys, sheet: &originalSheet)
+        if originalSheet.netLines != undoSheet.netLines || originalSheet.netLabels != undoSheet.netLabels {
+            editedSheet = originalSheet
+            invalidateSelectableCache()
+        }
         let snapTargets = schematicSnapTargets(excluding: selectedObjects)
         let connectionPlan = selectedSchematicSymbolMoveConnectionPlan(in: originalSheet)
         let connectionMovePlan = selectedSchematicConnectionMovePlan(in: originalSheet)
-        let fixedConnectionPointKeys = schematicFixedConnectionPointKeys(in: originalSheet)
         let snappedStart = snapSchematicPointToGrid(start)
         let initialPoints = HorizontalCanvasModeSupport.moveInitialPoints(
             startPoint: start,
@@ -2361,8 +2372,8 @@ struct SchematicCanvasView: View {
             startPoint: initialPoints.startPoint,
             lastPoint: initialPoints.lastPoint,
             originalSheet: originalSheet,
-            undoSheet: originalSheet,
-            editedSheetBeforeMove: editedSheet,
+            undoSheet: undoSheet,
+            editedSheetBeforeMove: editedSheetBeforeMove,
             tracksCursor: tracksCursor,
             snapTargets: snapTargets,
             connectionPlan: connectionPlan,
@@ -4955,6 +4966,17 @@ struct SchematicCanvasView: View {
             sheet.junctionNetIDs.removeValue(forKey: junctionID)
         }
         let removedIDSet = Set(removedIDs.map(normalizedID))
+        for index in sheet.netLabels.indices where sheet.netLabels[index].junctionID.map({ removedIDSet.contains(normalizedID($0)) }) == true {
+            sheet.netLabels[index].junctionID = keepID
+        }
+        for index in sheet.netLines.indices {
+            if case .junction(let id) = sheet.netLines[index].schematicFrom, removedIDSet.contains(normalizedID(id)) {
+                sheet.netLines[index].schematicFrom = .junction(keepID)
+            }
+            if case .junction(let id) = sheet.netLines[index].schematicTo, removedIDSet.contains(normalizedID(id)) {
+                sheet.netLines[index].schematicTo = .junction(keepID)
+            }
+        }
         for index in sheet.powerSymbols.indices
             where removedIDSet.contains(normalizedID(sheet.powerSymbols[index].junctionID)) {
             sheet.powerSymbols[index].junctionID = keepID
@@ -5062,7 +5084,9 @@ struct SchematicCanvasView: View {
         movedKeys: inout Set<String>,
         fixedConnectionPointKeys: Set<String>
     ) {
-        guard !fixedConnectionPointKeys.contains(pointKey(point)) else {
+        if fixedConnectionPointKeys.contains(pointKey(point)) {
+            guard movedKeys.insert(pointKey(point)).inserted else { return }
+            SchematicMovePlanner.movePinLabels(at: point, by: delta, selected: selectedObjects, sheet: &sheet)
             return
         }
         moveSchematicConnectionPoint(at: point, by: delta, sheet: &sheet, movedKeys: &movedKeys)

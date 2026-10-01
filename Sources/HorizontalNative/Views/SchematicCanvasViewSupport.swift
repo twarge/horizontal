@@ -202,6 +202,13 @@ final class SchematicSheetRenderCache {
     private var movePreviewValue: HorizontalSchematicSheet?
     private var selectionDetailsKey: SchematicSelectionDetailsCacheKey?
     private var selectionDetailsValue = HorizontalSelectionDetailState.empty
+    private var warningsKey: SchematicSelectableCacheKey?
+    private var warningsValue: [HorizontalCanvasWarning] = []
+
+    func warnings(key: SchematicSelectableCacheKey, build: () -> [HorizontalCanvasWarning]) -> [HorizontalCanvasWarning] {
+        if warningsKey != key { warningsValue = build(); warningsKey = key }
+        return warningsValue
+    }
 
     func selectableScene(
         key: SchematicSelectableCacheKey,
@@ -349,6 +356,9 @@ final class SchematicSheetRenderCache {
 /// that changed while it was away (an undo, the live channel, a reload) is
 /// told apart by its content fingerprint and built again.
 final class SchematicSelectableCache: ObservableObject {
+    func warnings(key: SchematicSelectableCacheKey, build: () -> [HorizontalCanvasWarning]) -> [HorizontalCanvasWarning] {
+        cache(for: key.sheetID).warnings(key: key, build: build)
+    }
     private struct Entry {
         var cache = SchematicSheetRenderCache()
         /// The content the caches were built from, taken when the canvas

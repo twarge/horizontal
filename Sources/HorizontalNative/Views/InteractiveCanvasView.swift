@@ -447,6 +447,7 @@ struct InteractiveCanvasView: View {
     var placesUnplacedObjectsOnTrailingEdge = false
     var selectionToolSettings = HorizontalSelectionToolSettings()
     var selectionSelectables: [HorizontalSelectable] = []
+    var warnings: [HorizontalCanvasWarning] = []
     var handlesSelectionDeletion = false
     var undoManager: UndoManager? = nil
     var ignoresCanvasMouseEvents = false
@@ -1014,6 +1015,15 @@ struct InteractiveCanvasView: View {
                         }
                     )
                     #endif
+                }
+
+                ForEach(warnings) { warning in
+                    let point = transform.point(warning.position)
+                    if point.x >= 0 && point.y >= 0 && point.x <= proxy.size.width && point.y <= proxy.size.height {
+                        HorizontalCanvasWarningMarker(warning: warning)
+                            .position(x: point.x + 12, y: point.y - 12)
+                            .onHover { pointerInsideSelectionPopover = $0 }
+                    }
                 }
 
                 if showsSelectionDetails, selectionDetails.hasSelection {

@@ -118,6 +118,7 @@ struct HorizontalSchematicSheet: Identifiable {
     var unplacedObjects: [HorizontalUnplacedObject] = []
     var addedComponents: [HorizontalSchematicComponentRecord] = []
     var componentInfo: [String: SchematicComponentInfo] = [:]
+    var warningContext = HorizontalSchematicWarningContext()
     var bounds: HorizontalRect
 
     var junctionCount: Int { junctions.count }
@@ -388,6 +389,7 @@ struct HorizontalSchematic {
         var ports: [HorizontalSegment] = []
         var texts: [HorizontalText] = []
         var portPositions: [String: HorizontalPoint] = [:]
+        var missingPorts: [String: [String]] = [:]
 
         var points: [HorizontalPoint] {
             lines.flatMap { [$0.from, $0.to] }
@@ -967,6 +969,14 @@ struct HorizontalSchematic {
                 unplacedObjects: [],
                 addedComponents: [],
                 componentInfo: blockInfo.components,
+                warningContext: HorizontalSchematicWarningContext(
+                    junctionBusIDs: sheet.dictionaryMap("junctions").compactMapValues { $0.string("bus").map(normalizedID) },
+                    busRippers: sheet.dictionaryMap("bus_rippers").compactMapValues { item in
+                        guard let junctionID = item.string("junction"), let busID = item.string("bus") else { return nil }
+                        return .init(junctionID: normalizedID(junctionID), busID: normalizedID(busID))
+                    },
+                    missingPorts: blockSymbolArtwork.missingPorts
+                ),
                 bounds: HorizontalRect(points: points).padded().orEmptyContentCanvasRegion()
             )
         }
@@ -2231,7 +2241,9 @@ struct HorizontalSchematic {
                 return nil
             }
 
-            return HorizontalSegment(id: id, from: from, to: to, width: 0, layer: nil)
+            return HorizontalSegment(id: id, from: from, to: to, width: 0, layer: nil,
+                                     schematicFrom: HorizontalSchematicEndpoint(json: item.dictionary("from") ?? [:]),
+                                     schematicTo: HorizontalSchematicEndpoint(json: item.dictionary("to") ?? [:]))
                 .withNetID(
                     item.string("net").map(normalizedID)
                         ?? schematicEndpointNetID(item.dictionary("from"), junctionNetIDs: junctionNetIDs)
@@ -2807,6 +2819,9 @@ struct HorizontalSchematic {
             result.ports.append(contentsOf: ports.lines)
             result.texts.append(contentsOf: ports.texts)
             result.portPositions.merge(ports.positions) { current, _ in current }
+            let displayedNets = Set(symbolJSON.dictionaryMap("ports").values.compactMap { $0.string("net").map(normalizedID) })
+            let missing = resource.nets.filter { $0.value.isPort && !displayedNets.contains($0.key) }.values.map(\.name).sorted()
+            if !missing.isEmpty { result.missingPorts[blockSymbolID] = missing }
         }
 
         return result
@@ -3169,7 +3184,9 @@ struct HorizontalSchematic {
                 position: position,
                 size: item.double("size") ?? 1_000_000,
                 orientation: item.string("orientation") ?? "right",
-                netID: netID
+                netID: netID,
+                junctionID: junctionID,
+                showsPort: item.bool("show_port") ?? false
             )
         }
     }
@@ -4569,6 +4586,7 @@ extension HorizontalSchematicSheet {
         hasher.combine(name)
         hasher.combine(junctions)
         hasher.combine(junctionNetIDs)
+        hasher.combine(warningContext)
         hasher.combine(netDetails)
         hasher.combine(netLines)
         hasher.combine(drawingLines)
