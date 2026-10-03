@@ -3579,50 +3579,7 @@ struct ProjectWorkspaceView: View {
     }
 
     private var projectMetaRows: [ProjectMetadataRow] {
-        let preferredKeys = ["project_title", "project_name", "rev", "author", "date", "license"]
-        var seenValues = Set<String>()
-        var rows = [ProjectMetadataRow]()
-
-        func append(key: String, value: String?, includesEmpty: Bool = false) {
-            let displayValue = value ?? ""
-            let trimmedValue = displayValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard includesEmpty || !trimmedValue.isEmpty,
-                  trimmedValue.isEmpty || !seenValues.contains(trimmedValue) else {
-                return
-            }
-            if !trimmedValue.isEmpty {
-                seenValues.insert(trimmedValue)
-            }
-            rows.append(ProjectMetadataRow(key: key, title: projectMetaTitle(key), value: displayValue))
-        }
-
-        for key in preferredKeys {
-            append(key: key, value: project.projectMeta[key], includesEmpty: true)
-        }
-
-        let remainingKeys = project.projectMeta.keys
-            .filter { !preferredKeys.contains($0) }
-            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-        for key in remainingKeys {
-            append(key: key, value: project.projectMeta[key])
-        }
-
-        return rows
-    }
-
-    private func projectMetaTitle(_ key: String) -> String {
-        switch key {
-        case "project_title": "Title"
-        case "project_name": "Project"
-        case "rev": "Revision"
-        case "author": "Author"
-        case "date": "Date"
-        case "license": "License"
-        default:
-            key.split(separator: "_")
-                .map { $0.localizedCapitalized }
-                .joined(separator: " ")
-        }
+        ProjectMetadataRow.rows(for: project.projectMeta)
     }
 
     private var selectedSchematic: SelectedSchematic? {
@@ -4082,12 +4039,42 @@ struct ProjectNavigatorView: View {
     }
 }
 
-private struct ProjectMetadataRow: Identifiable {
+/// One field of the information panel's Project Metadata editor.
+struct ProjectMetadataRow: Identifiable, Equatable {
     var key: String
     var title: String
     var value: String
 
     var id: String { key }
+
+    static let preferredKeys = ["project_title", "project_name", "rev", "author", "date", "license"]
+
+    /// A field for every key: the usual ones always, empty or not, then any
+    /// other key the project has a value for. Two keys holding the same value
+    /// are still two fields — a project often starts with its name and title
+    /// alike, and hiding one left it unreachable, so renaming the title left
+    /// the name behind.
+    static func rows(for meta: [String: String]) -> [ProjectMetadataRow] {
+        let others = meta.keys
+            .filter { !preferredKeys.contains($0) && !(meta[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        return (preferredKeys + others).map { ProjectMetadataRow(key: $0, title: title(for: $0), value: meta[$0] ?? "") }
+    }
+
+    static func title(for key: String) -> String {
+        switch key {
+        case "project_title": "Title"
+        case "project_name": "Project"
+        case "rev": "Revision"
+        case "author": "Author"
+        case "date": "Date"
+        case "license": "License"
+        default:
+            key.split(separator: "_")
+                .map { $0.localizedCapitalized }
+                .joined(separator: " ")
+        }
+    }
 }
 
 private struct NavigatorSelectionSummary: Identifiable {
