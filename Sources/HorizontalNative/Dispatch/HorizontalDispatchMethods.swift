@@ -223,10 +223,11 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "list_board_texts",
-            summary: "Free text on the board layers, with the ids the board text ops take. The reference designators Horizon smashed out of packages are left out unless smashed is passed: on a populated board they are most of its texts, and each belongs to its package.",
+            summary: "Free text on the board layers, with the ids the board text ops take. The reference designators Horizon smashed out of packages are left out unless smashed is passed: on a populated board they are most of its texts, and each belongs to its package. A text that draws something other than what it stores (\"$RD\", \"$project_title\") says what in drawn.",
             params: ["handle": "Project handle.", "layer": "Only texts on this layer (optional).",
-                     "smashed": "Also list texts smashed out of packages, marked from_smash with the package that carries them (default false).",
-                     "text": "Only texts containing this, ignoring case (optional)."],
+                     "smashed": "Also list texts smashed out of packages, marked from_smash with the package that carries them and the refdes of its part (default false).",
+                     "component": "Only the texts smashed out of this component's package, by refdes or id (optional; implies smashed).",
+                     "text": "Only texts containing this, as stored or as drawn, ignoring case (optional)."],
             handler: listBoardTexts
         ),
         .init(
@@ -290,8 +291,9 @@ enum HorizontalDispatchMethods {
             name: "list_texts",
             summary: "Free text on the schematic sheets, with the ids place_text and remove_text take. Each says which drawn symbol it sits nearest (near_symbol), so a note left behind by a removed part shows up far from everything. Texts smashed out of symbols are left out unless smashed is passed.",
             params: ["handle": "Project handle.", "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet.",
-                     "smashed": "Also list texts smashed out of symbols, marked from_smash with the symbol that carries them (default false).",
-                     "text": "Only texts containing this, ignoring case (optional)."],
+                     "smashed": "Also list texts smashed out of symbols, marked from_smash with the symbol that carries them and the refdes of its part (default false).",
+                     "component": "Only the texts smashed out of this component's symbols, by refdes or id (optional; implies smashed).",
+                     "text": "Only texts containing this, as stored or as drawn, ignoring case (optional)."],
             handler: listTexts
         ),
         .init(
@@ -1017,7 +1019,11 @@ enum HorizontalDispatchMethods {
             let project = params["pool_items"] == nil ? entry.project : try HorizontalDispatchSession.project(from: snapshot, url: entry.url)
             let editor = try HorizontalProjectEditor(project: project, store: store, snapshot: snapshot,
                                                      block: params.string("block"))
-            try editor.apply(operations)
+            do {
+                try editor.apply(operations)
+            } catch let error as HorizontalDispatchError {
+                throw HorizontalEditHandles.explain(error, handles: handles, changes: editor.changes)
+            }
             _ = try editor.write()
             let normalized = zip(operations, editor.changes).map { operation, change -> JSONDictionary in
                 var json = operation.params
@@ -2244,24 +2250,48 @@ enum HorizontalDispatchMethods {
     @Sendable private static func listBoardTexts(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         let layer = params.int("layer")
-        let smashed = params.bool("smashed") ?? false
         let needle = params.string("text").flatMap { $0.isEmpty ? nil : $0 }
+        let owner = try componentFilter(entry, params)
+        // A part's own texts are all smashed out of its package.
+        let smashed = params.bool("smashed") ?? false || owner != nil
         let json = try boardJSON(entry)
-        // A package that has been smashed refers to the texts pulled out of it.
+        // A package that has been smashed refers to the texts pulled out of it,
+        // and names the component whose reference they print.
         var ownerByText = [String: String]()
+        var refdesByPackage = [String: String]()
         for (packageID, package) in json.dictionaryMap("packages") {
             for id in package["texts"] as? [String] ?? [] { ownerByText[id.lowercased()] = packageID }
+            if let componentID = package.string("component"), let component = entry.index.component(id: componentID) {
+                refdesByPackage[packageID.lowercased()] = component.refdes
+            }
+        }
+        // What the board draws: a smashed text keeps "$RD" in the file and
+        // shows its part's reference, and "$project_title" shows the title.
+        var drawn = [String: String]()
+        if let board = entry.project.board {
+            for text in board.texts { drawn[text.id.lowercased()] = text.text }
+            for text in board.packageTexts where text.fromSmash {
+                guard let range = text.id.range(of: "/text/") else { continue }
+                drawn[String(text.id[range.upperBound...]).lowercased()] = text.text
+            }
         }
         return json.dictionaryMap("texts").compactMap { id, item -> JSONDictionary? in
             let textLayer = item.int("layer")
             guard layer == nil || layer == textLayer else { return nil }
             guard smashed || item.bool("from_smash") != true else { return nil }
-            if let needle, !(item.string("text") ?? "").localizedCaseInsensitiveContains(needle) { return nil }
+            let package = ownerByText[id.lowercased()]
+            let refdes = package.flatMap { refdesByPackage[$0.lowercased()] }
+            if let owner, refdes?.caseInsensitiveCompare(owner) != .orderedSame { return nil }
+            let text = item.string("text") ?? ""
+            let shown = drawn[id.lowercased()].flatMap { $0 == text ? nil : $0 }
+            if let needle, !text.localizedCaseInsensitiveContains(needle), shown?.localizedCaseInsensitiveContains(needle) != true {
+                return nil
+            }
             let placement = item.dictionary("placement") ?? [:]
             let shift = placement["shift"] as? [Any] ?? []
-            return [
+            var row: JSONDictionary = [
                 "id": id,
-                "text": item.string("text") ?? "",
+                "text": text,
                 "layer": textLayer as Any? as Any,
                 "layer_name": textLayer.map { HorizontalBoardLayers.name(for: $0) } as Any? as Any,
                 "x_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(shift.first ?? 0)),
@@ -2273,9 +2303,29 @@ enum HorizontalDispatchMethods {
                 "origin": item.string("origin") ?? "center",
                 "font": item.string("font") ?? "simplex",
                 "from_smash": item.bool("from_smash") ?? false,
-                "package": ownerByText[id.lowercased()] as Any? as Any
+                "package": package as Any? as Any
             ]
-        }.sorted { ($0.string("text") ?? "", $0.string("id") ?? "") < ($1.string("text") ?? "", $1.string("id") ?? "") }
+            if let shown { row["drawn"] = shown }
+            if let refdes { row["refdes"] = refdes }
+            return row
+        }.sorted(by: textOrder)
+    }
+
+    /// The component a text listing is narrowed to, by refdes or id.
+    private static func componentFilter(_ entry: HorizontalDispatchProjectEntry, _ params: JSONDictionary) throws -> String? {
+        guard let reference = params.string("component"), !reference.isEmpty else { return nil }
+        guard let component = entry.index.component(refdes: reference) ?? entry.index.component(id: reference) else {
+            throw HorizontalDispatchError.notFound("No component \(reference).")
+        }
+        return component.refdes
+    }
+
+    /// Texts in the order they read: by what is drawn, so the texts smashed
+    /// out of C1, C2 and C10 come in that order rather than as "$RD" by id.
+    private static func textOrder(_ a: JSONDictionary, _ b: JSONDictionary) -> Bool {
+        let left = a.string("drawn") ?? a.string("text") ?? "", right = b.string("drawn") ?? b.string("text") ?? ""
+        let order = left.localizedStandardCompare(right)
+        return order == .orderedSame ? (a.string("id") ?? "") < (b.string("id") ?? "") : order == .orderedAscending
     }
 
     @Sendable private static func exportSettings(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
@@ -2507,24 +2557,41 @@ enum HorizontalDispatchMethods {
         let wanted = try selectedSheets(entry, params)
         // A symbol's smashed texts are listed on request, marked with the
         // symbol they belong to, so a caller can see why they are not free to edit.
-        let smashed = params.bool("smashed") ?? false
+        let owner = try componentFilter(entry, params)
+        let smashed = params.bool("smashed") ?? false || owner != nil
         let needle = params.string("text").flatMap { $0.isEmpty ? nil : $0 }
+        // What each sheet draws, by text id: a smashed "$REFDES" shows the
+        // part's reference.
+        var drawnBySheet = [String: [String: String]]()
+        for sheet in entry.project.schematics.flatMap(\.schematic.sheets) {
+            var drawn = [String: String]()
+            for text in sheet.texts + sheet.symbolTexts { drawn[text.id.lowercased()] = text.text }
+            drawnBySheet[sheet.id.lowercased()] = drawn
+        }
         return wanted.flatMap { sheet -> [JSONDictionary] in
             var ownerBySymbol = [String: String]()
             let symbols = sheet.json.dictionaryMap("symbols")
             for (symbolID, symbol) in symbols {
                 for id in symbol["texts"] as? [String] ?? [] { ownerBySymbol[id.lowercased()] = symbolID }
             }
+            let drawn = drawnBySheet[sheet.id.lowercased()] ?? [:]
             return sheet.json.dictionaryMap("texts").compactMap { id, item -> JSONDictionary? in
                 guard smashed || item.bool("from_smash") != true else { return nil }
-                if let needle, !(item.string("text") ?? "").localizedCaseInsensitiveContains(needle) { return nil }
+                let symbol = ownerBySymbol[id.lowercased()]
+                let refdes = symbol.flatMap { symbols[$0]?.string("component") }.flatMap { entry.index.component(id: $0)?.refdes }
+                if let owner, refdes?.caseInsensitiveCompare(owner) != .orderedSame { return nil }
+                let text = item.string("text") ?? ""
+                let shown = drawn[id.lowercased()].flatMap { $0 == text ? nil : $0 }
+                if let needle, !text.localizedCaseInsensitiveContains(needle), shown?.localizedCaseInsensitiveContains(needle) != true {
+                    return nil
+                }
                 let placement = item.dictionary("placement") ?? [:]
                 let shift = placement["shift"] as? [Any] ?? []
                 var json: JSONDictionary = [
                     "id": id,
                     "sheet": sheet.id,
                     "sheet_index": sheet.index,
-                    "text": item.string("text") ?? "",
+                    "text": text,
                     "x_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(shift.first ?? 0)),
                     "y_mm": HorizontalDispatchJSON.mm(JSONHelper.doubleValue(shift.count > 1 ? shift[1] : 0)),
                     "angle_deg": HorizontalDispatchJSON.degrees(placement.int("angle") ?? 0),
@@ -2535,10 +2602,12 @@ enum HorizontalDispatchMethods {
                     "font": item.string("font") ?? "simplex",
                     "from_smash": item.bool("from_smash") ?? false
                 ]
-                json["symbol"] = ownerBySymbol[id.lowercased()] as Any
+                json["symbol"] = symbol as Any
+                if let shown { json["drawn"] = shown }
+                if let refdes { json["refdes"] = refdes }
                 // Free text names no part; the closest one is the best guess
                 // at what it describes, and none nearby marks a stray note.
-                if ownerBySymbol[id.lowercased()] == nil,
+                if symbol == nil,
                    let near = HorizontalSchematicTextProximity.nearest(to: HorizontalSchematicTextProximity.position(of: item),
                                                                        symbols: symbols, pool: entry.poolIndex) {
                     let componentID = symbols[near.id]?.string("component")?.lowercased()
@@ -2546,7 +2615,7 @@ enum HorizontalDispatchMethods {
                                            "distance_mm": HorizontalDispatchJSON.mm(near.distance)] as JSONDictionary
                 }
                 return json
-            }.sorted { ($0.string("text") ?? "", $0.string("id") ?? "") < ($1.string("text") ?? "", $1.string("id") ?? "") }
+            }.sorted(by: textOrder)
         }
     }
 

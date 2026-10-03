@@ -286,7 +286,16 @@ final class HorizontalLiveConnection: @unchecked Sendable {
             // Requests are answered in order, and dispatch runs on the main
             // actor because live documents live there. The connection queue
             // waits for each answer rather than interleaving them.
+            //
+            // A client works while the app is in the background, where App Nap
+            // runs the main thread at background priority (ps shows PRI 4): a
+            // dry run on a large board took three times as long as the same
+            // work done headless. A user-initiated activity for the length of
+            // the request keeps it at the priority the user's own edits get.
             let token = self.token
+            let activity = ProcessInfo.processInfo.beginActivity(
+                options: .userInitiatedAllowingIdleSystemSleep, reason: "Answering a live channel request"
+            )
             let execute: @Sendable () -> String = DispatchQueue.main.sync {
                 MainActor.assumeIsolated {
                     if let read = HorizontalLiveServer.prepareRead(line: line, expectedToken: token) { return read }
@@ -295,6 +304,7 @@ final class HorizontalLiveConnection: @unchecked Sendable {
                 }
             }
             let response = execute()
+            ProcessInfo.processInfo.endActivity(activity)
             connection.send(content: Data((response + "\n").utf8), completion: .contentProcessed { _ in })
         }
     }
