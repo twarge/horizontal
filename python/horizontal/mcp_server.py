@@ -15,6 +15,8 @@ import atexit
 import importlib.metadata
 import logging
 import hashlib
+import re
+import subprocess
 import threading
 from contextvars import ContextVar
 import os
@@ -31,6 +33,7 @@ from ._native import (HorizontalError, find_live, find_live_for, find_cli, find_
                       project_holders, transport_error)
 from .client import Project, Session, open as open_any, _request_deadline, mutation_timeout
 from .schemas import (Result, ProjectInfo, Component, ComponentFields, Net, Sheet, EditResult, Region, RenderedImage, EditOperation,
+                      schema_vocabulary, vocabulary_digest, compare_vocabulary,
                       PinnedSnapshot, AnalysisValidation, AnalysisJob)
 from .analysis import Scenario, Setup, validate as validate_circuit
 from .analysis_jobs import AnalysisJobs
@@ -143,6 +146,11 @@ def _tool(fn: Callable[..., Any]) -> Callable[..., Any]:
                                        "and the project summary. Off, the reply is ids and counts.")])]
     wrapper.__signature__ = signature.replace(parameters=parameters, return_annotation=output)
     wrapper.__annotations__ = {p.name: p.annotation for p in parameters} | {"return": output}
+    if fn.__name__ == "apply_ops":
+        # A client may keep showing tool schemas from an earlier server; this
+        # line is how an agent can tell which one it is looking at.
+        wrapper.__doc__ = (fn.__doc__ or "") + (f"\n\n    Op schema {_SCHEMA_DIGEST}, {len(schema_vocabulary())} ops. connection_status "
+                                                "and open_project compare it with the engine's and warn when they differ.")
     resource_writes = {"open_project", "new_project", "save", "undo", "reload_project", "analysis_snapshot", "release_analysis_snapshot", "analyze_transfer", "analyze_noise", "analyze_headroom", "analyze_adc_filter", "cancel_analysis", "discard_analysis"}
     registered = mcp.tool(annotations=ToolAnnotations(read_only_hint=fn.__name__ not in _mutations | resource_writes | {"export", "highlight", "select", "zoom_to", "close_project", "export_analysis"},
                                                destructive_hint=fn.__name__ in _mutations,
@@ -197,9 +205,113 @@ def _open_context_for(path: str, name: str | None) -> Project:
     return project
 
 
+# What this server is, fixed when it started: a reconnect that leaves the
+# process running keeps all of it, which is how a stale server shows itself.
+_PACKAGE_DIR = Path(__file__).resolve().parent
+_STARTED = time.time()
+
+
+def _source_mtime() -> float:
+    return max((p.stat().st_mtime for p in _PACKAGE_DIR.glob("*.py")), default=0)
+
+
+def _git_commit() -> str | None:
+    try:
+        return subprocess.run(["git", "-C", str(_PACKAGE_DIR), "rev-parse", "--short", "HEAD"], capture_output=True,
+                              text=True, timeout=2).stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+_SOURCE_MTIME = _source_mtime()
+_COMMIT = _git_commit()
+_SCHEMA_DIGEST = vocabulary_digest(schema_vocabulary())
+
+
+def _server_identity() -> dict[str, Any]:
+    changed = sorted(p.name for p in _PACKAGE_DIR.glob("*.py") if p.stat().st_mtime > _SOURCE_MTIME + 0.5)
+    commit_now = _git_commit()
+    identity = {"pid": os.getpid(), "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(_STARTED)),
+                "package": importlib.metadata.version("horizontal"), "package_dir": str(_PACKAGE_DIR),
+                "commit_at_start": _COMMIT, "commit_now": commit_now, "schema_digest": _SCHEMA_DIGEST,
+                "ops": len(schema_vocabulary())}
+    if changed or (commit_now and _COMMIT and commit_now != _COMMIT):
+        identity["stale"] = True
+        identity["changed_since_start"] = changed
+    return identity
+
+
+def _server_warnings(project: Project | None = None) -> list[str]:
+    """What the agent should know before trusting this server's schema."""
+    warnings = []
+    identity = _server_identity()
+    if identity.get("stale"):
+        warnings.append("This MCP server's code changed after it started (" + (", ".join(identity["changed_since_start"]) or
+                        f"commit {identity['commit_at_start']} -> {identity['commit_now']}") +
+                        "); its tool schemas are the old ones. Ask the user to restart the server — a new session restarts it; "
+                        "\"reconnect\" may not.")
+    engine = project.session.engine if project else None
+    if engine and engine.get("ops_digest") and engine["ops_digest"] != _SCHEMA_DIGEST:
+        try:
+            difference = compare_vocabulary(project.session.call("list_ops"))
+        except HorizontalError:
+            difference = {}
+        newer = "the engine" if difference.get("engine_only_ops") or difference.get("engine_only_params") else "this server"
+        warnings.append(f"The engine ({engine.get('host', 'worker')}) and this server's schema describe different ops; {newer} is newer. "
+                        "Restart whichever is older (the app, or the MCP server). Differences: " + json.dumps(
+                            {k: v for k, v in difference.items() if k not in {"match", "schema_digest", "engine_digest"}}))
+    return warnings
+
+
+def _drop_context(ref: str) -> None:
+    project = _projects.pop(ref)
+    _snapshots.pop(ref, None)
+    if not any(p.session is project.session for p in _projects.values()):
+        project.session.close()
+
+
 def _open_context(path: str, source: str) -> Project:
+    if source == "disk":
+        # A disk context already open on this path is reloaded, not doubled.
+        for other in _projects.values():
+            if (not other.is_live and not other.summary.get("frozen") and not other.session.transport.closed
+                    and Path(other.path).resolve() == Path(path).expanduser().resolve()):
+                kept = {k: other.summary.get(k) for k in ("project_ref", "requested_source", "transport")}
+                other.reload()
+                other.summary.update(kept)
+                _active_project.set(other)
+                return other
     if len(_projects) >= 64: raise ValueError("Close unused project contexts before opening another.")
     project = open_any(path, source=source, isolated=os.environ.get("HORIZONTAL_ISOLATED") != "0")
+    if project.is_live:
+        # One context per open document. Reopening it returns the context the
+        # agent already holds — re-attached if its connection was lost — and
+        # contexts on a document since closed or reopened, or dead duplicates,
+        # are dropped rather than left to pile up.
+        same = [(ref, other) for ref, other in _projects.items()
+                if other.is_live and not other.summary.get("frozen")
+                and Path(other.path).resolve() == Path(project.path).resolve()]
+        keep = next(((ref, o) for ref, o in same if o.summary.get("instance_id") == project.summary.get("instance_id")
+                     and not o.session.transport.closed), None) or next(
+            ((ref, o) for ref, o in same if o.summary.get("instance_id") == project.summary.get("instance_id")), None)
+        for ref, other in same:
+            if keep and ref == keep[0]:
+                continue
+            if other.summary.get("instance_id") != project.summary.get("instance_id") or other.session.transport.closed:
+                _drop_context(ref)
+        if keep:
+            other = keep[1]
+            fresh = {k: v for k, v in project.summary.items() if k not in {"project_ref", "requested_source", "transport"}}
+            if other.session.transport.closed:
+                other.session = project.session
+                other._generation = project.session.generation
+            else:
+                project.session.close()
+            other.handle = fresh.get("handle", other.handle)
+            other.summary.update(fresh)
+            other.last_metadata.update({k: fresh[k] for k in ("revision", "snapshot_id", "instance_id") if k in fresh})
+            _active_project.set(other)
+            return other
     ref = str(uuid.uuid4())
     project.summary.update(project_ref=ref, requested_source=source, transport=type(project.session.transport).__name__)
     _projects[ref] = project
@@ -241,7 +353,14 @@ def connection_status() -> dict[str, Any]:
     """Diagnose discovery, authentication, engine versions, binary selection and open contexts without opening a project. Tokens are never returned."""
     attempts: list[dict[str, Any]] = []
     info = find_live(attempts)
+    # The app's own discovery file is in its sandbox container; the holder
+    # records beside an open or configured project usually are not.
+    for candidate in [os.environ.get("HORIZONTAL_PROJECT")] + [p.path for p in _projects.values()]:
+        if info or not candidate:
+            continue
+        info = find_live_for(candidate, attempts)
     status: dict[str, Any] = {"mcp_version": importlib.metadata.version("mcp"), "required_native_api": 2,
+                              "server": _server_identity(),
                               "discovery": attempts, "live": {"status": "unavailable", "reason": "No reachable live endpoint; app, automation, or document state is unknown"}}
     if info:
         transport = None
@@ -251,7 +370,8 @@ def connection_status() -> dict[str, Any]:
             session = Session(transport=transport)
             version = session.version()
             status["live"] = {"status": "authenticated", "endpoint": transport.path, "discovery_path": info["path"], "engine": version,
-                              "compatible": version.get("api") == 2, "latency_ms": round((time.monotonic() - started) * 1000, 1)}
+                              "compatible": version.get("api") == 2, "latency_ms": round((time.monotonic() - started) * 1000, 1),
+                              "schema": compare_vocabulary(session.call("list_ops"))}
         except (HorizontalError, OSError) as error:
             status["live"] = {"status": "failed", "reason": str(error)}
         finally:
@@ -267,7 +387,14 @@ def connection_status() -> dict[str, Any]:
     status["hard_deadlines"] = os.environ.get("HORIZONTAL_ISOLATED") != "0"
     status["contexts"] = [{"project_ref": id, "path": p.path, **p.last_metadata,
                             "transport": type(p.session.transport).__name__, "connected": not p.session.transport.closed,
-                            "engine": p.session.engine} for id, p in _projects.items()]
+                            "engine": p.session.engine,
+                            "schema_matches": (p.session.engine or {}).get("ops_digest", _SCHEMA_DIGEST) == _SCHEMA_DIGEST}
+                           for id, p in _projects.items()]
+    warnings = _server_warnings()
+    if status["live"].get("schema", {}).get("match") is False:
+        warnings.append("The live app and this server's schema describe different ops: " + json.dumps(status["live"]["schema"]))
+    if warnings:
+        status["warnings"] = warnings
     return status
 
 
@@ -414,9 +541,12 @@ def export_analysis(job_id: str, target_directory: str, include_schematic_images
 
 @_tool
 def open_project(path: str, source: Literal["auto", "live", "disk"] = "auto") -> dict[str, Any]:
-    """Open a Horizon project (.hprj file or .horizontal package) and return its summary: blocks, sheets, counts, diagnostics."""
+    """Open a Horizon project (.hprj file or .horizontal package) and return its summary: blocks, sheets, counts, diagnostics.
+    Opening a document that already has a context returns that context, with the same project_ref. warnings says
+    when this server or the engine is out of date."""
     project = _open_context(path, source)
-    return project.summary
+    warnings = _server_warnings(project)
+    return {**project.summary, **({"warnings": warnings} if warnings else {})}
 
 
 @_tool
@@ -470,25 +600,70 @@ def _only(record: dict[str, Any], fields: list[str] | None) -> dict[str, Any]:
 @_tool
 def list_components(path: str | None = None, sheet: int | None = None, sheet_id: str | None = None, block_id: str | None = None, name: str | None = None,
                     fields: Annotated[list[str] | None, Field(description="Only these keys of each component (id and refdes always), e.g. [\"value\", \"mpn\"].")] = None,
-                    refdes_prefix: Annotated[str | None, Field(description="Only components whose refdes starts with this, e.g. \"C\".")] = None) -> list[dict[str, Any]]:
-    """Every component with refdes, value, MPN, package, and where it is placed. Optionally only those with a symbol on one sheet."""
+                    refdes_prefix: Annotated[str | None, Field(description="Only components whose refdes starts with this, e.g. \"C\".")] = None,
+                    include_terminals: Annotated[bool, Field(description="Include every package pad of every component (physical_terminals) — large for big packages; get_component reads one part's pins and pads.")] = False) -> list[dict[str, Any]]:
+    """Every component with refdes, value, MPN, package, pin and connected-pin counts, and where it is placed.
+    Optionally only those with a symbol on one sheet. Package pads are left out unless include_terminals."""
     components = _resolve(path).components(sheet=sheet, sheet_id=sheet_id, block_id=block_id, name=name)
     if refdes_prefix: components = [c for c in components if str(c.get("refdes", "")).upper().startswith(refdes_prefix.upper())]
+    if not include_terminals:
+        components = [{k: v for k, v in c.items() if k not in {"pins", "physical_terminals"}} for c in components]
     return [_only(c, fields) for c in components]
+
+
+_SUPPLY_PIN = re.compile(r"^(V(DD|CC|BAT|CAP|IN|LDO|SMPS|REF\+|DDA|IO)|AVDD|DVDD|IOVDD|PVDD|VS\+|V\+|VREF$)", re.I)
+_GROUND_PIN = re.compile(r"^(V(SS|EE|REF-)|(A|D|P|S)?GND|EP(AD)?$|PAD$|V-)", re.I)
+
+
+def _pin_groups(pins: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pins by what they are for: supply and ground pins by the net each is tied to, no-connects, pins on no
+    net, and a count of the signal pins."""
+    groups: dict[str, Any] = {"supply": {}, "ground": {}, "no_connect": [], "unconnected": [], "signal": 0}
+    for pin in pins:
+        name, net = str(pin.get("pin", "")), pin.get("net")
+        power = pin.get("direction") in {"power_input", "power_output"} or _SUPPLY_PIN.match(name) or _GROUND_PIN.match(name)
+        if pin.get("connection_state") == "no_connect":
+            groups["no_connect"].append(name)
+        elif power:
+            ground = _GROUND_PIN.match(name) or (net and _GROUND_PIN.match(str(net)))
+            groups["ground" if ground else "supply"].setdefault(net or "(no net)", []).append(name)
+        elif net is None:
+            groups["unconnected"].append(name)
+        else:
+            groups["signal"] += 1
+    return groups
 
 
 @_tool
 def get_component(refdes: str | None = None, path: str | None = None, id: str | None = None,
                   fields: Annotated[list[str] | None, Field(description="Only these top-level keys (id and refdes always), e.g. [\"pins\", \"symbols\"].")] = None,
                   pins: Annotated[str | None, Field(description="Only pins whose name contains this, case-insensitively, e.g. \"PA1\".")] = None,
-                  connected: Annotated[bool | None, Field(description="true: only pins on a net; false: only pins on none.")] = None) -> dict[str, Any]:
-    """One component in full: every pin with its net, symbol placements, board placement, part details. On a
-    part with hundreds of pins, narrow it with fields, pins or connected."""
+                  pin_regex: Annotated[str | None, Field(description="Only pins whose name matches this regular expression, case-insensitively, e.g. \"^V(DD|SS)\".")] = None,
+                  connected: Annotated[bool | None, Field(description="true: only pins on a net; false: only pins on none.")] = None,
+                  group_pins: Annotated[bool, Field(description="Instead of the pin list, pin_groups: supply and ground pins by the net each is tied to, no-connects, pins on no net, and a count of signal pins — how a part's power is wired, at a glance.")] = False,
+                  all_pins: Annotated[bool, Field(description="Every pin even on a large part; otherwise a part with more than 64 pins lists only the pins on a net or marked no-connect.")] = False) -> dict[str, Any]:
+    """One component in full: pins with their nets, symbol placements, board placement, part details. A part with
+    more than 64 pins lists only its connected and no-connect pins unless all_pins, and says how many it left out;
+    pins, pin_regex and connected narrow the list, and group_pins summarises it."""
     component = _resolve(path).component(refdes=refdes, id=id)
-    if pins is not None or connected is not None:
-        component["pins"] = [p for p in component.get("pins", [])
+    every = component.get("pins") or []
+    if pin_regex is not None:
+        try: pattern = re.compile(pin_regex, re.I)
+        except re.error as error: raise ValueError(f"pin_regex is not a regular expression: {error}") from error
+    if group_pins:
+        component["pin_groups"] = _pin_groups(every)
+        component["pins"] = []
+        component["pins_omitted"] = len(every)
+    elif pins is not None or pin_regex is not None or connected is not None:
+        component["pins"] = [p for p in every
                              if (pins is None or pins.lower() in str(p.get("pin", "")).lower())
+                             and (pin_regex is None or pattern.search(str(p.get("pin", ""))))
                              and (connected is None or (p.get("net") is not None) == connected)]
+    elif len(every) > 64 and not all_pins:
+        component["pins"] = [p for p in every if p.get("net") is not None or p.get("connection_state") == "no_connect"]
+        component["pins_omitted"] = len(every) - len(component["pins"])
+        component["note"] = (f"{component['pins_omitted']} pins on no net were left out; pass all_pins, connected=false, "
+                             "or pins/pin_regex to see them.")
     return _only(component, fields)
 
 
@@ -591,13 +766,61 @@ def list_symbols(path: str | None = None, sheet: int | None = None, sheet_id: st
     return _resolve(path).symbols(sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id)
 
 
+def _endpoint(end: dict[str, Any]) -> str:
+    kind = end.get("kind")
+    if kind == "pin":
+        return f"{end.get('refdes') or end.get('component') or end.get('symbol')}.{end.get('pin_name') or end.get('pin')}"
+    if kind == "junction":
+        return "junction:" + str(end.get("junction"))
+    return f"{kind}:{end.get(kind, '')}"
+
+
 @_tool
 def list_net_lines(path: str | None = None, net: str | None = None, sheet: int | None = None,
-                   sheet_id: str | None = None, name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
-    """The wires drawn on the schematic sheets, with their ids and what each end connects to. An endpoint is a
-    symbol pin (naming the component and gate), a junction, a bus ripper or a block port. Horizon derives
-    connectivity from the block, not from these — they are what draw_net_line records."""
-    return _resolve(path).net_lines(net=net, sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id)
+                   sheet_id: str | None = None, name: str | None = None, block_id: str | None = None,
+                   verbose: Annotated[bool, Field(description="Full rows: each end's kind, ids, component and gate, and the sheet and net uuids.")] = False) -> list[dict[str, Any]]:
+    """The wires drawn on the schematic sheets, with their ids, nets and what each end connects to. An endpoint
+    reads "U8.PA13" for a pin (refdes and pin name), "junction:<id>" for a junction, or the bus ripper or block
+    port it lands on; from_mm and to_mm are [x, y]. verbose gives the full rows. Horizon derives connectivity
+    from the block, not from these — they are what draw_net_line records. find_dangling and find_overlaps answer
+    the usual questions about them without reading every wire."""
+    rows = _resolve(path).net_lines(net=net, sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id)
+    if verbose:
+        return rows
+    def xy(point: dict[str, Any] | None) -> list[float] | None:
+        return [point["x_mm"], point["y_mm"]] if point else None
+    return [{"id": r["id"], "sheet_index": r.get("sheet_index"), "net_name": r.get("net_name"),
+             "from": _endpoint(r.get("from") or {}), "to": _endpoint(r.get("to") or {}),
+             "from_mm": xy(r.get("from_mm")), "to_mm": xy(r.get("to_mm"))} for r in rows]
+
+
+
+@_tool
+def find_dangling(path: str | None = None, sheet: int | None = None, sheet_id: str | None = None,
+                  name: str | None = None, block_id: str | None = None) -> dict[str, Any]:
+    """Drawing that connects nothing, sheet by sheet: wiring islands that reach no pin, port or bus ripper — even
+    when a label or power symbol gives them a net — wire ends stopping at a bare junction, and wires whose ends
+    name nothing. Each comes with ids and a position. prune_sheet with unanchored: true and stubs: true removes it."""
+    params = {k: v for k, v in {"sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id}.items() if v is not None}
+    return _resolve(path)._call("find_dangling", **params)
+
+
+@_tool
+def find_overlaps(path: str | None = None, sheet: int | None = None, sheet_id: str | None = None,
+                  name: str | None = None, block_id: str | None = None) -> dict[str, Any]:
+    """Places a sheet looks connected and is not: a wire over a pin it does not end on, a junction on a pin with no
+    wire to it, junctions sharing a spot that no wire joins, and a wire ending part way along another with no
+    junction there. Each finding names the pin or wires and where it is."""
+    params = {k: v for k, v in {"sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id}.items() if v is not None}
+    return _resolve(path)._call("find_overlaps", **params)
+
+
+def _compact_marks(rows: list[dict[str, Any]], verbose: bool) -> list[dict[str, Any]]:
+    """Rows without the uuids a page full of them repeats: the sheet's (sheet_index says it) and the net's
+    (net_name says it, unless the net is unnamed)."""
+    if verbose:
+        return rows
+    return [{k: v for k, v in r.items() if k != "sheet" and not (k == "net" and r.get("net_name"))} for r in rows]
 
 
 @_tool
@@ -620,26 +843,31 @@ def autoroute(net: str, path: str | None = None, layer: int = 0, width_mm: float
 
 @_tool
 def list_junctions(path: str | None = None, net: str | None = None, sheet: int | None = None,
-                   sheet_id: str | None = None, name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
-    """Schematic junction IDs, positions, and nets. Use these IDs in typed wire endpoints."""
-    return _resolve(path).junctions(net=net, sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id)
+                   sheet_id: str | None = None, name: str | None = None, block_id: str | None = None,
+        verbose: Annotated[bool, Field(description="Include the sheet and net uuids.")] = False) -> list[dict[str, Any]]:
+    """Schematic junction IDs, positions, and nets. Use these IDs in typed wire endpoints. The sheet and net
+    uuids are left out unless verbose."""
+    return _compact_marks(_resolve(path).junctions(net=net, sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id), verbose)
 
 
 @_tool
 def list_net_labels(path: str | None = None, net: str | None = None, sheet: int | None = None,
-                    sheet_id: str | None = None, name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
+                    sheet_id: str | None = None, name: str | None = None, block_id: str | None = None,
+        verbose: Annotated[bool, Field(description="Include the sheet and net uuids.")] = False) -> list[dict[str, Any]]:
     """Net labels on the schematic sheets: which net each names, where it sits, and the id remove_net_label takes.
-    A label is how a net is named on the page, and how one net spans several sheets."""
-    return _resolve(path).net_labels(net=net, sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id)
+    A label is how a net is named on the page, and how one net spans several sheets. The sheet and net uuids are
+    left out unless verbose."""
+    return _compact_marks(_resolve(path).net_labels(net=net, sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id), verbose)
 
 
 @_tool
 def list_power_symbols(path: str | None = None, net: str | None = None, sheet: int | None = None,
-                       sheet_id: str | None = None, name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
+                       sheet_id: str | None = None, name: str | None = None, block_id: str | None = None,
+        verbose: Annotated[bool, Field(description="Include the sheet and net uuids.")] = False) -> list[dict[str, Any]]:
     """Power symbols on the schematic sheets, with the net each marks and the id remove_power_symbol takes. The
     shape a symbol draws with — gnd, dot, antenna or earth — belongs to the net, not the symbol, so every symbol
-    on one net looks the same."""
-    return _resolve(path).power_symbols(net=net, sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id)
+    on one net looks the same. The sheet and net uuids are left out unless verbose."""
+    return _compact_marks(_resolve(path).power_symbols(net=net, sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id), verbose)
 
 
 @_tool

@@ -326,4 +326,153 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         let none = try XCTUnwrap(try result("search_pool", ["query": "4.7uF", "kind": "part"]) as? JSONDictionary)
         XCTAssertFalse(none.dictionaryArray("items").contains { $0.string("uuid") == cap.part })
     }
+
+    // MARK: - Second round: debris, overlaps, notes, replayed dry runs
+
+    func testDanglingWiringIsFoundAndPrunedEvenWhenItNamesANet() throws {
+        _ = try placedMCU()
+        try apply([["op": "terminate_pin", "component": "U1", "pin": "PA13(JTMS/SWDIO)"]])
+        // A GND symbol on a stub to nowhere: the symbol gives it a live net.
+        let a = UUID().uuidString.lowercased(), b = UUID().uuidString.lowercased()
+        try apply([["op": "ensure_net", "name": "GND", "is_power": true],
+                   ["op": "place_junction", "id": a, "net": "GND", "x_mm": 50, "y_mm": 50],
+                   ["op": "place_junction", "id": b, "net": "GND", "x_mm": 60, "y_mm": 50],
+                   ["op": "draw_net_line", "from": ["kind": "junction", "junction": a], "to": ["kind": "junction", "junction": b]],
+                   ["op": "place_power_symbol", "net": "GND", "x_mm": 50, "y_mm": 50]])
+        // A dead-end run off a pin: pin, junction, junction, nothing.
+        let c = UUID().uuidString.lowercased(), d = UUID().uuidString.lowercased()
+        try apply([["op": "place_junction", "id": c, "net": "SWCLK", "x_mm": 90, "y_mm": 97.46],
+                   ["op": "place_junction", "id": d, "net": "SWCLK", "x_mm": 80, "y_mm": 97.46],
+                   ["op": "draw_net_line", "from": ["kind": "pin", "component": "U1", "pin": "PA14"], "to": ["kind": "junction", "junction": c]],
+                   ["op": "draw_net_line", "from": ["kind": "junction", "junction": c], "to": ["kind": "junction", "junction": d]]])
+
+        let found = try XCTUnwrap(try result("find_dangling") as? JSONDictionary)
+        XCTAssertEqual(found.dictionary("totals")?.int("unanchored_islands"), 1)
+        XCTAssertEqual(found.dictionary("totals")?.int("stubs"), 1)
+        let island = try XCTUnwrap(found.dictionaryArray("sheets").first?.dictionaryArray("unanchored_islands").first)
+        XCTAssertEqual(island["nets"] as? [String], ["GND"])
+        XCTAssertEqual(island.dictionary("at")?.double("x_mm"), 50)
+
+        // Plain prune keeps it: it names a live net.
+        XCTAssertEqual(changes(try apply([["op": "prune_sheet"]])).first?.dictionary("removed")?.int("power_symbols"), 0)
+        let pruned = try apply([["op": "prune_sheet", "unanchored": true, "stubs": true]])
+        let removed = try XCTUnwrap(changes(pruned).first?.dictionary("removed"))
+        XCTAssertEqual(removed.int("power_symbols"), 1)
+        XCTAssertEqual(removed.int("net_lines"), 3, "the GND stub, and the dead-end run back to the pin")
+        XCTAssertEqual(removed.int("junctions"), 4, "both junctions of each")
+        XCTAssertEqual((try result("list_power_symbols") as? [JSONDictionary])?.count, 0)
+        XCTAssertEqual((try result("list_net_labels") as? [JSONDictionary])?.count, 1, "wiring that reaches a pin stays")
+        XCTAssertEqual((try result("list_net_lines") as? [JSONDictionary])?.count, 1)
+        let clean = try XCTUnwrap(try result("find_dangling") as? JSONDictionary)
+        XCTAssertEqual(clean.dictionaryArray("sheets").count, 0)
+    }
+
+    func testOverlapsFindWhatLooksConnectedAndIsNot() throws {
+        _ = try placedMCU()
+        // A wire running down the pin column, over three pins it does not end on.
+        let top = UUID().uuidString.lowercased(), bottom = UUID().uuidString.lowercased()
+        // A wire ending part way along another.
+        let left = UUID().uuidString.lowercased(), right = UUID().uuidString.lowercased()
+        let stem = UUID().uuidString.lowercased(), foot = UUID().uuidString.lowercased()
+        try apply([["op": "place_junction", "id": top, "net": "SWDIO", "x_mm": 100, "y_mm": 95],
+                   ["op": "place_junction", "id": bottom, "net": "SWDIO", "x_mm": 100, "y_mm": 85],
+                   ["op": "draw_net_line", "from": ["kind": "junction", "junction": top], "to": ["kind": "junction", "junction": bottom]],
+                   ["op": "place_junction", "id": left, "net": "SWCLK", "x_mm": 120, "y_mm": 120],
+                   ["op": "place_junction", "id": right, "net": "SWCLK", "x_mm": 140, "y_mm": 120],
+                   ["op": "draw_net_line", "from": ["kind": "junction", "junction": left], "to": ["kind": "junction", "junction": right]],
+                   ["op": "place_junction", "id": stem, "net": "SWDIO", "x_mm": 130, "y_mm": 120],
+                   ["op": "place_junction", "id": foot, "net": "SWDIO", "x_mm": 130, "y_mm": 130],
+                   ["op": "draw_net_line", "from": ["kind": "junction", "junction": stem], "to": ["kind": "junction", "junction": foot]]])
+        // Two junctions on one spot that nothing joins: only a raw file says so.
+        var archive = try HorizontalProjectArchive.snapshot(from: root)
+        var schematic = try HorizontalSchematicClipboardEditor.read("top_schematic.json", archive: archive)
+        var sheets = schematic.dictionaryMap("sheets")
+        let sheetID = try XCTUnwrap(sheets.keys.first)
+        var junctions = sheets[sheetID]!.dictionaryMap("junctions")
+        junctions[UUID().uuidString.lowercased()] = ["position": [70_000_000, 70_000_000]]
+        junctions[UUID().uuidString.lowercased()] = ["position": [70_000_000, 70_000_000]]
+        sheets[sheetID]?["junctions"] = junctions
+        schematic["sheets"] = sheets
+        try HorizontalSchematicClipboardEditor.write(schematic, path: "top_schematic.json", archive: &archive)
+        try archive.write(to: root)
+        _ = try result("reload_project")
+
+        let found = try XCTUnwrap(try result("find_overlaps") as? JSONDictionary)
+        let totals = try XCTUnwrap(found.dictionary("totals"))
+        XCTAssertEqual(totals.int("wire_over_pin"), 3, "\(found)")
+        XCTAssertEqual(totals.int("unjoined_junctions"), 1)
+        XCTAssertEqual(totals.int("t_without_junction"), 1)
+        let findings = found.dictionaryArray("sheets").first?.dictionaryArray("findings") ?? []
+        XCTAssertTrue(findings.contains { $0.string("pin") == "U1 NRST" })
+        let t = try XCTUnwrap(findings.first { $0.string("kind") == "t_without_junction" })
+        XCTAssertEqual(t.bool("same_net"), false, "SWDIO meeting SWCLK with no junction")
+    }
+
+    func testNotesTravelWithTheirPartsAndSayWhichPartTheyAreBy() throws {
+        _ = try placedMCU()
+        let other = part(["A", "B"])
+        try apply([["op": "ensure_component", "refdes": "U2", "part": other.part],
+                   ["op": "place_symbol", "component": "U2", "x_mm": 200, "y_mm": 100],
+                   ["op": "place_text", "text": "U1 boots from flash", "x_mm": 110, "y_mm": 100],
+                   ["op": "place_text", "text": "U2 note", "x_mm": 195, "y_mm": 100],
+                   ["op": "place_text", "text": "Lost note", "x_mm": 20, "y_mm": 20]], ["pool_items": other.items])
+        let texts = try XCTUnwrap(try result("list_texts") as? [JSONDictionary])
+        let boot = try XCTUnwrap(texts.first { $0.string("text") == "U1 boots from flash" })
+        XCTAssertEqual(boot.dictionary("near_symbol")?.string("refdes"), "U1")
+        XCTAssertEqual(boot.dictionary("near_symbol")?.double("distance_mm") ?? 99, 10, accuracy: 0.01)
+        let lost = try XCTUnwrap(texts.first { $0.string("text") == "Lost note" })
+        XCTAssertGreaterThan(lost.dictionary("near_symbol")?.double("distance_mm") ?? 0, 80)
+
+        let removed = try apply([["op": "remove_component", "component": "U1", "texts_within_mm": 50]])
+        XCTAssertEqual((changes(removed).first?["texts_removed"] as? [String])?.count, 1)
+        let left = try XCTUnwrap(try result("list_texts") as? [JSONDictionary]).compactMap { $0.string("text") }.sorted()
+        XCTAssertEqual(left, ["Lost note", "U2 note"], "a note nearer another part, or near nothing, stays")
+    }
+
+    func testACommitReplayingItsDryRunReusesTheStagedEdit() throws {
+        _ = try placedMCU()
+        let ops: [JSONDictionary] = [["op": "ensure_net", "name": "SPARE"], ["op": "place_text", "text": "spare", "x_mm": 5, "y_mm": 5]]
+        let preview = try apply(ops, ["dry_run": true, "detail": "compact"])
+        let digest = try XCTUnwrap(preview.string("plan_digest"))
+        XCTAssertNotNil(preview["timing"])
+        let committed = try apply(ops, ["plan_digest": digest, "detail": "compact"])
+        XCTAssertEqual(committed.dictionary("timing")?.bool("reused_dry_run"), true)
+        XCTAssertNil(committed.dictionary("timing")?["load_ms"], "nothing was loaded twice")
+        XCTAssertEqual((try result("list_texts") as? [JSONDictionary])?.contains { $0.string("text") == "spare" }, true)
+        XCTAssertNotNil(try result("get_net", ["name": "SPARE"]))
+
+        // Once the revision moves, a stale plan is not reused but redone, and
+        // its digest no longer matches.
+        let again = try apply([["op": "ensure_net", "name": "OTHER"]], ["dry_run": true])
+        _ = try apply([["op": "ensure_net", "name": "THIRD"]])
+        let stale = try call("apply", ["ops": [["op": "ensure_net", "name": "OTHER"]], "plan_digest": again["plan_digest"]!])
+        XCTAssertNotNil(stale["error"])
+    }
+
+    func testVersionDescribesTheOpVocabulary() throws {
+        let response = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 1, "method": "version", "params": [:] as JSONDictionary], in: session)
+        let version = try XCTUnwrap(response["result"] as? JSONDictionary, "\(response)")
+        XCTAssertEqual(version.string("ops_digest"), HorizontalEditOperationKind.vocabularyDigest)
+        XCTAssertEqual(version.int("ops"), HorizontalEditOperationKind.allCases.count)
+    }
+
+    /// Schematic symbols turn the other way when mirrored (Horizon's file
+    /// convention). The stub must start where the renderer draws the pin.
+    func testTerminatePinFollowsRotatedMirroredSymbols() throws {
+        _ = try placedMCU()
+        for (angle, mirror) in [(90.0, false), (270.0, true), (180.0, true), (90.0, true)] {
+            try apply([["op": "place_symbol", "component": "U1", "angle_deg": angle, "mirror": mirror]])
+            let change = try XCTUnwrap(changes(try apply([["op": "terminate_pin", "component": "U1", "pin": "NRST", "net": "RST", "create_net": true]])).first)
+            let line = try XCTUnwrap((try result("list_net_lines", ["net": "RST"]) as? [JSONDictionary])?.first { $0.string("id") == change.string("net_line") })
+            let from = try XCTUnwrap(line.dictionary("from_mm")), to = try XCTUnwrap(line.dictionary("to_mm"))
+            let dx = (to.double("x_mm") ?? 0) - (from.double("x_mm") ?? 0), dy = (to.double("y_mm") ?? 0) - (from.double("y_mm") ?? 0)
+            XCTAssertEqual(hypot(dx, dy), 2.54, accuracy: 1e-3, "angle \(angle) mirror \(mirror): \(line)")
+            XCTAssertTrue(abs(dx) < 1e-6 || abs(dy) < 1e-6, "the stub runs straight out")
+            let overlaps = try XCTUnwrap(try result("find_overlaps") as? JSONDictionary)
+            XCTAssertEqual(overlaps.dictionary("totals")?.count ?? 0, 0, "angle \(angle) mirror \(mirror): \(overlaps)")
+            try apply([["op": "remove_net_line", "line": change.string("net_line")!],
+                       ["op": "remove_net_label", "id": change.string("net_label")!],
+                       ["op": "disconnect", "component": "U1", "pin": "NRST"]])
+        }
+    }
 }

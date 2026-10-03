@@ -268,7 +268,12 @@ class ComponentOp(Input):
 
 
 class RemoveComponent(ComponentOp):
-    op: Literal["remove_component", "remove_placement"]
+    op: Literal["remove_component"]
+    texts_within_mm: float | None = Field(default=None, gt=0)
+
+
+class RemovePlacement(ComponentOp):
+    op: Literal["remove_placement"]
 
 
 class SetValue(ComponentOp):
@@ -396,6 +401,7 @@ class RemoveSymbol(ComponentOp):
     op: Literal["remove_symbol"]
     gate: str | None = None
     sheet: StrictStr | StrictInt | None = None
+    texts_within_mm: float | None = Field(default=None, gt=0)
 
 
 class PlaceText(Input):
@@ -503,6 +509,8 @@ class RemoveJunction(Input):
 class PruneSheet(Input):
     op: Literal["prune_sheet"]
     sheet: StrictStr | StrictInt | None = None
+    unanchored: bool | None = None
+    stubs: bool | None = None
 
 
 class TerminatePin(ComponentOp):
@@ -895,7 +903,7 @@ class CopyLayout(Input):
     include_routing: bool = True
 
 
-EditOperation = Annotated[EnsureComponent | RemoveComponent | SetValue | SetRefdes | SetPart | SetPopulation |
+EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | SetValue | SetRefdes | SetPart | SetPopulation |
                           SetGroup | EnsureNet | RenameNet | SetNetClass | RetireNet | Connect | Disconnect |
                           Place | PlaceSymbol | RemoveSymbol | DrawNetLine | PlaceJunction | SetNetLineEndpoint | RemapPart | PlaceText | RemoveText |
                           RemoveNetLine | RemoveJunction | PruneSheet | TerminatePin | SetSymbolDisplay | SetNoConnect |
@@ -915,3 +923,38 @@ EditOperation = Annotated[EnsureComponent | RemoveComponent | SetValue | SetRefd
 
 
 EditResult.model_rebuild()
+
+
+def schema_vocabulary() -> dict[str, set[str]]:
+    """Each op this schema accepts, with the parameter names it sends (aliases
+    as written on the wire: a track end's "from", not from_)."""
+    from typing import get_args
+    union = get_args(EditOperation)[0]
+    vocabulary: dict[str, set[str]] = {}
+    for model in get_args(union):
+        params = {field.alias or name for name, field in model.model_fields.items() if name != "op"}
+        for op in get_args(model.model_fields["op"].annotation):
+            vocabulary[op] = params
+    return vocabulary
+
+
+def vocabulary_digest(vocabulary: dict[str, set[str]]) -> str:
+    """The engine's ops_digest, computed the same way: "op:param,param" lines,
+    sorted, joined by newlines, SHA-256, first 16 hex digits."""
+    import hashlib
+    lines = sorted(f"{op}:{','.join(sorted(params))}" for op, params in vocabulary.items())
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()[:16]
+
+
+def compare_vocabulary(engine_ops: list[dict[str, Any]]) -> dict[str, Any]:
+    """How the engine's op list (list_ops) and this schema differ, if at all."""
+    engine = {item["op"]: set(item.get("params", {})) for item in engine_ops}
+    schema = schema_vocabulary()
+    differences = {
+        "engine_only_ops": sorted(set(engine) - set(schema)),
+        "schema_only_ops": sorted(set(schema) - set(engine)),
+        "engine_only_params": {op: sorted(engine[op] - schema[op]) for op in sorted(set(engine) & set(schema)) if engine[op] - schema[op]},
+        "schema_only_params": {op: sorted(schema[op] - engine[op]) for op in sorted(set(engine) & set(schema)) if schema[op] - engine[op]},
+    }
+    return {"match": not any(differences.values()), "schema_digest": vocabulary_digest(schema),
+            "engine_digest": vocabulary_digest(engine), **{k: v for k, v in differences.items() if v}}

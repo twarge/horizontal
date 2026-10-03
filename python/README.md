@@ -83,6 +83,24 @@ failure is raised with `outcome: "not_committed"` and is safe to resend. A
 connection lost by an earlier call is reopened before the next one is sent, so
 a timeout does not strand the `project_ref`.
 
+`connection_status` names the server — PID, start time, package version and
+commit — and says `stale` with the files when its code changed after it
+started; the live engine's op list is compared with the server's schema. A
+"reconnect" in the client may keep the old process, so these, and the
+`warnings` `open_project` returns, are how a stale server shows itself. The
+`apply_ops` description carries the schema digest the engine's `version`
+reports as `ops_digest`. Opening a document that already has a context
+returns that context and its `project_ref`.
+
+Reads are summaries by default. `list_components` leaves out package pads
+(`include_terminals`). `get_component` lists only a large part's connected and
+no-connect pins (`all_pins` for every one), narrows with `pins`, `pin_regex` and
+`connected`, and `group_pins` summarises supply and ground pins by net.
+`list_net_lines` gives one-line ends ("U8.PA13", "junction:<id>") and
+`[x, y]` points; the mark lists drop repeated sheet and net uuids. `verbose`
+returns the full rows. `find_dangling` and `find_overlaps` answer the usual
+questions about the wiring without reading it all.
+
 `board_info.drawing_layers` lists the renderable layer IDs and names for that
 project. `render_board` accepts either `layers=["Top Copper"]` (using the
 actual advertised names) or `layer_ids=[0]`, never both. Omitted or empty
