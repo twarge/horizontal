@@ -127,7 +127,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .terminatePin: "Draw a short wire straight out from a symbol pin and end it in a net label or power symbol facing away from the pin. Connects the pin to the net first when it is on none."
         case .setNoConnect: "Mark component pins as deliberately not connected, or clear the mark. A pin on a net is refused unless disconnect is passed."
         case .remapPart: "Replace a component's part, preserving connections, symbols and wires atomically. Pins are matched by name unless an explicit gate/pin identity map is given."
-        case .placeText: "Write a text on a schematic sheet, or change one that is already there. Free text only: a symbol's own texts belong to the symbol."
+        case .placeText: "Write a text on a schematic sheet, or change one that is already there. id names the text to change; one that names no text makes it under that id, so a batch can name a text and edit or remove it later. Free text only: a symbol's own texts belong to the symbol."
         case .removeText: "Remove a text from a schematic sheet."
         case .placePowerSymbol: "Draw a power symbol on a sheet: the ground or supply marker that says a point is on that net. Marks the net as a power net, since that is what one means."
         case .removePowerSymbol: "Remove a power symbol from its sheet."
@@ -158,7 +158,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .removeHole: "Remove a board hole."
         case .placeKeepout: "Mark an area where copper may not go, on one layer or all of them."
         case .removeKeepout: "Remove a keepout and the polygon bounding it."
-        case .placeBoardText: "Write a text on a board layer — silkscreen, assembly, fabrication notes — or change one that is there."
+        case .placeBoardText: "Write a text on a board layer — silkscreen, assembly, fabrication notes — or change one that is there. As with place_text, an id that names no text makes one under it."
         case .removeBoardText: "Remove a board text. A text a package carries belongs to that package."
         case .placeDimension: "Measure between two points on the board, the way the dimension tool does."
         case .removeDimension: "Remove a dimension."
@@ -2543,12 +2543,22 @@ final class HorizontalProjectEditor {
         }
     }
 
+    /// An id that names a text edits it. One that names none makes the text
+    /// under that id, as the other ops that make things do, which is what lets
+    /// a batch name a text ("id": "t1") and edit or remove it later; making one
+    /// needs its words and its place, so a mistyped id on a move still fails.
     private func placeText(_ params: JSONDictionary) throws -> JSONDictionary {
-        let existing = try params.string("id").map { reference -> (sheet: String, id: String, json: JSONDictionary) in
-            guard let found = try sheetTexts().first(where: { $0.id.caseInsensitiveCompare(reference) == .orderedSame }) else {
-                throw HorizontalDispatchError.notFound("No text \(reference) on any sheet. list_texts returns the ids.")
+        let reference = params.string("id")
+        let existing = try reference.flatMap { reference in
+            try sheetTexts().first(where: { $0.id.caseInsensitiveCompare(reference) == .orderedSame })
+        }
+        if let reference, existing == nil {
+            guard UUID(uuidString: reference) != nil, params.string("text") != nil, params.double("x_mm") != nil, params.double("y_mm") != nil else {
+                throw HorizontalDispatchError.notFound(
+                    "No text \(reference) on any sheet. list_texts returns the ids; to make a text under a new id, "
+                        + "give a UUID or a name with text, x_mm and y_mm."
+                )
             }
-            return found
         }
         // A text a symbol carries is the symbol's, extracted by Horizon's
         // Smash; it moves and dies with the symbol rather than on its own.
@@ -2600,7 +2610,7 @@ final class HorizontalProjectEditor {
         if let mirror = params.bool("mirror") { placement["mirror"] = mirror }
         item["placement"] = placement
 
-        let id = existing?.id ?? UUID().uuidString.lowercased()
+        let id = existing?.id ?? reference?.lowercased() ?? UUID().uuidString.lowercased()
         try updateSheet(targetSheet) { sheet in
             var texts = sheet["texts"] as? JSONDictionary ?? [:]
             texts[id] = item
@@ -3193,14 +3203,25 @@ final class HorizontalProjectEditor {
 
     // MARK: - Board text and dimensions
 
+    /// An id edits that text or, naming none, makes one under it — see placeText.
     private func placeBoardText(_ params: JSONDictionary) throws -> JSONDictionary {
         let texts = try board()["texts"] as? JSONDictionary ?? [:]
-        let existing = try params.string("id").map { reference -> (id: String, json: JSONDictionary) in
+        let reference = params.string("id")
+        let existing = reference.flatMap { reference -> (id: String, json: JSONDictionary)? in
             guard let key = texts.keys.first(where: { $0.caseInsensitiveCompare(reference) == .orderedSame }),
                   let item = texts[key] as? JSONDictionary else {
-                throw HorizontalDispatchError.notFound("No board text \(reference). list_board_texts returns the ids.")
+                return nil
             }
             return (key, item)
+        }
+        if let reference, existing == nil {
+            guard UUID(uuidString: reference) != nil, params.string("text") != nil, params.int("layer") != nil,
+                  params.double("x_mm") != nil, params.double("y_mm") != nil else {
+                throw HorizontalDispatchError.notFound(
+                    "No board text \(reference). list_board_texts returns the ids; to make a text under a new id, "
+                        + "give a UUID or a name with text, layer, x_mm and y_mm."
+                )
+            }
         }
         // A text a package carries was extracted from it by Smash; it moves and
         // dies with the package rather than on its own.
@@ -3246,7 +3267,7 @@ final class HorizontalProjectEditor {
         if let mirror = params.bool("mirror") { placement["mirror"] = mirror }
         item["placement"] = placement
 
-        let id = existing?.id ?? UUID().uuidString.lowercased()
+        let id = existing?.id ?? reference?.lowercased() ?? UUID().uuidString.lowercased()
         try updateBoard { board in
             var texts = board["texts"] as? JSONDictionary ?? [:]
             texts[id] = item

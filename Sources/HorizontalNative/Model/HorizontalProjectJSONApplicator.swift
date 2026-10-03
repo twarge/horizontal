@@ -1888,18 +1888,15 @@ enum HorizontalProjectJSONApplicator {
         return json
     }
 
+    /// Written the way Horizon writes it, as every other writer of project
+    /// files does, so an edit made here and one made over MCP leave the same
+    /// bytes and a diff shows only what changed.
     private static func saveJSON(
         _ json: JSONDictionary,
         relativePath: String,
         to archive: inout HorizontalProjectArchive
     ) throws {
-        let data = try JSONSerialization.data(
-            withJSONObject: json,
-            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        )
-        var terminated = data
-        terminated.append(0x0A)
-        try archive.replaceRegularFileData(relativePath: relativePath, with: terminated)
+        try archive.replaceRegularFileData(relativePath: relativePath, with: HorizontalHorizonJSONWriter.data(json))
     }
 
     private static func relativePath(for url: URL, baseURL: URL) -> String? {

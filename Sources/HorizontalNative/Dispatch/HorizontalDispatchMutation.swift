@@ -184,20 +184,31 @@ enum HorizontalDispatchMutation {
             result = try build(store)
             lap("edit_ms")
             after = HorizontalDispatchSnapshot(archive: store.archive, baseURL: entry.project.baseURL)
-            // Load the complete staged project before any original file is replaced.
-            staged = try HorizontalDispatchSession.project(from: after, url: entry.url)
+            // Load the complete staged project before any original file is
+            // replaced. A disk context then reads from it, so it gets the
+            // editor's connectivity pass. A live document installs the project
+            // as loaded and the session derives its own from the document
+            // afterwards, so for one that pass would be thrown away.
+            staged = entry.live == nil
+                ? try HorizontalDispatchSession.project(from: after, url: entry.url)
+                : try after.materializedProject()
             lap("load_ms")
             func diagnostics(_ snapshot: HorizontalDispatchSnapshot) throws -> [String: Int] {
                 if let cached = entry.cachedDiagnostics, cached.snapshotID == snapshot.id { return cached.counts }
                 let project = try snapshot.materializedProject()
                 return Dictionary(project.diagnostics.map { ($0.message.replacingOccurrences(of: project.baseURL.path, with: "<project>"), 1) }, uniquingKeysWith: +)
             }
-            let previousDiagnostics = try diagnostics(snapshot)
             nextDiagnostics = try diagnostics(after)
-            lap("diagnostics_ms")
-            guard nextDiagnostics.allSatisfy({ $0.value <= previousDiagnostics[$0.key, default: 0] }) else {
-                throw HorizontalDispatchError.failed("The edit introduces project load diagnostics; nothing was committed.")
+            // Only an edit that leaves diagnostics needs the count it started
+            // from, and finding that out means loading the project as it was,
+            // which costs as much as loading the edit.
+            if !nextDiagnostics.isEmpty {
+                let previousDiagnostics = try diagnostics(snapshot)
+                guard nextDiagnostics.allSatisfy({ $0.value <= previousDiagnostics[$0.key, default: 0] }) else {
+                    throw HorizontalDispatchError.failed("The edit introduces project load diagnostics; nothing was committed.")
+                }
             }
+            lap("diagnostics_ms")
         }
         let changed = after.files.filter { after.archive.regularFileData(relativePath: $0) != snapshot.archive.regularFileData(relativePath: $0) }
         let plan: JSONDictionary = ["revision": entry.revision, "ops": result["normalized_ops"] ?? params["ops"] ?? [], "pool_items": params["pool_items"] ?? params["items"] ?? []]
