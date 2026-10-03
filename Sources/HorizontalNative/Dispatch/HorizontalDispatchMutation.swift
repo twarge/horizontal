@@ -44,10 +44,46 @@ enum HorizontalDispatchMutation {
         }
     }
 
+    /// What changed in one file, as JSON paths rather than text:
+    /// "sheets/<id>/net_lines/<id>" removed, and so on, at most `limit` of
+    /// each with the full count beside. A file that is not JSON, or is new or
+    /// gone, gets its sizes only.
+    static func fileDiff(before: Data?, after: Data?, limit: Int = 100) -> JSONDictionary {
+        var result: JSONDictionary = ["before_bytes": before?.count ?? 0, "after_bytes": after?.count ?? 0]
+        guard let before, let after,
+              let old = try? JSONSerialization.jsonObject(with: before), let new = try? JSONSerialization.jsonObject(with: after) else {
+            return result
+        }
+        var added = [String](), removed = [String](), changed = [String]()
+        func walk(_ a: Any, _ b: Any, _ path: String) {
+            guard let a = a as? JSONDictionary, let b = b as? JSONDictionary else {
+                if !((a as? NSObject)?.isEqual(b) ?? false) { changed.append(path) }
+                return
+            }
+            for key in Set(a.keys).union(b.keys).sorted() {
+                let sub = path.isEmpty ? key : path + "/" + key
+                switch (a[key], b[key]) {
+                case (nil, _?): added.append(sub)
+                case (_?, nil): removed.append(sub)
+                case let (x?, y?): walk(x, y, sub)
+                default: break
+                }
+            }
+        }
+        walk(old, new, "")
+        for (key, list) in [("added", added), ("removed", removed), ("changed", changed)] where !list.isEmpty {
+            result[key] = Array(list.prefix(limit))
+            if list.count > limit { result[key + "_count"] = list.count }
+        }
+        return result
+    }
+
     /// What a caller asked to see of a result. "compact" keeps the ids and
     /// counts an agent acts on and drops what it already sent or can ask for:
     /// the echoed ops, file previews, the project summary. A dry run keeps its
     /// normalized ops, because they are what gets replayed with plan_digest.
+    /// "full", the default, previews each file as the JSON paths it changes;
+    /// "files" adds each file's whole text before and after.
     static func shaped(_ result: JSONDictionary, _ params: JSONDictionary) -> JSONDictionary {
         guard params.string("detail") == "compact" else { return result }
         var compact = result
@@ -186,9 +222,15 @@ enum HorizontalDispatchMutation {
         result["live"] = entry.live != nil
         result["would_write"] = changed
         if params.string("detail") != "compact" { result["preview"] = changed.map { path -> JSONDictionary in
-            ["path": path,
-             "before": snapshot.archive.regularFileData(relativePath: path).flatMap { String(data: $0, encoding: .utf8) } as Any,
-             "after": after.archive.regularFileData(relativePath: path).flatMap { String(data: $0, encoding: .utf8) } as Any]
+            let before = snapshot.archive.regularFileData(relativePath: path), afterData = after.archive.regularFileData(relativePath: path)
+            var file = Self.fileDiff(before: before, after: afterData)
+            file["path"] = path
+            // The text itself only on request: a schematic runs to megabytes.
+            if params.string("detail") == "files" {
+                file["before"] = before.flatMap { String(data: $0, encoding: .utf8) } as Any
+                file["after"] = afterData.flatMap { String(data: $0, encoding: .utf8) } as Any
+            }
+            return file
         } }
         if dryRun {
             result["timing"] = timing

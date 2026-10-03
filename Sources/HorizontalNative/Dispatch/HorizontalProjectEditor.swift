@@ -269,7 +269,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .pruneSheet:
             return ["sheet": "Sheet index, name or uuid (optional; default every sheet).",
                     "unanchored": "Also remove wiring that reaches no pin, port or bus ripper even when a label or power symbol gives it a net — a GND symbol on a stub to nowhere — with its marks (default false).",
-                    "stubs": "Also trim wire ends that stop at a junction nothing else uses, repeatedly, so a dead-end run goes in one pass (default false)."]
+                    "stubs": "Also remove dead-end runs: wire that stops at a junction nothing else uses, back to where it branches. These are the stubs find_dangling lists, every wire and junction of each (default false)."]
         case .terminatePin:
             return ["component": component, "pin": "Pin as for connect.", "gate": "The pin's gate, as for connect (optional).",
                     "net": "Net name or id to end the pin on. Optional when the pin is already on a net; created when create_net is passed.",
@@ -2469,33 +2469,43 @@ final class HorizontalProjectEditor {
                     sheet["net_lines"] = lines
                 }
             }
-            // A dead end goes back to where it branched, one wire at a time.
-            var stubs = [String]()
-            var trimmedJunctions = [String]()
-            while trimStubs, let current = try sheetsInOrder().first(where: { $0.id == target })?.json {
-                let found = HorizontalSchematicDebris(sheet: current, block: block, symbolHasPin: pool.symbolHasPin).stubs.map(\.line)
-                guard !found.isEmpty, stubs.count < 10_000 else { break }
-                stubs += found
-                try updateSheet(target) { sheet in
-                    var lines = sheet.dictionaryMap("net_lines")
-                    for id in found { lines.removeValue(forKey: id) }
-                    sheet["net_lines"] = lines
+            // A dead end goes back to where it branched: the same runs
+            // find_dangling reports, taken whole.
+            var stubs = [JSONDictionary]()
+            if trimStubs, let current = try sheetsInOrder().first(where: { $0.id == target })?.json {
+                let found = HorizontalSchematicDebris(sheet: current, block: block, symbolHasPin: pool.symbolHasPin).stubs
+                if !found.isEmpty {
+                    let doomed = Set(found.flatMap(\.lines))
+                    try updateSheet(target) { sheet in
+                        var lines = sheet.dictionaryMap("net_lines")
+                        for id in doomed { lines.removeValue(forKey: id) }
+                        sheet["net_lines"] = lines
+                    }
+                    doomedLines.formUnion(doomed)
                 }
-                trimmedJunctions += try collectSheetJunctions(target)
+                stubs = found.map { stub in
+                    var entry: JSONDictionary = ["net_lines": stub.lines.count, "junctions": stub.junctions.count]
+                    if let point = HorizontalSchematicDebris.point(stub.position) { entry["at"] = point }
+                    return entry
+                }
             }
-            doomedLines.formUnion(stubs)
-            let junctions = (trimmedJunctions + (try collectSheetJunctions(target))).sorted()
+            let junctions = try collectSheetJunctions(target)
             guard !(doomedLines.isEmpty && doomedLabels.isEmpty && doomedPower.isEmpty && doomedSymbols.isEmpty && junctions.isEmpty) else { continue }
             var entry: JSONDictionary = ["sheet": target, "name": sheet.string("name") as Any, "net_lines": doomedLines.sorted(),
                                          "net_labels": doomedLabels.sorted(), "power_symbols": doomedPower.sorted(), "symbols": doomedSymbols,
                                          "junctions": junctions]
             if !islands.isEmpty { entry["unanchored_islands"] = islands }
-            if !stubs.isEmpty { entry["stubs"] = stubs.sorted() }
+            if !stubs.isEmpty { entry["stubs"] = stubs }
             report.append(entry)
         }
         var removed = JSONDictionary()
         for key in ["net_lines", "net_labels", "power_symbols", "symbols", "junctions"] {
             removed[key] = report.reduce(0) { total, sheet in total + ((sheet[key] as? [String])?.count ?? 0) }
+        }
+        // Counts a compact reply keeps, to set beside find_dangling's totals.
+        for key in ["unanchored_islands", "stubs"] {
+            let count = report.reduce(0) { total, sheet in total + ((sheet[key] as? [JSONDictionary])?.count ?? 0) }
+            if count > 0 { removed[key] = count }
         }
         return ["pruned": report, "removed": removed]
     }

@@ -168,7 +168,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "find_dangling",
-            summary: "Drawing that connects nothing, sheet by sheet: wiring islands that reach no pin, port or bus ripper (whatever net their labels or power symbols name), wire ends that stop at a bare junction, and wires whose ends name nothing. prune_sheet with unanchored and stubs removes what this finds.",
+            summary: "Drawing that connects nothing, sheet by sheet: wiring islands that reach no pin, port or bus ripper (whatever net their labels or power symbols name), dead-end runs of wire traced back to where they branch, and wires whose ends name nothing. Each stub lists every wire and junction prune_sheet with stubs would remove, and what it hangs from; prune_sheet with unanchored and stubs removes what this finds.",
             params: ["handle": "Project handle.", "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet."],
             handler: findDangling
         ),
@@ -1964,12 +1964,15 @@ enum HorizontalDispatchMethods {
         let block = blockJSON(entry) ?? [:]
         let nets = block.dictionaryMap("nets")
         let pool = entry.poolIndex
-        var totals = ["unanchored_islands": 0, "stubs": 0, "broken_lines": 0]
+        var totals = ["unanchored_islands": 0, "stubs": 0, "stub_net_lines": 0, "stub_junctions": 0, "broken_lines": 0]
         let sheets = try selectedSheets(entry, params).compactMap { sheet -> JSONDictionary? in
             let debris = HorizontalSchematicDebris(sheet: sheet.json, block: block, symbolHasPin: pool.symbolHasPin)
             guard !(debris.unanchored.isEmpty && debris.stubs.isEmpty && debris.brokenLines.isEmpty) else { return nil }
+            let symbols = sheet.json.dictionaryMap("symbols").reduce(into: [String: JSONDictionary]()) { $0[$1.key.lowercased()] = $1.value }
             totals["unanchored_islands", default: 0] += debris.unanchored.count
             totals["stubs", default: 0] += debris.stubs.count
+            totals["stub_net_lines", default: 0] += debris.stubs.reduce(0) { $0 + $1.lines.count }
+            totals["stub_junctions", default: 0] += debris.stubs.reduce(0) { $0 + $1.junctions.count }
             totals["broken_lines", default: 0] += debris.brokenLines.count
             return [
                 "sheet": sheet.id, "sheet_index": sheet.index, "name": sheet.json.string("name") as Any,
@@ -1979,7 +1982,11 @@ enum HorizontalDispatchMethods {
                      "net_lines": island.lines, "net_labels": island.labels, "power_symbols": island.powerSymbols,
                      "junctions": island.junctions]
                 },
-                "stubs": debris.stubs.map { ["net_line": $0.line, "junction": $0.junction, "at": HorizontalSchematicDebris.point($0.position) as Any] as JSONDictionary },
+                "stubs": debris.stubs.map { stub -> JSONDictionary in
+                    ["at": HorizontalSchematicDebris.point(stub.position) as Any, "ends": stub.ends,
+                     "branches_from": stub.branch.map { netLineEndpoint($0, symbols: symbols, entry: entry) } as Any,
+                     "net_lines": stub.lines, "junctions": stub.junctions]
+                },
                 "broken_lines": debris.brokenLines
             ] as JSONDictionary
         }

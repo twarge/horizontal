@@ -4,10 +4,11 @@ import CoreFoundation
 enum HorizontalDispatchValidation {
     static func validate(method: String, params: JSONDictionary) throws {
         guard let descriptor = HorizontalDispatchMethods.all.first(where: { $0.name == method }) else { return }
-        // detail shapes any mutation's reply: "compact" for ids and counts.
+        // detail shapes any mutation's reply: "compact" for ids and counts,
+        // "files" for a dry run's file text as well.
         let common: Set<String> = ["include_metadata", "expected_revision", "operation_id", "plan_digest", "deadline_unix_ms", "detail"]
-        if let detail = params["detail"], !["compact", "full"].contains(detail as? String ?? "") {
-            throw HorizontalDispatchError.invalidParams("detail must be compact or full.")
+        if let detail = params["detail"], !["compact", "full", "files"].contains(detail as? String ?? "") {
+            throw HorizontalDispatchError.invalidParams("detail must be compact, full or files.")
         }
         let allowed = Set(descriptor.params.keys).union(common)
         let unknown = Set(params.keys).subtracting(allowed)
