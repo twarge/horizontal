@@ -2949,24 +2949,25 @@ struct ProjectWorkspaceView: View {
         selectionDetailsByPane[.board] = .empty
     }
 
+    /// Sheet edits go through the archive and a reload, like every other edit:
+    /// the loader bakes each page's number, the page count and its title into
+    /// the title block, and the page numbers into net labels' off-sheet
+    /// references, so changing the model alone left the drawing saying the old
+    /// numbers. The reload also puts the change on the undo stack.
     private func renameSheet(sheetID: String, to name: String, schematicURL: URL) {
         guard !isReadOnly else {
             return
         }
-        updateSchematics(at: schematicURL) { schematic in
-            guard let index = schematic.sheets.firstIndex(where: { $0.id == sheetID }) else {
-                return
-            }
-            schematic.sheets[index].name = name
-        }
         do {
+            var archive = document.archive
             try HorizontalProjectJSONApplicator.apply(
                 sheetName: name,
                 forSheetID: sheetID,
                 schematicURL: schematicURL,
                 in: project,
-                to: &document.archive
+                to: &archive
             )
+            try applyLiveArchive(archive, actionName: "Rename Sheet")
         } catch {
             recordArchiveApplyFailure(error)
         }
@@ -2976,40 +2977,18 @@ struct ProjectWorkspaceView: View {
         guard !isReadOnly else {
             return
         }
-        updateSchematics(at: schematicURL) { schematic in
-            schematic.sheets.sort { lhs, rhs in
-                (orderedSheetIDs.firstIndex(of: lhs.id) ?? .max)
-                    < (orderedSheetIDs.firstIndex(of: rhs.id) ?? .max)
-            }
-            for index in schematic.sheets.indices {
-                schematic.sheets[index].index = index + 1
-            }
-        }
         do {
+            var archive = document.archive
             try HorizontalProjectJSONApplicator.apply(
                 sheetOrder: orderedSheetIDs,
                 schematicURL: schematicURL,
                 in: project,
-                to: &document.archive
+                to: &archive
             )
+            try applyLiveArchive(archive, actionName: "Reorder Sheets")
         } catch {
             recordArchiveApplyFailure(error)
         }
-    }
-
-    /// Applies one mutation to every in-memory copy of the schematic at `url`:
-    /// the per-block schematics list and the top-schematic mirror.
-    private func updateSchematics(at url: URL, _ mutate: (inout HorizontalSchematic) -> Void) {
-        let standardizedURL = url.standardizedFileURL
-        for index in project.schematics.indices
-            where project.schematics[index].schematic.url.standardizedFileURL == standardizedURL {
-            mutate(&project.schematics[index].schematic)
-        }
-        if var schematic = project.schematic, schematic.url.standardizedFileURL == standardizedURL {
-            mutate(&schematic)
-            project.schematic = schematic
-        }
-        schematicEditRevision += 1
     }
 
     private func replace(_ sheet: HorizontalSchematicSheet, in schematic: inout HorizontalSchematic) {
