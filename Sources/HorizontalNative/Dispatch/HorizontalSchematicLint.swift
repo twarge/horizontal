@@ -15,9 +15,19 @@ struct HorizontalSchematicDebris {
         var position: [Int]?
     }
 
+    /// A dead end, traced back to where it branches off wiring that goes
+    /// somewhere. A run of several wires — rail, corner, nothing — is one
+    /// stub, because pruning takes all of it.
     struct Stub {
-        var line: String
-        var junction: String
+        /// Every wire it takes, from the dead end back to the branch.
+        var lines: [String] = []
+        /// The junctions that go with them: the dead end and any corners.
+        var junctions: [String] = []
+        /// The bare junctions it stops at; more than one where dead ends meet.
+        var ends: [String] = []
+        /// The wire end it hangs from: a junction that stays, or a pin.
+        var branch: JSONDictionary?
+        /// Where the first dead end is.
         var position: [Int]?
     }
 
@@ -99,11 +109,14 @@ struct HorizontalSchematicDebris {
         }
         unanchored.sort { ($0.position?.first ?? 0, $0.position?.last ?? 0) < ($1.position?.first ?? 0, $1.position?.last ?? 0) }
 
-        // A wire end at a junction nothing else uses goes nowhere.
-        var degree = [String: [String]]()
-        for (id, line) in lines where !brokenSet.contains(id) {
+        // A wire end at a junction nothing else uses goes nowhere. Peel such
+        // ends back a wire at a time, until a junction that still leads
+        // somewhere, a pin, or a label or power symbol stops it.
+        let floating = Set(unanchored.flatMap(\.lines))
+        var touching = [String: [String]]()
+        for (id, line) in lines where !brokenSet.contains(id) && !floating.contains(id) {
             for end in ["from", "to"] {
-                if let junction = line.dictionary(end)?.string("junc")?.lowercased() { degree[junction, default: []].append(id) }
+                if let junction = line.dictionary(end)?.string("junc")?.lowercased() { touching[junction, default: []].append(id) }
             }
         }
         var marked = Set(anchors.map { String($0.dropFirst(5)) })
@@ -112,12 +125,60 @@ struct HorizontalSchematicDebris {
                 if let junction = mark.string("junction") { marked.insert(junction.lowercased()) }
             }
         }
-        let floating = Set(unanchored.flatMap(\.lines))
-        for (junction, touching) in degree where touching.count == 1 && !marked.contains(junction) && !floating.contains(touching[0]) {
-            let key = junctions.keys.first { $0.lowercased() == junction } ?? junction
-            stubs.append(Stub(line: touching[0], junction: key, position: position(key)))
+        func junctionEnds(_ id: String) -> [String] {
+            ["from", "to"].compactMap { lines[id]?.dictionary($0)?.string("junc")?.lowercased() }
         }
-        stubs.sort { $0.line < $1.line }
+        var queue = touching.filter { $0.value.count == 1 && !marked.contains($0.key) }.keys.sorted()
+        let deadEnds = Set(queue)
+        var peeled = [String](), gone = [String](), goneSet = Set<String>()
+        var next = 0
+        while next < queue.count {
+            let junction = queue[next]; next += 1
+            guard !goneSet.contains(junction), let left = touching[junction], left.count == 1 else { continue }
+            let id = left[0]
+            peeled.append(id); gone.append(junction); goneSet.insert(junction)
+            touching[junction] = []
+            for other in junctionEnds(id) where other != junction {
+                guard var rest = touching[other], let at = rest.firstIndex(of: id) else { continue }
+                rest.remove(at: at)
+                touching[other] = rest
+                if rest.count == 1 && !marked.contains(other) { queue.append(other) }
+            }
+        }
+
+        // One stub per run: wires joined through junctions that go with them.
+        var parent = Dictionary(uniqueKeysWithValues: gone.map { ($0, $0) })
+        func root(_ junction: String) -> String {
+            var junction = junction
+            while let up = parent[junction], up != junction { junction = up }
+            return junction
+        }
+        for id in peeled {
+            let ends = junctionEnds(id).filter(goneSet.contains)
+            if ends.count == 2 { parent[root(ends[0])] = root(ends[1]) }
+        }
+        let original = junctions.keys.reduce(into: [String: String]()) { $0[$1.lowercased()] = $1 }
+        var runs = [String: Stub]()
+        for junction in gone {
+            let key = original[junction] ?? junction
+            runs[root(junction), default: Stub()].junctions.append(key)
+            if deadEnds.contains(junction) { runs[root(junction), default: Stub()].ends.append(key) }
+        }
+        for id in peeled {
+            guard let run = junctionEnds(id).first(where: goneSet.contains).map(root) else { continue }
+            runs[run, default: Stub()].lines.append(id)
+            for end in ["from", "to"] {
+                guard let endpoint = lines[id]?.dictionary(end) else { continue }
+                if let junction = endpoint.string("junc")?.lowercased(), goneSet.contains(junction) { continue }
+                runs[run]?.branch = endpoint
+            }
+        }
+        stubs = runs.values.map { run in
+            var run = run
+            run.position = run.ends.first.flatMap(position)
+            return run
+        }
+        stubs.sort { ($0.position?.first ?? 0, $0.position?.last ?? 0, $0.lines.first ?? "") < ($1.position?.first ?? 0, $1.position?.last ?? 0, $1.lines.first ?? "") }
     }
 
     static func point(_ position: [Int]?) -> JSONDictionary? {

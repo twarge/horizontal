@@ -108,7 +108,9 @@ def _tool(fn: Callable[..., Any]) -> Callable[..., Any]:
             if fn.__name__ in _mutations:
                 options = {key: kwargs.pop(key, None) for key in ("expected_revision", "operation_id", "plan_digest")}
                 options = {key: value for key, value in options.items() if value is not None}
-                if not kwargs.pop("verbose", False): options["detail"] = "compact"
+                verbose, file_text = kwargs.pop("verbose", False), kwargs.pop("file_text", False)
+                if file_text: options["detail"] = "files"
+                elif not verbose: options["detail"] = "compact"
                 _edit_options.set(options)
             value = fn(*args, **kwargs)
             project = _active_project.get()
@@ -142,8 +144,13 @@ def _tool(fn: Callable[..., Any]) -> Callable[..., Any]:
                        inspect.Parameter("operation_id", inspect.Parameter.KEYWORD_ONLY, annotation=str),
                        inspect.Parameter("plan_digest", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=str | None),
                        inspect.Parameter("verbose", inspect.Parameter.KEYWORD_ONLY, default=False, annotation=Annotated[bool, Field(
-                           description="Return the full reply: every change in full, the echoed ops, file previews for a dry run, "
-                                       "and the project summary. Off, the reply is ids and counts.")])]
+                           description="Return the full reply: every change in full, the echoed ops, for a dry run what each "
+                                       "file gains, loses and changes (as JSON paths), and the project summary. Off, the reply "
+                                       "is ids and counts.")])]
+        if "dry_run" in signature.parameters:
+            parameters.append(inspect.Parameter("file_text", inspect.Parameter.KEYWORD_ONLY, default=False, annotation=Annotated[bool, Field(
+                description="With dry_run, the verbose reply plus each changed file's whole text before and after. A "
+                            "schematic on a large design is over a megabyte, so ask for this only when the paths are not enough.")]))
     wrapper.__signature__ = signature.replace(parameters=parameters, return_annotation=output)
     wrapper.__annotations__ = {p.name: p.annotation for p in parameters} | {"return": output}
     if fn.__name__ == "apply_ops":
@@ -799,10 +806,17 @@ def list_net_lines(path: str | None = None, net: str | None = None, sheet: int |
 def find_dangling(path: str | None = None, sheet: int | None = None, sheet_id: str | None = None,
                   name: str | None = None, block_id: str | None = None) -> dict[str, Any]:
     """Drawing that connects nothing, sheet by sheet: wiring islands that reach no pin, port or bus ripper — even
-    when a label or power symbol gives them a net — wire ends stopping at a bare junction, and wires whose ends
-    name nothing. Each comes with ids and a position. prune_sheet with unanchored: true and stubs: true removes it."""
+    when a label or power symbol gives them a net — dead-end runs of wire, and wires whose ends name nothing. Each
+    comes with ids and a position. A stub is the whole run back to where it branches: every wire and junction that
+    prune_sheet with stubs: true would remove, the bare ends it stops at, and branches_from, the junction or pin
+    ("U8.PA13") it hangs from. totals.stub_net_lines and stub_junctions are what such a prune removes, to check a
+    dry run against. prune_sheet with unanchored: true and stubs: true removes it all."""
     params = {k: v for k, v in {"sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id}.items() if v is not None}
-    return _resolve(path)._call("find_dangling", **params)
+    found = _resolve(path)._call("find_dangling", **params)
+    for sheet_row in found.get("sheets", []):
+        for stub in sheet_row.get("stubs", []):
+            if isinstance(stub.get("branches_from"), dict): stub["branches_from"] = _endpoint(stub["branches_from"])
+    return found
 
 
 @_tool
