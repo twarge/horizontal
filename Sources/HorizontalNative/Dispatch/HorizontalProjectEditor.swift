@@ -80,6 +80,14 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case removePlacement = "remove_placement"
     case copyGroupLayout = "copy_group_layout"
 
+    /// A digest of every op and its parameter names, in a form the Python
+    /// client computes from its own schema the same way: lines of
+    /// "op:param,param" sorted, joined by newlines, SHA-256, first 16 hex digits.
+    static var vocabularyDigest: String {
+        let lines = allCases.map { "\($0.rawValue):\($0.params.keys.sorted().joined(separator: ","))" }.sorted()
+        return String(HorizontalProjectTransaction.digest(Data(lines.joined(separator: "\n").utf8)).prefix(16))
+    }
+
     var summary: String {
         switch self {
         case .ensureComponent: "Create a block component if it does not exist; returns its id."
@@ -113,7 +121,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .setNetLineEndpoint: "Retarget one end of an existing wire, keeping its id and logical net."
         case .removeNetLine: "Remove a wire from its sheet, and any junction at its ends that it leaves holding nothing."
         case .removeJunction: "Remove a junction with the wires ending on it and the labels and power symbols sitting on it — net-less junctions included."
-        case .pruneSheet: "Clear orphaned drawing from a sheet: wires with a dangling end, wiring islands that carry no net and reach no pin, labels on no net, and junctions nothing uses."
+        case .pruneSheet: "Clear orphaned drawing from a sheet: wires with a dangling end, wiring islands that carry no net and reach no pin, labels on no net, and junctions nothing uses. unanchored and stubs widen it to wiring that names a net but reaches no pin, and wire ends to nowhere."
         case .terminatePin: "Draw a short wire straight out from a symbol pin and end it in a net label or power symbol facing away from the pin. Connects the pin to the net first when it is on none."
         case .setNoConnect: "Mark component pins as deliberately not connected, or clear the mark. A pin on a net is refused unless disconnect is passed."
         case .remapPart: "Replace a component's part, preserving connections, symbols and wires atomically. Pins are matched by name unless an explicit gate/pin identity map is given."
@@ -164,7 +172,10 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         switch self {
         case .ensureComponent:
             return ["id": "Component id to use (optional).", "refdes": "Reference designator (optional; defaults to the entity's prefix plus ?).", "part": "Pool part id.", "entity": "Pool entity id (when there is no part).", "value": "Value (optional).", "group": "Group name (optional).", "tag": "Tag name (optional)."]
-        case .removeComponent, .removePlacement:
+        case .removeComponent:
+            return ["component": component,
+                    "texts_within_mm": "Also remove free text this close to the component's symbols when they are the nearest symbol to it — the notes that described the part (optional)."]
+        case .removePlacement:
             return ["component": component]
         case .setValue:
             return ["component": component, "value": "New value."]
@@ -237,7 +248,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "display_all_pads": "List every pad number on a multi-pad pin (optional)."]
         case .removeSymbol:
             return ["component": component, "gate": "Gate name, suffix or id; optional when the entity has one gate.",
-                    "sheet": "Sheet index, name or uuid (optional; default every sheet)."]
+                    "sheet": "Sheet index, name or uuid (optional; default every sheet).",
+                    "texts_within_mm": "Also remove free text this close to the removed symbols when they are the nearest symbol to it (optional)."]
         case .drawNetLine:
             return ["component": component, "pin": "Pin as for connect.", "gate": "The pin's gate, as for connect (optional).",
                     "to_component": "The other end's component.",
@@ -255,7 +267,9 @@ enum HorizontalEditOperationKind: String, CaseIterable {
             return ["junction": "Junction id from list_junctions; one with no net is fine.", "sheet": "Sheet index, name or uuid (optional).",
                     "cascade": "Also remove the wires ending on it and the labels and power symbols on it (default true; false refuses when anything uses it)."]
         case .pruneSheet:
-            return ["sheet": "Sheet index, name or uuid (optional; default every sheet)."]
+            return ["sheet": "Sheet index, name or uuid (optional; default every sheet).",
+                    "unanchored": "Also remove wiring that reaches no pin, port or bus ripper even when a label or power symbol gives it a net — a GND symbol on a stub to nowhere — with its marks (default false).",
+                    "stubs": "Also trim wire ends that stop at a junction nothing else uses, repeatedly, so a dead-end run goes in one pass (default false)."]
         case .terminatePin:
             return ["component": component, "pin": "Pin as for connect.", "gate": "The pin's gate, as for connect (optional).",
                     "net": "Net name or id to end the pin on. Optional when the pin is already on a net; created when create_net is passed.",
@@ -451,10 +465,11 @@ struct HorizontalEditOperation {
                     throw HorizontalDispatchError.invalidParams("\(key) must be an object.")
                 }
             } else if ["x_mm", "y_mm", "angle_deg", "size_mm", "width_mm", "copper_mm", "substrate_mm",
-                       "label_distance_mm", "length_mm"].contains(key) {
+                       "label_distance_mm", "length_mm", "texts_within_mm"].contains(key) {
                 try HorizontalDispatchValidation.number(value, key: key)
             } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs", "exposed_copper_only",
-                       "force", "cascade", "swap", "remove_routing", "display_all_pads", "no_connect", "disconnect"].contains(key) {
+                       "force", "cascade", "swap", "remove_routing", "display_all_pads", "no_connect", "disconnect",
+                       "unanchored", "stubs"].contains(key) {
                 try HorizontalDispatchValidation.boolean(value, key: key)
             } else if value is NSNull, ["part", "group", "tag"].contains(key) {
                 continue
@@ -629,7 +644,9 @@ final class HorizontalProjectEditor {
         case .removeComponent:
             let id = try componentID(params)
             change["component"] = id
+            let notes = try textsNear(componentID: id, gateID: nil, sheet: nil, params)
             change["removed"] = removeComponent(id)
+            if !notes.isEmpty { change["texts_removed"] = try removeFreeTexts(notes) }
         case .setValue:
             let id = try componentID(params)
             guard let value = params["value"] as? String else {
@@ -757,7 +774,10 @@ final class HorizontalProjectEditor {
         case .removeSymbol:
             let id = try componentID(params)
             change["component"] = id
+            let gateID = params.string("gate") == nil ? nil : try gate(params, componentID: id).id
+            let notes = try textsNear(componentID: id, gateID: gateID, sheet: params["sheet"] == nil ? nil : try sheetID(params), params)
             change["removed"] = try removeSymbol(id, params)
+            if !notes.isEmpty { change["texts_removed"] = try removeFreeTexts(notes) }
         case .drawNetLine:
             change.merge(try drawNetLine(params)) { _, new in new }
         case .placeJunction:
@@ -1310,7 +1330,7 @@ final class HorizontalProjectEditor {
         guard let symbol = instance.json.string("symbol"), let geometry = pool.symbolPin(symbol, pin: pinID) else {
             throw HorizontalDispatchError.invalidParams("The symbol drawing \(refdes) does not draw pin \(name).")
         }
-        let transform = HorizontalPlacementTransform(json: instance.json.dictionary("placement")) ?? .identity
+        let transform = (HorizontalPlacementTransform(json: instance.json.dictionary("placement")) ?? .identity).schematicGeometry
         let direction = Self.outward[geometry.orientation] ?? (1, 0)
         let tip = transform.applying(to: geometry.position)
         let ahead = transform.applying(to: HorizontalPoint(x: geometry.position.x + direction.x * 1_000_000,
@@ -2400,10 +2420,27 @@ final class HorizontalProjectEditor {
                     doomedLabels.append(id)
                 }
             }
-            let doomedPower = sheet.dictionaryMap("power_symbols").filter { !known.contains($0.value.string("net")?.lowercased() ?? "") }.keys.sorted()
+            var doomedPower = sheet.dictionaryMap("power_symbols").filter { !known.contains($0.value.string("net")?.lowercased() ?? "") }.keys.sorted()
             // A symbol whose component is gone is drawn from nothing.
             let doomedSymbols = symbols.filter { componentsMap[$0.value.string("component")?.lowercased() ?? ""] == nil }.keys.sorted()
-            guard !doomedLines.isEmpty || !doomedLabels.isEmpty || !doomedPower.isEmpty || !doomedSymbols.isEmpty || !junctionIDs.isSubset(of: Self.referencedJunctions(sheet)) else { continue }
+            // Wiring that reaches no pin is debris whatever its marks name.
+            var islands = [JSONDictionary]()
+            if params.bool("unanchored") ?? false {
+                let nets = block.dictionaryMap("nets")
+                for island in HorizontalSchematicDebris(sheet: sheet, block: block, symbolHasPin: pool.symbolHasPin).unanchored {
+                    doomedLines.formUnion(island.lines)
+                    doomedLabels.append(contentsOf: island.labels.filter { !doomedLabels.contains($0) })
+                    doomedPower.append(contentsOf: island.powerSymbols.filter { !doomedPower.contains($0) })
+                    var entry: JSONDictionary = ["net_lines": island.lines.count, "net_labels": island.labels.count,
+                                                 "power_symbols": island.powerSymbols.count,
+                                                 "nets": island.nets.map { nets[$0]?.string("name") ?? $0 }.sorted()]
+                    if let point = HorizontalSchematicDebris.point(island.position) { entry["at"] = point }
+                    islands.append(entry)
+                }
+            }
+            let trimStubs = params.bool("stubs") ?? false
+            guard !doomedLines.isEmpty || !doomedLabels.isEmpty || !doomedPower.isEmpty || !doomedSymbols.isEmpty || trimStubs
+                    || !junctionIDs.isSubset(of: Self.referencedJunctions(sheet)) else { continue }
             try updateSheet(target) { sheet in
                 var lines = sheet.dictionaryMap("net_lines")
                 for id in doomedLines { lines.removeValue(forKey: id) }
@@ -2432,10 +2469,29 @@ final class HorizontalProjectEditor {
                     sheet["net_lines"] = lines
                 }
             }
-            let junctions = try collectSheetJunctions(target)
-            report.append(["sheet": target, "name": sheet.string("name") as Any, "net_lines": doomedLines.sorted(),
-                           "net_labels": doomedLabels.sorted(), "power_symbols": doomedPower, "symbols": doomedSymbols,
-                           "junctions": junctions])
+            // A dead end goes back to where it branched, one wire at a time.
+            var stubs = [String]()
+            var trimmedJunctions = [String]()
+            while trimStubs, let current = try sheetsInOrder().first(where: { $0.id == target })?.json {
+                let found = HorizontalSchematicDebris(sheet: current, block: block, symbolHasPin: pool.symbolHasPin).stubs.map(\.line)
+                guard !found.isEmpty, stubs.count < 10_000 else { break }
+                stubs += found
+                try updateSheet(target) { sheet in
+                    var lines = sheet.dictionaryMap("net_lines")
+                    for id in found { lines.removeValue(forKey: id) }
+                    sheet["net_lines"] = lines
+                }
+                trimmedJunctions += try collectSheetJunctions(target)
+            }
+            doomedLines.formUnion(stubs)
+            let junctions = (trimmedJunctions + (try collectSheetJunctions(target))).sorted()
+            guard !(doomedLines.isEmpty && doomedLabels.isEmpty && doomedPower.isEmpty && doomedSymbols.isEmpty && junctions.isEmpty) else { continue }
+            var entry: JSONDictionary = ["sheet": target, "name": sheet.string("name") as Any, "net_lines": doomedLines.sorted(),
+                                         "net_labels": doomedLabels.sorted(), "power_symbols": doomedPower.sorted(), "symbols": doomedSymbols,
+                                         "junctions": junctions]
+            if !islands.isEmpty { entry["unanchored_islands"] = islands }
+            if !stubs.isEmpty { entry["stubs"] = stubs.sorted() }
+            report.append(entry)
         }
         var removed = JSONDictionary()
         for key in ["net_lines", "net_labels", "power_symbols", "symbols", "junctions"] {
@@ -2523,6 +2579,41 @@ final class HorizontalProjectEditor {
             sheet["texts"] = texts
         }
         return ["text_id": id, "sheet": targetSheet, "text": item.string("text") as Any, "created": existing == nil]
+    }
+
+    /// Free texts that sit by a component's symbols — within the radius, and
+    /// nearer to one of them than to any other drawn symbol — on the sheets
+    /// those symbols are drawn on.
+    private func textsNear(componentID: String, gateID: String?, sheet only: String?, _ params: JSONDictionary) throws -> [(sheet: String, id: String)] {
+        guard let radius = params.double("texts_within_mm") else { return [] }
+        guard radius > 0 else { throw HorizontalDispatchError.invalidParams("texts_within_mm must be more than zero.") }
+        var found = [(sheet: String, id: String)]()
+        for page in try sheetsInOrder() where only == nil || only == page.id {
+            let symbols = page.json.dictionaryMap("symbols")
+            let mine = Set(symbols.filter {
+                $0.value.string("component")?.lowercased() == componentID && (gateID == nil || $0.value.string("gate")?.lowercased() == gateID)
+            }.keys)
+            guard !mine.isEmpty else { continue }
+            let owned = Set(symbols.values.flatMap { ($0["texts"] as? [String] ?? []).map { $0.lowercased() } })
+            for (id, text) in page.json.dictionaryMap("texts") where text.bool("from_smash") != true && !owned.contains(id.lowercased()) {
+                guard let near = HorizontalSchematicTextProximity.nearest(to: HorizontalSchematicTextProximity.position(of: text),
+                                                                          symbols: symbols, pool: pool),
+                      mine.contains(near.id), near.distance <= radius * 1_000_000 else { continue }
+                found.append((page.id, id))
+            }
+        }
+        return found
+    }
+
+    private func removeFreeTexts(_ texts: [(sheet: String, id: String)]) throws -> [String] {
+        for (sheet, ids) in Dictionary(grouping: texts, by: \.sheet) {
+            try updateSheet(sheet) { item in
+                var map = item.dictionaryMap("texts")
+                for text in ids { map.removeValue(forKey: text.id) }
+                item["texts"] = map
+            }
+        }
+        return texts.map(\.id).sorted()
     }
 
     private func removeText(_ params: JSONDictionary) throws -> JSONDictionary {

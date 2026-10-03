@@ -41,7 +41,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 
 | Method | What it answers |
 |---|---|
-| `version`, `methods` | API version; the method table |
+| `version`, `methods` | API version, the build's executable time, and `ops`/`ops_digest` fingerprinting the edit vocabulary; the method table |
 | `open_project`, `new_project`, `close_project`, `reload_project`, `list_projects` | project handles; opening a path twice returns the same handle; `new_project` writes the template to a path that does not exist yet |
 | `save` | writes an open document to its file; a disk context reports `saved: false` because its edits were already written |
 | `project_info`, `project_files` | blocks, sheets, counts, diagnostics; files in the captured source |
@@ -53,6 +53,8 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `list_symbols` | symbol instances on the sheets: component, gate, placement, and the instance id the schematic ops take |
 | `list_junctions` | schematic junction IDs, positions, resolved nets and sheet identities for wire endpoints |
 | `list_net_lines` | the wires on the sheets, with what each end connects — a symbol pin (with its name), a junction, a bus ripper or a block port — and where each end is (`from_mm`, `to_mm`) |
+| `find_dangling` | drawing that connects nothing: wiring islands that reach no pin, port or bus ripper (even when a label or power symbol names a net), wire ends stopping at a bare junction, and wires whose ends name nothing — with ids and positions |
+| `find_overlaps` | what looks connected and is not: a wire over a pin it does not end on, a junction on a pin with no wire to it, junctions on one spot no wire joins, and a wire ending part way along another |
 | `list_tracks`, `list_vias` | copper, filtered by net or layer; a track end is a pad (naming the component) or a junction. Both wrap their answer in `total`/`truncated`, because a board has thousands |
 | `list_net_labels`, `list_power_symbols` | what names a net on a page, with the ids their remove ops take |
 | `list_block_instances` | the blocks this block uses, their wired ports, and where each is drawn |
@@ -130,12 +132,15 @@ which is replayed with them), file previews and the project summary. Replies
 carry `timing` in milliseconds for the edit, the staged load, the diagnostics
 comparison and the commit. A mutation that fails is recorded under its
 `operation_id`, so `transaction_status` answers `not_committed` instead of
-`unknown`, and the same id may be sent again.
+`unknown`, and the same id may be sent again. A commit that replays the dry
+run just made — same revision, same request, its `plan_digest` — installs what
+the dry run staged and validated rather than doing it again
+(`timing.reused_dry_run`).
 
 | Op | Effect |
 |---|---|
 | `ensure_component` | Create a block component from a pool part or entity, returning its id; idempotent by id or refdes |
-| `remove_component` | Remove the component, its symbols and the net lines on them, its board package, and turn tracks that ended on its pads into junction-ended tracks |
+| `remove_component` | Remove the component, its symbols and the net lines on them, its board package, and turn tracks that ended on its pads into junction-ended tracks. `texts_within_mm` also removes free notes within that distance whose nearest symbol was this part's (`list_texts` reports each note's `near_symbol`) |
 | `set_value`, `set_refdes`, `set_part`, `set_no_populate` | Component fields; a part swap that changes the entity clears the connections |
 | `set_group_tag` | Horizon's group and tag, the fields it uses to copy placement between identical sub-circuits; ids derive from the names |
 | `ensure_net`, `rename_net`, `set_net_class`, `retire_net` | Nets. Retiring one drops its connections, block ports and bus members, and the labels, power symbols, wires and junctions drawn for it; board copper on it is counted, and removed with `remove_routing` |
@@ -145,7 +150,7 @@ comparison and the commit. A mutation that fails is recorded under its
 | `draw_net_line` | A wire between typed pin or junction endpoints on one sheet and logical net; retains the legacy pin-to-pin form. A pin end is `{kind: pin, symbol, pin}` or `{kind: pin, component, gate?, pin}`, the pin by name or uuid. A junction with no net takes the wire's |
 | `place_junction`, `set_net_line_endpoint` | Create a schematic junction — reusing one at the point, and giving it the net if it had none — or retarget one end of an existing wire, preserving its identity and net |
 | `remove_net_line`, `remove_junction` | Take a wire off its sheet, or a junction with the wires, labels and power symbols on it (net-less junctions included); junctions left holding nothing go too |
-| `prune_sheet` | Clear what a sheet draws for nothing: wires with a dangling end, wiring that reaches no pin and carries no net, labels on no net, symbols of removed components and unused junctions — on one sheet or all |
+| `prune_sheet` | Clear what a sheet draws for nothing: wires with a dangling end, wiring that reaches no pin and carries no net, labels on no net, symbols of removed components and unused junctions — on one sheet or all. `unanchored` also removes wiring that names a net but reaches no pin (a GND symbol on a stub), `stubs` trims dead-end wire runs back to where they branch |
 | `terminate_pin` | A stub wire straight out from a pin, ending in a net label or power symbol that faces away from it. Connects the pin first when it is on no net |
 | `set_no_connect` | Mark pins deliberately unconnected — a connection naming no net, as the app's no-connect tool writes — or clear the mark |
 | `remap_part` | Substitute an imported part, preserving connections, symbols, wires and copper atomically. Pins `pin_map` leaves out are matched by gate and pin name; a connected pin with no counterpart is named and nothing changes |

@@ -122,29 +122,61 @@ enum HorizontalDispatchMutation {
             let readOnly = MainActor.assumeIsolated { live.isReadOnly() }
             guard !readOnly else { throw HorizontalDispatchError(code: .readOnly, message: "The document is read-only.") }
         }
-        let store = HorizontalArchiveFileStore(archive: snapshot.archive, baseURL: entry.project.baseURL)
-        var result = try build(store)
-        lap("edit_ms")
-        let after = HorizontalDispatchSnapshot(archive: store.archive, baseURL: entry.project.baseURL)
-        // Load the complete staged project before any original file is replaced.
-        let staged = try HorizontalDispatchSession.project(from: after, url: entry.url)
-        lap("load_ms")
-        func diagnostics(_ snapshot: HorizontalDispatchSnapshot) throws -> [String: Int] {
-            if let cached = entry.cachedDiagnostics, cached.snapshotID == snapshot.id { return cached.counts }
-            let project = try snapshot.materializedProject()
-            return Dictionary(project.diagnostics.map { ($0.message.replacingOccurrences(of: project.baseURL.path, with: "<project>"), 1) }, uniquingKeysWith: +)
+        // A commit that replays the dry run just made — same revision, same
+        // request, the plan it returned — installs what the dry run staged and
+        // validated instead of editing and loading the project again.
+        let planKeys = { (ops: Any?) throws -> String in
+            var payload = params.filter { !["handle", "include_metadata", "operation_id", "plan_digest", "deadline_unix_ms", "detail", "dry_run"].contains($0.key) }
+            if let ops { payload["ops"] = ops }
+            payload["revision"] = entry.revision
+            return HorizontalProjectTransaction.digest(try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]))
         }
-        let previousDiagnostics = try diagnostics(snapshot)
-        let nextDiagnostics = try diagnostics(after)
-        lap("diagnostics_ms")
-        guard nextDiagnostics.allSatisfy({ $0.value <= previousDiagnostics[$0.key, default: 0] }) else {
-            throw HorizontalDispatchError.failed("The edit introduces project load diagnostics; nothing was committed.")
+        let requestKey = try planKeys(nil)
+        var result: JSONDictionary
+        let after: HorizontalDispatchSnapshot
+        let staged: HorizontalProject
+        let nextDiagnostics: [String: Int]
+        if !dryRun, let plan = entry.stagedPlan, plan.revision == entry.revision, plan.keys.contains(requestKey),
+           params.string("plan_digest") == plan.digest {
+            result = plan.result
+            after = plan.after
+            staged = plan.staged
+            nextDiagnostics = plan.diagnostics
+            timing["reused_dry_run"] = true
+        } else {
+            let store = HorizontalArchiveFileStore(archive: snapshot.archive, baseURL: entry.project.baseURL)
+            result = try build(store)
+            lap("edit_ms")
+            after = HorizontalDispatchSnapshot(archive: store.archive, baseURL: entry.project.baseURL)
+            // Load the complete staged project before any original file is replaced.
+            staged = try HorizontalDispatchSession.project(from: after, url: entry.url)
+            lap("load_ms")
+            func diagnostics(_ snapshot: HorizontalDispatchSnapshot) throws -> [String: Int] {
+                if let cached = entry.cachedDiagnostics, cached.snapshotID == snapshot.id { return cached.counts }
+                let project = try snapshot.materializedProject()
+                return Dictionary(project.diagnostics.map { ($0.message.replacingOccurrences(of: project.baseURL.path, with: "<project>"), 1) }, uniquingKeysWith: +)
+            }
+            let previousDiagnostics = try diagnostics(snapshot)
+            nextDiagnostics = try diagnostics(after)
+            lap("diagnostics_ms")
+            guard nextDiagnostics.allSatisfy({ $0.value <= previousDiagnostics[$0.key, default: 0] }) else {
+                throw HorizontalDispatchError.failed("The edit introduces project load diagnostics; nothing was committed.")
+            }
         }
         let changed = after.files.filter { after.archive.regularFileData(relativePath: $0) != snapshot.archive.regularFileData(relativePath: $0) }
         let plan: JSONDictionary = ["revision": entry.revision, "ops": result["normalized_ops"] ?? params["ops"] ?? [], "pool_items": params["pool_items"] ?? params["items"] ?? []]
         let planDigest = HorizontalProjectTransaction.digest(try JSONSerialization.data(withJSONObject: plan, options: [.sortedKeys]))
         if let expected = params.string("plan_digest"), expected != planDigest {
             throw HorizontalDispatchError(code: .staleRevision, message: "Dry-run plan does not match this edit.")
+        }
+        if dryRun {
+            // Kept for the commit that replays this plan, by either spelling of
+            // the request: as sent, or with the normalized ops the reply gave.
+            entry.stagedPlan = HorizontalDispatchProjectEntry.StagedPlan(
+                keys: [requestKey, try planKeys(result["normalized_ops"])], digest: planDigest, revision: entry.revision,
+                after: after, staged: staged, diagnostics: nextDiagnostics, result: result)
+        } else {
+            entry.stagedPlan = nil
         }
         result["plan_digest"] = planDigest
         result["before_revision"] = entry.revision
@@ -197,7 +229,7 @@ enum HorizontalDispatchMutation {
             lap("commit_ms")
         } else if let live = entry.live {
             try beforeCommit()
-            let archive = store.archive
+            let archive = after.archive
             let count = result["applied"] as? Int ?? changed.count
             let action = "Apply \(count) Edit\(count == 1 ? "" : "s")"
             // The archive as loaded, before the dispatch layer's own
