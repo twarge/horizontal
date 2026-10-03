@@ -479,7 +479,32 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         pruned = (await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id="prune",
                                   ops=[{"op": "prune_sheet", "unanchored": True}]))["data"]
         self.assertEqual(pruned["changes"][0]["removed"]["power_symbols"], 1)
+        self.assertEqual(pruned["changes"][0]["removed"]["unanchored_islands"], 1, "a compact reply keeps the count")
         self.assertEqual((await self.call("find_overlaps", project_ref=self.ref))["data"]["totals"], {})
+
+    async def test_a_stub_names_what_it_hangs_from_in_one_string(self):
+        engine = {"sheets": [{"stubs": [{"branches_from": {"kind": "pin", "refdes": "U8", "pin_name": "PA13", "pin": "p"}},
+                                        {"branches_from": {"kind": "junction", "junction": "j1"}}]}], "totals": {"stubs": 2}}
+        class Engine:
+            def _call(self, method, **params): return json.loads(json.dumps(engine))
+        with patch.object(server, "_resolve", return_value=Engine()):
+            found = (await self.call("find_dangling", project_ref=self.ref))["data"]
+        self.assertEqual([s["branches_from"] for s in found["sheets"][0]["stubs"]], ["U8.PA13", "junction:j1"])
+
+    async def test_a_verbose_dry_run_previews_paths_and_file_text_only_on_request(self):
+        tools = {t.name: t for t in await server.mcp.list_tools()}
+        self.assertIn("file_text", tools["apply_ops"].input_schema["properties"])
+        self.assertNotIn("file_text", tools["rename_net"].input_schema["properties"], "only tools with a dry run take it")
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        ops = [{"op": "ensure_net", "name": "V"}]
+        verbose = (await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id="paths",
+                                   ops=ops, dry_run=True, verbose=True))["data"]
+        self.assertTrue(all("after" not in f and "before" not in f for f in verbose["preview"]))
+        self.assertTrue(any(path.startswith("nets/") for f in verbose["preview"] for path in f.get("added", [])), verbose["preview"])
+        text = (await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id="text",
+                                ops=ops, dry_run=True, file_text=True))["data"]
+        self.assertTrue(any('"V"' in (f.get("after") or "") for f in text["preview"]))
+        self.assertEqual([sorted(c) for c in text["changes"]], [sorted(c) for c in verbose["changes"]], "file_text is verbose and more")
 
     async def test_board_shape_rules_and_pool_reads(self):
         tools = {t.name: t for t in await server.mcp.list_tools()}
