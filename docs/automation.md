@@ -59,7 +59,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `list_net_labels`, `list_power_symbols` | what names a net on a page, with the ids their remove ops take |
 | `list_block_instances` | the blocks this block uses, their wired ports, and where each is drawn |
 | `autoroute` | best-effort automatic routing of one net's airwires |
-| `list_board_texts`, `list_dimensions` | board text and dimensions; a dimension reports `measures_mm`, worked out for its mode. The reference designators smashed out of packages are left out unless `smashed`, and `text` keeps only texts containing it |
+| `list_board_texts`, `list_dimensions` | board text and dimensions; a dimension reports `measures_mm`, worked out for its mode. The reference designators smashed out of packages are left out unless `smashed`, each with the `refdes` of its part; `component` keeps one part's; a text that draws something other than it stores (`$RD`, `$project_title`) gives it as `drawn`; `text` keeps texts containing it as stored or as drawn |
 | `export_settings` | the export settings Horizon EDA keeps in the project — Gerber, ODB, pick-and-place, STEP, board PDF, BOM, schematic PDF — as stored, or null where there are none. Horizontal's own `export` names its files after the project file and does not read them |
 | `list_buses`, `list_net_ties` | buses with their members, net ties with the nets they join, and where each is drawn |
 | `undo` | takes back the last step on the document's own undo stack, or puts one back |
@@ -69,7 +69,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `board_rules` | the design rules as data — one entry per rule, not per kind — the net classes they select, and the stackup |
 | `get_pool_item` | one pool item's own JSON — the bytes `pool_write` takes back |
 | `pour_planes` | fills every plane, as Update All Planes does |
-| `list_texts` | free text on the schematic sheets, with the ids the text ops take; texts smashed out of symbols only with `smashed`, and `text` filters |
+| `list_texts` | free text on the schematic sheets, with the ids the text ops take; texts smashed out of symbols only with `smashed`, each with its part's `refdes`, or only one part's with `component`; `drawn` and `text` as for `list_board_texts` |
 | `list_parts` | parts the project can use; `scope` widens it from the project pool to the pools it draws from |
 | `search_pool` | search those pools by name, description, manufacturer, tag, uuid or a part's value, filtered by item kind. A quantity matches however it is written — `2.2 µF`, `2u2`, `2200nF` — against a part's value, description words or parametric data |
 | `import_pool_part` | copy a part and its whole dependency chain from a base pool into the project pool cache |
@@ -158,7 +158,7 @@ the dry run staged and validated rather than doing it again
 | `place_power_symbol`, `remove_power_symbol` | The ground or supply marker that says a point is on that net. Placing one marks the net as a power net, because that is what it means; the shape (`gnd`, `dot`, `antenna`, `earth`) belongs to the net, so every symbol on it matches |
 | `place_net_label`, `remove_net_label` | Names a net on the page — and, placed on more than one sheet, is how a net spans pages |
 | `add_sheet`, `rename_sheet`, `remove_sheet` | Pages. A new page takes the frame (title block) the last page uses, or `frame`; an `index` already taken inserts it there. A sheet with anything drawn on it is refused unless `force` clears it, and a schematic keeps at least one |
-| `place_text`, `remove_text` | Free text on a sheet: write one, or change the text, position, rotation, size, origin or font of one `list_texts` named. A text Horizon extracted from a symbol with Smash belongs to that symbol and is refused |
+| `place_text`, `remove_text` | Free text on a sheet: write one, or change the text, position, rotation, size, origin or font of one `list_texts` named. An `id` that names no text makes the text under it, so a batch can name one. A text Horizon extracted from a symbol with Smash belongs to that symbol and is refused |
 | `place_component`, `remove_placement` | Board placement in millimetres and degrees; a placed package moves, an unplaced one gets a package entry the loader completes from the part |
 | `place_track`, `remove_track`, `set_track_width` | One straight copper segment per op, between pads, junctions or points; a point becomes a junction, and a junction nothing holds any more is removed with the copper that held it |
 | `place_board_text`, `remove_board_text` | Free text on a board layer — silkscreen, assembly, fabrication notes |
@@ -218,14 +218,20 @@ nothing, and the error names it by its place in the batch — `ops[3]
 place_junction: No net NOPE.` — with `op_index` and `op` in its details.
 
 An op that makes something under an id — `place_junction`, `place_symbol`,
-`draw_net_line`, `ensure_component`, `ensure_net` and the `add_` ops — may give
-a short name instead of a UUID (`"id": "j1"`), and later ops in the batch use
-the name wherever they refer to that kind of thing: a wire end's `junction` or
-`symbol`, a `line`, a `component` or `net`. A name stands only for its own
+`draw_net_line`, `place_text`, `place_board_text`, `ensure_component`,
+`ensure_net` and the `add_` ops — may give a short name instead of a UUID
+(`"id": "j1"`), and later ops in the batch use the name wherever they refer to
+that kind of thing: a wire end's `junction` or `symbol`, a `line`, a
+`component` or `net`, the `id` of `remove_text`. A name stands only for its own
 kind, so a junction called `GND` leaves every net field alone. Each name
 becomes a UUID before anything runs, derived from the revision and the name,
 so a dry run and its commit agree; the reply's `handles` maps each name to its
-UUID, and the normalized operations carry the UUIDs. `dry_run` returns normalized operations, changed-file previews and a
+UUID, and the normalized operations carry the UUIDs. The text ops make and edit
+under one id: one that names a text changes it, one that names none makes the
+text under it. When an op fails over something a name stood for, the error
+gives the name beside the UUID, and names the earlier op that removed it if
+one did (`details.removed_by`): removing a wire takes the junctions it leaves
+bare with it. `dry_run` returns normalized operations, changed-file previews and a
 plan digest. Disk commits journal all file replacements and recover interrupted
 batches; live commits install one undoable archive. Pool items and operations
 can share the same batch. The complete staged project is loaded before commit.

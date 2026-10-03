@@ -685,4 +685,157 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertEqual((try result("list_board_texts", ["text": "PROJECT"]) as? [JSONDictionary])?.count, 1)
         XCTAssertNotNil(try call("list_board_texts", ["smashed": "yes"])["error"])
     }
+
+    // MARK: - Round six: notes 17–20
+
+    /// A smashed text stores "$RD" and named its part only by package UUID,
+    /// so asking for U1's silkscreen reference found nothing.
+    func testSmashedTextsNameTheirPartAndListWhatTheyDraw() throws {
+        let (_, instance) = try placedMCU()
+        try apply([["op": "place_component", "component": "U1", "x_mm": 10, "y_mm": 10],
+                   ["op": "set_project_meta", "values": ["project_title": "Billo"]],
+                   ["op": "place_board_text", "text": "$project_title", "layer": 20, "x_mm": 0, "y_mm": -5]])
+        // Smash U1 as Horizon does: its reference becomes a board text, and
+        // the package lists it.
+        let smashedID = UUID().uuidString.lowercased()
+        var packageID = ""
+        try rewrite("board.json") { json in
+            var packages = try XCTUnwrap(json["packages"] as? JSONDictionary)
+            packageID = try XCTUnwrap(packages.keys.first)
+            var package = try XCTUnwrap(packages[packageID] as? JSONDictionary)
+            package["smashed"] = true
+            package["texts"] = [smashedID]
+            packages[packageID] = package
+            json["packages"] = packages
+            var texts = json["texts"] as? JSONDictionary ?? [:]
+            texts[smashedID] = ["from_smash": true, "text": "$RD", "layer": 20, "origin": "center", "font": "simplex",
+                                "size": 1_000_000, "width": 150_000,
+                                "placement": ["angle": 0, "mirror": false, "shift": [10_000_000, 12_000_000]]]
+            json["texts"] = texts
+        }
+
+        let free = try XCTUnwrap(try result("list_board_texts") as? [JSONDictionary])
+        XCTAssertEqual(free.map { $0.string("drawn") }, ["Billo"], "\(free)")
+        let part = try XCTUnwrap(try result("list_board_texts", ["component": "u1"]) as? [JSONDictionary])
+        XCTAssertEqual(part.count, 1, "\(part)")
+        XCTAssertEqual(part.first?.string("id"), smashedID)
+        XCTAssertEqual(part.first?.string("refdes"), "U1")
+        XCTAssertEqual(part.first?.string("drawn"), "U1")
+        XCTAssertEqual(part.first?.string("package"), packageID)
+        XCTAssertEqual((try result("list_board_texts", ["smashed": true, "text": "U1"]) as? [JSONDictionary])?.map { $0.string("id") }, [smashedID],
+                       "text matches what is drawn as well as what is stored")
+        XCTAssertEqual((try result("list_board_texts", ["text": "billo"]) as? [JSONDictionary])?.count, 1)
+        XCTAssertNotNil(try call("list_board_texts", ["component": "U9"])["error"])
+
+        // The same on a sheet, where a smashed symbol keeps "$REFDES".
+        let textID = UUID().uuidString.lowercased()
+        try rewrite("top_schematic.json") { json in
+            var sheets = try XCTUnwrap(json["sheets"] as? JSONDictionary)
+            let sheetID = try XCTUnwrap(sheets.keys.first)
+            var sheet = try XCTUnwrap(sheets[sheetID] as? JSONDictionary)
+            var symbols = try XCTUnwrap(sheet["symbols"] as? JSONDictionary)
+            var symbol = try XCTUnwrap(symbols[instance] as? JSONDictionary)
+            symbol["smashed"] = true
+            symbol["texts"] = [textID]
+            symbols[instance] = symbol
+            sheet["symbols"] = symbols
+            var texts = sheet["texts"] as? JSONDictionary ?? [:]
+            texts[textID] = ["from_smash": true, "text": "$REFDES", "origin": "center", "font": "simplex", "size": 1_500_000,
+                             "width": 0, "placement": ["angle": 0, "mirror": false, "shift": [100_000_000, 105_000_000]]]
+            sheet["texts"] = texts
+            sheets[sheetID] = sheet
+            json["sheets"] = sheets
+        }
+        let symbolTexts = try XCTUnwrap(try result("list_texts", ["component": "U1"]) as? [JSONDictionary])
+        XCTAssertEqual(symbolTexts.map { $0.string("id") }, [textID], "\(symbolTexts)")
+        XCTAssertEqual(symbolTexts.first?.string("refdes"), "U1")
+        XCTAssertEqual(symbolTexts.first?.string("drawn"), "U1")
+        XCTAssertEqual(symbolTexts.first?.string("symbol"), instance)
+        XCTAssertEqual((try result("list_texts") as? [JSONDictionary])?.count, 0, "still free text only by default")
+    }
+
+    /// The app's own edits wrote files as Foundation pretty-prints them
+    /// ("key" : value, two spaces) and an MCP edit writes them as Horizon
+    /// does, so a file flipped format with whichever wrote it last: on Billo,
+    /// 12,380 lines of diff for a three-field change.
+    func testTheAppsOwnEditsWriteFilesAsHorizonDoes() throws {
+        try apply([["op": "set_project_meta", "values": ["project_title": "Roxanne", "rev": "1B"]]])
+        let before = try Data(contentsOf: root.appendingPathComponent("top_block.json"))
+        var archive = try HorizontalProjectArchive.completeProject(from: root)
+        try HorizontalProjectJSONApplicator.apply(titleBlockChanges: HorizontalTitleBlockChanges(key: "project_title", value: "Billo"),
+                                                  in: try session.entry(handle: handle).project, to: &archive)
+        let after = try XCTUnwrap(archive.regularFileData(relativePath: "top_block.json"))
+        XCTAssertEqual(after, try HorizontalHorizonJSONWriter.data(JSONHelper.loadDictionary(from: after)))
+        let old = String(decoding: before, as: UTF8.self).components(separatedBy: "\n")
+        let new = String(decoding: after, as: UTF8.self).components(separatedBy: "\n")
+        XCTAssertEqual(old.count, new.count)
+        XCTAssertEqual(zip(old, new).filter { $0 != $1 }.map(\.1), ["        \"project_title\": \"Billo\","])
+    }
+
+    /// place_text took its id as a text to edit, so a batch could not name a
+    /// new one; and an op over a name whose thing an earlier op had taken away
+    /// said only "No junction <uuid>".
+    func testATextCanBeNamedAndAGoneHandleSaysWhatTookIt() throws {
+        _ = try placedMCU()
+        let made = try apply([
+            ["op": "place_text", "id": "t1", "text": "draft", "x_mm": 20, "y_mm": 20],
+            ["op": "place_text", "id": "t1", "text": "final"],
+            ["op": "place_text", "id": "t2", "text": "gone", "x_mm": 30, "y_mm": 20],
+            ["op": "remove_text", "id": "t2"],
+            ["op": "place_board_text", "id": "b1", "text": "R1", "layer": 20, "x_mm": 1, "y_mm": 1],
+            ["op": "place_board_text", "id": "b1", "x_mm": 2, "y_mm": 1]
+        ])
+        let handles = try XCTUnwrap(made["handles"] as? [String: String], "\(made)")
+        XCTAssertEqual(Set(handles.keys), ["t1", "t2", "b1"])
+        XCTAssertEqual(changes(made).map { $0.bool("created") }, [true, false, true, nil, true, false])
+        let texts = try XCTUnwrap(try result("list_texts") as? [JSONDictionary])
+        XCTAssertEqual(texts.map { $0.string("id") }, [handles["t1"]])
+        XCTAssertEqual(texts.first?.string("text"), "final")
+        let board = try XCTUnwrap(try result("list_board_texts") as? [JSONDictionary])
+        XCTAssertEqual(board.map { $0.string("id") }, [handles["b1"]])
+        XCTAssertEqual(board.first?.double("x_mm"), 2)
+        // A mistyped id on a move still finds nothing rather than making a text.
+        XCTAssertTrue(try error([["op": "place_text", "id": UUID().uuidString, "x_mm": 1, "y_mm": 1]]).contains("No text"))
+
+        // Removing a wire takes the junctions it leaves bare with it.
+        let response = try call("apply", ["ops": [
+            ["op": "place_junction", "id": "j1", "net": "SWDIO", "x_mm": 20, "y_mm": 40],
+            ["op": "place_junction", "id": "j2", "net": "SWDIO", "x_mm": 30, "y_mm": 40],
+            ["op": "draw_net_line", "id": "w1", "from": ["kind": "junction", "junction": "j1"], "to": ["kind": "junction", "junction": "j2"]],
+            ["op": "remove_net_line", "line": "w1"],
+            ["op": "remove_junction", "junction": "j2"]
+        ], "dry_run": true])
+        let failure = try XCTUnwrap(response["error"] as? JSONDictionary, "\(response)")
+        let message = try XCTUnwrap(failure.string("message"))
+        XCTAssertTrue(message.hasPrefix("ops[4] remove_junction: No junction j2 ("), message)
+        XCTAssertTrue(message.hasSuffix("ops[3] remove_net_line removed it earlier in this batch."), message)
+        let details = failure.dictionary("data")?.dictionary("details")
+        XCTAssertEqual(details?.string("handle"), "j2")
+        XCTAssertEqual(details?.int("removed_by"), 3)
+    }
+
+    /// The airwire pass tested every node of a poured net against every
+    /// vertex of the pour — on Billo, 1.7 s of each 4.5 s dry run. Boxes and
+    /// height bands cut that without changing a single answer.
+    func testPlanePathContainmentMatchesTheOutlineTest() {
+        var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+        func random(_ range: ClosedRange<Double>) -> Double {
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return range.lowerBound + Double(state >> 11) / Double(1 << 53) * (range.upperBound - range.lowerBound)
+        }
+        // On a half-unit grid, so points fall on vertex heights and edges.
+        func snapped(_ value: Double) -> Double { (value * 2).rounded() / 2 }
+        for trial in 0..<24 {
+            let count = 3 + trial * 23
+            let points = (0..<count).map { index -> HorizontalPoint in
+                let angle = Double(index) / Double(count) * 2 * .pi
+                let radius = random(4...12)
+                return HorizontalPoint(x: snapped(radius * cos(angle)), y: snapped(radius * sin(angle)))
+            }
+            let path = HorizontalBoard.PlanePath(points)
+            for point in points + (0..<1_500).map({ _ in HorizontalPoint(x: snapped(random(-14...14)), y: snapped(random(-14...14))) }) {
+                XCTAssertEqual(path.contains(point), HorizontalBoardOutlines.contains(point, in: points), "\(count) vertices at \(point)")
+            }
+        }
+    }
 }

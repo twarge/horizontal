@@ -1855,7 +1855,7 @@ struct HorizontalBoard {
                     continue
                 }
                 for fragment in plane.fragments where !fragment.paths.isEmpty {
-                    let bounds = fragmentBounds(fragment)
+                    let paths = fragment.paths.map(PlanePath.init)
                     var first: Int?
                     for (index, node) in nodes.enumerated() {
                         guard let layers = node.layers,
@@ -1863,13 +1863,12 @@ struct HorizontalBoard {
                             continue
                         }
                         let point = node.point
-                        guard point.x >= bounds.minX, point.x <= bounds.maxX,
-                              point.y >= bounds.minY, point.y <= bounds.maxY else {
-                            continue
-                        }
                         // Even-odd over the fragment's paths: inside the outer
                         // path and outside its holes.
-                        let crossings = fragment.paths.reduce(0) { $0 + (HorizontalBoardOutlines.contains(point, in: $1) ? 1 : 0) }
+                        var crossings = 0
+                        for path in paths where path.contains(point) {
+                            crossings += 1
+                        }
                         guard crossings % 2 == 1 else {
                             continue
                         }
@@ -1903,17 +1902,74 @@ struct HorizontalBoard {
         return airwires
     }
 
-    private static func fragmentBounds(_ fragment: HorizontalPlaneFragment) -> (minX: Double, minY: Double, maxX: Double, maxY: Double) {
-        var bounds = (minX: Double.infinity, minY: Double.infinity, maxX: -Double.infinity, maxY: -Double.infinity)
-        for path in fragment.paths {
-            for point in path {
-                bounds.minX = min(bounds.minX, point.x)
-                bounds.minY = min(bounds.minY, point.y)
-                bounds.maxX = max(bounds.maxX, point.x)
-                bounds.maxY = max(bounds.maxY, point.y)
+    /// One path of a poured fragment, set up for testing many points against
+    /// it. A fragment is its outline plus a hole for every pad, via and track
+    /// it clears, and every node of the plane's net is tested against all of
+    /// them — on a real board, hundreds of nodes against an outline of
+    /// fifteen thousand vertices, on each layer. Two shortcuts give the same
+    /// answer as `HorizontalBoardOutlines.contains` for less:
+    /// - a point outside the path's box crosses it an even number of times,
+    ///   so it is outside;
+    /// - an edge can only be crossed by a point whose height it spans, so a
+    ///   long path files its edges by height band and a point walks only its
+    ///   band. Each of those edges is tested exactly as `contains` tests it.
+    struct PlanePath {
+        private var minX = Double.infinity, minY = Double.infinity
+        private var maxX = -Double.infinity, maxY = -Double.infinity
+        private let points: [HorizontalPoint]
+        private var bandHeight = 0.0
+        private var bands = [[Int32]]()
+
+        init(_ points: [HorizontalPoint]) {
+            self.points = points
+            for point in points {
+                minX = min(minX, point.x)
+                minY = min(minY, point.y)
+                maxX = max(maxX, point.x)
+                maxY = max(maxY, point.y)
+            }
+            guard points.count >= 64, maxY > minY else {
+                return
+            }
+            let count = min(1024, points.count / 8)
+            bandHeight = (maxY - minY) / Double(count)
+            bands = Array(repeating: [], count: count)
+            var previous = points.count - 1
+            for index in points.indices {
+                let a = points[index].y, b = points[previous].y
+                for band in band(min(a, b))...band(max(a, b)) {
+                    bands[band].append(Int32(index))
+                }
+                previous = index
             }
         }
-        return bounds
+
+        private func band(_ y: Double) -> Int {
+            min(bands.count - 1, max(0, Int((y - minY) / bandHeight)))
+        }
+
+        func contains(_ point: HorizontalPoint) -> Bool {
+            guard points.count >= 3,
+                  point.x >= minX, point.x <= maxX, point.y >= minY, point.y <= maxY else {
+                return false
+            }
+            guard !bands.isEmpty else {
+                return HorizontalBoardOutlines.contains(point, in: points)
+            }
+            var inside = false
+            for edge in bands[band(point.y)] {
+                let index = Int(edge)
+                let a = points[index]
+                let b = points[index == 0 ? points.count - 1 : index - 1]
+                if (a.y > point.y) != (b.y > point.y) {
+                    let crossing = (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x
+                    if point.x < crossing {
+                        inside.toggle()
+                    }
+                }
+            }
+            return inside
+        }
     }
 
     /// Pad path (`package/pad`, normalized) to the copper layers its pad

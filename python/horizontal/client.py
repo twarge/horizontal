@@ -365,9 +365,11 @@ class Project:
         """Take back the last step on an open document's undo stack, or put one back."""
         return self._call("undo", redo=redo)
 
-    def board_texts(self, layer: int | None = None, smashed: bool = False, text: str | None = None) -> list[dict[str, Any]]:
-        """Free text on the board layers; smashed adds the texts smashed out of packages."""
-        params = {k: v for k, v in {"layer": layer, "smashed": smashed or None, "text": text}.items() if v is not None}
+    def board_texts(self, layer: int | None = None, smashed: bool = False, text: str | None = None,
+                    component: str | None = None) -> list[dict[str, Any]]:
+        """Free text on the board layers; smashed adds the texts smashed out of packages, component only one part's."""
+        params = {k: v for k, v in {"layer": layer, "smashed": smashed or None, "text": text,
+                                    "component": component}.items() if v is not None}
         return self._call("list_board_texts", **params)
 
     def export_settings(self, kind: str | None = None) -> dict[str, Any]:
@@ -440,10 +442,11 @@ class Project:
 
     def texts(self, sheet: int | None = None, sheet_id: str | None = None,
               name: str | None = None, block_id: str | None = None,
-              smashed: bool = False, text: str | None = None) -> list[dict[str, Any]]:
-        """Free text on the schematic sheets, with the ids the text ops take; smashed adds symbols' own texts."""
+              smashed: bool = False, text: str | None = None, component: str | None = None) -> list[dict[str, Any]]:
+        """Free text on the schematic sheets, with the ids the text ops take; smashed adds symbols' own texts,
+        component only one part's."""
         params = {k: v for k, v in {"sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id,
-                                    "smashed": smashed or None, "text": text}.items() if v is not None}
+                                    "smashed": smashed or None, "text": text, "component": component}.items() if v is not None}
         return self._call("list_texts", **params)
 
     def parts(self, scope: str = "project") -> list[dict[str, Any]]:
