@@ -130,6 +130,23 @@ enum HorizontalDispatchMethods {
             handler: HorizontalDispatchPool.importPart
         ),
         .init(
+            name: "list_part_updates",
+            summary: "Compare project parts and their dependencies with their recorded source libraries. Reports changes, local edits, unavailable sources, affected references, and a review digest without changing the project.",
+            params: ["handle": "Project handle.", "pool_path": "Source pool directory when it is not registered (optional)."],
+            handler: HorizontalDispatchPool.listUpdates
+        ),
+        .init(
+            name: "update_project_parts",
+            summary: "Explicitly update selected project parts and shared dependencies. Blocks pin/pad remapping changes. Uses the same planner as Parts review; one transaction and one live undo step.",
+            params: ["handle": "Project handle.", "parts": "Array of project part UUIDs from list_part_updates.",
+                     "pool_path": "Source pool directory (optional).", "review_digest": "Digest returned by list_part_updates (recommended).",
+                     "allow_project_changes": "Explicitly authorize replacing local edits and unverified legacy copies (default false).",
+                     "expected_revision": "The project revision this edit was planned against.",
+                     "operation_id": "Caller-chosen mutation ID.", "plan_digest": "Digest returned by a dry run (optional).",
+                     "dry_run": "Preview without changing files (default false)."],
+            handler: HorizontalDispatchPool.updateParts
+        ),
+        .init(
             name: "list_symbols",
             summary: "Symbol instances on the schematic sheets: which component and gate each draws, where, and the instance id place_symbol and draw_net_line refer to.",
             params: ["handle": "Project handle.", "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet."],

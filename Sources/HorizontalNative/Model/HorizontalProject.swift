@@ -56,6 +56,7 @@ struct HorizontalProject: Identifiable {
     var poolParts: [HorizontalPoolPart]
     var schematic: HorizontalSchematic?
     var board: HorizontalBoard?
+    var poolModelFiles: HorizontalPoolModelFiles? = nil
 
     var displayTitle: String {
         if let projectTitle = Self.nonEmpty(projectMeta["project_title"]) ?? Self.nonEmpty(projectMeta["project_name"]) {
@@ -566,6 +567,7 @@ extension HorizontalProject {
             if let poolURL = current.poolDirectory.map({ current.baseURL.appendingPathComponent($0) }) {
                 board.rebasePackageModelURLs(poolURL: poolURL)
             }
+            poolModelFiles?.apply(to: &board)
             self.board = board
         }
         if var schematic {

@@ -3,7 +3,8 @@ import HorizontalProjectIO
 
 enum HorizontalDispatchMutation {
     static func execute(session: HorizontalDispatchSession, entry: HorizontalDispatchProjectEntry,
-                        params: JSONDictionary, build: (HorizontalArchiveFileStore) throws -> JSONDictionary) throws -> JSONDictionary {
+                        params: JSONDictionary, beforeCommit: () throws -> Void = {},
+                        build: (HorizontalArchiveFileStore) throws -> JSONDictionary) throws -> JSONDictionary {
         let dryRun = params.bool("dry_run") ?? false
         let operationID = params.string("operation_id")
         if !dryRun, operationID?.isEmpty != false { throw HorizontalDispatchError.invalidParams("operation_id is required for a mutation.") }
@@ -101,6 +102,7 @@ enum HorizontalDispatchMutation {
             // Hash the complete input set again under the writer lock, directly before commit.
             try entry.requireRevision(params)
             try HorizontalDispatchValidation.checkDeadline(params)
+            try beforeCommit()
             try transaction.commit(updates, operationID: operationID,
                                    receipt: JSONSerialization.data(withJSONObject: HorizontalDispatchJSON.sanitized(result), options: [.sortedKeys])) {
                 let installed = try HorizontalDispatchSnapshot.capture(url: entry.url)
@@ -111,6 +113,7 @@ enum HorizontalDispatchMutation {
             entry.generation += 1
             entry.invalidateIndex()
         } else if let live = entry.live {
+            try beforeCommit()
             let archive = store.archive
             let count = result["applied"] as? Int ?? changed.count
             let action = "Apply \(count) Edit\(count == 1 ? "" : "s")"

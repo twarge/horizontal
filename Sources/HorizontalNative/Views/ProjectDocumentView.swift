@@ -1332,13 +1332,31 @@ struct ProjectWorkspaceView: View {
     /// model reloads from it, URLs are pointed back at the real project (the
     /// snapshot loads from a temporary copy), and the previous archive and
     /// model go on the undo stack as one step.
-    private func applyLiveArchive(_ archive: HorizontalProjectArchive, actionName: String) throws {
+    private func updateProjectParts(_ review: HorizontalPoolCacheReview, _ ids: Set<String>, _ allowProjectChanges: Bool) throws {
+        guard !isReadOnly, let directory = project.poolDirectory else {
+            throw HorizontalDispatchError.failed("This project's library is read-only.")
+        }
+        let updated = try HorizontalPoolCacheUpdater.applying(review, selecting: ids, allowProjectChanges: allowProjectChanges,
+                                                              to: document.archive, poolDirectory: directory)
+        try HorizontalPoolCacheUpdater.validate(updated, against: project)
+        HorizontalPoolLibrary.invalidateCache()
+        HorizontalPoolPadstacks.invalidateCaches()
+        try applyLiveArchive(updated, actionName: "Update Project Parts", beforeInstall: { try review.requireSourcesCurrent() })
+    }
+
+    private func applyLiveArchive(_ archive: HorizontalProjectArchive, actionName: String, beforeInstall: () throws -> Void = {}) throws {
         guard !isReadOnly else {
             throw HorizontalDispatchError.failed("Read-only operation is enabled in Horizontal.")
         }
-        let previous = HorizontalLiveSnapshot(archive: document.archive, project: project)
+        var previousProject = project
         var reloaded = try HorizontalProject.loadSnapshot(of: archive)
+        if previousProject.poolModelFiles != nil || HorizontalProject.poolModelsChanged(from: document.archive, to: archive, poolDirectory: project.poolDirectory) {
+            try previousProject.retainPoolModels(in: document.archive, reusing: previousProject.poolModelFiles)
+            try reloaded.retainPoolModels(in: archive, reusing: previousProject.poolModelFiles)
+        }
+        let previous = HorizontalLiveSnapshot(archive: document.archive, project: previousProject)
         rebaseProjectURLs(&reloaded, onto: project)
+        try beforeInstall()
         liveUndoTarget.configure(
             currentValue: { HorizontalLiveSnapshot(archive: document.archive, project: project) },
             restoreValue: { snapshot in installLiveSnapshot(snapshot) }
@@ -1364,6 +1382,11 @@ struct ProjectWorkspaceView: View {
     }
 
     private func installLiveSnapshot(_ snapshot: HorizontalLiveSnapshot) {
+        if let board = snapshot.project.board, let previous = project.board,
+           HorizontalBoardPlaneInputs.signature(of: board) != HorizontalBoardPlaneInputs.signature(of: previous) {
+            planePourCache = HorizontalPlanePourCache()
+            planesNeedUpdate = !board.planes.isEmpty
+        }
         document.archive = snapshot.archive
         project = snapshot.project
         boardEditRevision += 1
@@ -1532,7 +1555,11 @@ struct ProjectWorkspaceView: View {
                     poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
                     safeAreaInsets: fitSafeAreaInsets,
                     isReadOnly: isReadOnly,
-                    onPlacePart: beginPartPlacement
+                    onPlacePart: beginPartPlacement,
+                    libraryFiles: project.poolDirectory.map { HorizontalPoolCacheUpdater.files(in: document.archive, poolDirectory: $0) } ?? [:],
+                    libraryReferences: HorizontalPoolCacheUpdater.references(in: document.archive, project: project),
+                    libraryRevision: boardEditRevision + schematicEditRevision,
+                    onUpdateParts: updateProjectParts
                 )
             }
         case .library:

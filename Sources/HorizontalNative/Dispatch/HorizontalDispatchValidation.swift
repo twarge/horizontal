@@ -11,9 +11,9 @@ enum HorizontalDispatchValidation {
         let integers: Set<String> = ["handle", "sheet", "max_pixels", "limit", "layer"]
         let numbers: Set<String> = ["dpi", "margin_mm", "deadline_unix_ms", "factor"]
         let booleans: Set<String> = ["include_metadata", "include_unconnected", "include_no_populate", "dry_run",
-                                     "mirrored", "redo"]
+                                     "mirrored", "redo", "allow_project_changes"]
         let objects: Set<String> = ["region", "options"]
-        let arrays: Set<String> = ["ops", "items", "pool_items", "components", "nets", "layers", "layer_ids", "sections", "panes"]
+        let arrays: Set<String> = ["ops", "items", "pool_items", "components", "nets", "layers", "layer_ids", "sections", "panes", "parts"]
         for (key, value) in params {
             if integers.contains(key) { try number(value, key: key, integer: true) }
             else if numbers.contains(key) { try number(value, key: key) }

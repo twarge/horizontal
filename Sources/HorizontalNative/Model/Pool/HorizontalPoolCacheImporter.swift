@@ -80,14 +80,16 @@ enum HorizontalPoolCacheImporter {
     static func plan(
         _ item: HorizontalPoolLibraryItem,
         into projectPoolURL: URL,
-        destination: HorizontalPoolCacheDestination = .disk
+        destination: HorizontalPoolCacheDestination = .disk,
+        sourceItems: [HorizontalPoolLibraryItem]? = nil
     ) throws -> [HorizontalPoolCacheFile] {
         let sourcePools = HorizontalPoolLibrary.editorPoolURLs(forPoolRoot: item.poolURL)
-        let index = HorizontalPoolLibraryIndex(items: sourcePools.flatMap { poolURL in
+        let index = HorizontalPoolLibraryIndex(items: sourceItems ?? sourcePools.flatMap { poolURL in
             HorizontalPoolLibrary.items(inPool: poolURL, poolName: HorizontalPoolRegistryStore.poolInfo(at: poolURL).name)
         })
         var session = Session(projectPoolURL: projectPoolURL, index: index, destination: destination)
         try session.cachePart(item.uuid)
+        try session.finishProvenance()
         return session.planned
     }
 
@@ -112,6 +114,7 @@ enum HorizontalPoolCacheImporter {
         /// A base part usually names the same package as the part deriving
         /// from it; caching it once is enough.
         private var visitedPackages = Set<String>()
+        private var origins = [String: HorizontalPoolCacheProvenance.Origin]()
 
         init(projectPoolURL: URL, index: HorizontalPoolLibraryIndex, destination: HorizontalPoolCacheDestination) {
             self.projectPoolURL = projectPoolURL
@@ -130,6 +133,22 @@ enum HorizontalPoolCacheImporter {
             guard stagedByPath[path] == nil else { return }
             stagedByPath[path] = data
             planned.append(HorizontalPoolCacheFile(url: url, data: data))
+        }
+
+        private mutating func stage(_ data: Data, at url: URL, source: URL, pool: URL) throws {
+            let path = try HorizontalPoolCacheProvenance.relativePath(url, in: projectPoolURL)
+            origins[path] = .init(poolUUID: HorizontalPoolRegistryStore.poolInfo(at: pool).uuid,
+                                  sourcePath: try HorizontalPoolCacheProvenance.relativePath(source, in: pool),
+                                  baseline: try HorizontalPoolCacheProvenance.digest(data, path: path))
+            stage(data, at: url)
+        }
+
+        mutating func finishProvenance() throws {
+            guard !origins.isEmpty else { return }
+            let url = projectPoolURL.appendingPathComponent(HorizontalPoolCacheProvenance.path)
+            var metadata = try HorizontalPoolCacheProvenance.load(try destination.read(url))
+            metadata.files.merge(origins) { _, new in new }
+            stage(try metadata.data(), at: url)
         }
 
         /// What `directory` holds, counting files this import has staged but
@@ -243,12 +262,12 @@ enum HorizontalPoolCacheImporter {
                 if !models.isEmpty {
                     json["models"] = models
                 }
-                stage(try HorizontalHorizonJSONWriter.data(json), at: destination)
+                try stage(try HorizontalHorizonJSONWriter.data(json), at: destination, source: source.url, pool: source.poolURL)
                 for path in modelPaths {
-                    let modelSource = source.poolURL.appendingPathComponent(path)
-                    let modelDestination = projectPoolURL.appendingPathComponent(Self.cachedModelPath(path, poolUUID: sourcePoolUUID))
+                    let modelSource = try HorizontalPoolCacheProvenance.safeURL(path, in: source.poolURL)
+                    let modelDestination = try HorizontalPoolCacheProvenance.safeURL(Self.cachedModelPath(path, poolUUID: sourcePoolUUID), in: projectPoolURL)
                     if fileManager.fileExists(atPath: modelSource.path), existing(modelDestination) == nil {
-                        stage(try Data(contentsOf: modelSource), at: modelDestination)
+                        try stage(try Data(contentsOf: modelSource), at: modelDestination, source: modelSource, pool: source.poolURL)
                     }
                 }
 
@@ -263,7 +282,7 @@ enum HorizontalPoolCacheImporter {
                         }
                         let target = localDestination.appendingPathComponent(url.lastPathComponent)
                         if existing(target) == nil {
-                            stage(try Data(contentsOf: url), at: target)
+                            try stage(try Data(contentsOf: url), at: target, source: url, pool: source.poolURL)
                         }
                         localPadstackIDs.insert(uuid)
                     }
@@ -331,7 +350,7 @@ enum HorizontalPoolCacheImporter {
                 return try JSONHelper.loadDictionary(from: source.url)
             }
             let data = try Data(contentsOf: source.url)
-            stage(data, at: destination)
+            try stage(data, at: destination, source: source.url, pool: source.poolURL)
             return try JSONHelper.loadDictionary(from: data)
         }
     }

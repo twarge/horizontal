@@ -10,6 +10,74 @@ import HorizontalProjectIO
 /// These methods browse the same pools the app's library pane browses, and
 /// copy a part with its whole dependency chain into the project pool.
 enum HorizontalDispatchPool {
+    private static func libraryReview(_ entry: HorizontalDispatchProjectEntry, _ params: JSONDictionary,
+                                      archive: HorizontalProjectArchive) throws -> HorizontalPoolCacheReview {
+        guard let directory = entry.project.poolDirectory else {
+            throw HorizontalDispatchError.failed("The project has no pool directory.")
+        }
+        HorizontalPoolLibrary.invalidateCache()
+        return try HorizontalPoolCacheUpdater.review(
+            poolURL: entry.project.baseURL.appendingPathComponent(directory),
+            files: HorizontalPoolCacheUpdater.files(in: archive, poolDirectory: directory),
+            sourcePools: try poolURLs(for: entry, params: params),
+            references: HorizontalPoolCacheUpdater.references(in: archive),
+            sourceOverrides: params.string("pool_path").map { path in
+                let source = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
+                let ids = HorizontalPoolCacheUpdater.files(in: archive, poolDirectory: directory).values.compactMap {
+                    (try? JSONHelper.loadDictionary(from: $0)).flatMap { $0.string("type") == "part" ? $0.string("uuid") : nil }
+                }
+                return Dictionary(uniqueKeysWithValues: Set(ids).map { ($0, source) })
+            } ?? [:]
+        )
+    }
+
+    @Sendable static func listUpdates(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        guard let snapshot = entry.snapshot else { throw HorizontalDispatchError.failed("No project snapshot.") }
+        let review = try libraryReview(entry, params, archive: snapshot.archive)
+        return ["review_digest": review.digest, "parts": review.parts.map { part -> JSONDictionary in
+            ["uuid": part.id, "name": part.name, "status": part.status.rawValue,
+             "references": part.references, "can_update": part.canUpdate,
+             "needs_confirmation": part.needsConfirmation, "message": part.message,
+             "changes": part.changes.map { change -> JSONDictionary in
+                 ["path": change.path, "name": change.title, "fields": change.fields,
+                  "locally_modified": change.locallyModified, "unverified": change.unverified,
+                  "blocking_reason": change.blockingReason as Any,
+                  "before": change.before.flatMap { String(data: $0, encoding: .utf8) } as Any,
+                  "after": String(data: change.after, encoding: .utf8) as Any]
+             }]
+        }] as JSONDictionary
+    }
+
+    @Sendable static func updateParts(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        guard let partIDs = params["parts"] as? [String], !partIDs.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("Pass parts: project part UUIDs from list_part_updates.")
+        }
+        let ids = Set(partIDs.map { $0.lowercased() })
+        let allowChanges = params.bool("allow_project_changes") ?? false
+        var plannedReview: HorizontalPoolCacheReview?
+        return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params,
+                                                     beforeCommit: { try plannedReview?.requireSourcesCurrent() }) { store in
+            let review = try libraryReview(entry, params, archive: store.archive)
+            plannedReview = review
+            if let expected = params.string("review_digest"), expected != review.digest {
+                throw HorizontalDispatchError.failed("The library or project changed since review. Refresh before updating.")
+            }
+            guard let directory = entry.project.poolDirectory else { throw HorizontalDispatchError.failed("No project pool.") }
+            let updates = try review.updates(selecting: ids, allowProjectChanges: allowChanges)
+            for (path, data) in updates {
+                try store.write(data, to: entry.project.baseURL.appendingPathComponent(directory).appendingPathComponent(path))
+            }
+            HorizontalPoolLibrary.invalidateCache()
+            HorizontalPoolPadstacks.invalidateCaches()
+            return ["applied": ids.count,
+                    "affected_parts": review.affectedParts(selecting: ids).map(\.id),
+                    "normalized_ops": [["op": "update_project_parts", "parts": ids.sorted(), "review_digest": review.digest,
+                                         "allow_project_changes": allowChanges]]]
+        }
+    }
+
     /// The pools a project draws from, project pool first: its own pool, the
     /// pools that pool includes, then every discovered base pool. Matches the
     /// precedence the library browser and the padstack catalog use.
