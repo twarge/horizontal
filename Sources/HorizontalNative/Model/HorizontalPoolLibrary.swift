@@ -198,6 +198,12 @@ enum HorizontalPoolLibrary {
         lock.unlock()
     }
 
+    static func invalidateCache(for poolURL: URL) {
+        lock.lock()
+        cache.removeValue(forKey: poolURL.standardizedFileURL.path)
+        lock.unlock()
+    }
+
     private static func scan(poolURL: URL, poolName: String) -> [HorizontalPoolLibraryItem] {
         var itemsByKey = [String: HorizontalPoolLibraryItem]()
         var cachedKeys = Set<String>()

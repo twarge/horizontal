@@ -1,12 +1,33 @@
 import Foundation
 import HorizontalProjectIO
 import XCTest
+import AppKit
+import SwiftUI
 @testable import HorizontalNative
 
 /// Reaching a part the project has never used: finding it in the pools the
 /// project draws from, copying it into the project pool, and putting it on a
 /// sheet — the whole path, through the dispatcher.
 final class HorizontalDispatchPoolTests: XCTestCase {
+    @MainActor private final class DocumentState: ObservableObject {
+        @Published var document = HorizontalProjectDocument()
+        init(_ archive: HorizontalProjectArchive) { document.archive = archive }
+    }
+
+    private struct UpdateWorkspace: View {
+        @ObservedObject var state: DocumentState
+        var project: HorizontalProject
+        @State private var panes: Set<HorizontalPane> = [.parts]
+        @State private var nets = Set<String>()
+        @State private var highlightedNets = Set<String>()
+        @State private var components = Set<String>()
+        @State private var highlightedComponents = Set<String>()
+        var body: some View {
+            ProjectWorkspaceView(project: project, document: $state.document, visiblePanes: $panes,
+                                 selectedNetIDs: $nets, highlightedNetIDs: $highlightedNets,
+                                 selectedComponentIDs: $components, highlightedComponentIDs: $highlightedComponents)
+        }
+    }
     private var root: URL!
     private var packageURL: URL!
     private var handle = 0
@@ -95,7 +116,7 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         if method != "open_project" {
             params["handle"] = handle
         }
-        if ["apply", "import_pool_part"].contains(method) {
+        if ["apply", "import_pool_part", "update_project_parts"].contains(method) {
             params["expected_revision"] = try HorizontalDispatchSession.shared.perform { try $0.entry(handle: handle).revision }
             params["operation_id"] = UUID().uuidString
         }
@@ -135,6 +156,112 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         XCTAssertEqual((try XCTUnwrap(try result("search_pool", ["query": "nothing here"]) as? [String: Any])["total"] as? Int), 0)
 
         XCTAssertNotNil(try call("search_pool", ["kind": "gizmo"])["error"])
+    }
+
+    func testPartUpdateReviewDryRunAndCommitShareThePlanner() throws {
+        _ = try result("import_pool_part", ["part": "part-1"])
+        let original = try HorizontalProjectArchive.snapshot(from: packageURL)
+        let current = try XCTUnwrap(try result("list_part_updates") as? JSONDictionary)
+        XCTAssertEqual((current["parts"] as? [JSONDictionary])?.first?.string("status"), "current")
+        var source = try JSONHelper.loadDictionary(from: root.appendingPathComponent("stock/symbols/resistor.json"))
+        source["name"] = "Updated resistor symbol"
+        try write(source, to: "stock/symbols/resistor.json")
+        let review = try XCTUnwrap(try result("list_part_updates") as? JSONDictionary)
+        XCTAssertEqual((review["parts"] as? [JSONDictionary])?.first?.string("status"), "updateAvailable")
+        let params: JSONDictionary = ["parts": ["part-1"], "review_digest": try XCTUnwrap(review.string("review_digest")), "dry_run": true]
+        let dry = try XCTUnwrap(try result("update_project_parts", params) as? JSONDictionary)
+        XCTAssertEqual(dry.bool("dry_run"), true)
+        XCTAssertEqual(original, try HorizontalProjectArchive.snapshot(from: packageURL))
+        var commit = params
+        commit["dry_run"] = false
+        commit["plan_digest"] = try XCTUnwrap(dry.string("plan_digest"))
+        let updated = try XCTUnwrap(try result("update_project_parts", commit) as? JSONDictionary)
+        XCTAssertEqual(updated.string("status"), "committed")
+        XCTAssertEqual(updated["affected_parts"] as? [String], ["part-1"])
+        XCTAssertNotEqual(original, try HorizontalProjectArchive.snapshot(from: packageURL))
+        let nextReview = try XCTUnwrap(try result("list_part_updates") as? JSONDictionary)
+        XCTAssertEqual((nextReview["parts"] as? [JSONDictionary])?.first?.string("status"), "current")
+    }
+
+    func testStaleLibraryReviewIsRefusedWithoutWriting() throws {
+        _ = try result("import_pool_part", ["part": "part-1"])
+        var source = try JSONHelper.loadDictionary(from: root.appendingPathComponent("stock/symbols/resistor.json"))
+        source["name"] = "First update"
+        try write(source, to: "stock/symbols/resistor.json")
+        let review = try XCTUnwrap(try result("list_part_updates") as? JSONDictionary)
+        source["name"] = "Second update"
+        try write(source, to: "stock/symbols/resistor.json")
+        let original = try HorizontalProjectArchive.snapshot(from: packageURL)
+        let refused = try call("update_project_parts", ["parts": ["part-1"], "review_digest": try XCTUnwrap(review.string("review_digest"))])
+        XCTAssertNotNil(refused["error"])
+        XCTAssertEqual(original, try HorizontalProjectArchive.snapshot(from: packageURL))
+    }
+
+    func testPinRemovalCannotBeForcedThroughDispatch() throws {
+        _ = try result("import_pool_part", ["part": "part-1"])
+        var source = try JSONHelper.loadDictionary(from: root.appendingPathComponent("stock/symbols/resistor.json"))
+        var pins = source.dictionaryMap("pins")
+        pins.removeValue(forKey: "pin-1")
+        source["pins"] = pins
+        try write(source, to: "stock/symbols/resistor.json")
+        let original = try HorizontalProjectArchive.snapshot(from: packageURL)
+        let refused = try call("update_project_parts", ["parts": ["part-1"], "allow_project_changes": true])
+        XCTAssertNotNil(refused["error"])
+        XCTAssertEqual(original, try HorizontalProjectArchive.snapshot(from: packageURL))
+    }
+
+    @MainActor func testMountedLivePartUpdatePreservesUnsavedEditsAndUndoesAsOneStep() async throws {
+        _ = NSApplication.shared
+        _ = try result("import_pool_part", ["part": "part-1"])
+        let originalDisk = try HorizontalProjectArchive.snapshot(from: packageURL)
+        let loaded = try HorizontalProject.load(from: packageURL)
+        let unsaved = try HorizontalCanvasProjectEdit.archive(applying: [["op": "place_text", "text": "Unsaved note", "x_mm": 5, "y_mm": 6]],
+                                                              to: originalDisk, in: loaded).archive
+        var project = try HorizontalProject.loadSnapshot(of: unsaved)
+        project.rebaseURLs(onto: loaded)
+        let state = DocumentState(unsaved)
+        let defaults = UserDefaults(suiteName: "parts-live-\(UUID().uuidString)")!
+        defaults.set(false, forKey: HorizontalOperationDefaults.readOnlyOperationKey)
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        let registeredDocument = NSDocument()
+        registeredDocument.fileURL = packageURL
+        registeredDocument.undoManager = undo
+        NSDocumentController.shared.addDocument(registeredDocument)
+        defer { NSDocumentController.shared.removeDocument(registeredDocument) }
+        let hosted = NSHostingView(rootView: UpdateWorkspace(state: state, project: project)
+            .environmentObject(HorizontalAppearanceSettings(defaults: defaults)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 650),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosted
+        window.orderFront(nil)
+        defer { window.close() }
+        let deadline = Date().addingTimeInterval(10)
+        while !HorizontalDispatchSession.shared.openEntries.contains(where: { $0.live != nil && $0.url.resolvingSymlinksInPath() == packageURL.resolvingSymlinksInPath() }), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        let live = try XCTUnwrap(HorizontalDispatchSession.shared.openEntries.first { $0.live != nil && $0.url.resolvingSymlinksInPath() == packageURL.resolvingSymlinksInPath() })
+        var symbol = try JSONHelper.loadDictionary(from: root.appendingPathComponent("stock/symbols/resistor.json"))
+        symbol["name"] = "Live symbol update"
+        try write(symbol, to: "stock/symbols/resistor.json")
+        undo.beginUndoGrouping()
+        let result = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 2, "method": "update_project_parts", "params": [
+            "handle": live.handle, "parts": ["part-1"], "expected_revision": live.revision, "operation_id": "live-part-update"
+        ]])
+        undo.endUndoGrouping()
+        XCTAssertNil(result["error"], "\(result)")
+        let updated = state.document.archive
+        let cached = try JSONHelper.loadDictionary(from: XCTUnwrap(updated.regularFileData(relativePath: "pool/symbols/cache/sym-1.json")))
+        XCTAssertEqual(cached.string("name"), "Live symbol update")
+        XCTAssertEqual(try HorizontalProject.loadSnapshot(of: updated).schematic?.sheets.first?.texts.map(\.text), ["Unsaved note"])
+        XCTAssertEqual(try HorizontalProjectArchive.snapshot(from: packageURL), originalDisk, "a live update never writes the last-saved project")
+        XCTAssertTrue(undo.canUndo)
+        undo.undo()
+        XCTAssertEqual(state.document.archive, unsaved)
+        XCTAssertFalse(undo.canUndo, "one update is one undo step")
+        undo.redo()
+        XCTAssertEqual(state.document.archive, updated)
     }
 
     func testImportedPartBecomesUsableAndDrawable() throws {

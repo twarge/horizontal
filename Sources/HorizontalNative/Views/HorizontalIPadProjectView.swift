@@ -46,6 +46,8 @@ struct HorizontalIPadProjectView: View {
     @State private var schematicSheetID: String?
     /// Counts schematic edits, for the live document's revision.
     @State private var schematicEditRevision = 0
+    @StateObject private var libraryUndoTarget = HorizontalUndoTarget<HorizontalLiveSnapshot>()
+    @Environment(\.undoManager) private var documentUndoManager
     /// The dispatch session's handle for this document while it is registered
     /// live, which is what lets an App Intent reach it.
     @State private var liveHandle: Int?
@@ -809,7 +811,11 @@ struct HorizontalIPadProjectView: View {
                     visiblePanes.insert(.schematic)
                 }
                 focusedPane = .schematic
-            }
+            },
+            libraryFiles: project.poolDirectory.map { HorizontalPoolCacheUpdater.files(in: document.archive, poolDirectory: $0) } ?? [:],
+            libraryReferences: HorizontalPoolCacheUpdater.references(in: document.archive, project: project),
+            libraryRevision: boardEditRevision + schematicEditRevision,
+            onUpdateParts: updateProjectParts
         )
     }
 
@@ -1073,6 +1079,45 @@ struct HorizontalIPadProjectView: View {
     /// reach, so they go through the automation channel's own edit vocabulary.
     /// It hands back a whole archive, so the project is reloaded from it
     /// rather than patched in place.
+    private func updateProjectParts(_ review: HorizontalPoolCacheReview, _ ids: Set<String>, _ allowProjectChanges: Bool) throws {
+        guard !isReadOnly, let current = project, let directory = current.poolDirectory else {
+            throw HorizontalDispatchError.failed("This project's library is read-only.")
+        }
+        let archive = try HorizontalPoolCacheUpdater.applying(review, selecting: ids, allowProjectChanges: allowProjectChanges,
+                                                              to: document.archive, poolDirectory: directory)
+        try HorizontalPoolCacheUpdater.validate(archive, against: current)
+        HorizontalPoolLibrary.invalidateCache()
+        HorizontalPoolPadstacks.invalidateCaches()
+        var reloaded = try HorizontalProject.loadSnapshot(of: archive)
+        var previousProject = current
+        if previousProject.poolModelFiles != nil || HorizontalProject.poolModelsChanged(from: document.archive, to: archive, poolDirectory: current.poolDirectory) {
+            try previousProject.retainPoolModels(in: document.archive, reusing: previousProject.poolModelFiles)
+            try reloaded.retainPoolModels(in: archive, reusing: previousProject.poolModelFiles)
+        }
+        reloaded.rebaseURLs(onto: current)
+        try review.requireSourcesCurrent()
+        libraryUndoTarget.configure(
+            currentValue: { HorizontalLiveSnapshot(archive: document.archive, project: project ?? current) },
+            restoreValue: { installLibrarySnapshot($0) }
+        )
+        libraryUndoTarget.registerUndo(from: HorizontalLiveSnapshot(archive: document.archive, project: previousProject),
+                                       actionName: "Update Project Parts", undoManager: documentUndoManager)
+        installLibrarySnapshot(HorizontalLiveSnapshot(archive: archive, project: reloaded))
+    }
+
+    private func installLibrarySnapshot(_ snapshot: HorizontalLiveSnapshot) {
+        if let board = snapshot.project.board, let previous = project?.board,
+           HorizontalBoardPlaneInputs.signature(of: board) != HorizontalBoardPlaneInputs.signature(of: previous) {
+            planePourCache = HorizontalPlanePourCache()
+            planesNeedUpdate = !board.planes.isEmpty
+        }
+        document.archive = snapshot.archive
+        project = snapshot.project
+        boardEditRevision += 1
+        boardSyncRevision += 1
+        schematicEditRevision += 1
+    }
+
     private func applyProjectEdit(_ operations: [JSONDictionary], actionName: String) {
         guard let current = project, !operations.isEmpty else {
             return

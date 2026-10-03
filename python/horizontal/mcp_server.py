@@ -64,7 +64,7 @@ _projects: dict[str, Project] = {}
 _active_project: ContextVar[Project | None] = ContextVar("horizontal_project", default=None)
 _edit_options: ContextVar[dict[str, Any]] = ContextVar("horizontal_edit", default={})
 _mutations = {"apply_ops", "set_component_value", "rename_net", "connect_pin", "place_component", "copy_group_layout",
-              "import_pool_part", "pool_write", "pour_planes", "autoroute"}
+              "import_pool_part", "update_project_parts", "pool_write", "pour_planes", "autoroute"}
 _snapshots: dict[str, dict[str, Any]] = {}
 _jobs = AnalysisJobs()
 _tool_lock = threading.RLock()
@@ -519,6 +519,25 @@ def import_pool_part(part: str, path: str | None = None, dry_run: bool = False) 
     pool into the project pool cache, exactly as placing it from the library does, so ensure_component can name it.
     part is a pool part uuid, or an MPN when it is unambiguous; find one with search_pool."""
     return _edit_call(_resolve(path), "import_pool_part", part=part, dry_run=dry_run)
+
+
+@_tool
+def list_part_updates(path: str | None = None, pool_path: str | None = None) -> dict[str, Any]:
+    """Review project parts and their dependencies against source libraries. Returns changes, affected
+    references, local-edit conflicts, unavailable sources, and review_digest. Does not change files."""
+    return _resolve(path).part_updates(pool_path=pool_path)
+
+
+@_tool
+def update_project_parts(parts: list[str], path: str | None = None, dry_run: bool = False,
+                         allow_project_changes: bool = False, review_digest: str | None = None,
+                         pool_path: str | None = None) -> dict[str, Any]:
+    """Explicitly update UUIDs from list_part_updates, including shared dependencies. Pass review_digest
+    to reject changes since review. Local edits and unverified legacy copies require allow_project_changes;
+    changes requiring pin/pad remapping are blocked. One transaction and one live undo step."""
+    options = {k: v for k, v in {"review_digest": review_digest, "pool_path": pool_path}.items() if v is not None}
+    return _edit_call(_resolve(path), "update_project_parts", parts=parts, dry_run=dry_run,
+                      allow_project_changes=allow_project_changes, **options)
 
 
 @_tool

@@ -127,6 +127,7 @@ class Project:
 
     def _perform_call(self, method: str, **params: Any) -> Any:
         reads = {"project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "list_texts", "list_symbols", "list_block_instances", "list_net_lines", "list_junctions", "list_net_labels", "list_power_symbols", "list_planes", "list_polygons", "list_holes", "list_keepouts", "list_board_texts", "list_dimensions", "list_buses", "list_net_ties", "list_tracks", "list_vias", "board_rules", "search_pool", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status"}
+        reads.add("list_part_updates")
         deadline = _request_deadline.get() or (time.monotonic() + self.session.transport.timeout)
         if self._generation != self.session.generation:
             self._rebind()
@@ -373,6 +374,25 @@ class Project:
         """One pool item's JSON, read through the project's view of its pool."""
         params = {k: v for k, v in {"kind": kind, "pool_path": pool_path}.items() if v is not None}
         return self._call("get_pool_item", uuid=uuid, **params)
+
+    def part_updates(self, pool_path: str | None = None) -> dict[str, Any]:
+        """Review cached parts and dependencies without changing the project."""
+        return self._call("list_part_updates", **({"pool_path": pool_path} if pool_path else {}))
+
+    def update_project_parts(self, parts: list[str], dry_run: bool = False, *,
+                             allow_project_changes: bool = False, review_digest: str | None = None,
+                             pool_path: str | None = None, expected_revision: str | None = None,
+                             operation_id: str | None = None, plan_digest: str | None = None) -> dict[str, Any]:
+        """Explicitly update project copies; breaking pin/pad changes are refused."""
+        options = {k: v for k, v in {"review_digest": review_digest, "pool_path": pool_path,
+                                   "plan_digest": plan_digest}.items() if v is not None}
+        result = self._call("update_project_parts", parts=parts, dry_run=dry_run,
+                            allow_project_changes=allow_project_changes,
+                            expected_revision=expected_revision or self.summary["revision"],
+                            operation_id=operation_id or str(uuid.uuid4()), **options)
+        if not dry_run and "project" in result:
+            self.summary = result["project"]
+        return result
 
     def import_pool_part(self, part: str, dry_run: bool = False, *, expected_revision: str | None = None,
                          operation_id: str | None = None) -> dict[str, Any]:

@@ -184,11 +184,16 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         found = (await self.call("search_pool", project_ref=self.ref, query="nothing at all"))["data"]
         self.assertEqual(found["total"], 0)
         self.assertTrue(found["pools"][0]["is_project_pool"])
+        updates = (await self.call("list_part_updates", project_ref=self.ref))["data"]
+        self.assertEqual(updates["parts"], [])
+        self.assertIsInstance(updates["review_digest"], str)
 
         # The live-only view verbs are all advertised, and all refuse a disk
         # project by saying so rather than by doing nothing. show_panes is the
         # one the app's own Siri shortcut runs.
         tools = {t.name: t for t in await server.mcp.list_tools()}
+        self.assertTrue(tools["list_part_updates"].annotations.read_only_hint)
+        self.assertFalse(tools["update_project_parts"].annotations.read_only_hint)
         for name in ("highlight", "select", "zoom_to", "show_panes", "show_sheet", "show_layers", "zoom"):
             self.assertIn(name, tools)
         self.assertIn("panes", tools["show_panes"].input_schema["required"])
@@ -197,7 +202,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("not open in Horizontal", str(refused.structured_content))
 
         # Bringing in a part is a mutation like any other: guarded, and named.
-        for name in ("import_pool_part", "pool_write"):
+        for name in ("import_pool_part", "pool_write", "update_project_parts"):
             self.assertIn("expected_revision", tools[name].input_schema["required"])
             self.assertIn("operation_id", tools[name].input_schema["required"])
         missing = await server.mcp.call_tool("import_pool_part", {
