@@ -896,11 +896,11 @@ def undo(path: str | None = None, redo: bool = False) -> dict[str, Any]:
 
 @_tool
 def list_board_texts(path: str | None = None, layer: int | None = None,
-                     smashed: Annotated[bool, Field(description="Also list the reference designators Horizon smashed out of packages — on a populated board, most of its texts.")] = False,
-                     text: Annotated[str | None, Field(description="Only texts containing this, as stored or as drawn, ignoring case, e.g. \"$project\" or \"U1\".")] = None,
+                     smashed: Annotated[bool | None, Field(description="Also list the reference designators Horizon smashed out of packages — on a populated board, most of its texts. A text or component search looks through them unless this is false.")] = None,
+                     text: Annotated[str | None, Field(description="Only texts containing this, as stored or as drawn, ignoring case, e.g. \"$project\" or \"U1\"; smashed texts included unless smashed is false.")] = None,
                      component: Annotated[str | None, Field(description="Only the texts smashed out of this part's package, by refdes or id; implies smashed.")] = None) -> list[dict[str, Any]]:
     """Free text on the board layers, with the ids the board text ops take. Texts smashed out of packages are left
-    out unless smashed: each is marked from_smash and belongs to the package named in its package field, so it moves
+    out unless smashed, or a text or component search, asks for them: each is marked from_smash and belongs to the package named in its package field, so it moves
     and dies with the component rather than being edited on its own; refdes names that part. A text that draws
     something other than what it stores ("$RD", "$project_title") says what in drawn."""
     return _resolve(path).board_texts(layer=layer, smashed=smashed, text=text, component=component)
@@ -997,11 +997,11 @@ def list_vias(path: str | None = None, net: str | None = None, limit: int = 200)
 @_tool
 def list_texts(path: str | None = None, sheet: int | None = None, sheet_id: str | None = None,
                name: str | None = None, block_id: str | None = None,
-               smashed: Annotated[bool, Field(description="Also list the texts Horizon smashed out of symbols.")] = False,
-               text: Annotated[str | None, Field(description="Only texts containing this, as stored or as drawn, ignoring case.")] = None,
+               smashed: Annotated[bool | None, Field(description="Also list the texts Horizon smashed out of symbols. A text or component search looks through them unless this is false.")] = None,
+               text: Annotated[str | None, Field(description="Only texts containing this, as stored or as drawn, ignoring case; smashed texts included unless smashed is false.")] = None,
                component: Annotated[str | None, Field(description="Only the texts smashed out of this part's symbols, by refdes or id; implies smashed.")] = None) -> list[dict[str, Any]]:
     """Free text on the schematic sheets, with the ids place_text and remove_text take, and where each sits.
-    Texts smashed out of symbols are left out unless smashed: each is marked from_smash and belongs to the symbol
+    Texts smashed out of symbols are left out unless smashed, or a text or component search, asks for them: each is marked from_smash and belongs to the symbol
     named in its symbol field, so it moves and dies with the component rather than being edited on its own; refdes
     names that part. A text that draws something other than what it stores says what in drawn."""
     return _resolve(path).texts(sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id, smashed=smashed, text=text,

@@ -254,7 +254,9 @@ enum HorizontalProjectJSONApplicator {
             referenceKey: "net_tie"
         )
 
-        patchGridSettings(&json, grid: sheet.grid)
+        // A schematic's grid is fixed, and neither Horizon nor Horizontal
+        // reads one from the file; earlier saves wrote it all the same.
+        json.removeValue(forKey: "grid_settings")
         patchJunctions(&sheetJSON, points: sheet.junctions, netIDs: sheet.junctionNetIDs)
         patchSchematicNetLines(&sheetJSON, sheet: sheet)
         patchPlacements(&sheetJSON, key: "symbols", placements: sheet.symbols, boardPackages: false)
@@ -581,17 +583,23 @@ enum HorizontalProjectJSONApplicator {
         removeEntriesNotIn(&map, keeping: sheet.netLines.map(\.id))
         for line in sheet.netLines {
             let key = matchingKey(line.id, in: map) ?? line.id
-            var item = map[key] as? JSONDictionary ?? [:]
+            let existing = map[key] as? JSONDictionary
+            var item = existing ?? [:]
             if let fromEndpoint = schematicNetLineEndpoint(at: line.from, netID: line.netID, preferred: line.schematicFrom, in: sheet) {
                 item["from"] = fromEndpoint
             }
             if let toEndpoint = schematicNetLineEndpoint(at: line.to, netID: line.netID, preferred: line.schematicTo, in: sheet) {
                 item["to"] = toEndpoint
             }
-            if let netID = line.netID {
-                item["net"] = netID
-            } else {
-                item.removeValue(forKey: "net")
+            // Horizon stores no net on a wire. Keep the one an MCP edit cached
+            // up to date, and give one to a new wire as MCP does, but don't
+            // add one to every wire on the sheet.
+            if existing == nil || existing?["net"] != nil {
+                if let netID = line.netID {
+                    item["net"] = netID
+                } else {
+                    item.removeValue(forKey: "net")
+                }
             }
             guard item["from"] != nil, item["to"] != nil else {
                 continue
@@ -865,7 +873,9 @@ enum HorizontalProjectJSONApplicator {
                 case .connected(let netID):
                     entry["net"] = netID
                 case .notConnected:
-                    entry.removeValue(forKey: "net")
+                    // Horizon marks a no-connect with a null net and reads
+                    // "net" with at(), so an entry without one is dropped.
+                    entry["net"] = NSNull()
                 }
                 connections[key] = entry
             }
@@ -1454,11 +1464,13 @@ enum HorizontalProjectJSONApplicator {
                 "width": jsonNumber(text.width),
                 "origin": text.origin.rawValue,
                 "font": text.font.rawValue,
-                "allow_upside_down": text.allowUpsideDown,
                 "from_smash": text.fromSmash
             ]
             if let layer = text.layer {
                 item["layer"] = layer
+            }
+            if text.allowUpsideDown {
+                item["allow_upside_down"] = true
             }
             map[text.id] = item
         }
@@ -1495,7 +1507,12 @@ enum HorizontalProjectJSONApplicator {
             }
             item["origin"] = text.origin.rawValue
             item["font"] = text.font.rawValue
-            item["allow_upside_down"] = text.allowUpsideDown
+            // As Horizon writes it: only when set.
+            if text.allowUpsideDown {
+                item["allow_upside_down"] = true
+            } else {
+                item.removeValue(forKey: "allow_upside_down")
+            }
             item["from_smash"] = text.fromSmash
             map[itemKey] = item
         }
