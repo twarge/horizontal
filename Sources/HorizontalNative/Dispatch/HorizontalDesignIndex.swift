@@ -565,6 +565,10 @@ final class HorizontalDispatchPoolIndex {
         }
     }
 
+    func symbolPins(_ symbol: String) -> [String: SymbolPinGeometry] {
+        symbolPinGeometry[symbol.lowercased()] ?? [:]
+    }
+
     func symbolPin(_ symbol: String, pin: String) -> SymbolPinGeometry? {
         symbolPinGeometry[symbol.lowercased()]?[pin.lowercased()]
     }

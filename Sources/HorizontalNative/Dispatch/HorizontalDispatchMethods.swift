@@ -167,6 +167,18 @@ enum HorizontalDispatchMethods {
             handler: listNetLines
         ),
         .init(
+            name: "find_dangling",
+            summary: "Drawing that connects nothing, sheet by sheet: wiring islands that reach no pin, port or bus ripper (whatever net their labels or power symbols name), wire ends that stop at a bare junction, and wires whose ends name nothing. prune_sheet with unanchored and stubs removes what this finds.",
+            params: ["handle": "Project handle.", "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet."],
+            handler: findDangling
+        ),
+        .init(
+            name: "find_overlaps",
+            summary: "Places a sheet looks connected and is not: a wire passing over a pin it does not end on, a junction sitting on a pin with no wire to it, junctions on one spot that no wire joins, and a wire ending part way along another with no junction there.",
+            params: ["handle": "Project handle.", "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet."],
+            handler: findOverlaps
+        ),
+        .init(
             name: "list_block_instances",
             summary: "The blocks this block uses: each instance, the block it stands for, its reference designator, which ports are wired, and where its symbol is drawn.",
             params: ["handle": "Project handle."],
@@ -268,7 +280,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "list_texts",
-            summary: "Free text on the schematic sheets, with the ids place_text and remove_text take. A text a symbol carries is marked from_smash and belongs to that symbol.",
+            summary: "Free text on the schematic sheets, with the ids place_text and remove_text take. A text a symbol carries is marked from_smash and belongs to that symbol; free text says which drawn symbol it sits nearest (near_symbol), so a note left behind by a removed part shows up far from everything.",
             params: ["handle": "Project handle.", "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet."],
             handler: listTexts
         ),
@@ -489,6 +501,14 @@ enum HorizontalDispatchMethods {
         var result: JSONDictionary = ["api": HorizontalDispatch.apiVersion, "module": "HorizontalNative", "capabilities": ["source_snapshots", "revision_checked_edits", "transactions", "electrical_snapshot", "typed_errors"], "instance_id": HorizontalDispatchSession.shared.serverID]
         if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
             result["host_version"] = version
+        }
+        // What this build understands, so a client holding an older or newer
+        // schema can tell before an edit is refused for it.
+        result["ops"] = HorizontalEditOperationKind.allCases.count
+        result["ops_digest"] = HorizontalEditOperationKind.vocabularyDigest
+        let executable = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments.first ?? "")
+        if let modified = (try? executable.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate {
+            result["build"] = ["executable": executable.lastPathComponent, "modified": ISO8601DateFormatter().string(from: modified)]
         }
         if let identifier = Bundle.main.bundleIdentifier {
             result["host"] = identifier
@@ -1939,6 +1959,73 @@ enum HorizontalDispatchMethods {
         }
     }
 
+    @Sendable private static func findDangling(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let block = blockJSON(entry) ?? [:]
+        let nets = block.dictionaryMap("nets")
+        let pool = entry.poolIndex
+        var totals = ["unanchored_islands": 0, "stubs": 0, "broken_lines": 0]
+        let sheets = try selectedSheets(entry, params).compactMap { sheet -> JSONDictionary? in
+            let debris = HorizontalSchematicDebris(sheet: sheet.json, block: block, symbolHasPin: pool.symbolHasPin)
+            guard !(debris.unanchored.isEmpty && debris.stubs.isEmpty && debris.brokenLines.isEmpty) else { return nil }
+            totals["unanchored_islands", default: 0] += debris.unanchored.count
+            totals["stubs", default: 0] += debris.stubs.count
+            totals["broken_lines", default: 0] += debris.brokenLines.count
+            return [
+                "sheet": sheet.id, "sheet_index": sheet.index, "name": sheet.json.string("name") as Any,
+                "unanchored_islands": debris.unanchored.map { island -> JSONDictionary in
+                    ["at": HorizontalSchematicDebris.point(island.position) as Any,
+                     "nets": island.nets.map { nets[$0]?.string("name") ?? $0 }.sorted(),
+                     "net_lines": island.lines, "net_labels": island.labels, "power_symbols": island.powerSymbols,
+                     "junctions": island.junctions]
+                },
+                "stubs": debris.stubs.map { ["net_line": $0.line, "junction": $0.junction, "at": HorizontalSchematicDebris.point($0.position) as Any] as JSONDictionary },
+                "broken_lines": debris.brokenLines
+            ] as JSONDictionary
+        }
+        return ["sheets": sheets, "totals": totals,
+                "note": "prune_sheet with unanchored: true removes the islands, stubs: true the stubs; plain prune_sheet removes broken lines."] as JSONDictionary
+    }
+
+    @Sendable private static func findOverlaps(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let block = blockJSON(entry) ?? [:]
+        let pool = entry.poolIndex
+        var totals = [String: Int]()
+        let sheets = try selectedSheets(entry, params).compactMap { sheet -> JSONDictionary? in
+            // Where each drawn pin connects, and whose pin it is.
+            var tips = [String: [Int]]()
+            var names = [String: String]()
+            for (instanceID, symbol) in sheet.json.dictionaryMap("symbols") {
+                guard let symbolID = symbol.string("symbol") else { continue }
+                let transform = (HorizontalPlacementTransform(json: symbol.dictionary("placement")) ?? .identity).schematicGeometry
+                let component = symbol.string("component").flatMap { entry.index.component(id: $0.lowercased()) }
+                let gate = symbol.string("gate")?.lowercased()
+                for (pinID, geometry) in pool.symbolPins(symbolID) {
+                    let tip = transform.applying(to: geometry.position)
+                    let key = "\(instanceID.lowercased())/\(pinID)"
+                    tips[key] = [Int(tip.x.rounded()), Int(tip.y.rounded())]
+                    let pinName = component?.pins.first { $0.pinID.lowercased() == pinID && $0.gateID.lowercased() == gate }?.pinName ?? pinID
+                    names[key] = "\(component?.refdes ?? "?") \(pinName)"
+                }
+            }
+            let overlaps = HorizontalSchematicOverlaps(sheet: sheet.json, block: block, pinTips: tips)
+            guard !overlaps.findings.isEmpty else { return nil }
+            for finding in overlaps.findings { totals[finding.kind, default: 0] += 1 }
+            return [
+                "sheet": sheet.id, "sheet_index": sheet.index, "name": sheet.json.string("name") as Any,
+                "findings": overlaps.findings.map { finding -> JSONDictionary in
+                    var json = finding.detail
+                    if let pin = json.string("pin") { json["pin"] = names[pin] ?? pin }
+                    json["kind"] = finding.kind
+                    json["at"] = HorizontalSchematicDebris.point(finding.position) as Any
+                    return json
+                }
+            ] as JSONDictionary
+        }
+        return ["sheets": sheets, "totals": totals] as JSONDictionary
+    }
+
     /// One end of a track: a junction, or a pad on a placed package.
     private static func trackEndpoint(_ endpoint: JSONDictionary?, entry: HorizontalDispatchProjectEntry) -> JSONDictionary {
         guard let endpoint else { return ["kind": "unknown"] }
@@ -2376,7 +2463,8 @@ enum HorizontalDispatchMethods {
         // belong to, so a caller can see why they are not free to edit.
         return wanted.flatMap { sheet -> [JSONDictionary] in
             var ownerBySymbol = [String: String]()
-            for (symbolID, symbol) in sheet.json.dictionaryMap("symbols") {
+            let symbols = sheet.json.dictionaryMap("symbols")
+            for (symbolID, symbol) in symbols {
                 for id in symbol["texts"] as? [String] ?? [] { ownerBySymbol[id.lowercased()] = symbolID }
             }
             return sheet.json.dictionaryMap("texts").map { id, item -> JSONDictionary in
@@ -2398,6 +2486,15 @@ enum HorizontalDispatchMethods {
                     "from_smash": item.bool("from_smash") ?? false
                 ]
                 json["symbol"] = ownerBySymbol[id.lowercased()] as Any
+                // Free text names no part; the closest one is the best guess
+                // at what it describes, and none nearby marks a stray note.
+                if ownerBySymbol[id.lowercased()] == nil,
+                   let near = HorizontalSchematicTextProximity.nearest(to: HorizontalSchematicTextProximity.position(of: item),
+                                                                       symbols: symbols, pool: entry.poolIndex) {
+                    let componentID = symbols[near.id]?.string("component")?.lowercased()
+                    json["near_symbol"] = ["symbol": near.id, "refdes": componentID.flatMap { entry.index.component(id: $0)?.refdes } as Any,
+                                           "distance_mm": HorizontalDispatchJSON.mm(near.distance)] as JSONDictionary
+                }
                 return json
             }.sorted { ($0.string("text") ?? "", $0.string("id") ?? "") < ($1.string("text") ?? "", $1.string("id") ?? "") }
         }
