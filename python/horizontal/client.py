@@ -504,7 +504,8 @@ class Project:
               pool_items: list[dict[str, Any]] | None = None, block: str | None = None,
               detail: str | None = None) -> dict[str, Any]:
         """Apply edit operations; each is {"op": name, ...params}. Writes only changed files.
-        detail="compact" returns ids and counts without echoing the ops or the project summary."""
+        detail="compact" returns ids and counts without echoing the ops or the project summary. A dry run's
+        preview gives each file's changed JSON paths; detail="files" adds its whole text before and after."""
         params: dict[str, Any] = {"ops": list(ops), "dry_run": dry_run,
                                   "expected_revision": expected_revision or self.summary["revision"],
                                   "operation_id": operation_id or str(uuid.uuid4())}

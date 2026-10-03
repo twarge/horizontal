@@ -83,8 +83,8 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         try XCTUnwrap(try result("apply", extra.merging(["ops": ops]) { new, _ in new }) as? JSONDictionary)
     }
 
-    private func error(_ ops: [JSONDictionary]) throws -> String {
-        let response = try call("apply", ["ops": ops])
+    private func error(_ ops: [JSONDictionary], _ extra: JSONDictionary = [:]) throws -> String {
+        let response = try call("apply", extra.merging(["ops": ops]) { new, _ in new })
         return try XCTUnwrap((response["error"] as? JSONDictionary)?.string("message"), "expected an error: \(response)")
     }
 
@@ -352,6 +352,14 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         let island = try XCTUnwrap(found.dictionaryArray("sheets").first?.dictionaryArray("unanchored_islands").first)
         XCTAssertEqual(island["nets"] as? [String], ["GND"])
         XCTAssertEqual(island.dictionary("at")?.double("x_mm"), 50)
+        // The run off the pin is one stub: both its wires and both junctions.
+        let stub = try XCTUnwrap(found.dictionaryArray("sheets").first?.dictionaryArray("stubs").first)
+        XCTAssertEqual((stub["net_lines"] as? [String])?.count, 2)
+        XCTAssertEqual(Set(stub["junctions"] as? [String] ?? []), [c, d])
+        XCTAssertEqual(stub["ends"] as? [String], [d])
+        XCTAssertEqual(stub.dictionary("branches_from")?.string("pin_name"), "PA14")
+        XCTAssertEqual(found.dictionary("totals")?.int("stub_net_lines"), 2)
+        XCTAssertEqual(found.dictionary("totals")?.int("stub_junctions"), 2)
 
         // Plain prune keeps it: it names a live net.
         XCTAssertEqual(changes(try apply([["op": "prune_sheet"]])).first?.dictionary("removed")?.int("power_symbols"), 0)
@@ -360,11 +368,68 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertEqual(removed.int("power_symbols"), 1)
         XCTAssertEqual(removed.int("net_lines"), 3, "the GND stub, and the dead-end run back to the pin")
         XCTAssertEqual(removed.int("junctions"), 4, "both junctions of each")
+        XCTAssertEqual(removed.int("unanchored_islands"), 1)
+        XCTAssertEqual(removed.int("stubs"), 1)
         XCTAssertEqual((try result("list_power_symbols") as? [JSONDictionary])?.count, 0)
         XCTAssertEqual((try result("list_net_labels") as? [JSONDictionary])?.count, 1, "wiring that reaches a pin stays")
         XCTAssertEqual((try result("list_net_lines") as? [JSONDictionary])?.count, 1)
         let clean = try XCTUnwrap(try result("find_dangling") as? JSONDictionary)
         XCTAssertEqual(clean.dictionaryArray("sheets").count, 0)
+    }
+
+    func testAStubIsTheWholeRunPruneWouldTake() throws {
+        _ = try placedMCU()
+        // A rail from the pin to a label, and two dead ends off one junction
+        // on it: rail, corner, nothing; and a Y whose two arms go nowhere.
+        let ids = (0..<7).map { _ in UUID().uuidString.lowercased() }
+        let (rail, labelled, corner, end, fork, armA, armB) = (ids[0], ids[1], ids[2], ids[3], ids[4], ids[5], ids[6])
+        func junction(_ id: String, _ x: Double, _ y: Double) -> JSONDictionary {
+            ["op": "place_junction", "id": id, "net": "SWCLK", "x_mm": x, "y_mm": y]
+        }
+        func wire(_ a: String, _ b: String) -> JSONDictionary {
+            ["op": "draw_net_line", "from": ["kind": "junction", "junction": a], "to": ["kind": "junction", "junction": b]]
+        }
+        try apply([junction(rail, 90, 97.46), junction(labelled, 80, 97.46), junction(corner, 90, 110), junction(end, 95, 110),
+                   junction(fork, 90, 85), junction(armA, 85, 80), junction(armB, 95, 80),
+                   ["op": "draw_net_line", "from": ["kind": "pin", "component": "U1", "pin": "PA14"], "to": ["kind": "junction", "junction": rail]],
+                   wire(rail, labelled), ["op": "place_net_label", "net": "SWCLK", "x_mm": 80, "y_mm": 97.46],
+                   wire(rail, corner), wire(corner, end), wire(rail, fork), wire(fork, armA), wire(fork, armB)])
+
+        let found = try XCTUnwrap(try result("find_dangling") as? JSONDictionary)
+        let totals = try XCTUnwrap(found.dictionary("totals"))
+        XCTAssertEqual(totals.int("stubs"), 2, "one per run, however many wires or ends it has")
+        XCTAssertEqual(totals.int("stub_net_lines"), 5)
+        XCTAssertEqual(totals.int("stub_junctions"), 5)
+        let stubs = found.dictionaryArray("sheets").first?.dictionaryArray("stubs") ?? []
+        XCTAssertEqual(Set(stubs.map { Set($0["junctions"] as? [String] ?? []) }), [[corner, end], [fork, armA, armB]])
+        XCTAssertEqual(Set(stubs.map { Set($0["ends"] as? [String] ?? []) }), [[end], [armA, armB]])
+        XCTAssertTrue(stubs.allSatisfy { $0.dictionary("branches_from")?.string("junction") == rail }, "both hang off the rail")
+
+        // A dry run removes what find_dangling said, no more.
+        let dry = try apply([["op": "prune_sheet", "stubs": true]], ["dry_run": true, "detail": "compact"])
+        let removed = try XCTUnwrap(changes(dry).first?.dictionary("removed"))
+        XCTAssertEqual(removed.int("net_lines"), 5)
+        XCTAssertEqual(removed.int("junctions"), 5)
+        XCTAssertEqual(removed.int("stubs"), 2)
+        try apply([["op": "prune_sheet", "stubs": true]])
+        XCTAssertEqual((try result("list_net_lines") as? [JSONDictionary])?.count, 2, "the rail stays")
+        XCTAssertEqual((try result("find_dangling") as? JSONDictionary)?.dictionaryArray("sheets").count, 0)
+    }
+
+    func testAVerboseDryRunPreviewsPathsAndTextOnlyOnRequest() throws {
+        let mcu = part(["A", "B"])
+        try apply([["op": "ensure_component", "refdes": "U9", "part": mcu.part]], ["pool_items": mcu.items])
+        let ops: [JSONDictionary] = [["op": "set_value", "component": "U9", "value": "x"]]
+        let full = try apply(ops, ["dry_run": true])
+        let file = try XCTUnwrap(full.dictionaryArray("preview").first)
+        XCTAssertNil(file["before"], "no file text unless asked")
+        XCTAssertNil(file["after"])
+        XCTAssertGreaterThan(file.int("after_bytes") ?? 0, 0)
+        let changed = file["changed"] as? [String] ?? []
+        XCTAssertTrue(changed.contains { $0.hasSuffix("/value") }, "\(file)")
+        let text = try XCTUnwrap(try apply(ops, ["dry_run": true, "detail": "files"]).dictionaryArray("preview").first)
+        XCTAssertTrue((text.string("after") ?? "").contains("\"x\""))
+        XCTAssertTrue(try error(ops, ["dry_run": true, "detail": "everything"]).contains("compact, full or files"))
     }
 
     func testOverlapsFindWhatLooksConnectedAndIsNot() throws {
