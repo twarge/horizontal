@@ -2416,36 +2416,30 @@ struct ProjectWorkspaceView: View {
         }
     }
 
+    /// A title-block value edited in the information panel goes through the
+    /// archive and a reload, like other edits: the loader bakes the values into
+    /// each sheet's title block and the board's texts, so patching the model
+    /// alone left the drawing showing the old value. The schematic's own copy
+    /// of a key, which older files keep and which wins on its sheets, changes
+    /// with the block's. The reload also puts the change on the undo stack.
     private func applyEditedProjectMetadata(key: String, value: String) {
         guard !isReadOnly else {
             return
         }
-
-        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedValue.isEmpty {
-            project.projectMeta.removeValue(forKey: key)
-        } else {
-            project.projectMeta[key] = trimmedValue
-        }
-
         do {
-            try HorizontalProjectJSONApplicator.apply(
-                projectMeta: project.projectMeta,
-                targetURL: projectMetadataTargetURL,
+            var archive = document.archive
+            let changed = try HorizontalProjectJSONApplicator.apply(
+                titleBlockChanges: HorizontalTitleBlockChanges(key: key, value: value),
                 in: project,
-                to: &document.archive
+                to: &archive
             )
+            guard !changed.isEmpty else {
+                return
+            }
+            try applyLiveArchive(archive, actionName: "Edit Project Metadata")
         } catch {
             recordArchiveApplyFailure(error)
         }
-    }
-
-    private var projectMetadataTargetURL: URL {
-        if let topBlockFilename = project.blocks.first(where: \.isTop)?.blockFilename ?? project.blockFilename,
-           !topBlockFilename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return project.baseURL.appendingPathComponent(topBlockFilename)
-        }
-        return project.projectFileURL
     }
 
     /// The block's power nets for the editor popover, as the sheet being
@@ -4865,17 +4859,50 @@ private struct ProjectMetadataEditorView: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 104, alignment: .leading)
 
-                        TextField(row.title, text: Binding(
-                            get: { row.value },
-                            set: { onChange(row.key, $0) }
-                        ))
-                        .font(.body)
-                        .textFieldStyle(.roundedBorder)
-                        .disabled(!isEditable)
+                        ProjectMetadataField(row: row, isEditable: isEditable, onChange: onChange)
                     }
                 }
             }
         }
+    }
+}
+
+/// One title-block value. It is applied when editing ends — Return, or the
+/// field losing focus — rather than at every keystroke, because applying one
+/// reloads the project so the sheets and the board redraw with it.
+private struct ProjectMetadataField: View {
+    var row: ProjectMetadataRow
+    var isEditable: Bool
+    var onChange: (String, String) -> Void
+
+    @State private var draft = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField(row.title, text: $draft)
+            .font(.body)
+            .textFieldStyle(.roundedBorder)
+            .disabled(!isEditable)
+            .focused($isFocused)
+            .onSubmit(commit)
+            .onAppear { draft = row.value }
+            // Closing the panel mid-edit keeps what was typed.
+            .onDisappear(perform: commit)
+            .onChange(of: isFocused) { _, focused in
+                if !focused { commit() }
+            }
+            // An undo, or an automation client, can change the value under
+            // the field; it shows the new one unless it is being typed in.
+            .onChange(of: row.value) { _, value in
+                if !isFocused { draft = value }
+            }
+    }
+
+    private func commit() {
+        guard draft != row.value else {
+            return
+        }
+        onChange(row.key, draft)
     }
 }
 

@@ -59,7 +59,8 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `list_net_labels`, `list_power_symbols` | what names a net on a page, with the ids their remove ops take |
 | `list_block_instances` | the blocks this block uses, their wired ports, and where each is drawn |
 | `autoroute` | best-effort automatic routing of one net's airwires |
-| `list_board_texts`, `list_dimensions` | board text and dimensions; a dimension reports `measures_mm`, worked out for its mode |
+| `list_board_texts`, `list_dimensions` | board text and dimensions; a dimension reports `measures_mm`, worked out for its mode. The reference designators smashed out of packages are left out unless `smashed`, and `text` keeps only texts containing it |
+| `export_settings` | the export settings Horizon EDA keeps in the project — Gerber, ODB, pick-and-place, STEP, board PDF, BOM, schematic PDF — as stored, or null where there are none. Horizontal's own `export` names its files after the project file and does not read them |
 | `list_buses`, `list_net_ties` | buses with their members, net ties with the nets they join, and where each is drawn |
 | `undo` | takes back the last step on the document's own undo stack, or puts one back |
 | `show_panes`, `show_sheet`, `show_layers`, `zoom` | show these panes in the app's window and hide the rest; show a schematic sheet by index, name or id; show a board layer view (`top_placement`, `top_silkscreen`, `top_routing`, the bottom three, `top_view` and `bottom_view` — the side seen from that side, mirrored for the bottom — `flip_view`, the side-less `placement`, `silkscreen`, `routing` for whichever side is up, `all`, `copper_only`, `clean`); zoom a pane's view about its centre by a factor. `zoom_to` reveals a pane or a sheet only on the way to something in it, and turns a sided board view over to a part on the far side |
@@ -68,7 +69,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `board_rules` | the design rules as data — one entry per rule, not per kind — the net classes they select, and the stackup |
 | `get_pool_item` | one pool item's own JSON — the bytes `pool_write` takes back |
 | `pour_planes` | fills every plane, as Update All Planes does |
-| `list_texts` | free text on the schematic sheets, with the ids the text ops take |
+| `list_texts` | free text on the schematic sheets, with the ids the text ops take; texts smashed out of symbols only with `smashed`, and `text` filters |
 | `list_parts` | parts the project can use; `scope` widens it from the project pool to the pools it draws from |
 | `search_pool` | search those pools by name, description, manufacturer, tag, uuid or a part's value, filtered by item kind. A quantity matches however it is written — `2.2 µF`, `2u2`, `2200nF` — against a part's value, description words or parametric data |
 | `import_pool_part` | copy a part and its whole dependency chain from a base pool into the project pool cache |
@@ -145,7 +146,7 @@ the dry run staged and validated rather than doing it again
 | `set_group_tag` | Horizon's group and tag, the fields it uses to copy placement between identical sub-circuits; ids derive from the names |
 | `ensure_net`, `rename_net`, `set_net_class`, `retire_net` | Nets. Retiring one drops its connections, block ports and bus members, and the labels, power symbols, wires and junctions drawn for it; board copper on it is counted, and removed with `remove_routing` |
 | `connect`, `disconnect` | Pin connections; `create_net` makes the net when it is missing |
-| `place_symbol`, `remove_symbol` | Schematic placement: draw a gate on a sheet with the symbol for its unit, move it, or take it off with the net lines that ended on it. `id` names a new instance so later ops in the batch can refer to it; `pin_display_mode` and `display_all_pads` set how its pins are labelled |
+| `place_symbol`, `remove_symbol` | Schematic placement: draw a gate on a sheet with the symbol for its unit, move it, or take it off with the net lines that ended on it. `id` gives a new instance its UUID or a name later ops in the batch use for it; `pin_display_mode` and `display_all_pads` set how its pins are labelled |
 | `set_symbol_display` | Change a drawn symbol's `pin_display_mode` or `display_all_pads` — hiding the pad-number list on a multi-pad pin, say |
 | `draw_net_line` | A wire between typed pin or junction endpoints on one sheet and logical net; retains the legacy pin-to-pin form. A pin end is `{kind: pin, symbol, pin}` or `{kind: pin, component, gate?, pin}`, the pin by name or uuid. A junction with no net takes the wire's |
 | `place_junction`, `set_net_line_endpoint` | Create a schematic junction — reusing one at the point, and giving it the net if it had none — or retarget one end of an existing wire, preserving its identity and net |
@@ -177,6 +178,8 @@ the dry run staged and validated rather than doing it again
 | `add_net_class`, `rename_net_class` | Net classes. Their electrical parameters live in the board rules, not here |
 | `place_via`, `remove_via` | A via on a net at a point, sharing the junction with any copper already there. Its padstack defaults to what the board's other vias use |
 | `copy_group_layout` | Lay one group out like another: every member with a matching tag gets the same relative placement and rotation around an anchor, and the tracks, junctions and vias inside the source group are cloned onto the target's pads |
+| `set_project_meta` | The title-block values — `project_title`, `project_name`, `rev`, `author` and the rest — that `$project_title` and the like stand for on the sheets and the board. They live in the top block; where the schematic keeps its own copy of a key (for the whole schematic or one sheet), that copy changes too, since it wins on the sheets it covers. `null` or `""` removes a key |
+| `set_export_settings` | Merge fields into one kind of export settings Horizon EDA keeps (`export_settings` shows them). Only fields the settings already hold, each with a value of the type it has, because Horizon reads them back strictly; a project with none of that kind yet is refused |
 
 ### A live edit is not saved until it is saved
 
@@ -211,7 +214,18 @@ were already committed, which is the answer to give when the edit went
 somewhere else.
 
 A batch is validated and applied in memory first; a failing operation writes
-nothing. `dry_run` returns normalized operations, changed-file previews and a
+nothing, and the error names it by its place in the batch — `ops[3]
+place_junction: No net NOPE.` — with `op_index` and `op` in its details.
+
+An op that makes something under an id — `place_junction`, `place_symbol`,
+`draw_net_line`, `ensure_component`, `ensure_net` and the `add_` ops — may give
+a short name instead of a UUID (`"id": "j1"`), and later ops in the batch use
+the name wherever they refer to that kind of thing: a wire end's `junction` or
+`symbol`, a `line`, a `component` or `net`. A name stands only for its own
+kind, so a junction called `GND` leaves every net field alone. Each name
+becomes a UUID before anything runs, derived from the revision and the name,
+so a dry run and its commit agree; the reply's `handles` maps each name to its
+UUID, and the normalized operations carry the UUIDs. `dry_run` returns normalized operations, changed-file previews and a
 plan digest. Disk commits journal all file replacements and recover interrupted
 batches; live commits install one undoable archive. Pool items and operations
 can share the same batch. The complete staged project is loaded before commit.
@@ -232,8 +246,9 @@ rule insists on an explicit width rather than inventing a plausible one.
 
 On the schematic the ops cover components, wires, free text, net labels, power
 symbols, buses with their labels and rippers, net ties and the sheets
-themselves; block symbols, title block values and a sheet's drawn lines, arcs
-and pictures are still the app's alone.
+themselves, and `set_project_meta` sets the title-block values; block symbols,
+a sheet's own title-block values and its drawn lines, arcs and pictures are
+still the app's alone.
 
 The bus, ripper and net-tie ops run the other way round too: the app's own
 Design ▸ Place Bus Label, Place Bus Ripper and Tie Nets are these operations,
