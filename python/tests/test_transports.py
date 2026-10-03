@@ -61,16 +61,75 @@ class TransportTests(unittest.TestCase):
 
     def test_mutation_is_never_automatically_replayed(self):
         class Broken(Transport):
-            count = 0
+            def __init__(self): self.methods = []
             def call(self, request):
-                self.count += 1
+                self.methods.append(request["method"])
                 raise transport_error("CONNECTION_LOST", "Lost receipt", request, "indeterminate")
         transport = Broken(); session = Session(transport=transport); session.engine = {"api": 2}
         project = Project(session, {"handle": 1, "path": "/tmp/test", "title": "Test", "revision": "r1"})
-        with patch.object(session, "reconnect") as reconnect:
-            with self.assertRaises(HorizontalError): project.apply([{"op": "ensure_net", "name": "x"}])
-            reconnect.assert_not_called()
-        self.assertEqual(transport.count, 1)
+        with patch.object(session, "reconnect"), patch.object(project, "_rebind"):
+            with self.assertRaises(HorizontalError) as caught: project.apply([{"op": "ensure_net", "name": "x"}])
+        # The outcome is looked up, never resent.
+        self.assertEqual(transport.methods, ["apply", "transaction_status"])
+        self.assertEqual(caught.exception.structured()["outcome"], "unknown")
+
+    def test_lost_mutation_is_resolved_from_its_receipt(self):
+        for state, outcome in (("committed", None), ("not_committed", "not_committed"), ("unknown", "not_committed")):
+            class Scripted(Transport):
+                def __init__(self): self.methods = []
+                def call(self, request):
+                    self.methods.append(request["method"])
+                    if request["method"] == "apply":
+                        raise transport_error("TIMEOUT", "Timed out", request, "indeterminate")
+                    receipt = {"operation_id": request["params"]["operation_id"], "status": state, "error": "No component X."}
+                    return {"jsonrpc": "2.0", "id": request["id"], "result": receipt}
+            transport = Scripted(); session = Session(transport=transport); session.engine = {"api": 2}
+            project = Project(session, {"handle": 1, "path": "/tmp/test", "title": "Test", "revision": "r1"})
+            with patch.object(session, "reconnect"), patch.object(project, "_rebind"):
+                if outcome is None:
+                    self.assertEqual(project.apply([{"op": "ensure_net", "name": "x"}])["status"], "committed")
+                else:
+                    with self.assertRaises(HorizontalError) as caught: project.apply([{"op": "ensure_net", "name": "x"}])
+                    self.assertEqual(caught.exception.structured()["outcome"], outcome, state)
+            self.assertEqual(transport.methods, ["apply", "transaction_status"], state)
+
+    def test_a_closed_connection_is_reopened_before_sending(self):
+        class Fine(Transport):
+            def call(self, request):
+                return {"jsonrpc": "2.0", "id": request["id"], "result": {"data": [], "meta": {"source": "live", "revision": "r2"}}}
+        session = Session(transport=Fine()); session.engine = {"api": 2}
+        session.transport.closed = True
+        project = Project(session, {"handle": 1, "path": "/tmp/test", "title": "Test", "revision": "r1"})
+        def reopen(timeout):
+            session.transport = Fine()
+            session.generation += 1
+        with patch.object(session, "reconnect", side_effect=reopen) as reconnect, patch.object(project, "_rebind"):
+            project.nets()
+            reconnect.assert_called_once()
+
+    def test_reconnect_looks_beside_the_project(self):
+        session = Session(transport=Transport(), project="/tmp/p.hprj")
+        with patch.object(Session, "is_live", new=property(lambda self: True)), \
+             patch("horizontal.client.find_live_for", return_value={"port": 1, "token": "t"}) as beside, \
+             patch("horizontal.client.find_live", return_value=None), \
+             patch("horizontal.client.LiveTransport") as live:
+            session.reconnect(1)
+        beside.assert_called_once_with("/tmp/p.hprj")
+        live.assert_called_once()
+
+    def test_mutations_get_a_longer_budget_than_reads(self):
+        seen = {}
+        class Clock(Transport):
+            def call(self, request):
+                seen[request["method"]] = request["deadline_unix_ms"] / 1000 - time.time()
+                return {"jsonrpc": "2.0", "id": request["id"], "result": {"applied": 0, "changes": []}}
+        session = Session(transport=Clock()); session.engine = {"api": 2}
+        project = Project(session, {"handle": 1, "path": "/tmp/test", "title": "Test", "revision": "r1"})
+        with patch.dict("os.environ", {"HORIZONTAL_MUTATION_TIMEOUT": "120"}):
+            project.apply([{"op": "ensure_net", "name": "x"}])
+            project._call("list_nets")
+        self.assertGreater(seen["apply"], 100)
+        self.assertLess(seen["list_nets"], 31)
 
     def test_live_read_rebinds_only_the_same_document_instance(self):
         summary = {"handle": 1, "path": "/tmp/project.horizontal", "title": "Test", "revision": "r1", "instance_id": "document-1", "live": True}

@@ -331,6 +331,64 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
                 "operation_id": str(uuid.uuid4()), "ops": [op]})
             self.assertTrue(result.is_error, op)
 
+    async def test_edit_replies_are_compact_unless_verbose(self):
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        ops = [{"op": "ensure_net", "name": f"N{i}"} for i in range(30)] + [{"op": "add_sheet", "name": "Cover", "index": 1}]
+        compact = (await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id="compact", ops=ops))["data"]
+        self.assertEqual(compact["applied"], 31)
+        self.assertNotIn("project", compact)
+        self.assertEqual(compact["normalized_ops"], [])
+        self.assertTrue(all("net" in change for change in compact["changes"][:30]))
+        self.assertIn("timing", compact)
+        self.assertLess(len(json.dumps(compact)), 8000)
+        self.assertEqual([s["name"] for s in (await self.call("list_sheets", project_ref=self.ref))["data"]][0], "Cover",
+                         "a page number already taken is made room for")
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        verbose = (await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id="verbose",
+                                   ops=[{"op": "ensure_net", "name": "V"}], verbose=True))["data"]
+        self.assertIn("project", verbose)
+        self.assertEqual(len(verbose["normalized_ops"]), 1)
+
+    async def test_failed_mutations_report_not_committed(self):
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        failed = await server.mcp.call_tool("apply_ops", {"project_ref": self.ref, "expected_revision": revision, "operation_id": "doomed",
+                                                          "ops": [{"op": "remove_junction", "junction": str(uuid.uuid4())}]})
+        self.assertTrue(failed.is_error)
+        status = (await self.call("transaction_status", project_ref=self.ref, operation_id="doomed"))["data"]
+        self.assertEqual(status["status"], "not_committed")
+        self.assertIn("junction", status["error"])
+        unknown = (await self.call("transaction_status", project_ref=self.ref, operation_id="never-sent"))["data"]
+        self.assertEqual(unknown["status"], "unknown")
+
+    async def test_component_reads_narrow_to_what_is_asked(self):
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        unit, entity, symbol, part = (str(uuid.uuid4()) for _ in range(4))
+        gate, pins = str(uuid.uuid4()), [str(uuid.uuid4()) for _ in range(3)]
+        names = ["PA13(JTMS/SWDIO)", "PA14", "NRST"]
+        items = [{"type": "unit", "uuid": unit, "name": "MCU", "manufacturer": "",
+                  "pins": {p: {"primary_name": n, "direction": "bidirectional", "swap_group": 0, "names": []} for p, n in zip(pins, names)}},
+                 {"type": "entity", "uuid": entity, "name": "MCU", "manufacturer": "", "prefix": "U", "tags": [],
+                  "gates": {gate: {"name": "Main", "suffix": "", "swap_group": 0, "unit": unit}}},
+                 {"type": "symbol", "uuid": symbol, "name": "MCU", "unit": unit, "junctions": {}, "lines": {}, "arcs": {}, "texts": {},
+                  "polygons": {}, "pins": {p: {"position": [0, -i * 2540000], "length": 2540000, "orientation": "left",
+                                                "name_visible": True, "pad_visible": True} for i, p in enumerate(pins)}}]
+        await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id="mcu", pool_items=items,
+                        ops=[{"op": "ensure_component", "refdes": "U1", "entity": entity},
+                             {"op": "ensure_component", "refdes": "C1", "entity": entity, "value": "2.2uF"},
+                             {"op": "place_symbol", "component": "U1", "x_mm": 50, "y_mm": 50},
+                             {"op": "connect", "component": "U1", "pin": "PA13(JTMS/SWDIO)", "net": "SWDIO", "create_net": True},
+                             {"op": "terminate_pin", "component": "U1", "pin": "PA13(JTMS/SWDIO)"}])
+        one = (await self.call("get_component", project_ref=self.ref, refdes="U1", pins="pa1", fields=["pins"]))["data"]
+        self.assertEqual(set(one), {"id", "refdes", "pins"})
+        self.assertEqual([p["pin"] for p in one["pins"]], ["PA13(JTMS/SWDIO)", "PA14"])
+        on_nets = (await self.call("get_component", project_ref=self.ref, refdes="U1", connected=True))["data"]
+        self.assertEqual([p["net"] for p in on_nets["pins"]], ["SWDIO"])
+        caps = (await self.call("list_components", project_ref=self.ref, refdes_prefix="C", fields=["value"]))["data"]
+        self.assertEqual(caps, [{"id": caps[0]["id"], "refdes": "C1", "value": "2.2uF"}])
+        lines = (await self.call("list_net_lines", project_ref=self.ref))["data"]
+        self.assertEqual(lines[0]["from"]["pin_name"], "PA13(JTMS/SWDIO)")
+        self.assertIn("x_mm", lines[0]["from_mm"])
+
     async def test_board_shape_rules_and_pool_reads(self):
         tools = {t.name: t for t in await server.mcp.list_tools()}
         for name in ("list_planes", "list_polygons", "board_rules", "get_pool_item"):

@@ -33,6 +33,11 @@ final class HorizontalLiveDocument {
     var setSelection: (Set<String>, Set<String>) -> Void
     /// Swaps in an edited archive as one undoable step named `actionName`.
     var applyArchive: (HorizontalProjectArchive, String) throws -> Void
+    /// The same, with the project already loaded from that archive. A commit
+    /// has just loaded it to validate the edit, and loading a large design is
+    /// most of what a live commit costs; a document that can take it skips
+    /// loading it a second time.
+    var applyLoadedArchive: ((HorizontalProjectArchive, HorizontalProject, String) throws -> Void)?
     /// Whether the document has changes its file does not have yet.
     var isEdited: () -> Bool
     /// What Undo would take back, and what Redo would put back — the action

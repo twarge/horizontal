@@ -86,7 +86,7 @@ enum HorizontalDispatchPool {
             "pool_path": item.poolURL.path,
             "path": item.url.path,
             "in_project_pool": inProject.contains(key(item.category, item.uuid))
-        ]
+        ].merging(item.category == .part ? ["value": item.value, "description": item.partDescription] : [:]) { old, _ in old }
     }
 
     /// `search_pool`: the pools a project draws from, filtered by kind and a
@@ -124,11 +124,46 @@ enum HorizontalDispatchPool {
 
     private static func matches(_ query: String, _ item: HorizontalPoolLibraryItem) -> Bool {
         guard !query.isEmpty else { return true }
-        for field in [item.name, item.detail, item.manufacturer, item.tags, item.uuid]
-        where field.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+        let fields = [item.name, item.detail, item.manufacturer, item.tags, item.uuid, item.value, item.partDescription]
+        for field in fields where field.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
             return true
         }
-        return false
+        // Spelling-insensitive: "2.2 µF" finds "2.2uF", "2u2" and "2.2 uF".
+        let squeezed = squeeze(query)
+        if !squeezed.isEmpty, fields.contains(where: { squeeze($0).contains(squeezed) }) { return true }
+        // A quantity matches a part declaring the same one, however written.
+        guard item.category == .part, let wanted = quantity(query) else { return false }
+        // A description says "Capacitor 2.2uF 10V X5R": read it word by word.
+        let words = [item.value, item.partDescription].flatMap { $0.split { $0.isWhitespace || $0 == "," || $0 == ";" }.map(String.init) }
+        let candidates = ([item.value, item.name] + words).compactMap(quantity)
+            + item.parametric.compactMap { key, text -> (Double, String?)? in
+                guard let unit = ["capacitance": "F", "resistance": "ohm", "inductance": "H"][key], let number = Double(text) else { return nil }
+                return (number, unit)
+            }
+        return candidates.contains { value, unit in
+            (wanted.unit == nil || unit == nil || wanted.unit == unit) && abs(value - wanted.value) <= abs(wanted.value) * 1e-6
+        }
+    }
+
+    /// Lowercased, without spaces, micro signs as u and ohm signs as ohm.
+    private static func squeeze(_ text: String) -> String {
+        text.lowercased()
+            .replacingOccurrences(of: "µ", with: "u").replacingOccurrences(of: "μ", with: "u")
+            .replacingOccurrences(of: "Ω", with: "ohm").replacingOccurrences(of: "Ω", with: "ohm")
+            .filter { !$0.isWhitespace }
+    }
+
+    /// A number with a multiplier or unit — 2.2uF, 2u2, 10k, 4.7 nH — read as
+    /// SI. A bare number is not a quantity: it would match every "10" in a name.
+    private static func quantity(_ text: String) -> (value: Double, unit: String?)? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, trimmed.rangeOfCharacter(from: .letters) != nil else { return nil }
+        let parsed = HorizontalElectricalValue.parse(trimmed, refdes: "")
+        if let value = parsed["value_si"] as? Double { return (value, parsed["unit"] as? String) }
+        guard parsed["status"] as? String == "ambiguous" else { return nil }
+        // No unit and no refdes to guess one from: keep the number, unit open.
+        let probe = HorizontalElectricalValue.parse(trimmed, refdes: "C")
+        return (probe["value_si"] as? Double).map { ($0, nil) }
     }
 
     /// `get_pool_item`: one pool item's JSON, read through the project's own

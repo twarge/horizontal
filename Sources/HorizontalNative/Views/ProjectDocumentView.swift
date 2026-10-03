@@ -1194,6 +1194,9 @@ struct ProjectWorkspaceView: View {
         live.applyArchive = { archive, actionName in
             try applyLiveArchive(archive, actionName: actionName)
         }
+        live.applyLoadedArchive = { archive, loaded, actionName in
+            try applyLiveArchive(archive, loaded: loaded, actionName: actionName)
+        }
         #if os(macOS)
         // The document system owns saving; find this document by its URL
         // rather than sending the Save action, which would go to whichever
@@ -1332,12 +1335,14 @@ struct ProjectWorkspaceView: View {
     /// model reloads from it, URLs are pointed back at the real project (the
     /// snapshot loads from a temporary copy), and the previous archive and
     /// model go on the undo stack as one step.
-    private func applyLiveArchive(_ archive: HorizontalProjectArchive, actionName: String) throws {
+    private func applyLiveArchive(_ archive: HorizontalProjectArchive, loaded: HorizontalProject? = nil, actionName: String) throws {
         guard !isReadOnly else {
             throw HorizontalDispatchError.failed("Read-only operation is enabled in Horizontal.")
         }
         let previous = HorizontalLiveSnapshot(archive: document.archive, project: project)
-        var reloaded = try HorizontalProject.loadSnapshot(of: archive)
+        // A commit hands over the project it loaded from this archive to
+        // validate the edit; loading it again would double the wait.
+        var reloaded = try loaded ?? HorizontalProject.loadSnapshot(of: archive)
         rebaseProjectURLs(&reloaded, onto: project)
         liveUndoTarget.configure(
             currentValue: { HorizontalLiveSnapshot(archive: document.archive, project: project) },

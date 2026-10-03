@@ -104,8 +104,11 @@ def _remaining(deadline: float) -> float:
 
 
 def _deadline(request: dict[str, Any], timeout: float) -> float:
-    remaining = request.get("deadline_unix_ms", (time.time() + timeout) * 1000) / 1000 - time.time()
-    return time.monotonic() + min(timeout, max(0, remaining))
+    """A request's own deadline wins: the session sets one per call, longer for
+    a mutation than the transport's default. Without one, the default."""
+    if "deadline_unix_ms" not in request:
+        return time.monotonic() + timeout
+    return time.monotonic() + max(0, request["deadline_unix_ms"] / 1000 - time.time())
 
 
 @contextmanager

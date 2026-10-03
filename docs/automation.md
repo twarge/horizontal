@@ -45,14 +45,14 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `open_project`, `new_project`, `close_project`, `reload_project`, `list_projects` | project handles; opening a path twice returns the same handle; `new_project` writes the template to a path that does not exist yet |
 | `save` | writes an open document to its file; a disk context reports `saved: false` because its edits were already written |
 | `project_info`, `project_files` | blocks, sheets, counts, diagnostics; files in the captured source |
-| `freeze_project`, `analysis_snapshot`, `transaction_status` | immutable read context; electrical evidence; mutation receipt lookup |
+| `freeze_project`, `analysis_snapshot`, `transaction_status` | immutable read context; electrical evidence; mutation receipt lookup — `committed`, `not_committed` with the error, or `unknown` when the document never saw that id |
 | `list_sheets` | sheets in the PDF exporter's page order |
 | `list_components`, `get_component` | components with part details; one component with every pin, its net, symbol and board placements |
 | `list_nets`, `get_net`, `netlist` | nets with class and flags; one net with its pins, routing counts, and airwire geometry; the whole netlist |
 | `bom` | grouped the way the BOM exporter groups |
 | `list_symbols` | symbol instances on the sheets: component, gate, placement, and the instance id the schematic ops take |
 | `list_junctions` | schematic junction IDs, positions, resolved nets and sheet identities for wire endpoints |
-| `list_net_lines` | the wires on the sheets, with what each end connects — a symbol pin, a junction, a bus ripper or a block port |
+| `list_net_lines` | the wires on the sheets, with what each end connects — a symbol pin (with its name), a junction, a bus ripper or a block port — and where each end is (`from_mm`, `to_mm`) |
 | `list_tracks`, `list_vias` | copper, filtered by net or layer; a track end is a pad (naming the component) or a junction. Both wrap their answer in `total`/`truncated`, because a board has thousands |
 | `list_net_labels`, `list_power_symbols` | what names a net on a page, with the ids their remove ops take |
 | `list_block_instances` | the blocks this block uses, their wired ports, and where each is drawn |
@@ -68,7 +68,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `pour_planes` | fills every plane, as Update All Planes does |
 | `list_texts` | free text on the schematic sheets, with the ids the text ops take |
 | `list_parts` | parts the project can use; `scope` widens it from the project pool to the pools it draws from |
-| `search_pool` | search those pools by name, description, manufacturer, tag or uuid, filtered by item kind |
+| `search_pool` | search those pools by name, description, manufacturer, tag, uuid or a part's value, filtered by item kind. A quantity matches however it is written — `2.2 µF`, `2u2`, `2200nF` — against a part's value, description words or parametric data |
 | `import_pool_part` | copy a part and its whole dependency chain from a base pool into the project pool cache |
 | `board_info` | bounds, stackup, drawing layers, object counts |
 | `recompute_connectivity` | the editor's post-edit connectivity pass, in memory |
@@ -121,7 +121,16 @@ in Horizontal yet, so none here either.
 Horizon's own formatting so a change diffs as the lines it changed. `list_ops`
 returns the vocabulary with parameters. Components may be named by reference
 designator or id, nets by name or id, pins by name (`EN`), by gate and pin
-(`Main/EN`), or by ids.
+(`Main/EN`), or by ids. A whole pin name is tried before it is split at a
+slash, so `PA13(JTMS/SWDIO)` names that pin; `gate` narrows a name to one gate.
+
+Every mutation takes `detail: "compact"`, which replies with each change's ids,
+scalars and counts and leaves out the echoed operations (kept on a dry run,
+which is replayed with them), file previews and the project summary. Replies
+carry `timing` in milliseconds for the edit, the staged load, the diagnostics
+comparison and the commit. A mutation that fails is recorded under its
+`operation_id`, so `transaction_status` answers `not_committed` instead of
+`unknown`, and the same id may be sent again.
 
 | Op | Effect |
 |---|---|
@@ -129,15 +138,20 @@ designator or id, nets by name or id, pins by name (`EN`), by gate and pin
 | `remove_component` | Remove the component, its symbols and the net lines on them, its board package, and turn tracks that ended on its pads into junction-ended tracks |
 | `set_value`, `set_refdes`, `set_part`, `set_no_populate` | Component fields; a part swap that changes the entity clears the connections |
 | `set_group_tag` | Horizon's group and tag, the fields it uses to copy placement between identical sub-circuits; ids derive from the names |
-| `ensure_net`, `rename_net`, `set_net_class`, `retire_net` | Nets; retiring drops the connections and power symbols on it |
+| `ensure_net`, `rename_net`, `set_net_class`, `retire_net` | Nets. Retiring one drops its connections, block ports and bus members, and the labels, power symbols, wires and junctions drawn for it; board copper on it is counted, and removed with `remove_routing` |
 | `connect`, `disconnect` | Pin connections; `create_net` makes the net when it is missing |
-| `place_symbol`, `remove_symbol` | Schematic placement: draw a gate on a sheet with the symbol for its unit, move it, or take it off with the net lines that ended on it |
-| `draw_net_line` | A wire between typed pin or junction endpoints on one sheet and logical net; retains the legacy pin-to-pin form |
-| `place_junction`, `set_net_line_endpoint` | Create a schematic junction or retarget one end of an existing wire, preserving its identity and net |
-| `remap_part` | Substitute an imported part with explicit gate/pin and optional pad maps, preserving connections, symbols, wires and copper atomically |
+| `place_symbol`, `remove_symbol` | Schematic placement: draw a gate on a sheet with the symbol for its unit, move it, or take it off with the net lines that ended on it. `id` names a new instance so later ops in the batch can refer to it; `pin_display_mode` and `display_all_pads` set how its pins are labelled |
+| `set_symbol_display` | Change a drawn symbol's `pin_display_mode` or `display_all_pads` — hiding the pad-number list on a multi-pad pin, say |
+| `draw_net_line` | A wire between typed pin or junction endpoints on one sheet and logical net; retains the legacy pin-to-pin form. A pin end is `{kind: pin, symbol, pin}` or `{kind: pin, component, gate?, pin}`, the pin by name or uuid. A junction with no net takes the wire's |
+| `place_junction`, `set_net_line_endpoint` | Create a schematic junction — reusing one at the point, and giving it the net if it had none — or retarget one end of an existing wire, preserving its identity and net |
+| `remove_net_line`, `remove_junction` | Take a wire off its sheet, or a junction with the wires, labels and power symbols on it (net-less junctions included); junctions left holding nothing go too |
+| `prune_sheet` | Clear what a sheet draws for nothing: wires with a dangling end, wiring that reaches no pin and carries no net, labels on no net, symbols of removed components and unused junctions — on one sheet or all |
+| `terminate_pin` | A stub wire straight out from a pin, ending in a net label or power symbol that faces away from it. Connects the pin first when it is on no net |
+| `set_no_connect` | Mark pins deliberately unconnected — a connection naming no net, as the app's no-connect tool writes — or clear the mark |
+| `remap_part` | Substitute an imported part, preserving connections, symbols, wires and copper atomically. Pins `pin_map` leaves out are matched by gate and pin name; a connected pin with no counterpart is named and nothing changes |
 | `place_power_symbol`, `remove_power_symbol` | The ground or supply marker that says a point is on that net. Placing one marks the net as a power net, because that is what it means; the shape (`gnd`, `dot`, `antenna`, `earth`) belongs to the net, so every symbol on it matches |
 | `place_net_label`, `remove_net_label` | Names a net on the page — and, placed on more than one sheet, is how a net spans pages |
-| `add_sheet`, `rename_sheet`, `remove_sheet` | Pages. A sheet with anything drawn on it is refused rather than deleted quietly, and a schematic keeps at least one |
+| `add_sheet`, `rename_sheet`, `remove_sheet` | Pages. A new page takes the frame (title block) the last page uses, or `frame`; an `index` already taken inserts it there. A sheet with anything drawn on it is refused unless `force` clears it, and a schematic keeps at least one |
 | `place_text`, `remove_text` | Free text on a sheet: write one, or change the text, position, rotation, size, origin or font of one `list_texts` named. A text Horizon extracted from a symbol with Smash belongs to that symbol and is refused |
 | `place_component`, `remove_placement` | Board placement in millimetres and degrees; a placed package moves, an unplaced one gets a package entry the loader completes from the part |
 | `place_track`, `remove_track`, `set_track_width` | One straight copper segment per op, between pads, junctions or points; a point becomes a junction, and a junction nothing holds any more is removed with the copper that held it |
@@ -148,7 +162,7 @@ designator or id, nets by name or id, pins by name (`EN`), by gate and pin
 | `add_net_tie`, `remove_net_tie`, `place_net_tie` | Two nets joined on the board and kept apart in the schematic — a single-point ground join, say |
 | `place_hole`, `remove_hole` | A hole through the board, its size taken from a padstack. A hole with a net is plated onto it; one without is a mounting hole |
 | `place_keepout`, `remove_keepout` | An area copper may not enter, on one layer or on all of them |
-| `set_sheet_index` | Renumber a sheet, swapping with whatever held that page number |
+| `set_sheet_index` | Move a sheet to a page number, shifting the pages between; `swap` exchanges it with the page there instead. Page numbers change as a batch adds or moves sheets, so refer to sheets by name or uuid in such a batch |
 | `place_polygon`, `remove_polygon` | A closed polygon on a board layer. Layer 100 is the outline — the shape the board is cut to, and a board without one has no shape however complete it otherwise looks |
 | `place_plane`, `remove_plane` | A copper pour: a polygon on a copper layer, filled with one net. Defining it does not fill it; `pour_planes` does, and drops fill that reaches nothing on its net |
 | `add_block_instance`, `remove_block_instance`, `connect_block_port` | Using one block inside another, and wiring its ports to nets here |

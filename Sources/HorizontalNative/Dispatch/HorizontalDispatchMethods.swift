@@ -106,7 +106,7 @@ enum HorizontalDispatchMethods {
         .init(
             name: "search_pool",
             summary: "Search every pool the project draws from — its own pool, the pools that pool includes, and the discovered base pools — for parts, entities, symbols, packages, padstacks, units, frames and decals. Items outside the project pool need import_pool_part before a component can use them.",
-            params: ["handle": "Project handle.", "query": "Case-insensitive substring of name, description, manufacturer, tags or uuid (optional).",
+            params: ["handle": "Project handle.", "query": "Case-insensitive substring of name, description, manufacturer, tags, uuid or a part's value (optional). Spacing and µ/u are ignored, and a quantity such as 2.2uF, 2u2 or 10k also matches parts whose value, description or parametric data state the same amount.",
                      "kind": "One of \(HorizontalPoolItemCategory.allCases.map(\.rawValue).joined(separator: ", ")) (optional).",
                      "pool_path": "Directory of one pool to search (optional). A pool the project already draws from narrows the search; any other pool directory is searched as well, which is how a worker process reaches a pool registered only in the app.",
                      "limit": "Maximum items to return; default 50, maximum 500."],
@@ -423,7 +423,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(name: "analysis_snapshot", summary: "Immutable electrical input with schematic evidence and file hashes.", params: ["handle": "Project handle."], handler: analysisSnapshot),
         .init(name: "freeze_project", summary: "Pin a read-only snapshot for repeated analysis and renders. Close it when finished.", params: ["handle": "Project handle."], handler: { session, params in projectSummary(try session.freeze(session.entry(for: params))) }),
-        .init(name: "transaction_status", summary: "Look up a mutation receipt without replaying it.", params: ["handle": "Project handle.", "operation_id": "Mutation identifier."], handler: transactionStatus)
+        .init(name: "transaction_status", summary: "Look up a mutation receipt without replaying it: committed, not_committed (with the error), or unknown when this document never saw it.", params: ["handle": "Project handle.", "operation_id": "Mutation identifier.", "detail": "compact for ids and counts rather than the full receipt (optional)."], handler: transactionStatus)
     ]
 
     // MARK: - Handlers
@@ -451,11 +451,21 @@ enum HorizontalDispatchMethods {
     @Sendable private static func transactionStatus(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         guard let id = params.string("operation_id"), !id.isEmpty else { throw HorizontalDispatchError.invalidParams("operation_id is required.") }
-        if entry.live != nil { return entry.receipts[id] ?? ["operation_id": id, "status": "unknown", "instance_id": entry.instanceID] }
-        guard let transaction = try HorizontalProjectTransaction.existing(projectURL: entry.url) else { return ["operation_id": id, "status": "unknown"] }
-        try transaction.recover()
-        if let data = try transaction.receipt(operationID: id) { return try JSONHelper.loadDictionary(from: data) }
-        return ["operation_id": id, "status": "unknown"]
+        // A live channel and a worker both answer one request at a time, so a
+        // mutation sent before this has finished by now: committed, failed, or
+        // never received at all.
+        if entry.live != nil {
+            if let receipt = entry.receipts[id] { return HorizontalDispatchMutation.shaped(receipt, params) }
+            return entry.failedOperations[id] ?? ["operation_id": id, "status": "unknown", "instance_id": entry.instanceID,
+                                                  "note": "This document never received that operation, or was reopened since."]
+        }
+        if let transaction = try HorizontalProjectTransaction.existing(projectURL: entry.url) {
+            try transaction.recover()
+            if let data = try transaction.receipt(operationID: id) {
+                return HorizontalDispatchMutation.shaped(try JSONHelper.loadDictionary(from: data), params)
+            }
+        }
+        return entry.failedOperations[id] ?? ["operation_id": id, "status": "unknown"]
     }
 
     private static func version() -> Any {
@@ -1849,9 +1859,14 @@ enum HorizontalDispatchMethods {
             var json: JSONDictionary = ["kind": "pin", "symbol": parts.first as Any, "pin": parts.count > 1 ? parts[1] : ""]
             if let instance = parts.first, let symbol = symbols[instance.lowercased()],
                let componentID = symbol.string("component")?.lowercased() {
+                let component = entry.index.component(id: componentID)
                 json["component"] = componentID
-                json["refdes"] = entry.index.component(id: componentID)?.refdes as Any
+                json["refdes"] = component?.refdes as Any
                 json["gate"] = symbol.string("gate") as Any
+                if parts.count > 1, let gate = symbol.string("gate")?.lowercased(),
+                   let pin = component?.pins.first(where: { $0.gateID.lowercased() == gate && $0.pinID.lowercased() == parts[1].lowercased() }) {
+                    json["pin_name"] = pin.pinName
+                }
             }
             return json
         }
@@ -1883,10 +1898,13 @@ enum HorizontalDispatchMethods {
         return try selectedSheets(entry, params).flatMap { sheet -> [JSONDictionary] in
             let symbols = sheet.json.dictionaryMap("symbols").reduce(into: [String: JSONDictionary]()) { $0[$1.key.lowercased()] = $1.value }
             let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: blockJSON(entry) ?? [:])
+            // The loaded sheet has resolved each end to a point.
+            let drawn = (entry.project.schematic?.sheets.first { $0.id.caseInsensitiveCompare(sheet.id) == .orderedSame }?.netLines ?? [])
+                .reduce(into: [String: HorizontalSegment]()) { $0[$1.id.lowercased()] = $1 }
             return sheet.json.dictionaryMap("net_lines").compactMap { id, item -> JSONDictionary? in
                 let netID = item.dictionary("from").flatMap { connectivity.net(at: $0) }
                 guard wanted == nil || wanted == netID else { return nil }
-                return [
+                var json: JSONDictionary = [
                     "id": id,
                     "sheet": sheet.id,
                     "sheet_index": sheet.index,
@@ -1895,6 +1913,11 @@ enum HorizontalDispatchMethods {
                     "from": netLineEndpoint(item.dictionary("from"), symbols: symbols, entry: entry),
                     "to": netLineEndpoint(item.dictionary("to"), symbols: symbols, entry: entry)
                 ]
+                if let segment = drawn[id.lowercased()] {
+                    json["from_mm"] = HorizontalDispatchJSON.point(segment.from)
+                    json["to_mm"] = HorizontalDispatchJSON.point(segment.to)
+                }
+                return json
             }.sorted { ($0.string("net_name") ?? "", $0.string("id") ?? "") < ($1.string("net_name") ?? "", $1.string("id") ?? "") }
         }
     }
