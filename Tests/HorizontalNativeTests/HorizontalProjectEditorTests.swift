@@ -859,7 +859,7 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual(symbols.count, 1)
         XCTAssertEqual(symbols[0]["net_name"] as? String, "GND")
         XCTAssertEqual(symbols[0]["x_mm"] as? Double, 20)
-        XCTAssertEqual(symbols[0]["orientation"] as? String, "up")
+        XCTAssertEqual(symbols[0]["orientation"] as? String, "down", "earth hangs down unless told otherwise, as the app places it")
         XCTAssertEqual(symbols[0]["style"] as? String, "earth", "the style is read back off the net")
         let id = try XCTUnwrap(symbols[0]["id"] as? String)
 
@@ -922,8 +922,14 @@ final class HorizontalProjectEditorTests: XCTestCase {
         let sheets = try XCTUnwrap(try result("list_sheets") as? [[String: Any]])
         XCTAssertEqual(sheets.last?["name"] as? String, "Supplies")
 
-        // A page number already taken is a mistake worth naming.
-        XCTAssertNotNil(try call("apply", ["ops": [["op": "add_sheet", "name": "Clash", "index": 1]]])["error"])
+        // A page number already taken makes room: the new page goes there and
+        // the rest move down, the way inserting a page in the app does.
+        let inserted = try apply([["op": "add_sheet", "name": "Cover", "index": 1]])
+        XCTAssertEqual((inserted["changes"] as? [[String: Any]])?.first?["shifted"] as? [String] != nil, true)
+        XCTAssertEqual(try XCTUnwrap(try result("list_sheets") as? [[String: Any]]).map { $0["name"] as? String }, ["Cover", "Sheet 1", "Supplies"])
+        XCTAssertNotNil(try call("apply", ["ops": [["op": "add_sheet", "name": "Far", "index": 9]]])["error"], "no gaps in page numbers")
+        _ = try apply([["op": "remove_sheet", "sheet": "Cover"]])
+        XCTAssertEqual(try XCTUnwrap(try result("list_sheets") as? [[String: Any]]).map { $0["index"] as? Int }, [1, 2], "removing a page closes the gap")
         XCTAssertNotNil(try call("apply", ["ops": [["op": "add_sheet", "name": " "]]])["error"])
 
         // A page holding work is not deleted quietly.
@@ -1455,8 +1461,9 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertNotNil(try call("apply", ["ops": [["op": "place_keepout", "vertices": [["x_mm": 0, "y_mm": 0]]]]])["error"])
     }
 
-    /// Two sheets cannot share a page number, so renumbering swaps.
-    func testSheetsAreRenumberedBySwapping() throws {
+    /// Two sheets cannot share a page number: renumbering moves the pages
+    /// between, or swaps when asked.
+    func testSheetsAreRenumberedByMovingOrSwapping() throws {
         _ = try apply([["op": "add_sheet", "name": "Power"], ["op": "add_sheet", "name": "Analog"]])
         let before = try XCTUnwrap(try result("list_sheets") as? [[String: Any]])
         XCTAssertEqual(before.map { $0["index"] as? Int }, [1, 2, 3])
@@ -1464,10 +1471,14 @@ final class HorizontalProjectEditorTests: XCTestCase {
         let moved = try apply([["op": "set_sheet_index", "sheet": "Analog", "index": 1]])
         let change = try XCTUnwrap((moved["changes"] as? [[String: Any]])?.first)
         XCTAssertEqual(change["was"] as? Int, 3)
-        XCTAssertNotNil(change["swapped_with"] as? String)
+        XCTAssertEqual((change["moved"] as? [String])?.count, 2)
+        XCTAssertEqual(try XCTUnwrap(try result("list_sheets") as? [[String: Any]]).map { $0["name"] as? String },
+                       ["Analog", "Sheet 1", "Power"], "the pages between move down one")
 
+        let swapped = try apply([["op": "set_sheet_index", "sheet": "Analog", "index": 3, "swap": true]])
+        XCTAssertNotNil((swapped["changes"] as? [[String: Any]])?.first?["swapped_with"] as? String)
         let after = try XCTUnwrap(try result("list_sheets") as? [[String: Any]])
-        XCTAssertEqual(after.map { $0["name"] as? String }, ["Analog", "Power", "Sheet 1"])
+        XCTAssertEqual(after.map { $0["name"] as? String }, ["Power", "Sheet 1", "Analog"])
         XCTAssertEqual(after.map { $0["index"] as? Int }, [1, 2, 3], "no two sheets share a page number")
 
         XCTAssertNotNil(try call("apply", ["ops": [["op": "set_sheet_index", "sheet": 1, "index": 0]]])["error"])

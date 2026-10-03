@@ -472,12 +472,21 @@ final class HorizontalDispatchPoolIndex {
         var pins: [String: Pin]
     }
 
+    /// Where a symbol draws a pin: the connection point, in symbol
+    /// coordinates, and the way the pin points out of the body.
+    struct SymbolPinGeometry {
+        var position: HorizontalPoint
+        var length: Double
+        var orientation: String
+    }
+
     private var entities: [String: Entity] = [:]
     private var units: [String: Unit] = [:]
     /// Symbol uuids per unit, sorted, so a gate can be drawn without the
     /// caller naming the symbol that draws its unit.
     private var symbolsByUnit: [String: [String]] = [:]
     private var symbolPins: [String: Set<String>] = [:]
+    private var symbolPinGeometry: [String: [String: SymbolPinGeometry]] = [:]
     private var parts: [String: JSONDictionary] = [:]
     private var packages: [String: JSONDictionary] = [:]
     private var padstacks: [String: JSONDictionary] = [:]
@@ -543,10 +552,21 @@ final class HorizontalDispatchPoolIndex {
             }
             symbolsByUnit[unitID, default: []].append(uuid)
             symbolPins[uuid] = Set(json.dictionaryMap("pins").keys.map { $0.lowercased() })
+            for (pinID, pin) in json.dictionaryMap("pins") {
+                guard let position = pin["position"] as? [Any], position.count == 2,
+                      let x = (position[0] as? NSNumber)?.doubleValue, let y = (position[1] as? NSNumber)?.doubleValue else { continue }
+                symbolPinGeometry[uuid, default: [:]][pinID.lowercased()] = SymbolPinGeometry(
+                    position: HorizontalPoint(x: x, y: y), length: pin.double("length") ?? 0,
+                    orientation: pin.string("orientation") ?? "right")
+            }
         }
         for unitID in symbolsByUnit.keys {
             symbolsByUnit[unitID]?.sort()
         }
+    }
+
+    func symbolPin(_ symbol: String, pin: String) -> SymbolPinGeometry? {
+        symbolPinGeometry[symbol.lowercased()]?[pin.lowercased()]
     }
 
     func symbolHasPin(_ symbol: String, pin: String) -> Bool {

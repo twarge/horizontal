@@ -4,7 +4,11 @@ import CoreFoundation
 enum HorizontalDispatchValidation {
     static func validate(method: String, params: JSONDictionary) throws {
         guard let descriptor = HorizontalDispatchMethods.all.first(where: { $0.name == method }) else { return }
-        let common: Set<String> = ["include_metadata", "expected_revision", "operation_id", "plan_digest", "deadline_unix_ms"]
+        // detail shapes any mutation's reply: "compact" for ids and counts.
+        let common: Set<String> = ["include_metadata", "expected_revision", "operation_id", "plan_digest", "deadline_unix_ms", "detail"]
+        if let detail = params["detail"], !["compact", "full"].contains(detail as? String ?? "") {
+            throw HorizontalDispatchError.invalidParams("detail must be compact or full.")
+        }
         let allowed = Set(descriptor.params.keys).union(common)
         let unknown = Set(params.keys).subtracting(allowed)
         guard unknown.isEmpty else { throw HorizontalDispatchError.invalidParams("Unknown parameters: \(unknown.sorted().joined(separator: ", ")).") }
