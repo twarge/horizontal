@@ -69,6 +69,11 @@ struct HorizontalPoolLibraryItem: Identifiable, Hashable, Sendable {
     /// A symbol's unit uuid (lowercased), so a unit's symbols can be found
     /// without opening every symbol file.
     var symbolUnitID: String = ""
+    /// A part's value, description and parametric table, for searching by
+    /// what a part is ("2.2uF") rather than what it is called.
+    var value: String = ""
+    var partDescription: String = ""
+    var parametric: [String: String] = [:]
 }
 
 /// Cross-reference lookup over the browsed pools' items by kind and uuid, so
@@ -248,7 +253,10 @@ enum HorizontalPoolLibrary {
                 manufacturer: category == .part
                     ? (attributeString(json["manufacturer"]) ?? "")
                     : (json.string("manufacturer") ?? ""),
-                symbolUnitID: category == .symbol ? (json.string("unit")?.lowercased() ?? "") : ""
+                symbolUnitID: category == .symbol ? (json.string("unit")?.lowercased() ?? "") : "",
+                value: category == .part ? (attributeString(json["value"]) ?? "") : "",
+                partDescription: category == .part ? (attributeString(json["description"]) ?? "") : "",
+                parametric: category == .part ? (json["parametric"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String } : [:]
             )
             if isCacheCopy {
                 cachedKeys.insert(key)

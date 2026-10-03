@@ -33,6 +33,12 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case drawNetLine = "draw_net_line"
     case placeJunction = "place_junction"
     case setNetLineEndpoint = "set_net_line_endpoint"
+    case removeNetLine = "remove_net_line"
+    case removeJunction = "remove_junction"
+    case pruneSheet = "prune_sheet"
+    case terminatePin = "terminate_pin"
+    case setSymbolDisplay = "set_symbol_display"
+    case setNoConnect = "set_no_connect"
     case remapPart = "remap_part"
     case placeText = "place_text"
     case removeText = "remove_text"
@@ -96,15 +102,21 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .renameNetClass: "Rename a net class."
         case .renameNet: "Rename a net."
         case .setNetClass: "Put a net in a net class, by name or id."
-        case .retireNet: "Remove a net and every connection to it."
+        case .retireNet: "Remove a net, every connection to it, and the labels, power symbols, wires and junctions drawn for it. Board copper on it is reported, or removed with remove_routing."
         case .connect: "Connect a component pin to a net."
         case .disconnect: "Remove a pin's connection."
         case .placeSymbol: "Draw a component's gate on a schematic sheet, or move it if it is already drawn. A component connected without this is in the netlist but on no sheet."
+        case .setSymbolDisplay: "Change how a drawn symbol shows its pins: which pin names (pin_display_mode) and whether a multi-pad pin lists every pad number (display_all_pads)."
         case .removeSymbol: "Take a component's gate off its sheet, with the net lines that ended on it. The component and its connections stay."
-        case .drawNetLine: "Draw a wire between pins or junctions on one logical net. Does not change block connectivity."
-        case .placeJunction: "Create a schematic junction on a net, reusing a compatible junction at the same point."
+        case .drawNetLine: "Draw a wire between pins or junctions on one logical net. Does not change block connectivity. A junction with no net yet takes the wire's."
+        case .placeJunction: "Create a schematic junction on a net, reusing a compatible or net-less junction at the same point."
         case .setNetLineEndpoint: "Retarget one end of an existing wire, keeping its id and logical net."
-        case .remapPart: "Replace a component's part with an explicit gate/pin identity map, preserving connections, symbols and wires atomically."
+        case .removeNetLine: "Remove a wire from its sheet, and any junction at its ends that it leaves holding nothing."
+        case .removeJunction: "Remove a junction with the wires ending on it and the labels and power symbols sitting on it — net-less junctions included."
+        case .pruneSheet: "Clear orphaned drawing from a sheet: wires with a dangling end, wiring islands that carry no net and reach no pin, labels on no net, and junctions nothing uses."
+        case .terminatePin: "Draw a short wire straight out from a symbol pin and end it in a net label or power symbol facing away from the pin. Connects the pin to the net first when it is on none."
+        case .setNoConnect: "Mark component pins as deliberately not connected, or clear the mark. A pin on a net is refused unless disconnect is passed."
+        case .remapPart: "Replace a component's part, preserving connections, symbols and wires atomically. Pins are matched by name unless an explicit gate/pin identity map is given."
         case .placeText: "Write a text on a schematic sheet, or change one that is already there. Free text only: a symbol's own texts belong to the symbol."
         case .removeText: "Remove a text from a schematic sheet."
         case .placePowerSymbol: "Draw a power symbol on a sheet: the ground or supply marker that says a point is on that net. Marks the net as a power net, since that is what one means."
@@ -120,9 +132,9 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .setRule: "Change fields of a board design rule. The board is refused if the change makes the rules invalid."
         case .removeRule: "Remove a board design rule."
         case .setStackup: "Set how many inner copper layers the board has, and the copper and dielectric thicknesses."
-        case .addSheet: "Add a schematic sheet."
+        case .addSheet: "Add a schematic sheet, with the drawing frame the other sheets use. An index already taken inserts the sheet there and moves the later ones down."
         case .renameSheet: "Rename a schematic sheet."
-        case .removeSheet: "Remove an empty schematic sheet. A sheet with anything drawn on it is refused."
+        case .removeSheet: "Remove a schematic sheet. A sheet with anything drawn on it is refused unless force is passed, which clears it — symbols included, though their components stay in the block."
         case .placeTrack: "Route one straight copper segment on a layer between two points, pads or junctions. Manual routing: it draws what it is told and does not find a path."
         case .removeTrack: "Remove a copper segment, and any junction it leaves holding nothing."
         case .setTrackWidth: "Set a copper segment's width."
@@ -140,7 +152,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .removeBoardText: "Remove a board text. A text a package carries belongs to that package."
         case .placeDimension: "Measure between two points on the board, the way the dimension tool does."
         case .removeDimension: "Remove a dimension."
-        case .setSheetIndex: "Renumber a schematic sheet, swapping with whatever holds that page number."
+        case .setSheetIndex: "Move a schematic sheet to a page number, shifting the sheets between; swap exchanges it with the one there instead."
         case .placeComponent: "Place a component's package on the board, or move it if it is placed."
         case .removePlacement: "Take a component's package off the board, keeping its copper as junctions."
         case .copyGroupLayout: "Copy the placement (and by default the routing) of one group's packages onto another group whose components carry the same tags."
@@ -201,33 +213,65 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .setNetClass:
             return ["net": "Net name or id.", "net_class": "Net class name or id."]
         case .retireNet:
-            return ["net": "Net name or id."]
+            return ["net": "Net name or id.",
+                    "remove_routing": "Also remove the board tracks, vias and planes on the net (default false: they are counted in the result and left alone)."]
         case .connect:
-            return ["component": component, "pin": "Pin as gate/pin names, a pin name unique across gates, or gate/pin ids.", "net": "Net name or id.", "create_net": "Create the net when it does not exist (default false)."]
+            return ["component": component, "pin": "Pin name or uuid. A name is matched whole first, so one containing \"/\" works; otherwise gate/pin, by name or id.",
+                    "gate": "Gate name, suffix or id, when the pin name is on several gates (optional).",
+                    "net": "Net name or id.", "create_net": "Create the net when it does not exist (default false)."]
         case .disconnect:
-            return ["component": component, "pin": "Pin as for connect."]
+            return ["component": component, "pin": "Pin as for connect.", "gate": "Gate, as for connect (optional)."]
         case .placeSymbol:
             return ["component": component, "gate": "Gate name, suffix or id; optional when the entity has one gate.",
                     "sheet": "Sheet index, name or uuid (optional; default the first sheet).",
                     "symbol": "Pool symbol uuid to draw the gate with (optional; default the one symbol in the project pool for its unit).",
                     "x_mm": "X position.", "y_mm": "Y position.", "angle_deg": "Rotation (optional, default 0 or unchanged).",
-                    "mirror": "Mirror the symbol (optional)."]
+                    "mirror": "Mirror the symbol (optional).",
+                    "id": "Symbol instance UUID to use for a gate drawn for the first time (optional), so later ops in the same batch can name it.",
+                    "pin_display_mode": "selected_only, custom_only, both or all (optional; default selected_only for a new symbol).",
+                    "display_all_pads": "List every pad number on a pin that has several (optional; Horizon's default is true)."]
+        case .setSymbolDisplay:
+            return ["component": component, "gate": "Gate name, suffix or id; omitted, every drawn gate of the component.",
+                    "symbol_instance": "One symbol instance id instead of component and gate (optional).",
+                    "pin_display_mode": "selected_only, custom_only, both or all (optional).",
+                    "display_all_pads": "List every pad number on a multi-pad pin (optional)."]
         case .removeSymbol:
             return ["component": component, "gate": "Gate name, suffix or id; optional when the entity has one gate.",
                     "sheet": "Sheet index, name or uuid (optional; default every sheet)."]
         case .drawNetLine:
-            return ["component": component, "pin": "Pin as for connect.", "to_component": "The other end's component.",
-                    "to_pin": "The other end's pin.", "sheet": "Sheet index, name or uuid (optional).",
+            return ["component": component, "pin": "Pin as for connect.", "gate": "The pin's gate, as for connect (optional).",
+                    "to_component": "The other end's component.",
+                    "to_pin": "The other end's pin.", "to_gate": "The other pin's gate (optional).", "sheet": "Sheet index, name or uuid (optional).",
                     "id": "Optional wire UUID, retained by dry-run normalization.",
-                    "from": "{kind: pin, symbol, pin} or {kind: junction, junction}; use from/to OR the legacy component/pin fields.",
+                    "from": "{kind: pin, symbol, pin} — pin a uuid or a name — or {kind: pin, component, gate?, pin} to find the symbol, or {kind: junction, junction}; use from/to OR the legacy component/pin fields. A junction with no net takes the other end's.",
                     "to": "The other typed endpoint, on the same sheet and net."]
         case .placeJunction:
             return ["id": "Optional junction UUID.", "sheet": "Sheet index, name or uuid (optional).", "net": "Net name or id.", "x_mm": "X position.", "y_mm": "Y position."]
         case .setNetLineEndpoint:
-            return ["line": "Wire id from list_net_lines.", "end": "from or to.", "endpoint": "{kind: pin, symbol, pin} or {kind: junction, junction}.", "sheet": "Optional sheet selector."]
+            return ["line": "Wire id from list_net_lines.", "end": "from or to.", "endpoint": "An endpoint as for draw_net_line.", "sheet": "Optional sheet selector."]
+        case .removeNetLine:
+            return ["line": "Wire id from list_net_lines.", "sheet": "Sheet index, name or uuid (optional)."]
+        case .removeJunction:
+            return ["junction": "Junction id from list_junctions; one with no net is fine.", "sheet": "Sheet index, name or uuid (optional).",
+                    "cascade": "Also remove the wires ending on it and the labels and power symbols on it (default true; false refuses when anything uses it)."]
+        case .pruneSheet:
+            return ["sheet": "Sheet index, name or uuid (optional; default every sheet)."]
+        case .terminatePin:
+            return ["component": component, "pin": "Pin as for connect.", "gate": "The pin's gate, as for connect (optional).",
+                    "net": "Net name or id to end the pin on. Optional when the pin is already on a net; created when create_net is passed.",
+                    "create_net": "Create the net when it does not exist (default false).",
+                    "kind": "label or power (optional; default power for a power net, label otherwise).",
+                    "length_mm": "How far out from the pin the wire runs (optional; default 2.54).",
+                    "size_mm": "Label cap height (optional; default 1.5).",
+                    "style": "Power symbol style, as for place_power_symbol (optional)."]
+        case .setNoConnect:
+            return ["component": component, "pin": "One pin, as for connect.", "pins": "Several pins, as for connect.",
+                    "gate": "Gate, as for connect (optional).",
+                    "no_connect": "true marks them not connected (default); false clears the mark.",
+                    "disconnect": "Take a pin off its net to mark it (default false: a connected pin is refused)."]
         case .remapPart:
             return ["component": component, "part": "Target imported pool part id.",
-                    "pin_map": "Object mapping old gateUUID/pinUUID to new gateUUID/pinUUID. Every connected or drawn pin must be mapped.",
+                    "pin_map": "Optional object mapping old gateUUID/pinUUID to new gateUUID/pinUUID. Pins it leaves out are matched by gate and pin name; every connected or drawn pin has to map one way or the other.",
                     "symbols": "Optional object mapping target gate UUIDs to symbol UUIDs.",
                     "pad_map": "Optional old pad UUID to target pad UUID map for ambiguous physical pin mappings."]
         case .placeText:
@@ -284,11 +328,13 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "copper_mm": "Copper thickness per layer (optional; default 0.035).",
                     "substrate_mm": "Dielectric thickness below each layer (optional; default 1.6 shared across the cores)."]
         case .addSheet:
-            return ["name": "Sheet name.", "index": "Page number (optional; default after the last sheet)."]
+            return ["name": "Sheet name.", "index": "Page number (optional; default after the last sheet). A page already taken moves down to make room.",
+                    "frame": "Pool frame uuid for the title block, or \"none\" (optional; default the frame the last sheet uses)."]
         case .renameSheet:
             return ["sheet": "Sheet index, name or uuid.", "name": "New name."]
         case .removeSheet:
-            return ["sheet": "Sheet index, name or uuid."]
+            return ["sheet": "Sheet index, name or uuid.",
+                    "force": "Remove it even when things are drawn on it (default false). Components whose symbols were there stay in the block, unplaced."]
         case .placePolygon:
             return ["layer": "Board layer number. 100 is the outline; board_info lists the rest.",
                     "vertices": "Three or more {\"x_mm\", \"y_mm\"} points, in order. The shape closes itself."]
@@ -333,7 +379,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .removeDimension:
             return ["dimension": "Dimension id, from list_dimensions."]
         case .setSheetIndex:
-            return ["sheet": "Sheet index, name or uuid.", "index": "The page number to give it."]
+            return ["sheet": "Sheet index, name or uuid.", "index": "The page number to give it.",
+                    "swap": "Exchange page numbers with the sheet there rather than moving the sheets between (default false)."]
         case .placeTrack:
             let endpoint = "One of {\"component\", \"pad\"}, {\"junction\"} or {\"x_mm\", \"y_mm\"}. A point becomes a junction."
             return ["from": endpoint, "to": endpoint, "layer": "Copper layer number; 0 is the top. board_info lists them.",
@@ -387,6 +434,10 @@ struct HorizontalEditOperation {
                 guard let vertices = value as? [Any], vertices.count >= 3, vertices.allSatisfy({ $0 is JSONDictionary }) else {
                     throw HorizontalDispatchError.invalidParams("vertices must be three or more {\"x_mm\", \"y_mm\"} points.")
                 }
+            } else if key == "pins" {
+                guard let pins = value as? [Any], !pins.isEmpty, pins.allSatisfy({ $0 is String }) else {
+                    throw HorizontalDispatchError.invalidParams("pins must be a non-empty array of pin names or ids.")
+                }
             } else if ["layer", "index", "priority", "inner_layers"].contains(key) {
                 try HorizontalDispatchValidation.number(value, key: key, integer: true)
             } else if ["fields", "pin_map", "symbols", "pad_map"].contains(key) {
@@ -400,9 +451,10 @@ struct HorizontalEditOperation {
                     throw HorizontalDispatchError.invalidParams("\(key) must be an object.")
                 }
             } else if ["x_mm", "y_mm", "angle_deg", "size_mm", "width_mm", "copper_mm", "substrate_mm",
-                       "label_distance_mm"].contains(key) {
+                       "label_distance_mm", "length_mm"].contains(key) {
                 try HorizontalDispatchValidation.number(value, key: key)
-            } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs", "exposed_copper_only"].contains(key) {
+            } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs", "exposed_copper_only",
+                       "force", "cascade", "swap", "remove_routing", "display_all_pads", "no_connect", "disconnect"].contains(key) {
                 try HorizontalDispatchValidation.boolean(value, key: key)
             } else if value is NSNull, ["part", "group", "tag"].contains(key) {
                 continue
@@ -668,7 +720,7 @@ final class HorizontalProjectEditor {
         case .retireNet:
             let id = try netID(params)
             change["net"] = id
-            change["removed"] = retireNet(id)
+            change.merge(try retireNet(id, removeRouting: params.bool("remove_routing") ?? false)) { _, new in new }
         case .connect:
             let id = try componentID(params)
             let pin = try pinPath(params, componentID: id)
@@ -712,6 +764,18 @@ final class HorizontalProjectEditor {
             change.merge(try placeJunction(params)) { _, new in new }
         case .setNetLineEndpoint:
             change.merge(try setNetLineEndpoint(params)) { _, new in new }
+        case .removeNetLine:
+            change.merge(try removeNetLine(params)) { _, new in new }
+        case .removeJunction:
+            change.merge(try removeJunction(params)) { _, new in new }
+        case .pruneSheet:
+            change.merge(try pruneSheets(params)) { _, new in new }
+        case .terminatePin:
+            change.merge(try terminatePin(params)) { _, new in new }
+        case .setSymbolDisplay:
+            change.merge(try setSymbolDisplay(params)) { _, new in new }
+        case .setNoConnect:
+            change.merge(try setNoConnect(params)) { _, new in new }
         case .remapPart:
             change.merge(try remapPart(params)) { _, new in new }
         case .placeText:
@@ -1061,9 +1125,40 @@ final class HorizontalProjectEditor {
         throw HorizontalDispatchError.notFound("No net class \(reference). Known: \(classes.values.compactMap { $0.string("name") }.sorted().joined(separator: ", ")).")
     }
 
-    private func retireNet(_ id: String) -> JSONDictionary {
+    private func retireNet(_ id: String, removeRouting: Bool) throws -> JSONDictionary {
+        let id = id.lowercased()
+        // What the schematic draws for the net, worked out while the net and
+        // its connections still exist to resolve it.
+        var drawn = [String: (lines: Set<String>, labels: Set<String>, power: Set<String>, junctions: Set<String>)]()
+        if files["schematic"] != nil {
+            for sheet in try sheetsInOrder() {
+                let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: block)
+                func onNet(_ endpoint: JSONDictionary?) -> Bool { endpoint.flatMap { connectivity.net(at: $0) }?.lowercased() == id }
+                let lines = sheet.json.dictionaryMap("net_lines").filter { _, line in
+                    line.string("net")?.lowercased() == id || onNet(line.dictionary("from")) || onNet(line.dictionary("to"))
+                }.keys
+                let labels = sheet.json.dictionaryMap("net_labels").filter { _, label in
+                    label.string("last_net")?.lowercased() == id || onNet(label.string("junction").map { ["junc": $0] as JSONDictionary })
+                }.keys
+                let power = sheet.json.dictionaryMap("power_symbols").filter { $0.value.string("net")?.lowercased() == id }.keys
+                let junctions = sheet.json.dictionaryMap("junctions").filter { key, junction in
+                    junction.string("net")?.lowercased() == id || onNet(["junc": key])
+                }.keys
+                if !(lines.isEmpty && labels.isEmpty && power.isEmpty && junctions.isEmpty) {
+                    drawn[sheet.id] = (Set(lines), Set(labels), Set(power), Set(junctions))
+                }
+            }
+        }
+        // A net tie names the net on both sides; leaving one would tie to nothing.
+        let ties = block.dictionaryMap("net_ties").filter {
+            [$0.value.string("net_primary")?.lowercased(), $0.value.string("net_secondary")?.lowercased()].contains(id)
+        }
+        guard ties.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("Net tie \(ties.keys.sorted().joined(separator: ", ")) joins this net; remove_net_tie it first.")
+        }
+
         var all = block["nets"] as? JSONDictionary ?? [:]
-        all.removeValue(forKey: id)
+        all.removeValue(forKey: all.keys.first { $0.lowercased() == id } ?? id)
         block["nets"] = all
 
         var disconnected = 0
@@ -1084,34 +1179,221 @@ final class HorizontalProjectEditor {
         }
         block["components"] = componentsMap
 
-        var powerSymbols = 0
-        if var schematic = files["schematic"] {
-            var sheets = schematic["sheets"] as? JSONDictionary ?? [:]
-            for (sheetID, value) in sheets {
-                guard var sheet = value as? JSONDictionary else {
-                    continue
+        // Block ports wired to it, and bus members carrying it, go with it.
+        var ports = 0
+        var instances = block.dictionaryMap("block_instances")
+        for (instanceID, var instance) in instances {
+            var connections = instance.dictionaryMap("connections")
+            let before = connections.count
+            connections = connections.filter { $0.value.string("net")?.lowercased() != id }
+            guard connections.count != before else { continue }
+            ports += before - connections.count
+            instance["connections"] = connections
+            instances[instanceID] = instance
+        }
+        if ports > 0 { block["block_instances"] = instances }
+        var busMembers = Set<String>()
+        var buses = block.dictionaryMap("buses")
+        for (busID, var bus) in buses {
+            var members = bus.dictionaryMap("members")
+            let doomed = members.filter { $0.value.string("net")?.lowercased() == id }.keys
+            guard !doomed.isEmpty else { continue }
+            for member in doomed { members.removeValue(forKey: member); busMembers.insert(member.lowercased()) }
+            bus["members"] = members
+            buses[busID] = bus
+        }
+        if !busMembers.isEmpty { block["buses"] = buses }
+
+        var counts = ["net_lines": 0, "net_labels": 0, "power_symbols": 0, "junctions": 0, "bus_rippers": 0]
+        if files["schematic"] != nil {
+            for sheet in try sheetsInOrder() {
+                let marks = drawn[sheet.id]
+                let rippers = sheet.json.dictionaryMap("bus_rippers").filter { busMembers.contains($0.value.string("member")?.lowercased() ?? "") }.keys
+                guard marks != nil || !rippers.isEmpty else { continue }
+                try updateSheet(sheet.id) { item in
+                    for (key, doomed) in [("net_lines", marks?.lines ?? []), ("net_labels", marks?.labels ?? []),
+                                          ("power_symbols", marks?.power ?? []), ("bus_rippers", Set(rippers))] where !doomed.isEmpty {
+                        var map = item.dictionaryMap(key)
+                        for markID in doomed { map.removeValue(forKey: markID) }
+                        item[key] = map
+                        counts[key, default: 0] += doomed.count
+                    }
                 }
-                var symbols = sheet["power_symbols"] as? JSONDictionary ?? [:]
-                let before = symbols.count
-                symbols = symbols.filter { ($0.value as? JSONDictionary)?.string("net")?.lowercased() != id }
-                if symbols.count != before {
-                    powerSymbols += before - symbols.count
-                    sheet["power_symbols"] = symbols
-                    sheets[sheetID] = sheet
-                }
-            }
-            if powerSymbols > 0 {
-                schematic["sheets"] = sheets
-                files["schematic"] = schematic
-                dirty.insert("schematic")
+                // Junctions of the net, once nothing else stands on them.
+                let candidates = (marks?.junctions ?? []).union((marks?.lines ?? []).flatMap { line in
+                    sheet.json.dictionaryMap("net_lines")[line].map { Array(Self.lineJunctions($0)) } ?? []
+                })
+                counts["junctions", default: 0] += try collectSheetJunctions(sheet.id, candidates: candidates).count
             }
         }
-        return ["connections": disconnected, "power_symbols": powerSymbols]
+
+        // Board copper on the net, as the loaded board resolved it.
+        var board: JSONDictionary = [:]
+        if isTopBlock, let loaded = project.board, files["board"] != nil {
+            let tracks = loaded.tracks.filter { $0.netID?.lowercased() == id }.map { $0.id.lowercased() }
+            let vias = loaded.vias.filter { $0.netID?.lowercased() == id }.map { $0.id.lowercased() }
+            let planes = (files["board"]?.dictionaryMap("planes") ?? [:]).filter { $0.value.string("net")?.lowercased() == id }
+            board = ["tracks": tracks.count, "vias": vias.count, "planes": planes.count]
+            if removeRouting, !(tracks.isEmpty && vias.isEmpty && planes.isEmpty) {
+                try updateBoard { json in
+                    for (key, doomed) in [("tracks", Set(tracks)), ("vias", Set(vias))] {
+                        var map = json.dictionaryMap(key)
+                        for itemID in map.keys where doomed.contains(itemID.lowercased()) { map.removeValue(forKey: itemID) }
+                        json[key] = map
+                    }
+                    var planeMap = json.dictionaryMap("planes"), polygons = json.dictionaryMap("polygons")
+                    for (planeID, plane) in planes {
+                        planeMap.removeValue(forKey: planeID)
+                        if let polygon = plane.string("polygon") { polygons.removeValue(forKey: polygon) }
+                    }
+                    json["planes"] = planeMap
+                    json["polygons"] = polygons
+                }
+                board["junctions_removed"] = try collectJunctions().count
+                board["removed"] = true
+            } else if !(tracks.isEmpty && vias.isEmpty && planes.isEmpty) {
+                board["removed"] = false
+                board["note"] = "Copper on this net is left in place, on no net; pass remove_routing to remove it."
+            }
+        }
+        var removed: JSONDictionary = ["connections": disconnected, "block_ports": ports, "bus_members": busMembers.count]
+        for (key, count) in counts { removed[key] = count }
+        var change: JSONDictionary = ["removed": removed]
+        if !board.isEmpty { change["board"] = board }
+        return change
+    }
+
+    // MARK: - Pin terminations
+
+    /// The way a pin points out of its symbol's body, by its orientation.
+    private static let outward: [String: (x: Double, y: Double)] = ["left": (-1, 0), "right": (1, 0), "up": (0, 1), "down": (0, -1)]
+
+    private func terminatePin(_ params: JSONDictionary) throws -> JSONDictionary {
+        let componentID = try componentID(params)
+        let path = try pinPath(params, componentID: componentID)
+        let refdes = components()[componentID]?.string("refdes") ?? componentID
+        let name = pinName(path, componentID: componentID)
+        let connection = components()[componentID]?.dictionary("connections")?.first { $0.key.lowercased() == path }?.value as? JSONDictionary
+        let current = connection?.string("net")?.lowercased()
+        let net: String
+        if params["net"] != nil {
+            if let existing = try? netID(params) {
+                net = existing.lowercased()
+            } else if params.bool("create_net") ?? false, let name = params.string("net") {
+                net = try ensureNet(["name": name]).0
+            } else {
+                throw HorizontalDispatchError.notFound("No net matches \(params["net"] ?? "nothing"); pass create_net to make it.")
+            }
+            if let current, current != net {
+                throw HorizontalDispatchError.invalidParams(
+                    "\(refdes) pin \(name) is on \(nets()[current]?.string("name") ?? current), not \(nets()[net]?.string("name") ?? net); disconnect it first."
+                )
+            }
+        } else {
+            guard let current else {
+                throw HorizontalDispatchError.invalidParams("\(refdes) pin \(name) is on no net; pass \"net\" to end it on one.")
+            }
+            net = current
+        }
+        if current == nil {
+            try updateComponent(componentID) { component in
+                var connections = component["connections"] as? JSONDictionary ?? [:]
+                connections.removeValue(forKey: connections.keys.first { $0.lowercased() == path } ?? path)
+                connections[path] = ["net": net]
+                component["connections"] = connections
+            }
+        }
+        let gateID = String(path.split(separator: "/")[0]), pinID = String(path.split(separator: "/")[1])
+        guard let instance = try symbolInstance(componentID: componentID, gateID: gateID) else {
+            throw HorizontalDispatchError.notFound("The gate of \(refdes) holding pin \(name) is not on a sheet; place_symbol it first.")
+        }
+        guard let symbol = instance.json.string("symbol"), let geometry = pool.symbolPin(symbol, pin: pinID) else {
+            throw HorizontalDispatchError.invalidParams("The symbol drawing \(refdes) does not draw pin \(name).")
+        }
+        let transform = HorizontalPlacementTransform(json: instance.json.dictionary("placement")) ?? .identity
+        let direction = Self.outward[geometry.orientation] ?? (1, 0)
+        let tip = transform.applying(to: geometry.position)
+        let ahead = transform.applying(to: HorizontalPoint(x: geometry.position.x + direction.x * 1_000_000,
+                                                           y: geometry.position.y + direction.y * 1_000_000))
+        let dx = ((ahead.x - tip.x) / 1_000_000).rounded(), dy = ((ahead.y - tip.y) / 1_000_000).rounded()
+        let facing = dx < 0 ? "left" : dx > 0 ? "right" : dy > 0 ? "up" : "down"
+        let length = params.double("length_mm") ?? 2.54
+        guard length > 0 else { throw HorizontalDispatchError.invalidParams("length_mm must be more than zero.") }
+        let end = (x: tip.x / 1_000_000 + dx * length, y: tip.y / 1_000_000 + dy * length)
+
+        let kind = params.string("kind") ?? (nets()[net]?.bool("is_power") == true ? "power" : "label")
+        var mark: JSONDictionary = ["net": net, "sheet": instance.sheet, "x_mm": end.x, "y_mm": end.y, "orientation": facing]
+        let placed: JSONDictionary
+        switch kind {
+        case "power":
+            if let style = params.string("style") { mark["style"] = style }
+            placed = try placePowerSymbol(mark)
+        case "label":
+            if let size = params.double("size_mm") { mark["size_mm"] = size }
+            placed = try placeNetLabel(mark)
+        default:
+            throw HorizontalDispatchError.invalidParams("kind must be label or power.")
+        }
+        guard let junction = placed.string("junction") else { throw HorizontalDispatchError.failed("The mark has no junction.") }
+        let wire = try drawTypedNetLine([:], from: ["kind": "pin", "symbol": instance.id, "pin": pinID],
+                                        to: ["kind": "junction", "junction": junction])
+        var change: JSONDictionary = ["component": componentID, "pin": path, "pin_name": name, "net": net, "sheet": instance.sheet,
+                                      "connected": current == nil, "kind": kind, "orientation": facing, "junction": junction,
+                                      "net_line": wire["net_line"] as Any,
+                                      "x_mm": HorizontalDispatchJSON.mm(end.x * 1_000_000), "y_mm": HorizontalDispatchJSON.mm(end.y * 1_000_000)]
+        change[kind == "power" ? "power_symbol" : "net_label"] = placed[kind == "power" ? "power_symbol" : "net_label"]
+        return change
+    }
+
+    // MARK: - No-connect
+
+    /// Horizon marks a pin deliberately unconnected with a connection that
+    /// names no net, which is what the app's no-connect tool writes.
+    private func setNoConnect(_ params: JSONDictionary) throws -> JSONDictionary {
+        let componentID = try componentID(params)
+        let references = (params["pins"] as? [String] ?? []) + (params.string("pin").map { [$0] } ?? [])
+        guard !references.isEmpty else { throw HorizontalDispatchError.invalidParams("set_no_connect needs \"pin\" or \"pins\".") }
+        let mark = params.bool("no_connect") ?? true
+        let disconnect = params.bool("disconnect") ?? false
+        let refdes = components()[componentID]?.string("refdes") ?? componentID
+        var paths = [String]()
+        var taken = [JSONDictionary]()
+        var connections = components()[componentID]?.dictionary("connections") ?? [:]
+        for reference in references {
+            var selector: JSONDictionary = ["pin": reference]
+            if let gate = params.string("gate") { selector["gate"] = gate }
+            let path = try pinPath(selector, componentID: componentID)
+            let key = connections.keys.first { $0.lowercased() == path } ?? path
+            let net = (connections[key] as? JSONDictionary)?.string("net")
+            if mark {
+                if let net {
+                    guard disconnect else {
+                        throw HorizontalDispatchError.invalidParams(
+                            "\(refdes) pin \(pinName(path, componentID: componentID)) is on \(nets()[net.lowercased()]?.string("name") ?? net); pass disconnect to take it off and mark it."
+                        )
+                    }
+                    taken.append(["pin": path, "net": net])
+                }
+                connections.removeValue(forKey: key)
+                connections[path] = ["net": NSNull()]
+            } else if connections[key] != nil, net == nil {
+                connections.removeValue(forKey: key)
+            }
+            paths.append(path)
+        }
+        try updateComponent(componentID) { $0["connections"] = connections }
+        var change: JSONDictionary = ["component": componentID, "pins": paths, "no_connect": mark]
+        if !taken.isEmpty { change["disconnected"] = taken }
+        return change
     }
 
     // MARK: - Pins
 
     /// Resolves the `pin` parameter to Horizon's `gate uuid/pin uuid` key.
+    ///
+    /// The whole reference is tried as a pin name or uuid first, because pin
+    /// names carry slashes of their own — `PA13(JTMS/SWDIO)` — and only then
+    /// split as gate/pin. A `gate` parameter narrows the search to one gate.
     private func pinPath(_ params: JSONDictionary, componentID: String) throws -> String {
         guard let reference = params.string("pin"), !reference.isEmpty else {
             throw HorizontalDispatchError.invalidParams("Missing \"pin\".")
@@ -1122,40 +1404,59 @@ final class HorizontalProjectEditor {
         guard let entity = pool.entity(entityID) else {
             throw HorizontalDispatchError.notFound("Pool entity \(entityID) for \(componentID) is not in the project pool.")
         }
-        let pieces = reference.split(separator: "/", maxSplits: 1).map(String.init)
-        if pieces.count == 2 {
-            let gateReference = pieces[0]
-            let pinReference = pieces[1]
-            let gateMatches = entity.gates.filter { gateID, gate in
-                gateID.caseInsensitiveCompare(gateReference) == .orderedSame
-                    || gate.name.caseInsensitiveCompare(gateReference) == .orderedSame
-                    || (!gate.suffix.isEmpty && gate.suffix.caseInsensitiveCompare(gateReference) == .orderedSame)
-            }
-            guard gateMatches.count == 1, let (gateID, gate) = gateMatches.first else {
-                throw HorizontalDispatchError.notFound("No gate \(gateReference) on \(entity.name). Gates: \(entity.gates.values.map(\.name).sorted().joined(separator: ", ")).")
-            }
-            guard let unitID = gate.unitID, let unit = pool.unit(unitID) else {
-                throw HorizontalDispatchError.notFound("Gate \(gate.name) has no unit in the project pool.")
-            }
-            guard let pinID = pinID(pinReference, in: unit) else {
-                throw HorizontalDispatchError.notFound("No pin \(pinReference) on gate \(gate.name). Pins: \(unit.pins.values.map(\.name).sorted().joined(separator: ", ")).")
-            }
-            return "\(gateID)/\(pinID)"
-        }
+        let refdes = component.string("refdes") ?? componentID
+        let only = params.string("gate") == nil ? nil : try gate(params, componentID: componentID).id
+        let gates = entity.gates.filter { only == nil || $0.key == only }
+
         var matches = [String]()
-        for (gateID, gate) in entity.gates {
-            guard let unitID = gate.unitID, let unit = pool.unit(unitID), let pinID = pinID(reference, in: unit) else {
-                continue
+        var duplicated = [String]()
+        for (gateID, gate) in gates.sorted(by: { $0.key < $1.key }) {
+            guard let unitID = gate.unitID, let unit = pool.unit(unitID) else { continue }
+            if let pinID = pinID(reference, in: unit) {
+                matches.append("\(gateID)/\(pinID)")
+            } else if unit.pins.values.filter({ $0.name.caseInsensitiveCompare(reference) == .orderedSame }).count > 1 {
+                duplicated.append(gate.name)
             }
-            matches.append("\(gateID)/\(pinID)")
         }
-        guard matches.count == 1, let match = matches.first else {
-            if matches.isEmpty {
-                throw HorizontalDispatchError.notFound("No pin \(reference) on \(entity.name).")
+        if matches.count == 1 { return matches[0] }
+        if matches.count > 1 {
+            throw HorizontalDispatchError.invalidParams(
+                "Pin \(reference) is on \(matches.count) gates of \(refdes) (\(entity.name)); pass \"gate\" or name it as gate/pin."
+            )
+        }
+        if !duplicated.isEmpty {
+            throw HorizontalDispatchError.ambiguous(
+                "More than one pin of \(refdes) is called \(reference); name it by pin uuid. get_component lists them.",
+                candidates: gates.flatMap { gateID, gate -> [String] in
+                    guard let unitID = gate.unitID, let unit = pool.unit(unitID) else { return [] }
+                    return unit.pins.filter { $0.value.name.caseInsensitiveCompare(reference) == .orderedSame }.keys.map { "\(gateID)/\($0)" }
+                }.sorted()
+            )
+        }
+        // gate/pin, at every slash: a gate name may hold one as well.
+        if only == nil {
+            var index = reference.startIndex
+            while let slash = reference[index...].firstIndex(of: "/") {
+                let gateReference = String(reference[..<slash])
+                let pinReference = String(reference[reference.index(after: slash)...])
+                index = reference.index(after: slash)
+                let gateMatches = entity.gates.filter { gateID, gate in
+                    gateID.caseInsensitiveCompare(gateReference) == .orderedSame
+                        || gate.name.caseInsensitiveCompare(gateReference) == .orderedSame
+                        || (!gate.suffix.isEmpty && gate.suffix.caseInsensitiveCompare(gateReference) == .orderedSame)
+                }
+                guard gateMatches.count == 1, let (gateID, gate) = gateMatches.first,
+                      let unitID = gate.unitID, let unit = pool.unit(unitID) else { continue }
+                if let pinID = pinID(pinReference, in: unit) { return "\(gateID)/\(pinID)" }
             }
-            throw HorizontalDispatchError.invalidParams("Pin \(reference) is on \(matches.count) gates of \(entity.name); name the gate as gate/pin.")
         }
-        return match
+        let names = gates.values.compactMap { $0.unitID.flatMap { pool.unit($0) } }
+            .flatMap { $0.pins.values.map(\.name) }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        let listed = names.prefix(80).joined(separator: ", ") + (names.count > 80 ? ", … (\(names.count) in all)" : "")
+        throw HorizontalDispatchError.notFound(
+            "No pin \(reference) on \(refdes) (\(entity.name))\(only == nil ? "" : " gate \(entity.gates[only!]?.name ?? only!)"). Pins: \(listed)."
+        )
     }
 
     private func pinID(_ reference: String, in unit: HorizontalDispatchPoolIndex.Unit) -> String? {
@@ -1164,6 +1465,15 @@ final class HorizontalProjectEditor {
         }
         let byName = unit.pins.filter { $0.value.name.caseInsensitiveCompare(reference) == .orderedSame }
         return byName.count == 1 ? byName.keys.first : nil
+    }
+
+    /// A pin's name, for messages.
+    private func pinName(_ path: String, componentID: String) -> String {
+        let pieces = path.split(separator: "/").map(String.init)
+        guard pieces.count == 2, let entityID = components()[componentID]?.string("entity"),
+              let unitID = pool.entity(entityID)?.gates[pieces[0].lowercased()]?.unitID,
+              let name = pool.unit(unitID)?.pins[pieces[1].lowercased()]?.name, !name.isEmpty else { return path }
+        return name
     }
 
     // MARK: - Groups and tags
@@ -1325,6 +1635,7 @@ final class HorizontalProjectEditor {
         item["component"] = componentID
         item["gate"] = gateID
         if item["pin_display_mode"] == nil { item["pin_display_mode"] = "selected_only" }
+        try Self.applySymbolDisplay(params, to: &item)
 
         var placement = item["placement"] as? JSONDictionary ?? ["angle": 0, "mirror": false, "shift": [0, 0]]
         if let x = params.double("x_mm"), let y = params.double("y_mm") {
@@ -1340,7 +1651,18 @@ final class HorizontalProjectEditor {
         }
         item["placement"] = placement
 
-        let instanceID = existing?.id ?? UUID().uuidString.lowercased()
+        let instanceID: String
+        if let existing {
+            if let requested = params.string("id"), requested.caseInsensitiveCompare(existing.id) != .orderedSame {
+                throw HorizontalDispatchError.invalidParams("This gate is already drawn as \(existing.id); id only names a new symbol instance.")
+            }
+            instanceID = existing.id
+        } else {
+            instanceID = try editObjectID(params)
+            guard try !symbolInstances().contains(where: { $0.id.caseInsensitiveCompare(instanceID) == .orderedSame }) else {
+                throw HorizontalDispatchError.invalidParams("Symbol instance id already exists: \(instanceID).")
+            }
+        }
         // Moving a gate to another sheet takes its net lines' endpoints with
         // it, which this editor cannot redraw; make the caller do it in two
         // explicit steps instead of leaving lines pointing at nothing.
@@ -1356,6 +1678,48 @@ final class HorizontalProjectEditor {
         }
         return ["gate": gateID, "sheet": targetSheet, "symbol_instance": instanceID,
                 "symbol": item.string("symbol") as Any, "created": existing == nil]
+    }
+
+    static let pinDisplayModes = ["selected_only", "custom_only", "both", "all"]
+
+    private static func applySymbolDisplay(_ params: JSONDictionary, to item: inout JSONDictionary) throws {
+        if let mode = params.string("pin_display_mode") {
+            guard pinDisplayModes.contains(mode) else {
+                throw HorizontalDispatchError.invalidParams("pin_display_mode must be one of \(pinDisplayModes.joined(separator: ", ")).")
+            }
+            item["pin_display_mode"] = mode
+        }
+        if let all = params.bool("display_all_pads") { item["display_all_pads"] = all }
+    }
+
+    private func setSymbolDisplay(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard params["pin_display_mode"] != nil || params["display_all_pads"] != nil else {
+            throw HorizontalDispatchError.invalidParams("set_symbol_display needs pin_display_mode or display_all_pads.")
+        }
+        let targets: [(sheet: String, id: String, json: JSONDictionary)]
+        if let instance = params.string("symbol_instance") {
+            targets = try symbolInstances().filter { $0.id.caseInsensitiveCompare(instance) == .orderedSame }
+            guard !targets.isEmpty else { throw HorizontalDispatchError.notFound("No symbol instance \(instance). list_symbols returns them.") }
+        } else {
+            let componentID = try componentID(params)
+            let gateID = params.string("gate") == nil ? nil : try gate(params, componentID: componentID).id
+            targets = try symbolInstances().filter {
+                $0.json.string("component")?.lowercased() == componentID
+                    && (gateID == nil || $0.json.string("gate")?.lowercased() == gateID)
+            }
+            guard !targets.isEmpty else { throw HorizontalDispatchError.notFound("No symbol for \(componentID) is on a sheet.") }
+        }
+        for target in targets {
+            try updateSheet(target.sheet) { sheet in
+                var symbols = sheet.dictionaryMap("symbols")
+                guard var item = symbols[target.id] else { return }
+                try Self.applySymbolDisplay(params, to: &item)
+                symbols[target.id] = item
+                sheet["symbols"] = symbols
+            }
+        }
+        return ["symbol_instances": targets.map(\.id).sorted(),
+                "pin_display_mode": params["pin_display_mode"] ?? NSNull(), "display_all_pads": params["display_all_pads"] ?? NSNull()]
     }
 
     private func removeSymbol(_ componentID: String, _ params: JSONDictionary) throws -> JSONDictionary {
@@ -1410,7 +1774,9 @@ final class HorizontalProjectEditor {
             throw HorizontalDispatchError.invalidParams("draw_net_line needs \"to_component\" and \"to_pin\".")
         }
         let toComponent = try componentID(reference: toReference)
-        let toPin = try pinPath(["pin": toPinReference], componentID: toComponent)
+        var toSelector: JSONDictionary = ["pin": toPinReference]
+        if let toGate = params.string("to_gate") { toSelector["gate"] = toGate }
+        let toPin = try pinPath(toSelector, componentID: toComponent)
 
         func net(_ component: String, _ pin: String) throws -> String {
             guard let net = (components()[component]?["connections"] as? JSONDictionary)?
@@ -1478,54 +1844,127 @@ final class HorizontalProjectEditor {
 
     private struct WireEnd {
         var sheet: String
-        var net: String
+        /// Nil only for a junction with no net yet, which takes the net of
+        /// whatever it is wired to.
+        var net: String?
         var json: JSONDictionary
         var identity: String
+        var junction: String? = nil
     }
 
     private func wireEnd(_ endpoint: JSONDictionary, sheet selected: String? = nil) throws -> WireEnd {
         if endpoint.string("kind") == "pin" {
-            guard Set(endpoint.keys) == ["kind", "symbol", "pin"],
-                  let symbolID = endpoint.string("symbol")?.lowercased(),
-                  let pinID = endpoint.string("pin")?.lowercased() else {
-                throw HorizontalDispatchError.invalidParams("A pin endpoint needs kind, symbol instance UUID and pin UUID on the selected sheet.")
+            guard Set(endpoint.keys).isSubset(of: ["kind", "symbol", "pin", "component", "gate"]),
+                  let pinReference = endpoint.string("pin"), !pinReference.isEmpty,
+                  (endpoint["symbol"] == nil) != (endpoint["component"] == nil) else {
+                throw HorizontalDispatchError.invalidParams(
+                    "A pin endpoint is {kind: pin, symbol: <instance id>, pin: <name or uuid>} or {kind: pin, component: <refdes>, gate?: <gate>, pin: <name or uuid>}."
+                )
             }
-            let matches = try symbolInstances().filter { $0.id.lowercased() == symbolID && (selected == nil || selected == $0.sheet) }
-            guard matches.count == 1, let instance = matches.first,
-                  let component = instance.json.string("component"), let gate = instance.json.string("gate") else {
-                throw HorizontalDispatchError.invalidParams("Symbol instance is missing or ambiguous on the selected sheet.")
+            let instance: (sheet: String, id: String, json: JSONDictionary)
+            if let symbolID = endpoint.string("symbol") {
+                let matches = try symbolInstances().filter { $0.id.caseInsensitiveCompare(symbolID) == .orderedSame && (selected == nil || selected == $0.sheet) }
+                guard matches.count == 1, let match = matches.first else {
+                    throw HorizontalDispatchError.notFound("No symbol instance \(symbolID)\(selected == nil ? "" : " on that sheet"). list_symbols returns them.")
+                }
+                instance = match
+            } else {
+                let componentID = try componentID(reference: endpoint.string("component") ?? "")
+                let gateID = endpoint.string("gate") == nil ? nil : try gate(endpoint, componentID: componentID).id
+                var drawn = try symbolInstances().filter {
+                    $0.json.string("component")?.lowercased() == componentID && (selected == nil || selected == $0.sheet)
+                        && (gateID == nil || $0.json.string("gate")?.lowercased() == gateID)
+                }
+                if drawn.count > 1 {
+                    // Which gate holds the pin decides it.
+                    let path = try pinPath(["pin": pinReference], componentID: componentID)
+                    let holder = String(path.split(separator: "/")[0])
+                    drawn = drawn.filter { $0.json.string("gate")?.lowercased() == holder }
+                }
+                guard drawn.count == 1, let match = drawn.first else {
+                    throw HorizontalDispatchError.notFound(drawn.isEmpty
+                        ? "\(endpoint.string("component") ?? componentID) has no symbol\(selected == nil ? "" : " on that sheet") to wire to; place_symbol it first."
+                        : "\(endpoint.string("component") ?? componentID) is drawn more than once; name the symbol instance.")
+                }
+                instance = match
             }
-            let path = try pinPath(["pin": "\(gate)/\(pinID)"], componentID: component)
-            guard path == "\(gate)/\(pinID)".lowercased(),
-                  let symbol = instance.json.string("symbol"), pool.symbolHasPin(symbol, pin: pinID),
-                  let net = components()[component]?.dictionary("connections")?.dictionary(path)?.string("net"),
-                  block.dictionaryMap("nets")[net.lowercased()] != nil else {
-                throw HorizontalDispatchError.invalidParams("The symbol pin must exist and have a block connection; connect it first.")
+            guard let component = instance.json.string("component")?.lowercased(), let gate = instance.json.string("gate")?.lowercased() else {
+                throw HorizontalDispatchError.invalidParams("Symbol instance \(instance.id) names no component and gate.")
             }
-            return WireEnd(sheet: instance.sheet, net: net.lowercased(), json: Self.pinEndpoint("\(instance.id)/\(pinID)"), identity: "pin/\(instance.id)/\(pinID)")
+            let path = try pinPath(["pin": pinReference, "gate": gate], componentID: component)
+            let pinID = String(path.split(separator: "/")[1])
+            let refdes = components()[component]?.string("refdes") ?? component
+            let name = pinName(path, componentID: component)
+            guard let symbol = instance.json.string("symbol"), pool.symbolHasPin(symbol, pin: pinID) else {
+                throw HorizontalDispatchError.invalidParams("The symbol drawing \(refdes) does not draw pin \(name), so there is nothing to wire to.")
+            }
+            let connection = components()[component]?.dictionary("connections")?.first { $0.key.lowercased() == path }?.value as? JSONDictionary
+            guard let net = connection?.string("net")?.lowercased(), block.dictionaryMap("nets")[net] != nil
+                    || block.dictionaryMap("nets").keys.contains(where: { $0.lowercased() == net }) else {
+                throw HorizontalDispatchError.invalidParams(connection == nil
+                    ? "\(refdes) pin \(name) is on no net. Connect it first (connect); a wire records a connection the block already makes."
+                    : "\(refdes) pin \(name) is marked no-connect. Connect it to a net first.")
+            }
+            return WireEnd(sheet: instance.sheet, net: net, json: Self.pinEndpoint("\(instance.id)/\(pinID)"), identity: "pin/\(instance.id)/\(pinID)")
         }
         guard endpoint.string("kind") == "junction", Set(endpoint.keys) == ["kind", "junction"],
               let id = endpoint.string("junction")?.lowercased() else {
-            throw HorizontalDispatchError.invalidParams("An endpoint is {kind: pin, symbol, pin} or {kind: junction, junction}.")
+            throw HorizontalDispatchError.invalidParams("An endpoint is {kind: pin, symbol, pin}, {kind: pin, component, gate?, pin} or {kind: junction, junction}.")
         }
         let matches = try sheetsInOrder().filter { selected == nil || selected == $0.id }.flatMap { sheet in
-            sheet.json.dictionaryMap("junctions").filter { $0.key.lowercased() == id }.map { (sheet.id, $0.key, $0.value) }
+            sheet.json.dictionaryMap("junctions").filter { $0.key.lowercased() == id }.map { (sheet: sheet.id, id: $0.key, json: $0.value) }
         }
         guard matches.count == 1, let junction = matches.first,
-              let sheet = try sheetsInOrder().first(where: { $0.id == junction.0 }),
-              let net = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: block).net(at: ["junc": junction.1]) else {
-            throw HorizontalDispatchError.invalidParams("Junction \(id) must resolve uniquely on a sheet and carry a net.")
+              let sheet = try sheetsInOrder().first(where: { $0.id == junction.sheet }) else {
+            throw HorizontalDispatchError.notFound("No junction \(id)\(selected == nil ? "" : " on that sheet"). list_junctions returns them.")
         }
-        return WireEnd(sheet: junction.0, net: net.lowercased(),
-                       json: ["junc": junction.1, "pin": NSNull(), "port": NSNull(), "bus_ripper": NSNull()], identity: "junc/\(junction.1)")
+        let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: block)
+        let endpointJSON: JSONDictionary = ["junc": junction.id, "pin": NSNull(), "port": NSNull(), "bus_ripper": NSNull()]
+        let net = connectivity.net(at: ["junc": junction.id])
+        if net == nil {
+            let named = connectivity.namedNets(at: ["junc": junction.id])
+            let known = Set(block.dictionaryMap("nets").keys.map { $0.lowercased() })
+            // Floating, or still naming a net that is gone: either way it can
+            // take a net. Two live nets meeting is a short to fix, not adopt.
+            guard named.intersection(known).isEmpty else {
+                throw HorizontalDispatchError.invalidParams("Junction \(id) is wired to more than one net (\(named.sorted().joined(separator: ", "))); fix that before wiring to it.")
+            }
+        }
+        return WireEnd(sheet: junction.sheet, net: net?.lowercased(), json: endpointJSON, identity: "junc/\(junction.id)", junction: junction.id)
+    }
+
+    /// Gives a net-less junction a net, so the wire about to reach it carries one.
+    private func adoptJunction(_ id: String, sheet: String, net: String) throws {
+        try updateSheet(sheet) { sheet in
+            var junctions = sheet.dictionaryMap("junctions")
+            guard let key = junctions.keys.first(where: { $0.caseInsensitiveCompare(id) == .orderedSame }) else { return }
+            junctions[key]?["net"] = net
+            sheet["junctions"] = junctions
+        }
     }
 
     private func drawTypedNetLine(_ params: JSONDictionary, from: JSONDictionary, to: JSONDictionary) throws -> JSONDictionary {
         let sheet = try params["sheet"].map { _ in try sheetID(params) }
         let start = try wireEnd(from, sheet: sheet)
         let end = try wireEnd(to, sheet: sheet)
-        guard start.sheet == end.sheet, start.net == end.net, start.identity != end.identity else {
-            throw HorizontalDispatchError.invalidParams("Wire endpoints must be distinct, on one sheet and the same logical net.")
+        guard start.sheet == end.sheet else {
+            throw HorizontalDispatchError.invalidParams("Wire endpoints are on different sheets; a wire stays on one sheet. Nets cross sheets through their labels.")
+        }
+        guard start.identity != end.identity else {
+            throw HorizontalDispatchError.invalidParams("A wire needs two distinct endpoints.")
+        }
+        guard let net = start.net ?? end.net else {
+            throw HorizontalDispatchError.invalidParams("Neither end is on a net. Wire one end to a pin, label or power symbol, or place_junction it on a net.")
+        }
+        guard (start.net ?? net) == net, (end.net ?? net) == net else {
+            throw HorizontalDispatchError.invalidParams("The endpoints are on different nets (\(start.net!), \(end.net!)); a wire joins one net.")
+        }
+        var adopted = [String]()
+        for wireEnd in [start, end] where wireEnd.net == nil {
+            if let junction = wireEnd.junction {
+                try adoptJunction(junction, sheet: start.sheet, net: net)
+                adopted.append(junction)
+            }
         }
         var id = try editObjectID(params)
         var created = true
@@ -1539,11 +1978,13 @@ final class HorizontalProjectEditor {
             }) { id = existing.key; created = false }
             else {
                 guard lines[id] == nil else { throw HorizontalDispatchError.invalidParams("Wire id already exists: \(id).") }
-                lines[id] = ["from": start.json, "to": end.json, "net": start.net]
+                lines[id] = ["from": start.json, "to": end.json, "net": net]
                 sheet["net_lines"] = lines
             }
         }
-        return ["net_line": id, "sheet": start.sheet, "net": start.net, "created": created]
+        var change: JSONDictionary = ["net_line": id, "sheet": start.sheet, "net": net, "created": created]
+        if !adopted.isEmpty { change["adopted_junctions"] = adopted }
+        return change
     }
 
     private func placeJunction(_ params: JSONDictionary) throws -> JSONDictionary {
@@ -1558,10 +1999,21 @@ final class HorizontalProjectEditor {
             let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block)
             var junctions = sheet.dictionaryMap("junctions")
             let coincident = junctions.filter { $0.value["position"] as? [Int] == point }
-            guard coincident.keys.allSatisfy({ connectivity.net(at: ["junc": $0]) == net }), coincident.count <= 1 else {
+            let known = Set(block.dictionaryMap("nets").keys.map { $0.lowercased() })
+            let floating = { (id: String) in
+                connectivity.net(at: ["junc": id]) == nil && connectivity.namedNets(at: ["junc": id]).intersection(known).isEmpty
+            }
+            guard coincident.keys.allSatisfy({ connectivity.net(at: ["junc": $0]) == net || floating($0) }), coincident.count <= 1 else {
                 throw HorizontalDispatchError.invalidParams("A different or ambiguous net already has a junction at this point.")
             }
-            if let existing = coincident.first { id = existing.key; created = false }
+            if let existing = coincident.first {
+                id = existing.key
+                created = false
+                if floating(existing.key) {
+                    junctions[existing.key]?["net"] = net
+                    sheet["junctions"] = junctions
+                }
+            }
             else {
                 guard junctions[id] == nil else { throw HorizontalDispatchError.invalidParams("Junction id already exists: \(id).") }
                 junctions[id] = ["position": point, "net": net]
@@ -1586,10 +2038,14 @@ final class HorizontalProjectEditor {
             throw HorizontalDispatchError.notFound("The wire's sheet is missing.")
         }
         let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: block)
-        guard let original = line.2.dictionary(end), replacement.net == connectivity.net(at: original) else {
-            throw HorizontalDispatchError.invalidParams("Replacement endpoint must be on the wire's logical net.")
-        }
         let other = end == "from" ? "to" : "from"
+        guard let original = line.2.dictionary(end),
+              let wireNet = connectivity.net(at: original) ?? line.2.dictionary(other).flatMap({ connectivity.net(at: $0) }) else {
+            throw HorizontalDispatchError.invalidParams("The wire is on no net, so there is nothing to keep it on; remove_net_line it instead.")
+        }
+        guard (replacement.net ?? wireNet) == wireNet else {
+            throw HorizontalDispatchError.invalidParams("Replacement endpoint is on \(replacement.net!), not the wire's net \(wireNet).")
+        }
         let otherJSON = line.2.dictionary(other) ?? [:]
         let otherSelector: JSONDictionary
         if let junction = otherJSON.string("junc") {
@@ -1600,18 +2056,23 @@ final class HorizontalProjectEditor {
         } else {
             throw HorizontalDispatchError.unsupported("Retargeting currently requires a pin or junction at the opposite end.")
         }
-        guard try wireEnd(otherSelector, sheet: line.0).net == replacement.net else {
+        guard (try wireEnd(otherSelector, sheet: line.0).net ?? wireNet) == wireNet else {
             throw HorizontalDispatchError.invalidParams("The opposite endpoint no longer agrees with the wire's logical net.")
         }
         guard HorizontalSchematicNetConnectivity.endpointID(replacement.json) != HorizontalSchematicNetConnectivity.endpointID(otherJSON) else {
             throw HorizontalDispatchError.invalidParams("A wire must have distinct endpoints.")
+        }
+        if replacement.net == nil, let junction = replacement.junction {
+            try adoptJunction(junction, sheet: line.0, net: wireNet)
         }
         try updateSheet(line.0) { sheet in
             var lines = sheet.dictionaryMap("net_lines")
             lines[line.1]?[end] = replacement.json
             sheet["net_lines"] = lines
         }
-        return ["net_line": line.1, "sheet": line.0, "end": end, "net": replacement.net]
+        var change: JSONDictionary = ["net_line": line.1, "sheet": line.0, "end": end, "net": wireNet]
+        if replacement.net == nil, let junction = replacement.junction { change["adopted_junctions"] = [junction] }
+        return change
     }
 
     /// Explicit substitution, leaving both the source and imported pool items
@@ -1620,10 +2081,13 @@ final class HorizontalProjectEditor {
         let componentID = try componentID(params)
         guard let component = components()[componentID],
               let targetID = params.string("part")?.lowercased(), let target = poolPart(targetID),
-              let entityID = target.entityID?.lowercased(), let targetEntity = pool.entity(entityID),
-              let rawMap = params["pin_map"] as? [String: String], !rawMap.isEmpty else {
-            throw HorizontalDispatchError.invalidParams("remap_part needs an imported part and a nonempty pin_map of gateUUID/pinUUID identities.")
+              let entityID = target.entityID?.lowercased(), let targetEntity = pool.entity(entityID) else {
+            throw HorizontalDispatchError.invalidParams("remap_part needs a part in the project pool; import_pool_part brings one in.")
         }
+        guard params["pin_map"] == nil || params["pin_map"] is [String: String] else {
+            throw HorizontalDispatchError.invalidParams("pin_map must map gateUUID/pinUUID strings to gateUUID/pinUUID strings.")
+        }
+        let rawMap = params["pin_map"] as? [String: String] ?? [:]
         func identity(_ path: String, entity: HorizontalDispatchPoolIndex.Entity) -> Bool {
             let pieces = path.split(separator: "/").map(String.init)
             return pieces.count == 2 && entity.gates[pieces[0]]?.unitID.flatMap { pool.unit($0)?.pins[pieces[1]] } != nil
@@ -1641,6 +2105,41 @@ final class HorizontalProjectEditor {
         }
         guard Set(mapping.values).count == mapping.count else {
             throw HorizontalDispatchError.invalidParams("pin_map must not merge two old pins into one target pin.")
+        }
+        // Whatever pin_map leaves out is matched by name: the gate by name,
+        // suffix, or as the only gate, then each pin by its primary name.
+        // Pins sharing a name (VSS, VDD) pair up in a stable order.
+        var automatic = 0
+        var sharedNames = Set<String>()
+        let explicit = Set(mapping.keys)
+        var used = Set(mapping.values)
+        for (oldGateID, oldGate) in oldEntity.gates.sorted(by: { $0.key < $1.key }) {
+            let candidates = targetEntity.gates.filter { $0.value.name.caseInsensitiveCompare(oldGate.name) == .orderedSame }
+            let bySuffix = targetEntity.gates.filter { !oldGate.suffix.isEmpty && $0.value.suffix.caseInsensitiveCompare(oldGate.suffix) == .orderedSame }
+            let only = oldEntity.gates.count == 1 && targetEntity.gates.count == 1 ? targetEntity.gates : [:]
+            guard let (newGateID, newGate) = (candidates.count == 1 ? candidates.first : bySuffix.count == 1 ? bySuffix.first : only.first),
+                  let oldUnit = oldGate.unitID.flatMap({ pool.unit($0) }), let newUnit = newGate.unitID.flatMap({ pool.unit($0) }) else { continue }
+            let oldByName = Dictionary(grouping: oldUnit.pins.keys.sorted()) { oldUnit.pins[$0]!.name.lowercased() }
+            let newByName = Dictionary(grouping: newUnit.pins.keys.sorted()) { newUnit.pins[$0]!.name.lowercased() }
+            for (name, oldPins) in oldByName {
+                let newPins = (newByName[name] ?? []).filter { !used.contains("\(newGateID)/\($0)") }
+                if oldPins.count > 1 || newPins.count > 1 { sharedNames.insert(oldUnit.pins[oldPins[0]]!.name) }
+                for (oldPin, newPin) in zip(oldPins.filter { !explicit.contains("\(oldGateID)/\($0)") }, newPins) {
+                    mapping["\(oldGateID)/\(oldPin)"] = "\(newGateID)/\(newPin)"
+                    used.insert("\(newGateID)/\(newPin)")
+                    automatic += 1
+                }
+            }
+        }
+        // Every pin something depends on must have come through one way or
+        // the other; name the ones that did not, rather than the first.
+        let needed = Set((component.dictionary("connections") ?? [:]).keys.map { $0.lowercased() })
+            .union((component.dictionary("alt_pins") ?? [:]).keys.map { $0.lowercased() })
+        let unmapped = needed.subtracting(mapping.keys).sorted()
+        guard unmapped.isEmpty else {
+            throw HorizontalDispatchError.invalidParams(
+                "\(unmapped.count) connected pins have no counterpart by name on the new part: \(unmapped.prefix(40).map { pinName($0, componentID: componentID) }.joined(separator: ", ")). Map them in pin_map; nothing was changed."
+            )
         }
         var connections = JSONDictionary(), altPins = JSONDictionary()
         for (key, value) in component.dictionary("connections") ?? [:] {
@@ -1757,8 +2256,11 @@ final class HorizontalProjectEditor {
             component["connections"] = connections
             component["alt_pins"] = altPins
         }
-        return ["component": componentID, "part": targetID, "pin_map": mapping, "pad_map": padMapping,
-                "preserved_connections": connections.count, "symbols": symbolUpdates.count, "net_lines": changedWires]
+        var change: JSONDictionary = ["component": componentID, "part": targetID, "pin_map": mapping, "pad_map": padMapping,
+                                      "preserved_connections": connections.count, "symbols": symbolUpdates.count, "net_lines": changedWires,
+                                      "explicitly_mapped": explicit.count, "mapped_by_name": automatic]
+        if !sharedNames.isEmpty { change["paired_shared_names"] = sharedNames.sorted() }
+        return change
     }
 
     private func stringMap(_ params: JSONDictionary, key: String) throws -> [String: String] {
@@ -1770,6 +2272,176 @@ final class HorizontalProjectEditor {
             result[key.lowercased()] = value.lowercased()
         }
         return result
+    }
+
+    // MARK: - Wire cleanup
+
+    /// One wire, by id, on any sheet or the one named.
+    private func netLine(_ params: JSONDictionary, key: String = "line") throws -> (sheet: String, id: String, json: JSONDictionary) {
+        guard let reference = params.string(key), !reference.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("\(key) is required; list_net_lines returns the ids.")
+        }
+        let selected = try params["sheet"].map { _ in try sheetID(params) }
+        let matches = try sheetsInOrder().filter { selected == nil || selected == $0.id }.flatMap { sheet in
+            sheet.json.dictionaryMap("net_lines").filter { $0.key.caseInsensitiveCompare(reference) == .orderedSame }
+                .map { (sheet: sheet.id, id: $0.key, json: $0.value) }
+        }
+        guard matches.count == 1, let match = matches.first else {
+            throw HorizontalDispatchError.notFound("No wire \(reference)\(selected == nil ? "" : " on that sheet"). list_net_lines returns them.")
+        }
+        return match
+    }
+
+    private static func lineJunctions(_ line: JSONDictionary) -> Set<String> {
+        Set(["from", "to"].compactMap { line.dictionary($0)?.string("junc")?.lowercased() })
+    }
+
+    private func removeNetLine(_ params: JSONDictionary) throws -> JSONDictionary {
+        let line = try netLine(params)
+        try updateSheet(line.sheet) { sheet in
+            var lines = sheet.dictionaryMap("net_lines")
+            lines.removeValue(forKey: line.id)
+            sheet["net_lines"] = lines
+        }
+        return ["net_line": line.id, "sheet": line.sheet,
+                "junctions_removed": try collectSheetJunctions(line.sheet, candidates: Self.lineJunctions(line.json))]
+    }
+
+    private func removeJunction(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard let reference = params.string("junction"), !reference.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("remove_junction needs \"junction\"; list_junctions returns the ids.")
+        }
+        let selected = try params["sheet"].map { _ in try sheetID(params) }
+        let matches = try sheetsInOrder().filter { selected == nil || selected == $0.id }.compactMap { sheet -> (sheet: String, id: String, json: JSONDictionary)? in
+            guard let key = sheet.json.dictionaryMap("junctions").keys.first(where: { $0.caseInsensitiveCompare(reference) == .orderedSame }) else { return nil }
+            return (sheet.id, key, sheet.json)
+        }
+        guard matches.count == 1, let match = matches.first else {
+            throw HorizontalDispatchError.notFound("No junction \(reference)\(selected == nil ? "" : " on that sheet"). list_junctions returns them.")
+        }
+        let id = match.id.lowercased()
+        let lines = match.json.dictionaryMap("net_lines").filter { Self.lineJunctions($0.value).contains(id) }
+        var marks = [String: [String]]()
+        for key in ["net_labels", "power_symbols", "bus_labels", "bus_rippers"] {
+            let on = match.json.dictionaryMap(key).filter { $0.value.string("junction")?.lowercased() == id }.keys.sorted()
+            if !on.isEmpty { marks[key] = on }
+        }
+        let ties = match.json.dictionaryMap("net_ties").filter { _, tie in ["from", "to"].contains { tie.string($0)?.lowercased() == id } }
+        guard ties.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("A net tie is drawn on junction \(match.id); remove_net_tie it first.")
+        }
+        guard params.bool("cascade") ?? true || (lines.isEmpty && marks.isEmpty) else {
+            throw HorizontalDispatchError.invalidParams(
+                "Junction \(match.id) still holds \(lines.count) wires and \(marks.values.map(\.count).reduce(0, +)) labels or symbols; pass cascade to remove them too."
+            )
+        }
+        try updateSheet(match.sheet) { sheet in
+            var junctions = sheet.dictionaryMap("junctions")
+            junctions.removeValue(forKey: match.id)
+            sheet["junctions"] = junctions
+            var netLines = sheet.dictionaryMap("net_lines")
+            for key in lines.keys { netLines.removeValue(forKey: key) }
+            sheet["net_lines"] = netLines
+            for (key, ids) in marks {
+                var map = sheet.dictionaryMap(key)
+                for markID in ids { map.removeValue(forKey: markID) }
+                sheet[key] = map
+            }
+        }
+        // The far ends of the wires taken with it may be left holding nothing.
+        let farEnds = lines.values.reduce(into: Set<String>()) { $0.formUnion(Self.lineJunctions($1)) }.subtracting([id])
+        var change: JSONDictionary = ["junction": match.id, "sheet": match.sheet, "net_lines": lines.keys.sorted(),
+                                      "junctions_removed": try collectSheetJunctions(match.sheet, candidates: farEnds)]
+        for (key, ids) in marks { change[key] = ids }
+        return change
+    }
+
+    /// Drawing left behind once what it drew is gone: wires with an end that
+    /// names nothing, wiring that carries no net and reaches no pin, labels on
+    /// no net, and junctions nothing stands on.
+    private func pruneSheets(_ params: JSONDictionary) throws -> JSONDictionary {
+        let targets = params["sheet"] == nil ? try sheetsInOrder().map(\.id) : [try sheetID(params)]
+        let known = Set(block.dictionaryMap("nets").keys.map { $0.lowercased() })
+        let componentsMap = components()
+        var report = [JSONDictionary]()
+        for target in targets {
+            guard let sheet = try sheetsInOrder().first(where: { $0.id == target })?.json else { continue }
+            let junctionIDs = Set(sheet.dictionaryMap("junctions").keys.map { $0.lowercased() })
+            let symbols = sheet.dictionaryMap("symbols")
+            let symbolIDs = Set(symbols.keys.map { $0.lowercased() })
+            func dangling(_ end: JSONDictionary?) -> Bool {
+                guard let end, HorizontalSchematicNetConnectivity.endpointID(end) != nil else { return true }
+                if let junction = end.string("junc") { return !junctionIDs.contains(junction.lowercased()) }
+                if let pin = end.string("pin") {
+                    let pieces = pin.lowercased().split(separator: "/").map(String.init)
+                    guard pieces.count == 2, symbolIDs.contains(pieces[0]),
+                          let symbol = symbols.first(where: { $0.key.lowercased() == pieces[0] })?.value.string("symbol") else { return true }
+                    return !pool.symbolHasPin(symbol, pin: pieces[1])
+                }
+                return false
+            }
+            let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block)
+            func floating(_ endpoint: JSONDictionary) -> Bool {
+                guard let id = HorizontalSchematicNetConnectivity.endpointID(endpoint), let island = connectivity.islandOf[id] else { return true }
+                let members = connectivity.islands[island].members
+                return connectivity.islands[island].nets.intersection(known).isEmpty && members.allSatisfy { $0.hasPrefix("junc/") }
+            }
+            var doomedLines = Set<String>()
+            for (id, line) in sheet.dictionaryMap("net_lines") {
+                if dangling(line.dictionary("from")) || dangling(line.dictionary("to")) || line.dictionary("from").map(floating) ?? true {
+                    doomedLines.insert(id)
+                }
+            }
+            var doomedLabels = [String]()
+            for (id, label) in sheet.dictionaryMap("net_labels") {
+                guard let junction = label.string("junction") else { doomedLabels.append(id); continue }
+                let named = connectivity.namedNets(at: ["junc": junction]).intersection(known)
+                if !junctionIDs.contains(junction.lowercased()) || (named.isEmpty && !known.contains(label.string("last_net")?.lowercased() ?? "")) {
+                    doomedLabels.append(id)
+                }
+            }
+            let doomedPower = sheet.dictionaryMap("power_symbols").filter { !known.contains($0.value.string("net")?.lowercased() ?? "") }.keys.sorted()
+            // A symbol whose component is gone is drawn from nothing.
+            let doomedSymbols = symbols.filter { componentsMap[$0.value.string("component")?.lowercased() ?? ""] == nil }.keys.sorted()
+            guard !doomedLines.isEmpty || !doomedLabels.isEmpty || !doomedPower.isEmpty || !doomedSymbols.isEmpty || !junctionIDs.isSubset(of: Self.referencedJunctions(sheet)) else { continue }
+            try updateSheet(target) { sheet in
+                var lines = sheet.dictionaryMap("net_lines")
+                for id in doomedLines { lines.removeValue(forKey: id) }
+                sheet["net_lines"] = lines
+                var labels = sheet.dictionaryMap("net_labels")
+                for id in doomedLabels { labels.removeValue(forKey: id) }
+                sheet["net_labels"] = labels
+                var power = sheet.dictionaryMap("power_symbols")
+                for id in doomedPower { power.removeValue(forKey: id) }
+                sheet["power_symbols"] = power
+                var drawn = sheet.dictionaryMap("symbols")
+                for id in doomedSymbols { drawn.removeValue(forKey: id) }
+                sheet["symbols"] = drawn
+            }
+            // Lines that ended on a removed symbol go too.
+            if !doomedSymbols.isEmpty {
+                let gone = Set(doomedSymbols.map { $0.lowercased() })
+                try updateSheet(target) { sheet in
+                    var lines = sheet.dictionaryMap("net_lines")
+                    for (id, line) in lines where ["from", "to"].contains(where: { end in
+                        line.dictionary(end)?.string("pin")?.lowercased().split(separator: "/").first.map { gone.contains(String($0)) } ?? false
+                    }) {
+                        lines.removeValue(forKey: id)
+                        doomedLines.insert(id)
+                    }
+                    sheet["net_lines"] = lines
+                }
+            }
+            let junctions = try collectSheetJunctions(target)
+            report.append(["sheet": target, "name": sheet.string("name") as Any, "net_lines": doomedLines.sorted(),
+                           "net_labels": doomedLabels.sorted(), "power_symbols": doomedPower, "symbols": doomedSymbols,
+                           "junctions": junctions])
+        }
+        var removed = JSONDictionary()
+        for key in ["net_lines", "net_labels", "power_symbols", "symbols", "junctions"] {
+            removed[key] = report.reduce(0) { total, sheet in total + ((sheet[key] as? [String])?.count ?? 0) }
+        }
+        return ["pruned": report, "removed": removed]
     }
 
     // MARK: - Sheet texts
@@ -1893,8 +2565,21 @@ final class HorizontalProjectEditor {
     private func ensureSheetJunction(_ sheetID: String, x: Double, y: Double, net: String?) throws -> String {
         let point = [Self.nanometres(x), Self.nanometres(y)]
         let sheets = try sheetsInOrder()
-        let existing = sheets.first { $0.id == sheetID }?.json.dictionaryMap("junctions")
-            .first { $0.value["position"] as? [Int] == point }
+        let sheetJSON = sheets.first { $0.id == sheetID }?.json ?? [:]
+        let existing = sheetJSON.dictionaryMap("junctions").first { $0.value["position"] as? [Int] == point }
+        if let existing, let net {
+            // A junction already at the point is reused — a net-less one takes
+            // this net — but one on another live net would short the two.
+            let connectivity = HorizontalSchematicNetConnectivity(sheet: sheetJSON, block: block)
+            let known = Set(block.dictionaryMap("nets").keys.map { $0.lowercased() })
+            let named = connectivity.namedNets(at: ["junc": existing.key]).intersection(known)
+            guard named.isSubset(of: [net.lowercased()]) else {
+                let names = named.map { block.dictionaryMap("nets")[$0]?.string("name") ?? $0 }.sorted()
+                throw HorizontalDispatchError.invalidParams(
+                    "The junction at (\(x), \(y)) is on \(names.joined(separator: ", ")); a mark for another net there would join them. Move it, or remove_junction first."
+                )
+            }
+        }
         let id = existing?.key ?? UUID().uuidString.lowercased()
         try updateSheet(sheetID) { sheet in
             var junctions = sheet["junctions"] as? JSONDictionary ?? [:]
@@ -1908,14 +2593,17 @@ final class HorizontalProjectEditor {
         return id
     }
 
-    /// Junctions on a sheet that nothing refers to any more.
-    @discardableResult
-    private func collectSheetJunctions(_ sheetID: String) throws -> [String] {
-        guard let sheet = try sheetsInOrder().first(where: { $0.id == sheetID })?.json else { return [] }
+    /// The junctions a sheet's wires, marks and net ties stand on.
+    private static func referencedJunctions(_ sheet: JSONDictionary) -> Set<String> {
         var referenced = Set<String>()
         for key in ["net_labels", "power_symbols", "bus_labels", "bus_rippers"] {
             for (_, item) in sheet.dictionaryMap(key) {
                 if let junction = item.string("junction") { referenced.insert(junction.lowercased()) }
+            }
+        }
+        for (_, tie) in sheet.dictionaryMap("net_ties") {
+            for end in ["from", "to"] {
+                if let junction = tie.string(end) { referenced.insert(junction.lowercased()) }
             }
         }
         for (_, line) in sheet.dictionaryMap("net_lines") {
@@ -1923,10 +2611,21 @@ final class HorizontalProjectEditor {
                 if let junction = line.dictionary(end)?.string("junc") { referenced.insert(junction.lowercased()) }
             }
         }
+        return referenced
+    }
+
+    /// Junctions on a sheet that nothing refers to any more — only those
+    /// among `candidates` when given, so a junction placed on purpose ahead of
+    /// its wires is not swept up by an unrelated removal.
+    @discardableResult
+    private func collectSheetJunctions(_ sheetID: String, candidates: Set<String>? = nil) throws -> [String] {
+        guard let sheet = try sheetsInOrder().first(where: { $0.id == sheetID })?.json else { return [] }
+        let referenced = Self.referencedJunctions(sheet)
+        let candidates = candidates.map { Set($0.map { $0.lowercased() }) }
         var removed = [String]()
         try updateSheet(sheetID) { sheet in
             var junctions = sheet["junctions"] as? JSONDictionary ?? [:]
-            for id in junctions.keys where !referenced.contains(id.lowercased()) {
+            for id in junctions.keys where !referenced.contains(id.lowercased()) && (candidates?.contains(id.lowercased()) ?? true) {
                 junctions.removeValue(forKey: id)
                 removed.append(id)
             }
@@ -1949,8 +2648,12 @@ final class HorizontalProjectEditor {
         guard let x = params.double("x_mm"), let y = params.double("y_mm") else {
             throw HorizontalDispatchError.invalidParams("place_power_symbol needs \"x_mm\" and \"y_mm\".")
         }
-        let orientation = try markOption(params, key: "orientation", allowed: Self.markOrientations, default: "up")
         let style = params.string("style")
+        // Ground and earth hang down, dot and antenna stand up, as the app
+        // places them; the style is the net's when this does not set one.
+        let effectiveStyle = style ?? nets()[net]?.string("power_symbol_style")
+        let orientation = try markOption(params, key: "orientation", allowed: Self.markOrientations,
+                                         default: HorizontalSchematicSheet.defaultPowerSymbolOrientation(forStyle: effectiveStyle))
         if let style, !Self.powerSymbolStyles.contains(style) {
             throw HorizontalDispatchError.invalidParams("style must be one of \(Self.powerSymbolStyles.joined(separator: ", ")).")
         }
@@ -2329,8 +3032,9 @@ final class HorizontalProjectEditor {
         return ["keepout": match.key, "polygon": polygon as Any? as Any]
     }
 
-    /// Renumbering a sheet swaps with whoever holds that number, because two
-    /// sheets sharing a page number is a state the app cannot show.
+    /// Moves a sheet to a page number, shifting the pages between up or down
+    /// one, the way dragging a page in the app does. swap exchanges it with
+    /// the page there instead. Either way no two sheets share a number.
     private func setSheetIndex(_ params: JSONDictionary) throws -> JSONDictionary {
         let id = try sheetID(params)
         guard let index = params.int("index") else {
@@ -2342,14 +3046,30 @@ final class HorizontalProjectEditor {
             throw HorizontalDispatchError.notFound("No sheet \(id).")
         }
         let was = current.json.int("index") ?? 0
-        guard was != index else { return ["sheet": id, "index": index, "swapped_with": NSNull()] }
-        let occupant = sheets.first { $0.json.int("index") == index && $0.id != id }
-        try updateSheet(id) { $0["index"] = index }
-        if let occupant {
-            try updateSheet(occupant.id) { $0["index"] = was }
+        let last = sheets.map { $0.json.int("index") ?? 0 }.max() ?? 0
+        guard index <= last else { throw HorizontalDispatchError.invalidParams("The last page is \(last).") }
+        guard was != index else { return ["sheet": id, "index": index, "was": was, "swapped_with": NSNull(), "moved": [String]()] }
+        if params.bool("swap") ?? false {
+            let occupant = sheets.first { $0.json.int("index") == index && $0.id != id }
+            try updateSheet(id) { $0["index"] = index }
+            if let occupant {
+                try updateSheet(occupant.id) { $0["index"] = was }
+            }
+            return ["sheet": id, "index": index, "was": was, "swapped_with": occupant?.id as Any? as Any]
         }
-        return ["sheet": id, "index": index, "was": was,
-                "swapped_with": occupant?.id as Any? as Any]
+        var moved = [String]()
+        for other in sheets where other.id != id {
+            guard let page = other.json.int("index") else { continue }
+            if index < was, page >= index, page < was {
+                try updateSheet(other.id) { $0["index"] = page + 1 }
+                moved.append(other.id)
+            } else if index > was, page <= index, page > was {
+                try updateSheet(other.id) { $0["index"] = page - 1 }
+                moved.append(other.id)
+            }
+        }
+        try updateSheet(id) { $0["index"] = index }
+        return ["sheet": id, "index": index, "was": was, "swapped_with": NSNull(), "moved": moved.sorted()]
     }
 
     // MARK: - Board text and dimensions
@@ -2889,24 +3609,46 @@ final class HorizontalProjectEditor {
             throw HorizontalDispatchError.invalidParams("add_sheet needs a \"name\".")
         }
         let sheets = try sheetsInOrder()
-        let index = params.int("index") ?? ((sheets.map { $0.json.int("index") ?? 0 }.max() ?? 0) + 1)
-        if let clash = sheets.first(where: { $0.json.int("index") == index }) {
-            throw HorizontalDispatchError.invalidParams(
-                "Sheet \(index) is already \(clash.json.string("name") ?? clash.id); pass another index or leave it out."
-            )
+        let last = (sheets.map { $0.json.int("index") ?? 0 }.max() ?? 0)
+        let index = params.int("index") ?? (last + 1)
+        guard index > 0 else { throw HorizontalDispatchError.invalidParams("A page number starts at 1.") }
+        guard index <= last + 1 else {
+            throw HorizontalDispatchError.invalidParams("There are \(sheets.count) sheets; a new one goes at page \(last + 1) or before.")
+        }
+        // The frame draws the title block. A new page looks like the others
+        // unless told otherwise.
+        let frame: String?
+        switch params.string("frame") {
+        case "none": frame = nil
+        case let requested?:
+            guard UUID(uuidString: requested) != nil else { throw HorizontalDispatchError.invalidParams("frame must be a pool frame uuid or \"none\".") }
+            frame = requested.lowercased()
+        case nil:
+            frame = sheets.last?.json.string("frame")
         }
         let id = UUID().uuidString.lowercased()
         guard var schematic = files["schematic"] else {
             throw HorizontalDispatchError.notFound("The project has no schematic.")
         }
         var all = schematic["sheets"] as? JSONDictionary ?? [:]
+        // A page already taken moves down, with every page after it.
+        var shifted = [String]()
+        for (sheetID, value) in all {
+            guard var sheet = value as? JSONDictionary, let page = sheet.int("index"), page >= index else { continue }
+            sheet["index"] = page + 1
+            all[sheetID] = sheet
+            shifted.append(sheetID)
+        }
         var sheet: JSONDictionary = ["name": name, "index": index]
         for key in Self.emptySheetKeys { sheet[key] = [String: Any]() }
+        if let frame { sheet["frame"] = frame }
         all[id] = sheet
         schematic["sheets"] = all
         files["schematic"] = schematic
         dirty.insert("schematic")
-        return ["sheet": id, "name": name, "index": index]
+        var change: JSONDictionary = ["sheet": id, "name": name, "index": index, "frame": frame as Any? as Any]
+        if !shifted.isEmpty { change["shifted"] = shifted.sorted() }
+        return change
     }
 
     private func renameSheet(_ params: JSONDictionary) throws -> JSONDictionary {
@@ -2933,9 +3675,10 @@ final class HorizontalProjectEditor {
             .filter { $0 != "title_block_values" }
             .map { (key: $0, count: sheet.json.dictionaryMap($0).count) }
             .filter { $0.count > 0 }
-        guard drawn.isEmpty else {
+        let force = params.bool("force") ?? false
+        guard drawn.isEmpty || force else {
             throw HorizontalDispatchError.invalidParams(
-                "Sheet \(sheet.json.string("name") ?? id) still holds \(drawn.map { "\($0.count) \($0.key)" }.joined(separator: ", ")). Clear it first."
+                "Sheet \(sheet.json.string("name") ?? id) still holds \(drawn.map { "\($0.count) \($0.key)" }.joined(separator: ", ")). Clear it first, or pass force."
             )
         }
         guard var schematic = files["schematic"] else {
@@ -2943,10 +3686,27 @@ final class HorizontalProjectEditor {
         }
         var all = schematic["sheets"] as? JSONDictionary ?? [:]
         all.removeValue(forKey: id)
+        // The pages after it close up, so page numbers stay a sequence.
+        let page = sheet.json.int("index") ?? 0
+        for (sheetID, value) in all {
+            guard var other = value as? JSONDictionary, let index = other.int("index"), index > page else { continue }
+            other["index"] = index - 1
+            all[sheetID] = other
+        }
         schematic["sheets"] = all
         files["schematic"] = schematic
         dirty.insert("schematic")
-        return ["sheet": id, "name": sheet.json.string("name") as Any]
+        var change: JSONDictionary = ["sheet": id, "name": sheet.json.string("name") as Any]
+        if !drawn.isEmpty {
+            change["cleared"] = Dictionary(uniqueKeysWithValues: drawn.map { ($0.key, $0.count) })
+            let unplaced = Set(sheet.json.dictionaryMap("symbols").values.compactMap { $0.string("component")?.lowercased() })
+                .compactMap { components()[$0]?.string("refdes") }.sorted()
+            if !unplaced.isEmpty {
+                change["unplaced_components"] = unplaced
+                change["note"] = "These components stay in the block with no symbol on any sheet; place_symbol draws them again."
+            }
+        }
+        return change
     }
 
     /// Horizon's net-line endpoint: exactly one of the four is set.

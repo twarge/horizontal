@@ -6,6 +6,11 @@ import Foundation
 /// unresolved. Coordinates alone never join separate junctions.
 struct HorizontalSchematicNetConnectivity {
     private var netsByEndpoint: [String: String] = [:]
+    /// Every endpoint's island — the endpoints wires join it to — and the
+    /// nets that island's pins, junctions and labels name, known or not. An
+    /// island naming none floats; one naming several conflicts.
+    private(set) var islandOf: [String: Int] = [:]
+    private(set) var islands: [(members: Set<String>, nets: Set<String>)] = []
 
     static func endpointID(_ endpoint: JSONDictionary) -> String? {
         let identities = ["junc", "pin", "port", "bus_ripper"].compactMap { kind in
@@ -16,6 +21,13 @@ struct HorizontalSchematicNetConnectivity {
 
     func net(at endpoint: JSONDictionary) -> String? {
         Self.endpointID(endpoint).flatMap { netsByEndpoint[$0] }
+    }
+
+    /// The nets an endpoint's island names, before any are ruled out as
+    /// unknown or conflicting. Empty for a floating island.
+    func namedNets(at endpoint: JSONDictionary) -> Set<String> {
+        guard let id = Self.endpointID(endpoint), let island = islandOf[id] else { return [] }
+        return islands[island].nets
     }
 
     init(sheet: JSONDictionary, block: JSONDictionary, requiresKnownNet: Bool = true) {
@@ -84,6 +96,8 @@ struct HorizontalSchematicNetConnectivity {
             // Wire net fields are cached artwork metadata. Pin, junction and
             // label connectivity can change without updating those fields.
             if nets.isEmpty { nets = wireNets }
+            for id in connected { islandOf[id] = islands.count }
+            islands.append((connected, nets))
             guard nets.count == 1, let net = nets.first,
                   !requiresKnownNet || knownNets.contains(net) else { continue }
             for id in connected { netsByEndpoint[id] = net }

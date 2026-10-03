@@ -63,6 +63,39 @@ final class HorizontalLiveServerTests: XCTestCase {
         return document
     }
 
+    /// A live commit hands the app the project it loaded to validate the edit,
+    /// leaves the next commit's diagnostics cached, and records a failure so
+    /// a client that lost the reply can be told it did not commit.
+    func testLiveCommitsReuseTheirLoadAndRecordFailures() throws {
+        let document = try registerTemplateDocument()
+        var handed: [HorizontalProject] = []
+        let fallback = document.applyArchive
+        document.applyLoadedArchive = { archive, loaded, name in
+            handed.append(loaded)
+            try fallback(archive, name)
+        }
+        let entry = try HorizontalDispatchSession.shared.entry(handle: handle!)
+        func apply(_ ops: [JSONDictionary], id: String = UUID().uuidString) -> JSONDictionary {
+            HorizontalDispatch.call(["jsonrpc": "2.0", "id": 1, "method": "apply", "params": [
+                "handle": handle!, "expected_revision": entry.revision, "operation_id": id, "detail": "compact", "ops": ops]])
+        }
+        XCTAssertNil(apply([["op": "ensure_net", "name": "A"]])["error"])
+        XCTAssertEqual(handed.count, 1)
+        let reloaded = try HorizontalProject.loadSnapshot(of: document.archive())
+        XCTAssertEqual(handed[0].schematics.count, reloaded.schematics.count)
+        XCTAssertEqual(handed[0].diagnostics.map(\.message).count, reloaded.diagnostics.map(\.message).count)
+        // The document's archive comes back byte for byte, so the snapshot the
+        // next commit starts from is the one whose diagnostics are cached.
+        XCTAssertEqual(entry.cachedDiagnostics?.snapshotID, entry.snapshot?.id)
+
+        let failedID = UUID().uuidString
+        XCTAssertNotNil(apply([["op": "set_value", "component": "NOPE", "value": "1"]], id: failedID)["error"])
+        let status = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 2, "method": "transaction_status",
+                                              "params": ["handle": handle!, "operation_id": failedID]])
+        XCTAssertEqual((status["result"] as? JSONDictionary)?.string("status"), "not_committed")
+        XCTAssertEqual(handed.count, 1, "nothing was applied for the failure")
+    }
+
     func testTheChannelIsOffUntilItIsTurnedOn() throws {
         let suite = "horizontal-live-default-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

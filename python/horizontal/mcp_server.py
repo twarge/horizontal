@@ -29,15 +29,18 @@ from pydantic import BaseModel, Field, StrictInt, ValidationError
 
 from ._native import (HorizontalError, find_live, find_live_for, find_cli, find_dylib, LiveTransport,
                       project_holders, transport_error)
-from .client import Project, Session, open as open_any, _request_deadline
-from .schemas import (Result, ProjectInfo, Component, Net, Sheet, EditResult, Region, RenderedImage, EditOperation,
+from .client import Project, Session, open as open_any, _request_deadline, mutation_timeout
+from .schemas import (Result, ProjectInfo, Component, ComponentFields, Net, Sheet, EditResult, Region, RenderedImage, EditOperation,
                       PinnedSnapshot, AnalysisValidation, AnalysisJob)
 from .analysis import Scenario, Setup, validate as validate_circuit
 from .analysis_jobs import AnalysisJobs
 
 class TypedMCPServer(MCPServer):
     async def call_tool(self, name, arguments, context=None):
-        deadline_token = _request_deadline.set(time.monotonic() + 30)
+        # A mutation on a large live document can take longer than a read;
+        # it gets the client's mutation budget plus time to look up its outcome.
+        budget = 2 * mutation_timeout() + 10 if name in _mutations else 30
+        deadline_token = _request_deadline.set(time.monotonic() + budget)
         try:
             return await super().call_tool(name, arguments, context)
         except ToolError as error:
@@ -56,7 +59,10 @@ mcp = TypedMCPServer(
         "Call open_project first, or set HORIZONTAL_PROJECT; then query components, nets, the netlist, "
         "the BOM, run checks, export fabrication files, and render sheets or the board as images. "
         "Edits cover the block, schematic symbols, wires and text, board placement and manual track and via "
-        "routing, and can pull parts in from the pools a project draws from. Nothing autoroutes."
+        "routing, and can pull parts in from the pools a project draws from. Nothing autoroutes. "
+        "Edit replies are compact — ids and counts per op — unless verbose is passed. A mutation whose reply is "
+        "lost is looked up by its operation_id before an error is returned, so a TIMEOUT means the outcome "
+        "really is unknown; transaction_status answers it later."
     ),
 )
 
@@ -77,7 +83,7 @@ def _tool(fn: Callable[..., Any]) -> Callable[..., Any]:
     result_type = {"open_project": ProjectInfo, "new_project": ProjectInfo, "reload_project": ProjectInfo,
                    "analysis_snapshot": PinnedSnapshot, "validate_analysis": AnalysisValidation,
                    **{name: AnalysisJob for name in ("analyze_transfer", "analyze_noise", "analyze_headroom", "analyze_adc_filter", "analysis_result", "cancel_analysis")},
-                   "list_components": list[Component], "get_component": Component,
+                   "list_components": list[Component | ComponentFields], "get_component": Component | ComponentFields,
                    "list_nets": list[Net], "get_net": Net, "list_sheets": list[Sheet],
                    **{name: EditResult for name in _mutations},
                    **{name: RenderedImage for name in ("render_sheet", "render_board", "render_viewport")}}.get(fn.__name__, hints.get("return", Any))
@@ -98,7 +104,9 @@ def _tool(fn: Callable[..., Any]) -> Callable[..., Any]:
                 _active_project.set(_projects[ref])
             if fn.__name__ in _mutations:
                 options = {key: kwargs.pop(key, None) for key in ("expected_revision", "operation_id", "plan_digest")}
-                _edit_options.set({key: value for key, value in options.items() if value is not None})
+                options = {key: value for key, value in options.items() if value is not None}
+                if not kwargs.pop("verbose", False): options["detail"] = "compact"
+                _edit_options.set(options)
             value = fn(*args, **kwargs)
             project = _active_project.get()
             meta = dict(project.last_metadata) if project else None
@@ -129,7 +137,10 @@ def _tool(fn: Callable[..., Any]) -> Callable[..., Any]:
     if fn.__name__ in _mutations:
         parameters += [inspect.Parameter("expected_revision", inspect.Parameter.KEYWORD_ONLY, annotation=str),
                        inspect.Parameter("operation_id", inspect.Parameter.KEYWORD_ONLY, annotation=str),
-                       inspect.Parameter("plan_digest", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=str | None)]
+                       inspect.Parameter("plan_digest", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=str | None),
+                       inspect.Parameter("verbose", inspect.Parameter.KEYWORD_ONLY, default=False, annotation=Annotated[bool, Field(
+                           description="Return the full reply: every change in full, the echoed ops, file previews for a dry run, "
+                                       "and the project summary. Off, the reply is ids and counts.")])]
     wrapper.__signature__ = signature.replace(parameters=parameters, return_annotation=output)
     wrapper.__annotations__ = {p.name: p.annotation for p in parameters} | {"return": output}
     resource_writes = {"open_project", "new_project", "save", "undo", "reload_project", "analysis_snapshot", "release_analysis_snapshot", "analyze_transfer", "analyze_noise", "analyze_headroom", "analyze_adc_filter", "cancel_analysis", "discard_analysis"}
@@ -273,9 +284,12 @@ def close_project(path: str | None = None) -> dict[str, Any]:
 
 
 @_tool
-def transaction_status(operation_id: str, path: str | None = None) -> dict[str, Any]:
-    """Look up a mutation outcome after a lost response. Unknown does not authorize replay."""
-    return _resolve(path).transaction_status(operation_id)
+def transaction_status(operation_id: str, path: str | None = None, verbose: bool = False) -> dict[str, Any]:
+    """Look up a mutation's outcome after a lost response: committed (with its receipt), not_committed (with the
+    error — safe to resend), or unknown when the document never saw that id. The engine answers one request at a
+    time, so this waits for a mutation still running. A lost connection is reopened first."""
+    project = _resolve(path)
+    return project._call("transaction_status", operation_id=operation_id, **({} if verbose else {"detail": "compact"}))
 
 
 @_tool
@@ -446,16 +460,36 @@ def list_sheets(path: str | None = None) -> list[dict[str, Any]]:
     return _resolve(path).sheets()
 
 
+def _only(record: dict[str, Any], fields: list[str] | None) -> dict[str, Any]:
+    """The fields asked for, and always what identifies the record."""
+    if not fields: return record
+    keep = set(fields) | {"id", "refdes"}
+    return {key: value for key, value in record.items() if key in keep}
+
+
 @_tool
-def list_components(path: str | None = None, sheet: int | None = None, sheet_id: str | None = None, block_id: str | None = None, name: str | None = None) -> list[dict[str, Any]]:
+def list_components(path: str | None = None, sheet: int | None = None, sheet_id: str | None = None, block_id: str | None = None, name: str | None = None,
+                    fields: Annotated[list[str] | None, Field(description="Only these keys of each component (id and refdes always), e.g. [\"value\", \"mpn\"].")] = None,
+                    refdes_prefix: Annotated[str | None, Field(description="Only components whose refdes starts with this, e.g. \"C\".")] = None) -> list[dict[str, Any]]:
     """Every component with refdes, value, MPN, package, and where it is placed. Optionally only those with a symbol on one sheet."""
-    return _resolve(path).components(sheet=sheet, sheet_id=sheet_id, block_id=block_id, name=name)
+    components = _resolve(path).components(sheet=sheet, sheet_id=sheet_id, block_id=block_id, name=name)
+    if refdes_prefix: components = [c for c in components if str(c.get("refdes", "")).upper().startswith(refdes_prefix.upper())]
+    return [_only(c, fields) for c in components]
 
 
 @_tool
-def get_component(refdes: str | None = None, path: str | None = None, id: str | None = None) -> dict[str, Any]:
-    """One component in full: every pin with its net, symbol placements, board placement, part details."""
-    return _resolve(path).component(refdes=refdes, id=id)
+def get_component(refdes: str | None = None, path: str | None = None, id: str | None = None,
+                  fields: Annotated[list[str] | None, Field(description="Only these top-level keys (id and refdes always), e.g. [\"pins\", \"symbols\"].")] = None,
+                  pins: Annotated[str | None, Field(description="Only pins whose name contains this, case-insensitively, e.g. \"PA1\".")] = None,
+                  connected: Annotated[bool | None, Field(description="true: only pins on a net; false: only pins on none.")] = None) -> dict[str, Any]:
+    """One component in full: every pin with its net, symbol placements, board placement, part details. On a
+    part with hundreds of pins, narrow it with fields, pins or connected."""
+    component = _resolve(path).component(refdes=refdes, id=id)
+    if pins is not None or connected is not None:
+        component["pins"] = [p for p in component.get("pins", [])
+                             if (pins is None or pins.lower() in str(p.get("pin", "")).lower())
+                             and (connected is None or (p.get("net") is not None) == connected)]
+    return _only(component, fields)
 
 
 @_tool
@@ -858,7 +892,18 @@ def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool =
     reports what is still unrouted.
 
     block selects which block to edit; without it, the top one. A sub-block's components are instantiated
-    wherever that block is used, so it has no board of its own and board operations on one are refused."""
+    wherever that block is used, so it has no board of its own and board operations on one are refused.
+
+    Pins are named by name or uuid, whole names first, so PA13(JTMS/SWDIO) works; a wire end can name a
+    component and pin instead of a symbol instance. Cleanup: remove_net_line, remove_junction, prune_sheet,
+    remove_sheet with force, and retire_net, which takes the net's labels, wires and junctions with it. Drawing:
+    terminate_pin runs a stub from a pin to a label or power symbol; place_symbol takes an id so later ops in
+    the batch can name it. set_no_connect marks unused pins; remap_part matches pins by name when pin_map is
+    left out. Refer to sheets by name or uuid in a batch that adds or reorders sheets — page numbers move.
+
+    The reply is compact unless verbose: per op, its ids, scalars and counts, plus timing. A slow live commit
+    is waited for (HORIZONTAL_MUTATION_TIMEOUT seconds, 180 by default), and a lost reply is resolved through
+    transaction_status before this returns."""
     # by_alias: a track end is spelled "from", which is a Swift and Python keyword.
     encoded = [op.model_dump(exclude_unset=True, by_alias=True) if isinstance(op, BaseModel) else op for op in ops]
     return _edit(_resolve(path), encoded, dry_run=dry_run, pool_items=pool_items, block=block)

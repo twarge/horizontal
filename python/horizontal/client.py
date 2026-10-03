@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import itertools
+import os
 import time
 import uuid
 from contextvars import ContextVar
@@ -15,16 +16,34 @@ from ._native import (HorizontalError, LiveTransport, Transport, default_transpo
 
 _request_deadline: ContextVar[float | None] = ContextVar("horizontal_deadline", default=None)
 
+# Methods that change the project. They get a longer budget than a read: a
+# live commit reloads the document in the app, and on a large design that
+# takes longer than any read does.
+MUTATIONS = frozenset({"apply", "pool_write", "import_pool_part", "pour_planes", "autoroute", "update_project_parts"})
+
+
+def mutation_timeout() -> float:
+    """Seconds a mutation may take before the client stops waiting for it;
+    HORIZONTAL_MUTATION_TIMEOUT overrides the default of 180."""
+    try:
+        return max(1.0, float(os.environ.get("HORIZONTAL_MUTATION_TIMEOUT", "180")))
+    except ValueError:
+        return 180.0
+
 
 class Session:
     """One connection to the engine; holds the open projects."""
 
-    def __init__(self, transport: Transport | None = None, isolated: bool = False):
+    def __init__(self, transport: Transport | None = None, isolated: bool = False, project: str | Path | None = None):
         self.transport = transport or default_transport(isolated=isolated)
         self._ids = itertools.count(1)
         self.isolated = isolated
         self.generation = 0
         self.engine: dict[str, Any] | None = None
+        # The project a live session was found through. The app's discovery
+        # file is in its sandbox container, so reconnecting has to look beside
+        # the project again rather than only where the app writes.
+        self.project = str(project) if project is not None else None
 
     @classmethod
     def live(cls, project: str | Path | None = None) -> "Session | None":
@@ -35,7 +54,7 @@ class Session:
         refuses other processes, so that is often the only way through.
         """
         info = find_live_for(project) if project is not None else find_live()
-        return cls(transport=LiveTransport(info)) if info else None
+        return cls(transport=LiveTransport(info), project=project) if info else None
 
     @property
     def is_live(self) -> bool:
@@ -46,7 +65,8 @@ class Session:
             self.engine = self.call("version")
         if method != "version" and self.engine.get("api") != 2:
             raise transport_error("INCOMPATIBLE_ENGINE", "This client requires native API 2. Rebuild horizontal and HorizontalPy; check the selected binary in connection_status.")
-        remaining = min(self.transport.timeout, (_request_deadline.get() or (time.monotonic() + self.transport.timeout)) - time.monotonic())
+        deadline = _request_deadline.get()
+        remaining = (deadline - time.monotonic()) if deadline is not None else self.transport.timeout
         if remaining <= 0: raise transport_error("TIMEOUT", "Request exceeded its total deadline.")
         request = {"jsonrpc": "2.0", "id": next(self._ids), "method": method, "params": params,
                    "deadline_unix_ms": (time.time() + remaining) * 1000}
@@ -61,7 +81,7 @@ class Session:
         configured_timeout = self.transport.timeout
         self.transport.close()
         if live:
-            info = find_live()
+            info = find_live_for(self.project) if self.project else find_live()
             if info is None: raise transport_error("LIVE_UNAVAILABLE", "The live endpoint is unavailable; the source remains live.")
             self.transport = LiveTransport(info, timeout=max(0.01, timeout))
         else:
@@ -119,7 +139,8 @@ class Project:
         self.close()
 
     def _call(self, method: str, **params: Any) -> Any:
-        token = _request_deadline.set(min(_request_deadline.get() or float('inf'), time.monotonic() + self.session.transport.timeout))
+        budget = mutation_timeout() if method in MUTATIONS and not params.get("dry_run") else self.session.transport.timeout
+        token = _request_deadline.set(min(_request_deadline.get() or float('inf'), time.monotonic() + budget))
         try:
             return self._perform_call(method, **params)
         finally:
@@ -129,12 +150,21 @@ class Project:
         reads = {"project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "list_texts", "list_symbols", "list_block_instances", "list_net_lines", "list_junctions", "list_net_labels", "list_power_symbols", "list_planes", "list_polygons", "list_holes", "list_keepouts", "list_board_texts", "list_dimensions", "list_buses", "list_net_ties", "list_tracks", "list_vias", "board_rules", "search_pool", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status"}
         reads.add("list_part_updates")
         deadline = _request_deadline.get() or (time.monotonic() + self.session.transport.timeout)
+        # A connection an earlier call lost is reopened before anything is
+        # sent on it — safe for any method, since nothing has gone out — so a
+        # timeout does not strand the context that suffered it.
+        if self.session.transport.closed and not self.summary.get("frozen"):
+            self.session.reconnect(max(0.01, deadline - time.monotonic()))
         if self._generation != self.session.generation:
             self._rebind()
         try:
             result = self.session.call(method, handle=self.handle, include_metadata=True, **params)
         except HorizontalError as error:
-            if method not in reads or error.structured()["code"] not in {"CONNECTION_LOST", "TIMEOUT", "AUTH_FAILED"} or self.summary.get("frozen"):
+            code = error.structured()["code"]
+            if (method in MUTATIONS and code in {"CONNECTION_LOST", "TIMEOUT"} and params.get("operation_id")
+                    and not params.get("dry_run") and not self.summary.get("frozen")):
+                return self._resolve_lost_mutation(method, error, params)
+            if method not in reads or code not in {"CONNECTION_LOST", "TIMEOUT", "AUTH_FAILED"} or self.summary.get("frozen"):
                 raise
             remaining = deadline - time.monotonic()
             if remaining <= 0: raise
@@ -146,6 +176,43 @@ class Project:
             self.summary.update(result["meta"])
             return result["data"]
         return result
+
+    def _resolve_lost_mutation(self, method: str, error: HorizontalError, params: dict[str, Any]) -> Any:
+        """A mutation whose reply never came. The engine answers one request
+        at a time, so asking after it on a fresh connection waits for that
+        mutation to finish and then says what became of it — committed, not
+        committed, or never received. The answer replaces the timeout."""
+        operation_id = params["operation_id"]
+        token = _request_deadline.set(time.monotonic() + mutation_timeout())
+        try:
+            try:
+                self.session.reconnect(mutation_timeout())
+                self._rebind()
+                status = self.session.call("transaction_status", handle=self.handle, include_metadata=True,
+                                           operation_id=operation_id,
+                                           **({"detail": params["detail"]} if params.get("detail") else {}))
+            except HorizontalError as lookup:
+                raise HorizontalError(error.code, f"{error.message}; the outcome could not be looked up either: {lookup.message}",
+                                      {**(error.data if isinstance(error.data, dict) else {}), "outcome": "unknown",
+                                       "details": {"operation_id": operation_id}}) from error
+        finally:
+            _request_deadline.reset(token)
+        if isinstance(status, dict) and "meta" in status and "data" in status:
+            self.last_metadata = status["meta"]
+            self.summary.update(status["meta"])
+            status = status["data"]
+        state = status.get("status") if isinstance(status, dict) else None
+        if state == "committed":
+            status["recovered_after"] = error.structured()["code"]
+            return status
+        if state == "not_committed":
+            raise HorizontalError(error.code, f"{method} did not commit: {status.get('error', 'it failed')}",
+                                  {"code": status.get("code", "ENGINE_ERROR"), "retryable": True, "outcome": "not_committed",
+                                   "details": {"operation_id": operation_id, "after": error.structured()["code"]}}) from error
+        raise HorizontalError(error.code, f"{error.message}. There is no record of {method} committing — it never arrived, "
+                              "or was rolled back — so it is safe to send again.",
+                              {"code": error.structured()["code"], "retryable": True, "outcome": "not_committed",
+                               "details": {"operation_id": operation_id, "status": state}}) from error
 
     def _rebind(self) -> None:
         if self.summary.get("frozen"):
@@ -422,17 +489,22 @@ class Project:
 
     def apply(self, ops: list[dict[str, Any]], dry_run: bool = False, *, expected_revision: str | None = None,
               operation_id: str | None = None, plan_digest: str | None = None,
-              pool_items: list[dict[str, Any]] | None = None, block: str | None = None) -> dict[str, Any]:
-        """Apply edit operations; each is {"op": name, ...params}. Writes only changed files."""
+              pool_items: list[dict[str, Any]] | None = None, block: str | None = None,
+              detail: str | None = None) -> dict[str, Any]:
+        """Apply edit operations; each is {"op": name, ...params}. Writes only changed files.
+        detail="compact" returns ids and counts without echoing the ops or the project summary."""
         params: dict[str, Any] = {"ops": list(ops), "dry_run": dry_run,
                                   "expected_revision": expected_revision or self.summary["revision"],
                                   "operation_id": operation_id or str(uuid.uuid4())}
         if plan_digest is not None: params["plan_digest"] = plan_digest
         if pool_items is not None: params["pool_items"] = pool_items
         if block is not None: params["block"] = block
+        if detail is not None: params["detail"] = detail
         result = self._call("apply", **params)
         if not dry_run and "project" in result:
             self.summary = result["project"]
+        elif not dry_run and result.get("after_revision"):
+            self.summary["revision"] = result["after_revision"]
         return result
 
     def ensure_component(self, refdes: str | None = None, part: str | None = None, entity: str | None = None, **fields: Any) -> str:

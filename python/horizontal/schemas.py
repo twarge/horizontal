@@ -88,6 +88,12 @@ class Component(Record):
     symbols: list[dict[str, Any]] | None = None
 
 
+class ComponentFields(Record):
+    """A component narrowed with fields: what identifies it, and what was asked for."""
+    id: str
+    refdes: str
+
+
 class NetPin(Record):
     component_id: str
     refdes: str
@@ -327,11 +333,13 @@ class SetNetClass(NetOp):
 
 class RetireNet(NetOp):
     op: Literal["retire_net"]
+    remove_routing: bool | None = None
 
 
 class Connect(ComponentOp):
     op: Literal["connect"]
     pin: StrictStr
+    gate: str | None = None
     net: StrictStr
     create_net: bool = False
 
@@ -339,6 +347,7 @@ class Connect(ComponentOp):
 class Disconnect(ComponentOp):
     op: Literal["disconnect"]
     pin: StrictStr
+    gate: str | None = None
 
 
 class Place(ComponentOp):
@@ -347,6 +356,9 @@ class Place(ComponentOp):
     y_mm: float | None = None
     angle_deg: float | None = None
     bottom: bool | None = None
+
+
+PinDisplayMode = Literal["selected_only", "custom_only", "both", "all"]
 
 
 class PlaceSymbol(ComponentOp):
@@ -358,6 +370,26 @@ class PlaceSymbol(ComponentOp):
     y_mm: float | None = None
     angle_deg: float | None = None
     mirror: bool | None = None
+    id: str | None = None
+    pin_display_mode: PinDisplayMode | None = None
+    display_all_pads: bool | None = None
+
+
+class SetSymbolDisplay(Input):
+    op: Literal["set_symbol_display"]
+    component: StrictStr | None = None
+    gate: str | None = None
+    symbol_instance: str | None = None
+    pin_display_mode: PinDisplayMode | None = None
+    display_all_pads: bool | None = None
+
+    @model_validator(mode="after")
+    def target(self):
+        if (self.component is None) == (self.symbol_instance is None):
+            raise ValueError("Name a component (and optionally a gate) or one symbol_instance.")
+        if self.pin_display_mode is None and self.display_all_pads is None:
+            raise ValueError("Set pin_display_mode or display_all_pads.")
+        return self
 
 
 class RemoveSymbol(ComponentOp):
@@ -389,9 +421,21 @@ class RemoveText(Input):
 
 
 class SchematicPinEnd(Input):
+    """A symbol pin: by symbol instance id, or by component (and gate). The pin
+    is a uuid or a name."""
     kind: Literal["pin"]
-    symbol: StrictStr
+    symbol: StrictStr | None = None
+    component: StrictStr | None = None
+    gate: StrictStr | None = None
     pin: StrictStr
+
+    @model_validator(mode="after")
+    def one_symbol(self):
+        if (self.symbol is None) == (self.component is None):
+            raise ValueError("A pin endpoint names a symbol instance or a component, not both.")
+        if self.gate is not None and self.component is None:
+            raise ValueError("gate goes with component.")
+        return self
 
 
 class SchematicJunctionEnd(Input):
@@ -407,8 +451,10 @@ class DrawNetLine(Input):
     id: str | None = None
     component: StrictStr | None = None
     pin: StrictStr | None = None
+    gate: StrictStr | None = None
     to_component: StrictStr | None = None
     to_pin: StrictStr | None = None
+    to_gate: StrictStr | None = None
     sheet: StrictStr | StrictInt | None = None
     from_: SchematicEnd | None = Field(default=None, alias="from")
     to: SchematicEnd | None = None
@@ -441,10 +487,56 @@ class SetNetLineEndpoint(Input):
     sheet: StrictStr | StrictInt | None = None
 
 
+class RemoveNetLine(Input):
+    op: Literal["remove_net_line"]
+    line: StrictStr
+    sheet: StrictStr | StrictInt | None = None
+
+
+class RemoveJunction(Input):
+    op: Literal["remove_junction"]
+    junction: StrictStr
+    sheet: StrictStr | StrictInt | None = None
+    cascade: bool | None = None
+
+
+class PruneSheet(Input):
+    op: Literal["prune_sheet"]
+    sheet: StrictStr | StrictInt | None = None
+
+
+class TerminatePin(ComponentOp):
+    op: Literal["terminate_pin"]
+    pin: StrictStr
+    gate: StrictStr | None = None
+    net: StrictStr | None = None
+    create_net: bool | None = None
+    kind: Literal["label", "power"] | None = None
+    length_mm: float | None = Field(default=None, gt=0)
+    size_mm: float | None = Field(default=None, gt=0)
+    style: Literal["gnd", "dot", "antenna", "earth"] | None = None
+
+
+class SetNoConnect(ComponentOp):
+    op: Literal["set_no_connect"]
+    pin: StrictStr | None = None
+    pins: list[StrictStr] | None = Field(default=None, min_length=1)
+    gate: StrictStr | None = None
+    no_connect: bool | None = None
+    disconnect: bool | None = None
+
+    @model_validator(mode="after")
+    def some_pin(self):
+        if self.pin is None and not self.pins:
+            raise ValueError("Pass pin or pins.")
+        return self
+
+
 class RemapPart(ComponentOp):
+    """pin_map is optional: pins it leaves out are matched by gate and pin name."""
     op: Literal["remap_part"]
     part: StrictStr
-    pin_map: dict[StrictStr, StrictStr] = Field(min_length=1)
+    pin_map: dict[StrictStr, StrictStr] | None = None
     symbols: dict[StrictStr, StrictStr] | None = None
     pad_map: dict[StrictStr, StrictStr] | None = None
 
@@ -679,6 +771,7 @@ class SetSheetIndex(Input):
     op: Literal["set_sheet_index"]
     sheet: StrictStr | StrictInt
     index: StrictInt = Field(ge=1)
+    swap: bool | None = None
 
 
 class AddRule(Input):
@@ -710,7 +803,8 @@ class SetStackup(Input):
 class AddSheet(Input):
     op: Literal["add_sheet"]
     name: StrictStr
-    index: StrictInt | None = None
+    index: StrictInt | None = Field(default=None, ge=1)
+    frame: StrictStr | None = None
 
 
 class RenameSheet(Input):
@@ -722,6 +816,7 @@ class RenameSheet(Input):
 class RemoveSheet(Input):
     op: Literal["remove_sheet"]
     sheet: StrictStr | StrictInt
+    force: bool | None = None
 
 
 class Vertex(Input):
@@ -803,6 +898,7 @@ class CopyLayout(Input):
 EditOperation = Annotated[EnsureComponent | RemoveComponent | SetValue | SetRefdes | SetPart | SetPopulation |
                           SetGroup | EnsureNet | RenameNet | SetNetClass | RetireNet | Connect | Disconnect |
                           Place | PlaceSymbol | RemoveSymbol | DrawNetLine | PlaceJunction | SetNetLineEndpoint | RemapPart | PlaceText | RemoveText |
+                          RemoveNetLine | RemoveJunction | PruneSheet | TerminatePin | SetSymbolDisplay | SetNoConnect |
                           PlaceTrack | RemoveTrack | SetTrackWidth | PlaceVia | RemoveVia |
                           PlacePowerSymbol | PlaceNetLabel | RemoveSheetMark |
                           AddSheet | RenameSheet | RemoveSheet |

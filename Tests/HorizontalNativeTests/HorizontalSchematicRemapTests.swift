@@ -12,11 +12,11 @@ final class HorizontalSchematicRemapTests: XCTestCase {
         var pads: [String]
     }
 
-    private func connector(_ count: Int) -> Connector {
+    private func connector(_ count: Int, prefix: String = "") -> Connector {
         let pins = (0..<count).map { _ in UUID().uuidString.lowercased() }
         let pads = (0..<count).map { _ in UUID().uuidString.lowercased() }
         var unit = HorizontalPoolItemFactory.newUnit()
-        for i in pins.indices { unit.pins[pins[i]] = HorizontalUnitPin(id: pins[i], primaryName: String(i + 1)) }
+        for i in pins.indices { unit.pins[pins[i]] = HorizontalUnitPin(id: pins[i], primaryName: prefix + String(i + 1)) }
         let entity = HorizontalPoolItemFactory.newEntity(for: unit)
         let gate = entity.gates.keys.first!
         var symbol = HorizontalPoolItemFactory.newSymbol(for: unit)
@@ -143,7 +143,8 @@ final class HorizontalSchematicRemapTests: XCTestCase {
             XCTAssertNil(response["error"], "\(response)")
             return try XCTUnwrap(response["result"])
         }
-        let old = connector(5), target = connector(6)
+        // Differently named pins, so nothing maps by name and pin_map decides.
+        let old = connector(5), target = connector(6, prefix: "P")
         _ = try result("apply", ["pool_items": old.items + target.items, "ops": [
             ["op": "ensure_component", "refdes": "J1", "part": old.part],
             ["op": "ensure_component", "refdes": "J2", "part": old.part],
