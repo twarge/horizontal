@@ -293,6 +293,14 @@ final class HorizontalDispatchProjectEntry {
     let instanceID: String
     var generation = 0
     var receipts: [String: JSONDictionary] = [:]
+    /// Mutations that ran and committed nothing, by operation id, so a client
+    /// that lost the response can be told so rather than "unknown". A retry
+    /// under the same id is still allowed, and clears the entry.
+    var failedOperations: [String: JSONDictionary] = [:]
+    /// The load diagnostics of the last snapshot a mutation produced. The
+    /// next mutation starts from that snapshot, so it need not load the whole
+    /// project again just to count them.
+    var cachedDiagnostics: (snapshotID: String, counts: [String: Int])?
     var frozen = false
     var origin: JSONDictionary?
     var readMetadata: JSONDictionary?
