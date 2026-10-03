@@ -176,6 +176,19 @@ final class HorizontalSheetEditingTests: XCTestCase {
             "an unchanged value changes nothing, so the app records no undo step for it")
     }
 
+    /// The information panel has a field for every title-block key. It used to
+    /// skip a key whose value an earlier field already showed, so on Billo,
+    /// whose name and title were both "Roxanne", the name had no field at all
+    /// and renaming the title left it behind.
+    func testEveryTitleBlockKeyHasItsOwnField() {
+        let rows = ProjectMetadataRow.rows(for: ["project_title": "Roxanne", "project_name": "Roxanne", "rev": "1B",
+                                                 "author": "Roxanne", "custom_note": "x", "blank": " "])
+        XCTAssertEqual(rows.map(\.key), ["project_title", "project_name", "rev", "author", "date", "license", "custom_note"])
+        XCTAssertEqual(rows.first { $0.key == "project_name" }?.value, "Roxanne")
+        XCTAssertEqual(rows.first { $0.key == "date" }?.value, "", "the usual keys show even when empty")
+        XCTAssertEqual(rows.last?.title, "Custom Note")
+    }
+
     // MARK: - Helpers
 
     private func sheetsJSON(in archive: HorizontalProjectArchive) throws -> [String: Any] {
