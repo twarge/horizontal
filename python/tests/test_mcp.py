@@ -684,6 +684,25 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(unknown.is_error)
         self.assertIn("No component U9", str(unknown.content))
 
+    async def test_a_text_search_looks_through_smashed_texts(self):
+        revision = self.opened["data"]["revision"]
+        made = await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id=str(uuid.uuid4()),
+                               ops=[{"op": "place_board_text", "id": "note", "text": "TP1 is ground", "layer": 20, "x_mm": 0, "y_mm": 0},
+                                    {"op": "place_board_text", "id": "ref", "text": "TP1", "layer": 20, "x_mm": 5, "y_mm": 0}])
+        handles = made["data"]["handles"]
+        board_file = self.path / "board.json"
+        board = json.loads(board_file.read_text())
+        board["texts"][handles["ref"]]["from_smash"] = True
+        board_file.write_text(json.dumps(board))
+        await self.call("reload_project", project_ref=self.ref)
+        free = (await self.call("list_board_texts", project_ref=self.ref))["data"]
+        self.assertEqual([t["id"] for t in free], [handles["note"]])
+        found = (await self.call("list_board_texts", project_ref=self.ref, text="tp1"))["data"]
+        self.assertEqual(sorted((t["id"], t["from_smash"]) for t in found),
+                         sorted([(handles["note"], False), (handles["ref"], True)]))
+        kept_out = (await self.call("list_board_texts", project_ref=self.ref, text="tp1", smashed=False))["data"]
+        self.assertEqual([t["id"] for t in kept_out], [handles["note"]])
+
     async def test_worker_restart_rebinds_a_disk_read(self):
         project = server._projects[self.ref]
         before = project.summary["instance_id"]
