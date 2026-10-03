@@ -223,11 +223,11 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "list_board_texts",
-            summary: "Free text on the board layers, with the ids the board text ops take. The reference designators Horizon smashed out of packages are left out unless smashed is passed: on a populated board they are most of its texts, and each belongs to its package. A text that draws something other than what it stores (\"$RD\", \"$project_title\") says what in drawn.",
+            summary: "Free text on the board layers, with the ids the board text ops take. The reference designators Horizon smashed out of packages are left out unless smashed is passed or a text or component search asks for them: on a populated board they are most of its texts, and each belongs to its package. A text that draws something other than what it stores (\"$RD\", \"$project_title\") says what in drawn.",
             params: ["handle": "Project handle.", "layer": "Only texts on this layer (optional).",
-                     "smashed": "Also list texts smashed out of packages, marked from_smash with the package that carries them and the refdes of its part (default false).",
+                     "smashed": "Also list texts smashed out of packages, marked from_smash with the package that carries them and the refdes of its part (default: only when searching with text or component; false keeps them out of a text search).",
                      "component": "Only the texts smashed out of this component's package, by refdes or id (optional; implies smashed).",
-                     "text": "Only texts containing this, as stored or as drawn, ignoring case (optional)."],
+                     "text": "Only texts containing this, as stored or as drawn, ignoring case, smashed ones included unless smashed is false (optional)."],
             handler: listBoardTexts
         ),
         .init(
@@ -289,11 +289,11 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "list_texts",
-            summary: "Free text on the schematic sheets, with the ids place_text and remove_text take. Each says which drawn symbol it sits nearest (near_symbol), so a note left behind by a removed part shows up far from everything. Texts smashed out of symbols are left out unless smashed is passed.",
+            summary: "Free text on the schematic sheets, with the ids place_text and remove_text take. Each says which drawn symbol it sits nearest (near_symbol), so a note left behind by a removed part shows up far from everything. Texts smashed out of symbols are left out unless smashed is passed or a text or component search asks for them.",
             params: ["handle": "Project handle.", "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet.",
-                     "smashed": "Also list texts smashed out of symbols, marked from_smash with the symbol that carries them and the refdes of its part (default false).",
+                     "smashed": "Also list texts smashed out of symbols, marked from_smash with the symbol that carries them and the refdes of its part (default: only when searching with text or component; false keeps them out of a text search).",
                      "component": "Only the texts smashed out of this component's symbols, by refdes or id (optional; implies smashed).",
-                     "text": "Only texts containing this, as stored or as drawn, ignoring case (optional)."],
+                     "text": "Only texts containing this, as stored or as drawn, ignoring case, smashed ones included unless smashed is false (optional)."],
             handler: listTexts
         ),
         .init(
@@ -2252,8 +2252,9 @@ enum HorizontalDispatchMethods {
         let layer = params.int("layer")
         let needle = params.string("text").flatMap { $0.isEmpty ? nil : $0 }
         let owner = try componentFilter(entry, params)
-        // A part's own texts are all smashed out of its package.
-        let smashed = params.bool("smashed") ?? false || owner != nil
+        // A part's own texts are all smashed out of its package, and a search
+        // looks through them too: "U1" is most likely U1's reference.
+        let smashed = owner != nil || (params.bool("smashed") ?? (needle != nil))
         let json = try boardJSON(entry)
         // A package that has been smashed refers to the texts pulled out of it,
         // and names the component whose reference they print.
@@ -2558,8 +2559,8 @@ enum HorizontalDispatchMethods {
         // A symbol's smashed texts are listed on request, marked with the
         // symbol they belong to, so a caller can see why they are not free to edit.
         let owner = try componentFilter(entry, params)
-        let smashed = params.bool("smashed") ?? false || owner != nil
         let needle = params.string("text").flatMap { $0.isEmpty ? nil : $0 }
+        let smashed = owner != nil || (params.bool("smashed") ?? (needle != nil))
         // What each sheet draws, by text id: a smashed "$REFDES" shows the
         // part's reference.
         var drawnBySheet = [String: [String: String]]()

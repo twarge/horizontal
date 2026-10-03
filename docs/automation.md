@@ -59,7 +59,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `list_net_labels`, `list_power_symbols` | what names a net on a page, with the ids their remove ops take |
 | `list_block_instances` | the blocks this block uses, their wired ports, and where each is drawn |
 | `autoroute` | best-effort automatic routing of one net's airwires |
-| `list_board_texts`, `list_dimensions` | board text and dimensions; a dimension reports `measures_mm`, worked out for its mode. The reference designators smashed out of packages are left out unless `smashed`, each with the `refdes` of its part; `component` keeps one part's; a text that draws something other than it stores (`$RD`, `$project_title`) gives it as `drawn`; `text` keeps texts containing it as stored or as drawn |
+| `list_board_texts`, `list_dimensions` | board text and dimensions; a dimension reports `measures_mm`, worked out for its mode. The reference designators smashed out of packages are left out unless `smashed`, each with the `refdes` of its part; `component` keeps one part's; a text that draws something other than it stores (`$RD`, `$project_title`) gives it as `drawn`; `text` keeps texts containing it as stored or as drawn, smashed ones included unless `smashed` is false |
 | `export_settings` | the export settings Horizon EDA keeps in the project — Gerber, ODB, pick-and-place, STEP, board PDF, BOM, schematic PDF — as stored, or null where there are none. Horizontal's own `export` names its files after the project file and does not read them |
 | `list_buses`, `list_net_ties` | buses with their members, net ties with the nets they join, and where each is drawn |
 | `undo` | takes back the last step on the document's own undo stack, or puts one back |
@@ -69,7 +69,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `board_rules` | the design rules as data — one entry per rule, not per kind — the net classes they select, and the stackup |
 | `get_pool_item` | one pool item's own JSON — the bytes `pool_write` takes back |
 | `pour_planes` | fills every plane, as Update All Planes does |
-| `list_texts` | free text on the schematic sheets, with the ids the text ops take; texts smashed out of symbols only with `smashed`, each with its part's `refdes`, or only one part's with `component`; `drawn` and `text` as for `list_board_texts` |
+| `list_texts` | free text on the schematic sheets, with the ids the text ops take; texts smashed out of symbols only with `smashed` or in a `text` search, each with its part's `refdes`, or only one part's with `component`; `drawn` and `text` as for `list_board_texts` |
 | `list_parts` | parts the project can use; `scope` widens it from the project pool to the pools it draws from |
 | `search_pool` | search those pools by name, description, manufacturer, tag, uuid or a part's value, filtered by item kind. A quantity matches however it is written — `2.2 µF`, `2u2`, `2200nF` — against a part's value, description words or parametric data |
 | `import_pool_part` | copy a part and its whole dependency chain from a base pool into the project pool cache |

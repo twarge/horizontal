@@ -814,6 +814,151 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertEqual(details?.int("removed_by"), 3)
     }
 
+    // MARK: - Round seven: notes 24–25
+
+    /// On Billo a search for "U1" found nothing: U1's reference is a smashed
+    /// text, and those were left out of a search unless smashed was passed too.
+    func testATextSearchLooksThroughSmashedTexts() throws {
+        let made = try apply([
+            ["op": "place_board_text", "id": "note", "text": "R1 sets the gain", "layer": 20, "x_mm": 0, "y_mm": 0],
+            ["op": "place_board_text", "id": "ref", "text": "R1", "layer": 20, "x_mm": 5, "y_mm": 0],
+            ["op": "place_text", "id": "sheetNote", "text": "R1 sets the gain", "x_mm": 20, "y_mm": 20],
+            ["op": "place_text", "id": "sheetRef", "text": "R1", "x_mm": 30, "y_mm": 20]
+        ])
+        let handles = try XCTUnwrap(made["handles"] as? [String: String])
+        // Mark the bare references smashed, as Horizon leaves a part's.
+        func smash(_ texts: inout JSONDictionary, _ id: String) throws {
+            var item = try XCTUnwrap(texts[id] as? JSONDictionary)
+            item["from_smash"] = true
+            texts[id] = item
+        }
+        try rewrite("board.json") { json in
+            var texts = try XCTUnwrap(json["texts"] as? JSONDictionary)
+            try smash(&texts, try XCTUnwrap(handles["ref"]))
+            json["texts"] = texts
+        }
+        try rewrite("top_schematic.json") { json in
+            var sheets = try XCTUnwrap(json["sheets"] as? JSONDictionary)
+            let sheetID = try XCTUnwrap(sheets.keys.first)
+            var sheet = try XCTUnwrap(sheets[sheetID] as? JSONDictionary)
+            var texts = try XCTUnwrap(sheet["texts"] as? JSONDictionary)
+            try smash(&texts, try XCTUnwrap(handles["sheetRef"]))
+            sheet["texts"] = texts
+            sheets[sheetID] = sheet
+            json["sheets"] = sheets
+        }
+        func ids(_ method: String, _ args: JSONDictionary = [:]) throws -> Set<String> {
+            Set(try XCTUnwrap(try result(method, args) as? [JSONDictionary]).compactMap { $0.string("id") })
+        }
+        for (method, note, ref) in [("list_board_texts", "note", "ref"), ("list_texts", "sheetNote", "sheetRef")] {
+            let note = try XCTUnwrap(handles[note]), ref = try XCTUnwrap(handles[ref])
+            XCTAssertEqual(try ids(method), [note], "\(method): free text only by default")
+            XCTAssertEqual(try ids(method, ["text": "r1"]), [note, ref], "\(method): a search looks through smashed texts")
+            XCTAssertEqual(try ids(method, ["text": "r1", "smashed": false]), [note], "\(method): unless told not to")
+            XCTAssertEqual(try ids(method, ["smashed": true]), [note, ref], method)
+        }
+    }
+
+    /// Moving one text in the app and saving also wrote Billo's 15
+    /// no-connects as {} — Horizon EDA reads "net" with at(), so it would
+    /// drop them — gave all 64 wires on the sheet a net, and added
+    /// grid_settings and allow_upside_down: false. Horizon writes none of that.
+    func testAnInAppSaveChangesOnlyWhatItsEditChanged() throws {
+        _ = try placedMCU()
+        let made = try apply([
+            ["op": "set_no_connect", "component": "U1", "pins": ["NRST"]],
+            ["op": "place_junction", "id": "j1", "net": "SWCLK", "x_mm": 90, "y_mm": 97.46],
+            ["op": "draw_net_line", "from": ["kind": "pin", "component": "U1", "pin": "PA14"], "to": ["kind": "junction", "junction": "j1"]],
+            ["op": "place_text", "id": "t1", "text": "note", "x_mm": 20, "y_mm": 20]
+        ])
+        let textID = try XCTUnwrap((made["handles"] as? [String: String])?["t1"])
+        // The files as the 18:23 save left Billo: wires without a net, as
+        // Horizon writes them, a grid an earlier save added, and the
+        // no-connect written as {}.
+        var noConnect = ""
+        try rewrite("top_schematic.json") { json in
+            var sheets = try XCTUnwrap(json["sheets"] as? JSONDictionary)
+            let sheetID = try XCTUnwrap(sheets.keys.first)
+            var sheet = try XCTUnwrap(sheets[sheetID] as? JSONDictionary)
+            var lines = try XCTUnwrap(sheet["net_lines"] as? JSONDictionary)
+            XCTAssertFalse(lines.isEmpty)
+            for (id, line) in lines { lines[id] = (line as? JSONDictionary)?.filter { $0.key != "net" } }
+            sheet["net_lines"] = lines
+            sheets[sheetID] = sheet
+            json["sheets"] = sheets
+            json["grid_settings"] = ["current": ["mode": "square", "name": "", "origin": [0, 0],
+                                                 "spacing_rect": [1_250_000, 1_250_000], "spacing_square": 1_250_000],
+                                     "grids": JSONDictionary()]
+        }
+        try rewrite("top_block.json") { json in
+            var components = try XCTUnwrap(json["components"] as? JSONDictionary)
+            for (id, value) in components {
+                var component = try XCTUnwrap(value as? JSONDictionary)
+                var connections = component["connections"] as? JSONDictionary ?? [:]
+                for (path, connection) in connections where (connection as? JSONDictionary)?["net"] is NSNull {
+                    noConnect = path
+                    connections[path] = JSONDictionary()
+                }
+                component["connections"] = connections
+                components[id] = component
+            }
+            json["components"] = components
+        }
+        XCTAssertFalse(noConnect.isEmpty, "set_no_connect writes a null net")
+        let schematicBefore = try JSONHelper.loadDictionary(from: root.appendingPathComponent("top_schematic.json"))
+        let blockBefore = try JSONHelper.loadDictionary(from: root.appendingPathComponent("top_block.json"))
+
+        let project = try session.entry(handle: handle).project
+        let schematic = try XCTUnwrap(project.schematic)
+        var sheet = try XCTUnwrap(schematic.sheets.first)
+        let index = try XCTUnwrap(sheet.texts.firstIndex { $0.id.lowercased() == textID.lowercased() })
+        sheet.texts[index].position.x += 1_250_000
+        var archive = try HorizontalProjectArchive.completeProject(from: root)
+        try HorizontalProjectJSONApplicator.apply(schematicSheet: sheet, schematicURL: schematic.url, in: project, to: &archive)
+        let schematicAfter = try JSONHelper.loadDictionary(from: XCTUnwrap(archive.regularFileData(relativePath: "top_schematic.json")))
+        let blockAfter = try JSONHelper.loadDictionary(from: XCTUnwrap(archive.regularFileData(relativePath: "top_block.json")))
+
+        // The block changes only where it had drifted: the no-connect gets its null net back.
+        var expectedBlock = blockBefore
+        var components = try XCTUnwrap(expectedBlock["components"] as? JSONDictionary)
+        for (id, value) in components {
+            var component = try XCTUnwrap(value as? JSONDictionary)
+            var connections = component["connections"] as? JSONDictionary ?? [:]
+            if connections[noConnect] != nil { connections[noConnect] = ["net": NSNull()] }
+            component["connections"] = connections
+            components[id] = component
+        }
+        expectedBlock["components"] = components
+        XCTAssertEqual(blockAfter as NSDictionary, expectedBlock as NSDictionary)
+
+        // The schematic: the text moved a grid step, and the grid is gone.
+        var expectedSchematic = schematicBefore
+        expectedSchematic.removeValue(forKey: "grid_settings")
+        var sheets = try XCTUnwrap(expectedSchematic["sheets"] as? JSONDictionary)
+        let sheetKey = try XCTUnwrap(sheets.keys.first)
+        var sheetJSON = try XCTUnwrap(sheets[sheetKey] as? JSONDictionary)
+        var texts = try XCTUnwrap(sheetJSON["texts"] as? JSONDictionary)
+        let textKey = try XCTUnwrap(texts.keys.first { $0.lowercased() == textID.lowercased() })
+        var text = try XCTUnwrap(texts[textKey] as? JSONDictionary)
+        var placement = try XCTUnwrap(text["placement"] as? JSONDictionary)
+        var shift = try XCTUnwrap(placement["shift"] as? [Any])
+        shift[0] = JSONHelper.doubleValue(shift[0]) + 1_250_000
+        placement["shift"] = shift
+        text["placement"] = placement
+        texts[textKey] = text
+        sheetJSON["texts"] = texts
+        sheets[sheetKey] = sheetJSON
+        expectedSchematic["sheets"] = sheets
+        XCTAssertEqual(schematicAfter as NSDictionary, expectedSchematic as NSDictionary)
+
+        // allow_upside_down is written as Horizon writes it: only when set.
+        sheet.texts[index].allowUpsideDown = true
+        try HorizontalProjectJSONApplicator.apply(schematicSheet: sheet, schematicURL: schematic.url, in: project, to: &archive)
+        let flipped = try JSONHelper.loadDictionary(from: XCTUnwrap(archive.regularFileData(relativePath: "top_schematic.json")))
+        let flippedText = flipped.dictionary("sheets")?.dictionary(sheetKey)?.dictionary("texts")?.dictionary(textKey)
+        XCTAssertEqual(flippedText?.bool("allow_upside_down"), true)
+    }
+
     /// The airwire pass tested every node of a poured net against every
     /// vertex of the pour — on Billo, 1.7 s of each 4.5 s dry run. Boxes and
     /// height bands cut that without changing a single answer.
