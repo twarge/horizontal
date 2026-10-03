@@ -665,6 +665,25 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([t["text"] for t in titled], ["$project_title R$rev"])
         self.assertEqual(len((await self.call("list_board_texts", project_ref=self.ref, smashed=True))["data"]), 2)
 
+    async def test_texts_say_what_they_draw_and_take_names(self):
+        revision = self.opened["data"]["revision"]
+        made = await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id=str(uuid.uuid4()),
+                               ops=[{"op": "set_project_meta", "values": {"project_title": "Billo", "rev": "2A"}},
+                                    {"op": "place_board_text", "id": "title", "text": "$project_title R$rev", "layer": 20,
+                                     "x_mm": 0, "y_mm": 0},
+                                    {"op": "place_text", "id": "t1", "text": "draft", "x_mm": 10, "y_mm": 10},
+                                    {"op": "place_text", "id": "t1", "text": "final"},
+                                    {"op": "place_text", "id": "t2", "text": "gone", "x_mm": 20, "y_mm": 10},
+                                    {"op": "remove_text", "id": "t2"}])
+        self.assertEqual(set(made["data"]["handles"]), {"title", "t1", "t2"})
+        board = (await self.call("list_board_texts", project_ref=self.ref, text="billo"))["data"]
+        self.assertEqual([(t["id"], t["drawn"]) for t in board], [(made["data"]["handles"]["title"], "Billo R2A")])
+        sheet = (await self.call("list_texts", project_ref=self.ref))["data"]
+        self.assertEqual([(t["id"], t["text"]) for t in sheet], [(made["data"]["handles"]["t1"], "final")])
+        unknown = await server.mcp.call_tool("list_board_texts", {"project_ref": self.ref, "component": "U9"})
+        self.assertTrue(unknown.is_error)
+        self.assertIn("No component U9", str(unknown.content))
+
     async def test_worker_restart_rebinds_a_disk_read(self):
         project = server._projects[self.ref]
         before = project.summary["instance_id"]

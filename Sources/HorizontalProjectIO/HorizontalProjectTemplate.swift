@@ -213,15 +213,11 @@ private func newID() -> String {
     UUID().uuidString.lowercased()
 }
 
-/// The exact serialization the save path uses, so an unchanged file round-trips
-/// byte-for-byte. The template dictionaries are plist-safe literals, so
-/// serialization cannot actually fail; the fallback keeps the file valid JSON
-/// rather than crashing document creation.
+/// Written the way Horizon writes its files, as every edit writes them, so
+/// the first edit of a new project changes only what it changes. The template
+/// dictionaries are plist-safe literals, so serialization cannot actually
+/// fail; the fallback keeps the file valid JSON rather than crashing document
+/// creation.
 private func jsonData(_ object: [String: Any]) -> Data {
-    var data = (try? JSONSerialization.data(
-        withJSONObject: object,
-        options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-    )) ?? Data("{}".utf8)
-    data.append(0x0A)
-    return data
+    (try? HorizontalHorizonJSONWriter.data(object)) ?? Data("{}".utf8)
 }

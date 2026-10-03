@@ -71,14 +71,17 @@ final class HorizontalProjectTemplateTests: XCTestCase {
         XCTAssertEqual(bottom["thickness"] as? Int, 35_000)
     }
 
-    func testEveryTemplateFileIsAJSONObjectWithATrailingNewline() throws {
+    /// Written the way Horizon writes its files, which is how every edit
+    /// writes them, so the first edit of a new project changes only what it
+    /// changes rather than reformatting the file.
+    func testEveryTemplateFileIsAJSONObjectWrittenAsHorizonWritesIt() throws {
         let archive = HorizontalProjectArchive.newProject()
 
         for path in archive.regularFilePaths {
             let data = try XCTUnwrap(archive.regularFileData(relativePath: path))
-            XCTAssertEqual(data.last, 0x0A, "\(path) should end with a newline like every saved file")
-            let object = try JSONSerialization.jsonObject(with: data)
-            XCTAssertTrue(object is [String: Any], "\(path) should be a JSON object")
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any], "\(path) should be a JSON object")
+            XCTAssertFalse(object.isEmpty, "\(path) should not be the empty fallback")
+            XCTAssertEqual(data, try HorizontalHorizonJSONWriter.data(object), "\(path) should be in Horizon's own format")
         }
     }
 
