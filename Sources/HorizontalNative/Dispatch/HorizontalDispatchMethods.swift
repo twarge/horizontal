@@ -223,9 +223,17 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "list_board_texts",
-            summary: "Free text on the board layers, with the ids the board text ops take. A text marked from_smash belongs to the package that carries it.",
-            params: ["handle": "Project handle.", "layer": "Only texts on this layer (optional)."],
+            summary: "Free text on the board layers, with the ids the board text ops take. The reference designators Horizon smashed out of packages are left out unless smashed is passed: on a populated board they are most of its texts, and each belongs to its package.",
+            params: ["handle": "Project handle.", "layer": "Only texts on this layer (optional).",
+                     "smashed": "Also list texts smashed out of packages, marked from_smash with the package that carries them (default false).",
+                     "text": "Only texts containing this, ignoring case (optional)."],
             handler: listBoardTexts
+        ),
+        .init(
+            name: "export_settings",
+            summary: "The export settings Horizon EDA keeps in the project, by kind: gerber, odb, pick_and_place, board_step, board_pdf, bom and schematic_pdf, each as the file stores it, or null where it has none. Horizontal's own export names its files after the project file and does not read these; set_export_settings changes them.",
+            params: ["handle": "Project handle.", "kind": "Only this kind (optional)."],
+            handler: exportSettings
         ),
         .init(
             name: "list_dimensions",
@@ -280,8 +288,10 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "list_texts",
-            summary: "Free text on the schematic sheets, with the ids place_text and remove_text take. A text a symbol carries is marked from_smash and belongs to that symbol; free text says which drawn symbol it sits nearest (near_symbol), so a note left behind by a removed part shows up far from everything.",
-            params: ["handle": "Project handle.", "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet."],
+            summary: "Free text on the schematic sheets, with the ids place_text and remove_text take. Each says which drawn symbol it sits nearest (near_symbol), so a note left behind by a removed part shows up far from everything. Texts smashed out of symbols are left out unless smashed is passed.",
+            params: ["handle": "Project handle.", "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet.",
+                     "smashed": "Also list texts smashed out of symbols, marked from_smash with the symbol that carries them (default false).",
+                     "text": "Only texts containing this, ignoring case (optional)."],
             handler: listTexts
         ),
         .init(
@@ -987,11 +997,17 @@ enum HorizontalDispatchMethods {
         guard let rawOps = params["ops"] as? [Any], !rawOps.isEmpty else {
             throw HorizontalDispatchError.invalidParams("Pass \"ops\", a non-empty array of operations.")
         }
-        let operations = try rawOps.enumerated().map { index, raw -> HorizontalEditOperation in
+        // Names a batch gives what it makes become UUIDs before anything runs.
+        let (resolvedOps, handles) = try HorizontalEditHandles.resolve(rawOps, revision: entry.revision)
+        let operations = try resolvedOps.enumerated().map { index, raw -> HorizontalEditOperation in
             guard let json = raw as? JSONDictionary else {
                 throw HorizontalDispatchError.invalidParams("Operation \(index) is not an object.")
             }
-            return try HorizontalEditOperation(json: json)
+            do {
+                return try HorizontalEditOperation(json: json)
+            } catch let error as HorizontalDispatchError {
+                throw error.inOperation(index, json.string("op") ?? "?")
+            }
         }
         return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params) { store in
             if let items = params["pool_items"] as? [JSONDictionary] {
@@ -1011,8 +1027,10 @@ enum HorizontalDispatchMethods {
                 if operation.kind == .placeJunction { json["id"] = change["junction"] }
                 return json
             }
-            return ["applied": editor.changes.count, "changes": editor.changes, "normalized_ops": normalized,
-                    "block": editor.blockID, "is_top_block": editor.isTopBlock]
+            var result: JSONDictionary = ["applied": editor.changes.count, "changes": editor.changes, "normalized_ops": normalized,
+                                          "block": editor.blockID, "is_top_block": editor.isTopBlock]
+            if !handles.isEmpty { result["handles"] = handles }
+            return result
         }
     }
 
@@ -2226,6 +2244,8 @@ enum HorizontalDispatchMethods {
     @Sendable private static func listBoardTexts(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         let layer = params.int("layer")
+        let smashed = params.bool("smashed") ?? false
+        let needle = params.string("text").flatMap { $0.isEmpty ? nil : $0 }
         let json = try boardJSON(entry)
         // A package that has been smashed refers to the texts pulled out of it.
         var ownerByText = [String: String]()
@@ -2235,6 +2255,8 @@ enum HorizontalDispatchMethods {
         return json.dictionaryMap("texts").compactMap { id, item -> JSONDictionary? in
             let textLayer = item.int("layer")
             guard layer == nil || layer == textLayer else { return nil }
+            guard smashed || item.bool("from_smash") != true else { return nil }
+            if let needle, !(item.string("text") ?? "").localizedCaseInsensitiveContains(needle) { return nil }
             let placement = item.dictionary("placement") ?? [:]
             let shift = placement["shift"] as? [Any] ?? []
             return [
@@ -2254,6 +2276,23 @@ enum HorizontalDispatchMethods {
                 "package": ownerByText[id.lowercased()] as Any? as Any
             ]
         }.sorted { ($0.string("text") ?? "", $0.string("id") ?? "") < ($1.string("text") ?? "", $1.string("id") ?? "") }
+    }
+
+    @Sendable private static func exportSettings(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        let locations = try params.string("kind").map { [try HorizontalStoredExportSettings.location($0)] } ?? HorizontalStoredExportSettings.all
+        var result = JSONDictionary()
+        for location in locations {
+            let file: JSONDictionary?
+            switch location.file {
+            case "board": file = entry.project.board == nil ? nil : try boardJSON(entry)
+            case "block": file = blockJSON(entry)
+            default: file = (entry.project.blocks.first(where: \.isTop)?.schematicFilename ?? entry.project.schematicFilename) == nil
+                ? nil : try schematicJSON(entry)
+            }
+            result[location.kind] = ["key": location.key, "settings": file?[location.key] ?? NSNull()] as JSONDictionary
+        }
+        return result
     }
 
     @Sendable private static func listDimensions(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
@@ -2466,15 +2505,19 @@ enum HorizontalDispatchMethods {
     @Sendable private static func listTexts(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         let wanted = try selectedSheets(entry, params)
-        // A symbol's smashed texts are listed too, marked with the symbol they
-        // belong to, so a caller can see why they are not free to edit.
+        // A symbol's smashed texts are listed on request, marked with the
+        // symbol they belong to, so a caller can see why they are not free to edit.
+        let smashed = params.bool("smashed") ?? false
+        let needle = params.string("text").flatMap { $0.isEmpty ? nil : $0 }
         return wanted.flatMap { sheet -> [JSONDictionary] in
             var ownerBySymbol = [String: String]()
             let symbols = sheet.json.dictionaryMap("symbols")
             for (symbolID, symbol) in symbols {
                 for id in symbol["texts"] as? [String] ?? [] { ownerBySymbol[id.lowercased()] = symbolID }
             }
-            return sheet.json.dictionaryMap("texts").map { id, item -> JSONDictionary in
+            return sheet.json.dictionaryMap("texts").compactMap { id, item -> JSONDictionary? in
+                guard smashed || item.bool("from_smash") != true else { return nil }
+                if let needle, !(item.string("text") ?? "").localizedCaseInsensitiveContains(needle) { return nil }
                 let placement = item.dictionary("placement") ?? [:]
                 let shift = placement["shift"] as? [Any] ?? []
                 var json: JSONDictionary = [

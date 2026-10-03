@@ -79,6 +79,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case placeComponent = "place_component"
     case removePlacement = "remove_placement"
     case copyGroupLayout = "copy_group_layout"
+    case setProjectMeta = "set_project_meta"
+    case setExportSettings = "set_export_settings"
 
     /// A digest of every op and its parameter names, in a form the Python
     /// client computes from its own schema the same way: lines of
@@ -164,6 +166,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .placeComponent: "Place a component's package on the board, or move it if it is placed."
         case .removePlacement: "Take a component's package off the board, keeping its copper as junctions."
         case .copyGroupLayout: "Copy the placement (and by default the routing) of one group's packages onto another group whose components carry the same tags."
+        case .setProjectMeta: "Set the project's title-block values — project_title, project_name, rev, author and the rest — that $project_title and the like stand for on the sheets and the board. The schematic's own copies of a value change with it."
+        case .setExportSettings: "Change the export settings Horizon EDA keeps in the project — Gerber, ODB, pick-and-place, STEP, board PDF, BOM, schematic PDF: file names, directories, options. export_settings shows them."
         }
     }
 
@@ -171,7 +175,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         let component = "Reference designator or component id."
         switch self {
         case .ensureComponent:
-            return ["id": "Component id to use (optional).", "refdes": "Reference designator (optional; defaults to the entity's prefix plus ?).", "part": "Pool part id.", "entity": "Pool entity id (when there is no part).", "value": "Value (optional).", "group": "Group name (optional).", "tag": "Tag name (optional)."]
+            return ["id": "Component UUID to use, or a name for it that later ops in the batch can use as its component (optional).", "refdes": "Reference designator (optional; defaults to the entity's prefix plus ?).", "part": "Pool part id.", "entity": "Pool entity id (when there is no part).", "value": "Value (optional).", "group": "Group name (optional).", "tag": "Tag name (optional)."]
         case .removeComponent:
             return ["component": component,
                     "texts_within_mm": "Also remove free text this close to the component's symbols when they are the nearest symbol to it — the notes that described the part (optional)."]
@@ -188,14 +192,14 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .setGroupTag:
             return ["component": component, "group": "Group name, or null.", "tag": "Tag name, or null."]
         case .ensureNet:
-            return ["id": "Net id to use (optional).", "name": "Net name.", "net_class": "Net class name or id (optional).", "is_power": "Power net (optional)."]
+            return ["id": "Net UUID to use, or a name for it that later ops in the batch can use as its net (optional).", "name": "Net name.", "net_class": "Net class name or id (optional).", "is_power": "Power net (optional)."]
         case .addBus:
-            return ["name": "Bus name.", "id": "Bus id to use (optional)."]
+            return ["name": "Bus name.", "id": "Bus UUID to use, or a name later ops in the batch can use for it (optional)."]
         case .removeBus:
             return ["bus": "Bus name or id."]
         case .addBusMember:
             return ["bus": "Bus name or id.", "name": "Member name within the bus.", "net": "Net name or id it carries.",
-                    "id": "Member id to use (optional)."]
+                    "id": "Member UUID to use, or a name later ops in the batch can use for it (optional)."]
         case .placeBusLabel:
             return ["bus": "Bus name or id.", "sheet": "Sheet index, name or uuid (optional; default the first sheet).",
                     "x_mm": "X position.", "y_mm": "Y position.",
@@ -208,7 +212,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "orientation": "up, down, left or right (optional; default up)."]
         case .addNetTie:
             return ["primary": "The net kept as the primary one.", "secondary": "The net tied to it.",
-                    "id": "Net tie id to use (optional)."]
+                    "id": "Net tie UUID to use, or a name later ops in the batch can use for it (optional)."]
         case .removeNetTie:
             return ["net_tie": "Net tie id."]
         case .placeNetTie:
@@ -216,7 +220,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "sheet": "Sheet index, name or uuid (optional; default the first sheet).",
                     "from": "{\"x_mm\", \"y_mm\"} on the primary net.", "to": "{\"x_mm\", \"y_mm\"} on the secondary."]
         case .addNetClass:
-            return ["name": "Net class name.", "id": "Net class id to use (optional)."]
+            return ["name": "Net class name.", "id": "Net class UUID to use, or a name later ops in the batch can use for it (optional)."]
         case .renameNetClass:
             return ["net_class": "Net class name or id.", "name": "New name."]
         case .renameNet:
@@ -238,7 +242,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "symbol": "Pool symbol uuid to draw the gate with (optional; default the one symbol in the project pool for its unit).",
                     "x_mm": "X position.", "y_mm": "Y position.", "angle_deg": "Rotation (optional, default 0 or unchanged).",
                     "mirror": "Mirror the symbol (optional).",
-                    "id": "Symbol instance UUID to use for a gate drawn for the first time (optional), so later ops in the same batch can name it.",
+                    "id": "Symbol instance UUID for a gate drawn for the first time, or a name such as \"u1a\" that later ops in the batch use for it in a wire end's symbol (optional).",
                     "pin_display_mode": "selected_only, custom_only, both or all (optional; default selected_only for a new symbol).",
                     "display_all_pads": "List every pad number on a pin that has several (optional; Horizon's default is true)."]
         case .setSymbolDisplay:
@@ -254,11 +258,11 @@ enum HorizontalEditOperationKind: String, CaseIterable {
             return ["component": component, "pin": "Pin as for connect.", "gate": "The pin's gate, as for connect (optional).",
                     "to_component": "The other end's component.",
                     "to_pin": "The other end's pin.", "to_gate": "The other pin's gate (optional).", "sheet": "Sheet index, name or uuid (optional).",
-                    "id": "Optional wire UUID, retained by dry-run normalization.",
+                    "id": "Wire UUID, or a name later ops in the batch can use as its line (optional; normalized ops carry the UUID).",
                     "from": "{kind: pin, symbol, pin} — pin a uuid or a name — or {kind: pin, component, gate?, pin} to find the symbol, or {kind: junction, junction}; use from/to OR the legacy component/pin fields. A junction with no net takes the other end's.",
                     "to": "The other typed endpoint, on the same sheet and net."]
         case .placeJunction:
-            return ["id": "Optional junction UUID.", "sheet": "Sheet index, name or uuid (optional).", "net": "Net name or id.", "x_mm": "X position.", "y_mm": "Y position."]
+            return ["id": "Junction UUID, or a name such as \"j1\" that later ops in the batch use as a wire end's junction (optional).", "sheet": "Sheet index, name or uuid (optional).", "net": "Net name or id.", "x_mm": "X position.", "y_mm": "Y position."]
         case .setNetLineEndpoint:
             return ["line": "Wire id from list_net_lines.", "end": "from or to.", "endpoint": "An endpoint as for draw_net_line.", "sheet": "Optional sheet selector."]
         case .removeNetLine:
@@ -317,7 +321,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
             return ["id": "Net label id, from list_net_labels."]
         case .addBlockInstance:
             return ["block": "The block to use, by uuid or name.", "refdes": "Reference designator for this use of it (optional).",
-                    "id": "Instance id to use (optional)."]
+                    "id": "Instance UUID to use, or a name later ops in the batch can use as its instance (optional)."]
         case .removeBlockInstance:
             return ["instance": "Block instance id or refdes."]
         case .connectBlockPort:
@@ -421,6 +425,11 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                 "angle_deg": "Rotation of the whole copy (optional; default: the anchor's current rotation, else the source's).",
                 "include_routing": "Also copy the tracks and vias inside the source group (default true)."
             ]
+        case .setProjectMeta:
+            return ["values": "Object of title-block keys to set, e.g. {\"project_title\": \"Billo\", \"rev\": \"2A\"}. A key is what $key stands for in a frame or text; project_name, project_title, rev, author, date and license are the usual ones. null or \"\" removes a key."]
+        case .setExportSettings:
+            return ["kind": "Which settings: gerber, odb, pick_and_place, board_step, board_pdf, bom or schematic_pdf.",
+                    "fields": "Object of fields to change, merged into the settings, e.g. {\"output_directory\": \"Billo Fabrication\"}. Only fields the settings already hold, each with a value of the same type; export_settings shows them."]
         }
     }
 }
@@ -454,7 +463,7 @@ struct HorizontalEditOperation {
                 }
             } else if ["layer", "index", "priority", "inner_layers"].contains(key) {
                 try HorizontalDispatchValidation.number(value, key: key, integer: true)
-            } else if ["fields", "pin_map", "symbols", "pad_map"].contains(key) {
+            } else if ["fields", "pin_map", "symbols", "pad_map", "values"].contains(key) {
                 guard value is JSONDictionary else {
                     throw HorizontalDispatchError.invalidParams("\(key) must be an object.")
                 }
@@ -628,8 +637,13 @@ final class HorizontalProjectEditor {
     // MARK: - Applying
 
     func apply(_ operations: [HorizontalEditOperation]) throws {
-        for operation in operations {
-            try apply(operation)
+        for (index, operation) in operations.enumerated() {
+            do {
+                try apply(operation)
+            } catch let error as HorizontalDispatchError {
+                // Which op of forty failed is the first thing a caller needs.
+                throw error.inOperation(index, operation.kind.rawValue)
+            }
         }
     }
 
@@ -881,6 +895,10 @@ final class HorizontalProjectEditor {
         case .copyGroupLayout:
             let result = try copyGroupLayout(params)
             change.merge(result) { _, new in new }
+        case .setProjectMeta:
+            change.merge(try setProjectMeta(params)) { _, new in new }
+        case .setExportSettings:
+            change.merge(try setExportSettings(params)) { _, new in new }
         }
         changes.append(change)
     }
@@ -3665,6 +3683,90 @@ final class HorizontalProjectEditor {
         return ["kind": kind.rawValue, "rule_id": id as Any? as Any, "removed": true]
     }
 
+    // MARK: - Project metadata and export settings
+
+    /// The title-block values live in the top block, where the board and
+    /// Horizon read them. The schematic may keep copies of its own, once for
+    /// the whole schematic and once per sheet, and a copy wins on the sheets
+    /// it covers; so a key a copy repeats changes there too, or the sheets
+    /// would keep the old value while the board showed the new one.
+    private func setProjectMeta(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard isTopBlock else {
+            throw HorizontalDispatchError.invalidParams("The title-block values are the project's, kept in the top block. Leave \"block\" out.")
+        }
+        guard let values = params["values"] as? JSONDictionary, !values.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("set_project_meta needs \"values\": the keys to set.")
+        }
+        var changes = HorizontalTitleBlockChanges()
+        for (key, value) in values {
+            guard !key.trimmingCharacters(in: .whitespaces).isEmpty, !key.contains("$") else {
+                throw HorizontalDispatchError.invalidParams("\"\(key)\" is not a title-block key; $\(key) has to name it.")
+            }
+            guard value is NSNull || value is String else {
+                throw HorizontalDispatchError.invalidParams("\(key) must be a string, or null to remove it.")
+            }
+            // Trimmed, and blank means gone, as the app's own editor has it.
+            let one = HorizontalTitleBlockChanges(key: key, value: value as? String)
+            changes.set.merge(one.set) { _, new in new }
+            changes.removed.formUnion(one.removed)
+        }
+        var meta = block["project_meta"] as? JSONDictionary ?? [:]
+        var changed = Set(changes.patch(&meta, onlyExisting: false))
+        if !changed.isEmpty {
+            if meta.isEmpty { block.removeValue(forKey: "project_meta") } else { block["project_meta"] = meta }
+        }
+        var copies = [String]()
+        if var schematic = files["schematic"] {
+            let patched = changes.patchCopies(inSchematic: &schematic)
+            if !patched.changed.isEmpty {
+                files["schematic"] = schematic
+                dirty.insert("schematic")
+                changed.formUnion(patched.changed)
+                copies = patched.copies
+            }
+        }
+        return ["project_meta": meta, "changed": changed.sorted(), "schematic_copies": copies]
+    }
+
+    /// Merges fields into the export settings Horizon EDA keeps for one kind
+    /// of output. Only fields the settings already hold, each kept to the type
+    /// it has: Horizon reads these back strictly, and a misspelt key or a
+    /// number where it wants a string would stop it opening the project.
+    private func setExportSettings(_ params: JSONDictionary) throws -> JSONDictionary {
+        let location = try HorizontalStoredExportSettings.location(params.string("kind"))
+        guard isTopBlock else {
+            throw HorizontalDispatchError.invalidParams("Export settings are the project's, kept with the top block. Leave \"block\" out.")
+        }
+        guard let fields = params["fields"] as? JSONDictionary, !fields.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("set_export_settings needs \"fields\": what to change.")
+        }
+        guard var file = files[location.file] else {
+            throw HorizontalDispatchError.notFound("The project has no \(location.file).")
+        }
+        guard var settings = file[location.key] as? JSONDictionary else {
+            throw HorizontalDispatchError.notFound(
+                "The project keeps no \(location.kind) settings (\(location.key)) yet. Horizon EDA writes them the first time its export dialog is used; Horizontal's own export does not need them."
+            )
+        }
+        for key in fields.keys.sorted() {
+            let value = fields[key]!
+            guard let current = settings[key] else {
+                throw HorizontalDispatchError.invalidParams(
+                    "\(location.kind) settings have no field \(key). They hold: \(settings.keys.sorted().joined(separator: ", "))."
+                )
+            }
+            if let problem = HorizontalStoredExportSettings.mismatch(current, value) {
+                throw HorizontalDispatchError.invalidParams("\(key) must be \(problem), as it is now.")
+            }
+            settings[key] = value
+        }
+        file[location.key] = settings
+        files[location.file] = file
+        dirty.insert(location.file)
+        return ["kind": location.kind, "key": location.key, "changed": fields.keys.sorted(),
+                "values": fields]
+    }
+
     // MARK: - Stackup
 
     private func setStackup(_ params: JSONDictionary) throws -> JSONDictionary {
@@ -4789,5 +4891,66 @@ final class HorizontalProjectEditor {
         files["board"] = board
         dirty.insert("board")
         return doomed.count
+    }
+}
+
+/// Where Horizon EDA keeps each export's settings in a project: the file, as
+/// the editor loads it, and the key in it. Horizontal's own export names its
+/// files after the project file and reads none of these; they are kept so
+/// the project exports the same from Horizon.
+enum HorizontalStoredExportSettings {
+    struct Location {
+        var kind: String
+        var file: String
+        var key: String
+    }
+
+    static let all: [Location] = [
+        Location(kind: "gerber", file: "board", key: "fab_output_settings"),
+        Location(kind: "odb", file: "board", key: "odb_output_settings"),
+        Location(kind: "pick_and_place", file: "board", key: "pnp_export_settings"),
+        Location(kind: "board_step", file: "board", key: "step_export_settings"),
+        Location(kind: "board_pdf", file: "board", key: "pdf_export_settings"),
+        Location(kind: "bom", file: "block", key: "bom_export_settings"),
+        Location(kind: "schematic_pdf", file: "schematic", key: "pdf_export_settings")
+    ]
+
+    /// The export tool's names for the same outputs.
+    private static let aliases = ["gerbers": "gerber", "pnp": "pick_and_place", "step": "board_step", "board_drawing": "board_pdf"]
+
+    static func location(_ kind: String?) throws -> Location {
+        let known = all.map(\.kind).joined(separator: ", ")
+        guard let kind, !kind.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("Pass \"kind\": one of \(known).")
+        }
+        let name = aliases[kind.lowercased()] ?? kind.lowercased()
+        guard let found = all.first(where: { $0.kind == name }) else {
+            throw HorizontalDispatchError.invalidParams("Unknown export settings kind \(kind). Known: \(known).")
+        }
+        return found
+    }
+
+    /// What a new value would have to be to stand where the current one does,
+    /// or nil when it already is. Null stands for anything.
+    static func mismatch(_ current: Any, _ value: Any) -> String? {
+        func isBool(_ item: Any) -> Bool { (item as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() } ?? false }
+        switch current {
+        case is NSNull:
+            return nil
+        case _ where isBool(current):
+            return isBool(value) ? nil : "true or false"
+        case let number as NSNumber:
+            guard let new = value as? NSNumber, !isBool(value), new.doubleValue.isFinite else { return "a number" }
+            let whole = number.doubleValue.rounded() == number.doubleValue
+            return whole && new.doubleValue.rounded() != new.doubleValue ? "a whole number" : nil
+        case is String:
+            return value is String ? nil : "a string"
+        case is JSONDictionary:
+            return value is JSONDictionary ? nil : "an object"
+        case is [Any]:
+            return value is [Any] ? nil : "an array"
+        default:
+            return nil
+        }
     }
 }

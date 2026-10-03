@@ -827,6 +827,19 @@ class RemoveSheet(Input):
     force: bool | None = None
 
 
+class SetProjectMeta(Input):
+    """Title-block values: what $project_title and the like stand for on the sheets and the board."""
+    op: Literal["set_project_meta"]
+    values: dict[str, str | None] = Field(min_length=1)
+
+
+class SetExportSettings(Input):
+    """Fields of the export settings Horizon EDA keeps in the project; export_settings shows them."""
+    op: Literal["set_export_settings"]
+    kind: Literal["gerber", "odb", "pick_and_place", "board_step", "board_pdf", "bom", "schematic_pdf"]
+    fields: dict[str, Any] = Field(min_length=1)
+
+
 class Vertex(Input):
     x_mm: float
     y_mm: float
@@ -918,7 +931,7 @@ EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | 
                           PlaceHole | RemoveHole | PlaceKeepout | RemoveKeepout | SetSheetIndex |
                           PlaceBoardText | RemoveBoardText | PlaceDimension | RemoveDimension |
                           AddBus | RemoveBus | AddBusMember | PlaceBusLabel | PlaceBusRipper |
-                          AddNetTie | RemoveNetTie | PlaceNetTie | CopyLayout,
+                          AddNetTie | RemoveNetTie | PlaceNetTie | CopyLayout | SetProjectMeta | SetExportSettings,
                           Field(discriminator="op")]
 
 

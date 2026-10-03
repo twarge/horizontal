@@ -101,6 +101,81 @@ final class HorizontalSheetEditingTests: XCTestCase {
         XCTAssertEqual(try drawn(reloaded, "Power").label, "VIN [1]")
     }
 
+    /// The information panel's title-block edit. Older Horizon files, Billo
+    /// among them, keep their own copy of the project title in the schematic,
+    /// once for the whole schematic and once per sheet, and a copy wins on the
+    /// sheets it covers. Changing the block alone left every title block
+    /// saying the old name while the board said the new one; the copies change
+    /// with it, and the reload redraws both.
+    func testATitleBlockEditReachesTheSheetsAndTheBoard() throws {
+        let packageURL = try writtenTemplate()
+        let session = HorizontalDispatchSession()
+        let entry = try session.open(url: packageURL)
+        var frame = HorizontalPoolItemFactory.newFrame().json()
+        frame["texts"] = [UUID().uuidString.lowercased(): [
+            "text": "$project_title R$rev", "size": 2_000_000, "width": 0,
+            "origin": "baseline", "font": "simplex",
+            "placement": ["angle": 0, "mirror": false, "shift": [10_000_000, 10_000_000]]
+        ] as JSONDictionary]
+        let frameID = try XCTUnwrap(frame.string("uuid"))
+        let response = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 1, "method": "apply", "params": [
+            "handle": entry.handle, "expected_revision": entry.revision, "operation_id": UUID().uuidString,
+            "pool_items": [frame],
+            "ops": [["op": "add_sheet", "name": "Power", "frame": frameID],
+                    ["op": "add_sheet", "name": "Analog"],
+                    ["op": "set_project_meta", "values": ["project_title": "Roxanne", "rev": "1B"]],
+                    ["op": "place_board_text", "text": "$project_title", "layer": 20, "x_mm": 0, "y_mm": 0]]
+        ]], in: session)
+        XCTAssertNil(response["error"], "\(response)")
+
+        // The copies an older file keeps: the schematic's own, and Analog's.
+        let schematicURL = packageURL.appendingPathComponent("top_schematic.json")
+        var schematic = try JSONHelper.loadDictionary(from: schematicURL)
+        schematic["title_block_values"] = ["project_title": "Roxanne"]
+        var sheets = try XCTUnwrap(schematic["sheets"] as? JSONDictionary)
+        let analog = try XCTUnwrap(sheets.first { ($0.value as? JSONDictionary)?.string("name") == "Analog" }?.key)
+        var sheet = try XCTUnwrap(sheets[analog] as? JSONDictionary)
+        sheet["title_block_values"] = ["project_title": "Roxanne"]
+        sheets[analog] = sheet
+        schematic["sheets"] = sheets
+        try JSONSerialization.data(withJSONObject: schematic, options: [.sortedKeys]).write(to: schematicURL)
+
+        func drawn(_ project: HorizontalProject) -> [String: [String]] {
+            Dictionary(uniqueKeysWithValues: (project.schematic?.sheets ?? [])
+                .filter { !$0.frameTexts.isEmpty }
+                .map { ($0.name, $0.frameTexts.map(\.text)) })
+        }
+        let project = try HorizontalProject.load(from: packageURL)
+        XCTAssertEqual(drawn(project), ["Power": ["Roxanne R1B"], "Analog": ["Roxanne R1B"]])
+
+        // What the panel used to do: the block alone. The copies win.
+        var blockOnly = try HorizontalProjectArchive.completeProject(from: packageURL)
+        var stale = try JSONHelper.loadDictionary(from: XCTUnwrap(blockOnly.regularFileData(relativePath: "top_block.json")))
+        stale["project_meta"] = ["project_title": "Billo", "rev": "1B"]
+        try blockOnly.replaceRegularFileData(relativePath: "top_block.json", with: JSONSerialization.data(withJSONObject: stale))
+        XCTAssertEqual(drawn(try HorizontalProject.loadSnapshot(of: blockOnly)), ["Power": ["Roxanne R1B"], "Analog": ["Roxanne R1B"]])
+
+        var archive = try HorizontalProjectArchive.completeProject(from: packageURL)
+        let changed = try HorizontalProjectJSONApplicator.apply(
+            titleBlockChanges: HorizontalTitleBlockChanges(key: "project_title", value: " Billo "), in: project, to: &archive)
+        XCTAssertEqual(changed, ["project_title"])
+        let reloaded = try HorizontalProject.loadSnapshot(of: archive)
+        XCTAssertEqual(drawn(reloaded), ["Power": ["Billo R1B"], "Analog": ["Billo R1B"]])
+        XCTAssertEqual(reloaded.board?.texts.map(\.text), ["Billo"])
+        XCTAssertEqual(reloaded.projectMeta["project_title"], "Billo")
+
+        // Blank removes a key everywhere it is; a copy is never added to.
+        try HorizontalProjectJSONApplicator.apply(titleBlockChanges: HorizontalTitleBlockChanges(key: "rev", value: ""),
+                                                  in: reloaded, to: &archive)
+        let block = try JSONHelper.loadDictionary(from: XCTUnwrap(archive.regularFileData(relativePath: "top_block.json")))
+        XCTAssertEqual(block.dictionary("project_meta") as? [String: String], ["project_title": "Billo"])
+        let copies = try JSONHelper.loadDictionary(from: XCTUnwrap(archive.regularFileData(relativePath: "top_schematic.json")))
+        XCTAssertEqual(copies.dictionary("title_block_values") as? [String: String], ["project_title": "Billo"])
+        XCTAssertEqual(try HorizontalProjectJSONApplicator.apply(
+            titleBlockChanges: HorizontalTitleBlockChanges(key: "project_title", value: "Billo"), in: reloaded, to: &archive), [],
+            "an unchanged value changes nothing, so the app records no undo step for it")
+    }
+
     // MARK: - Helpers
 
     private func sheetsJSON(in archive: HorizontalProjectArchive) throws -> [String: Any] {

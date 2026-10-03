@@ -169,6 +169,18 @@ struct HorizontalDispatchError: Error, @unchecked Sendable {
     static func failed(_ message: String) -> Self {
         Self(code: .applicationError, message: message)
     }
+
+    /// The same error, said of one op in a batch: "ops[3] place_junction: …",
+    /// with the index and op in details so a caller can find it without
+    /// parsing the message. An error already placed keeps its place.
+    func inOperation(_ index: Int, _ op: String) -> Self {
+        guard details["op_index"] == nil else { return self }
+        var located = self
+        located.message = "ops[\(index)] \(op): \(message)"
+        located.details["op_index"] = index
+        located.details["op"] = op
+        return located
+    }
 }
 
 /// Makes result values safe for `JSONSerialization`: non-finite doubles
