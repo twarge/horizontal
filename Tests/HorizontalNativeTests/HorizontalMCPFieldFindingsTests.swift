@@ -540,4 +540,149 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
                        ["op": "disconnect", "component": "U1", "pin": "NRST"]])
         }
     }
+
+    /// Rewrites one of the project's files the way another program would, and
+    /// reloads, so a test can start from what a real project holds.
+    private func rewrite(_ file: String, _ body: (inout JSONDictionary) throws -> Void) throws {
+        let url = root.appendingPathComponent(file)
+        var json = try JSONHelper.loadDictionary(from: url)
+        try body(&json)
+        try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]).write(to: url)
+        _ = try result("reload_project")
+    }
+
+    func testABatchNamesWhatItMakesAndUsesTheNames() throws {
+        _ = try placedMCU()
+        let ops: [JSONDictionary] = [
+            ["op": "place_junction", "id": "j1", "net": "SWDIO", "x_mm": 90, "y_mm": 100],
+            ["op": "place_junction", "id": "j2", "net": "SWDIO", "x_mm": 90, "y_mm": 95],
+            ["op": "draw_net_line", "id": "w1", "from": ["kind": "pin", "component": "U1", "pin": "PA13(JTMS/SWDIO)"],
+             "to": ["kind": "junction", "junction": "j1"]],
+            ["op": "draw_net_line", "id": "w2", "from": ["kind": "junction", "junction": "j1"], "to": ["kind": "junction", "junction": "j2"]],
+            // A junction called SWDIO is a junction's name; the net keeps its own.
+            ["op": "place_junction", "id": "SWDIO", "net": "SWDIO", "x_mm": 90, "y_mm": 90],
+            ["op": "place_junction", "id": "j3", "net": "SWDIO", "x_mm": 85, "y_mm": 90]
+        ]
+        let preview = try apply(ops, ["dry_run": true])
+        let handles = try XCTUnwrap(preview["handles"] as? [String: String], "\(preview)")
+        XCTAssertEqual(Set(handles.keys), ["j1", "j2", "j3", "w1", "w2", "SWDIO"])
+        XCTAssertTrue(handles.values.allSatisfy { UUID(uuidString: $0) != nil })
+        let normalized = try XCTUnwrap(preview["normalized_ops"] as? [JSONDictionary])
+        XCTAssertEqual(normalized[3].dictionary("from")?.string("junction"), handles["j1"])
+        XCTAssertEqual(normalized[2].string("id"), handles["w1"])
+        XCTAssertEqual(normalized[5].string("net"), "SWDIO", "a junction's name leaves nets alone")
+
+        // Another dry run in between, so the commit cannot reuse the staged
+        // plan. It still matches it: at one revision a name is one UUID. (An
+        // op given no id at all still gets a fresh one each time.)
+        _ = try apply([["op": "ensure_net", "name": "OTHER"]], ["dry_run": true])
+        let committed = try apply(ops, ["plan_digest": try XCTUnwrap(preview.string("plan_digest"))])
+        XCTAssertNil(committed.dictionary("timing")?["reused_dry_run"])
+        XCTAssertEqual(committed["handles"] as? [String: String], handles)
+        let junctions = Set((try result("list_junctions") as? [JSONDictionary] ?? []).compactMap { $0.string("id") })
+        XCTAssertTrue(junctions.isSuperset(of: [handles["j1"]!, handles["j2"]!, handles["SWDIO"]!]), "\(junctions)")
+        XCTAssertTrue((try result("list_net_lines") as? [JSONDictionary] ?? []).contains { $0.string("id") == handles["w1"] })
+
+        // One name, one thing.
+        let clash = try error([["op": "place_junction", "id": "x", "net": "SWDIO", "x_mm": 70, "y_mm": 70],
+                               ["op": "draw_net_line", "id": "x", "from": ["kind": "junction", "junction": "x"],
+                                "to": ["kind": "junction", "junction": handles["j2"]!]]])
+        XCTAssertTrue(clash.hasPrefix("ops[1] draw_net_line: ") && clash.contains("already names"), clash)
+    }
+
+    func testAFailingOpIsNamedByItsPlaceInTheBatch() throws {
+        let response = try call("apply", ["ops": [["op": "ensure_net", "name": "A"],
+                                                   ["op": "place_junction", "net": "NOPE", "x_mm": 1, "y_mm": 1]]])
+        let failure = try XCTUnwrap(response["error"] as? JSONDictionary)
+        XCTAssertTrue(failure.string("message")?.hasPrefix("ops[1] place_junction: ") == true, "\(failure)")
+        let details = failure.dictionary("data")?.dictionary("details")
+        XCTAssertEqual(details?.int("op_index"), 1)
+        XCTAssertEqual(details?.string("op"), "place_junction")
+        // An op the engine cannot read is placed too, before anything runs.
+        let unread = try error([["op": "ensure_net", "name": "B"], ["op": "set_value", "component": "X", "valu": "1"]])
+        XCTAssertTrue(unread.hasPrefix("ops[1] set_value: "), unread)
+    }
+
+    func testProjectMetaReachesTheBlockAndTheSchematicsCopies() throws {
+        // A project that also keeps its title in the schematic, once for the
+        // whole schematic and once on a sheet, as older Horizon files do.
+        try rewrite("top_schematic.json") { json in
+            json["title_block_values"] = ["project_title": "Roxanne", "author": "T"]
+            var sheets = try XCTUnwrap(json["sheets"] as? JSONDictionary)
+            let id = try XCTUnwrap(sheets.keys.first)
+            var sheet = try XCTUnwrap(sheets[id] as? JSONDictionary)
+            sheet["title_block_values"] = ["project_title": "Roxanne"]
+            sheets[id] = sheet
+            json["sheets"] = sheets
+        }
+        let change = try XCTUnwrap(changes(try apply([["op": "set_project_meta",
+                                                        "values": ["project_title": "Billo", "rev": " 2A ", "author": NSNull()]]])).first)
+        XCTAssertEqual(change["changed"] as? [String], ["author", "project_title", "rev"])
+        XCTAssertEqual((change["schematic_copies"] as? [String])?.count, 2)
+
+        let block = try JSONHelper.loadDictionary(from: root.appendingPathComponent("top_block.json"))
+        XCTAssertEqual(block.dictionary("project_meta") as? [String: String], ["project_title": "Billo", "rev": "2A"])
+        let schematic = try JSONHelper.loadDictionary(from: root.appendingPathComponent("top_schematic.json"))
+        let copy = schematic.dictionary("title_block_values")
+        XCTAssertEqual(copy?.string("project_title"), "Billo")
+        XCTAssertNil(copy?["author"], "removed from the copy as well")
+        XCTAssertNil(copy?["rev"], "a copy is changed, not added to")
+        XCTAssertEqual(schematic.dictionaryMap("sheets").values.first?.dictionary("title_block_values")?.string("project_title"), "Billo")
+        XCTAssertEqual(try session.entry(handle: handle).project.projectMeta["project_title"], "Billo")
+
+        XCTAssertTrue(try error([["op": "set_project_meta", "values": ["rev": 2]]]).contains("must be a string"))
+        XCTAssertTrue(try error([["op": "set_project_meta", "values": ["$rev": "2"]]]).contains("not a title-block key"))
+    }
+
+    func testExportSettingsChangeOnlyFieldsTheyHold() throws {
+        let none = try XCTUnwrap(try result("export_settings") as? JSONDictionary)
+        XCTAssertTrue(none.dictionary("odb")?["settings"] is NSNull, "\(none)")
+        XCTAssertEqual(none.count, 7)
+        XCTAssertTrue(try error([["op": "set_export_settings", "kind": "odb", "fields": ["output_filename": "x.zip"]]])
+            .contains("keeps no odb settings"))
+
+        try rewrite("board.json") {
+            $0["odb_output_settings"] = ["format": "zip", "job_name": "", "output_directory": "",
+                                         "output_filename": "Roxanne Fabrication/Roxanne ODB.zip"]
+        }
+        try rewrite("top_block.json") {
+            $0["bom_export_settings"] = ["include_nopopulate": false, "output_filename": "Roxanne BOM.csv",
+                                         "csv_settings": ["order": "asc"]]
+        }
+        let applied = try apply([
+            ["op": "set_export_settings", "kind": "odb", "fields": ["output_filename": "Billo Fabrication/Billo ODB.zip"]],
+            ["op": "set_export_settings", "kind": "bom", "fields": ["output_filename": "Billo BOM.csv", "include_nopopulate": true]]
+        ])
+        XCTAssertEqual(changes(applied).first?["changed"] as? [String], ["output_filename"])
+        let odb = try XCTUnwrap(try result("export_settings", ["kind": "odb"]) as? JSONDictionary)
+        XCTAssertEqual(odb.count, 1)
+        XCTAssertEqual(odb.dictionary("odb")?.dictionary("settings")?.string("output_filename"), "Billo Fabrication/Billo ODB.zip")
+        let bom = (try result("export_settings", ["kind": "bom"]) as? JSONDictionary)?.dictionary("bom")?.dictionary("settings")
+        XCTAssertEqual(bom?.bool("include_nopopulate"), true)
+        XCTAssertEqual(bom?.dictionary("csv_settings")?.string("order"), "asc", "fields left out stay")
+
+        // Horizon reads these back strictly: no new fields, no changed types.
+        XCTAssertTrue(try error([["op": "set_export_settings", "kind": "odb", "fields": ["output_name": "x"]]]).contains("no field output_name"))
+        XCTAssertTrue(try error([["op": "set_export_settings", "kind": "bom", "fields": ["include_nopopulate": "yes"]]]).contains("true or false"))
+        XCTAssertTrue(try error([["op": "set_export_settings", "kind": "plots", "fields": ["a": 1]]]).contains("Known: gerber"))
+    }
+
+    func testTextListsLeaveSmashedTextsOutUnlessAsked() throws {
+        try apply([["op": "place_board_text", "text": "$project_title", "layer": 20, "x_mm": 0, "y_mm": 0],
+                   ["op": "place_board_text", "text": "R1", "layer": 20, "x_mm": 5, "y_mm": 0]])
+        let before = try XCTUnwrap(try result("list_board_texts") as? [JSONDictionary])
+        let refdes = try XCTUnwrap(before.first { $0.string("text") == "R1" }?.string("id"))
+        try rewrite("board.json") { json in
+            var texts = try XCTUnwrap(json["texts"] as? JSONDictionary)
+            var item = try XCTUnwrap(texts[refdes] as? JSONDictionary)
+            item["from_smash"] = true
+            texts[refdes] = item
+            json["texts"] = texts
+        }
+        XCTAssertEqual((try result("list_board_texts") as? [JSONDictionary])?.map { $0.string("text") }, ["$project_title"])
+        XCTAssertEqual((try result("list_board_texts", ["smashed": true]) as? [JSONDictionary])?.count, 2)
+        XCTAssertEqual((try result("list_board_texts", ["smashed": true, "text": "r1"]) as? [JSONDictionary])?.first?.bool("from_smash"), true)
+        XCTAssertEqual((try result("list_board_texts", ["text": "PROJECT"]) as? [JSONDictionary])?.count, 1)
+        XCTAssertNotNil(try call("list_board_texts", ["smashed": "yes"])["error"])
+    }
 }

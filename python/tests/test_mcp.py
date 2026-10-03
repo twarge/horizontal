@@ -615,6 +615,56 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
                 {"x_mm": 1, "y_mm": 1}, {"x_mm": 2, "y_mm": 2}]}]})
         self.assertTrue(bad.is_error)
 
+    async def test_a_batch_names_what_it_makes_and_a_failure_names_its_op(self):
+        revision = self.opened["data"]["revision"]
+        made = await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id=str(uuid.uuid4()),
+                               ops=[{"op": "ensure_net", "name": "SIG"},
+                                    {"op": "place_junction", "id": "j1", "net": "SIG", "x_mm": 0, "y_mm": 0},
+                                    {"op": "place_junction", "id": "j2", "net": "SIG", "x_mm": 5, "y_mm": 0},
+                                    {"op": "draw_net_line", "id": "w", "from": {"kind": "junction", "junction": "j1"},
+                                     "to": {"kind": "junction", "junction": "j2"}}])
+        handles = made["data"]["handles"]
+        self.assertEqual(set(handles), {"j1", "j2", "w"})
+        self.assertEqual(made["data"]["changes"][3]["net_line"], handles["w"])
+        ids = {j["id"] for j in (await self.call("list_junctions", project_ref=self.ref))["data"]}
+        self.assertEqual(ids, {handles["j1"], handles["j2"]})
+
+        failed = await server.mcp.call_tool("apply_ops", {
+            "project_ref": self.ref, "expected_revision": made["meta"]["revision"], "operation_id": str(uuid.uuid4()),
+            "ops": [{"op": "ensure_net", "name": "OK"}, {"op": "place_junction", "net": "NOPE", "x_mm": 1, "y_mm": 1}]})
+        self.assertTrue(failed.is_error)
+        error = failed.structured_content["error"]
+        self.assertTrue(error["message"].startswith("ops[1] place_junction: "), error)
+        self.assertEqual(error["details"]["op_index"], 1)
+
+    async def test_project_meta_export_settings_and_text_filters(self):
+        tools = {t.name: t for t in await server.mcp.list_tools()}
+        self.assertTrue(tools["export_settings"].annotations.read_only_hint)
+        mapping = tools["apply_ops"].input_schema["properties"]["ops"]["items"]["discriminator"]["mapping"]
+        self.assertIn("set_project_meta", mapping)
+        self.assertIn("set_export_settings", mapping)
+
+        settings = (await self.call("export_settings", project_ref=self.ref))["data"]
+        self.assertEqual(set(settings), {"gerber", "odb", "pick_and_place", "board_step", "board_pdf", "bom", "schematic_pdf"})
+        self.assertIsNone(settings["odb"]["settings"])
+        revision = self.opened["data"]["revision"]
+        refused = await server.mcp.call_tool("apply_ops", {
+            "project_ref": self.ref, "expected_revision": revision, "operation_id": str(uuid.uuid4()),
+            "ops": [{"op": "set_export_settings", "kind": "odb", "fields": {"output_filename": "x.zip"}}]})
+        self.assertTrue(refused.is_error)
+        self.assertIn("keeps no odb settings", refused.structured_content["error"]["message"])
+
+        named = await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id=str(uuid.uuid4()),
+                                ops=[{"op": "set_project_meta", "values": {"project_title": "Billo", "rev": "2A"}},
+                                     {"op": "place_board_text", "text": "$project_title R$rev", "layer": 20, "x_mm": 0, "y_mm": 0},
+                                     {"op": "place_board_text", "text": "TP1", "layer": 20, "x_mm": 5, "y_mm": 0}])
+        self.assertEqual(named["data"]["changes"][0]["changed"], ["project_title", "rev"])
+        reopened = await self.call("reload_project", project_ref=self.ref)
+        self.assertEqual(reopened["data"]["project_meta"]["project_title"], "Billo")
+        titled = (await self.call("list_board_texts", project_ref=self.ref, text="$project"))["data"]
+        self.assertEqual([t["text"] for t in titled], ["$project_title R$rev"])
+        self.assertEqual(len((await self.call("list_board_texts", project_ref=self.ref, smashed=True))["data"]), 2)
+
     async def test_worker_restart_rebinds_a_disk_read(self):
         project = server._projects[self.ref]
         before = project.summary["instance_id"]

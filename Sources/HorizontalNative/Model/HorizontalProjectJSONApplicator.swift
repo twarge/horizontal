@@ -20,17 +20,107 @@ enum HorizontalProjectJSONApplyError: LocalizedError {
     }
 }
 
+/// A change to the title-block values — what `$project_title` and the like
+/// stand for: keys to set and keys to remove.
+struct HorizontalTitleBlockChanges {
+    var set: [String: String] = [:]
+    var removed: Set<String> = []
+
+    init(set: [String: String] = [:], removed: Set<String> = []) {
+        self.set = set
+        self.removed = removed
+    }
+
+    /// One key as an editor field gives it: trimmed, and blank means gone.
+    init(key: String, value: String?) {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty { removed = [key] } else { set = [key: trimmed] }
+    }
+
+    /// Applies the change to one table of values and returns the keys it
+    /// changed. A copy (`onlyExisting`) is changed or cleared, never added to:
+    /// a key it lacks falls through to the block's value already.
+    func patch(_ table: inout JSONDictionary, onlyExisting: Bool) -> [String] {
+        var changed = [String]()
+        for (key, value) in set where (table[key] as? String) != value && (!onlyExisting || table[key] != nil) {
+            table[key] = value
+            changed.append(key)
+        }
+        for key in removed where table[key] != nil {
+            table.removeValue(forKey: key)
+            changed.append(key)
+        }
+        return changed
+    }
+
+    /// The copies a schematic keeps — its own `title_block_values` and each
+    /// sheet's — patched where they hold a key. Returns the keys changed and
+    /// which copies ("schematic", "sheet:<id>") changed.
+    func patchCopies(inSchematic schematic: inout JSONDictionary) -> (changed: Set<String>, copies: [String]) {
+        var changed = Set<String>(), copies = [String]()
+        if var table = schematic["title_block_values"] as? JSONDictionary {
+            let keys = patch(&table, onlyExisting: true)
+            if !keys.isEmpty {
+                schematic["title_block_values"] = table
+                changed.formUnion(keys)
+                copies.append("schematic")
+            }
+        }
+        guard var sheets = schematic["sheets"] as? JSONDictionary else { return (changed, copies) }
+        var sheetsChanged = false
+        for id in sheets.keys.sorted() {
+            guard var sheet = sheets[id] as? JSONDictionary, var table = sheet["title_block_values"] as? JSONDictionary else { continue }
+            let keys = patch(&table, onlyExisting: true)
+            guard !keys.isEmpty else { continue }
+            sheet["title_block_values"] = table
+            sheets[id] = sheet
+            sheetsChanged = true
+            changed.formUnion(keys)
+            copies.append("sheet:\(id)")
+        }
+        if sheetsChanged { schematic["sheets"] = sheets }
+        return (changed, copies)
+    }
+}
+
 enum HorizontalProjectJSONApplicator {
+    /// Sets and removes title-block values where the project keeps them: in
+    /// the top block, where the board and Horizon read them (the project file
+    /// when there is no block), and in any copy the top schematic keeps of a
+    /// key, once for the whole schematic and once per sheet. A copy wins on
+    /// the sheets it covers, so changing the block alone would leave them
+    /// showing the old value. Returns the keys that changed anywhere.
+    @discardableResult
     static func apply(
-        projectMeta: [String: String],
-        targetURL: URL,
+        titleBlockChanges changes: HorizontalTitleBlockChanges,
         in project: HorizontalProject,
         to archive: inout HorizontalProjectArchive
-    ) throws {
-        let path = try archivePath(for: targetURL, project: project, archive: archive)
-        var json = try loadJSON(relativePath: path, fallbackURL: targetURL, from: archive)
-        patchProjectMeta(&json, projectMeta: projectMeta)
-        try saveJSON(json, relativePath: path, to: &archive)
+    ) throws -> Set<String> {
+        var changed = Set<String>()
+        let top = project.blocks.first(where: \.isTop)
+        let blockFilename = (top?.blockFilename ?? project.blockFilename).flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
+        let metaURL = blockFilename.map { project.baseURL.appendingPathComponent($0) } ?? project.projectFileURL
+        let metaPath = try archivePath(for: metaURL, project: project, archive: archive)
+        var json = try loadJSON(relativePath: metaPath, fallbackURL: metaURL, from: archive)
+        var meta = json.dictionary("project_meta") ?? [:]
+        let keys = changes.patch(&meta, onlyExisting: false)
+        if !keys.isEmpty {
+            if meta.isEmpty { json.removeValue(forKey: "project_meta") } else { json["project_meta"] = meta }
+            try saveJSON(json, relativePath: metaPath, to: &archive)
+            changed.formUnion(keys)
+        }
+        if let schematicFilename = top?.schematicFilename ?? project.schematicFilename,
+           !schematicFilename.trimmingCharacters(in: .whitespaces).isEmpty {
+            let url = project.baseURL.appendingPathComponent(schematicFilename)
+            let path = try archivePath(for: url, project: project, archive: archive)
+            var schematic = try loadJSON(relativePath: path, fallbackURL: url, from: archive)
+            let copies = changes.patchCopies(inSchematic: &schematic)
+            if !copies.changed.isEmpty {
+                try saveJSON(schematic, relativePath: path, to: &archive)
+                changed.formUnion(copies.changed)
+            }
+        }
+        return changed
     }
 
     static func apply(board: HorizontalBoard, in project: HorizontalProject, to archive: inout HorizontalProjectArchive) throws {
@@ -361,21 +451,6 @@ enum HorizontalProjectJSONApplicator {
             settings["grids"] = JSONDictionary()
         }
         json["grid_settings"] = settings
-    }
-
-    private static func patchProjectMeta(_ json: inout JSONDictionary, projectMeta: [String: String]) {
-        let cleaned = projectMeta.reduce(into: JSONDictionary()) { result, item in
-            let value = item.value.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty {
-                result[item.key] = value
-            }
-        }
-
-        if cleaned.isEmpty {
-            json.removeValue(forKey: "project_meta")
-        } else {
-            json["project_meta"] = cleaned
-        }
     }
 
     private static func patchStackup(_ json: inout JSONDictionary, stackupLayers: [HorizontalBoardStackupLayer]) {
