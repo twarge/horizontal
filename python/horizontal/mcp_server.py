@@ -895,11 +895,23 @@ def undo(path: str | None = None, redo: bool = False) -> dict[str, Any]:
 
 
 @_tool
-def list_board_texts(path: str | None = None, layer: int | None = None) -> list[dict[str, Any]]:
-    """Free text on the board layers, with the ids the board text ops take. A text marked from_smash belongs to
-    the package named in its package field — Horizon pulled it out of that package, so it moves and dies with the
-    component rather than being edited on its own."""
-    return _resolve(path).board_texts(layer=layer)
+def list_board_texts(path: str | None = None, layer: int | None = None,
+                     smashed: Annotated[bool, Field(description="Also list the reference designators Horizon smashed out of packages — on a populated board, most of its texts.")] = False,
+                     text: Annotated[str | None, Field(description="Only texts containing this, ignoring case, e.g. \"$project\".")] = None) -> list[dict[str, Any]]:
+    """Free text on the board layers, with the ids the board text ops take. Texts smashed out of packages are left
+    out unless smashed: each is marked from_smash and belongs to the package named in its package field, so it moves
+    and dies with the component rather than being edited on its own."""
+    return _resolve(path).board_texts(layer=layer, smashed=smashed, text=text)
+
+
+@_tool
+def export_settings(path: str | None = None,
+                    kind: Annotated[Literal["gerber", "odb", "pick_and_place", "board_step", "board_pdf", "bom", "schematic_pdf"] | None,
+                                    Field(description="Only this kind.")] = None) -> dict[str, Any]:
+    """The export settings Horizon EDA keeps in the project — file names, directories, options — by kind, as the
+    files store them, or null where a project has none. set_export_settings changes them. Horizontal's own export
+    names its files after the project file and does not read these."""
+    return _resolve(path).export_settings(kind=kind)
 
 
 @_tool
@@ -982,11 +994,13 @@ def list_vias(path: str | None = None, net: str | None = None, limit: int = 200)
 
 @_tool
 def list_texts(path: str | None = None, sheet: int | None = None, sheet_id: str | None = None,
-               name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
+               name: str | None = None, block_id: str | None = None,
+               smashed: Annotated[bool, Field(description="Also list the texts Horizon smashed out of symbols.")] = False,
+               text: Annotated[str | None, Field(description="Only texts containing this, ignoring case.")] = None) -> list[dict[str, Any]]:
     """Free text on the schematic sheets, with the ids place_text and remove_text take, and where each sits.
-    A text marked from_smash belongs to the symbol named in its symbol field — Horizon extracted it from that
-    symbol, so it moves and dies with the component rather than being edited on its own."""
-    return _resolve(path).texts(sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id)
+    Texts smashed out of symbols are left out unless smashed: each is marked from_smash and belongs to the symbol
+    named in its symbol field, so it moves and dies with the component rather than being edited on its own."""
+    return _resolve(path).texts(sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id, smashed=smashed, text=text)
 
 
 @_tool
@@ -1139,9 +1153,18 @@ def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool =
     Pins are named by name or uuid, whole names first, so PA13(JTMS/SWDIO) works; a wire end can name a
     component and pin instead of a symbol instance. Cleanup: remove_net_line, remove_junction, prune_sheet,
     remove_sheet with force, and retire_net, which takes the net's labels, wires and junctions with it. Drawing:
-    terminate_pin runs a stub from a pin to a label or power symbol; place_symbol takes an id so later ops in
-    the batch can name it. set_no_connect marks unused pins; remap_part matches pins by name when pin_map is
-    left out. Refer to sheets by name or uuid in a batch that adds or reorders sheets — page numbers move.
+    terminate_pin runs a stub from a pin to a label or power symbol. set_no_connect marks unused pins;
+    remap_part matches pins by name when pin_map is left out. Refer to sheets by name or uuid in a batch that
+    adds or reorders sheets — page numbers move.
+
+    An op that makes something — place_junction, place_symbol, draw_net_line, ensure_component, ensure_net and
+    the add_ ops — may give a short name as its id instead of a UUID ("id": "j1"), and later ops in the batch
+    use that name where they refer to that kind of thing ({"kind": "junction", "junction": "j1"}). The reply's
+    handles maps each name to the UUID it became. A failing op is named in the error: "ops[3] place_junction: …".
+
+    Project: set_project_meta sets the title-block values — project_title, rev and the rest, what $project_title
+    stands for on the sheets and the board. set_export_settings changes the export settings Horizon EDA keeps
+    in the project; export_settings shows them.
 
     The reply is compact unless verbose: per op, its ids, scalars and counts, plus timing. A slow live commit
     is waited for (HORIZONTAL_MUTATION_TIMEOUT seconds, 180 by default), and a lost reply is resolved through

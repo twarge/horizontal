@@ -147,7 +147,7 @@ class Project:
             _request_deadline.reset(token)
 
     def _perform_call(self, method: str, **params: Any) -> Any:
-        reads = {"project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "list_texts", "list_symbols", "list_block_instances", "list_net_lines", "list_junctions", "list_net_labels", "list_power_symbols", "list_planes", "list_polygons", "list_holes", "list_keepouts", "list_board_texts", "list_dimensions", "list_buses", "list_net_ties", "list_tracks", "list_vias", "board_rules", "search_pool", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status", "find_dangling", "find_overlaps"}
+        reads = {"project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "list_texts", "list_symbols", "list_block_instances", "list_net_lines", "list_junctions", "list_net_labels", "list_power_symbols", "list_planes", "list_polygons", "list_holes", "list_keepouts", "list_board_texts", "list_dimensions", "list_buses", "list_net_ties", "list_tracks", "list_vias", "board_rules", "search_pool", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status", "find_dangling", "find_overlaps", "export_settings"}
         reads.add("list_part_updates")
         deadline = _request_deadline.get() or (time.monotonic() + self.session.transport.timeout)
         # A connection an earlier call lost is reopened before anything is
@@ -365,9 +365,14 @@ class Project:
         """Take back the last step on an open document's undo stack, or put one back."""
         return self._call("undo", redo=redo)
 
-    def board_texts(self, layer: int | None = None) -> list[dict[str, Any]]:
-        """Free text on the board layers."""
-        return self._call("list_board_texts", **({"layer": layer} if layer is not None else {}))
+    def board_texts(self, layer: int | None = None, smashed: bool = False, text: str | None = None) -> list[dict[str, Any]]:
+        """Free text on the board layers; smashed adds the texts smashed out of packages."""
+        params = {k: v for k, v in {"layer": layer, "smashed": smashed or None, "text": text}.items() if v is not None}
+        return self._call("list_board_texts", **params)
+
+    def export_settings(self, kind: str | None = None) -> dict[str, Any]:
+        """The export settings Horizon EDA keeps in the project, by kind."""
+        return self._call("export_settings", **({"kind": kind} if kind else {}))
 
     def dimensions(self) -> list[dict[str, Any]]:
         """Dimensions on the board, with what each measures."""
@@ -434,9 +439,11 @@ class Project:
         return result
 
     def texts(self, sheet: int | None = None, sheet_id: str | None = None,
-              name: str | None = None, block_id: str | None = None) -> list[dict[str, Any]]:
-        """Free text on the schematic sheets, with the ids the text ops take."""
-        params = {k: v for k, v in {"sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id}.items() if v is not None}
+              name: str | None = None, block_id: str | None = None,
+              smashed: bool = False, text: str | None = None) -> list[dict[str, Any]]:
+        """Free text on the schematic sheets, with the ids the text ops take; smashed adds symbols' own texts."""
+        params = {k: v for k, v in {"sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id,
+                                    "smashed": smashed or None, "text": text}.items() if v is not None}
         return self._call("list_texts", **params)
 
     def parts(self, scope: str = "project") -> list[dict[str, Any]]:

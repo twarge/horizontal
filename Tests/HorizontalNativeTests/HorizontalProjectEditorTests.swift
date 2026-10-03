@@ -524,7 +524,9 @@ final class HorizontalProjectEditorTests: XCTestCase {
 
         // Point the symbol at it and mark it as the symbol's own.
         try smash(symbolInstance: symbolID, text: placedID)
-        let listed = try XCTUnwrap(try texts().first { $0["id"] as? String == placedID })
+        // A symbol's own texts are left out unless asked for.
+        XCTAssertNil(try texts().first { $0["id"] as? String == placedID })
+        let listed = try XCTUnwrap(try texts(["smashed": true]).first { $0["id"] as? String == placedID })
         XCTAssertEqual(listed["from_smash"] as? Bool, true)
         XCTAssertEqual(listed["symbol"] as? String, symbolID)
 
