@@ -114,7 +114,9 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         await self.call("apply_ops", project_ref=self.ref, expected_revision=committed["data"]["after_revision"],
                         operation_id="retarget-wire", ops=[{"op": "set_net_line_endpoint", "line": line_id, "end": "to",
                                                           "endpoint": {"kind": "junction", "junction": junctions[2]}}])
-        self.assertEqual((await self.call("list_net_lines", project_ref=self.ref))["data"][0]["to"]["junction"], junctions[2])
+        self.assertEqual((await self.call("list_net_lines", project_ref=self.ref, verbose=True))["data"][0]["to"]["junction"], junctions[2])
+        self.assertEqual((await self.call("list_net_lines", project_ref=self.ref))["data"][0]["to"], "junction:" + junctions[2],
+                         "compact rows spell an end as one string")
 
     async def test_pinned_snapshot_and_render_metadata(self):
         pinned = await self.call("analysis_snapshot", project_ref=self.ref)
@@ -390,9 +392,94 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([p["net"] for p in on_nets["pins"]], ["SWDIO"])
         caps = (await self.call("list_components", project_ref=self.ref, refdes_prefix="C", fields=["value"]))["data"]
         self.assertEqual(caps, [{"id": caps[0]["id"], "refdes": "C1", "value": "2.2uF"}])
-        lines = (await self.call("list_net_lines", project_ref=self.ref))["data"]
+        lines = (await self.call("list_net_lines", project_ref=self.ref, verbose=True))["data"]
         self.assertEqual(lines[0]["from"]["pin_name"], "PA13(JTMS/SWDIO)")
         self.assertIn("x_mm", lines[0]["from_mm"])
+        compact = (await self.call("list_net_lines", project_ref=self.ref))["data"]
+        self.assertEqual(compact[0]["from"], "U1.PA13(JTMS/SWDIO)")
+        self.assertEqual(len(compact[0]["from_mm"]), 2)
+
+    async def test_the_schema_matches_the_engine_and_says_which_it_is(self):
+        from horizontal.schemas import compare_vocabulary
+        session = Session(isolated=True)
+        try:
+            ops = session.call("list_ops")
+            engine = session.version()
+        finally:
+            session.close()
+        comparison = compare_vocabulary(ops)
+        self.assertTrue(comparison["match"], comparison)
+        self.assertEqual(engine["ops_digest"], comparison["schema_digest"])
+        tools = {t.name: t for t in await server.mcp.list_tools()}
+        self.assertIn(comparison["schema_digest"], tools["apply_ops"].description)
+
+    async def test_status_names_the_server_and_notices_it_going_stale(self):
+        status = (await self.call("connection_status"))["data"]
+        identity = status["server"]
+        self.assertEqual(identity["pid"], os.getpid())
+        self.assertIn("started_at", identity)
+        self.assertNotIn("stale", identity)
+        self.assertTrue(all(c["schema_matches"] for c in status["contexts"]))
+        with patch.object(server, "_SOURCE_MTIME", 0):
+            stale = (await self.call("connection_status"))["data"]
+            self.assertTrue(stale["server"]["stale"])
+            self.assertTrue(any("restart" in w for w in stale["warnings"]))
+            reopened = (await self.call("open_project", path=str(self.path), source="disk"))["data"]
+            self.assertTrue(any("restart" in w for w in reopened["warnings"]))
+
+    async def test_reopening_a_project_reuses_its_context(self):
+        again = (await self.call("open_project", path=str(self.path), source="disk"))["data"]
+        self.assertEqual(again["project_ref"], self.ref)
+        self.assertEqual(len(server._projects), 1)
+
+    async def test_large_reads_are_summaries_unless_asked(self):
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        unit, entity, symbol = (str(uuid.uuid4()) for _ in range(3))
+        gate = str(uuid.uuid4())
+        names = [f"PA{i}" for i in range(70)] + ["VDD", "VDD", "VSS", "VSS", "VCAP", "NRST"]
+        pins = [str(uuid.uuid4()) for _ in names]
+        items = [{"type": "unit", "uuid": unit, "name": "MCU", "manufacturer": "",
+                  "pins": {p: {"primary_name": n, "direction": "power_input" if n in {"VDD", "VSS", "VCAP"} else "bidirectional",
+                               "swap_group": 0, "names": []} for p, n in zip(pins, names)}},
+                 {"type": "entity", "uuid": entity, "name": "MCU", "manufacturer": "", "prefix": "U", "tags": [],
+                  "gates": {gate: {"name": "Main", "suffix": "", "swap_group": 0, "unit": unit}}}]
+        ops = [{"op": "ensure_component", "refdes": "U1", "entity": entity}]
+        ops += [{"op": "connect", "component": "U1", "pin": pin, "net": net, "create_net": True}
+                for pin, net in ((pins[70], "P3V3"), (pins[71], "P3V3"), (pins[72], "GND"), (pins[73], "GND"), (pins[74], "VCAP"), (pins[0], "LED"))]
+        await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id="big", pool_items=items, ops=ops)
+        listed = (await self.call("list_components", project_ref=self.ref))["data"]
+        self.assertFalse(listed[0].get("physical_terminals"))
+        self.assertEqual(listed[0]["pin_count"], 76)
+        self.assertEqual(listed[0]["connected_pin_count"], 6)
+        part = (await self.call("get_component", project_ref=self.ref, refdes="U1"))["data"]
+        self.assertEqual(len(part["pins"]), 6)
+        self.assertEqual(part["pins_omitted"], 70)
+        self.assertEqual(len((await self.call("get_component", project_ref=self.ref, refdes="U1", all_pins=True))["data"]["pins"]), 76)
+        regex = (await self.call("get_component", project_ref=self.ref, refdes="U1", pin_regex="^V(DD|SS)$"))["data"]
+        self.assertEqual(sorted(p["pin"] for p in regex["pins"]), ["VDD", "VDD", "VSS", "VSS"])
+        groups = (await self.call("get_component", project_ref=self.ref, refdes="U1", group_pins=True))["data"]["pin_groups"]
+        self.assertEqual(groups["supply"], {"P3V3": ["VDD", "VDD"], "VCAP": ["VCAP"]})
+        self.assertEqual(groups["ground"], {"GND": ["VSS", "VSS"]})
+        self.assertEqual(groups["signal"], 1)
+        self.assertEqual(len(groups["unconnected"]), 70)
+
+    async def test_dangling_wiring_is_reported_and_pruned(self):
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        a, b = str(uuid.uuid4()), str(uuid.uuid4())
+        await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id="debris",
+                        ops=[{"op": "ensure_net", "name": "GND", "is_power": True},
+                             {"op": "place_junction", "id": a, "net": "GND", "x_mm": 10, "y_mm": 10},
+                             {"op": "place_junction", "id": b, "net": "GND", "x_mm": 20, "y_mm": 10},
+                             {"op": "draw_net_line", "from": {"kind": "junction", "junction": a}, "to": {"kind": "junction", "junction": b}},
+                             {"op": "place_power_symbol", "net": "GND", "x_mm": 10, "y_mm": 10}])
+        found = (await self.call("find_dangling", project_ref=self.ref))["data"]
+        self.assertEqual(found["totals"]["unanchored_islands"], 1)
+        self.assertEqual(found["sheets"][0]["unanchored_islands"][0]["at"], {"x_mm": 10, "y_mm": 10})
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        pruned = (await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id="prune",
+                                  ops=[{"op": "prune_sheet", "unanchored": True}]))["data"]
+        self.assertEqual(pruned["changes"][0]["removed"]["power_symbols"], 1)
+        self.assertEqual((await self.call("find_overlaps", project_ref=self.ref))["data"]["totals"], {})
 
     async def test_board_shape_rules_and_pool_reads(self):
         tools = {t.name: t for t in await server.mcp.list_tools()}

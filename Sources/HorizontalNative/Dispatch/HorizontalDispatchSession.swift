@@ -301,6 +301,19 @@ final class HorizontalDispatchProjectEntry {
     /// next mutation starts from that snapshot, so it need not load the whole
     /// project again just to count them.
     var cachedDiagnostics: (snapshotID: String, counts: [String: Int])?
+
+    /// The last dry run's staged edit, so a commit replaying it at the same
+    /// revision installs it rather than doing the work twice.
+    struct StagedPlan {
+        var keys: Set<String>
+        var digest: String
+        var revision: String
+        var after: HorizontalDispatchSnapshot
+        var staged: HorizontalProject
+        var diagnostics: [String: Int]
+        var result: JSONDictionary
+    }
+    var stagedPlan: StagedPlan?
     var frozen = false
     var origin: JSONDictionary?
     var readMetadata: JSONDictionary?
@@ -349,5 +362,17 @@ final class HorizontalDispatchProjectEntry {
 
     func invalidateIndex() {
         cachedIndex = nil
+        cachedPoolIndex = nil
+    }
+
+    private var cachedPoolIndex: HorizontalDispatchPoolIndex?
+
+    /// The project pool's entities, units and symbol geometry, for reads that
+    /// need to know where a pin is drawn.
+    var poolIndex: HorizontalDispatchPoolIndex {
+        if let cachedPoolIndex { return cachedPoolIndex }
+        let index = HorizontalDispatchPoolIndex(project: project, snapshot: snapshot)
+        cachedPoolIndex = index
+        return index
     }
 }

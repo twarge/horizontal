@@ -147,7 +147,7 @@ class Project:
             _request_deadline.reset(token)
 
     def _perform_call(self, method: str, **params: Any) -> Any:
-        reads = {"project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "list_texts", "list_symbols", "list_block_instances", "list_net_lines", "list_junctions", "list_net_labels", "list_power_symbols", "list_planes", "list_polygons", "list_holes", "list_keepouts", "list_board_texts", "list_dimensions", "list_buses", "list_net_ties", "list_tracks", "list_vias", "board_rules", "search_pool", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status"}
+        reads = {"project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "list_texts", "list_symbols", "list_block_instances", "list_net_lines", "list_junctions", "list_net_labels", "list_power_symbols", "list_planes", "list_polygons", "list_holes", "list_keepouts", "list_board_texts", "list_dimensions", "list_buses", "list_net_ties", "list_tracks", "list_vias", "board_rules", "search_pool", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status", "find_dangling", "find_overlaps"}
         reads.add("list_part_updates")
         deadline = _request_deadline.get() or (time.monotonic() + self.session.transport.timeout)
         # A connection an earlier call lost is reopened before anything is
@@ -348,6 +348,18 @@ class Project:
         """Power symbols on the sheets, with the net each marks."""
         params = {k: v for k, v in {"net": net, "sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id}.items() if v is not None}
         return self._call("list_power_symbols", **params)
+
+    def dangling(self, sheet: int | None = None, sheet_id: str | None = None, name: str | None = None,
+                 block_id: str | None = None) -> dict[str, Any]:
+        """Drawing that connects nothing: pin-less wiring islands, stub ends, wires naming nothing."""
+        params = {k: v for k, v in {"sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id}.items() if v is not None}
+        return self._call("find_dangling", **params)
+
+    def overlaps(self, sheet: int | None = None, sheet_id: str | None = None, name: str | None = None,
+                 block_id: str | None = None) -> dict[str, Any]:
+        """Places that look connected and are not."""
+        params = {k: v for k, v in {"sheet": sheet, "sheet_id": sheet_id, "name": name, "block_id": block_id}.items() if v is not None}
+        return self._call("find_overlaps", **params)
 
     def undo(self, redo: bool = False) -> dict[str, Any]:
         """Take back the last step on an open document's undo stack, or put one back."""
