@@ -3559,15 +3559,14 @@ struct BoardCanvasView: View {
         if let point {
             updatePackagePlacement(to: point)
         }
-        guard var draft = editedBoard else {
+        guard let draft = editedBoard else {
             return
         }
-        draft.regenerateAirwires()
         packagePlacementState = nil
         selectedUnplacedObjectID = nil
         registerUndoSnapshot(state.originalBoard, actionName: "Place Package")
         invalidateSelectableCache()
-        publishConnectivityResolvedEdit(draft)
+        publishConnectivityResolvedEdit(draft, regeneratingAirwires: true)
         publishSelectionContext()
         publishCanvasCommandActions()
     }
@@ -6684,17 +6683,24 @@ struct BoardCanvasView: View {
     /// and publish. Every editing commit routes its board through here so a drawn
     /// track without a connection, or copper left dangling by a delete/move,
     /// disconnects automatically (mirrors propagate_nets after edits).
-    private func publishConnectivityResolvedEdit(_ board: HorizontalBoard) {
+    ///
+    /// regeneratingAirwires rebuilds the rats' nest from the nets the pass just
+    /// gave. Built before it, on a board whose file stores no junction nets
+    /// (Horizon writes none), placing a package brought back an airwire for
+    /// every routed connection that bends — on Billo, 328 where there are 32.
+    private func publishConnectivityResolvedEdit(_ board: HorizontalBoard, regeneratingAirwires: Bool = false) {
         // A pool item has no nets: nothing to propagate, and the recompute
         // would strip the (absent) net of every pad anyway.
         guard modeProfile.usesConnectivity else {
             var board = board
+            if regeneratingAirwires { board.regenerateAirwires() }
             board.recomputePoolEditorBounds()
             editedBoard = board
             onBoardChange(board)
             return
         }
-        let resolved = HorizontalBoardConnectivity.recompute(board)
+        var resolved = HorizontalBoardConnectivity.recompute(board)
+        if regeneratingAirwires { resolved.regenerateAirwires() }
         // A net change is a color change (net-less copper is orange), so force a
         // metal-scene rebuild even when the edit would otherwise patch in place.
         if resolved.tracks.map(\.netID) != board.tracks.map(\.netID) {

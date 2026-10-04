@@ -100,7 +100,7 @@ native: deps
 python: native
 	cd python && uv sync
 
-## python-test: run the Python package's tests against the release dylib
+## python-test: run the Python package's tests against the release dylib and CLI that `native` builds
 python-test: python
 	cd python && uv run python -m unittest discover -s tests -v
 
