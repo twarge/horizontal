@@ -186,6 +186,55 @@ final class SchematicKeyboardMoveTests: XCTestCase {
         }
     }
 
+    /// Horizon writes "layer": 0 on every sheet text, and a text's ref carried
+    /// it while the Metal scene filed the text's strokes without one, so a
+    /// dragged text stayed put until the move committed. One text here stores
+    /// a layer and one, as MCP's place_text wrote it, does not.
+    func testTextsFollowTheMovePreviewWhetherOrNotTheyStoreALayer() async throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
+        _ = NSApplication.shared
+        var sheet = HorizontalSchematicSheet.poolEditorSheet(id: "sheet", name: "Sheet", gridSpacing: 1_250_000)
+        sheet.texts = [
+            .init(id: "with-layer", text: "Amplifier", position: .init(x: 0, y: 0), size: 1_500_000, layer: 0),
+            .init(id: "no-layer", text: "Note", position: .init(x: 0, y: -5_000_000), size: 1_500_000, layer: nil),
+        ]
+        let state = State(sheet)
+        let hosted = NSHostingView(rootView: Canvas(state: state)
+            .environmentObject(HorizontalAppearanceSettings(defaults: UserDefaults(suiteName: UUID().uuidString)!)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosted
+        window.orderFront(nil)
+        defer { window.close() }
+        await assertSettles { state.actions != nil && self.renderer(in: hosted)?.presentedContentKey != nil }
+        let renderer = try XCTUnwrap(renderer(in: hosted))
+        let handle = try XCTUnwrap(monitor(in: hosted)).makeEventHandler()
+        let before = renderer.residentLineEndpoints(compositeGroup: 0)
+        XCTAssertFalse(before.isEmpty)
+        state.actions?.dispatch(.selectAll)
+        await assertSettles { state.actions?.canMoveSelection == true }
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\u{f700}",
+            charactersIgnoringModifiers: "\u{f700}", isARepeat: false, keyCode: 126))
+        XCTAssertNil(handle(event))
+        await assertSettles { state.actions?.canCommitInteraction == true }
+        // Settle on the whole preview, not on any change: before the fix the
+        // text without a layer moved and the one with a layer did not.
+        func shifted(_ lines: [(from: SIMD2<Float>, to: SIMD2<Float>)]) -> Bool {
+            guard lines.count == before.count else { return false }
+            let step: Float = 1_250_000
+            for (original, moved) in zip(before, lines) {
+                let across = abs(moved.from.x - original.from.x)
+                let fromUp = abs(moved.from.y - original.from.y - step)
+                let toUp = abs(moved.to.y - original.to.y - step)
+                if across >= 2 || fromUp >= 2 || toUp >= 2 { return false }
+            }
+            return true
+        }
+        await assertSettles { shifted(renderer.residentLineEndpoints(compositeGroup: 0)) }
+    }
+
     func testKeyMonitorConsumesHandledArrowsAndPassesThroughTextEditing() throws {
         _ = NSApplication.shared
         let monitor = TrackpadCanvasMonitor.MonitorView()

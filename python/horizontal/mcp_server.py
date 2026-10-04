@@ -899,8 +899,8 @@ def list_board_texts(path: str | None = None, layer: int | None = None,
                      smashed: Annotated[bool | None, Field(description="Also list the reference designators Horizon smashed out of packages — on a populated board, most of its texts. A text or component search looks through them unless this is false.")] = None,
                      text: Annotated[str | None, Field(description="Only texts containing this, as stored or as drawn, ignoring case, e.g. \"$project\" or \"U1\"; smashed texts included unless smashed is false.")] = None,
                      component: Annotated[str | None, Field(description="Only the texts smashed out of this part's package, by refdes or id; implies smashed.")] = None) -> list[dict[str, Any]]:
-    """Free text on the board layers, with the ids the board text ops take. Texts smashed out of packages are left
-    out unless smashed, or a text or component search, asks for them: each is marked from_smash and belongs to the package named in its package field, so it moves
+    """Free text on the board layers, with the ids remove_board_text takes and place_board_text takes to move or
+    change one. Texts smashed out of packages are left out unless smashed, or a text or component search, asks for them: each is marked from_smash and belongs to the package named in its package field, so it moves
     and dies with the component rather than being edited on its own; refdes names that part. A text that draws
     something other than what it stores ("$RD", "$project_title") says what in drawn."""
     return _resolve(path).board_texts(layer=layer, smashed=smashed, text=text, component=component)
@@ -1000,7 +1000,8 @@ def list_texts(path: str | None = None, sheet: int | None = None, sheet_id: str 
                smashed: Annotated[bool | None, Field(description="Also list the texts Horizon smashed out of symbols. A text or component search looks through them unless this is false.")] = None,
                text: Annotated[str | None, Field(description="Only texts containing this, as stored or as drawn, ignoring case; smashed texts included unless smashed is false.")] = None,
                component: Annotated[str | None, Field(description="Only the texts smashed out of this part's symbols, by refdes or id; implies smashed.")] = None) -> list[dict[str, Any]]:
-    """Free text on the schematic sheets, with the ids place_text and remove_text take, and where each sits.
+    """Free text on the schematic sheets, and where each sits, with the ids remove_text takes and place_text takes to
+    move or change one.
     Texts smashed out of symbols are left out unless smashed, or a text or component search, asks for them: each is marked from_smash and belongs to the symbol
     named in its symbol field, so it moves and dies with the component rather than being edited on its own; refdes
     names that part. A text that draws something other than what it stores says what in drawn."""
@@ -1168,6 +1169,10 @@ def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool =
     ({"kind": "junction", "junction": "j1"}; remove_text's id). The reply's handles maps each name to the UUID it
     became. A failing op is named in the error: "ops[3] place_junction: …", and so is a name it involved, with
     the earlier op that removed the thing if one did — removing a wire takes the junctions it leaves bare.
+
+    Texts: place_text and place_board_text also change a text that is already there. Name it by the id list_texts
+    or list_board_texts gives, and pass only what changes: x_mm, y_mm or both move it, and it keeps its uuid, its
+    layer and everything else. A text smashed out of a symbol or package moves with its part instead.
 
     Project: set_project_meta sets the title-block values — project_title, rev and the rest, what $project_title
     stands for on the sheets and the board. set_export_settings changes the export settings Horizon EDA keeps
