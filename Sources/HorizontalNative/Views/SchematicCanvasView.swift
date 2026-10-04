@@ -10304,8 +10304,16 @@ struct SchematicCanvasView: View {
         }
     }
 
+    /// A sheet has no layers, so a text's ref names it by id alone, as the
+    /// Metal scene, its move patch and the editor's own selections do. With
+    /// the "layer": 0 Horizon writes on every text, a dragged text matched
+    /// no patch and stayed put while its selection box moved.
     private func textSelectables(_ texts: [HorizontalText], type: HorizontalObjectType) -> [HorizontalSelectable] {
-        HorizontalCanvasModeSupport.textSelectables(texts, type: type)
+        HorizontalCanvasModeSupport.textSelectables(texts, type: type).map { selectable in
+            var selectable = selectable
+            selectable.ref.layer = nil
+            return selectable
+        }
     }
 
     private func groupedSchematicSelectables(
