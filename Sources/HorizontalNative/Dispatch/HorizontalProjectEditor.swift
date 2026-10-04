@@ -2582,6 +2582,10 @@ final class HorizontalProjectEditor {
         }
 
         var item = existing?.json ?? ["from_smash": false, "origin": "center", "font": "simplex", "width": 0, "size": 1_500_000]
+        // Horizon writes "layer": 0 on every sheet text, and reads a missing
+        // one as 0; a text this op touches gets it, so Horizon's next save
+        // has nothing to add.
+        if item["layer"] == nil { item["layer"] = 0 }
         if let text = params.string("text") {
             guard !text.isEmpty else { throw HorizontalDispatchError.invalidParams("place_text needs a non-empty \"text\".") }
             item["text"] = text

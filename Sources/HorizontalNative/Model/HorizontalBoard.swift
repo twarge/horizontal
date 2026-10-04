@@ -684,7 +684,9 @@ struct HorizontalBoard {
                     packagePads: packageGeometry.pads,
                     packageHoles: packageGeometry.holes,
                     copperLayers: boardCopperLayers(tracks: ownTracks, pads: packageGeometry.pads)
-                )
+                ),
+                junctions: junctions,
+                junctionNetIDs: junctionNetIDs
             )
         }
         ownTracks = boardConnectivity.tracks
@@ -693,7 +695,7 @@ struct HorizontalBoard {
         let ownAirwires = BoardLoadTimer.measure("HorizontalBoard.load — generateAirwires") {
             generateAirwires(
                 junctions: junctions,
-                junctionNetIDs: junctionNetIDs,
+                junctionNetIDs: boardConnectivity.airwireJunctionNetIDs,
                 packagePadPositions: packageGeometry.padPositions,
                 packagePadNetIDs: packageGeometry.padNetIDs,
                 packagePadLayers: padLayers(from: packageGeometry.pads),
@@ -1626,6 +1628,15 @@ struct HorizontalBoard {
         return result
     }
 
+    /// Fills in the nets of tracks and vias that store none, from the one net
+    /// on their copper, and finds the same for each junction on single-net
+    /// copper, for the airwires only. Horizon stores no net on a board
+    /// junction, and a track ending at a bend joins nothing in the rats' nest
+    /// unless that junction is a node of its net: on Billo the loader drew 328
+    /// airwires where the editor, which derives junction nets, drew 32. Copper
+    /// that joins two nets gives its junctions neither, as the editor's pass
+    /// does. The derived nets are not put on the board, since a save writes
+    /// the board's junction nets into the file.
     private static func resolveBoardConnectivity(
         tracks: [HorizontalSegment],
         vias: [HorizontalMarker],
@@ -1633,8 +1644,11 @@ struct HorizontalBoard {
         packagePads: [HorizontalPolygon],
         packagePadPositions: [String: HorizontalPoint],
         copperLayers: [Int],
-        anchors: [String: Set<String>]
-    ) -> (tracks: [HorizontalSegment], vias: [HorizontalMarker], viaHoles: [HorizontalHole]) {
+        anchors: [String: Set<String>],
+        junctions: [String: HorizontalPoint] = [:],
+        junctionNetIDs: [String: String] = [:]
+    ) -> (tracks: [HorizontalSegment], vias: [HorizontalMarker], viaHoles: [HorizontalHole],
+          airwireJunctionNetIDs: [String: String]) {
         var resolvedTracks = tracks
         var resolvedVias = vias
         var resolvedViaHoles = viaHoles
@@ -1710,8 +1724,10 @@ struct HorizontalBoard {
         let neighbors = graph.neighbors
         allPointKeys.formUnion(anchors.keys)
         var visited = Set<String>()
+        var netForKey = [String: String]()
         for startKey in allPointKeys where !visited.contains(startKey) {
             var stack = [startKey]
+            var componentKeys = [String]()
             var componentTrackIndices = Set<Int>()
             var componentViaIndices = Set<Int>()
             var componentViaHoleIndices = Set<Int>()
@@ -1719,6 +1735,7 @@ struct HorizontalBoard {
             visited.insert(startKey)
 
             while let key = stack.popLast() {
+                componentKeys.append(key)
                 componentNetIDs.formUnion(anchors[key] ?? [])
 
                 for index in trackIndicesByPoint[key] ?? [] {
@@ -1750,6 +1767,7 @@ struct HorizontalBoard {
                   let netID = componentNetIDs.first else {
                 continue
             }
+            for key in componentKeys { netForKey[key] = netID }
 
             for index in componentTrackIndices where resolvedTracks[index].netID == nil {
                 resolvedTracks[index].netID = netID
@@ -1762,7 +1780,17 @@ struct HorizontalBoard {
             }
         }
 
-        return (resolvedTracks, resolvedVias, resolvedViaHoles)
+        // A junction carries no layer, so it takes the net of the copper at its
+        // point only when every layer there agrees.
+        var airwireJunctionNetIDs = junctionNetIDs
+        for (id, point) in junctions where airwireJunctionNetIDs[id] == nil {
+            let netsHere = Set(copperLayers.compactMap { netForKey[HorizontalCopperConnectivity.node(point, layer: $0)] })
+            if netsHere.count == 1, let netID = netsHere.first {
+                airwireJunctionNetIDs[id] = netID
+            }
+        }
+
+        return (resolvedTracks, resolvedVias, resolvedViaHoles, airwireJunctionNetIDs)
     }
 
     private static func generateAirwires(

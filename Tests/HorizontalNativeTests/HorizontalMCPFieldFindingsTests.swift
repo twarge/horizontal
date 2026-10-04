@@ -1025,6 +1025,59 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         }
     }
 
+    // MARK: - Round nine: notes 21–23, 26
+
+    /// Five of Billo's notes, written by place_text, had no "layer"; Horizon
+    /// writes "layer": 0 on every sheet text and adds it on its next save.
+    func testASheetTextIsWrittenWithTheKeysHorizonWrites() throws {
+        let made = try apply([["op": "place_text", "id": "note", "text": "note", "x_mm": 20, "y_mm": 20]])
+        let note = try XCTUnwrap((made["handles"] as? [String: String])?["note"])
+        func stored() throws -> JSONDictionary {
+            let json = try JSONHelper.loadDictionary(from: root.appendingPathComponent("top_schematic.json"))
+            let sheet = try XCTUnwrap(json.dictionary("sheets")?.values.first as? JSONDictionary)
+            return try XCTUnwrap(sheet.dictionary("texts")?.dictionary(note))
+        }
+        XCTAssertEqual(Set(try stored().keys), ["font", "from_smash", "layer", "origin", "placement", "size", "text", "width"])
+        XCTAssertEqual(try stored().int("layer"), 0)
+
+        // A text an earlier place_text left without one gets it when touched,
+        // and nothing else about it changes.
+        try rewrite("top_schematic.json") { json in
+            var sheets = try XCTUnwrap(json["sheets"] as? JSONDictionary)
+            let sheetID = try XCTUnwrap(sheets.keys.first)
+            var sheet = try XCTUnwrap(sheets[sheetID] as? JSONDictionary)
+            var texts = try XCTUnwrap(sheet["texts"] as? JSONDictionary)
+            var text = try XCTUnwrap(texts[note] as? JSONDictionary)
+            text.removeValue(forKey: "layer")
+            texts[note] = text
+            sheet["texts"] = texts
+            sheets[sheetID] = sheet
+            json["sheets"] = sheets
+        }
+        var expected = try stored()
+        XCTAssertNil(expected["layer"])
+        _ = try apply([["op": "place_text", "id": note]])
+        expected["layer"] = 0
+        XCTAssertEqual(try stored() as NSDictionary, expected as NSDictionary)
+    }
+
+    /// A safe save's leftover is named for the file it replaced, and said to
+    /// match it or not; another file's, or an ordinary sibling, is not one.
+    func testSafeSaveLeftoversAreTheProjectFilesOwn() throws {
+        let folder = root.appendingPathComponent("leftovers")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let project = folder.appendingPathComponent("Billo.hprj")
+        try Data("{}".utf8).write(to: project)
+        try Data("{}".utf8).write(to: folder.appendingPathComponent("Billo.hprj.sb-ec53240b-ZysDK4"))
+        try Data("{\"old\":1}".utf8).write(to: folder.appendingPathComponent("Billo.hprj.sb-0badf00d-AbCdEf"))
+        try Data("{}".utf8).write(to: folder.appendingPathComponent("board.json.sb-12345678-QwErTy"))
+        try Data("{}".utf8).write(to: folder.appendingPathComponent("top_block.json"))
+        let found = HorizontalDispatchMethods.safeSaveLeftovers(of: project)
+        XCTAssertEqual(found.map { $0.string("name") }, ["Billo.hprj.sb-0badf00d-AbCdEf", "Billo.hprj.sb-ec53240b-ZysDK4"])
+        XCTAssertEqual(found.map { $0.bool("same_as_file") }, [false, true])
+        XCTAssertTrue(HorizontalDispatchMethods.safeSaveLeftovers(of: folder.appendingPathComponent("none.hprj")).isEmpty)
+    }
+
     /// The airwire pass tested every node of a poured net against every
     /// vertex of the pour — on Billo, 1.7 s of each 4.5 s dry run. Boxes and
     /// height bands cut that without changing a single answer.

@@ -283,6 +283,23 @@ final class HorizontalLiveServerTests: XCTestCase {
         XCTAssertTrue((error["message"] as? String ?? "").contains("still does not match"), "\(error)")
     }
 
+    /// Billo's 17:04 save left Billo.hprj.sb-ec53240b-ZysDK4 beside the project
+    /// file and nothing said so. A save now names any it finds, and leaves it.
+    func testASaveNamesASafeSaveLeftoverAndLeavesIt() throws {
+        let document = try registerTemplateDocument()
+        var edited = true
+        document.isEdited = { edited }
+        let leftover = packageURL.deletingLastPathComponent()
+            .appendingPathComponent(packageURL.lastPathComponent + ".sb-ec53240b-ZysDK4")
+        document.save = { edited = false; try? Data("moved aside".utf8).write(to: leftover) }
+        let handle = try XCTUnwrap(self.handle)
+        let response = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 1, "method": "save", "params": ["handle": handle]])
+        let saved = try XCTUnwrap(response["result"] as? JSONDictionary, "\(response)")
+        XCTAssertEqual(saved["verified"] as? Bool, true)
+        XCTAssertEqual((saved["leftovers"] as? [JSONDictionary])?.map { $0.string("name") }, [leftover.lastPathComponent])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: leftover.path), "reported, not deleted")
+    }
+
     /// Undo through the channel drives the document's own stack — the one the
     /// Edit menu drives — so an edit made here and one made by hand undo alike.
     /// `show_panes` says which panes to show and hides the rest — the one

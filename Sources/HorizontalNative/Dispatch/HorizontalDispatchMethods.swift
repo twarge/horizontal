@@ -660,9 +660,35 @@ enum HorizontalDispatchMethods {
                 details: ["document_snapshot": entry.snapshot?.id ?? "", "file_snapshot": onDisk.id]
             )
         }
-        return ["saved": edited, "had_unsaved_changes": edited, "source": "live",
-                "path": entry.url.path, "verified": true,
-                "snapshot_id": onDisk.id, "revision": entry.revision] as JSONDictionary
+        var result: JSONDictionary = ["saved": edited, "had_unsaved_changes": edited, "source": "live",
+                                      "path": entry.url.path, "verified": true,
+                                      "snapshot_id": onDisk.id, "revision": entry.revision]
+        let leftovers = safeSaveLeftovers(of: entry.url)
+        if !leftovers.isEmpty {
+            result["leftovers"] = leftovers
+            result["note"] = "A safe save left these beside the project file. AppKit removes its own, and nothing here "
+                + "deletes them; same_as_file says whether each holds what the file now does."
+        }
+        return result
+    }
+
+    /// The temporary files a sandboxed safe save names `<file>.sb-<hex>-<chars>`
+    /// beside the file it replaces. AppKit writes and removes them; Billo's
+    /// 17:04 save on 2026-10-03 left one, byte-identical to its project file,
+    /// and nothing said so. One that outlives a save is reported rather than
+    /// deleted, since it may be the copy that was moved aside.
+    static func safeSaveLeftovers(of url: URL) -> [JSONDictionary] {
+        let folder = url.deletingLastPathComponent()
+        let prefix = url.lastPathComponent + ".sb-"
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        let current = try? Data(contentsOf: url)
+        return names.filter { $0.hasPrefix(prefix) }.sorted().map { name in
+            var item: JSONDictionary = ["name": name]
+            if let current, let copy = try? Data(contentsOf: folder.appendingPathComponent(name)) {
+                item["same_as_file"] = copy == current
+            }
+            return item
+        }
     }
 
     @Sendable private static func undo(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {

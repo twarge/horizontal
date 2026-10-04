@@ -757,6 +757,46 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual((try result("list_tracks") as? [String: Any])?["total"] as? Int, 0)
     }
 
+    /// Horizon stores no net on a board junction. Read from such a file, the
+    /// loader left a track ending at a bend joining nothing, so the app drew an
+    /// airwire over every routed connection that bends — on Billo, 328 where
+    /// the editor's pass, which MCP reads answer from, gave 32.
+    func testABendWithNoStoredNetStillJoinsItsTracks() throws {
+        try placedDivider()
+        _ = try apply([
+            ["op": "place_track", "from": ["component": "R1", "pad": "1"], "to": ["x_mm": 20, "y_mm": 20], "layer": 0, "width_mm": 0.25],
+            ["op": "place_track", "from": ["x_mm": 20, "y_mm": 20], "to": ["component": "R2", "pad": "1"], "layer": 0, "width_mm": 0.25]
+        ])
+        // Write the junctions as Horizon does: a position and nothing else.
+        let boardURL = packageURL.appendingPathComponent("board.json")
+        var board = try JSONHelper.loadDictionary(from: boardURL)
+        var junctions = try XCTUnwrap(board["junctions"] as? JSONDictionary)
+        XCTAssertFalse(junctions.isEmpty)
+        for (id, value) in junctions {
+            var junction = try XCTUnwrap(value as? JSONDictionary)
+            junction.removeValue(forKey: "net")
+            junctions[id] = junction
+        }
+        board["junctions"] = junctions
+        try JSONSerialization.data(withJSONObject: board, options: [.sortedKeys]).write(to: boardURL)
+
+        let loaded = try HorizontalProject.load(from: packageURL)
+        let loadedBoard = try XCTUnwrap(loaded.board)
+        XCTAssertTrue(loadedBoard.junctionNetIDs.isEmpty, "the loader derives junction nets for the airwires, not the file")
+        let editor = try XCTUnwrap(HorizontalDispatchSession.withEditorConnectivity(loaded).board)
+        XCTAssertEqual(loadedBoard.airwires.count, 0, "the pads are joined by copper through the bend")
+        XCTAssertEqual(editor.airwires.count, loadedBoard.airwires.count)
+        _ = try result("reload_project")
+        let net = try XCTUnwrap(try result("get_net", ["name": "VCC"]) as? [String: Any])
+        XCTAssertEqual(net["airwire_count"] as? Int, 0)
+
+        // Placing a package in the app rebuilds the rats' nest after the
+        // connectivity pass, from the junction nets it gives.
+        var placed = HorizontalBoardConnectivity.recompute(loadedBoard)
+        placed.regenerateAirwires()
+        XCTAssertEqual(placed.airwires.count, 0)
+    }
+
     /// A track joins its ends. Two ends on different nets would tie those nets
     /// together, so it is refused rather than written.
     func testRoutingRefusesToShortTwoNets() throws {
