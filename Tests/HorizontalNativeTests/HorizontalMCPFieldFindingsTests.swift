@@ -959,6 +959,72 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertEqual(flippedText?.bool("allow_upside_down"), true)
     }
 
+    // MARK: - Round eight: notes 27–28
+
+    /// Putting Billo's "Amplifier" back needed a text moved where it was.
+    /// place_text with the text's id does that, but nothing apply_ops showed
+    /// said so, and for a text that was there, x_mm without y_mm was dropped
+    /// without a word.
+    func testAnExistingTextMovesInPlaceOnEitherAxis() throws {
+        let made = try apply([
+            ["op": "place_text", "id": "note", "text": "Amplifier", "x_mm": 178.75, "y_mm": 137.5, "size_mm": 2],
+            ["op": "place_board_text", "id": "silk", "text": "REV", "layer": 20, "x_mm": 1, "y_mm": 1]
+        ])
+        let handles = try XCTUnwrap(made["handles"] as? [String: String])
+        let note = try XCTUnwrap(handles["note"]), silk = try XCTUnwrap(handles["silk"])
+        func sheetText() throws -> JSONDictionary {
+            let json = try JSONHelper.loadDictionary(from: root.appendingPathComponent("top_schematic.json"))
+            let sheet = try XCTUnwrap(json.dictionary("sheets")?.values.first as? JSONDictionary)
+            return try XCTUnwrap(sheet.dictionary("texts")?.dictionary(note))
+        }
+        // Horizon writes "layer": 0 on every sheet text; a move keeps it.
+        try rewrite("top_schematic.json") { json in
+            var sheets = try XCTUnwrap(json["sheets"] as? JSONDictionary)
+            let sheetID = try XCTUnwrap(sheets.keys.first)
+            var sheet = try XCTUnwrap(sheets[sheetID] as? JSONDictionary)
+            var texts = try XCTUnwrap(sheet["texts"] as? JSONDictionary)
+            var text = try XCTUnwrap(texts[note] as? JSONDictionary)
+            text["layer"] = 0
+            texts[note] = text
+            sheet["texts"] = texts
+            sheets[sheetID] = sheet
+            json["sheets"] = sheets
+        }
+        var expected = try sheetText()
+
+        let moved = try apply([
+            ["op": "place_text", "id": note, "x_mm": 181.25],
+            ["op": "place_board_text", "id": silk, "y_mm": 3]
+        ])
+        XCTAssertEqual(changes(moved).map { $0.bool("created") }, [false, false])
+        XCTAssertEqual(changes(moved).map { $0.double("x_mm") }, [181.25, 1], "The reply says where each text is now")
+        XCTAssertEqual(changes(moved).map { $0.double("y_mm") }, [137.5, 3])
+        // Only the shift changed: same uuid, text, size and layer.
+        var placement = try XCTUnwrap(expected["placement"] as? JSONDictionary)
+        placement["shift"] = [181_250_000, 137_500_000]
+        expected["placement"] = placement
+        XCTAssertEqual(try sheetText() as NSDictionary, expected as NSDictionary)
+        let board = try XCTUnwrap(try result("list_board_texts") as? [JSONDictionary])
+        XCTAssertEqual(board.map { $0.string("id") }, [silk])
+        XCTAssertEqual(board.first?.double("x_mm"), 1)
+        XCTAssertEqual(board.first?.double("y_mm"), 3)
+        XCTAssertEqual(board.first?.int("layer"), 20)
+
+        // A new text still needs both coordinates.
+        XCTAssertTrue(try error([["op": "place_text", "text": "half", "x_mm": 1]]).contains("needs \"x_mm\" and \"y_mm\""))
+        XCTAssertTrue(try error([["op": "place_board_text", "text": "half", "layer": 20, "y_mm": 1]])
+            .contains("needs \"x_mm\" and \"y_mm\""))
+    }
+
+    /// The op summaries an agent reads say that place_text and
+    /// place_board_text move a text that is there.
+    func testTheTextOpsSayTheyMoveATextThatIsThere() {
+        for op in [HorizontalEditOperationKind.placeText, .placeBoardText] {
+            XCTAssertTrue(op.summary.contains("x_mm, y_mm or both move it"), "\(op.rawValue): \(op.summary)")
+            XCTAssertTrue(op.params["x_mm"]?.contains("either alone moves it") == true, op.rawValue)
+        }
+    }
+
     /// The airwire pass tested every node of a poured net against every
     /// vertex of the pour — on Billo, 1.7 s of each 4.5 s dry run. Boxes and
     /// height bands cut that without changing a single answer.

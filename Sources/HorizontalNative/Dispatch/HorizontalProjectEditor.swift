@@ -127,7 +127,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .terminatePin: "Draw a short wire straight out from a symbol pin and end it in a net label or power symbol facing away from the pin. Connects the pin to the net first when it is on none."
         case .setNoConnect: "Mark component pins as deliberately not connected, or clear the mark. A pin on a net is refused unless disconnect is passed."
         case .remapPart: "Replace a component's part, preserving connections, symbols and wires atomically. Pins are matched by name unless an explicit gate/pin identity map is given."
-        case .placeText: "Write a text on a schematic sheet, or change one that is already there. id names the text to change; one that names no text makes it under that id, so a batch can name a text and edit or remove it later. Free text only: a symbol's own texts belong to the symbol."
+        case .placeText: "Write a text on a schematic sheet, or change one that is already there: move it, turn it, rewrite it. id names the text to change, from list_texts; give only what changes. x_mm, y_mm or both move it, and it keeps its uuid, layer and the rest. An id that names no text makes one under it, so a batch can name a text and edit or remove it later. Free text only: a symbol's own texts belong to the symbol."
         case .removeText: "Remove a text from a schematic sheet."
         case .placePowerSymbol: "Draw a power symbol on a sheet: the ground or supply marker that says a point is on that net. Marks the net as a power net, since that is what one means."
         case .removePowerSymbol: "Remove a power symbol from its sheet."
@@ -158,7 +158,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .removeHole: "Remove a board hole."
         case .placeKeepout: "Mark an area where copper may not go, on one layer or all of them."
         case .removeKeepout: "Remove a keepout and the polygon bounding it."
-        case .placeBoardText: "Write a text on a board layer — silkscreen, assembly, fabrication notes — or change one that is there. As with place_text, an id that names no text makes one under it."
+        case .placeBoardText: "Write a text on a board layer — silkscreen, assembly, fabrication notes — or change one that is there. As with place_text, an id from list_board_texts changes that text, and x_mm, y_mm or both move it; an id that names no text makes one under it."
         case .removeBoardText: "Remove a board text. A text a package carries belongs to that package."
         case .placeDimension: "Measure between two points on the board, the way the dimension tool does."
         case .removeDimension: "Remove a dimension."
@@ -296,7 +296,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
             return ["text": "The text to write. Optional when changing an existing text's placement only.",
                     "id": "Text id to change (optional; a new text otherwise). list_texts returns them.",
                     "sheet": "Sheet index, name or uuid (optional; default the first sheet).",
-                    "x_mm": "X position.", "y_mm": "Y position.",
+                    "x_mm": "X position. A new text needs both; for one that is there, either alone moves it along that axis.",
+                    "y_mm": "Y position. A new text needs both; for one that is there, either alone moves it along that axis.",
                     "angle_deg": "Rotation (optional, default 0 or unchanged).", "mirror": "Mirror the text (optional).",
                     "size_mm": "Cap height (optional; default 1.5).", "width_mm": "Stroke width (optional; default 0, which is Horizon's automatic width).",
                     "origin": "baseline, center or bottom (optional; default center).",
@@ -382,7 +383,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
             return ["text": "The text to write. Optional when changing placement only.",
                     "id": "Board text id to change (optional; a new text otherwise). list_board_texts returns them.",
                     "layer": "Board layer number. board_info lists them; 20 is top silkscreen.",
-                    "x_mm": "X position.", "y_mm": "Y position.",
+                    "x_mm": "X position. A new text needs both; for one that is there, either alone moves it along that axis.",
+                    "y_mm": "Y position. A new text needs both; for one that is there, either alone moves it along that axis.",
                     "angle_deg": "Rotation (optional).", "mirror": "Mirror the text (optional).",
                     "size_mm": "Cap height (optional; default 1.5).", "width_mm": "Stroke width (optional; default 0, Horizon's automatic width).",
                     "origin": "baseline, center or bottom (optional; default center).",
@@ -2601,11 +2603,10 @@ final class HorizontalProjectEditor {
         guard (item["size"] as? Int ?? 0) > 0 else { throw HorizontalDispatchError.invalidParams("size_mm must be more than zero.") }
 
         var placement = item["placement"] as? JSONDictionary ?? ["angle": 0, "mirror": false, "shift": [0, 0]]
-        if let x = params.double("x_mm"), let y = params.double("y_mm") {
-            placement["shift"] = [Int((x * 1_000_000).rounded()), Int((y * 1_000_000).rounded())]
-        } else if existing == nil {
+        if existing == nil, params.double("x_mm") == nil || params.double("y_mm") == nil {
             throw HorizontalDispatchError.invalidParams("place_text needs \"x_mm\" and \"y_mm\" for a text that is not on a sheet yet.")
         }
+        if let shift = Self.textShift(placement, params) { placement["shift"] = shift }
         if let degrees = params.double("angle_deg") { placement["angle"] = Self.horizonAngle(degrees) }
         if let mirror = params.bool("mirror") { placement["mirror"] = mirror }
         item["placement"] = placement
@@ -2616,7 +2617,9 @@ final class HorizontalProjectEditor {
             texts[id] = item
             sheet["texts"] = texts
         }
-        return ["text_id": id, "sheet": targetSheet, "text": item.string("text") as Any, "created": existing == nil]
+        let (x, y) = Self.shift(placement)
+        return ["text_id": id, "sheet": targetSheet, "text": item.string("text") as Any, "created": existing == nil,
+                "x_mm": x / 1_000_000, "y_mm": y / 1_000_000]
     }
 
     /// Free texts that sit by a component's symbols — within the radius, and
@@ -3258,11 +3261,10 @@ final class HorizontalProjectEditor {
         guard (item["size"] as? Int ?? 0) > 0 else { throw HorizontalDispatchError.invalidParams("size_mm must be more than zero.") }
 
         var placement = item["placement"] as? JSONDictionary ?? ["angle": 0, "mirror": false, "shift": [0, 0]]
-        if let x = params.double("x_mm"), let y = params.double("y_mm") {
-            placement["shift"] = [Self.nanometres(x), Self.nanometres(y)]
-        } else if existing == nil {
+        if existing == nil, params.double("x_mm") == nil || params.double("y_mm") == nil {
             throw HorizontalDispatchError.invalidParams("place_board_text needs \"x_mm\" and \"y_mm\" the first time.")
         }
+        if let shift = Self.textShift(placement, params) { placement["shift"] = shift }
         if let degrees = params.double("angle_deg") { placement["angle"] = Self.horizonAngle(degrees) }
         if let mirror = params.bool("mirror") { placement["mirror"] = mirror }
         item["placement"] = placement
@@ -3273,8 +3275,9 @@ final class HorizontalProjectEditor {
             texts[id] = item
             board["texts"] = texts
         }
+        let (x, y) = Self.shift(placement)
         return ["id": id, "text": item.string("text") as Any, "layer": item.int("layer") as Any? as Any,
-                "created": existing == nil]
+                "created": existing == nil, "x_mm": x / 1_000_000, "y_mm": y / 1_000_000]
     }
 
     private func placeDimension(_ params: JSONDictionary) throws -> JSONDictionary {
@@ -4608,6 +4611,17 @@ final class HorizontalProjectEditor {
             return (0, 0)
         }
         return (JSONHelper.doubleValue(shift[0]), JSONHelper.doubleValue(shift[1]))
+    }
+
+    /// A text's shift after x_mm and y_mm, or nil when neither is given. A
+    /// text that is there takes either alone and keeps its other coordinate,
+    /// so x_mm by itself moves it sideways; the ops make a new text only with
+    /// both.
+    private static func textShift(_ placement: JSONDictionary, _ params: JSONDictionary) -> [Int]? {
+        let x = params.double("x_mm"), y = params.double("y_mm")
+        guard x != nil || y != nil else { return nil }
+        let (oldX, oldY) = shift(placement)
+        return [x.map(nanometres) ?? Int(oldX.rounded()), y.map(nanometres) ?? Int(oldY.rounded())]
     }
 
     private func copyGroupLayout(_ params: JSONDictionary) throws -> JSONDictionary {
