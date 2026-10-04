@@ -261,10 +261,12 @@ extension HorizontalDispatchSession {
         return project
     }
 
-    /// The loader's rats' nest is a first pass; the editor re-derives track and
-    /// via nets from pad connectivity after every edit and regenerates the
-    /// airwires from that. Headless callers want the editor's answer, so a
-    /// freshly loaded project gets the same pass before anything reads it.
+    /// The editor's connectivity pass: track, via and junction nets re-derived
+    /// from pad connectivity, and the airwires regenerated from them. Headless
+    /// callers want that answer, so a freshly loaded project gets the same pass
+    /// before anything reads it. The loader gives junctions the net of their
+    /// copper for its own airwires too, so on a board whose file stores no
+    /// junction nets — Horizon writes none — the app draws what this reports.
     static func withEditorConnectivity(_ project: HorizontalProject) -> HorizontalProject {
         guard let board = project.board else {
             return project
