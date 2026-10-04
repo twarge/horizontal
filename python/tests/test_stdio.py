@@ -9,11 +9,13 @@ from mcp.client.stdio import stdio_client
 from horizontal.client import Session
 from horizontal._native import SubprocessTransport
 
+from cli_under_test import CLI
+
 
 class StdioTests(unittest.IsolatedAsyncioTestCase):
     async def test_stdio_contract(self):
         import sys
-        cli = Path(__file__).resolve().parents[2] / ".build/debug/horizontal"
+        cli = CLI
         with tempfile.TemporaryDirectory() as directory:
             project_path = Path(directory) / "Test.horizontal"
             native = Session(transport=SubprocessTransport(cli))

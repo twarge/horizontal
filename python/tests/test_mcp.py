@@ -11,7 +11,7 @@ from unittest.mock import patch
 from horizontal.client import Session
 from horizontal import mcp_server as server
 
-CLI = Path(__file__).resolve().parents[2] / ".build/debug/horizontal"
+from cli_under_test import CLI
 
 
 class MCPTests(unittest.IsolatedAsyncioTestCase):
