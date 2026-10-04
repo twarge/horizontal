@@ -703,6 +703,28 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         kept_out = (await self.call("list_board_texts", project_ref=self.ref, text="tp1", smashed=False))["data"]
         self.assertEqual([t["id"] for t in kept_out], [handles["note"]])
 
+    async def test_a_text_that_is_there_moves_and_the_tools_say_so(self):
+        # An agent reading apply_ops took place_text for an op that only makes texts.
+        tools = {t.name: t for t in await server.mcp.list_tools()}
+        def said(text):
+            return " ".join(text.split())
+        self.assertIn("x_mm, y_mm or both move it", said(tools["apply_ops"].description))
+        definitions = tools["apply_ops"].input_schema["$defs"]
+        for name in ("PlaceText", "PlaceBoardText"):
+            self.assertIn("x_mm, y_mm or both move it", said(definitions[name]["description"]), name)
+        for name in ("list_texts", "list_board_texts"):
+            self.assertIn("takes to move or change one", said(tools[name].description), name)
+
+        made = await self.call("apply_ops", project_ref=self.ref, expected_revision=self.opened["data"]["revision"],
+                               operation_id=str(uuid.uuid4()),
+                               ops=[{"op": "place_text", "id": "note", "text": "Amplifier", "x_mm": 178.75, "y_mm": 137.5}])
+        note = made["data"]["handles"]["note"]
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id=str(uuid.uuid4()),
+                        ops=[{"op": "place_text", "id": note, "x_mm": 181.25}])
+        texts = (await self.call("list_texts", project_ref=self.ref))["data"]
+        self.assertEqual([(t["id"], t["text"], t["x_mm"], t["y_mm"]) for t in texts], [(note, "Amplifier", 181.25, 137.5)])
+
     async def test_worker_restart_rebinds_a_disk_read(self):
         project = server._projects[self.ref]
         before = project.summary["instance_id"]

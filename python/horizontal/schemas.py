@@ -405,6 +405,9 @@ class RemoveSymbol(ComponentOp):
 
 
 class PlaceText(Input):
+    """Write a free text on a sheet, or change one that is there: an id from list_texts names it, and only what
+    is given changes. x_mm, y_mm or both move it; it keeps its uuid, layer and the rest. A new text needs text,
+    x_mm and y_mm."""
     op: Literal["place_text"]
     text: str | None = None
     id: str | None = None
@@ -655,6 +658,9 @@ class ArcVertex(Input):
 
 
 class PlaceBoardText(Input):
+    """Write a text on a board layer, or change one that is there: an id from list_board_texts names it, and only
+    what is given changes. x_mm, y_mm or both move it; it keeps its uuid, layer and the rest. A new text needs
+    text, layer, x_mm and y_mm."""
     op: Literal["place_board_text"]
     text: str | None = None
     id: str | None = None
