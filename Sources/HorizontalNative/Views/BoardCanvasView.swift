@@ -7388,7 +7388,7 @@ struct BoardCanvasView: View {
         let normalizedPackageID = normalizedID(packageID)
         for index in board.packageTexts.indices
             where self.packageID(forGeometryID: board.packageTexts[index].id).map(normalizedID) == normalizedPackageID {
-            board.packageTexts[index].text = board.packageTexts[index].text.replacingOccurrences(of: oldRefdes, with: newRefdes)
+            board.packageTexts[index].redraw { $0.replacingOccurrences(of: oldRefdes, with: newRefdes) }
         }
     }
 
