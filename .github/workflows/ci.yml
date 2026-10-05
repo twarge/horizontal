@@ -10,12 +10,15 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# The xcode-27 image defaults to Xcode 27.0. Build with 27.1, the Xcode the
+# app is developed on, so CI compiles against the same SDKs.
+env:
+  DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+
 jobs:
   test:
     name: Build & test (macOS arm64)
-    # Package.swift requires swift-tools 6.3 / macOS 26 SDK, i.e. an Xcode 26
-    # toolchain — pin the runner image accordingly.
-    runs-on: macos-26
+    runs-on: xcode-27
     # First run on a fresh OCCT cache compiles OpenCascade from source
     # (Vendor/OCCT submodule); subsequent runs restore it from the cache.
     timeout-minutes: 180
@@ -24,11 +27,8 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Select newest Xcode 26 toolchain
+      - name: Toolchain
         run: |
-          if compgen -G "/Applications/Xcode_26*.app" > /dev/null; then
-            sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)/Contents/Developer"
-          fi
           swift --version
           xcodebuild -version
 
