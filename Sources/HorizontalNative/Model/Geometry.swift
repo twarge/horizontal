@@ -669,6 +669,37 @@ struct HorizontalText: Identifiable, Hashable {
     /// persisted to the board's `texts` (referenced by the package); a package's
     /// own (un-smashed) pool text has this false.
     var fromSmash: Bool = false
+    /// What the file stores for this text when it isn't what the text draws:
+    /// "$RD" on a refdes smashed out of a package, "$project_title" on a title.
+    /// `text` holds what it draws, for the canvas and for every reader.
+    var placeholder: HorizontalTextPlaceholder? = nil
+}
+
+/// A text's stored form, and what that drew when it was read.
+struct HorizontalTextPlaceholder: Hashable {
+    var stored: String
+    var drawn: String
+}
+
+extension HorizontalText {
+    /// What a save writes. The stored form while the text still draws what that
+    /// stood for, so "$RD" stays "$RD" and goes on following its refdes; what
+    /// it draws once someone has typed something else.
+    var fileText: String {
+        guard let placeholder, placeholder.drawn == text else {
+            return text
+        }
+        return placeholder.stored
+    }
+
+    /// Changes what the text draws without changing what it stores: a refdes
+    /// rename draws "$RD" as the new name.
+    mutating func redraw(_ change: (String) -> String) {
+        text = change(text)
+        if let drawn = placeholder?.drawn {
+            placeholder?.drawn = change(drawn)
+        }
+    }
 }
 
 extension HorizontalText {

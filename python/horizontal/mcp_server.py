@@ -956,7 +956,9 @@ def list_keepouts(path: str | None = None) -> list[dict[str, Any]]:
 @_tool
 def list_planes(path: str | None = None, net: str | None = None) -> list[dict[str, Any]]:
     """Copper pours on the board: the net each carries, its layer and priority, and whether it has been filled.
-    poured false means the plane is defined and empty — place_plane defines, pour_planes fills."""
+    poured false means the plane is defined and empty — place_plane defines, pour_planes fills. net_missing
+    marks a plane on a net the block doesn't have: Horizon leaves it out when it opens the board, so does the
+    loader, and remove_plane takes it out of the file."""
     return _resolve(path).planes(net=net)
 
 
@@ -1158,7 +1160,7 @@ def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool =
 
     Pins are named by name or uuid, whole names first, so PA13(JTMS/SWDIO) works; a wire end can name a
     component and pin instead of a symbol instance. Cleanup: remove_net_line, remove_junction, prune_sheet,
-    remove_sheet with force, and retire_net, which takes the net's labels, wires and junctions with it. Drawing:
+    remove_sheet with force, and retire_net, which takes the net's labels, wires, junctions and planes with it. Drawing:
     terminate_pin runs a stub from a pin to a label or power symbol. set_no_connect marks unused pins;
     remap_part matches pins by name when pin_map is left out. Refer to sheets by name or uuid in a batch that
     adds or reorders sheets — page numbers move.

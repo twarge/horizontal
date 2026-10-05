@@ -797,6 +797,191 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual(placed.airwires.count, 0)
     }
 
+    /// Placing a package in the app and saving wrote every board text as it
+    /// draws: on Billo, 157 smashed "$RD"s became their refdes and
+    /// "$project_title" became "Billo". It also gave 1,561 junctions a net,
+    /// which Horizon never writes, and turned each mirrored text half a turn,
+    /// 45 of them, which the board sync's second write turned back. A board
+    /// written back unchanged now leaves its file alone, and a moved package
+    /// changes only its placement.
+    func testAnInAppBoardEditWritesOnlyWhatItChanged() throws {
+        try placedDivider()
+        _ = try apply([
+            ["op": "place_track", "from": ["component": "R1", "pad": "1"], "to": ["x_mm": 20, "y_mm": 20], "layer": 0, "width_mm": 0.25],
+            ["op": "place_track", "from": ["x_mm": 20, "y_mm": 20], "to": ["component": "R2", "pad": "1"], "layer": 0, "width_mm": 0.25],
+            ["op": "set_project_meta", "values": ["project_title": "Billo"]],
+            ["op": "place_board_text", "text": "$project_title", "layer": 20, "x_mm": 0, "y_mm": -5]
+        ])
+        let r1 = try XCTUnwrap(try result("get_component", ["refdes": "R1"]) as? [String: Any])
+        let r1Package = try XCTUnwrap((r1["board"] as? [String: Any])?["package_instance"] as? String)
+
+        // The board as Horizon writes it: junctions with only a position, a
+        // grid, and R1 smashed, its reference a board text that stores "$RD".
+        let boardURL = packageURL.appendingPathComponent("board.json")
+        var board = try JSONHelper.loadDictionary(from: boardURL)
+        board["grid_settings"] = ["current": ["mode": "square", "name": "", "origin": [0, 0],
+                                              "spacing_rect": [1_000_000, 1_000_000], "spacing_square": 1_000_000],
+                                  "grids": JSONDictionary()]
+        var junctions = try XCTUnwrap(board["junctions"] as? JSONDictionary)
+        for (id, value) in junctions {
+            junctions[id] = (value as? JSONDictionary)?.filter { $0.key != "net" }
+        }
+        board["junctions"] = junctions
+        let smashedID = HorizontalPoolItemFactory.newUUID()
+        var packages = try XCTUnwrap(board["packages"] as? JSONDictionary)
+        var package = try XCTUnwrap(packages[r1Package] as? JSONDictionary)
+        package["smashed"] = true
+        package["texts"] = [smashedID]
+        packages[r1Package] = package
+        board["packages"] = packages
+        var texts = board["texts"] as? JSONDictionary ?? [:]
+        texts[smashedID] = ["from_smash": true, "text": "$RD", "layer": 20, "origin": "center", "font": "simplex",
+                            "size": 1_000_000, "width": 150_000,
+                            "placement": ["angle": 0, "mirror": false, "shift": [10_000_000, 12_000_000]]]
+        // Bottom-side silkscreen is mirrored, at every angle Billo's is.
+        for angle in [0, 16_384, 32_768, 49_152] {
+            texts[HorizontalPoolItemFactory.newUUID()] = [
+                "from_smash": false, "text": "BOTTOM \(angle)", "layer": -120, "origin": "center", "font": "simplex",
+                "size": 1_000_000, "width": 150_000,
+                "placement": ["angle": angle, "mirror": true, "shift": [5_000_000, angle * 100]]
+            ]
+        }
+        board["texts"] = texts
+        let before = try HorizontalHorizonJSONWriter.data(board)
+        try before.write(to: boardURL)
+
+        let project = try HorizontalProject.load(from: packageURL)
+        let loaded = try XCTUnwrap(project.board)
+        let reference = try XCTUnwrap(loaded.packageTexts.first { $0.fromSmash })
+        XCTAssertEqual(reference.text, "R1", "the canvas draws the refdes")
+        XCTAssertEqual(reference.fileText, "$RD")
+        let title = try XCTUnwrap(loaded.texts.first { $0.layer == 20 })
+        XCTAssertEqual(title.text, "Billo")
+        XCTAssertEqual(title.fileText, "$project_title")
+
+        // What the app does with a board edit: the connectivity pass, the
+        // airwires, then the board written back into the document.
+        var edited = HorizontalBoardConnectivity.recompute(loaded)
+        edited.regenerateAirwires()
+        XCTAssertFalse(edited.junctionNetIDs.isEmpty, "the pass gives the bend a net")
+        var archive = try HorizontalProjectArchive.completeProject(from: packageURL)
+        XCTAssertFalse(try HorizontalProjectJSONApplicator.apply(board: edited, in: project, to: &archive),
+                       "an unchanged board changes nothing")
+        XCTAssertEqual(archive.regularFileData(relativePath: "board.json"), before)
+
+        // A moved package: its placement and nothing else.
+        let r2 = try XCTUnwrap(try result("get_component", ["refdes": "R2"]) as? [String: Any])
+        let r2Package = try XCTUnwrap((r2["board"] as? [String: Any])?["package_instance"] as? String)
+        var moved = edited
+        let index = try XCTUnwrap(moved.packages.firstIndex { $0.id.lowercased() == r2Package.lowercased() })
+        moved.packages[index].position.x += 1_250_000
+        XCTAssertTrue(try HorizontalProjectJSONApplicator.apply(board: moved, in: project, to: &archive))
+        let after = try JSONHelper.loadDictionary(from: XCTUnwrap(archive.regularFileData(relativePath: "board.json")))
+        var expected = board
+        var expectedPackages = try XCTUnwrap(expected["packages"] as? JSONDictionary)
+        var expectedPackage = try XCTUnwrap(expectedPackages[r2Package] as? JSONDictionary)
+        var placement = try XCTUnwrap(expectedPackage["placement"] as? JSONDictionary)
+        var shift = try XCTUnwrap(placement["shift"] as? [Any])
+        shift[0] = JSONHelper.doubleValue(shift[0]) + 1_250_000
+        placement["shift"] = shift
+        expectedPackage["placement"] = placement
+        expectedPackages[r2Package] = expectedPackage
+        expected["packages"] = expectedPackages
+        XCTAssertEqual(after as NSDictionary, expected as NSDictionary)
+
+        // Typed over, a text stores what was typed.
+        var typed = moved
+        let textIndex = try XCTUnwrap(typed.packageTexts.firstIndex { $0.fromSmash })
+        typed.packageTexts[textIndex].text = "R1 (typed)"
+        try HorizontalProjectJSONApplicator.apply(board: typed, in: project, to: &archive)
+        let typedJSON = try JSONHelper.loadDictionary(from: XCTUnwrap(archive.regularFileData(relativePath: "board.json")))
+        XCTAssertEqual(typedJSON.dictionary("texts")?.dictionary(smashedID)?.string("text"), "R1 (typed)")
+
+        // A refdes rename redraws the reference and keeps what it stores.
+        var renamed = reference
+        renamed.redraw { $0.replacingOccurrences(of: "R1", with: "R9") }
+        XCTAssertEqual(renamed.text, "R9")
+        XCTAssertEqual(renamed.fileText, "$RD")
+    }
+
+    /// Billo has three planes on nets the block no longer has. Horizon leaves
+    /// such a plane out when it opens the board. The app drew them until a
+    /// placement's board sync dropped them without a word, so the canvas went
+    /// from 16 planes to 13 while list_planes still listed 16.
+    func testAPlaneOnANetTheBlockLacksIsLeftOutAndSaidSo() throws {
+        _ = try apply([
+            ["op": "ensure_component", "refdes": "R1", "part": partID],
+            ["op": "connect", "component": "R1", "pin": "1", "net": "GND", "create_net": true],
+            ["op": "place_component", "component": "R1", "x_mm": 15, "y_mm": 15],
+            ["op": "place_polygon", "layer": 100, "vertices": square(40)]
+        ])
+        let defined = try apply([["op": "place_plane", "net": "GND", "layer": 0, "vertices": square(30)]])
+        let planeID = try XCTUnwrap((defined["changes"] as? [[String: Any]])?.first?["plane"] as? String)
+
+        // The plane's net goes from the block, as it does when an edit removes
+        // a net without knowing about its planes.
+        let boardURL = packageURL.appendingPathComponent("board.json")
+        var board = try JSONHelper.loadDictionary(from: boardURL)
+        var planes = try XCTUnwrap(board["planes"] as? JSONDictionary)
+        var plane = try XCTUnwrap(planes[planeID] as? JSONDictionary)
+        let goneNet = HorizontalPoolItemFactory.newUUID()
+        plane["net"] = goneNet
+        planes[planeID] = plane
+        board["planes"] = planes
+        try HorizontalHorizonJSONWriter.data(board).write(to: boardURL)
+        _ = try result("reload_project")
+
+        let project = try HorizontalProject.load(from: packageURL)
+        let loaded = try XCTUnwrap(project.board)
+        XCTAssertTrue(loaded.planes.isEmpty, "left out, as Horizon leaves it out")
+        let diagnostic = try XCTUnwrap(project.diagnostics.first { $0.message.contains(planeID) })
+        XCTAssertTrue(diagnostic.message.contains(goneNet), diagnostic.message)
+        XCTAssertTrue(diagnostic.message.contains("remove_plane"), diagnostic.message)
+        // A board sync makes the board the loader made.
+        var synced = loaded
+        synced.removePlanesWithDeletedNets()
+        XCTAssertEqual(synced.planes.count, loaded.planes.count)
+
+        let listed = try XCTUnwrap(try result("list_planes") as? [[String: Any]])
+        XCTAssertEqual(listed.count, 1, "the file still has it")
+        XCTAssertEqual(listed.first?["net_missing"] as? Bool, true)
+        XCTAssertEqual(listed.first?["poured"] as? Bool, false)
+        let check = try XCTUnwrap(try result("check") as? [String: Any])
+        let messages = try XCTUnwrap(check["messages"] as? [[String: Any]])
+        XCTAssertTrue(messages.contains { $0["category"] as? String == "load" && ($0["title"] as? String ?? "").contains(planeID) },
+                      "\(messages)")
+
+        // An existing plane on a net the block has isn't flagged.
+        _ = try apply([["op": "remove_plane", "plane": planeID]])
+        XCTAssertEqual((try result("list_planes") as? [[String: Any]])?.count, 0)
+        _ = try apply([["op": "place_plane", "net": "GND", "layer": 0, "vertices": square(30)]])
+        XCTAssertEqual((try result("list_planes") as? [[String: Any]])?.first?["net_missing"] as? Bool, false)
+    }
+
+    /// retire_net left a net's planes on the net it removed, which is how a
+    /// board comes to have planes Horizon won't load. A track or via can be on
+    /// no net; a plane can't, so it goes, and its outline stays.
+    func testRetiringANetTakesItsPlanesAndLeavesTheirOutlines() throws {
+        _ = try apply([
+            ["op": "ensure_component", "refdes": "R1", "part": partID],
+            ["op": "connect", "component": "R1", "pin": "1", "net": "SHIELD", "create_net": true],
+            ["op": "place_component", "component": "R1", "x_mm": 15, "y_mm": 15]
+        ])
+        let defined = try apply([["op": "place_plane", "net": "SHIELD", "layer": 0, "vertices": square(30)]])
+        let change = try XCTUnwrap((defined["changes"] as? [[String: Any]])?.first)
+        let polygonID = try XCTUnwrap(change["polygon"] as? String)
+
+        let retired = try apply([["op": "retire_net", "net": "SHIELD"]])
+        let board = try XCTUnwrap((retired["changes"] as? [[String: Any]])?.first?["board"] as? [String: Any])
+        XCTAssertEqual(board["planes"] as? Int, 1)
+        XCTAssertEqual(board["planes_removed"] as? Int, 1)
+        XCTAssertEqual(board["removed"] as? Bool, false, "tracks and vias are left without remove_routing")
+        XCTAssertEqual((retired["project"] as? [String: Any])?["diagnostics"] as? [String], [])
+        XCTAssertEqual((try result("list_planes") as? [[String: Any]])?.count, 0)
+        let polygon = try XCTUnwrap((try result("list_polygons") as? [[String: Any]])?.first { $0["id"] as? String == polygonID })
+        XCTAssertTrue(polygon["plane"] is NSNull || polygon["plane"] == nil, "\(polygon)")
+    }
+
     /// A track joins its ends. Two ends on different nets would tie those nets
     /// together, so it is refused rather than written.
     func testRoutingRefusesToShortTwoNets() throws {
