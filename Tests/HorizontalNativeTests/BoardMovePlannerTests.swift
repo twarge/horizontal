@@ -230,5 +230,27 @@ final class BoardMovePlannerTests: XCTestCase {
         XCTAssertNil(BoardMovePlanner.packageID(forGeometryID: ""))
         // Non-ASCII defers to the Unicode-correct path (and still folds case).
         XCTAssertEqual(BoardMovePlanner.packageID(forGeometryID: "PÉKG/pad/x"), "pékg")
+        XCTAssertEqual(BoardMovePlanner.packageID(forGeometryID: "pkg/Polygon/x"), "pkg")
+        XCTAssertEqual(BoardMovePlanner.packageID(forGeometryID: "pkg/keepout"), "pkg")
+        // A segment that starts like a separator is not one.
+        XCTAssertNil(BoardMovePlanner.packageID(forGeometryID: "pkg/padstack/x"))
+    }
+
+    /// The membership test the package-geometry loops use agrees with
+    /// comparing the parsed package id, case and all.
+    func testGeometryMembershipMatchesPackageIDParsing() {
+        let geometryIDs = [
+            "pkg-abc/pad/pad-1", "PKG-ABC/PAD/x", "pkg-abc/keepout/k", "pkg-abcd/pad/x", "pkg-ab/pad/x",
+            "a/b/pad/x", "a//pad/x", "/pad/x", "pad/x", "loose-id", "", "pkg-abc/padstack/x", "PÉKG/pad/x",
+        ]
+        for geometryID in geometryIDs {
+            for packageID in ["pkg-abc", "a/b", "a", "pékg", "pad-1", ""] {
+                XCTAssertEqual(
+                    BoardMovePlanner.geometryID(geometryID, belongsToPackage: packageID),
+                    BoardMovePlanner.packageID(forGeometryID: geometryID) == packageID,
+                    "\(geometryID) in \(packageID)"
+                )
+            }
+        }
     }
 }

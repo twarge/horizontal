@@ -1884,7 +1884,7 @@ struct HorizontalBoard {
                     continue
                 }
                 for fragment in plane.fragments where !fragment.paths.isEmpty {
-                    let paths = fragment.paths.map(PlanePath.init)
+                    let paths = fragment.containmentPaths
                     var first: Int?
                     for (index, node) in nodes.enumerated() {
                         guard let layers = node.layers,
@@ -2001,6 +2001,32 @@ struct HorizontalBoard {
         }
     }
 
+    /// Pad polygons are `<board package>/pad/<pad>/shape/…`; the pad maps key
+    /// on `<board package>/<pad>`, lowercased. Nil for any other id. Every
+    /// airwire pass asks this of every pad shape on the board, so the usual
+    /// id is read in place; anything with an empty segment takes the
+    /// split-and-join path the result has to match.
+    static func padPath(forPadPolygonID id: String) -> String? {
+        let utf8 = id.utf8
+        // ASCII only: a slash a combining mark follows is no separator to `split`.
+        if utf8.allSatisfy({ $0 < 0x80 }),
+           let firstSlash = utf8.firstIndex(of: UInt8(ascii: "/")), firstSlash > id.startIndex {
+            let kindStart = id.index(after: firstSlash)
+            if id[kindStart...].hasPrefix("pad/") {
+                let padStart = id.index(kindStart, offsetBy: 4)
+                let padEnd = utf8[padStart...].firstIndex(of: UInt8(ascii: "/")) ?? id.endIndex
+                if padEnd > padStart {
+                    return normalizedID(String(id[..<firstSlash]) + "/" + id[padStart..<padEnd])
+                }
+            }
+        }
+        let components = id.split(separator: "/")
+        guard components.count >= 3, components[1] == "pad" else {
+            return nil
+        }
+        return normalizedUUIDPath("\(components[0])/\(components[2])")
+    }
+
     /// Pad path (`package/pad`, normalized) to the copper layers its pad
     /// polygons lie on; polygon ids are `<board package>/pad/<pad>/shape/…`.
     private static func padLayers(from pads: [HorizontalPolygon]) -> [String: Set<Int>] {
@@ -2009,11 +2035,10 @@ struct HorizontalBoard {
             guard let layer = pad.layer else {
                 continue
             }
-            let components = pad.id.split(separator: "/")
-            guard components.count >= 3, components[1] == "pad" else {
+            guard let padPath = padPath(forPadPolygonID: pad.id) else {
                 continue
             }
-            layers[normalizedUUIDPath("\(components[0])/\(components[2])"), default: []].insert(layer)
+            layers[padPath, default: []].insert(layer)
         }
         return layers
     }
@@ -5978,6 +6003,29 @@ struct HorizontalBoardPackagePlacementDraft {
 }
 
 extension HorizontalBoard {
+    /// How many of `packageIDs` own none of `geometryIDs` (the info panel's
+    /// unresolved-package count). A geometry id belongs to a package when it is
+    /// the package id, or starts with it followed by a slash. So every
+    /// slash-terminated prefix of every id is collected once, and each package
+    /// costs one lookup instead of a scan of the whole board.
+    static func unresolvedPackageCount(packageIDs: [String], geometryIDs: [String]) -> Int {
+        guard !packageIDs.isEmpty else {
+            return 0
+        }
+        var owners = Set<String>()
+        owners.reserveCapacity(geometryIDs.count * 2)
+        for geometryID in geometryIDs {
+            let normalized = normalizedID(geometryID)
+            owners.insert(normalized)
+            var searchStart = normalized.startIndex
+            while let slash = normalized[searchStart...].firstIndex(of: "/") {
+                owners.insert(String(normalized[..<slash]))
+                searchStart = normalized.index(after: slash)
+            }
+        }
+        return packageIDs.count(where: { !owners.contains(normalizedID($0)) })
+    }
+
     /// The board's unplaced-package column, built from the schematic's
     /// components the way the loader builds it from the block: every
     /// component with a part, carrying its connections for the pads.
@@ -6143,13 +6191,10 @@ extension HorizontalBoard {
             guard let netID = pad.netID else {
                 continue
             }
-            // Pad polygons are `<board package>/pad/<pad>/shape/…`; the pad
-            // maps key on `<board package>/<pad>`.
-            let components = pad.id.split(separator: "/")
-            guard components.count >= 3, components[1] == "pad" else {
+            guard let padPath = Self.padPath(forPadPolygonID: pad.id) else {
                 continue
             }
-            padNetIDs[Self.normalizedUUIDPath("\(components[0])/\(components[2])")] = Self.normalizedID(netID)
+            padNetIDs[padPath] = Self.normalizedID(netID)
         }
         airwires = Self.generateAirwires(
             junctions: junctions,
