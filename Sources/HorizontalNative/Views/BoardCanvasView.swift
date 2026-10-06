@@ -423,6 +423,9 @@ struct BoardCanvasView: View {
     #endif
     /// Every reported transform, for the live channel (see HorizontalLiveCanvasTransform).
     @State private var liveCanvasTransform = HorizontalLiveCanvasTransform()
+    /// The airwires the scene last handed over was built with, for the live
+    /// channel (see HorizontalLiveCanvasAirwires).
+    @State private var liveCanvasAirwires = HorizontalLiveCanvasAirwires()
     /// Quantized world-space cull threshold for generated labels at the current
     /// zoom (0 = show everything). Unlike `canvasDisplayTransform` this IS
     /// maintained during live pan/zoom, but only written when the quantized step
@@ -2438,6 +2441,7 @@ struct BoardCanvasView: View {
         // The live channel (docs/automation.md): what the canvas shows, and
         // framing a rectangle in it.
         actions.visibleWorldBounds = { liveCanvasTransform.transform?.visibleBounds }
+        actions.drawnAirwires = { liveCanvasAirwires.drawn }
         actions.frameWorldRect = { rect in
             guard let transform = liveCanvasTransform.transform else {
                 return
@@ -8866,6 +8870,7 @@ struct BoardCanvasView: View {
 
     private func boardMetalLineBatch(renderLayers: [Int]) -> BoardMetalLineBatch {
         guard drawsBoardLinesInMetal else {
+            liveCanvasAirwires.drawn = nil
             return .empty
         }
 
@@ -8886,6 +8891,9 @@ struct BoardCanvasView: View {
             BoardLoadTimer.flushPlaneTessellationSummary()
             return result
         }
+        // The buckets just fetched are the ones drawn, cached or not, so what
+        // they were built with is what the canvas shows.
+        liveCanvasAirwires.drawn = HorizontalDrawnAirwires(airwires: buckets.airwires, shown: displayOptions.connectionLines)
 
         let signature = metalVisibilitySignature()
         let includesResidentMoveMetadata = canPatchBoardMoveInMetal
@@ -9508,6 +9516,7 @@ struct BoardCanvasView: View {
                     to: \.connectionLines
                 )
             }
+            buckets.airwires = board.airwires
             for connectionLine in board.connectionLines {
                 appendText(
                     segmentLengthLabelText(connectionLine, idSuffix: "connection-length-label"),

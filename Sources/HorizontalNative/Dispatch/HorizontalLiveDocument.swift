@@ -54,6 +54,10 @@ final class HorizontalLiveDocument {
     var save: () throws -> Void
     /// The world rectangle a pane's canvas shows, if the pane is up.
     var visibleBounds: (HorizontalPane) -> HorizontalRect?
+    /// The airwires the board pane's canvas draws, or nil when the pane is not
+    /// up. Its scene is cached, so this is the canvas's own answer rather than
+    /// one worked out again from the model.
+    var drawnAirwires: () -> HorizontalDrawnAirwires?
     /// Frames a world rectangle in a pane's canvas, showing the pane first.
     var frame: (HorizontalPane, HorizontalRect) -> Void
     /// Shows a sheet (block id, sheet id) in the schematic pane.
@@ -98,6 +102,7 @@ final class HorizontalLiveDocument {
         }
         setPanes = { _ in }
         visibleBounds = { _ in nil }
+        drawnAirwires = { nil }
         frame = { _, _ in }
         showSheet = { _, _ in }
         currentSheet = { nil }

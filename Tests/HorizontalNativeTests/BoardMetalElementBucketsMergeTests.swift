@@ -41,4 +41,19 @@ final class BoardMetalElementBucketsMergeTests: XCTestCase {
         XCTAssertEqual(merged.connectionLines.lines.map(\.from.x), [4, 5], "the airwires come from the addition alone")
         XCTAssertEqual(scene.pads.lines, [oldPad], "the scene merged into is left as it was")
     }
+
+    /// A scene says which airwires it draws (field notes item 29), and a merge
+    /// keeps that true: replaced with the batch it redraws, appended otherwise.
+    func testAMergeCarriesTheAirwiresItsBatchesDraw() {
+        func airwire(_ id: String) -> HorizontalSegment {
+            HorizontalSegment(id: id, from: .zero, to: HorizontalPoint(x: 1, y: 1), width: 0, layer: nil)
+        }
+        let scene = BoardMetalElementBuckets()
+        scene.airwires = [airwire("old")]
+        let addition = BoardMetalElementBuckets()
+        addition.airwires = [airwire("new")]
+
+        XCTAssertEqual(scene.merged(adding: addition, replacing: [\.connectionLines]).airwires.map(\.id), ["new"])
+        XCTAssertEqual(scene.merged(adding: addition, replacing: []).airwires.map(\.id), ["old", "new"])
+    }
 }

@@ -391,6 +391,9 @@ final class BoardMetalElementBuckets {
     var dimensions = BoardMetalElementBatch()
     var connectionLines = BoardMetalElementBatch()
     var connectionLabels = BoardMetalElementBatch()
+    /// The airwires `connectionLines` was drawn from, so the scene can say
+    /// which it shows without reading its primitives back.
+    var airwires: [HorizontalSegment] = []
 
     /// Every batch, for whole-scene operations. `namedBatches()` lists the
     /// same batches; a test keeps the two the same length.
@@ -421,6 +424,7 @@ final class BoardMetalElementBuckets {
                 result[keyPath: keyPath] = batch
             }
         }
+        result.airwires = replaced.contains(\.connectionLines) ? addition.airwires : airwires + addition.airwires
         return result
     }
 

@@ -446,10 +446,11 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "render_viewport",
-            summary: "Render what a pane of the app currently shows, in the exporter's drawing style. Live channel only.",
+            summary: "Render what a pane of the app currently shows, in the exporter's drawing style, with the board's airwires drawn over it: the ones the board canvas draws, compared net by net with the ones check reports. Live channel only.",
             params: [
                 "handle": "Live project handle.",
                 "pane": "board or schematic (default board).",
+                "airwires": "Draw the airwires on a board render (default true). The reply's airwires says whose they are either way.",
                 "dpi": "Resolution (default 150).",
                 "max_pixels": "Cap on the longer side (default 4096).",
                 "output_path": "Write the PNG here instead of returning it base64-encoded."
@@ -663,9 +664,11 @@ enum HorizontalDispatchMethods {
         var result: JSONDictionary = ["saved": edited, "had_unsaved_changes": edited, "source": "live",
                                       "path": entry.url.path, "verified": true,
                                       "snapshot_id": onDisk.id, "revision": entry.revision]
+        // Always there, empty when the folder was looked at and held none, so
+        // "none" can be told from a reply that never checked.
         let leftovers = safeSaveLeftovers(of: entry.url)
+        result["leftovers"] = leftovers
         if !leftovers.isEmpty {
-            result["leftovers"] = leftovers
             result["note"] = "A safe save left these beside the project file. AppKit removes its own, and nothing here "
                 + "deletes them; same_as_file says whether each holds what the file now does."
         }
@@ -993,7 +996,69 @@ enum HorizontalDispatchMethods {
         json["drawing_layers"] = HorizontalDispatchRender.boardDrawingLayers(project: entry.project)
         json["net_classes"] = netClasses
         json["counts"] = counts
+        json["airwires"] = airwiresSourceJSON(entry, board: board)
         return json
+    }
+
+    // MARK: - Airwires: the dispatch's and the canvas's
+
+    /// Where `counts.airwires` comes from, and for a document open in the app,
+    /// what its board canvas draws beside it.
+    private static func airwiresSourceJSON(_ entry: HorizontalDispatchProjectEntry, board: HorizontalBoard) -> JSONDictionary {
+        var json: JSONDictionary = ["source": "connectivity"]
+        guard entry.live != nil else {
+            json["note"] = "counts.airwires is the editor's connectivity pass over the files, the set check reports."
+            return json
+        }
+        json["note"] = "counts.airwires is the editor's connectivity pass over the document's model, the set check "
+            + "reports. canvas is what the app's board pane draws from its cached scene, or null when the pane is not up."
+        json["canvas"] = canvasAirwires(entry).map { canvasAirwiresJSON($0, reported: board.airwires, index: entry.index) } ?? NSNull()
+        return json
+    }
+
+    /// The airwires a live entry's board canvas draws, read on the main thread
+    /// the live channel answers on; nil for a disk context or a hidden pane.
+    private static func canvasAirwires(_ entry: HorizontalDispatchProjectEntry) -> HorizontalDrawnAirwires? {
+        guard let live = entry.live, Thread.isMainThread else {
+            return nil
+        }
+        let drawn = HorizontalUnsafeSendableBox<HorizontalDrawnAirwires?>(nil)
+        MainActor.assumeIsolated {
+            drawn.value = live.drawnAirwires()
+        }
+        return drawn.value
+    }
+
+    /// The canvas's airwires held up against `reported`, the ones check gives,
+    /// net by net and segment by segment. The two are worked out separately —
+    /// the dispatch runs the editor's connectivity pass over the model, the
+    /// canvas draws a scene it caches — so a stale scene shows up here as
+    /// differences rather than having to be spotted on screen.
+    static func canvasAirwiresJSON(_ drawn: HorizontalDrawnAirwires, reported: [HorizontalSegment],
+                                   index: HorizontalDesignIndex) -> JSONDictionary {
+        func byNet(_ segments: [HorizontalSegment]) -> [String: Set<String>] {
+            var result = [String: Set<String>]()
+            for segment in segments {
+                // Ends in whole nanometres, in either order: the same airwire
+                // drawn either way round is the same airwire.
+                let ends = [segment.from, segment.to].map { "\(Int64($0.x.rounded())),\(Int64($0.y.rounded()))" }.sorted()
+                result[segment.netID?.lowercased() ?? "", default: []].insert(ends.joined(separator: ";"))
+            }
+            return result
+        }
+        let canvas = byNet(drawn.airwires), check = byNet(reported)
+        let differences: [JSONDictionary] = Set(canvas.keys).union(check.keys).sorted().compactMap { netID in
+            let drawnHere = canvas[netID] ?? [], reportedHere = check[netID] ?? []
+            guard drawnHere != reportedHere else {
+                return nil
+            }
+            return ["net": index.net(id: netID)?.name ?? netID, "net_id": netID,
+                    "canvas": drawnHere.count, "check": reportedHere.count,
+                    "only_canvas": drawnHere.subtracting(reportedHere).count,
+                    "only_check": reportedHere.subtracting(drawnHere).count]
+        }
+        return ["count": drawn.airwires.count, "nets": canvas.keys.filter { !$0.isEmpty }.count,
+                "shown": drawn.shown, "matches_check": differences.isEmpty, "differences": differences]
     }
 
     @Sendable private static func recomputeConnectivity(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
@@ -1573,8 +1638,33 @@ enum HorizontalDispatchMethods {
         let project = try entry.snapshot?.materializedProject() ?? entry.project
         var result: JSONDictionary
         if wanted == .board {
-            let image = try HorizontalDispatchRender.renderBoard(project: project, layerNames: nil, mirrored: false, region: region, dpi: dpi, maxPixels: maxPixels)
+            // The exporter draws no airwires, so they go on top: the ones the
+            // canvas draws when it says, else the ones check reports, and the
+            // reply says which, and how the two compare.
+            let reported = entry.project.board?.airwires ?? []
+            let drawn = canvasAirwires(entry)
+            let airwires = drawn?.airwires ?? reported
+            let drawsAirwires = params.bool("airwires") ?? true
+            let image = try HorizontalDispatchRender.renderBoard(project: project, layerNames: nil, mirrored: false, region: region,
+                                                                 airwires: drawsAirwires ? airwires : nil, dpi: dpi, maxPixels: maxPixels)
             result = imageJSON(image, outputPath: params.string("output_path"))
+            var airwiresJSON: JSONDictionary = drawn.map { canvasAirwiresJSON($0, reported: reported, index: entry.index) }
+                ?? ["count": reported.count, "nets": Set(reported.compactMap { $0.netID?.lowercased() }).count]
+            airwiresJSON["source"] = drawn == nil ? "connectivity" : "canvas"
+            airwiresJSON["drawn"] = drawsAirwires
+            // By the bounds rather than HorizontalRect.intersects, which counts
+            // a straight horizontal or vertical one's flat box as empty.
+            airwiresJSON["in_view"] = airwires.filter { airwire in
+                min(airwire.from.x, airwire.to.x) <= region.maxX && max(airwire.from.x, airwire.to.x) >= region.minX
+                    && min(airwire.from.y, airwire.to.y) <= region.maxY && max(airwire.from.y, airwire.to.y) >= region.minY
+            }.count
+            if drawn == nil {
+                airwiresJSON["note"] = "The board canvas gave no airwires, so these are the ones check reports."
+            } else if drawn?.shown == false {
+                airwiresJSON["note"] = "The pane's Connections switch is off, so the canvas draws none of these on screen; "
+                    + "the render shows what it would draw."
+            }
+            result["airwires"] = airwiresJSON
         } else {
             let (image, sheet) = try HorizontalDispatchRender.renderSheet(project: project, sheetIndex: nil, sheetName: nil, sheetID: state.value.1, region: region, dpi: dpi, maxPixels: maxPixels)
             result = imageJSON(image, outputPath: params.string("output_path"))

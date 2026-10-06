@@ -55,11 +55,21 @@ enum HorizontalDispatchRender {
         layerIDs: [Int]? = nil,
         mirrored: Bool,
         region: HorizontalRect? = nil,
+        airwires: [HorizontalSegment]? = nil,
         dpi: Double,
         maxPixels: Int
     ) throws -> Image {
         guard let board = project.board else {
             throw HorizontalDispatchError.notFound("The project has no board.")
+        }
+        // The exporter draws no airwires, and the PDF it writes is for
+        // fabrication drawings, which shouldn't gain them; they go on the
+        // raster instead, on the page the exporter laid out.
+        let mapping = { (pageSize: CGSize) in PageMapping(bounds: boardPageBounds(board), margin: 36, pageSize: pageSize) }
+        let overlay = airwires.map { segments in
+            { (context: CGContext, pageSize: CGSize, pixelsPerPoint: CGFloat) in
+                drawAirwires(segments, in: context, mapping: mapping(pageSize), pixelsPerPoint: pixelsPerPoint)
+            }
         }
         let selected = try resolveBoardLayers(project: project, names: layerNames, ids: layerIDs)
         let pdfURL = try exportPDF(project: project, section: .boardDrawing) { settings in
@@ -74,7 +84,34 @@ enum HorizontalDispatchRender {
         // The exporter pads the board's physical bounds by 8% and fits them
         // onto the page inside a 36-point margin; mirror this to crop.
         let crop = region.map { pageRect(for: $0, bounds: boardPageBounds(board), margin: 36) }
-        return try rasterize(pdfURL: pdfURL, page: 1, dpi: dpi, maxPixels: maxPixels, crop: crop)
+        return try rasterize(pdfURL: pdfURL, page: 1, dpi: dpi, maxPixels: maxPixels, crop: crop, overlay: overlay)
+    }
+
+    /// The colour airwires are drawn in on a render: on the exporter's white
+    /// page the canvas's cyan barely shows, so a deeper blue, dashed as the
+    /// canvas dashes them.
+    static let airwireColor: [CGFloat] = [0, 0.4, 0.95, 1]
+
+    /// Airwires as dashed lines about 1.5 pixels wide, whatever the
+    /// resolution, so they read the same at any dpi.
+    private static func drawAirwires(_ airwires: [HorizontalSegment], in context: CGContext,
+                                     mapping: PageMapping, pixelsPerPoint: CGFloat) {
+        guard !airwires.isEmpty else {
+            return
+        }
+        let pixel = 1 / max(pixelsPerPoint, 0.01)
+        context.saveGState()
+        context.setStrokeColor(CGColor(colorSpace: CGColorSpaceCreateDeviceRGB(), components: airwireColor)
+            ?? CGColor(gray: 0, alpha: 1))
+        context.setLineWidth(1.5 * pixel)
+        context.setLineCap(.round)
+        context.setLineDash(phase: 0, lengths: [6 * pixel, 4 * pixel])
+        for airwire in airwires {
+            context.move(to: mapping.point(airwire.from))
+            context.addLine(to: mapping.point(airwire.to))
+        }
+        context.strokePath()
+        context.restoreGState()
     }
 
     /// The exporter's per-project list is also the selector contract.
@@ -122,25 +159,42 @@ enum HorizontalDispatchRender {
         return sheet.bounds.padded(0.02)
     }
 
-    /// Where a world rectangle lands on a page whose content `bounds` were
-    /// fitted inside `margin`, as the exporter's world transform does. The
-    /// page size is read from the PDF at raster time; this returns the rect
-    /// as a function of it.
-    static func pageRect(for region: HorizontalRect, bounds: HorizontalRect, margin: CGFloat) -> (CGSize) -> CGRect {
-        { pageSize in
-            let content = bounds.isEmpty ? HorizontalRect(center: .zero, size: 100_000_000) : bounds
+    /// The exporter's world transform: content `bounds` fitted inside
+    /// `margin` on a page of `pageSize`, centred. The page size is read from
+    /// the PDF at raster time.
+    struct PageMapping {
+        var content: HorizontalRect
+        var scale: CGFloat
+        var origin: CGPoint
+
+        init(bounds: HorizontalRect, margin: CGFloat, pageSize: CGSize) {
+            content = bounds.isEmpty ? HorizontalRect(center: .zero, size: 100_000_000) : bounds
             let availableWidth = max(pageSize.width - margin * 2, 1)
             let availableHeight = max(pageSize.height - margin * 2, 1)
-            let scale = min(availableWidth / CGFloat(max(content.width, 1)), availableHeight / CGFloat(max(content.height, 1)))
-            let origin = CGPoint(
+            scale = min(availableWidth / CGFloat(max(content.width, 1)), availableHeight / CGFloat(max(content.height, 1)))
+            origin = CGPoint(
                 x: (pageSize.width - CGFloat(max(content.width, 1)) * scale) / 2,
                 y: (pageSize.height - CGFloat(max(content.height, 1)) * scale) / 2
             )
+        }
+
+        func point(_ point: HorizontalPoint) -> CGPoint {
+            CGPoint(x: origin.x + CGFloat(point.x - content.minX) * scale,
+                    y: origin.y + CGFloat(point.y - content.minY) * scale)
+        }
+    }
+
+    /// Where a world rectangle lands on that page, as a function of the page
+    /// size.
+    static func pageRect(for region: HorizontalRect, bounds: HorizontalRect, margin: CGFloat) -> (CGSize) -> CGRect {
+        { pageSize in
+            let mapping = PageMapping(bounds: bounds, margin: margin, pageSize: pageSize)
+            let corner = mapping.point(HorizontalPoint(x: region.minX, y: region.minY))
             return CGRect(
-                x: origin.x + CGFloat(region.minX - content.minX) * scale,
-                y: origin.y + CGFloat(region.minY - content.minY) * scale,
-                width: max(CGFloat(region.width) * scale, 1),
-                height: max(CGFloat(region.height) * scale, 1)
+                x: corner.x,
+                y: corner.y,
+                width: max(CGFloat(region.width) * mapping.scale, 1),
+                height: max(CGFloat(region.height) * mapping.scale, 1)
             )
         }
     }
@@ -176,7 +230,8 @@ enum HorizontalDispatchRender {
         page pageNumber: Int,
         dpi: Double,
         maxPixels: Int,
-        crop: ((CGSize) -> CGRect)? = nil
+        crop: ((CGSize) -> CGRect)? = nil,
+        overlay: ((CGContext, CGSize, CGFloat) -> Void)? = nil
     ) throws -> Image {
         guard let document = CGPDFDocument(pdfURL as CFURL) else {
             throw HorizontalDispatchError.failed("Could not open the rendered PDF.")
@@ -214,6 +269,8 @@ enum HorizontalDispatchRender {
         context.scaleBy(x: scale, y: scale)
         context.translateBy(x: -box.minX, y: -box.minY)
         context.drawPDFPage(page)
+        // Drawn in page points, over the page, with how many pixels a point is.
+        overlay?(context, mediaBox.size, CGFloat(scale))
         guard let image = context.makeImage() else {
             throw HorizontalDispatchError.failed("Could not rasterize the page.")
         }

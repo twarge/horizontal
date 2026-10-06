@@ -1789,6 +1789,9 @@ struct HorizontalIPadProjectView: View {
         live.visibleBounds = { pane in
             canvasActions(for: pane)?.visibleWorldBounds?()
         }
+        live.drawnAirwires = {
+            canvasActions(for: .board)?.drawnAirwires?()
+        }
         live.frame = { pane, rect in
             if pane == .threeD {
                 // The 3D pane has no world rectangle to frame; it has a
