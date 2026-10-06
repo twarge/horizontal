@@ -9,6 +9,22 @@ final class HorizontalLiveCanvasTransform {
     var transform: HorizontalCanvasTransform?
 }
 
+/// The airwires a board canvas's scene was built with, and whether its
+/// Connections switch lets them show. The scene is cached, so this is what
+/// the canvas draws, which the board it was given need not be; the live
+/// channel holds it up against what `check` reports.
+struct HorizontalDrawnAirwires {
+    var airwires: [HorizontalSegment]
+    var shown: Bool
+}
+
+/// Where the board canvas leaves `HorizontalDrawnAirwires` each time it hands
+/// its scene over, kept outside SwiftUI state as the transform is.
+@MainActor
+final class HorizontalLiveCanvasAirwires {
+    var drawn: HorizontalDrawnAirwires?
+}
+
 extension HorizontalRect {
     /// The same centre, `factor` times the size.
     func scaled(by factor: Double) -> HorizontalRect {

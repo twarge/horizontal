@@ -95,6 +95,8 @@ struct HorizontalCanvasCommandActions {
     var hasRoundOffVertexInteraction: Bool = false
     /// The world rectangle the canvas currently shows, for the live channel.
     var visibleWorldBounds: (() -> HorizontalRect?)? = nil
+    /// The airwires a board canvas's scene draws, for the live channel.
+    var drawnAirwires: (() -> HorizontalDrawnAirwires?)? = nil
     /// Frames a world rectangle in the canvas, for the live channel's zoom-to.
     var frameWorldRect: ((HorizontalRect) -> Void)? = nil
     /// Zooms the view about its centre; 2 is twice as close.

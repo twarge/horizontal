@@ -1,5 +1,7 @@
+import CoreGraphics
 import Foundation
 import HorizontalProjectIO
+import ImageIO
 import Network
 import XCTest
 @testable import HorizontalNative
@@ -253,6 +255,8 @@ final class HorizontalLiveServerTests: XCTestCase {
         XCTAssertEqual(saved["source"] as? String, "live")
         XCTAssertEqual(saved["verified"] as? Bool, true, "the file is checked, not the document's own flag")
         XCTAssertEqual(saved["path"] as? String, packageURL.path)
+        XCTAssertEqual((saved["leftovers"] as? [JSONDictionary])?.count, 0,
+                       "an empty list, not a missing key, says the folder was looked at and held none")
         XCTAssertEqual(saves, 1)
         XCTAssertEqual(try summary()["unsaved_changes"] as? Bool, false)
 
@@ -298,6 +302,90 @@ final class HorizontalLiveServerTests: XCTestCase {
         XCTAssertEqual(saved["verified"] as? Bool, true)
         XCTAssertEqual((saved["leftovers"] as? [JSONDictionary])?.map { $0.string("name") }, [leftover.lastPathComponent])
         XCTAssertTrue(FileManager.default.fileExists(atPath: leftover.path), "reported, not deleted")
+    }
+
+    /// Field notes item 29: render_viewport drew in the exporter's style, which
+    /// has no airwires, so whether the canvas drew the ones check reports could
+    /// only be judged by eye. It now draws the canvas's own over the render and
+    /// says how they compare with check's; board_info says whose its count is.
+    func testRenderViewportDrawsTheCanvasAirwiresAndComparesThemWithCheck() throws {
+        let document = try registerTemplateDocument()
+        let handle = try XCTUnwrap(self.handle)
+        let mm = 1_000_000.0
+        let region = HorizontalRect(points: [HorizontalPoint(x: -20 * mm, y: -20 * mm), HorizontalPoint(x: 20 * mm, y: 20 * mm)])
+        document.visibleBounds = { $0 == .board ? region : nil }
+        func call(_ method: String, _ params: JSONDictionary = [:]) throws -> JSONDictionary {
+            let response = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 1, "method": method,
+                                                    "params": params.merging(["handle": handle]) { $1 }])
+            return try XCTUnwrap(response["result"] as? JSONDictionary, "\(response)")
+        }
+
+        // No board pane: the airwires drawn are check's, and board_info says
+        // there is no canvas to ask.
+        let unseen = try XCTUnwrap(try call("render_viewport", ["dpi": 20]).dictionary("airwires"))
+        XCTAssertEqual(unseen.string("source"), "connectivity")
+        XCTAssertEqual(unseen.int("count"), 0)
+        let noCanvas = try XCTUnwrap(try call("board_info").dictionary("airwires"))
+        XCTAssertEqual(noCanvas.string("source"), "connectivity")
+        XCTAssertTrue(noCanvas["canvas"] is NSNull, "\(noCanvas)")
+
+        // A canvas drawing what check reports — none, on the template — agrees.
+        document.drawnAirwires = { HorizontalDrawnAirwires(airwires: [], shown: true) }
+        let agreed = try XCTUnwrap(try call("board_info").dictionary("airwires")?.dictionary("canvas"))
+        XCTAssertEqual(agreed["matches_check"] as? Bool, true)
+        XCTAssertEqual(agreed.int("count"), 0)
+
+        // A canvas drawing one check doesn't report — a stale scene — is named
+        // net by net, and drawn across the middle of the render.
+        let stale = HorizontalSegment(id: "a1", from: HorizontalPoint(x: -15 * mm, y: 0), to: HorizontalPoint(x: 15 * mm, y: 0),
+                                      width: 0, layer: nil)
+        document.drawnAirwires = { HorizontalDrawnAirwires(airwires: [stale], shown: false) }
+        let rendered = try call("render_viewport", ["dpi": 40])
+        let airwires = try XCTUnwrap(rendered.dictionary("airwires"))
+        XCTAssertEqual(airwires.string("source"), "canvas")
+        XCTAssertEqual(airwires["matches_check"] as? Bool, false)
+        XCTAssertEqual(airwires["shown"] as? Bool, false)
+        XCTAssertEqual(airwires.int("in_view"), 1, "a straight one counts though its box is flat")
+        let difference = try XCTUnwrap((airwires["differences"] as? [JSONDictionary])?.first)
+        XCTAssertEqual(difference.int("canvas"), 1)
+        XCTAssertEqual(difference.int("check"), 0)
+        XCTAssertEqual(difference.int("only_canvas"), 1)
+        XCTAssertGreaterThan(try airwirePixels(rendered), 10)
+
+        let bare = try call("render_viewport", ["dpi": 40, "airwires": false])
+        XCTAssertEqual(bare.dictionary("airwires")?["drawn"] as? Bool, false)
+        XCTAssertEqual(try airwirePixels(bare), 0, "the exporter itself draws none")
+
+        // The same airwire the other way round is the same airwire.
+        let reversed = HorizontalSegment(id: "a2", from: stale.to, to: stale.from, width: 0, layer: nil)
+        let index = try HorizontalDispatchSession.shared.entry(for: ["handle": handle]).index
+        let same = HorizontalDispatchMethods.canvasAirwiresJSON(HorizontalDrawnAirwires(airwires: [reversed], shown: true),
+                                                                reported: [stale], index: index)
+        XCTAssertEqual(same["matches_check"] as? Bool, true, "\(same)")
+    }
+
+    /// Pixels in the airwire colour in the rows through the render's middle.
+    private func airwirePixels(_ render: JSONDictionary) throws -> Int {
+        let png = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(render.string("png_base64"))))
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(png as CFData, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let width = image.width, height = image.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let context = try XCTUnwrap(CGContext(data: &pixels, width: width, height: height, bitsPerComponent: 8,
+                                              bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        var count = 0
+        for row in max(0, height / 2 - 3)...min(height - 1, height / 2 + 3) {
+            for column in 0..<width {
+                let offset = (row * width + column) * 4
+                let (red, green, blue) = (Int(pixels[offset]), Int(pixels[offset + 1]), Int(pixels[offset + 2]))
+                if blue > 180, red < 80, green < 160 {
+                    count += 1
+                }
+            }
+        }
+        return count
     }
 
     /// Undo through the channel drives the document's own stack — the one the
