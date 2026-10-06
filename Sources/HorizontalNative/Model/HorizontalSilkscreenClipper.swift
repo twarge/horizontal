@@ -20,6 +20,11 @@ struct HorizontalSilkscreenClipping: Hashable {
 struct HorizontalClippedSilkscreenObject: Hashable {
     var id: String
     var fragments: [[[HorizontalPoint]]]
+    /// The object as it was when clipped (`HorizontalSilkscreenClipper
+    /// .sourceSignature`). A caller holding on to a result past later edits
+    /// compares it with the object now, so it never draws fragments for a
+    /// line or text that has since moved.
+    var sourceSignature: Int
 }
 
 /// A silkscreen layer's clipping result. Objects that come nowhere near a
@@ -31,6 +36,16 @@ struct HorizontalClippedSilkscreenLayer: Hashable {
 
     func object(_ id: String) -> HorizontalClippedSilkscreenObject? {
         clipped[HorizontalCanvasModeSupport.normalizedID(id)]
+    }
+
+    /// The clipped object, but only while `source` is still the object that
+    /// was clipped: nil once it has been moved or reshaped since.
+    func object<Source: Hashable>(_ id: String, matching source: Source) -> HorizontalClippedSilkscreenObject? {
+        guard let object = object(id),
+              object.sourceSignature == HorizontalSilkscreenClipper.sourceSignature(source) else {
+            return nil
+        }
+        return object
     }
 }
 
@@ -144,7 +159,8 @@ enum HorizontalSilkscreenClipper {
                 : subtract(cutouts: relevant, outset: clearance, from: object.subjects)
             clipped[HorizontalCanvasModeSupport.normalizedID(object.id)] = HorizontalClippedSilkscreenObject(
                 id: object.id,
-                fragments: fragments
+                fragments: fragments,
+                sourceSignature: object.sourceSignature
             )
         }
         return HorizontalClippedSilkscreenLayer(layer: layer, clipped: clipped)
@@ -195,40 +211,49 @@ enum HorizontalSilkscreenClipper {
     private struct SilkscreenObject {
         var id: String
         var subjects: [[HorizontalPoint]]
+        var sourceSignature: Int
+    }
+
+    /// What a clipped object records of its source: the line, arc, polygon or
+    /// text itself, hashed.
+    static func sourceSignature<Source: Hashable>(_ source: Source) -> Int {
+        var hasher = Hasher()
+        hasher.combine(source)
+        return hasher.finalize()
     }
 
     private static func silkscreenObjects(on layer: Int, board: HorizontalBoard) -> [SilkscreenObject] {
         var objects = [SilkscreenObject]()
-        func add(_ id: String, _ subjects: [[HorizontalPoint]]) {
+        func add<Source: Hashable>(_ id: String, _ subjects: [[HorizontalPoint]], source: Source) {
             let valid = subjects.filter { $0.count >= 3 }
             if !valid.isEmpty {
-                objects.append(SilkscreenObject(id: id, subjects: valid))
+                objects.append(SilkscreenObject(id: id, subjects: valid, sourceSignature: sourceSignature(source)))
             }
         }
         for line in board.lines + board.packageLines where line.layer == layer {
-            add(line.id, strokePaths(for: line))
+            add(line.id, strokePaths(for: line), source: line)
         }
         for arc in board.arcs + board.packageArcs where arc.layer == layer {
-            add(arc.id, strokePaths(polyline: arc.polyline(precision: 48), width: arc.width))
+            add(arc.id, strokePaths(polyline: arc.polyline(precision: 48), width: arc.width), source: arc)
         }
         for polygon in board.polygons + board.packagePolygons where polygon.layer == layer {
-            add(polygon.id, [polygon.renderVertices(arcPrecision: 24)])
+            add(polygon.id, [polygon.renderVertices(arcPrecision: 24)], source: polygon)
         }
         for text in board.texts + board.packageTexts where text.layer == layer {
-            add(text.id, strokePaths(for: text))
+            add(text.id, strokePaths(for: text), source: text)
         }
         for decal in board.decals {
             for line in decal.lines where line.layer == layer {
-                add(line.id, strokePaths(for: line))
+                add(line.id, strokePaths(for: line), source: line)
             }
             for arc in decal.arcs where arc.layer == layer {
-                add(arc.id, strokePaths(polyline: arc.polyline(precision: 48), width: arc.width))
+                add(arc.id, strokePaths(polyline: arc.polyline(precision: 48), width: arc.width), source: arc)
             }
             for polygon in decal.polygons where polygon.layer == layer {
-                add(polygon.id, [polygon.renderVertices(arcPrecision: 24)])
+                add(polygon.id, [polygon.renderVertices(arcPrecision: 24)], source: polygon)
             }
             for text in decal.texts where text.layer == layer {
-                add(text.id, strokePaths(for: text))
+                add(text.id, strokePaths(for: text), source: text)
             }
         }
         return objects

@@ -77,6 +77,26 @@ final class HorizontalSilkscreenClipperTests: XCTestCase {
         XCTAssertTrue(both[HorizontalBoardLayers.bottomSilkscreen]?.clipped.isEmpty ?? false)
     }
 
+    /// The board canvas keeps a clip across edits, so a clipped object is
+    /// only served for the geometry it was made from: a line moved since
+    /// draws unclipped instead of from fragments left where it was.
+    func testAClipIsOnlyServedForTheObjectItWasMadeFrom() throws {
+        var board = board()
+        let across = line("across", from: HorizontalPoint(x: -5 * mm, y: 0), to: HorizontalPoint(x: 5 * mm, y: 0))
+        board.lines.append(across)
+        let layer = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(
+            HorizontalBoardLayers.topSilkscreen,
+            board: board,
+            clipping: HorizontalSilkscreenClipping(clearance: 0.1 * mm)
+        ))
+
+        XCTAssertNotNil(layer.object("across", matching: across))
+        var moved = across
+        moved.from = moved.from + HorizontalPoint(x: 0, y: 3 * mm)
+        moved.to = moved.to + HorizontalPoint(x: 0, y: 3 * mm)
+        XCTAssertNil(layer.object("across", matching: moved))
+    }
+
     func testALineEntirelyOverAPadVanishes() throws {
         var board = board()
         board.lines.append(line("inside", from: HorizontalPoint(x: -0.5 * mm, y: 0), to: HorizontalPoint(x: 0.5 * mm, y: 0)))

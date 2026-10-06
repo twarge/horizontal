@@ -1033,8 +1033,53 @@ struct HorizontalCircle: Identifiable, Hashable {
 }
 
 struct HorizontalPlaneFragment: Hashable {
-    var paths: [[HorizontalPoint]]
+    var paths: [[HorizontalPoint]] {
+        didSet {
+            derived = HorizontalPlaneFragmentDerived()
+        }
+    }
     var orphan: Bool
+    /// What is worked out from `paths` on demand and kept with them. Every
+    /// copy of the board shares it, so the airwire pass indexes a fill once
+    /// per pour instead of on every edit; changing `paths` starts afresh.
+    private var derived = HorizontalPlaneFragmentDerived()
+
+    init(paths: [[HorizontalPoint]], orphan: Bool) {
+        self.paths = paths
+        self.orphan = orphan
+    }
+
+    /// `paths` as point-in-polygon indexes, built on first use.
+    var containmentPaths: [HorizontalBoard.PlanePath] {
+        derived.containmentPaths { paths.map(HorizontalBoard.PlanePath.init) }
+    }
+
+    static func == (lhs: HorizontalPlaneFragment, rhs: HorizontalPlaneFragment) -> Bool {
+        lhs.paths == rhs.paths && lhs.orphan == rhs.orphan
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(paths)
+        hasher.combine(orphan)
+    }
+}
+
+/// `HorizontalPlaneFragment`'s memo. Shared by reference between copies, and
+/// filled from whichever thread asks first, hence the lock.
+final class HorizontalPlaneFragmentDerived: @unchecked Sendable {
+    private let lock = NSLock()
+    private var containment: [HorizontalBoard.PlanePath]?
+
+    func containmentPaths(_ build: () -> [HorizontalBoard.PlanePath]) -> [HorizontalBoard.PlanePath] {
+        lock.lock()
+        defer { lock.unlock() }
+        if let containment {
+            return containment
+        }
+        let built = build()
+        containment = built
+        return built
+    }
 }
 
 extension HorizontalPlaneFragment {

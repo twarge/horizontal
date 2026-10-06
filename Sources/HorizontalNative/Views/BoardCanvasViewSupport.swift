@@ -281,6 +281,16 @@ struct BoardMetalElementBatch {
         lineLabelSizes.append(labelSize)
     }
 
+    mutating func append(contentsOf other: BoardMetalElementBatch) {
+        lines.append(contentsOf: other.lines)
+        triangles.append(contentsOf: other.triangles)
+        anchoredRects.append(contentsOf: other.anchoredRects)
+        lineOwners.append(contentsOf: other.lineOwners)
+        triangleOwners.append(contentsOf: other.triangleOwners)
+        anchoredRectOwners.append(contentsOf: other.anchoredRectOwners)
+        lineLabelSizes.append(contentsOf: other.lineLabelSizes)
+    }
+
     mutating func appendLines(
         _ primitives: [HorizontalMetalLinePrimitive],
         owner: HorizontalSelectableRef? = nil,
@@ -382,6 +392,38 @@ final class BoardMetalElementBuckets {
     var connectionLines = BoardMetalElementBatch()
     var connectionLabels = BoardMetalElementBatch()
 
+    /// Every batch, for whole-scene operations. `namedBatches()` lists the
+    /// same batches; a test keeps the two the same length.
+    static var batchKeyPaths: [ReferenceWritableKeyPath<BoardMetalElementBuckets, BoardMetalElementBatch>] {
+        [
+            \.panels, \.panelLabels, \.origin, \.bodyOutlineHigh, \.bodyOutlineLow, \.bodyFill,
+            \.keepoutsAllCopper, \.keepoutsPerLayer, \.planes, \.packagesGeometry, \.packagesText,
+            \.packagesFallback, \.decals, \.alwaysOnLayered, \.pads, \.padLabels, \.vias, \.viaLabels,
+            \.holesNone, \.holesPad, \.holesVia, \.text, \.textPackagesAsText, \.trackLabels,
+            \.dimensions, \.connectionLines, \.connectionLabels,
+        ]
+    }
+
+    /// This scene plus `addition`'s primitives, with the `replacing` batches
+    /// taken from `addition` alone. Lets a package dropped onto the board join
+    /// the scene that is already built rather than rebuilding all of it.
+    func merged(
+        adding addition: BoardMetalElementBuckets,
+        replacing replaced: [ReferenceWritableKeyPath<BoardMetalElementBuckets, BoardMetalElementBatch>]
+    ) -> BoardMetalElementBuckets {
+        let result = BoardMetalElementBuckets()
+        for keyPath in Self.batchKeyPaths {
+            if replaced.contains(keyPath) {
+                result[keyPath: keyPath] = addition[keyPath: keyPath]
+            } else {
+                var batch = self[keyPath: keyPath]
+                batch.append(contentsOf: addition[keyPath: keyPath])
+                result[keyPath: keyPath] = batch
+            }
+        }
+        return result
+    }
+
     func namedBatches() -> [BoardMetalNamedPrimitiveWeight] {
         [
             .init(name: "panels", weight: panels.primitiveWeight),
@@ -415,6 +457,14 @@ final class BoardMetalElementBuckets {
     }
 }
 
+/// When the board canvas re-clips its silkscreen: a new board, a changed
+/// clearance, or a plane pour (Q). Edits in between leave the clip alone.
+struct BoardSilkscreenClipTrigger: Equatable {
+    var boardID: String
+    var clipping: HorizontalSilkscreenClipping?
+    var planePourRevision: Int
+}
+
 struct BoardMetalElementBucketsCacheKey: Hashable {
     var boardID: String
     var revision: Int
@@ -430,6 +480,8 @@ struct BoardMetalElementBucketsCacheKey: Hashable {
     var renderLayers: [Int]
     /// The clip-silkscreen-to-mask mode in force when the buckets were built.
     var silkscreenClipping: HorizontalSilkscreenClipping? = nil
+    /// `BoardSelectableCache.silkscreenClipVersion`: a refreshed clip rebuilds.
+    var silkscreenClipVersion: Int = 0
     var layerColors: [HorizontalMetalRGBA]
     // NOTE: `layerOpacity` is intentionally NOT in this key. It is applied as a
     // live uniform at composite time so the slider drags don't rebuild the
@@ -626,6 +678,9 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
     private var planeFragmentOutlines = [BoardMetalPlaneOutlineCacheKey: [HorizontalMetalLinePrimitive]]()
     private var padOutlineFragmentsKey: BoardAllSelectableCacheKey?
     private var padOutlineFragmentsValue = BoardPadOutlineFragmentsByLayer()
+    /// Survives `invalidate`: its entries are keyed by pad shape, so an edit
+    /// re-merges only the pads it touched.
+    let padOutlineUnionCache = HorizontalPadOutlineUnionCache()
     private var padLabelTextsKey: BoardAllSelectableCacheKey?
     private var padLabelTextsValue = [Int: [HorizontalText]]()
     private var visibleRenderLayersKey: BoardSelectableCacheKey?
@@ -636,20 +691,67 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
     private var elementBucketsValue = BoardMetalElementBuckets()
     private var concatenatedLineBatchKey: BoardMetalLineBatchConcatKey?
     private var concatenatedLineBatchValue = BoardMetalLineBatch.empty
+    /// What each of these held before its last rebuild or `invalidate`. After
+    /// an edit SwiftUI can still render once with the state from before it,
+    /// its transaction not yet applied. With one slot, that pass threw away
+    /// the scene built for the edit and rebuilt the old board, and the next
+    /// pass rebuilt the new one: two whole-board builds per placement click.
+    /// The keys carry the scene revision, so an old key only ever matches what
+    /// was built for it.
+    private var previousElementBuckets: (key: BoardMetalElementBucketsCacheKey, value: BoardMetalElementBuckets)?
+    private var previousConcatenatedLineBatch: (key: BoardMetalLineBatchConcatKey, value: BoardMetalLineBatch)?
+    private var previousAllSelectables: (key: BoardAllSelectableCacheKey, value: [HorizontalSelectable])?
     /// Increments after a background tessellation pass completes. Body observes
     /// this via @Published, which invalidates the bucket cache (key includes the
     /// version) and triggers a SwiftUI re-render with the freshly-tessellated
     /// plane fills.
     @Published private(set) var tessellationVersion: Int = 0
     private var tessellationInProgress = false
+    /// What the clip-silkscreen-to-mask mode draws from on the board. Clipping
+    /// every silkscreen object against every mask opening was the heaviest
+    /// part of a scene build, and redoing it per edit made each cursor step of
+    /// a package placement cost seconds. So, like the plane fills beside it, it
+    /// is refreshed only when asked (on load, when the clearance changes, when
+    /// the planes are poured), on a background task. In between, an object
+    /// whose own geometry changed draws unclipped (its stored fragments are no
+    /// longer where it is); the rest keep their last clip until the next
+    /// refresh.
+    private var silkscreenClipsValue = [Int: HorizontalClippedSilkscreenLayer]()
+    private var silkscreenClipsClipping: HorizontalSilkscreenClipping?
+    private var silkscreenClipRequest = 0
+    /// Increments when a refresh lands; the bucket cache key carries it, so the
+    /// scene is rebuilt once with the new clip.
+    @Published private(set) var silkscreenClipVersion: Int = 0
+
+    /// The built selectables, if they are the ones for `key`.
+    func allSelectables(ifBuiltFor key: BoardAllSelectableCacheKey) -> [HorizontalSelectable]? {
+        if allSelectablesKey == key {
+            return allSelectablesValue
+        }
+        return previousAllSelectables?.key == key ? previousAllSelectables?.value : nil
+    }
+
+    func seedAllSelectables(_ selectables: [HorizontalSelectable], for key: BoardAllSelectableCacheKey) {
+        if let allSelectablesKey {
+            previousAllSelectables = (allSelectablesKey, allSelectablesValue)
+        }
+        allSelectablesValue = selectables
+        allSelectablesKey = key
+    }
 
     func allSelectables(
         key: BoardAllSelectableCacheKey,
         build: () -> [HorizontalSelectable]
     ) -> [HorizontalSelectable] {
         if allSelectablesKey != key {
-            allSelectablesValue = build()
+            let replaced = allSelectablesKey.map { (key: $0, value: allSelectablesValue) }
+            if let previousAllSelectables, previousAllSelectables.key == key {
+                allSelectablesValue = previousAllSelectables.value
+            } else {
+                allSelectablesValue = build()
+            }
             allSelectablesKey = key
+            previousAllSelectables = replaced ?? previousAllSelectables
         }
         return allSelectablesValue
     }
@@ -817,6 +919,38 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// The last refreshed clip, if it was made with `clipping`. A clip made
+    /// at another clearance is not served while its replacement is computed.
+    func silkscreenClips(for clipping: HorizontalSilkscreenClipping) -> [Int: HorizontalClippedSilkscreenLayer] {
+        silkscreenClipsClipping == clipping ? silkscreenClipsValue : [:]
+    }
+
+    /// Clips `board`'s silkscreen off the main thread and publishes the result.
+    /// A newer request supersedes one still running.
+    func refreshSilkscreenClips(board: HorizontalBoard, clipping: HorizontalSilkscreenClipping?) {
+        silkscreenClipRequest &+= 1
+        let request = silkscreenClipRequest
+        guard let clipping else {
+            if silkscreenClipsClipping != nil || !silkscreenClipsValue.isEmpty {
+                silkscreenClipsValue = [:]
+                silkscreenClipsClipping = nil
+                silkscreenClipVersion &+= 1
+            }
+            return
+        }
+        Task.detached(priority: .userInitiated) {
+            let clips = HorizontalSilkscreenClipper.clip(board: board, clipping: clipping)
+            await MainActor.run {
+                guard request == self.silkscreenClipRequest else {
+                    return
+                }
+                self.silkscreenClipsValue = clips
+                self.silkscreenClipsClipping = clipping
+                self.silkscreenClipVersion &+= 1
+            }
+        }
+    }
+
     func planeFragmentTriangles(
         key: BoardMetalPlaneTriangleCacheKey,
         build: () -> [HorizontalMetalTrianglePrimitive]
@@ -885,15 +1019,37 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         return metalRenderLayersValue
     }
 
+    /// The built scene, if it is the one for `key`.
+    func elementBuckets(ifBuiltFor key: BoardMetalElementBucketsCacheKey) -> BoardMetalElementBuckets? {
+        if elementBucketsKey == key {
+            return elementBucketsValue
+        }
+        return previousElementBuckets?.key == key ? previousElementBuckets?.value : nil
+    }
+
+    /// Installs a scene made some other way than a full build (a package
+    /// merged into the previous one), so the next body pass finds it.
+    func seedElementBuckets(_ buckets: BoardMetalElementBuckets, for key: BoardMetalElementBucketsCacheKey) {
+        if let elementBucketsKey {
+            previousElementBuckets = (elementBucketsKey, elementBucketsValue)
+        }
+        elementBucketsValue = buckets
+        elementBucketsKey = key
+    }
+
     func elementBuckets(
         key: BoardMetalElementBucketsCacheKey,
         build: () -> BoardMetalElementBuckets
     ) -> BoardMetalElementBuckets {
         if elementBucketsKey != key {
-            elementBucketsValue = build()
+            let replaced = elementBucketsKey.map { (key: $0, value: elementBucketsValue) }
+            if let previousElementBuckets, previousElementBuckets.key == key {
+                elementBucketsValue = previousElementBuckets.value
+            } else {
+                elementBucketsValue = build()
+            }
             elementBucketsKey = key
-            concatenatedLineBatchKey = nil
-            concatenatedLineBatchValue = .empty
+            previousElementBuckets = replaced ?? previousElementBuckets
         }
         return elementBucketsValue
     }
@@ -903,8 +1059,14 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         build: () -> BoardMetalLineBatch
     ) -> BoardMetalLineBatch {
         if concatenatedLineBatchKey != key {
-            concatenatedLineBatchValue = build()
+            let replaced = concatenatedLineBatchKey.map { (key: $0, value: concatenatedLineBatchValue) }
+            if let previousConcatenatedLineBatch, previousConcatenatedLineBatch.key == key {
+                concatenatedLineBatchValue = previousConcatenatedLineBatch.value
+            } else {
+                concatenatedLineBatchValue = build()
+            }
             concatenatedLineBatchKey = key
+            previousConcatenatedLineBatch = replaced ?? previousConcatenatedLineBatch
         }
         return concatenatedLineBatchValue
     }
@@ -920,6 +1082,9 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
     }
 
     func invalidate(preservesMetalScene: Bool = false) {
+        if let allSelectablesKey {
+            previousAllSelectables = (allSelectablesKey, allSelectablesValue)
+        }
         allSelectablesKey = nil
         allSelectablesValue = []
         selectableSceneCache.invalidate()
@@ -947,6 +1112,12 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
             // on every commit — a move does not touch a single fragment, but the
             // fills rendered empty until the background pass caught up.
             // `retainPlaneFragments` evicts what is genuinely gone.
+            if let elementBucketsKey {
+                previousElementBuckets = (elementBucketsKey, elementBucketsValue)
+            }
+            if let concatenatedLineBatchKey {
+                previousConcatenatedLineBatch = (concatenatedLineBatchKey, concatenatedLineBatchValue)
+            }
             elementBucketsKey = nil
             elementBucketsValue = BoardMetalElementBuckets()
             concatenatedLineBatchKey = nil
