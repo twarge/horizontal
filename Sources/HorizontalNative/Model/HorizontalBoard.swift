@@ -633,6 +633,7 @@ struct HorizontalBoard {
                 from: json.dictionaryMap("planes"),
                 polygonsByID: polygonsByID,
                 planesURL: planesURL,
+                blockNetIDs: blockMetadata.isLoaded ? Set(blockMetadata.netDetails.keys) : nil,
                 diagnostics: &diagnostics
             )
         }
@@ -2481,10 +2482,16 @@ struct HorizontalBoard {
         }
     }
 
+    /// A plane on a net the block doesn't have is left out, as Horizon leaves
+    /// it out when it opens the board ("net … not found"), and said so: the
+    /// app used to draw it until a board sync dropped it without a word. Its
+    /// entry stays in the file for an edit to remove; its polygon is drawn as
+    /// a polygon. `blockNetIDs` is nil when there was no block to check against.
     private static func parsePlanes(
         from map: [String: JSONDictionary],
         polygonsByID: [String: HorizontalPolygon],
         planesURL: URL?,
+        blockNetIDs: Set<String>? = nil,
         diagnostics: inout [HorizontalDiagnostic]
     ) -> [HorizontalPlane] {
         guard !map.isEmpty else {
@@ -2502,11 +2509,20 @@ struct HorizontalBoard {
             }
 
             let fallbackPolygon = polygonsByID[normalizedID(polygonID)]
+            let netID = item.string("net").map(normalizedID)
+            if let blockNetIDs, !(netID.map(blockNetIDs.contains) ?? false) {
+                let layer = fallbackPolygon?.layer.map { " on \(HorizontalBoardLayers.name(for: $0))" } ?? ""
+                let net = netID.map { "is on net \($0), which the block doesn't have" } ?? "has no net"
+                diagnostics.append(HorizontalDiagnostic(
+                    message: "Plane \(id)\(layer) \(net). Horizon leaves such a plane out when it opens the board, and so does Horizontal; remove_plane takes it out of the file."
+                ))
+                return nil
+            }
             let settings = item.dictionary("settings")
             let planeSettings = HorizontalPlaneSettings(json: settings)
             return HorizontalPlane(
                 id: id,
-                netID: item.string("net").map(normalizedID),
+                netID: netID,
                 polygonID: polygonID,
                 layer: fallbackPolygon?.layer,
                 priority: item.int("priority") ?? 0,
@@ -3021,8 +3037,14 @@ struct HorizontalBoard {
             width: item.double("width") ?? 0,
             origin: item.horizonTextOrigin(),
             font: item.horizonTextFont(),
-            allowUpsideDown: item.bool("allow_upside_down") ?? false
+            allowUpsideDown: item.bool("allow_upside_down") ?? false,
+            placeholder: placeholder(stored: text, drawn: substitutedText)
         )
+    }
+
+    /// Kept so a save can write the stored form back rather than what it drew.
+    private static func placeholder(stored: String, drawn: String) -> HorizontalTextPlaceholder? {
+        stored == drawn ? nil : HorizontalTextPlaceholder(stored: stored, drawn: drawn)
     }
 
     private static func parsePackageGeometry(
@@ -3212,7 +3234,8 @@ struct HorizontalBoard {
         return BoardBlockMetadata(
             components: components,
             netDetails: netDetails,
-            titleValues: parseProjectMeta(from: json.dictionary("project_meta"))
+            titleValues: parseProjectMeta(from: json.dictionary("project_meta")),
+            isLoaded: true
         )
     }
 
@@ -4358,7 +4381,9 @@ struct HorizontalBoard {
                 width: item.double("width") ?? 0,
                 origin: item.horizonTextOrigin(),
                 font: item.horizonTextFont(),
-                allowUpsideDown: item.bool("allow_upside_down") ?? false
+                allowUpsideDown: item.bool("allow_upside_down") ?? false,
+                // Smash copies a package text, and Horizon's smash keeps "$RD".
+                placeholder: placeholder(stored: text, drawn: substitutedText)
             )
         }
     }
@@ -5470,6 +5495,9 @@ struct HorizontalBoard {
         var components = [String: BoardComponentInfo]()
         var netDetails = [String: HorizontalNetDetails]()
         var titleValues = [String: String]()
+        /// False when there was no block to read, so its nets are unknown
+        /// rather than none.
+        var isLoaded = false
     }
 
     private struct BoardComponentInfo {

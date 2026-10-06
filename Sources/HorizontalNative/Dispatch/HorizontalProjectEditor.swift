@@ -112,7 +112,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .renameNetClass: "Rename a net class."
         case .renameNet: "Rename a net."
         case .setNetClass: "Put a net in a net class, by name or id."
-        case .retireNet: "Remove a net, every connection to it, and the labels, power symbols, wires and junctions drawn for it. Board copper on it is reported, or removed with remove_routing."
+        case .retireNet: "Remove a net, every connection to it, and the labels, power symbols, wires and junctions drawn for it. Its planes go too, since a plane needs a net; their outlines stay as polygons. Tracks and vias on it are reported, or removed with remove_routing."
         case .connect: "Connect a component pin to a net."
         case .disconnect: "Remove a pin's connection."
         case .placeSymbol: "Draw a component's gate on a schematic sheet, or move it if it is already drawn. A component connected without this is in the netlist but on no sheet."
@@ -229,7 +229,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
             return ["net": "Net name or id.", "net_class": "Net class name or id."]
         case .retireNet:
             return ["net": "Net name or id.",
-                    "remove_routing": "Also remove the board tracks, vias and planes on the net (default false: they are counted in the result and left alone)."]
+                    "remove_routing": "Also remove the board tracks and vias on the net, and its planes' outlines (default false: tracks and vias are counted in the result and left alone, on no net)."]
         case .connect:
             return ["component": component, "pin": "Pin name or uuid. A name is matched whole first, so one containing \"/\" works; otherwise gate/pin, by name or id.",
                     "gate": "Gate name, suffix or id, when the pin name is on several gates (optional).",
@@ -1292,8 +1292,27 @@ final class HorizontalProjectEditor {
                 board["junctions_removed"] = try collectJunctions().count
                 board["removed"] = true
             } else if !(tracks.isEmpty && vias.isEmpty && planes.isEmpty) {
+                // A track or via can be on no net; a plane can't. Horizon drops
+                // one whose net is gone when it opens the board, so leaving it
+                // would leave a plane only this file believes in. Its outline
+                // stays, as a polygon.
+                if !planes.isEmpty {
+                    try updateBoard { json in
+                        var planeMap = json.dictionaryMap("planes")
+                        for planeID in planes.keys { planeMap.removeValue(forKey: planeID) }
+                        json["planes"] = planeMap
+                    }
+                    board["planes_removed"] = planes.count
+                }
                 board["removed"] = false
-                board["note"] = "Copper on this net is left in place, on no net; pass remove_routing to remove it."
+                let planesNote = "Its planes are removed, since a plane needs a net, and their outlines stay as polygons."
+                if planes.isEmpty {
+                    board["note"] = "Copper on this net is left in place, on no net; pass remove_routing to remove it."
+                } else if tracks.isEmpty && vias.isEmpty {
+                    board["note"] = planesNote
+                } else {
+                    board["note"] = "Tracks and vias on this net are left in place, on no net; pass remove_routing to remove them. " + planesNote
+                }
             }
         }
         var removed: JSONDictionary = ["connections": disconnected, "block_ports": ports, "bus_members": busMembers.count]

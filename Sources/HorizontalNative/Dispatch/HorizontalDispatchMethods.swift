@@ -200,7 +200,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "list_planes",
-            summary: "Copper pours on the board: the net each carries, its layer, priority, and whether it has been filled. A plane defined but never poured shows its outline and no copper.",
+            summary: "Copper pours on the board: the net each carries, its layer, priority, and whether it has been filled. A plane defined but never poured shows its outline and no copper. net_missing marks a plane on a net the block doesn't have: Horizon leaves it out when it opens the board, the loader does too, and remove_plane takes it out of the file.",
             params: ["handle": "Project handle.", "net": "Only planes on this net, by name or id (optional)."],
             handler: listPlanes
         ),
@@ -2113,10 +2113,14 @@ enum HorizontalDispatchMethods {
             let polygonID = item.string("polygon")
             let layer = polygonID.flatMap { key in polygons.first { $0.key.caseInsensitiveCompare(key) == .orderedSame }?.value.int("layer") }
             let plane = filled[id.lowercased()]
+            let net = netID.flatMap { entry.index.net(id: $0) }
             return [
                 "id": id,
                 "net": netID as Any? as Any,
-                "net_name": netID.flatMap { entry.index.net(id: $0)?.name } as Any? as Any,
+                "net_name": net?.name as Any? as Any,
+                // Horizon leaves such a plane out when it opens the board, and
+                // the loader does too; a load diagnostic names it.
+                "net_missing": net == nil,
                 "polygon": polygonID as Any? as Any,
                 "layer": layer as Any? as Any,
                 "layer_name": layer.map { HorizontalBoardLayers.name(for: $0) } as Any? as Any,
