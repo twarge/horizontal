@@ -6241,3 +6241,368 @@ extension HorizontalBoard {
         }
     }
 }
+
+// MARK: - Airwires that follow a move
+
+extension HorizontalBoard {
+    /// The rats' nest of the nets a move drags, worked out for wherever the
+    /// move has got to: what Horizon's move tool shows while a part is in
+    /// flight.
+    ///
+    /// Made once when the move starts, it splits each such net into what
+    /// stays put (its pieces, joined by tracks, coincident copper and plane
+    /// fills, and the tree of airwires between them) and what moves. A step
+    /// then only joins the moving copper to whatever it now touches and reruns
+    /// the tree over the fixed tree's edges, each moving node's nearest link
+    /// to every piece, and the links between moving nodes. Adding nodes to a
+    /// graph never brings back an old edge its tree had left out, so that is
+    /// the whole rats' nest, for the moving nodes times the net's nodes per
+    /// step instead of the net's nodes squared.
+    struct MovingAirwires: Sendable {
+        fileprivate struct Link: Sendable {
+            var lhs: Int
+            var rhs: Int
+            var weightSquared: Double
+            var from: HorizontalPoint
+            var to: HorizontalPoint
+        }
+
+        /// A track or net tie with an end the move carries.
+        fileprivate struct Segment: Sendable {
+            var from: HorizontalPoint
+            var fromMoves: Bool
+            var to: HorizontalPoint
+            var toMoves: Bool
+        }
+
+        /// One poured fragment of the net, and the fixed piece it already
+        /// joins, if any.
+        fileprivate struct Fill: Sendable {
+            var layer: Int
+            var paths: [PlanePath]
+            var component: Int?
+        }
+
+        fileprivate struct Net: Sendable {
+            var netID: String
+            var fixedPoints: [HorizontalPoint]
+            var fixedComponents: [Int]
+            var componentCount: Int
+            var componentByPointKey: [String: Int]
+            var fixedTree: [Link]
+            var movingPoints: [HorizontalPoint]
+            var movingLayers: [Set<Int>?]
+            var segments: [Segment]
+            var fills: [Fill]
+
+            /// Elements are the fixed pieces (`0..<componentCount`) and then the
+            /// moving nodes, in order.
+            func airwires(offset: HorizontalPoint) -> [HorizontalSegment] {
+                let pieceCount = componentCount
+                let moving = movingPoints.map { $0 + offset }
+                var disjointSet = HorizontalBoard.BoardAirwireDisjointSet(count: pieceCount + moving.count)
+
+                // Moving copper on fixed copper or on itself.
+                var movingByPointKey = [String: [Int]]()
+                for (index, point) in moving.enumerated() {
+                    let key = HorizontalBoard.pointKey(point)
+                    movingByPointKey[key, default: []].append(index)
+                    if let component = componentByPointKey[key] {
+                        _ = disjointSet.union(component, pieceCount + index)
+                    }
+                }
+                for indices in movingByPointKey.values where indices.count > 1 {
+                    for index in indices.dropFirst() {
+                        _ = disjointSet.union(pieceCount + indices[0], pieceCount + index)
+                    }
+                }
+
+                // Tracks that follow the move join whatever their ends now touch.
+                func elements(at point: HorizontalPoint) -> [Int] {
+                    let key = HorizontalBoard.pointKey(point)
+                    var result = (movingByPointKey[key] ?? []).map { pieceCount + $0 }
+                    if let component = componentByPointKey[key] {
+                        result.append(component)
+                    }
+                    return result
+                }
+                for segment in segments {
+                    let from = elements(at: segment.fromMoves ? segment.from + offset : segment.from)
+                    let to = elements(at: segment.toMoves ? segment.to + offset : segment.to)
+                    for lhs in from {
+                        for rhs in to {
+                            _ = disjointSet.union(lhs, rhs)
+                        }
+                    }
+                }
+
+                // Moving copper inside one of the net's fills.
+                for fill in fills {
+                    var first = fill.component
+                    for (index, point) in moving.enumerated() {
+                        guard let layers = movingLayers[index],
+                              layers.contains(fill.layer) || layers.contains(HorizontalBoard.airwireAnyLayer),
+                              fill.paths.filter({ $0.contains(point) }).count % 2 == 1 else {
+                            continue
+                        }
+                        if let first {
+                            _ = disjointSet.union(first, pieceCount + index)
+                        } else {
+                            first = pieceCount + index
+                        }
+                    }
+                }
+
+                // The fixed tree, plus every link a moving node could add.
+                var links = fixedTree
+                for index in moving.indices {
+                    var nearest = [(weightSquared: Double, point: HorizontalPoint)?](repeating: nil, count: pieceCount)
+                    for (fixedIndex, point) in fixedPoints.enumerated() {
+                        let component = fixedComponents[fixedIndex]
+                        let weightSquared = HorizontalBoard.squaredDistance(moving[index], point)
+                        if nearest[component].map({ weightSquared < $0.weightSquared }) ?? true {
+                            nearest[component] = (weightSquared, point)
+                        }
+                    }
+                    for (component, best) in nearest.enumerated() {
+                        guard let best else {
+                            continue
+                        }
+                        links.append(Link(
+                            lhs: component,
+                            rhs: pieceCount + index,
+                            weightSquared: best.weightSquared,
+                            from: best.point,
+                            to: moving[index]
+                        ))
+                    }
+                    for other in moving.indices where other > index {
+                        links.append(Link(
+                            lhs: pieceCount + index,
+                            rhs: pieceCount + other,
+                            weightSquared: HorizontalBoard.squaredDistance(moving[index], moving[other]),
+                            from: moving[index],
+                            to: moving[other]
+                        ))
+                    }
+                }
+                links.sort { $0.weightSquared < $1.weightSquared }
+
+                var airwires = [HorizontalSegment]()
+                for link in links where disjointSet.union(link.lhs, link.rhs) && link.weightSquared > 0 {
+                    airwires.append(HorizontalSegment(
+                        id: "airwire/\(netID)/\(airwires.count + 1)",
+                        from: link.from,
+                        to: link.to,
+                        width: 0,
+                        layer: nil,
+                        netID: netID
+                    ))
+                }
+                return airwires
+            }
+        }
+
+        fileprivate var nets: [Net]
+
+        /// The nets whose airwires these replace while the move lasts.
+        var netIDs: Set<String> {
+            Set(nets.map(\.netID))
+        }
+
+        var isEmpty: Bool {
+            nets.isEmpty
+        }
+
+        /// The airwires of those nets with the moving copper `offset` from
+        /// where it started.
+        func airwires(offset: HorizontalPoint) -> [HorizontalSegment] {
+            nets.flatMap { $0.airwires(offset: offset) }
+        }
+    }
+
+    /// The moving-airwire model for a move of these: packages (all their
+    /// pads), vias and junctions, by normalized id, and tracks or net ties
+    /// whose ends follow. Empty when the move drags too much copper for a
+    /// live rats' nest to be worth it, as when the whole board moves.
+    func movingAirwires(
+        packageIDs: Set<String>,
+        viaIDs: Set<String>,
+        junctionIDs: Set<String>,
+        segmentEnds: [String: (from: Bool, to: Bool)]
+    ) -> MovingAirwires {
+        struct Node {
+            var point: HorizontalPoint
+            var layers: Set<Int>?
+            var moves: Bool
+        }
+
+        var padNetIDs = [String: String]()
+        for pad in packagePads {
+            guard let netID = pad.netID, let padPath = Self.padPath(forPadPolygonID: pad.id) else {
+                continue
+            }
+            padNetIDs[padPath] = Self.normalizedID(netID)
+        }
+        let padLayers = Self.padLayers(from: packagePads)
+
+        var nodesByNet = [String: [Node]]()
+        func add(_ point: HorizontalPoint, netID: String?, layers: Set<Int>?, moves: Bool) {
+            guard let netID = netID.map(Self.normalizedID) else {
+                return
+            }
+            nodesByNet[netID, default: []].append(Node(point: point, layers: layers, moves: moves))
+        }
+        for (junctionID, point) in junctions {
+            add(point, netID: junctionNetIDs[junctionID], layers: nil, moves: junctionIDs.contains(Self.normalizedID(junctionID)))
+        }
+        for (padPath, point) in packagePadPositions {
+            let packageID = padPath.split(separator: "/", maxSplits: 1).first.map { Self.normalizedID(String($0)) } ?? ""
+            add(
+                point,
+                netID: padNetIDs[padPath],
+                layers: padLayers[padPath] ?? [Self.airwireAnyLayer],
+                moves: packageIDs.contains(packageID)
+            )
+        }
+        for via in vias {
+            let layers: Set<Int>
+            if !via.connectedLayers.isEmpty {
+                layers = Set(via.connectedLayers)
+            } else if let layer = via.layer {
+                layers = [layer]
+            } else {
+                layers = [Self.airwireAnyLayer]
+            }
+            add(via.position, netID: via.netID, layers: layers, moves: viaIDs.contains(Self.normalizedID(via.id)))
+        }
+
+        var segmentsByNet = [String: [(segment: HorizontalSegment, ends: (from: Bool, to: Bool))]]()
+        var netsWithMovingSegments = Set<String>()
+        for segment in tracks + netTies {
+            guard let netID = segment.netID.map(Self.normalizedID) else {
+                continue
+            }
+            let ends = segmentEnds[Self.normalizedID(segment.id)] ?? (false, false)
+            segmentsByNet[netID, default: []].append((segment, ends))
+            if ends.from || ends.to {
+                netsWithMovingSegments.insert(netID)
+            }
+        }
+
+        let movedNetIDs = Set(nodesByNet.filter { $0.value.contains(where: \.moves) }.keys).union(netsWithMovingSegments)
+        let movingNodeCount = movedNetIDs.reduce(0) { $0 + (nodesByNet[$1]?.filter(\.moves).count ?? 0) }
+        guard movingNodeCount <= 2_000 else {
+            return MovingAirwires(nets: [])
+        }
+        let planesByNet = Dictionary(grouping: planes.filter { $0.netID != nil && $0.layer != nil }) { Self.normalizedID($0.netID!) }
+
+        func onLayer(_ layers: Set<Int>?, _ layer: Int) -> Bool {
+            guard let layers else {
+                return false
+            }
+            return layers.contains(layer) || layers.contains(Self.airwireAnyLayer)
+        }
+
+        var nets = [MovingAirwires.Net]()
+        for netID in movedNetIDs.sorted() {
+            let nodes = nodesByNet[netID] ?? []
+            guard nodes.count > 1 else {
+                continue
+            }
+            let fixed = nodes.filter { !$0.moves }
+            let moving = nodes.filter(\.moves)
+
+            // The fixed pieces: coincident copper, tracks with neither end
+            // moving, and plane fills, as `generateAirwires` joins them.
+            var disjointSet = BoardAirwireDisjointSet(count: fixed.count)
+            var fixedByPointKey = [String: [Int]]()
+            for (index, node) in fixed.enumerated() {
+                fixedByPointKey[Self.pointKey(node.point), default: []].append(index)
+            }
+            for indices in fixedByPointKey.values where indices.count > 1 {
+                for index in indices.dropFirst() {
+                    _ = disjointSet.union(indices[0], index)
+                }
+            }
+            var segments = [MovingAirwires.Segment]()
+            for (segment, ends) in segmentsByNet[netID] ?? [] {
+                if ends.from || ends.to {
+                    segments.append(MovingAirwires.Segment(from: segment.from, fromMoves: ends.from, to: segment.to, toMoves: ends.to))
+                    continue
+                }
+                guard let fromIndices = fixedByPointKey[Self.pointKey(segment.from)],
+                      let toIndices = fixedByPointKey[Self.pointKey(segment.to)] else {
+                    continue
+                }
+                _ = disjointSet.union(fromIndices[0], toIndices[0])
+            }
+            var fillAnchors = [(layer: Int, paths: [PlanePath], anchor: Int?)]()
+            for plane in planesByNet[netID] ?? [] {
+                guard let layer = plane.layer else {
+                    continue
+                }
+                for fragment in plane.fragments where !fragment.paths.isEmpty {
+                    let paths = fragment.containmentPaths
+                    var anchor: Int?
+                    for (index, node) in fixed.enumerated() where onLayer(node.layers, layer) {
+                        guard paths.filter({ $0.contains(node.point) }).count % 2 == 1 else {
+                            continue
+                        }
+                        if let anchor {
+                            _ = disjointSet.union(anchor, index)
+                        } else {
+                            anchor = index
+                        }
+                    }
+                    fillAnchors.append((layer, paths, anchor))
+                }
+            }
+
+            var componentByRoot = [Int: Int]()
+            var fixedComponents = [Int]()
+            fixedComponents.reserveCapacity(fixed.count)
+            for index in fixed.indices {
+                let root = disjointSet.find(index)
+                if let component = componentByRoot[root] {
+                    fixedComponents.append(component)
+                } else {
+                    let component = componentByRoot.count
+                    componentByRoot[root] = component
+                    fixedComponents.append(component)
+                }
+            }
+            var componentByPointKey = [String: Int]()
+            for (key, indices) in fixedByPointKey {
+                componentByPointKey[key] = fixedComponents[indices[0]]
+            }
+
+            let airwireNodes = fixed.map { BoardAirwireNode(point: $0.point, layers: $0.layers) }
+            let fixedTree = Self.minimumAirwireEdges(nodes: airwireNodes, disjointSet: &disjointSet).map { edge in
+                MovingAirwires.Link(
+                    lhs: fixedComponents[edge.from],
+                    rhs: fixedComponents[edge.to],
+                    weightSquared: edge.weightSquared,
+                    from: fixed[edge.from].point,
+                    to: fixed[edge.to].point
+                )
+            }
+
+            nets.append(MovingAirwires.Net(
+                netID: netID,
+                fixedPoints: fixed.map(\.point),
+                fixedComponents: fixedComponents,
+                componentCount: componentByRoot.count,
+                componentByPointKey: componentByPointKey,
+                fixedTree: fixedTree,
+                movingPoints: moving.map(\.point),
+                movingLayers: moving.map(\.layers),
+                segments: segments,
+                fills: fillAnchors.map { fill in
+                    MovingAirwires.Fill(layer: fill.layer, paths: fill.paths, component: fill.anchor.map { fixedComponents[$0] })
+                }
+            ))
+        }
+        return MovingAirwires(nets: nets)
+    }
+}
