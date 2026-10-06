@@ -2317,9 +2317,11 @@ struct ProjectWorkspaceView: View {
         highlightedComponentIDs = componentIDs
     }
 
-    private func applyEditedBoard(_ board: HorizontalBoard, writesPlaneCache: Bool = false) {
+    /// Returns whether the document's files changed.
+    @discardableResult
+    private func applyEditedBoard(_ board: HorizontalBoard, writesPlaneCache: Bool = false) -> Bool {
         guard !isReadOnly else {
-            return
+            return false
         }
         var timings = [(String, UInt64)]()
         func measure<T>(_ label: String, _ body: () throws -> T) rethrows -> T {
@@ -2349,21 +2351,59 @@ struct ProjectWorkspaceView: View {
                   HorizontalBoardPlaneInputs.signature(of: board) != previousPlaneInputs {
             planesNeedUpdate = true
         }
+        // Every assignment through the document binding is an undo step and an
+        // edit to SwiftUI, so one that would change nothing isn't made.
+        var archive = document.archive
+        var changed = false
         do {
-            try measure("apply board JSON") {
-                try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &document.archive)
+            changed = try measure("apply board JSON") {
+                try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &archive)
             }
             if writesPlaneCache {
-                try measure("apply plane cache") {
-                    try HorizontalProjectJSONApplicator.applyPlaneCache(board: board, in: project, to: &document.archive)
+                let cacheChanged = try measure("apply plane cache") {
+                    try HorizontalProjectJSONApplicator.applyPlaneCache(board: board, in: project, to: &archive)
                 }
+                changed = changed || cacheChanged
             }
         } catch {
             measure("record failure") {
                 recordArchiveApplyFailure(error)
             }
         }
+        if changed {
+            measure("assign document archive") {
+                document.archive = archive
+            }
+        }
         HorizontalMoveCommitDiagnostics.reportProjectBoardChange(timings: timings)
+        return changed
+    }
+
+    /// Applies a board that follows from an edit already on the undo stack, the
+    /// netlist sync after a placement or the pour after a plane edit, without a
+    /// step of its own. SwiftUI puts every document assignment on the stack
+    /// unnamed, so a sync landing after "Place Package" was a nameless step on
+    /// top, and Undo took back the sync rather than the placement. Undoing the
+    /// step before it restores the whole board, this included.
+    private func applyFollowUpBoard(_ board: HorizontalBoard, writesPlaneCache: Bool = false) {
+        var managers = [UndoManager]()
+        #if os(macOS)
+        if let manager = HorizontalDocumentSaving.undoManager(url: project.url) {
+            managers.append(manager)
+        }
+        #endif
+        if let manager = activeUndoManager, !managers.contains(where: { $0 === manager }) {
+            managers.append(manager)
+        }
+        managers.forEach { $0.disableUndoRegistration() }
+        let changed = applyEditedBoard(board, writesPlaneCache: writesPlaneCache)
+        managers.forEach { $0.enableUndoRegistration() }
+        #if os(macOS)
+        // With nothing registered the document wouldn't know it changed.
+        if changed {
+            HorizontalDocumentSaving.markEdited(url: project.url)
+        }
+        #endif
     }
 
     private func showBoardRulesWindow() {
@@ -2590,8 +2630,10 @@ struct ProjectWorkspaceView: View {
 
         if registersUndo {
             registerBoardPlaneUpdateUndo(boardToPour)
+            applyEditedBoard(pouredBoard, writesPlaneCache: true)
+        } else {
+            applyFollowUpBoard(pouredBoard, writesPlaneCache: true)
         }
-        applyEditedBoard(pouredBoard, writesPlaneCache: true)
         boardSyncRevision += 1
         selectionDetailsByPane[.board] = .empty
     }
@@ -2926,7 +2968,7 @@ struct ProjectWorkspaceView: View {
         syncedBoard.url = previousBoard.url
         rebasePackageModelURLs(in: &syncedBoard)
         removePlanesWithDeletedNets(from: &syncedBoard)
-        applyEditedBoard(syncedBoard)
+        applyFollowUpBoard(syncedBoard)
         boardSyncRevision += 1
         selectionDetailsByPane[.board] = .empty
     }
@@ -3338,7 +3380,7 @@ struct ProjectWorkspaceView: View {
         let normalizedPackageID = normalizedID(packageID)
         for index in board.packageTexts.indices
             where self.packageID(forGeometryID: board.packageTexts[index].id).map(normalizedID) == normalizedPackageID {
-            board.packageTexts[index].text = board.packageTexts[index].text.replacingOccurrences(of: oldRefdes, with: newRefdes)
+            board.packageTexts[index].redraw { $0.replacingOccurrences(of: oldRefdes, with: newRefdes) }
         }
     }
 

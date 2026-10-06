@@ -123,7 +123,10 @@ enum HorizontalProjectJSONApplicator {
         return changed
     }
 
-    static func apply(board: HorizontalBoard, in project: HorizontalProject, to archive: inout HorizontalProjectArchive) throws {
+    /// Returns whether the board's file changed, so a caller can leave the
+    /// document alone when it didn't.
+    @discardableResult
+    static func apply(board: HorizontalBoard, in project: HorizontalProject, to archive: inout HorizontalProjectArchive) throws -> Bool {
         let path = try archivePath(for: board.url, project: project, archive: archive)
         var json = try loadJSON(relativePath: path, fallbackURL: board.url, from: archive)
         let removedPackageIDs = removedKeys(from: json.dictionaryMap("packages"), keeping: board.packages.map(\.id))
@@ -180,7 +183,7 @@ enum HorizontalProjectJSONApplicator {
         )
         patchBoardPanels(&json, panels: board.boardPanels)
 
-        try saveJSON(json, relativePath: path, to: &archive)
+        return try saveJSON(json, relativePath: path, to: &archive)
     }
 
     static func boardRules(in project: HorizontalProject, from archive: HorizontalProjectArchive) throws -> JSONDictionary {
@@ -202,9 +205,11 @@ enum HorizontalProjectJSONApplicator {
         try saveJSON(json, relativePath: path, to: &archive)
     }
 
-    static func applyPlaneCache(board: HorizontalBoard, in project: HorizontalProject, to archive: inout HorizontalProjectArchive) throws {
+    /// Returns whether the plane cache's file changed.
+    @discardableResult
+    static func applyPlaneCache(board: HorizontalBoard, in project: HorizontalProject, to archive: inout HorizontalProjectArchive) throws -> Bool {
         guard let planesFilename = project.planesFilename else {
-            return
+            return false
         }
 
         let planeMap = board.planes
@@ -222,7 +227,7 @@ enum HorizontalProjectJSONApplicator {
                 ] as JSONDictionary
             }
 
-        try saveJSON(["planes": planeMap], relativePath: planesFilename, to: &archive)
+        return try saveJSON(["planes": planeMap], relativePath: planesFilename, to: &archive)
     }
 
     static func apply(
@@ -563,12 +568,20 @@ enum HorizontalProjectJSONApplicator {
 
         for (id, point) in points {
             let key = matchingKey(id, in: junctions) ?? id
-            var item = junctions[key] as? JSONDictionary ?? [:]
+            let existing = junctions[key] as? JSONDictionary
+            var item = existing ?? [:]
             item["position"] = jsonPoint(point)
-            if let netID = netIDs[id] ?? netIDs[key] {
-                item["net"] = netID
-            } else {
-                item.removeValue(forKey: "net")
+            // Horizon writes only a junction's position. Keep a net an MCP edit
+            // cached up to date, and give one to a new junction as MCP does,
+            // but don't add one to every junction the board editor's
+            // connectivity pass found a net for; the board loader works those
+            // out again from the copper.
+            if existing == nil || existing?["net"] != nil {
+                if let netID = netIDs[id] ?? netIDs[key] {
+                    item["net"] = netID
+                } else {
+                    item.removeValue(forKey: "net")
+                }
             }
             junctions[key] = item
         }
@@ -1454,11 +1467,11 @@ enum HorizontalProjectJSONApplicator {
             }
             let placement: JSONDictionary = [
                 "shift": jsonPoint(text.position),
-                "angle": jsonNumber(Double(text.angle)),
+                "angle": storedAngle(of: text),
                 "mirror": text.mirrored
             ]
             var item: JSONDictionary = [
-                "text": text.text,
+                "text": text.fileText,
                 "placement": placement,
                 "size": jsonNumber(text.size),
                 "width": jsonNumber(text.width),
@@ -1475,6 +1488,17 @@ enum HorizontalProjectJSONApplicator {
             map[text.id] = item
         }
         json[key] = map
+    }
+
+    /// The angle a free text's placement stores. The loaders read a mirrored
+    /// one as it draws, 32768 less the stored angle (`accumulatedText`), so
+    /// writing that back turned each mirrored text half a turn: 45 of Billo's
+    /// bottom-side references on one in-app board edit, and back on the next.
+    private static func storedAngle(of text: HorizontalText) -> Any {
+        guard text.mirrored else {
+            return jsonNumber(Double(text.angle))
+        }
+        return jsonNumber(Double(((32_768 - text.angle) % 65_536 + 65_536) % 65_536))
     }
 
     private static func patchTexts(
@@ -1496,10 +1520,12 @@ enum HorizontalProjectJSONApplicator {
 
             var placement = item["placement"] as? JSONDictionary ?? [:]
             placement["shift"] = jsonPoint(text.position)
-            placement["angle"] = jsonNumber(Double(text.angle))
+            placement["angle"] = storedAngle(of: text)
             placement["mirror"] = text.mirrored
             item["placement"] = placement
-            item["text"] = text.text
+            // What the file stores, not what the text draws: a smashed refdes
+            // keeps "$RD" and a title "$project_title".
+            item["text"] = text.fileText
             item["size"] = jsonNumber(text.size)
             item["width"] = jsonNumber(text.width)
             if let layer = text.layer {
@@ -1908,12 +1934,20 @@ enum HorizontalProjectJSONApplicator {
     /// Written the way Horizon writes it, as every other writer of project
     /// files does, so an edit made here and one made over MCP leave the same
     /// bytes and a diff shows only what changed.
+    /// Writes `json` unless the file already holds exactly that, and says
+    /// whether it wrote.
+    @discardableResult
     private static func saveJSON(
         _ json: JSONDictionary,
         relativePath: String,
         to archive: inout HorizontalProjectArchive
-    ) throws {
-        try archive.replaceRegularFileData(relativePath: relativePath, with: HorizontalHorizonJSONWriter.data(json))
+    ) throws -> Bool {
+        let data = try HorizontalHorizonJSONWriter.data(json)
+        guard archive.regularFileData(relativePath: relativePath) != data else {
+            return false
+        }
+        try archive.replaceRegularFileData(relativePath: relativePath, with: data)
+        return true
     }
 
     private static func relativePath(for url: URL, baseURL: URL) -> String? {
