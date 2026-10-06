@@ -211,7 +211,9 @@ snapshot and compares it with the document's; a mismatch is an error naming
 both, not a success. The reply's `source` says which context answered — `live`
 saved a document, `disk` means the context asked was a disk one whose edits
 were already committed, which is the answer to give when the edit went
-somewhere else.
+somewhere else. A live save also lists `leftovers`, the temporary files a
+sandboxed safe save left beside the project file, and an empty list means it
+looked and found none.
 
 A batch is validated and applied in memory first; a failing operation writes
 nothing, and the error names it by its place in the batch — `ops[3]
@@ -437,6 +439,17 @@ computes the zoom and pan. `render_viewport` renders that visible rectangle
 through the drawing exporters, cropped to the region, so it is the exporter's
 style rather than a screenshot of the Metal canvas.
 
+The exporters draw no airwires, so a board render draws them on top, and they
+are the canvas's own. The canvas draws a scene it caches, and each scene keeps
+the airwires it was built from. The board canvas leaves the set it last handed
+over, and whether its Connections switch shows them, where its command actions
+reach it. `board_info` and `check` count a different set: the editor's
+connectivity pass, run again by the dispatch over the document's model. So the
+reply's `airwires` compares the two, net by net and segment by segment, and
+`board_info` gives the canvas's count beside its own. A stale scene shows up
+as `matches_check: false` with the nets that differ, and nobody has to judge
+the screen by eye.
+
 `show_panes` is the one view verb that goes nowhere: it says which panes to
 show and hides the rest, replacing what is up rather than adding to it. `frame`
 and `show_sheet` reveal a pane on the way to somewhere in it, which is not the
@@ -657,7 +670,8 @@ the method table, project summary, checks, renders, and export path rules.
 1. **Further schematic endpoint forms.** Wire creation and retargeting support
    pins and junctions; block-port and bus-ripper endpoints remain future work.
 2. **A true canvas capture** for `render_viewport`, which today renders the
-   visible region in the exporter's style rather than the Metal canvas.
+   visible region in the exporter's style rather than the Metal canvas. Only
+   the airwires come from the canvas.
 3. **atopile follow-ups**: 3D models and rounded-rectangle pad shapes in
    generated packages, and a PCB backend proposal upstream once the bridge
    has seen real projects.
