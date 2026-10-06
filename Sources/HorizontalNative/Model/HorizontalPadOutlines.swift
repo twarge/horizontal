@@ -25,7 +25,45 @@ private struct HorizontalPadOutlineGroup {
     var paths: [[HorizontalPoint]]
 }
 
-func horizonPadOutlineFragments(_ pads: [HorizontalPolygon]) -> [HorizontalPadOutlineFragment] {
+/// Remembers each pad's merged outline across scene rebuilds, so a rebuild
+/// re-unions only the pads whose shapes changed instead of every pad on the
+/// board. Keyed by the pad's paths relative to their first point, so a pad
+/// that only moved is still a hit: the stored outline is translated into
+/// place. Each pass forgets the pads it did not see, so the cache never
+/// outgrows the board.
+final class HorizontalPadOutlineUnionCache {
+    private var entries = [[[HorizontalPoint]]: [[[HorizontalPoint]]]]()
+    private var seen = Set<[[HorizontalPoint]]>()
+
+    func union(_ paths: [[HorizontalPoint]]) -> [[[HorizontalPoint]]] {
+        guard let origin = paths.first?.first else {
+            return horizonUnionedClosedPaths(paths)
+        }
+        let key = paths.map { path in path.map { $0 - origin } }
+        seen.insert(key)
+        if let cached = entries[key] {
+            return cached.map { fragment in fragment.map { path in path.map { $0 + origin } } }
+        }
+        let merged = horizonUnionedClosedPaths(paths)
+        entries[key] = merged.map { fragment in fragment.map { path in path.map { $0 - origin } } }
+        return merged
+    }
+
+    func endPass() {
+        if entries.count > seen.count {
+            entries = entries.filter { seen.contains($0.key) }
+        }
+        seen.removeAll(keepingCapacity: true)
+    }
+}
+
+func horizonPadOutlineFragments(
+    _ pads: [HorizontalPolygon],
+    unionCache: HorizontalPadOutlineUnionCache? = nil
+) -> [HorizontalPadOutlineFragment] {
+    defer {
+        unionCache?.endPass()
+    }
     var groups = [HorizontalPadOutlineKey: HorizontalPadOutlineGroup]()
     var order = [HorizontalPadOutlineKey]()
 
@@ -70,7 +108,7 @@ func horizonPadOutlineFragments(_ pads: [HorizontalPolygon]) -> [HorizontalPadOu
         if validPaths.count <= 1 {
             paths = validPaths.map { [$0] }
         } else {
-            let mergedPaths = horizonUnionedClosedPaths(validPaths)
+            let mergedPaths = unionCache?.union(validPaths) ?? horizonUnionedClosedPaths(validPaths)
             paths = mergedPaths.isEmpty ? validPaths.map { [$0] } : mergedPaths
         }
         for (index, fragmentPaths) in paths.enumerated() where !fragmentPaths.isEmpty {

@@ -349,6 +349,9 @@ struct BoardCanvasView: View {
     /// pour, a schematic sync. The canvas adopts the new board in place rather
     /// than being rebuilt, so the view never blanks for work it did not ask for.
     var syncRevision: Int = 0
+    /// Bumped by the pane each time "Update All Planes" lands. The silkscreen
+    /// clip is refreshed alongside the fills rather than on every edit.
+    var planePourRevision: Int = 0
     /// Number keys pick the working copper layer; the pane owns the selection,
     /// so the canvas reports the request rather than applying it.
     var onSelectDrawingLayer: (Int) -> Void = { _ in }
@@ -464,6 +467,7 @@ struct BoardCanvasView: View {
         toolSettings: HorizontalBoardToolSettings,
         drawingLayer: Int = HorizontalBoardLayers.topCopper,
         syncRevision: Int = 0,
+        planePourRevision: Int = 0,
         onSelectDrawingLayer: @escaping (Int) -> Void = { _ in },
         onSelectBoardLayerView: @escaping (HorizontalBoardLayerViewPreset) -> Void = { _ in },
         poolURL: URL? = nil,
@@ -503,6 +507,7 @@ struct BoardCanvasView: View {
         self.toolSettings = toolSettings
         self.drawingLayer = drawingLayer
         self.syncRevision = syncRevision
+        self.planePourRevision = planePourRevision
         self.onSelectDrawingLayer = onSelectDrawingLayer
         self.onSelectBoardLayerView = onSelectBoardLayerView
         self.poolURL = poolURL
@@ -955,6 +960,9 @@ struct BoardCanvasView: View {
         .onChange(of: syncRevision) { _, _ in
             adoptExternallyUpdatedBoard()
         }
+        .task(id: silkscreenClipTrigger) {
+            refreshSilkscreenClips()
+        }
         .sheet(isPresented: $padstackPickerPresented) {
             HorizontalPadstackPickerSheet(
                 choices: poolContext?.padstackChoices() ?? [],
@@ -973,6 +981,7 @@ struct BoardCanvasView: View {
             selectedUnplacedObjectID = nil
             hoveredObject = nil
             moveState = nil
+            packagePlacementState = nil
             drawGraphicsState = nil
             drawTrackState = nil
             trackRouterSession = nil
@@ -1331,6 +1340,11 @@ struct BoardCanvasView: View {
             let undoHint = trackRouteHistory.isEmpty ? "" : "   ⌫ back"
             return "Track (\(layerName), \(widthMM) mm, \(state.cornerStyle.label)): click to route   / posture   C corner (90/45/arc)   W width\(viaHint)\(undoHint)   Return/double-click finishes   Esc cancels"
         }
+        // Ahead of the move hint: placing a package rides the move tool.
+        if let state = packagePlacementState {
+            let label = board.packages.first { normalizedID($0.id) == normalizedID(state.placementID) }?.label ?? "package"
+            return "Place \(label): click places   R rotates   E flips to the other side   Esc cancels"
+        }
         if moveState != nil {
             return "Move: click or Return commits   Esc cancels"
         }
@@ -1343,10 +1357,6 @@ struct BoardCanvasView: View {
             case .hole(let hole):
                 return "Place \(hole.shape == .slot ? "slot" : "round") hole: click places   R rotates   Esc ends"
             }
-        }
-        if let state = packagePlacementState {
-            let label = board.packages.first { normalizedID($0.id) == normalizedID(state.placementID) }?.label ?? "package"
-            return "Place \(label): click places   R rotates   E flips to the other side   Esc cancels"
         }
         if let state = roundOffVertexState {
             let radiusMM = String(format: "%.3f", state.clampedRadius / 1_000_000)
@@ -3507,10 +3517,18 @@ struct BoardCanvasView: View {
             return
         }
         let originalBoard = board
+        // What the cursor snaps to: the board as it is, without the package.
+        let snapTargets = boardSnapTargets()
+        // And the scene and selectables already built for it, which the
+        // package can join instead of everything being rebuilt.
+        let renderLayers = boardMetalRenderLayers()
+        let builtBuckets = selectableCache.elementBuckets(ifBuiltFor: metalElementBucketsCacheKey(renderLayers: renderLayers))
+        let builtSelectables = selectableCache.allSelectables(ifBuiltFor: allSelectableCacheKey)
+        let position = lastCursorWorldPoint ?? originalBoard.bounds.center
         guard let draft = HorizontalBoard.placingPackage(
             for: object,
             in: originalBoard,
-            at: lastCursorWorldPoint ?? originalBoard.bounds.center,
+            at: position,
             poolURL: poolURL
         ) else {
             return
@@ -3519,37 +3537,162 @@ struct BoardCanvasView: View {
         packagePlacementState = PackagePlacementState(originalBoard: originalBoard, placementID: draft.placementID)
         selectedObjects = [HorizontalSelectableRef(id: draft.placementID, type: .boardPackage)]
         hoveredObject = nil
+        // One rebuild for the board with the package on it. From then on the
+        // package rides the move tool, whose resident plan shifts its spans on
+        // the GPU per cursor step; writing a new board per step instead rebuilt
+        // the whole scene, the selectables and the snap index every time.
         invalidateSelectableCache()
+        startPlacingPackageMove(on: draft.board, from: position, snapTargets: snapTargets)
+        seedPlacedPackage(
+            draft.board,
+            over: originalBoard,
+            builtBuckets: builtBuckets,
+            builtSelectables: builtSelectables,
+            renderLayers: renderLayers
+        )
         publishSelectionContext()
         publishCanvasCommandActions()
     }
 
+    /// Joins the dropped package to the scene and selectables that were built
+    /// for the board without it, so the click builds one package's worth
+    /// rather than the whole board. Seeded under the keys the next body pass
+    /// will ask for; should one not match, that pass simply rebuilds.
+    private func seedPlacedPackage(
+        _ placed: HorizontalBoard,
+        over original: HorizontalBoard,
+        builtBuckets: BoardMetalElementBuckets?,
+        builtSelectables: [HorizontalSelectable]?,
+        renderLayers: [Int]
+    ) {
+        guard let addition = packagePlacementAddition(placed, over: original) else {
+            return
+        }
+        if let builtBuckets, boardMetalRenderLayers() == renderLayers {
+            let additionBuckets = buildBoardMetalElementBuckets(renderLayers: renderLayers, partialBoard: addition)
+            // The airwires change with the package, so their batches are
+            // taken whole from the addition, which carries all of them.
+            selectableCache.seedElementBuckets(
+                builtBuckets.merged(adding: additionBuckets, replacing: [\.connectionLines, \.connectionLabels]),
+                for: metalElementBucketsCacheKey(renderLayers: renderLayers)
+            )
+        }
+        if let builtSelectables {
+            var selectableAddition = addition
+            selectableAddition.connectionLines = []
+            selectableCache.seedAllSelectables(
+                builtSelectables + buildAllBoardSelectables(in: selectableAddition),
+                for: allSelectableCacheKey
+            )
+        }
+    }
+
+    /// What `placed` adds to `original` as a board of its own: the package
+    /// `placingPackage` appended, plus every connection line and airwire,
+    /// since placing redraws those whole. The rest of the board is left out,
+    /// so a scene build over it emits only what is new. Nil when `placed` is
+    /// not `original` with one package appended.
+    private func packagePlacementAddition(_ placed: HorizontalBoard, over original: HorizontalBoard) -> HorizontalBoard? {
+        guard placed.packages.count == original.packages.count + 1,
+              placed.packagePads.count >= original.packagePads.count,
+              placed.packageHoles.count >= original.packageHoles.count,
+              placed.packagePolygons.count >= original.packagePolygons.count,
+              placed.packageLines.count >= original.packageLines.count,
+              placed.packageArcs.count >= original.packageArcs.count,
+              placed.packageTexts.count >= original.packageTexts.count,
+              placed.keepouts.count >= original.keepouts.count,
+              placed.tracks.count == original.tracks.count,
+              placed.vias.count == original.vias.count,
+              placed.polygons.count == original.polygons.count,
+              placed.planes.count == original.planes.count,
+              placed.texts.count == original.texts.count,
+              placed.decals.count == original.decals.count else {
+            return nil
+        }
+        var addition = placed
+        addition.packages = Array(placed.packages.dropFirst(original.packages.count))
+        addition.packagePads = Array(placed.packagePads.dropFirst(original.packagePads.count))
+        addition.packageHoles = Array(placed.packageHoles.dropFirst(original.packageHoles.count))
+        addition.packagePolygons = Array(placed.packagePolygons.dropFirst(original.packagePolygons.count))
+        addition.packageLines = Array(placed.packageLines.dropFirst(original.packageLines.count))
+        addition.packageArcs = Array(placed.packageArcs.dropFirst(original.packageArcs.count))
+        addition.packageTexts = Array(placed.packageTexts.dropFirst(original.packageTexts.count))
+        addition.keepouts = Array(placed.keepouts.dropFirst(original.keepouts.count))
+        addition.packagePadPositions = placed.packagePadPositions.filter { original.packagePadPositions[$0.key] == nil }
+        addition.junctions = [:]
+        addition.junctionNetIDs = [:]
+        addition.tracks = []
+        addition.netTies = []
+        addition.lines = []
+        addition.arcs = []
+        addition.polygons = []
+        addition.planes = []
+        addition.dimensions = []
+        addition.decals = []
+        addition.holes = []
+        addition.vias = []
+        addition.viaHoles = []
+        addition.texts = []
+        addition.boardPanels = []
+        addition.pads = []
+        addition.padstackShapes = []
+        return addition
+    }
+
+    /// Hands the package being placed to the move tool: the cursor drags it
+    /// from `origin`, where it sits on `board`.
+    private func startPlacingPackageMove(on board: HorizontalBoard, from origin: HorizontalPoint, snapTargets: [HorizontalPoint]?) {
+        let plan = boardResidentMovePlan(for: selectedObjects, in: board)
+        moveState = MoveState(
+            startPoint: origin,
+            lastPoint: origin,
+            originalBoard: board,
+            tracksCursor: true,
+            snapTargets: snapTargets,
+            residentMovePlan: plan
+        )
+        HorizontalMoveRateDiagnostics.beginMove(
+            tracksCursor: true,
+            selectedCount: selectedObjects.count,
+            details: "package placement, translated \(plan.translatedRefs.count), unsupported \(plan.unsupportedRefs.count)"
+        )
+    }
+
     private func updatePackagePlacement(to point: HorizontalPoint) {
-        guard let state = packagePlacementState,
-              var draft = editedBoard,
-              let package = draft.packages.first(where: { normalizedID($0.id) == normalizedID(state.placementID) }) else {
+        guard packagePlacementState != nil, moveState != nil else {
             return
         }
-        let delta = point - package.position
-        guard delta != .zero else {
-            return
+        updateMove(to: point)
+    }
+
+    /// The placement draft with the package where the cursor has taken it.
+    private func placingPackageBoard() -> HorizontalBoard? {
+        guard let state = moveState else {
+            return nil
         }
-        moveSelectedObjects(by: delta, board: &draft)
-        editedBoard = draft
-        invalidateSelectableCache()
+        var draft = state.originalBoard
+        let delta = state.lastPoint - state.startPoint
+        if delta != .zero {
+            moveSelectedObjects(by: delta, board: &draft)
+        }
+        return draft
     }
 
     /// R and E while placing: turn or flip the package about its own
-    /// origin, with no undo step of their own.
+    /// origin, with no undo step of their own. One rebuild per key press; the
+    /// move then carries on from the turned package.
     private func transformPlacingPackage(_ transform: (HorizontalPoint, inout HorizontalBoard) -> Void) {
         guard let state = packagePlacementState,
-              var draft = editedBoard,
+              let move = moveState,
+              var draft = placingPackageBoard(),
               let package = draft.packages.first(where: { normalizedID($0.id) == normalizedID(state.placementID) }) else {
             return
         }
         transform(package.position, &draft)
+        let origin = draft.packages.first(where: { normalizedID($0.id) == normalizedID(state.placementID) })?.position ?? package.position
         editedBoard = draft
         invalidateSelectableCache()
+        startPlacingPackageMove(on: draft, from: origin, snapTargets: move.snapTargets)
     }
 
     private func commitPackagePlacement(at point: HorizontalPoint?) {
@@ -3559,11 +3702,14 @@ struct BoardCanvasView: View {
         if let point {
             updatePackagePlacement(to: point)
         }
-        guard let draft = editedBoard else {
+        guard let draft = placingPackageBoard() else {
             return
         }
+        editedBoard = draft
+        moveState = nil
         packagePlacementState = nil
         selectedUnplacedObjectID = nil
+        HorizontalMoveRateDiagnostics.endMove(committed: true)
         registerUndoSnapshot(state.originalBoard, actionName: "Place Package")
         invalidateSelectableCache()
         publishConnectivityResolvedEdit(draft, regeneratingAirwires: true)
@@ -3576,9 +3722,11 @@ struct BoardCanvasView: View {
             return
         }
         editedBoard = state.originalBoard
+        moveState = nil
         packagePlacementState = nil
         selectedObjects = []
         hoveredObject = nil
+        HorizontalMoveRateDiagnostics.endMove(committed: false)
         invalidateSelectableCache()
         publishSelectionContext()
         publishCanvasCommandActions()
@@ -5483,7 +5631,7 @@ struct BoardCanvasView: View {
         let anchorKeys = packageConnectionAnchorKeys(packageID: packageID, in: board)
 
         func belongsToPackage(_ geometryID: String) -> Bool {
-            self.packageID(forGeometryID: geometryID).map(normalizedID) == normalizedPackageID
+            BoardMovePlanner.geometryID(geometryID, belongsToPackage: normalizedPackageID)
         }
 
         changed = removeAll(from: &board.packagePads) { belongsToPackage($0.id) } || changed
@@ -5565,7 +5713,7 @@ struct BoardCanvasView: View {
         var keys = Set<String>()
 
         func belongsToPackage(_ geometryID: String) -> Bool {
-            self.packageID(forGeometryID: geometryID).map(normalizedID) == normalizedPackageID
+            BoardMovePlanner.geometryID(geometryID, belongsToPackage: normalizedPackageID)
         }
 
         for pad in board.packagePads where belongsToPackage(pad.id) {
@@ -6117,15 +6265,76 @@ struct BoardCanvasView: View {
             return
         }
 
+        // Every anchor moves by the same delta, so the tracks are walked once
+        // against all of them — not once per pad shape, each pass formatting a
+        // point key for every track on the board. An endpoint also moves at
+        // most once, even where two pads sit exactly `delta` apart.
+        var anchorNetsByKey = [String: [String?]]()
+        var anchorKeys = [(key: String, point: HorizontalPoint, netID: String?)]()
         for anchor in anchors {
-            moveBoardTrackEndpoints(at: anchor.point, by: delta, netID: anchor.netID, board: &board)
+            let key = pointKey(anchor.point)
+            if anchorNetsByKey[key] == nil {
+                anchorKeys.append((key, anchor.point, anchor.netID))
+            }
+            anchorNetsByKey[key, default: []].append(anchor.netID)
+        }
+        func followsAnchor(_ point: HorizontalPoint, netID: String?) -> Bool {
+            anchorNetsByKey[pointKey(point)]?.contains { netsMatch(netID, $0) } == true
+        }
+        for index in board.tracks.indices {
+            let netID = board.tracks[index].netID
+            if followsAnchor(board.tracks[index].from, netID: netID) {
+                board.tracks[index].from = board.tracks[index].from + delta
+            }
+            if followsAnchor(board.tracks[index].to, netID: netID) {
+                board.tracks[index].to = board.tracks[index].to + delta
+            }
+        }
+        for index in board.netTies.indices {
+            let netID = board.netTies[index].netID
+            if followsAnchor(board.netTies[index].from, netID: netID) {
+                board.netTies[index].from = board.netTies[index].from + delta
+            }
+            if followsAnchor(board.netTies[index].to, netID: netID) {
+                board.netTies[index].to = board.netTies[index].to + delta
+            }
+        }
+
+        var junctionIDsByKey = [String: [String]]()
+        for (junctionID, position) in board.junctions {
+            let key = pointKey(position)
+            if anchorNetsByKey[key] != nil {
+                junctionIDsByKey[key, default: []].append(junctionID)
+            }
+        }
+        for anchor in anchorKeys {
+            guard let junctionIDs = junctionIDsByKey[anchor.key] else {
+                continue
+            }
+            var movedJunctionIDs = [String]()
+            for junctionID in junctionIDs {
+                // An earlier merge can have absorbed this one.
+                guard let position = board.junctions[junctionID], pointKey(position) == anchor.key else {
+                    continue
+                }
+                board.junctions[junctionID] = position + delta
+                movedJunctionIDs.append(junctionID)
+            }
+            if let preferredID = movedJunctionIDs.first {
+                mergeBoardJunctions(
+                    at: anchor.point + delta,
+                    preferredID: preferredID,
+                    netID: board.junctionNetIDs[preferredID] ?? anchor.netID,
+                    board: &board
+                )
+            }
         }
     }
 
     private func boardPackageConnectionAnchors(packageID: String, board: HorizontalBoard) -> [MovingConnectionPoint] {
         let normalizedPackageID = normalizedID(packageID)
         func belongsToPackage(_ geometryID: String) -> Bool {
-            self.packageID(forGeometryID: geometryID).map(normalizedID) == normalizedPackageID
+            BoardMovePlanner.geometryID(geometryID, belongsToPackage: normalizedPackageID)
         }
 
         let padAnchors = board.packagePads
@@ -6670,6 +6879,7 @@ struct BoardCanvasView: View {
                 editedBoard = value
                 invalidateSelectableCache()
                 moveState = nil
+                packagePlacementState = nil
                 hoveredObject = nil
                 onBoardChange(value)
                 reportNetClassDifferences(from: previousDetails, to: value.netDetails)
@@ -7443,7 +7653,7 @@ struct BoardCanvasView: View {
 
         let normalizedPackageID = normalizedID(packageID)
         func belongsToPackage(_ geometryID: String) -> Bool {
-            self.packageID(forGeometryID: geometryID).map(normalizedID) == normalizedPackageID
+            BoardMovePlanner.geometryID(geometryID, belongsToPackage: normalizedPackageID)
         }
 
         for index in board.packagePads.indices where belongsToPackage(board.packagePads[index].id) {
@@ -7477,7 +7687,7 @@ struct BoardCanvasView: View {
     ) {
         let normalizedPackageID = normalizedID(packageID)
         func belongsToPackage(_ geometryID: String) -> Bool {
-            self.packageID(forGeometryID: geometryID).map(normalizedID) == normalizedPackageID
+            BoardMovePlanner.geometryID(geometryID, belongsToPackage: normalizedPackageID)
         }
 
         for index in board.packagePads.indices where belongsToPackage(board.packagePads[index].id) {
@@ -7516,7 +7726,7 @@ struct BoardCanvasView: View {
 
         let normalizedPackageID = normalizedID(packageID)
         func belongsToPackage(_ geometryID: String) -> Bool {
-            self.packageID(forGeometryID: geometryID).map(normalizedID) == normalizedPackageID
+            BoardMovePlanner.geometryID(geometryID, belongsToPackage: normalizedPackageID)
         }
 
         for index in board.packagePads.indices where belongsToPackage(board.packagePads[index].id) {
@@ -8131,6 +8341,7 @@ struct BoardCanvasView: View {
             routePreviewRemoved: pushShoveRemovedSegmentIDs.sorted(),
             renderLayers: renderLayers,
             silkscreenClipping: appearanceSettings.silkscreenClipping,
+            silkscreenClipVersion: selectableCache.silkscreenClipVersion,
             layerColors: HorizontalBoardLayers.all.map { HorizontalMetalRGBA(layerColor(for: $0)) },
             layerFillModes: HorizontalBoardLayers.all.map { displayOptions.isLayerFilled($0) },
             bodyOutlineHighColor: HorizontalMetalRGBA(layerColor(for: HorizontalBoardLayers.outline).opacity(0.74)),
@@ -8641,16 +8852,17 @@ struct BoardCanvasView: View {
             return .empty
         }
 
-        // Kick off background plane-fragment tessellation. The first body call
-        // returns immediately without plane fills (earcut on the heavy planes
-        // runs on a detached Task with parallel workers). When that pass finishes
-        // it bumps `selectableCache.tessellationVersion`, which invalidates this
-        // bucket cache (the version is in the key) and triggers a re-render that
-        // includes the freshly-tessellated fills.
-        selectableCache.startBackgroundTessellation(planes: boardForMetalBuckets.planes)
-
         let bucketsKey = metalElementBucketsCacheKey(renderLayers: renderLayers)
         let buckets = selectableCache.elementBuckets(key: bucketsKey) {
+            // Kick off background plane-fragment tessellation. The first build
+            // goes ahead without plane fills (earcut on the heavy planes runs on
+            // a detached Task with parallel workers). When that pass finishes it
+            // bumps `selectableCache.tessellationVersion`, which invalidates this
+            // bucket cache (the version is in the key) and so comes back here
+            // with the freshly-tessellated fills. Only a rebuild can have new
+            // fragments: called on every body pass instead, it hashed every
+            // plane vertex on each step of a move.
+            selectableCache.startBackgroundTessellation(planes: boardForMetalBuckets.planes)
             let result = BoardLoadTimer.measure("BoardCanvasView.buildBoardMetalElementBuckets") {
                 buildBoardMetalElementBuckets(renderLayers: renderLayers)
             }
@@ -8677,12 +8889,50 @@ struct BoardCanvasView: View {
         }
     }
 
+    /// The silkscreen clip a scene build draws from. On the board it is the
+    /// snapshot `refreshSilkscreenClips` keeps, which edits don't recompute;
+    /// a pool editor's board is one package, cheap enough to clip every build.
+    private func silkscreenClips(for board: HorizontalBoard) -> [Int: HorizontalClippedSilkscreenLayer] {
+        guard let clipping = appearanceSettings.silkscreenClipping else {
+            return [:]
+        }
+        guard modeProfile.mode == .board else {
+            return HorizontalSilkscreenClipper.clip(board: board, clipping: clipping)
+        }
+        return selectableCache.silkscreenClips(for: clipping)
+    }
+
+    /// Re-clips the silkscreen in the background, on the occasions that
+    /// `BoardSilkscreenClipTrigger` names.
+    private func refreshSilkscreenClips() {
+        guard modeProfile.mode == .board else {
+            return
+        }
+        selectableCache.refreshSilkscreenClips(
+            board: editedBoard ?? sourceBoard,
+            clipping: appearanceSettings.silkscreenClipping
+        )
+    }
+
+    private var silkscreenClipTrigger: BoardSilkscreenClipTrigger {
+        BoardSilkscreenClipTrigger(
+            boardID: sourceBoard.uuid,
+            clipping: appearanceSettings.silkscreenClipping,
+            planePourRevision: planePourRevision
+        )
+    }
+
     // The build emits every primitive into one of the BoardMetalElementBuckets; it
     // does NOT consult element-type displayOptions flags. Layer-override visibility
     // is handled by composite-group masking in the renderer; element-type and
     // category-level visibility are applied at concat time by concatenateMetalBuckets.
-    private func buildBoardMetalElementBuckets(renderLayers: [Int]) -> BoardMetalElementBuckets {
-        let board = boardForMetalBuckets
+    //
+    // `partialBoard` builds just that board's primitives (a package being
+    // placed) for merging into the scene already built; it leaves the
+    // whole-board derived-geometry caches alone.
+    private func buildBoardMetalElementBuckets(renderLayers: [Int], partialBoard: HorizontalBoard? = nil) -> BoardMetalElementBuckets {
+        let board = partialBoard ?? boardForMetalBuckets
+        let isPartial = partialBoard != nil
         let buckets = BoardMetalElementBuckets()
 
         func profile<T>(_ label: String, _ body: () -> T) -> T {
@@ -8704,9 +8954,12 @@ struct BoardCanvasView: View {
             counts: boardGeometryCounts(for: board)
         )
         let padOutlineFragmentsByLayer = profile("pad outline fragments") {
-            selectableCache.padOutlineFragments(key: derivedGeometryKey) {
+            guard !isPartial else {
+                return Dictionary(grouping: horizonPadOutlineFragments(board.packagePads), by: { $0.layer })
+            }
+            return selectableCache.padOutlineFragments(key: derivedGeometryKey) {
                 Dictionary(
-                    grouping: horizonPadOutlineFragments(board.packagePads),
+                    grouping: horizonPadOutlineFragments(board.packagePads, unionCache: selectableCache.padOutlineUnionCache),
                     by: { $0.layer }
                 )
             }
@@ -9116,7 +9369,10 @@ struct BoardCanvasView: View {
         }
 
         let padLabelTextsByLayer = profile("pad label texts by layer") {
-            selectableCache.padLabelTexts(key: derivedGeometryKey) {
+            guard !isPartial else {
+                return packagePadLabelTextsByLayer(board: board)
+            }
+            return selectableCache.padLabelTexts(key: derivedGeometryKey) {
                 packagePadLabelTextsByLayer(board: board)
             }
         }
@@ -9310,12 +9566,11 @@ struct BoardCanvasView: View {
         // Per-layer geometry
         // ============================================================
         // Clip-silkscreen-to-mask mode: a silkscreen object near a mask
-        // opening draws from its clipped fragments instead of its strokes.
-        let silkscreenClips = appearanceSettings.silkscreenClipping.map { clipping in
-            HorizontalSilkscreenClipper.clip(board: board, clipping: clipping)
-        } ?? [:]
-        func clippedSilkscreen(_ id: String, layer: Int) -> HorizontalClippedSilkscreenObject? {
-            silkscreenClips[layer]?.object(id)
+        // opening draws from its clipped fragments instead of its strokes, as
+        // long as it is still the object that was clipped.
+        let clippedSilkscreenLayers = silkscreenClips(for: board)
+        func clippedSilkscreen<Source: Hashable>(_ id: String, layer: Int, source: Source) -> HorizontalClippedSilkscreenObject? {
+            clippedSilkscreenLayers[layer]?.object(id, matching: source)
         }
         func appendClippedSilkscreen(
             _ clipped: HorizontalClippedSilkscreenObject,
@@ -9358,7 +9613,7 @@ struct BoardCanvasView: View {
             profile("layer polygons lines tracks") {
                 for polygon in board.polygons where polygon.layer == layer && !isBoardBodyLayer(polygon.layer) {
                     let owner = selectableRef(id: polygon.id, type: .polygonEdge, layer: layer)
-                    if let clipped = clippedSilkscreen(polygon.id, layer: layer) {
+                    if let clipped = clippedSilkscreen(polygon.id, layer: layer, source: polygon) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.alwaysOnLayered)
                         continue
                     }
@@ -9384,7 +9639,7 @@ struct BoardCanvasView: View {
                 }
 
                 for line in board.lines where line.layer == layer {
-                    if let clipped = clippedSilkscreen(line.id, layer: layer) {
+                    if let clipped = clippedSilkscreen(line.id, layer: layer, source: line) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: selectableRef(id: line.id, type: .boardLine, layer: layer), to: \.alwaysOnLayered)
                         continue
                     }
@@ -9400,7 +9655,7 @@ struct BoardCanvasView: View {
                     )
                 }
                 for arc in board.arcs where arc.layer == layer {
-                    if let clipped = clippedSilkscreen(arc.id, layer: layer) {
+                    if let clipped = clippedSilkscreen(arc.id, layer: layer, source: arc) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: selectableRef(id: arc.id, type: .boardArc, layer: layer), to: \.alwaysOnLayered)
                         continue
                     }
@@ -9503,7 +9758,7 @@ struct BoardCanvasView: View {
                 for polygon in board.packagePolygons
                     where polygon.layer == layer && !isPackageGeometryHidden(polygon.id, layer: layer) {
                     let owner = packageOwner(for: polygon.id, layer: layer)
-                    if let clipped = clippedSilkscreen(polygon.id, layer: layer) {
+                    if let clipped = clippedSilkscreen(polygon.id, layer: layer, source: polygon) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.packagesGeometry)
                         continue
                     }
@@ -9529,7 +9784,7 @@ struct BoardCanvasView: View {
                 }
                 for line in board.packageLines
                     where line.layer == layer && !isPackageGeometryHidden(line.id, layer: layer) {
-                    if let clipped = clippedSilkscreen(line.id, layer: layer) {
+                    if let clipped = clippedSilkscreen(line.id, layer: layer, source: line) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: line.id, layer: layer), to: \.packagesGeometry)
                         continue
                     }
@@ -9537,7 +9792,7 @@ struct BoardCanvasView: View {
                 }
                 for arc in board.packageArcs
                     where arc.layer == layer && !isPackageGeometryHidden(arc.id, layer: layer) {
-                    if let clipped = clippedSilkscreen(arc.id, layer: layer) {
+                    if let clipped = clippedSilkscreen(arc.id, layer: layer, source: arc) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: arc.id, layer: layer), to: \.packagesGeometry)
                         continue
                     }
@@ -9551,7 +9806,7 @@ struct BoardCanvasView: View {
                     // never the smashed (`fromSmash`) board-level copies, which
                     // are the whole point of smashing.
                     if !text.fromSmash, isPackageGeometryHidden(text.id, layer: layer) { continue }
-                    if let clipped = clippedSilkscreen(text.id, layer: layer) {
+                    if let clipped = clippedSilkscreen(text.id, layer: layer, source: text) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: text.id, layer: layer), to: \.packagesText)
                         continue
                     }
@@ -9564,7 +9819,7 @@ struct BoardCanvasView: View {
                 for decal in board.decals {
                     let owner = selectableRef(id: decal.id, type: .boardDecal)
                     for polygon in decal.polygons where polygon.layer == layer {
-                        if let clipped = clippedSilkscreen(polygon.id, layer: layer) {
+                        if let clipped = clippedSilkscreen(polygon.id, layer: layer, source: polygon) {
                             appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
                             continue
                         }
@@ -9589,21 +9844,21 @@ struct BoardCanvasView: View {
                         }
                     }
                     for line in decal.lines where line.layer == layer {
-                        if let clipped = clippedSilkscreen(line.id, layer: layer) {
+                        if let clipped = clippedSilkscreen(line.id, layer: layer, source: line) {
                             appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
                             continue
                         }
                         appendSegment(line, color: layerMetalColor(layer), minimumWidth: 1, outlineOnly: outlineOnly, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
                     }
                     for arc in decal.arcs where arc.layer == layer {
-                        if let clipped = clippedSilkscreen(arc.id, layer: layer) {
+                        if let clipped = clippedSilkscreen(arc.id, layer: layer, source: arc) {
                             appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
                             continue
                         }
                         appendArc(arc, color: layerMetalColor(layer), minimumWidth: 1, outlineOnly: outlineOnly, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
                     }
                     for text in decal.texts where text.layer == layer {
-                        if let clipped = clippedSilkscreen(text.id, layer: layer) {
+                        if let clipped = clippedSilkscreen(text.id, layer: layer, source: text) {
                             appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
                             continue
                         }
@@ -9678,7 +9933,7 @@ struct BoardCanvasView: View {
             // Texts (board)
             profile("board text") {
                 for text in board.texts where text.layer == layer {
-                    if let clipped = clippedSilkscreen(text.id, layer: layer) {
+                    if let clipped = clippedSilkscreen(text.id, layer: layer, source: text) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: selectableRef(id: text.id, type: .text, layer: layer), to: \.text)
                         continue
                     }
@@ -11342,7 +11597,19 @@ struct BoardCanvasView: View {
             // selectables on a typical board, the previous O(n) scan ran on
             // every body fire and dominated wall time during interaction.
             let selectionBoard = canPatchBoardMoveInMetal ? (moveState?.originalBoard ?? board) : board
-            let selectablesByRef = boardSelectablesByRef(in: selectionBoard)
+            // The hit-testing scene already holds these selectables, grouped
+            // by ref, for the same board. Rebuilding them here repeated a
+            // whole-board build on every hover and selection change. Only a
+            // preview board the scene's key can't see (a move that can't be
+            // patched, a paste or pool ghost, a corner being rounded) needs
+            // them fresh.
+            let previewsUnkeyedBoard = (moveState != nil && !canPatchBoardMoveInMetal)
+                || pastePlacementState != nil
+                || poolPlacementState != nil
+                || roundOffVertexState != nil
+            let selectablesByRef = previewsUnkeyedBoard
+                ? boardSelectablesByRef(in: selectionBoard)
+                : boardSelectablesByRef()
             let style = HorizontalCanvasSelectionOverlayStyle(
                 selectedOuterColor: selectedOuterColor,
                 selectedInnerColor: selectedInnerColor,
@@ -13756,10 +14023,7 @@ struct BoardCanvasView: View {
     }
 
     private func packageID(forGeometryID geometryID: String) -> String? {
-        objectIDPrefix(
-            in: geometryID,
-            separators: ["arc", "hole", "keepout", "line", "pad", "polygon", "text"]
-        )
+        BoardMovePlanner.packageID(forGeometryID: geometryID)
     }
 
     private func color(for layer: Int?) -> Color {
@@ -13823,15 +14087,6 @@ struct BoardCanvasView: View {
         return Set(board.packages.compactMap { package in
             geometryPackageIDs.contains(normalizedID(package.id)) ? package.id : nil
         })
-    }
-
-    private func objectIDPrefix(in geometryID: String, separators: Set<String>) -> String? {
-        let components = normalizedID(geometryID).split(separator: "/").map(String.init)
-        guard let separatorIndex = components.firstIndex(where: { separators.contains($0) }),
-              separatorIndex > components.startIndex else {
-            return nil
-        }
-        return components[..<separatorIndex].joined(separator: "/")
     }
 
     private func hole(for id: String) -> HorizontalHole? {

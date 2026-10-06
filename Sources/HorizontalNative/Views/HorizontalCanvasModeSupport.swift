@@ -45,20 +45,44 @@ struct HorizontalCanvasSelectableScene {
 }
 
 final class HorizontalCanvasSelectableSceneCache<Key: Hashable> {
+    private struct Entry {
+        var key: Key
+        var scene: HorizontalCanvasSelectableScene
+        var snapTargets: [HorizontalPoint]?
+    }
+
     private var sceneKey: Key?
     private var sceneValue = HorizontalCanvasSelectableScene.empty
     private var snapTargetsKey: Key?
     private var snapTargetsValue = [HorizontalPoint]()
+    /// The scene before the last rebuild or `invalidate`. SwiftUI can render
+    /// once more with the state from before an edit; keeping the old scene
+    /// spares that pass a whole rebuild, and the next pass the rebuild back.
+    private var previous: Entry?
+
+    private var current: Entry? {
+        sceneKey.map { key in
+            Entry(key: key, scene: sceneValue, snapTargets: snapTargetsKey == key ? snapTargetsValue : nil)
+        }
+    }
 
     func scene(
         key: Key,
         build: () -> [HorizontalSelectable]
     ) -> HorizontalCanvasSelectableScene {
         if sceneKey != key {
-            sceneValue = HorizontalCanvasSelectableScene(selectables: build())
+            let replaced = current
+            if let previous, previous.key == key {
+                sceneValue = previous.scene
+                snapTargetsKey = previous.snapTargets == nil ? nil : key
+                snapTargetsValue = previous.snapTargets ?? []
+            } else {
+                sceneValue = HorizontalCanvasSelectableScene(selectables: build())
+                snapTargetsKey = nil
+                snapTargetsValue = []
+            }
             sceneKey = key
-            snapTargetsKey = nil
-            snapTargetsValue = []
+            previous = replaced ?? previous
         }
         return sceneValue
     }
@@ -82,6 +106,7 @@ final class HorizontalCanvasSelectableSceneCache<Key: Hashable> {
     }
 
     func invalidate() {
+        previous = current ?? previous
         sceneKey = nil
         sceneValue = .empty
         snapTargetsKey = nil

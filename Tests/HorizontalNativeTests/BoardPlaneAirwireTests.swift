@@ -86,4 +86,34 @@ final class BoardPlaneAirwireTests: XCTestCase {
         let both = board(planes: [plane(layer: top, paths: [topFill]), plane(layer: bottom, paths: [bottomFill])], vias: [via], extraPads: [("pkg-c", "p1", c, bottom)])
         XCTAssertEqual(both.airwires.count, 0)
     }
+
+    /// The airwire pass keys pads on `<board package>/<pad>`, read in place
+    /// for the usual id and by splitting for the rest.
+    func testPadPathsMatchTheSplitRule() {
+        XCTAssertEqual(HorizontalBoard.padPath(forPadPolygonID: "PKG/pad/P1/shape/s/layer/0"), "pkg/p1")
+        XCTAssertEqual(HorizontalBoard.padPath(forPadPolygonID: "pkg/pad/p1"), "pkg/p1")
+        XCTAssertEqual(HorizontalBoard.padPath(forPadPolygonID: "pkg//pad/p1"), "pkg/p1")
+        XCTAssertEqual(HorizontalBoard.padPath(forPadPolygonID: "/pkg/pad/p1"), "pkg/p1")
+        XCTAssertEqual(HorizontalBoard.padPath(forPadPolygonID: "pkg/pad//p1/x"), "pkg/p1")
+        XCTAssertEqual(HorizontalBoard.padPath(forPadPolygonID: "PKGÉ/pad/p1"), "pkgé/p1")
+        XCTAssertNil(HorizontalBoard.padPath(forPadPolygonID: "pkg/pad/"))
+        XCTAssertNil(HorizontalBoard.padPath(forPadPolygonID: "pkg/PAD/p1"))
+        XCTAssertNil(HorizontalBoard.padPath(forPadPolygonID: "pkg/hole/h1"))
+    }
+
+    /// A fill's containment index is kept with its paths across copies, and
+    /// starts again when the paths change.
+    func testAFragmentsContainmentIndexFollowsItsPaths() {
+        let inside = HorizontalPoint(x: 0, y: 0)
+        let elsewhere = HorizontalPoint(x: 100, y: 100)
+        var fragment = HorizontalPlaneFragment(paths: [square(around: inside, half: 10)], orphan: false)
+        XCTAssertTrue(fragment.containmentPaths[0].contains(inside))
+
+        let copy = fragment
+        fragment.paths = [square(around: elsewhere, half: 10)]
+        XCTAssertFalse(fragment.containmentPaths[0].contains(inside))
+        XCTAssertTrue(fragment.containmentPaths[0].contains(elsewhere))
+        XCTAssertTrue(copy.containmentPaths[0].contains(inside), "the copy keeps the index of its own paths")
+        XCTAssertNotEqual(copy, fragment)
+    }
 }
