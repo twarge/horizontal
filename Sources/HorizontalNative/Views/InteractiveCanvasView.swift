@@ -2244,7 +2244,10 @@ private struct HorizontalUnplacedObjectColumn: View {
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: 6) {
+            // A lazy stack takes the whole width it is offered, and hovering
+            // widens the column to make room for the labels: centred, the
+            // buttons slid across to the middle of the wider column.
+            LazyVStack(alignment: labelSide == .trailing ? .leading : .trailing, spacing: 6) {
                 ForEach(objects) { object in
                     HorizontalRailHelpLabel(title: helpText(for: object), labelOffset: 54) {
                         Button {
