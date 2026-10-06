@@ -191,6 +191,9 @@ struct BoardCanvasView: View {
         /// ref instead of registering a "Move" undo — the placement is one
         /// undoable step ("Add Text"), finalized only when real content is typed.
         var editTextRefOnCommit: String? = nil
+        /// The move's live rats' nest (`BoardSelectableCache.requestMovingAirwires`),
+        /// for a move that carries a package.
+        var airwireRequest: Int? = nil
     }
 
     #if os(macOS)
@@ -3498,6 +3501,10 @@ struct BoardCanvasView: View {
     /// the board under the cursor (Horizon's map-package tool). Read-only,
     /// or without a pool to bake from, it is only selected.
     private func selectUnplacedObject(_ object: HorizontalUnplacedObject) {
+        // A pick from this list need not be a click on the canvas (VoiceOver,
+        // the keyboard), so take the keys here: R, E and Esc now belong to the
+        // package being placed.
+        onRequestKeyboardFocus()
         selectedObjects = []
         hoveredObject = nil
         selectedUnplacedObjectID = object.id
@@ -3649,7 +3656,8 @@ struct BoardCanvasView: View {
             originalBoard: board,
             tracksCursor: true,
             snapTargets: snapTargets,
-            residentMovePlan: plan
+            residentMovePlan: plan,
+            airwireRequest: startMovingAirwires(plan: plan, board: board)
         )
         HorizontalMoveRateDiagnostics.beginMove(
             tracksCursor: true,
@@ -3789,6 +3797,9 @@ struct BoardCanvasView: View {
         let residentMovePlan = measure("resident plan") {
             boardResidentMovePlan(for: moveSelection, in: originalBoard)
         }
+        let airwireRequest = measure("moving airwires") {
+            startMovingAirwires(plan: residentMovePlan, board: originalBoard)
+        }
         measure("state assign") {
             moveState = MoveState(
                 startPoint: start,
@@ -3797,7 +3808,8 @@ struct BoardCanvasView: View {
                 tracksCursor: tracksCursor,
                 snapTargets: snapTargets,
                 residentMovePlan: residentMovePlan,
-                editTextRefOnCommit: editTextRefOnCommit
+                editTextRefOnCommit: editTextRefOnCommit,
+                airwireRequest: airwireRequest
             )
             hoveredObject = nil
         }
@@ -3877,6 +3889,11 @@ struct BoardCanvasView: View {
         if totalDelta == .zero {
             measure("clear move state") {
                 moveState = nil
+            }
+            // Its scene is kept, with the moving nets' airwires patched out
+            // for the live ones; rebuild to bring them back.
+            if let airwireRequest = state.airwireRequest, selectableCache.movingAirwires(for: airwireRequest) != nil {
+                invalidateSelectableCache()
             }
             measure("publish selection") {
                 publishSelectionContext()
@@ -9487,6 +9504,7 @@ struct BoardCanvasView: View {
                     color: airwireDashColor,
                     minimumWidth: 0.9,
                     dash: (6, 4),
+                    owner: airwire.netID.map(airwireOwner),
                     to: \.connectionLines
                 )
             }
@@ -10146,7 +10164,55 @@ struct BoardCanvasView: View {
                 patches.anchoredRectTranslationPatches.append(contentsOf: metalAnchoredRectTranslationPatches(spans: spans, delta: totalDelta))
             }
         }
+
+        // The nets the move drags draw their airwires live in the preview
+        // overlay; their resident airwires go transparent meanwhile.
+        if let airwireRequest = moveState.airwireRequest,
+           let movingAirwires = selectableCache.movingAirwires(for: airwireRequest) {
+            let transparent = HorizontalMetalRGBA(red: 0, green: 0, blue: 0, alpha: 0)
+            for netID in movingAirwires.netIDs {
+                let owner = airwireOwner(netID: netID)
+                guard let spans = metadata.lineSpansByRef[owner],
+                      let primitives = metadata.linePrimitivesByRef[owner] else {
+                    continue
+                }
+                let hidden = primitives.map { primitive in
+                    var primitive = primitive
+                    primitive.color = transparent
+                    return primitive
+                }
+                patches.linePatches.append(contentsOf: metalLinePatches(spans: spans, primitives: hidden))
+            }
+        }
         return patches
+    }
+
+    /// What a net's resident airwires are drawn under, so a move can find and
+    /// hide them while it draws that net's live ones.
+    private func airwireOwner(netID: String) -> HorizontalSelectableRef {
+        HorizontalSelectableRef(id: "airwire/" + normalizedID(netID), type: .connectionLine)
+    }
+
+    /// Starts making the live rats' nest of a move that carries a package, as
+    /// Horizon's move tool keeps one; nil for any other move.
+    private func startMovingAirwires(plan: BoardResidentMovePlan, board: HorizontalBoard) -> Int? {
+        let packageIDs = Set(plan.translatedRefs.filter { $0.type == .boardPackage }.map { normalizedID($0.id) })
+        guard modeProfile.mode == .board, !packageIDs.isEmpty else {
+            return nil
+        }
+        let viaIDs = Set(plan.translatedRefs.filter { $0.type == .via }.map { normalizedID($0.id) })
+        let junctionIDs = Set(plan.translatedRefs.filter { $0.type == .junction }.map { normalizedID($0.id) })
+        var segmentEnds = [String: (from: Bool, to: Bool)]()
+        for ref in plan.translatedRefs where ref.type == .track || ref.type == .boardNetTie {
+            segmentEnds[normalizedID(ref.id)] = (true, true)
+        }
+        for (ref, move) in plan.segmentMoves {
+            segmentEnds[normalizedID(ref.id)] = (move.movesFrom, move.movesTo)
+        }
+        let movingSegmentEnds = segmentEnds
+        return selectableCache.requestMovingAirwires {
+            board.movingAirwires(packageIDs: packageIDs, viaIDs: viaIDs, junctionIDs: junctionIDs, segmentEnds: movingSegmentEnds)
+        }
     }
 
     private func boardMetalLineEndpointPatch(
@@ -11966,6 +12032,27 @@ struct BoardCanvasView: View {
                         )
                     )
                 }
+            }
+        }
+
+        // A move's live airwires, styled as the resident ones they stand in for.
+        if displayOptions.connectionLines,
+           canPatchBoardMoveInMetal,
+           let state = moveState,
+           let airwireRequest = state.airwireRequest,
+           let airwires = selectableCache.movingAirwireSegments(for: airwireRequest, offset: state.lastPoint - state.startPoint) {
+            let color = HorizontalMetalRGBA(theme.airwire.opacity(0.72))
+            for airwire in airwires {
+                lines.append(
+                    HorizontalMetalLinePrimitive(
+                        from: airwire.from,
+                        to: airwire.to,
+                        color: color,
+                        minimumWidth: 0.9,
+                        dashLength: 6,
+                        dashGap: 4
+                    )
+                )
             }
         }
 
