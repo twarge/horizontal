@@ -40,13 +40,20 @@ struct HorizontalIPadProjectView: View {
     @State private var highlightedNetIDs = Set<String>()
     @State private var selectedComponentIDs = Set<String>()
     @State private var highlightedComponentIDs = Set<String>()
-    /// The top-level sheet the schematic pane shows; nil means the first.
-    /// Nothing in the iPad's own chrome changes it yet — an intent's zoom-to
-    /// does, when what it frames is on another sheet.
+    /// The top-level sheet the schematic pane shows; nil means the first. The
+    /// navigator changes it, and so does an intent's zoom-to when what it
+    /// frames is on another sheet.
     @State private var schematicSheetID: String?
+    // The project navigator: a left-hand column where there is room (the macOS
+    // workspace's sidebar), a sheet on a phone. Its selection is what was last
+    // picked in it; nil follows the sheet the schematic shows.
+    @State private var navigatorPresented = false
+    @State private var compactNavigatorPresented = false
+    @State private var navigatorSelection: ProjectNavigatorSelection?
+    @State private var navigatorSearchText = ""
     /// Counts schematic edits, for the live document's revision.
     @State private var schematicEditRevision = 0
-    @StateObject private var libraryUndoTarget = HorizontalUndoTarget<HorizontalLiveSnapshot>()
+    @StateObject private var liveUndoTarget = HorizontalUndoTarget<HorizontalLiveSnapshot>()
     @Environment(\.undoManager) private var documentUndoManager
     /// The dispatch session's handle for this document while it is registered
     /// live, which is what lets an App Intent reach it.
@@ -97,6 +104,7 @@ struct HorizontalIPadProjectView: View {
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorScheme) private var colorScheme
 
     init(document: Binding<HorizontalProjectDocument>, fileURL: URL?) {
         self._document = document
@@ -167,18 +175,23 @@ struct HorizontalIPadProjectView: View {
         // navigation bar (filename + back-to-Files + the document menu). Wrapping
         // the content in another NavigationStack stacked a second, redundant bar
         // (the duplicate document title) beneath it.
-        // The sidebar pushes the canvases aside on iPad so it never covers the board;
-        // compact widths keep the overlay, where a 340pt column would crush the canvas.
-        HorizontalInspectorSidebar(isPresented: rightPane != nil && !isCompact, pushesContent: true) {
-            VStack(spacing: 0) {
-                if let project {
-                    paneSplit(for: project)
-                } else {
-                    statusView
+        // Both sidebars push the canvases aside on iPad so neither covers the board;
+        // a compact width shows them as sheets instead, where a column would crush
+        // the canvas.
+        HorizontalInspectorSidebar(edge: .leading, isPresented: navigatorPresented && !isCompact, width: 280) {
+            HorizontalInspectorSidebar(isPresented: rightPane != nil && !isCompact, pushesContent: true) {
+                VStack(spacing: 0) {
+                    if let project {
+                        paneSplit(for: project)
+                    } else {
+                        statusView
+                    }
                 }
+            } inspector: {
+                rightPaneContent
             }
         } inspector: {
-            rightPaneContent
+            navigatorPanel
         }
         // DocumentGroup supplies the navigation bar, and with `navigationDocument`
         // the title too: the file's name, the icon, and the Rename/Move/Share
@@ -213,7 +226,11 @@ struct HorizontalIPadProjectView: View {
                         ToolbarSpacer(.flexible, placement: .bottomBar)
                     }
                     if availablePanes(for: project).count > 1 {
-                        ToolbarItem(placement: .bottomBar) {
+                        // A group of image items, one per pane, sharing one
+                        // capsule. A segmented picker is a custom view, which
+                        // stays horizontal-only, so it held the bottom bar
+                        // while a foldable's side bar took the other buttons.
+                        ToolbarItemGroup(placement: .bottomBar) {
                             panePicker(for: project)
                                 .labelStyle(.iconOnly)
                         }
@@ -225,10 +242,22 @@ struct HorizontalIPadProjectView: View {
                     }
                     .sharedBackgroundVisibility(toolbarBackgroundVisibility)
                 } else {
-                    // One ToolbarItem so everything shares a single glass island —
-                    // separate items each get their own capsule.
-                    ToolbarItem(placement: .topBarTrailing) {
-                        regularToolbarIsland(for: project)
+                    ToolbarItem(placement: .topBarLeading) {
+                        navigatorToggle
+                    }
+                    .sharedBackgroundVisibility(toolbarBackgroundVisibility)
+                    // Two islands: the document's verbs, then what the window
+                    // shows. Each is a group of image items rather than one
+                    // custom view, so a narrow window folds buttons into the
+                    // overflow menu one at a time; a single custom view could
+                    // only go all at once.
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        documentToolbarItems(for: project)
+                    }
+                    .sharedBackgroundVisibility(toolbarBackgroundVisibility)
+                    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        viewToolbarItems(for: project)
                     }
                     .sharedBackgroundVisibility(toolbarBackgroundVisibility)
                 }
@@ -237,11 +266,18 @@ struct HorizontalIPadProjectView: View {
         .sheet(isPresented: $settingsSheetPresented) {
             settingsSheet
         }
-        // On a phone the inspector and the export panel slide up over the
-        // canvas instead of beside it; at the medium detent the canvas
-        // behind stays live, so a selection can be inspected and changed.
-        .sheet(item: compactRightPane) { _ in
-            rightPaneContent
+        // On a phone the navigator, the inspector and the export panel slide
+        // up over the canvas instead of beside it; at the medium detent the
+        // canvas behind stays live, so a selection can be inspected and changed.
+        .sheet(item: compactSheet) { sheet in
+            Group {
+                switch sheet {
+                case .navigator:
+                    navigatorPanel
+                case .rightPane:
+                    rightPaneContent
+                }
+            }
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
@@ -272,6 +308,9 @@ struct HorizontalIPadProjectView: View {
         .onChange(of: rightPane) { _, _ in
             scheduleViewStateSave()
         }
+        .onChange(of: navigatorPresented) { _, _ in
+            scheduleViewStateSave()
+        }
         .onDisappear {
             viewStateSaveTask?.cancel()
             viewStateSaveTask = nil
@@ -292,6 +331,9 @@ struct HorizontalIPadProjectView: View {
             if sizeClass == .compact, visiblePanes.count > 1 {
                 visiblePanes = [focusedPane]
             }
+            // The phone's navigator sheet belongs to the compact width; left
+            // set, it would come back up on the next return to it.
+            compactNavigatorPresented = false
         }
         .task(id: loadIdentity) {
             loadProject()
@@ -332,15 +374,144 @@ struct HorizontalIPadProjectView: View {
 
     /// The active right-slide-over pane — the selection inspector or the export panel
     /// (mutually exclusive, like the macOS workspace's single right sidebar).
-    /// The right-hand pane as a sheet: set only on a compact width, so the
-    /// sidebar and the sheet never both show, and either way `rightPane` is
-    /// the one state behind both.
-    private var compactRightPane: Binding<HorizontalIPadRightPane?> {
+    /// The phone's one sheet: the navigator or the right-hand pane, set only on
+    /// a compact width so a sidebar and a sheet never both show. Either way
+    /// `rightPane` is the one state behind the inspector and export panel.
+    private var compactSheet: Binding<HorizontalIPadCompactSheet?> {
         Binding {
-            isCompact ? rightPane : nil
-        } set: { pane in
-            rightPane = pane
+            guard isCompact else {
+                return nil
+            }
+            if compactNavigatorPresented {
+                return .navigator
+            }
+            return rightPane.map(HorizontalIPadCompactSheet.rightPane)
+        } set: { sheet in
+            compactNavigatorPresented = sheet == .navigator
+            if case .rightPane(let pane) = sheet {
+                rightPane = pane
+            } else {
+                rightPane = nil
+            }
         }
+    }
+
+    /// The left-hand panel: the macOS workspace's navigator, with the search
+    /// field macOS keeps in its toolbar on top.
+    @ViewBuilder
+    private var navigatorPanel: some View {
+        if let project {
+            VStack(spacing: 0) {
+                navigatorSearchField
+                ProjectNavigatorView(
+                    project: project,
+                    selection: navigatorSelectionBinding,
+                    searchText: $navigatorSearchText,
+                    availableBlockIDs: shownBlockIDs(in: project),
+                    highlightedNetIDs: highlightedNetIDs,
+                    highlightColor: appearanceSettings.palette(for: .schematic, colorScheme: colorScheme).junction,
+                    allowsSheetEditing: !isReadOnly,
+                    onRenameSheet: { schematicURL, sheetID, name in
+                        renameSheet(sheetID: sheetID, to: name, schematicURL: schematicURL)
+                    },
+                    onReorderSheets: { schematicURL, orderedIDs in
+                        reorderSheets(orderedIDs, schematicURL: schematicURL)
+                    }
+                )
+                .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
+            }
+        }
+    }
+
+    private var navigatorSearchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search", text: $navigatorSearchText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+            if !navigatorSearchText.isEmpty {
+                Button {
+                    navigatorSearchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear Search")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 4)
+    }
+
+    /// What the navigator shows selected: the last pick, or else the sheet the
+    /// schematic is on, so a sheet an intent turned to is the one marked.
+    private var navigatorSelectionBinding: Binding<ProjectNavigatorSelection?> {
+        Binding {
+            navigatorSelection ?? currentSheetSelection
+        } set: { selection in
+            navigatorSelection = selection
+            showNavigatorSelection(selection)
+        }
+    }
+
+    private var currentSheetSelection: ProjectNavigatorSelection? {
+        guard let project, let schematic = project.schematic,
+              let sheet = currentSchematicSheet(in: schematic) else {
+            return nil
+        }
+        if let blockID = shownBlockIDs(in: project).first {
+            return .sheet(blockID: blockID, sheetID: sheet.id)
+        }
+        return .standaloneSheet(sheet.id)
+    }
+
+    /// The blocks whose sheets the schematic pane can show: the iPad shows the
+    /// top schematic only, and a sheet of any other block has nowhere to go.
+    private func shownBlockIDs(in project: HorizontalProject) -> Set<String> {
+        guard let url = project.schematic?.url.standardizedFileURL else {
+            return []
+        }
+        return Set(project.schematics
+            .filter { $0.schematic.url.standardizedFileURL == url }
+            .map(\.block.uuid))
+    }
+
+    /// Brings up what a navigator row names. A phone's navigator is a sheet over
+    /// the canvas, so it gets out of the way once a row has gone somewhere.
+    private func showNavigatorSelection(_ selection: ProjectNavigatorSelection?) {
+        guard let project else {
+            return
+        }
+        switch selection {
+        case .sheet(_, let sheetID), .standaloneSheet(let sheetID):
+            showSchematicSheet(sheetID)
+        case .block(let blockID):
+            guard let sheet = project.schematics.first(where: { $0.block.uuid == blockID })?.schematic.sheets.first else {
+                return
+            }
+            showSchematicSheet(sheet.id)
+        case .board:
+            showPane(.board)
+        default:
+            return
+        }
+        compactNavigatorPresented = false
+    }
+
+    private func showSchematicSheet(_ sheetID: String) {
+        guard project?.schematic?.sheets.contains(where: { $0.id == sheetID }) == true else {
+            return
+        }
+        schematicSheetID = sheetID
+        showPane(.schematic)
     }
 
     @ViewBuilder
@@ -473,11 +644,19 @@ struct HorizontalIPadProjectView: View {
     private func compactMoreMenu(for project: HorizontalProject) -> some View {
         Menu {
             Button {
+                rightPane = nil
+                compactNavigatorPresented = true
+            } label: {
+                Label("Navigator", systemImage: "sidebar.leading")
+            }
+            Button {
+                compactNavigatorPresented = false
                 rightPane = rightPane == .inspector ? nil : .inspector
             } label: {
                 Label("Inspector", systemImage: "sidebar.trailing")
             }
             Button {
+                compactNavigatorPresented = false
                 rightPane = rightPane == .export ? nil : .export
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
@@ -507,42 +686,55 @@ struct HorizontalIPadProjectView: View {
         }
     }
 
-    /// All the top-bar controls in one view, so the single ToolbarItem hosting
-    /// it renders them as one shared glass island — spacing alone separates the
-    /// controls.
-    private func regularToolbarIsland(for project: HorizontalProject) -> some View {
-        HStack(spacing: 14) {
-            readOnlyLockButton
-            if HorizontalVoiceControl.isAvailable {
-                HorizontalVoiceControlButton(control: voiceControl)
-            }
+    /// Shows and hides the navigator column, where the system puts a split
+    /// view's sidebar button: the top bar's leading edge.
+    private var navigatorToggle: some View {
+        Button {
+            navigatorPresented.toggle()
+        } label: {
+            Label(navigatorPresented ? "Hide Navigator" : "Show Navigator", systemImage: "sidebar.leading")
+        }
+    }
+
+    /// The top bar's first island: what acts on the document. Labels keep their
+    /// titles, which the bar's overflow menu shows when it takes a button.
+    @ViewBuilder
+    private func documentToolbarItems(for project: HorizontalProject) -> some View {
+        readOnlyLockButton
+        if HorizontalVoiceControl.isAvailable {
+            HorizontalVoiceControlButton(control: voiceControl)
+        }
+        Button {
+            settingsSheetPresented = true
+        } label: {
+            Label("Settings", systemImage: "gear")
+        }
+        if project.board != nil {
             Button {
-                settingsSheetPresented = true
+                rulesSheetPresented = true
             } label: {
-                Label("Settings", systemImage: "gear")
-            }
-            Button {
-                rightPane = rightPane == .inspector ? nil : .inspector
-            } label: {
-                Label("Inspector", systemImage: "sidebar.trailing")
-            }
-            if project.board != nil {
-                Button {
-                    rulesSheetPresented = true
-                } label: {
-                    Label("Board Rules", systemImage: "checklist")
-                }
-            }
-            Button {
-                rightPane = rightPane == .export ? nil : .export
-            } label: {
-                Label("Export", systemImage: "square.and.arrow.up")
-            }
-            if availablePanes(for: project).count > 1 {
-                panePicker(for: project)
+                Label("Board Rules", systemImage: "checklist")
             }
         }
-        .labelStyle(.iconOnly)
+        Button {
+            rightPane = rightPane == .export ? nil : .export
+        } label: {
+            Label("Export", systemImage: "square.and.arrow.up")
+        }
+    }
+
+    /// The second island: what the window shows. The panes, then the
+    /// inspector, which opens on the trailing edge its button sits nearest.
+    @ViewBuilder
+    private func viewToolbarItems(for project: HorizontalProject) -> some View {
+        if availablePanes(for: project).count > 1 {
+            panePicker(for: project)
+        }
+        Button {
+            rightPane = rightPane == .inspector ? nil : .inspector
+        } label: {
+            Label("Inspector", systemImage: "sidebar.trailing")
+        }
     }
 
     /// The read-only lock: shows the document's effective read-only state and
@@ -584,32 +776,24 @@ struct HorizontalIPadProjectView: View {
         }
     }
 
-    /// Pane chooser. A regular width class (iPad) toggles panes independently so the
-    /// schematic and the board can sit side by side; a compact one (iPhone) keeps the
-    /// old exclusive segmented control, since there is no room for two. Both live
-    /// inside the toolbar island, so neither draws its own grouped chrome (no
-    /// ControlGroup — that would nest a second bordered capsule in the island).
+    /// Pane chooser, one toggle per pane. A regular width class (iPad) toggles panes
+    /// independently so the schematic and the board can sit side by side; a compact
+    /// one (iPhone) shows one pane at a time, so turning a pane on turns the rest off.
+    /// Each toggle is its own image item in a toolbar group, never a ControlGroup
+    /// (that would nest a second bordered capsule in the group's): the top bar can
+    /// fold them into its overflow menu one by one, and the compact bottom bar can
+    /// move them into a foldable's side bar.
     @ViewBuilder
     private func panePicker(for project: HorizontalProject) -> some View {
         let panes = availablePanes(for: project)
-        if isCompact {
-            Picker("View", selection: exclusivePaneSelection(among: panes)) {
-                ForEach(panes) { pane in
-                    Label(pane.title, systemImage: pane.symbolName)
-                        .tag(pane)
-                }
+        ForEach(panes) { pane in
+            Toggle(isOn: isCompact
+                ? exclusivePaneBinding(for: pane, among: panes)
+                : paneVisibilityBinding(for: pane, among: panes)) {
+                Label(pane.title, systemImage: pane.symbolName)
             }
-            .pickerStyle(.segmented)
-            .labelStyle(.iconOnly)
-            .fixedSize()
-        } else {
-            ForEach(panes) { pane in
-                Toggle(isOn: paneVisibilityBinding(for: pane, among: panes)) {
-                    Label(pane.title, systemImage: pane.symbolName)
-                }
-                .toggleStyle(.button)
-                .accessibilityLabel("Show \(pane.title)")
-            }
+            .toggleStyle(.button)
+            .accessibilityLabel("Show \(pane.title)")
         }
     }
 
@@ -623,10 +807,12 @@ struct HorizontalIPadProjectView: View {
         HorizontalPane.allCases.filter { visiblePanes.contains($0) }
     }
 
-    private func exclusivePaneSelection(among panes: [HorizontalPane]) -> Binding<HorizontalPane> {
+    private func exclusivePaneBinding(for pane: HorizontalPane, among panes: [HorizontalPane]) -> Binding<Bool> {
         Binding {
-            orderedVisiblePanes.first ?? panes.first ?? .schematic
-        } set: { pane in
+            (orderedVisiblePanes.first ?? panes.first) == pane
+        } set: { isOn in
+            // Tapping the pane already shown leaves it shown.
+            guard isOn else { return }
             visiblePanes = [pane]
             focusedPane = pane
         }
@@ -1088,6 +1274,61 @@ struct HorizontalIPadProjectView: View {
         try HorizontalPoolCacheUpdater.validate(archive, against: current)
         HorizontalPoolLibrary.invalidateCache()
         HorizontalPoolPadstacks.invalidateCaches()
+        try applyArchiveEdit(archive, to: current, actionName: "Update Project Parts") {
+            try review.requireSourcesCurrent()
+        }
+    }
+
+    /// Sheet edits go through the archive and a reload, as on macOS: the loader
+    /// bakes each page's number, the page count and its title into the title
+    /// block, and the page numbers into net labels' off-sheet references, so
+    /// changing the model alone would leave the drawing with the old numbers.
+    private func renameSheet(sheetID: String, to name: String, schematicURL: URL) {
+        guard !isReadOnly, let current = project else {
+            return
+        }
+        do {
+            var archive = document.archive
+            try HorizontalProjectJSONApplicator.apply(
+                sheetName: name,
+                forSheetID: sheetID,
+                schematicURL: schematicURL,
+                in: current,
+                to: &archive
+            )
+            try applyArchiveEdit(archive, to: current, actionName: "Rename Sheet")
+        } catch {
+            loadError = "Couldn't rename the sheet: \(error.localizedDescription)"
+        }
+    }
+
+    private func reorderSheets(_ orderedSheetIDs: [String], schematicURL: URL) {
+        guard !isReadOnly, let current = project else {
+            return
+        }
+        do {
+            var archive = document.archive
+            try HorizontalProjectJSONApplicator.apply(
+                sheetOrder: orderedSheetIDs,
+                schematicURL: schematicURL,
+                in: current,
+                to: &archive
+            )
+            try applyArchiveEdit(archive, to: current, actionName: "Reorder Sheets")
+        } catch {
+            loadError = "Couldn't reorder the sheets: \(error.localizedDescription)"
+        }
+    }
+
+    /// Makes an edited archive the document, reloaded into the project, with
+    /// the one it replaces on the undo stack. `beforeInstall` runs once the
+    /// reload is done and can still turn the edit away.
+    private func applyArchiveEdit(
+        _ archive: HorizontalProjectArchive,
+        to current: HorizontalProject,
+        actionName: String,
+        beforeInstall: () throws -> Void = {}
+    ) throws {
         var reloaded = try HorizontalProject.loadSnapshot(of: archive)
         var previousProject = current
         if previousProject.poolModelFiles != nil || HorizontalProject.poolModelsChanged(from: document.archive, to: archive, poolDirectory: current.poolDirectory) {
@@ -1095,17 +1336,17 @@ struct HorizontalIPadProjectView: View {
             try reloaded.retainPoolModels(in: archive, reusing: previousProject.poolModelFiles)
         }
         reloaded.rebaseURLs(onto: current)
-        try review.requireSourcesCurrent()
-        libraryUndoTarget.configure(
+        try beforeInstall()
+        liveUndoTarget.configure(
             currentValue: { HorizontalLiveSnapshot(archive: document.archive, project: project ?? current) },
-            restoreValue: { installLibrarySnapshot($0) }
+            restoreValue: { installLiveSnapshot($0) }
         )
-        libraryUndoTarget.registerUndo(from: HorizontalLiveSnapshot(archive: document.archive, project: previousProject),
-                                       actionName: "Update Project Parts", undoManager: documentUndoManager)
-        installLibrarySnapshot(HorizontalLiveSnapshot(archive: archive, project: reloaded))
+        liveUndoTarget.registerUndo(from: HorizontalLiveSnapshot(archive: document.archive, project: previousProject),
+                                    actionName: actionName, undoManager: documentUndoManager)
+        installLiveSnapshot(HorizontalLiveSnapshot(archive: archive, project: reloaded))
     }
 
-    private func installLibrarySnapshot(_ snapshot: HorizontalLiveSnapshot) {
+    private func installLiveSnapshot(_ snapshot: HorizontalLiveSnapshot) {
         if let board = snapshot.project.board, let previous = project?.board,
            HorizontalBoardPlaneInputs.signature(of: board) != HorizontalBoardPlaneInputs.signature(of: previous) {
             planePourCache = HorizontalPlanePourCache()
@@ -1413,6 +1654,7 @@ struct HorizontalIPadProjectView: View {
             selectedComponentIDs.removeAll()
             highlightedComponentIDs.removeAll()
             schematicSheetID = nil
+            navigatorSelection = nil
             selectionDetailsByPane.removeAll()
             restoreViewState(for: loadedProject)
             registerLiveDocument(loadedProject)
@@ -1436,7 +1678,12 @@ struct HorizontalIPadProjectView: View {
             return
         }
 
-        if let stored = HorizontalFileViewStateStore.shared.load(for: fileURL, projectID: project.uuid) {
+        let stored = HorizontalFileViewStateStore.shared.load(for: fileURL, projectID: project.uuid)
+        // As on macOS: a remembered choice wins; otherwise the navigator earns
+        // its column only when there is more than one sheet to go between.
+        navigatorPresented = stored?.showsNavigatorSidebar
+            ?? (project.schematics.reduce(0) { $0 + $1.schematic.sheets.count } > 1)
+        if let stored {
             var panes = stored.visiblePanes.intersection(availablePanes(for: project))
             if isCompact, panes.count > 1, let first = panes.sorted(by: { $0.rawValue < $1.rawValue }).first {
                 panes = [first]
@@ -1481,6 +1728,7 @@ struct HorizontalIPadProjectView: View {
         // (viewports, display options, window size) survive the round trip.
         var state = HorizontalFileViewStateStore.shared.load(for: fileURL, projectID: project?.uuid) ?? .default
         state.visiblePanes = visiblePanes
+        state.showsNavigatorSidebar = navigatorPresented
         state.paneSizeFractions = paneSizeFractions.mapValues(Double.init)
         switch rightPane {
         case .inspector:
@@ -1613,9 +1861,9 @@ struct HorizontalIPadProjectView: View {
             showPane(.schematic)
             // The iPad shows the top block's schematic; a sheet from another
             // block has nowhere to go and leaves the current one alone.
-            if project?.schematic?.sheets.contains(where: { $0.id == sheetID }) == true {
-                schematicSheetID = sheetID
-            }
+            showSchematicSheet(sheetID)
+            // The navigator goes back to marking the sheet on screen.
+            navigatorSelection = nil
         }
         live.currentSheet = {
             guard let schematic = project?.schematic else {
@@ -1739,6 +1987,14 @@ private struct NavigationDocumentModifier: ViewModifier {
 enum HorizontalIPadRightPane: Identifiable {
     case inspector
     case export
+
+    var id: Self { self }
+}
+
+/// What a phone shows in its sheet.
+enum HorizontalIPadCompactSheet: Hashable, Identifiable {
+    case navigator
+    case rightPane(HorizontalIPadRightPane)
 
     var id: Self { self }
 }
