@@ -98,6 +98,16 @@ final class HorizontalDispatchSession: @unchecked Sendable {
         copy.frozen = original.frozen
         copy.loadedAt = original.loadedAt
         copy.readMetadata = original.metadata
+        // What the board canvas draws is a live document closure, so it is
+        // read now, as a value, while the caller holds the main actor (the
+        // live channel prepares its reads there).
+        if let live = original.live, Thread.isMainThread {
+            let drawn = HorizontalUnsafeSendableBox<HorizontalDrawnAirwires?>(nil)
+            MainActor.assumeIsolated {
+                drawn.value = live.drawnAirwires()
+            }
+            copy.liveCanvas = .init(drawnAirwires: drawn.value)
+        }
         session.entries[handle] = copy
         return session
     }
@@ -319,6 +329,12 @@ final class HorizontalDispatchProjectEntry {
     var frozen = false
     var origin: JSONDictionary?
     var readMetadata: JSONDictionary?
+    /// On a detached read copy of a live document: what its board canvas drew
+    /// when the copy was taken. Nil on the live entry itself and on disk ones.
+    struct LiveCanvas {
+        var drawnAirwires: HorizontalDrawnAirwires?
+    }
+    var liveCanvas: LiveCanvas?
     var revision: String { "\(instanceID):\(generation):\(snapshot?.id ?? "unknown")" }
     var metadata: JSONDictionary {
         if let readMetadata { return readMetadata }

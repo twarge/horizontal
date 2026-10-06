@@ -1253,18 +1253,28 @@ def zoom_to(path: str | None = None, refdes: str | None = None, net: str | None 
 
 
 @_tool
-def render_viewport(path: str | None = None, pane: str = "board", dpi: float = 110, airwires: bool = True) -> dict[str, Any]:
+def render_viewport(path: str | None = None, pane: str = "board", dpi: float = 110, airwires: bool | None = None,
+                    region: Region | None = None) -> dict[str, Any]:
     """Render what the app's board or schematic pane currently shows, as a PNG in the exporter's drawing style. Needs the project open in Horizontal.
 
-    On the board the airwires are drawn over it, dashed in blue: the ones the board canvas draws, which the
-    exporter does not. airwires in the reply says whose they are (source "canvas", or "connectivity" when the
-    canvas gave none), how many are in view, whether the pane's Connections switch shows them (shown), and
-    matches_check: whether they are the ones check reports, with the nets that differ. airwires=false leaves
-    them off the picture."""
+    On the board the airwires are drawn over it, dashed in blue, when the pane's Connections switch shows them:
+    the ones the board canvas draws, which the exporter does not. airwires=true draws them with the switch off,
+    false leaves them off. airwires in the reply says whose they are (source "canvas", or "connectivity" when the
+    canvas gave none), how many are in view, whether the switch shows them (shown), whether this picture has
+    them (drawn), and matches_check: whether they are the ones check reports, with the nets that differ.
+
+    A fitted pane spends much of the picture on margins and notes; region {min_x_mm, min_y_mm, max_x_mm,
+    max_y_mm} renders only that part of what it shows, as large as the whole view would be, so in more detail. The reply
+    gives view (what the pane shows), region (what was drawn) and px_per_mm."""
     project = _resolve(path)
     if not project.is_live:
         raise ValueError("The project is not open in Horizontal, so there is no viewport to render.")
-    return project._call("render_viewport", pane=pane, dpi=dpi, max_pixels=2400, airwires=airwires)
+    params: dict[str, Any] = {}
+    if airwires is not None:
+        params["airwires"] = airwires
+    if region is not None:
+        params["region"] = region.model_dump()
+    return project._call("render_viewport", pane=pane, dpi=dpi, max_pixels=2400, **params)
 
 
 @_tool

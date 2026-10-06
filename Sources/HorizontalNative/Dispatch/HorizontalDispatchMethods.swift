@@ -450,8 +450,9 @@ enum HorizontalDispatchMethods {
             params: [
                 "handle": "Live project handle.",
                 "pane": "board or schematic (default board).",
-                "airwires": "Draw the airwires on a board render (default true). The reply's airwires says whose they are either way.",
-                "dpi": "Resolution (default 150).",
+                "airwires": "Draw the airwires on a board render (default: as the pane's Connections switch does). The reply's airwires says whose they are either way.",
+                "region": "Optional {min_x_mm, min_y_mm, max_x_mm, max_y_mm}: only that part of what the pane shows, drawn as large as the whole view would be, so in more detail.",
+                "dpi": "Resolution of the exporter's page (default 150); the reply's px_per_mm says what it came to on the design.",
                 "max_pixels": "Cap on the longer side (default 4096).",
                 "output_path": "Write the PNG here instead of returning it base64-encoded."
             ],
@@ -1006,7 +1007,7 @@ enum HorizontalDispatchMethods {
     /// what its board canvas draws beside it.
     private static func airwiresSourceJSON(_ entry: HorizontalDispatchProjectEntry, board: HorizontalBoard) -> JSONDictionary {
         var json: JSONDictionary = ["source": "connectivity"]
-        guard entry.live != nil else {
+        guard entry.live != nil || entry.liveCanvas != nil else {
             json["note"] = "counts.airwires is the editor's connectivity pass over the files, the set check reports."
             return json
         }
@@ -1017,8 +1018,12 @@ enum HorizontalDispatchMethods {
     }
 
     /// The airwires a live entry's board canvas draws, read on the main thread
-    /// the live channel answers on; nil for a disk context or a hidden pane.
+    /// the live channel answers on, or as a detached read copy took them; nil
+    /// for a disk context or a hidden pane.
     private static func canvasAirwires(_ entry: HorizontalDispatchProjectEntry) -> HorizontalDrawnAirwires? {
+        if let captured = entry.liveCanvas {
+            return captured.drawnAirwires
+        }
         guard let live = entry.live, Thread.isMainThread else {
             return nil
         }
@@ -1630,10 +1635,25 @@ enum HorizontalDispatchMethods {
         MainActor.assumeIsolated {
             state.value = (live.visibleBounds(wanted), live.currentSheet())
         }
-        guard let region = state.value.0, !region.isEmpty else {
+        guard let view = state.value.0, !view.isEmpty else {
             throw HorizontalDispatchError.notFound("The \(wanted == .board ? "board" : "schematic") pane is not showing anything.")
         }
-        let dpi = params.double("dpi") ?? 150
+        // A fitted pane spends most of its pixels on margins, notes and
+        // dimension lines, so a part of what it shows can be asked for. It is
+        // drawn as large as the whole would have been, so in more detail.
+        let region: HorizontalRect
+        var dpi = params.double("dpi") ?? 150
+        if let asked = try regionParam(params) {
+            let minX = max(asked.minX, view.minX), maxX = min(asked.maxX, view.maxX)
+            let minY = max(asked.minY, view.minY), maxY = min(asked.maxY, view.maxY)
+            guard maxX > minX, maxY > minY else {
+                throw HorizontalDispatchError.invalidParams("region is outside what the pane shows (\(HorizontalDispatchJSON.rect(view))).")
+            }
+            region = HorizontalRect(points: [HorizontalPoint(x: minX, y: minY), HorizontalPoint(x: maxX, y: maxY)])
+            dpi *= max(view.maxX - view.minX, view.maxY - view.minY) / max(maxX - minX, maxY - minY)
+        } else {
+            region = view
+        }
         let maxPixels = params.int("max_pixels") ?? 4096
         let project = try entry.snapshot?.materializedProject() ?? entry.project
         var result: JSONDictionary
@@ -1644,7 +1664,9 @@ enum HorizontalDispatchMethods {
             let reported = entry.project.board?.airwires ?? []
             let drawn = canvasAirwires(entry)
             let airwires = drawn?.airwires ?? reported
-            let drawsAirwires = params.bool("airwires") ?? true
+            // As the pane does: with its Connections switch off, none, unless
+            // they are asked for.
+            let drawsAirwires = params.bool("airwires") ?? (drawn?.shown ?? true)
             let image = try HorizontalDispatchRender.renderBoard(project: project, layerNames: nil, mirrored: false, region: region,
                                                                  airwires: drawsAirwires ? airwires : nil, dpi: dpi, maxPixels: maxPixels)
             result = imageJSON(image, outputPath: params.string("output_path"))
@@ -1661,8 +1683,11 @@ enum HorizontalDispatchMethods {
             if drawn == nil {
                 airwiresJSON["note"] = "The board canvas gave no airwires, so these are the ones check reports."
             } else if drawn?.shown == false {
-                airwiresJSON["note"] = "The pane's Connections switch is off, so the canvas draws none of these on screen; "
-                    + "the render shows what it would draw."
+                airwiresJSON["note"] = drawsAirwires
+                    ? "The pane's Connections switch is off, so the canvas draws none of these on screen; "
+                        + "the render shows what it would draw, as asked."
+                    : "The pane's Connections switch is off, so neither the canvas nor the render draws these; "
+                        + "airwires: true draws them anyway."
             }
             result["airwires"] = airwiresJSON
         } else {
@@ -1671,6 +1696,12 @@ enum HorizontalDispatchMethods {
             result["sheet"] = ["index": sheet.index, "name": sheet.name, "id": sheet.id]
         }
         result["region"] = HorizontalDispatchJSON.rect(region)
+        result["view"] = HorizontalDispatchJSON.rect(view)
+        // dpi is the exporter's page's, which is scaled to fit the board, so
+        // this is the figure that says how much detail the picture holds.
+        if let width = result["width"] as? Int, region.maxX > region.minX {
+            result["px_per_mm"] = (Double(width) / ((region.maxX - region.minX) / 1_000_000) * 100).rounded() / 100
+        }
         result["pane"] = wanted == .board ? "board" : "schematic"
         return result
     }
