@@ -303,9 +303,95 @@ enum BoardMovePlanner {
     private static let packageGeometrySeparators: Set<String> = ["arc", "hole", "keepout", "line", "pad", "polygon", "text"]
 
     /// Derives the owning package id from a board-geometry id like
-    /// "pkg-uuid/pad/pad-uuid". Mirrors `BoardCanvasView.packageID(forGeometryID:)`.
+    /// "pkg-uuid/pad/pad-uuid", lowercased. The canvas calls this per pad, line
+    /// and text on every scene build and every package move, so the common
+    /// shape — ASCII, no empty components — is answered from one scan of the
+    /// bytes; anything else takes the exact split-and-join path.
     static func packageID(forGeometryID geometryID: String) -> String? {
-        objectIDPrefix(in: geometryID, separators: packageGeometrySeparators)
+        var id = geometryID
+        let fast: String?? = id.withUTF8 { bytes in
+            switch packagePrefixScan(bytes) {
+            case .prefix(let length):
+                return .some(String(decoding: UnsafeBufferPointer(rebasing: bytes[..<length]), as: UTF8.self).lowercased())
+            case .noPrefix:
+                return .some(nil)
+            case .needsSlowPath:
+                return nil
+            }
+        }
+        return fast ?? objectIDPrefix(in: geometryID, separators: packageGeometrySeparators)
+    }
+
+    /// `packageID(forGeometryID:) == normalizedPackageID`, without building the
+    /// prefix string: the package-geometry loops ask this of every geometry
+    /// item on the board for the one package they are moving.
+    static func geometryID(_ geometryID: String, belongsToPackage normalizedPackageID: String) -> Bool {
+        var id = geometryID
+        var candidate = normalizedPackageID
+        let fast: Bool? = id.withUTF8 { bytes in
+            switch packagePrefixScan(bytes) {
+            case .prefix(let length):
+                return candidate.withUTF8 { candidateBytes in
+                    candidateBytes.count == length
+                        && (0..<length).allSatisfy { lowercasedASCII(bytes[$0]) == candidateBytes[$0] }
+                }
+            case .noPrefix:
+                return false
+            case .needsSlowPath:
+                return nil
+            }
+        }
+        return fast ?? (objectIDPrefix(in: geometryID, separators: packageGeometrySeparators) == normalizedPackageID)
+    }
+
+    private enum PackagePrefixScan {
+        /// The package id is the first `length` bytes of the geometry id.
+        case prefix(Int)
+        case noPrefix
+        /// Non-ASCII or an empty component: `lowercased()` and `split` could
+        /// disagree with a byte scan, so only the exact path will do.
+        case needsSlowPath
+    }
+
+    private static let packageGeometrySeparatorBytes: [[UInt8]] = packageGeometrySeparators.map { Array($0.utf8) }
+
+    private static func packagePrefixScan(_ bytes: UnsafeBufferPointer<UInt8>) -> PackagePrefixScan {
+        var componentStart = 0
+        var componentCount = 0
+        var previousComponentEnd = 0
+        for offset in 0...bytes.count {
+            let atEnd = offset == bytes.count
+            if !atEnd {
+                let byte = bytes[offset]
+                if byte >= 0x80 {
+                    return .needsSlowPath
+                }
+                if byte != UInt8(ascii: "/") {
+                    continue
+                }
+            }
+            guard offset > componentStart else {
+                return .needsSlowPath
+            }
+            if componentCount > 0, isPackageGeometrySeparator(bytes, from: componentStart, to: offset) {
+                return .prefix(previousComponentEnd)
+            }
+            componentCount += 1
+            previousComponentEnd = offset
+            componentStart = offset + 1
+        }
+        return .noPrefix
+    }
+
+    private static func isPackageGeometrySeparator(_ bytes: UnsafeBufferPointer<UInt8>, from start: Int, to end: Int) -> Bool {
+        let length = end - start
+        return packageGeometrySeparatorBytes.contains { separator in
+            separator.count == length && (0..<length).allSatisfy { lowercasedASCII(bytes[start + $0]) == separator[$0] }
+        }
+    }
+
+    private static func lowercasedASCII(_ byte: UInt8) -> UInt8 {
+        (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(byte) ? byte | 0x20 : byte
     }
 
     private static func objectIDPrefix(in geometryID: String, separators: Set<String>) -> String? {

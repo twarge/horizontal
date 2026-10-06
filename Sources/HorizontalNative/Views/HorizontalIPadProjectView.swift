@@ -29,6 +29,9 @@ struct HorizontalIPadProjectView: View {
     /// Bumped when the board is replaced from outside the board canvas (a
     /// netlist reload), so the canvas adopts it.
     @State private var boardSyncRevision = 0
+    /// Bumped when "Update All Planes" lands, so the board canvas re-clips its
+    /// silkscreen then rather than on every edit.
+    @State private var planePourRevision = 0
     @State private var boardNetlistSyncTask: Task<Void, Never>?
     @State private var boardNetlistSyncRequested = false
     @State private var isPouringPlanes = false
@@ -1129,6 +1132,7 @@ struct HorizontalIPadProjectView: View {
                     toolSettings: boardToolSettings,
                     drawingLayer: boardDrawingLayer,
                     syncRevision: boardSyncRevision,
+                    planePourRevision: planePourRevision,
                     poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }
                 )
                 .overlay(alignment: .bottom) {
@@ -1491,7 +1495,11 @@ struct HorizontalIPadProjectView: View {
     /// Q, the rail button: pours every plane on the board. Mirrors the macOS
     /// workspace path minus undo, which this editor doesn't keep for board edits.
     private func updateAllBoardPlanes() {
-        guard let board = project?.board, !board.planes.isEmpty else { return }
+        guard let board = project?.board, !board.planes.isEmpty else {
+            // Nothing to pour, but Q still refreshes the silkscreen clip.
+            planePourRevision += 1
+            return
+        }
         Task {
             await pourAllPlanes(board)
         }
@@ -1543,6 +1551,7 @@ struct HorizontalIPadProjectView: View {
         planePourCache = updatedCache
         applyEditedBoard(pouredBoard, writesPlaneCache: true)
         boardSyncRevision += 1
+        planePourRevision += 1
         selectionDetailsByPane[.board] = .empty
     }
 

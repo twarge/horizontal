@@ -586,6 +586,9 @@ struct ProjectWorkspaceView: View {
     @State private var didRestoreFileViewState = false
     @State private var fileViewStateSaveTask: Task<Void, Never>?
     @State private var boardSyncRevision = 0
+    /// Bumped when "Update All Planes" lands, so the board canvas re-clips its
+    /// silkscreen then rather than on every edit.
+    @State private var planePourRevision = 0
     /// Counts every change to `project.board`'s content, so the 3D view
     /// knows to rebuild its scene (lazily, in the background).
     @State private var boardEditRevision = 0
@@ -1798,6 +1801,7 @@ struct ProjectWorkspaceView: View {
                                 toolSettings: boardToolSettings,
                                 drawingLayer: boardDrawingLayer,
                                 syncRevision: boardSyncRevision,
+                                planePourRevision: planePourRevision,
                                 onSelectDrawingLayer: { selectOrSoloBoardLayer($0) },
                                 onSelectBoardLayerView: { applyBoardLayerViewPreset($0) },
                                 poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
@@ -1812,8 +1816,10 @@ struct ProjectWorkspaceView: View {
                         MissingPaneView(message: "No board file was loaded.")
                     }
                 } info: {
-                    if let summary = project.board.map({ boardInfoSummary($0, subtitle: $0.url.lastPathComponent) }) {
-                        PaneInformationPanel(summary: summary)
+                    if let board = project.board {
+                        DeferredPaneInformationPanel {
+                            boardInfoSummary(board, subtitle: board.url.lastPathComponent)
+                        }
                     }
                 } layers: {
                     BoardLayerControls(
@@ -2093,22 +2099,10 @@ struct ProjectWorkspaceView: View {
     }
 
     private func unresolvedPackageCount(for board: HorizontalBoard) -> Int {
-        let geometryIDs = board.packagePads.map(\.id)
-            + board.packagePolygons.map(\.id)
-            + board.packageLines.map(\.id)
-
-        return board.packages.filter { package in
-            let normalizedPackageID = normalizedID(package.id)
-            return !geometryIDs.contains {
-                geometryBelongsToPackage($0, normalizedPackageID: normalizedPackageID)
-            }
-        }.count
-    }
-
-    private func geometryBelongsToPackage(_ geometryID: String, normalizedPackageID: String) -> Bool {
-        let normalizedGeometryID = normalizedID(geometryID)
-        return normalizedGeometryID == normalizedPackageID
-            || normalizedGeometryID.hasPrefix("\(normalizedPackageID)/")
+        HorizontalBoard.unresolvedPackageCount(
+            packageIDs: board.packages.map(\.id),
+            geometryIDs: board.packagePads.map(\.id) + board.packagePolygons.map(\.id) + board.packageLines.map(\.id)
+        )
     }
 
     private func normalizedID(_ id: String) -> String {
@@ -2538,6 +2532,8 @@ struct ProjectWorkspaceView: View {
             return
         }
         guard let board = project.board, !board.planes.isEmpty else {
+            // Nothing to pour, but Q still refreshes the silkscreen clip.
+            planePourRevision += 1
             return
         }
 
@@ -2635,6 +2631,7 @@ struct ProjectWorkspaceView: View {
             applyFollowUpBoard(pouredBoard, writesPlaneCache: true)
         }
         boardSyncRevision += 1
+        planePourRevision += 1
         selectionDetailsByPane[.board] = .empty
     }
 
@@ -4374,6 +4371,19 @@ private struct CanvasLoadingOverlay: View {
         .shadow(color: .black.opacity(0.16), radius: 14, y: 5)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
+    }
+}
+
+/// A pane-info panel that summarises only when SwiftUI asks for its body,
+/// which is while its popover is open. The pane rail builds its info content
+/// on every workspace update, and a board summary walks every pad, package
+/// and plane fragment, so building it eagerly cost a placement click or a
+/// commit hundreds of milliseconds for a panel nobody had open.
+private struct DeferredPaneInformationPanel: View {
+    var summary: () -> NavigatorSelectionSummary
+
+    var body: some View {
+        PaneInformationPanel(summary: summary())
     }
 }
 
