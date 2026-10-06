@@ -575,7 +575,10 @@ def save(path: str | None = None) -> dict[str, Any]:
     document afterwards rather than the document's own edited flag being trusted, so this can no longer claim
     success over a stale file. "disk" means the context you asked was a disk context, whose edits were already
     written when they committed — if your edit went to the app, that is the wrong context and you want
-    open_project with source="live"."""
+    open_project with source="live".
+
+    A live save also gives leftovers: any temporary file a sandboxed safe save left beside the project file, with
+    same_as_file. An empty list means the folder was looked at and held none."""
     return _resolve(path).save()
 
 
@@ -1027,7 +1030,9 @@ def board_rules(path: str | None = None, kind: str | None = None) -> dict[str, A
 
 @_tool
 def board_info(path: str | None = None) -> dict[str, Any]:
-    """Board size, stackup, drawing layers, and object counts."""
+    """Board size, stackup, drawing layers, and object counts. airwires says where counts.airwires comes from — the
+    editor's connectivity pass, the set check reports — and, for a project open in Horizontal, what the board
+    canvas draws beside it (canvas, null when the board pane is not up)."""
     return _resolve(path).board_info()
 
 
@@ -1248,12 +1253,18 @@ def zoom_to(path: str | None = None, refdes: str | None = None, net: str | None 
 
 
 @_tool
-def render_viewport(path: str | None = None, pane: str = "board", dpi: float = 110) -> dict[str, Any]:
-    """Render what the app's board or schematic pane currently shows, as a PNG in the exporter's drawing style. Needs the project open in Horizontal."""
+def render_viewport(path: str | None = None, pane: str = "board", dpi: float = 110, airwires: bool = True) -> dict[str, Any]:
+    """Render what the app's board or schematic pane currently shows, as a PNG in the exporter's drawing style. Needs the project open in Horizontal.
+
+    On the board the airwires are drawn over it, dashed in blue: the ones the board canvas draws, which the
+    exporter does not. airwires in the reply says whose they are (source "canvas", or "connectivity" when the
+    canvas gave none), how many are in view, whether the pane's Connections switch shows them (shown), and
+    matches_check: whether they are the ones check reports, with the nets that differ. airwires=false leaves
+    them off the picture."""
     project = _resolve(path)
     if not project.is_live:
         raise ValueError("The project is not open in Horizontal, so there is no viewport to render.")
-    return project._call("render_viewport", pane=pane, dpi=dpi, max_pixels=2400)
+    return project._call("render_viewport", pane=pane, dpi=dpi, max_pixels=2400, airwires=airwires)
 
 
 @_tool

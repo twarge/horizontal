@@ -1225,6 +1225,9 @@ struct ProjectWorkspaceView: View {
         live.visibleBounds = { pane in
             canvasCommandActionsByPane[pane]?.visibleWorldBounds?()
         }
+        live.drawnAirwires = {
+            visiblePanes.contains(.board) ? canvasCommandActionsByPane[.board]?.drawnAirwires?() : nil
+        }
         live.frame = { pane, rect in
             visiblePanes.insert(pane)
             if pane == .threeD {
