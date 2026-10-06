@@ -213,7 +213,11 @@ struct HorizontalIPadProjectView: View {
                         ToolbarSpacer(.flexible, placement: .bottomBar)
                     }
                     if availablePanes(for: project).count > 1 {
-                        ToolbarItem(placement: .bottomBar) {
+                        // A group of image items, one per pane, sharing one
+                        // capsule. A segmented picker is a custom view, which
+                        // stays horizontal-only, so it held the bottom bar
+                        // while a foldable's side bar took the other buttons.
+                        ToolbarItemGroup(placement: .bottomBar) {
                             panePicker(for: project)
                                 .labelStyle(.iconOnly)
                         }
@@ -584,32 +588,23 @@ struct HorizontalIPadProjectView: View {
         }
     }
 
-    /// Pane chooser. A regular width class (iPad) toggles panes independently so the
-    /// schematic and the board can sit side by side; a compact one (iPhone) keeps the
-    /// old exclusive segmented control, since there is no room for two. Both live
-    /// inside the toolbar island, so neither draws its own grouped chrome (no
-    /// ControlGroup — that would nest a second bordered capsule in the island).
+    /// Pane chooser, one toggle per pane. A regular width class (iPad) toggles panes
+    /// independently so the schematic and the board can sit side by side; a compact
+    /// one (iPhone) shows one pane at a time, so turning a pane on turns the rest off.
+    /// No ControlGroup in the regular island (that would nest a second bordered
+    /// capsule in it), and in the compact bottom bar each toggle is its own image
+    /// item, which the system can move into a foldable's side bar.
     @ViewBuilder
     private func panePicker(for project: HorizontalProject) -> some View {
         let panes = availablePanes(for: project)
-        if isCompact {
-            Picker("View", selection: exclusivePaneSelection(among: panes)) {
-                ForEach(panes) { pane in
-                    Label(pane.title, systemImage: pane.symbolName)
-                        .tag(pane)
-                }
+        ForEach(panes) { pane in
+            Toggle(isOn: isCompact
+                ? exclusivePaneBinding(for: pane, among: panes)
+                : paneVisibilityBinding(for: pane, among: panes)) {
+                Label(pane.title, systemImage: pane.symbolName)
             }
-            .pickerStyle(.segmented)
-            .labelStyle(.iconOnly)
-            .fixedSize()
-        } else {
-            ForEach(panes) { pane in
-                Toggle(isOn: paneVisibilityBinding(for: pane, among: panes)) {
-                    Label(pane.title, systemImage: pane.symbolName)
-                }
-                .toggleStyle(.button)
-                .accessibilityLabel("Show \(pane.title)")
-            }
+            .toggleStyle(.button)
+            .accessibilityLabel("Show \(pane.title)")
         }
     }
 
@@ -623,10 +618,12 @@ struct HorizontalIPadProjectView: View {
         HorizontalPane.allCases.filter { visiblePanes.contains($0) }
     }
 
-    private func exclusivePaneSelection(among panes: [HorizontalPane]) -> Binding<HorizontalPane> {
+    private func exclusivePaneBinding(for pane: HorizontalPane, among panes: [HorizontalPane]) -> Binding<Bool> {
         Binding {
-            orderedVisiblePanes.first ?? panes.first ?? .schematic
-        } set: { pane in
+            (orderedVisiblePanes.first ?? panes.first) == pane
+        } set: { isOn in
+            // Tapping the pane already shown leaves it shown.
+            guard isOn else { return }
             visiblePanes = [pane]
             focusedPane = pane
         }
