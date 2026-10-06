@@ -2198,6 +2198,22 @@ struct SchematicCanvasView: View {
         publishSelectionContext()
     }
 
+    /// Horizon tidies wires after every edit: a move or rotate that folds a
+    /// jog flat leaves no zero-length wire, and a straight run through a bare
+    /// junction becomes one wire. A selected wire or junction that went is
+    /// dropped from the selection.
+    private func simplifyNetLines(in sheet: inout HorizontalSchematicSheet) {
+        guard !editorProfile.isPoolMode else { return }
+        let cleanup = sheet.simplifyNetLines()
+        guard !cleanup.isEmpty else { return }
+        let lineIDs = Set(cleanup.removedNetLineIDs.map(normalizedID))
+        let junctionIDs = Set(cleanup.removedJunctionIDs.map(normalizedID))
+        selectedObjects.removeAll { ref in
+            (ref.type == .lineNet && lineIDs.contains(normalizedID(ref.id)))
+                || (ref.type == .junction && junctionIDs.contains(normalizedID(ref.id)))
+        }
+    }
+
     private func autoconnectPlacedSymbol(_ symbolID: String, sheet: inout HorizontalSchematicSheet) {
         guard let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(symbolID) }),
               let componentID = symbol.componentID.map(normalizedID),
@@ -2505,6 +2521,7 @@ struct SchematicCanvasView: View {
         for ref in selectedObjects where ref.type == .schematicSymbol {
             autoconnectPlacedSymbol(ref.id, sheet: &draft)
         }
+        simplifyNetLines(in: &draft)
         editedSheet = draft
         if editTextRef == nil {
             registerUndoSnapshot(state.undoSheet, actionName: "Move")
@@ -3550,6 +3567,7 @@ struct SchematicCanvasView: View {
         let previousSheet = editedSheet ?? sourceSheet
         var draft = previousSheet
         transform(center, &draft)
+        simplifyNetLines(in: &draft)
         editedSheet = draft
         invalidateSelectableCache()
         hoveredObject = nil
