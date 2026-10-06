@@ -130,6 +130,30 @@ final class BoardPlaneInputSignatureTests: XCTestCase {
         XCTAssertNotEqual(signature(makeBoard()), signature(board))
     }
 
+    /// The loader builds the board's arrays from JSON objects, whose keys come
+    /// back in a different order on every load. The same board reloaded from
+    /// the archive — after a sheet rename, say — must not read as new copper.
+    func testReloadOrderDoesNotInvalidateTheFills() {
+        var board = makeBoard()
+        board.tracks.append(HorizontalSegment(id: "t2", from: p(0, mm), to: p(5 * mm, mm),
+                                              width: 200_000, layer: 0, netID: "gnd"))
+        board.packagePads.append(square("pkg/pad/b", cx: -8 * mm, cy: 8 * mm, half: 500_000, net: "gnd"))
+        board.planes.append(plane("p2", half: 6 * mm, net: "vcc"))
+
+        var reloaded = board
+        reloaded.tracks.reverse()
+        reloaded.packagePads.reverse()
+        reloaded.planes.reverse()
+        XCTAssertEqual(signature(board), signature(reloaded))
+    }
+
+    /// Unordered, but still a multiset: a second copy of a track is new copper.
+    func testDuplicatingATrackInvalidatesTheFills() {
+        var board = makeBoard()
+        board.tracks.append(board.tracks[0])
+        XCTAssertNotEqual(signature(makeBoard()), signature(board))
+    }
+
     /// Things the pour never reads must not claim the fills are out of date, or
     /// the control cries wolf and gets ignored.
     func testCosmeticEditsDoNotInvalidateTheFills() {
