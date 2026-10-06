@@ -339,12 +339,12 @@ final class HorizontalLiveServerTests: XCTestCase {
         // net by net, and drawn across the middle of the render.
         let stale = HorizontalSegment(id: "a1", from: HorizontalPoint(x: -15 * mm, y: 0), to: HorizontalPoint(x: 15 * mm, y: 0),
                                       width: 0, layer: nil)
-        document.drawnAirwires = { HorizontalDrawnAirwires(airwires: [stale], shown: false) }
+        document.drawnAirwires = { HorizontalDrawnAirwires(airwires: [stale], shown: true) }
         let rendered = try call("render_viewport", ["dpi": 40])
         let airwires = try XCTUnwrap(rendered.dictionary("airwires"))
         XCTAssertEqual(airwires.string("source"), "canvas")
         XCTAssertEqual(airwires["matches_check"] as? Bool, false)
-        XCTAssertEqual(airwires["shown"] as? Bool, false)
+        XCTAssertEqual(airwires["shown"] as? Bool, true)
         XCTAssertEqual(airwires.int("in_view"), 1, "a straight one counts though its box is flat")
         let difference = try XCTUnwrap((airwires["differences"] as? [JSONDictionary])?.first)
         XCTAssertEqual(difference.int("canvas"), 1)
@@ -362,6 +362,76 @@ final class HorizontalLiveServerTests: XCTestCase {
         let same = HorizontalDispatchMethods.canvasAirwiresJSON(HorizontalDrawnAirwires(airwires: [reversed], shown: true),
                                                                 reported: [stale], index: index)
         XCTAssertEqual(same["matches_check"] as? Bool, true, "\(same)")
+    }
+
+    /// Field notes item 34: board_info is one of the reads the live channel
+    /// answers off the main actor, from a detached copy with no live document,
+    /// so it never gave the canvas's airwires. The copy now takes them along.
+    func testBoardInfoReadOffTheMainActorGivesTheCanvasAirwires() throws {
+        let document = try registerTemplateDocument()
+        let handle = try XCTUnwrap(self.handle)
+        let mm = 1_000_000.0
+        let stale = HorizontalSegment(id: "a1", from: HorizontalPoint(x: -15 * mm, y: 0), to: HorizontalPoint(x: 15 * mm, y: 0),
+                                      width: 0, layer: nil)
+        func boardInfo() throws -> JSONDictionary {
+            let request: JSONDictionary = ["jsonrpc": "2.0", "id": 1, "method": "board_info", "auth": "test-token", "params": ["handle": handle]]
+            let prepared = try XCTUnwrap(HorizontalLiveServer.prepareRead(line: HorizontalDispatch.serialize(request, pretty: false),
+                                                                          expectedToken: "test-token"), "board_info takes the off-main path")
+            let response = try JSONHelper.loadDictionary(from: Data(prepared().utf8))
+            return try XCTUnwrap(response.dictionary("result")?.dictionary("airwires"), "\(response)")
+        }
+
+        let hidden = try boardInfo()
+        XCTAssertTrue(hidden["canvas"] is NSNull, "a live document with no board pane says so: \(hidden)")
+        XCTAssertFalse(hidden.string("note")?.contains("over the files") ?? true)
+
+        document.drawnAirwires = { HorizontalDrawnAirwires(airwires: [stale], shown: true) }
+        let canvas = try XCTUnwrap(try boardInfo().dictionary("canvas"))
+        XCTAssertEqual(canvas.int("count"), 1)
+        XCTAssertEqual(canvas["matches_check"] as? Bool, false)
+    }
+
+    /// Field notes items 36 and 37: with the Connections switch off the pane
+    /// draws no airwires, so neither does its render unless asked; and a part
+    /// of what the pane shows can be rendered, in more detail than the whole.
+    func testRenderViewportFollowsTheConnectionsSwitchAndRendersARegion() throws {
+        let document = try registerTemplateDocument()
+        let handle = try XCTUnwrap(self.handle)
+        let mm = 1_000_000.0
+        let view = HorizontalRect(points: [HorizontalPoint(x: -20 * mm, y: -20 * mm), HorizontalPoint(x: 20 * mm, y: 20 * mm)])
+        document.visibleBounds = { $0 == .board ? view : nil }
+        let across = HorizontalSegment(id: "a1", from: HorizontalPoint(x: -15 * mm, y: 0), to: HorizontalPoint(x: 15 * mm, y: 0),
+                                       width: 0, layer: nil)
+        document.drawnAirwires = { HorizontalDrawnAirwires(airwires: [across], shown: false) }
+        func call(_ params: JSONDictionary) throws -> JSONDictionary {
+            let response = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 1, "method": "render_viewport",
+                                                    "params": params.merging(["handle": handle]) { $1 }])
+            return try XCTUnwrap(response["result"] as? JSONDictionary, "\(response)")
+        }
+
+        let off = try call(["dpi": 40])
+        XCTAssertEqual(off.dictionary("airwires")?["shown"] as? Bool, false)
+        XCTAssertEqual(off.dictionary("airwires")?["drawn"] as? Bool, false)
+        XCTAssertEqual(try airwirePixels(off), 0, "the switch is off, so the render draws none")
+        let forced = try call(["dpi": 40, "airwires": true])
+        XCTAssertEqual(forced.dictionary("airwires")?["drawn"] as? Bool, true)
+        XCTAssertGreaterThan(try airwirePixels(forced), 10)
+
+        // A part of the view, asked for past its top edge: clipped to the view,
+        // and drawn as large as the whole.
+        let whole = try call(["dpi": 40, "airwires": false])
+        let part = try call(["dpi": 40, "airwires": false,
+                             "region": ["min_x_mm": -10, "min_y_mm": -10, "max_x_mm": 10, "max_y_mm": 30]])
+        XCTAssertEqual(part.dictionary("region")?.double("max_y_mm"), 20)
+        XCTAssertEqual(part.dictionary("view")?.double("max_y_mm"), 20)
+        let wholeDetail = try XCTUnwrap(whole.double("px_per_mm")), partDetail = try XCTUnwrap(part.double("px_per_mm"))
+        // 30 mm tall where the view is 40, so 4/3 the detail.
+        XCTAssertEqual(partDetail / wholeDetail, 4.0 / 3.0, accuracy: 0.03, "\(wholeDetail) → \(partDetail)")
+        XCTAssertEqual(Double(try XCTUnwrap(part.int("height"))), Double(try XCTUnwrap(whole.int("height"))), accuracy: 2)
+
+        let outside = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 1, "method": "render_viewport", "params": [
+            "handle": handle, "region": ["min_x_mm": 50, "min_y_mm": 50, "max_x_mm": 60, "max_y_mm": 60]]])
+        XCTAssertNotNil(outside["error"], "\(outside)")
     }
 
     /// Pixels in the airwire colour in the rows through the render's middle.
