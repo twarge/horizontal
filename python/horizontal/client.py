@@ -668,9 +668,14 @@ class Project:
         return self._call("zoom_to", **params)
 
     def render_viewport(self, pane: str = "board", dpi: float = 150, max_pixels: int = 4096, output_path: str | Path | None = None,
-                        airwires: bool = True) -> bytes | Path:
-        """What the app's pane shows right now, rendered in the exporter's style, with the board canvas's airwires."""
-        params: dict[str, Any] = {"pane": pane, "dpi": dpi, "max_pixels": max_pixels, "airwires": airwires}
+                        airwires: bool | None = None, region: dict[str, float] | None = None) -> bytes | Path:
+        """What the app's pane shows right now, rendered in the exporter's style, with the board canvas's airwires
+        when its Connections switch shows them (or as airwires says). region renders part of the view."""
+        params: dict[str, Any] = {"pane": pane, "dpi": dpi, "max_pixels": max_pixels}
+        if airwires is not None:
+            params["airwires"] = airwires
+        if region is not None:
+            params["region"] = region
         if output_path is not None:
             params["output_path"] = str(output_path)
         return _image_result(self._call("render_viewport", **params))

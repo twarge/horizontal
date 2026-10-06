@@ -437,18 +437,25 @@ navigator to it first. The canvases expose their visible world rectangle and
 a frame request through their command actions, and `CanvasViewport.framing`
 computes the zoom and pan. `render_viewport` renders that visible rectangle
 through the drawing exporters, cropped to the region, so it is the exporter's
-style rather than a screenshot of the Metal canvas.
+style rather than a screenshot of the Metal canvas. A fitted pane spends much
+of its area on margins, notes and dimension lines, so `region` asks for part of
+what it shows, drawn as large as the whole would be. The reply's `px_per_mm`
+says how much detail that came to, since `dpi` is the exporter's page's.
 
 The exporters draw no airwires, so a board render draws them on top, and they
-are the canvas's own. The canvas draws a scene it caches, and each scene keeps
-the airwires it was built from. The board canvas leaves the set it last handed
-over, and whether its Connections switch shows them, where its command actions
-reach it. `board_info` and `check` count a different set: the editor's
-connectivity pass, run again by the dispatch over the document's model. So the
-reply's `airwires` compares the two, net by net and segment by segment, and
-`board_info` gives the canvas's count beside its own. A stale scene shows up
-as `matches_check: false` with the nets that differ, and nobody has to judge
-the screen by eye.
+are the canvas's own. Like the pane, it leaves them off while the pane's
+Connections switch is off, unless `airwires: true` asks for them. The canvas
+draws a scene it caches, and each scene keeps the airwires it was built from.
+The board canvas leaves the set it last handed over, and whether its
+Connections switch shows them, where its command actions reach it. `board_info`
+and `check` count a different set: the editor's connectivity pass, run again
+by the dispatch over the document's model. So the reply's `airwires` compares
+the two, net by net and segment by segment, and `board_info` gives the canvas's
+count beside its own. `board_info` is one of the reads the live channel answers
+off the main actor, from a detached copy of the document. The canvas's
+airwires are taken into that copy when it's made, on the main actor. A stale
+scene shows up as `matches_check: false` with the nets that differ, and nobody
+has to judge the screen by eye.
 
 `show_panes` is the one view verb that goes nowhere: it says which panes to
 show and hides the rest, replacing what is up rather than adding to it. `frame`
