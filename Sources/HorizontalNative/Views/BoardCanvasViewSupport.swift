@@ -722,6 +722,16 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
     /// Increments when a refresh lands; the bucket cache key carries it, so the
     /// scene is rebuilt once with the new clip.
     @Published private(set) var silkscreenClipVersion: Int = 0
+    /// The live rats' nest of the move in progress
+    /// (`HorizontalBoard.MovingAirwires`), made off the main thread when the
+    /// move starts; until it lands the move shows the airwires as they were.
+    private var movingAirwiresRequest = 0
+    private var movingAirwiresValue: (request: Int, airwires: HorizontalBoard.MovingAirwires)?
+    private var movingAirwireSegmentsRequest: Int?
+    private var movingAirwireSegmentsOffset = HorizontalPoint.zero
+    private var movingAirwireSegmentsValue = [HorizontalSegment]()
+    /// Increments when a move's live rats' nest lands, so the canvas redraws.
+    @Published private(set) var movingAirwiresVersion: Int = 0
 
     /// The built selectables, if they are the ones for `key`.
     func allSelectables(ifBuiltFor key: BoardAllSelectableCacheKey) -> [HorizontalSelectable]? {
@@ -917,6 +927,49 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
                 self.tessellationVersion &+= 1
             }
         }
+    }
+
+    /// Starts making a move's live rats' nest and returns the request the
+    /// move keeps, to find it with once it lands.
+    func requestMovingAirwires(_ make: @escaping @Sendable () -> HorizontalBoard.MovingAirwires) -> Int {
+        movingAirwiresRequest &+= 1
+        let request = movingAirwiresRequest
+        movingAirwiresValue = nil
+        movingAirwireSegmentsRequest = nil
+        movingAirwireSegmentsValue = []
+        Task.detached(priority: .userInitiated) {
+            let airwires = make()
+            await MainActor.run {
+                guard request == self.movingAirwiresRequest else {
+                    return
+                }
+                self.movingAirwiresValue = (request, airwires)
+                self.movingAirwiresVersion &+= 1
+            }
+        }
+        return request
+    }
+
+    /// The live rats' nest for `request`, once it has landed.
+    func movingAirwires(for request: Int) -> HorizontalBoard.MovingAirwires? {
+        guard let movingAirwiresValue, movingAirwiresValue.request == request else {
+            return nil
+        }
+        return movingAirwiresValue.airwires
+    }
+
+    /// The live airwires with the move `offset` from its start, remembered
+    /// for the offset last asked about, since several body passes see each one.
+    func movingAirwireSegments(for request: Int, offset: HorizontalPoint) -> [HorizontalSegment]? {
+        guard let airwires = movingAirwires(for: request) else {
+            return nil
+        }
+        if movingAirwireSegmentsRequest != request || movingAirwireSegmentsOffset != offset {
+            movingAirwireSegmentsValue = airwires.airwires(offset: offset)
+            movingAirwireSegmentsRequest = request
+            movingAirwireSegmentsOffset = offset
+        }
+        return movingAirwireSegmentsValue
     }
 
     /// The last refreshed clip, if it was made with `clipping`. A clip made
