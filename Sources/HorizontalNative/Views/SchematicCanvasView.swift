@@ -7391,6 +7391,10 @@ struct SchematicCanvasView: View {
             }
         )
         handlers.copySelection = canCopySchematicSelection ? { copySchematicSelection() } : nil
+        if !editorProfile.isPoolMode, onApplyProjectEdit != nil {
+            handlers.setAllUnconnectedPinsNC = { setAllNoConnect(true) }
+            handlers.clearAllNCPins = { setAllNoConnect(false) }
+        }
         handlers.pasteSelection = !editorProfile.isPoolMode && onPreparePaste != nil ? { pasteSchematicSelection() } : nil
         handlers.duplicateSelection = canCopySchematicSelection && onPreparePaste != nil ? { duplicateSchematicSelection() } : nil
         if editorProfile.isPoolMode {
@@ -7539,6 +7543,17 @@ struct SchematicCanvasView: View {
         #if os(macOS)
         var entries: [HorizontalTargetItemMenuEntry] = [.select(title: "Select")]
         if !isReadOnly, ref.type == .text { entries.append(.command(title: "Edit…", .editText)) }
+        if !isReadOnly, !editorProfile.isPoolMode, onApplyProjectEdit != nil, ref.type == .schematicSymbol,
+           let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
+            // Offered only when they would change something, as upstream's
+            // ToolSetNotConnectedAll::can_begin decides.
+            if noConnectChange(for: [symbol], mark: true) {
+                entries.append(.command(title: "Set all unconnected pins NC", .setAllUnconnectedPinsNC))
+            }
+            if noConnectChange(for: [symbol], mark: false) {
+                entries.append(.command(title: "Clear all NC pins", .clearAllNCPins))
+            }
+        }
         if onCopySelection != nil, HorizontalSchematicClipboardEditor.supports(ref) {
             entries.append(.command(title: "Copy", .copySelection))
             if !isReadOnly, onPreparePaste != nil { entries.append(.command(title: "Duplicate", .duplicateSelection)) }
@@ -7572,6 +7587,37 @@ struct SchematicCanvasView: View {
             return
         }
         onRevealPoolSymbol?(symbolID, target)
+    }
+
+    /// Whether Set all unconnected pins NC (`mark`) or Clear all NC pins
+    /// would change any pin of these symbols' gates.
+    private func noConnectChange(for symbols: [HorizontalPlacement], mark: Bool) -> Bool {
+        symbols.contains { symbol in
+            guard let componentID = symbol.componentID else { return false }
+            let connections = sheet.componentInfo[normalizedID(componentID)]?.connections ?? [:]
+            var states = [String: SchematicConnectionState]()
+            for (path, state) in connections { states[normalizedID(path)] = state }
+            return symbol.symbolPinNames.contains { pin in
+                switch states[normalizedID(pin.gatePinPath)] {
+                case nil: return mark
+                case .notConnected?: return !mark
+                case .connected?: return false
+                }
+            }
+        }
+    }
+
+    /// Horizon's Set all unconnected pins NC / Clear all NC pins on the
+    /// selected symbols: one set_no_connect per gate, applied as one step.
+    private func setAllNoConnect(_ mark: Bool) {
+        let selected = Set(selectedObjects.filter { $0.type == .schematicSymbol }.map { normalizedID($0.id) })
+        let symbols = sheet.symbols.filter { selected.contains(normalizedID($0.id)) && noConnectChange(for: [$0], mark: mark) }
+        let operations: [JSONDictionary] = symbols.compactMap { symbol in
+            guard let componentID = symbol.componentID, let gateID = symbol.gateID else { return nil }
+            return ["op": "set_no_connect", "component": componentID, "gate": gateID, "all": true, "no_connect": mark]
+        }
+        guard !operations.isEmpty else { return }
+        applyProjectEdit(operations, actionName: mark ? "Set All Unconnected Pins NC" : "Clear All NC Pins")
     }
 
     private func symbolContextMenuItems(for symbol: HorizontalPlacement, ref: HorizontalSelectableRef) -> [HorizontalSelectionTargetItem] {

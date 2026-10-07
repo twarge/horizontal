@@ -52,6 +52,8 @@ class PhysicalTerminal(Pad):
 
 
 class Pin(Record):
+    # A pin with alternates may also carry alternates (on request), selected and
+    # display_name; they are extras so pins without them stay as small as before.
     pin: str
     gate_id: str
     pin_id: str
@@ -535,11 +537,34 @@ class SetNoConnect(ComponentOp):
     gate: StrictStr | None = None
     no_connect: bool | None = None
     disconnect: bool | None = None
+    all: bool | None = None
 
     @model_validator(mode="after")
     def some_pin(self):
-        if self.pin is None and not self.pins:
-            raise ValueError("Pass pin or pins.")
+        if self.all:
+            if self.pin is not None or self.pins:
+                raise ValueError("Pass all or pin/pins, not both.")
+        elif self.pin is None and not self.pins:
+            raise ValueError("Pass pin, pins or all.")
+        return self
+
+
+class SetPinAlternate(ComponentOp):
+    """Choose what a pin is drawn as: an alternate its unit offers, several, a custom name, or back to the primary name."""
+    op: Literal["set_pin_alternate"]
+    pin: StrictStr | None = None
+    gate: StrictStr | None = None
+    alternate: StrictStr | list[StrictStr] | None = None
+    assignments: dict[StrictStr, StrictStr | list[StrictStr] | None] | None = Field(default=None, min_length=1)
+    use_primary_name: bool | None = None
+    custom_name: StrictStr | None = None
+    custom_direction: Literal["input", "output", "bidirectional", "open_collector", "passive",
+                              "power_input", "power_output", "not_connected"] | None = None
+
+    @model_validator(mode="after")
+    def one_form(self):
+        if (self.pin is None) == (self.assignments is None):
+            raise ValueError("Pass pin (with alternate) or assignments, not both.")
         return self
 
 
@@ -925,7 +950,7 @@ class CopyLayout(Input):
 EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | SetValue | SetRefdes | SetPart | SetPopulation |
                           SetGroup | EnsureNet | RenameNet | SetNetClass | RetireNet | Connect | Disconnect |
                           Place | PlaceSymbol | RemoveSymbol | DrawNetLine | PlaceJunction | SetNetLineEndpoint | RemapPart | PlaceText | RemoveText |
-                          RemoveNetLine | RemoveJunction | PruneSheet | TerminatePin | SetSymbolDisplay | SetNoConnect |
+                          RemoveNetLine | RemoveJunction | PruneSheet | TerminatePin | SetSymbolDisplay | SetNoConnect | SetPinAlternate |
                           PlaceTrack | RemoveTrack | SetTrackWidth | PlaceVia | RemoveVia |
                           PlacePowerSymbol | PlaceNetLabel | RemoveSheetMark |
                           AddSheet | RenameSheet | RemoveSheet |

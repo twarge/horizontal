@@ -277,6 +277,8 @@ struct HorizontalCanvasCommandHandlerSet {
     var moveNetSegmentToExistingNet: (() -> Void)? = nil
     var moveNetSegmentToNewNet: (() -> Void)? = nil
     var editSymbolPinNames: (() -> Void)?
+    var setAllUnconnectedPinsNC: (() -> Void)? = nil
+    var clearAllNCPins: (() -> Void)? = nil
     var toggleRectanglePlacementMode: (() -> Void)? = nil
     var moveSelectionBy: (HorizontalPoint) -> Void
     var placePad: (() -> Void)? = nil
@@ -447,6 +449,12 @@ struct HorizontalCanvasCommandHandlerSet {
         case .editSymbolPinNames:
             guard !isReadOnly else { return }
             editSymbolPinNames?()
+        case .setAllUnconnectedPinsNC:
+            guard !isReadOnly else { return }
+            setAllUnconnectedPinsNC?()
+        case .clearAllNCPins:
+            guard !isReadOnly else { return }
+            clearAllNCPins?()
         case .toggleRectanglePlacementMode:
             guard !isReadOnly else { return }
             toggleRectanglePlacementMode?()
