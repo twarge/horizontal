@@ -9,6 +9,40 @@ enum HorizontalSelectionPropertyValue: Equatable {
     case layer(Int?)
     case choice(String)
     case readOnly(String)
+    case pinFunctions(HorizontalPinFunctionsValue)
+}
+
+/// A placed symbol pin's names, as one compact row: which functions (the
+/// primary name, alternates, a custom name) the sheet shows, the custom
+/// name, and the custom name's direction.
+struct HorizontalPinFunctionsValue: Equatable {
+    /// Option ids from `HorizontalPinFunctionsEditor.functions` that are on.
+    var selected: Set<String>
+    var customName: String
+    var customDirection: String
+    /// The direction shown while Custom is off: the pin's own.
+    var pinDirection: String
+}
+
+struct HorizontalPinFunctionsEditor: Equatable {
+    /// The id of the function that carries the custom name.
+    static let customFunctionID = "customEnabled"
+
+    /// Shown in the closed function menu when nothing is selected — the
+    /// name the sheet falls back to.
+    var fallbackTitle: String
+    var functions: [HorizontalSelectionPropertyOption]
+    var directions: [HorizontalPinDirectionOption]
+    /// Sub-property ids are `"\(property.id):\(suffix)"`.
+    var customNameSuffix = "customName"
+    var customDirectionSuffix = "customDirection"
+}
+
+struct HorizontalPinDirectionOption: Identifiable, Equatable {
+    var id: String
+    var title: String
+    /// The glyph the closed direction menu shows.
+    var symbol: String
 }
 
 struct HorizontalSelectionPropertyOption: Identifiable, Equatable {
@@ -24,6 +58,7 @@ enum HorizontalSelectionPropertyEditor: Equatable {
     case angle
     case layer([HorizontalSelectionPropertyOption])
     case choice([HorizontalSelectionPropertyOption])
+    case pinFunctions(HorizontalPinFunctionsEditor)
     case readOnly
 }
 
@@ -36,6 +71,9 @@ struct HorizontalSelectionProperty: Identifiable, Equatable {
     /// change with this ID (the value is carried along but unused). The
     /// property builder owns the ID scheme, e.g. "removeParam:<key>".
     var removeID: String? = nil
+    /// Properties sharing a section are listed together after the others,
+    /// under a disclosure triangle with this title.
+    var section: String? = nil
 
     var isEditable: Bool {
         switch editor {
@@ -141,6 +179,8 @@ struct HorizontalSelectionPopoverView: View {
     @Environment(\.horizonPoolRevealAction) private var poolRevealAction
     @State private var currentObjects = [HorizontalObjectType: HorizontalSelectableRef]()
     @State private var applyAllProperties = Set<HorizontalSelectionApplyAllKey>()
+    /// Sections the user has opened; every section starts closed.
+    @State private var expandedSections = Set<String>()
 
     var body: some View {
         inspectorContent
@@ -318,12 +358,68 @@ struct HorizontalSelectionPopoverView: View {
                 detailsGrid(details)
             }
 
-            if !properties.isEmpty {
+            let unsectioned = properties.filter { $0.section == nil }
+            if !unsectioned.isEmpty {
                 VStack(alignment: .leading, spacing: 7) {
-                    ForEach(properties) { property in
+                    ForEach(unsectioned) { property in
                         propertyRow(property, group: group, item: item)
                     }
                 }
+            }
+
+            ForEach(sectionTitles(in: properties), id: \.self) { section in
+                let expanded = expandedSections.contains(section)
+                VStack(alignment: .leading, spacing: 7) {
+                    // Drawn by hand: the system DisclosureGroup's chevron
+                    // doesn't show in the inspector and ignores its colours.
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            sectionExpandedBinding(section).wrappedValue.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9, weight: .semibold))
+                                .rotationEffect(.degrees(expanded ? 90 : 0))
+                                .frame(width: 10)
+                            Text(section)
+                                .font(propertyLabelFont)
+                            Text("\(properties.filter { $0.section == section }.count)")
+                                .font(detailValueFont)
+                                .foregroundStyle(foregroundColor.opacity(0.45))
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(foregroundColor.opacity(0.66))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(section)
+                    .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+
+                    if expanded {
+                        ForEach(properties.filter { $0.section == section }) { property in
+                            propertyRow(property, group: group, item: item)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Section titles in the order their first property appears.
+    private func sectionTitles(in properties: [HorizontalSelectionProperty]) -> [String] {
+        var seen = Set<String>()
+        return properties.compactMap(\.section).filter { seen.insert($0).inserted }
+    }
+
+    private func sectionExpandedBinding(_ section: String) -> Binding<Bool> {
+        Binding {
+            expandedSections.contains(section)
+        } set: { expanded in
+            if expanded {
+                expandedSections.insert(section)
+            } else {
+                expandedSections.remove(section)
             }
         }
     }
@@ -489,7 +585,21 @@ struct HorizontalSelectionPopoverView: View {
         return nil
     }
 
+    @ViewBuilder
     private func propertyRow(
+        _ property: HorizontalSelectionProperty,
+        group: HorizontalSelectionDetailGroup,
+        item: HorizontalSelectionDetailItem
+    ) -> some View {
+        if case .pinFunctions(let editor) = property.editor,
+           case .pinFunctions(let value) = property.value {
+            pinFunctionsRow(property, editor: editor, value: value, group: group, item: item)
+        } else {
+            standardPropertyRow(property, group: group, item: item)
+        }
+    }
+
+    private func standardPropertyRow(
         _ property: HorizontalSelectionProperty,
         group: HorizontalSelectionDetailGroup,
         item: HorizontalSelectionDetailItem
@@ -498,7 +608,7 @@ struct HorizontalSelectionPopoverView: View {
             Text(property.label)
                 .font(propertyLabelFont)
                 .foregroundStyle(foregroundColor.opacity(0.66))
-                .frame(width: chrome == .sidebar ? 120 : 78, alignment: .leading)
+                .frame(width: propertyLabelWidth, alignment: .leading)
                 .lineLimit(1)
 
             if property.isEditable && !isReadOnly {
@@ -521,6 +631,132 @@ struct HorizontalSelectionPopoverView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    private var propertyLabelWidth: CGFloat {
+        chrome == .sidebar ? 120 : 78
+    }
+
+    /// `PA0 [functions ▾] [→ ▾]`, with the custom name's field below it
+    /// while Custom is one of the functions. No unit or All column: the row
+    /// is about one pin of one symbol.
+    private func pinFunctionsRow(
+        _ property: HorizontalSelectionProperty,
+        editor: HorizontalPinFunctionsEditor,
+        value: HorizontalPinFunctionsValue,
+        group: HorizontalSelectionDetailGroup,
+        item: HorizontalSelectionDetailItem
+    ) -> some View {
+        let usesCustom = value.selected.contains(HorizontalPinFunctionsEditor.customFunctionID)
+        let editable = !isReadOnly
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 7) {
+                Text(property.label)
+                    .font(propertyLabelFont)
+                    .foregroundStyle(foregroundColor.opacity(0.66))
+                    .frame(width: propertyLabelWidth, alignment: .leading)
+                    .lineLimit(1)
+
+                Menu {
+                    ForEach(editor.functions) { function in
+                        Toggle(function.title, isOn: Binding {
+                            value.selected.contains(function.id)
+                        } set: { enabled in
+                            sendSubChange(.bool(enabled), suffix: function.id, property: property, group: group, item: item)
+                        })
+                    }
+                } label: {
+                    Text(pinFunctionsTitle(editor: editor, value: value, usesCustom: usesCustom))
+                        .font(editorFont)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .menuIndicator(.visible)
+                .controlSize(.small)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .focusable(false)
+                .disabled(!editable)
+                .help("Names this pin shows on the sheet")
+
+                let direction = usesCustom ? value.customDirection : value.pinDirection
+                Menu {
+                    Picker("Direction", selection: Binding {
+                        value.customDirection
+                    } set: { direction in
+                        sendSubChange(.choice(direction), suffix: editor.customDirectionSuffix, property: property, group: group, item: item)
+                    }) {
+                        ForEach(editor.directions) { option in
+                            Text("\(option.symbol)  \(option.title)").tag(option.id)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                } label: {
+                    Text(editor.directions.first { $0.id == direction }?.symbol ?? "?")
+                        .font(editorMonospacedFont)
+                }
+                .menuIndicator(.hidden)
+                .controlSize(.small)
+                .fixedSize()
+                .focusable(false)
+                .disabled(!editable || !usesCustom)
+                .help(directionHelp(editor: editor, direction: direction, usesCustom: usesCustom))
+            }
+
+            if usesCustom {
+                TextPropertyField(
+                    text: Binding {
+                        value.customName
+                    } set: { name in
+                        sendSubChange(.text(name), suffix: editor.customNameSuffix, property: property, group: group, item: item)
+                    },
+                    font: editorFont
+                )
+                .disabled(!editable)
+                .padding(.leading, propertyLabelWidth + 7)
+            }
+        }
+    }
+
+    private func pinFunctionsTitle(
+        editor: HorizontalPinFunctionsEditor,
+        value: HorizontalPinFunctionsValue,
+        usesCustom: Bool
+    ) -> String {
+        let titles = editor.functions.compactMap { function -> String? in
+            guard value.selected.contains(function.id) else {
+                return nil
+            }
+            if function.id == HorizontalPinFunctionsEditor.customFunctionID {
+                let name = value.customName.trimmingCharacters(in: .whitespacesAndNewlines)
+                return name.isEmpty ? function.title : name
+            }
+            return function.title
+        }
+        return titles.isEmpty ? editor.fallbackTitle : titles.joined(separator: " · ")
+    }
+
+    private func directionHelp(editor: HorizontalPinFunctionsEditor, direction: String, usesCustom: Bool) -> String {
+        let title = editor.directions.first { $0.id == direction }?.title ?? direction
+        return usesCustom ? "Custom name direction: \(title)" : "Pin direction: \(title) (choose Custom to set one)"
+    }
+
+    /// A change to one part of a compound row, sent under `<id>:<suffix>`.
+    private func sendSubChange(
+        _ value: HorizontalSelectionPropertyValue,
+        suffix: String,
+        property: HorizontalSelectionProperty,
+        group: HorizontalSelectionDetailGroup,
+        item: HorizontalSelectionDetailItem
+    ) {
+        onChange(HorizontalSelectionPropertyChange(
+            ref: item.ref,
+            type: group.type,
+            propertyID: "\(property.id):\(suffix)",
+            value: value,
+            applyToAll: false
+        ))
     }
 
     private func unitLabel(for property: HorizontalSelectionProperty) -> String {
@@ -635,7 +871,7 @@ struct HorizontalSelectionPopoverView: View {
             .labelsHidden()
             .controlSize(.small)
             .focusable(false)
-        case .readOnly:
+        case .pinFunctions, .readOnly:
             EmptyView()
         }
     }
@@ -780,6 +1016,8 @@ struct HorizontalSelectionPopoverView: View {
             return degrees.formatted(.number.precision(.fractionLength(1))) + " deg"
         case .layer(let value):
             return value.map(String.init) ?? "None"
+        case .pinFunctions(let value):
+            return value.selected.sorted().joined(separator: ", ")
         }
     }
 

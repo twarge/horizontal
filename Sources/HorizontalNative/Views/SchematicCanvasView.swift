@@ -249,6 +249,9 @@ struct SchematicCanvasView: View {
     var drawNetLineCommand: HorizontalDrawNetLineCommand?
     var placePartRequest: HorizontalPartPlacementRequest?
     var poolURL: URL?
+    /// "Show in (Project) Pool Manager" for a placed symbol: the pool symbol
+    /// uuid and where to look. Nil hides the commands.
+    var onRevealPoolSymbol: ((String, HorizontalPoolRevealTarget) -> Void)?
     /// What the canvas edits: a sheet, or a pool symbol / frame (see
     /// `HorizontalSchematicEditorProfile`).
     var mode: HorizontalSchematicEditorMode = .sheet
@@ -334,6 +337,7 @@ struct SchematicCanvasView: View {
         drawNetLineCommand: HorizontalDrawNetLineCommand? = nil,
         placePartRequest: HorizontalPartPlacementRequest? = nil,
         poolURL: URL? = nil,
+        onRevealPoolSymbol: ((String, HorizontalPoolRevealTarget) -> Void)? = nil,
         mode: HorizontalSchematicEditorMode = .sheet,
         symbolEditorContext: HorizontalSymbolEditorContext? = nil,
         syncRevision: Int = 0
@@ -374,6 +378,7 @@ struct SchematicCanvasView: View {
         self.drawNetLineCommand = drawNetLineCommand
         self.placePartRequest = placePartRequest
         self.poolURL = poolURL
+        self.onRevealPoolSymbol = onRevealPoolSymbol
         self.mode = mode
         self.symbolEditorContext = symbolEditorContext
         self.syncRevision = syncRevision
@@ -1902,86 +1907,68 @@ struct SchematicCanvasView: View {
         return editableTextProperty("customValue", "Custom Value", placement.customValue ?? "", multiline: true)
     }
 
+    /// One compact row per pin, under a "Pins" disclosure section: the pin's
+    /// functions (primary, alternates, custom) in a multi-select menu and the
+    /// custom name's direction beside it. There is no display-mode control:
+    /// a pin shows what its menu selects (Horizon's `selected_only`).
     private func editableSymbolPinNameProperties(for placement: HorizontalPlacement) -> [HorizontalSelectionProperty] {
         guard !placement.symbolPinNames.isEmpty else {
             return []
         }
 
-        let modeOptions = HorizontalSymbolPinDisplayMode.allCases.map {
-            HorizontalSelectionPropertyOption(id: $0.rawValue, title: $0.title)
-        }
-        var properties = [
-            HorizontalSelectionProperty(
-                id: "pinDisplayMode",
-                label: "Pin names",
-                editor: .choice(modeOptions),
-                value: .choice(placement.pinDisplayMode)
-            )
-        ]
-
-        for pin in placement.symbolPinNames {
+        let directions = pinDirectionOptions()
+        return placement.symbolPinNames.map { pin in
             let pinTitle = nonEmpty(pin.primaryName) ?? shortID(pin.id)
-            properties.append(
-                HorizontalSelectionProperty(
-                    id: symbolPinPropertyID(pinID: pin.id, field: "primary"),
-                    label: "\(pinTitle) Primary",
-                    editor: .bool,
-                    value: .bool(pin.state.usePrimaryName)
-                )
-            )
-            for option in pin.alternateNames {
-                properties.append(
-                    HorizontalSelectionProperty(
-                        id: symbolPinPropertyID(pinID: pin.id, field: "alt", extra: option.id),
-                        label: "\(pinTitle) \(option.name)",
-                        editor: .bool,
-                        value: .bool(pin.state.pinNames.contains { normalizedID($0) == normalizedID(option.id) })
-                    )
-                )
+            var functions = [HorizontalSelectionPropertyOption(id: "primary", title: pinTitle)]
+            var selected = Set<String>()
+            if pin.state.usePrimaryName {
+                selected.insert("primary")
             }
-            properties.append(
-                HorizontalSelectionProperty(
-                    id: symbolPinPropertyID(pinID: pin.id, field: "customEnabled"),
-                    label: "\(pinTitle) Custom",
-                    editor: .bool,
-                    value: .bool(pin.state.useCustomName)
-                )
-            )
-            properties.append(
-                HorizontalSelectionProperty(
-                    id: symbolPinPropertyID(pinID: pin.id, field: "customName"),
-                    label: "\(pinTitle) Name",
-                    editor: .text,
-                    value: .text(pin.state.customName)
-                )
-            )
-            properties.append(
-                HorizontalSelectionProperty(
-                    id: symbolPinPropertyID(pinID: pin.id, field: "customDirection"),
-                    label: "\(pinTitle) Direction",
-                    editor: .choice(pinDirectionOptions()),
-                    value: .choice(pin.state.customDirection)
-                )
+            for option in pin.alternateNames {
+                let functionID = "alt:\(option.id)"
+                functions.append(HorizontalSelectionPropertyOption(id: functionID, title: option.name))
+                if pin.state.pinNames.contains(where: { normalizedID($0) == normalizedID(option.id) }) {
+                    selected.insert(functionID)
+                }
+            }
+            functions.append(HorizontalSelectionPropertyOption(id: HorizontalPinFunctionsEditor.customFunctionID, title: "Custom"))
+            if pin.state.useCustomName {
+                selected.insert(HorizontalPinFunctionsEditor.customFunctionID)
+            }
+            return HorizontalSelectionProperty(
+                id: symbolPinPropertyID(pinID: pin.id),
+                label: pinTitle,
+                editor: .pinFunctions(HorizontalPinFunctionsEditor(
+                    fallbackTitle: pinTitle,
+                    functions: functions,
+                    directions: directions
+                )),
+                value: .pinFunctions(HorizontalPinFunctionsValue(
+                    selected: selected,
+                    customName: pin.state.customName,
+                    customDirection: pin.state.customDirection,
+                    pinDirection: pin.primaryDirection
+                )),
+                section: "Pins"
             )
         }
-
-        return properties
     }
 
-    private func symbolPinPropertyID(pinID: String, field: String, extra: String? = nil) -> String {
-        ["pinName", pinID, field, extra].compactMap { $0 }.joined(separator: ":")
+    /// `pinName:<pin>`; the row's parts arrive as `pinName:<pin>:<field>[:<extra>]`.
+    private func symbolPinPropertyID(pinID: String) -> String {
+        "pinName:\(pinID)"
     }
 
-    private func pinDirectionOptions() -> [HorizontalSelectionPropertyOption] {
+    private func pinDirectionOptions() -> [HorizontalPinDirectionOption] {
         [
-            HorizontalSelectionPropertyOption(id: "input", title: "Input"),
-            HorizontalSelectionPropertyOption(id: "output", title: "Output"),
-            HorizontalSelectionPropertyOption(id: "bidirectional", title: "Bidirectional"),
-            HorizontalSelectionPropertyOption(id: "passive", title: "Passive"),
-            HorizontalSelectionPropertyOption(id: "power_input", title: "Power Input"),
-            HorizontalSelectionPropertyOption(id: "power_output", title: "Power Output"),
-            HorizontalSelectionPropertyOption(id: "open_collector", title: "Open Collector"),
-            HorizontalSelectionPropertyOption(id: "not_connected", title: "Not Connected")
+            HorizontalPinDirectionOption(id: "input", title: "Input", symbol: "→"),
+            HorizontalPinDirectionOption(id: "output", title: "Output", symbol: "←"),
+            HorizontalPinDirectionOption(id: "bidirectional", title: "Bidirectional", symbol: "↔"),
+            HorizontalPinDirectionOption(id: "passive", title: "Passive", symbol: "—"),
+            HorizontalPinDirectionOption(id: "power_input", title: "Power Input", symbol: "⇒"),
+            HorizontalPinDirectionOption(id: "power_output", title: "Power Output", symbol: "⇐"),
+            HorizontalPinDirectionOption(id: "open_collector", title: "Open Collector", symbol: "◇"),
+            HorizontalPinDirectionOption(id: "not_connected", title: "Not Connected", symbol: "✕")
         ]
     }
 
@@ -6065,6 +6052,9 @@ struct SchematicCanvasView: View {
             return true
         }
 
+        // The inspector has no display-mode control: a pin shows what its
+        // function menu selects, so an edit settles the symbol on that mode.
+        sheet.symbols[symbolIndex].pinDisplayMode = HorizontalSymbolPinDisplayMode.selectedOnly.rawValue
         updateSymbolPinNameTexts(
             symbolID: sheet.symbols[symbolIndex].id,
             pins: sheet.symbols[symbolIndex].symbolPinNames,
@@ -7401,6 +7391,10 @@ struct SchematicCanvasView: View {
             }
         )
         handlers.copySelection = canCopySchematicSelection ? { copySchematicSelection() } : nil
+        if !editorProfile.isPoolMode, onApplyProjectEdit != nil {
+            handlers.setAllUnconnectedPinsNC = { setAllNoConnect(true) }
+            handlers.clearAllNCPins = { setAllNoConnect(false) }
+        }
         handlers.pasteSelection = !editorProfile.isPoolMode && onPreparePaste != nil ? { pasteSchematicSelection() } : nil
         handlers.duplicateSelection = canCopySchematicSelection && onPreparePaste != nil ? { duplicateSchematicSelection() } : nil
         if editorProfile.isPoolMode {
@@ -7412,6 +7406,10 @@ struct SchematicCanvasView: View {
             handlers.moveNetSegmentToExistingNet = nil
             handlers.moveNetSegmentToNewNet = nil
             handlers.editSymbolPinNames = nil
+        }
+        if onRevealPoolSymbol != nil, selectedSymbolPoolID() != nil {
+            handlers.showInPoolManager = { revealSelectedSymbol(.registeredPool) }
+            handlers.showInProjectPoolManager = { revealSelectedSymbol(.projectPool) }
         }
         if editorProfile.supportsPins {
             handlers.placePin = { beginPlaceNextPin() }
@@ -7545,14 +7543,81 @@ struct SchematicCanvasView: View {
         #if os(macOS)
         var entries: [HorizontalTargetItemMenuEntry] = [.select(title: "Select")]
         if !isReadOnly, ref.type == .text { entries.append(.command(title: "Edit…", .editText)) }
+        if !isReadOnly, !editorProfile.isPoolMode, onApplyProjectEdit != nil, ref.type == .schematicSymbol,
+           let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
+            // Offered only when they would change something, as upstream's
+            // ToolSetNotConnectedAll::can_begin decides.
+            if noConnectChange(for: [symbol], mark: true) {
+                entries.append(.command(title: "Set all unconnected pins NC", .setAllUnconnectedPinsNC))
+            }
+            if noConnectChange(for: [symbol], mark: false) {
+                entries.append(.command(title: "Clear all NC pins", .clearAllNCPins))
+            }
+        }
         if onCopySelection != nil, HorizontalSchematicClipboardEditor.supports(ref) {
             entries.append(.command(title: "Copy", .copySelection))
             if !isReadOnly, onPreparePaste != nil { entries.append(.command(title: "Duplicate", .duplicateSelection)) }
+        }
+        if onRevealPoolSymbol != nil, symbolPoolID(for: ref) != nil {
+            entries.append(.separator)
+            entries.append(.command(title: "Show in Pool Manager", .showInPoolManager))
+            entries.append(.command(title: "Show in Project Pool Manager", .showInProjectPoolManager))
         }
         return entries.count > 1 ? entries : []
         #else
         return []
         #endif
+    }
+
+    /// The pool symbol uuid behind a placed symbol.
+    private func symbolPoolID(for ref: HorizontalSelectableRef) -> String? {
+        guard ref.type == .schematicSymbol,
+              let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+            return nil
+        }
+        return symbol.symbolID
+    }
+
+    private func selectedSymbolPoolID() -> String? {
+        selectedObjects.lazy.compactMap { symbolPoolID(for: $0) }.first
+    }
+
+    private func revealSelectedSymbol(_ target: HorizontalPoolRevealTarget) {
+        guard let symbolID = selectedSymbolPoolID() else {
+            return
+        }
+        onRevealPoolSymbol?(symbolID, target)
+    }
+
+    /// Whether Set all unconnected pins NC (`mark`) or Clear all NC pins
+    /// would change any pin of these symbols' gates.
+    private func noConnectChange(for symbols: [HorizontalPlacement], mark: Bool) -> Bool {
+        symbols.contains { symbol in
+            guard let componentID = symbol.componentID else { return false }
+            let connections = sheet.componentInfo[normalizedID(componentID)]?.connections ?? [:]
+            var states = [String: SchematicConnectionState]()
+            for (path, state) in connections { states[normalizedID(path)] = state }
+            return symbol.symbolPinNames.contains { pin in
+                switch states[normalizedID(pin.gatePinPath)] {
+                case nil: return mark
+                case .notConnected?: return !mark
+                case .connected?: return false
+                }
+            }
+        }
+    }
+
+    /// Horizon's Set all unconnected pins NC / Clear all NC pins on the
+    /// selected symbols: one set_no_connect per gate, applied as one step.
+    private func setAllNoConnect(_ mark: Bool) {
+        let selected = Set(selectedObjects.filter { $0.type == .schematicSymbol }.map { normalizedID($0.id) })
+        let symbols = sheet.symbols.filter { selected.contains(normalizedID($0.id)) && noConnectChange(for: [$0], mark: mark) }
+        let operations: [JSONDictionary] = symbols.compactMap { symbol in
+            guard let componentID = symbol.componentID, let gateID = symbol.gateID else { return nil }
+            return ["op": "set_no_connect", "component": componentID, "gate": gateID, "all": true, "no_connect": mark]
+        }
+        guard !operations.isEmpty else { return }
+        applyProjectEdit(operations, actionName: mark ? "Set All Unconnected Pins NC" : "Clear All NC Pins")
     }
 
     private func symbolContextMenuItems(for symbol: HorizontalPlacement, ref: HorizontalSelectableRef) -> [HorizontalSelectionTargetItem] {
