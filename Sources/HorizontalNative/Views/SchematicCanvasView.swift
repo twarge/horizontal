@@ -249,6 +249,9 @@ struct SchematicCanvasView: View {
     var drawNetLineCommand: HorizontalDrawNetLineCommand?
     var placePartRequest: HorizontalPartPlacementRequest?
     var poolURL: URL?
+    /// "Show in (Project) Pool Manager" for a placed symbol: the pool symbol
+    /// uuid and where to look. Nil hides the commands.
+    var onRevealPoolSymbol: ((String, HorizontalPoolRevealTarget) -> Void)?
     /// What the canvas edits: a sheet, or a pool symbol / frame (see
     /// `HorizontalSchematicEditorProfile`).
     var mode: HorizontalSchematicEditorMode = .sheet
@@ -334,6 +337,7 @@ struct SchematicCanvasView: View {
         drawNetLineCommand: HorizontalDrawNetLineCommand? = nil,
         placePartRequest: HorizontalPartPlacementRequest? = nil,
         poolURL: URL? = nil,
+        onRevealPoolSymbol: ((String, HorizontalPoolRevealTarget) -> Void)? = nil,
         mode: HorizontalSchematicEditorMode = .sheet,
         symbolEditorContext: HorizontalSymbolEditorContext? = nil,
         syncRevision: Int = 0
@@ -374,6 +378,7 @@ struct SchematicCanvasView: View {
         self.drawNetLineCommand = drawNetLineCommand
         self.placePartRequest = placePartRequest
         self.poolURL = poolURL
+        self.onRevealPoolSymbol = onRevealPoolSymbol
         self.mode = mode
         self.symbolEditorContext = symbolEditorContext
         self.syncRevision = syncRevision
@@ -7413,6 +7418,10 @@ struct SchematicCanvasView: View {
             handlers.moveNetSegmentToNewNet = nil
             handlers.editSymbolPinNames = nil
         }
+        if onRevealPoolSymbol != nil, selectedSymbolPoolID() != nil {
+            handlers.showInPoolManager = { revealSelectedSymbol(.registeredPool) }
+            handlers.showInProjectPoolManager = { revealSelectedSymbol(.projectPool) }
+        }
         if editorProfile.supportsPins {
             handlers.placePin = { beginPlaceNextPin() }
             // The board's "p" reaches the canvas as placePad; here it places a pin.
@@ -7549,10 +7558,35 @@ struct SchematicCanvasView: View {
             entries.append(.command(title: "Copy", .copySelection))
             if !isReadOnly, onPreparePaste != nil { entries.append(.command(title: "Duplicate", .duplicateSelection)) }
         }
+        if onRevealPoolSymbol != nil, symbolPoolID(for: ref) != nil {
+            entries.append(.separator)
+            entries.append(.command(title: "Show in Pool Manager", .showInPoolManager))
+            entries.append(.command(title: "Show in Project Pool Manager", .showInProjectPoolManager))
+        }
         return entries.count > 1 ? entries : []
         #else
         return []
         #endif
+    }
+
+    /// The pool symbol uuid behind a placed symbol.
+    private func symbolPoolID(for ref: HorizontalSelectableRef) -> String? {
+        guard ref.type == .schematicSymbol,
+              let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+            return nil
+        }
+        return symbol.symbolID
+    }
+
+    private func selectedSymbolPoolID() -> String? {
+        selectedObjects.lazy.compactMap { symbolPoolID(for: $0) }.first
+    }
+
+    private func revealSelectedSymbol(_ target: HorizontalPoolRevealTarget) {
+        guard let symbolID = selectedSymbolPoolID() else {
+            return
+        }
+        onRevealPoolSymbol?(symbolID, target)
     }
 
     private func symbolContextMenuItems(for symbol: HorizontalPlacement, ref: HorizontalSelectableRef) -> [HorizontalSelectionTargetItem] {
