@@ -104,6 +104,12 @@ enum HorizontalCanvasCommand {
     case moveNetSegmentToExistingNet
     case moveNetSegmentToNewNet
     case editSymbolPinNames
+    /// Schematic: mark every pin of the selected symbols' gates that is on
+    /// no net as not connected (Horizon's "Set all unconnected pins NC").
+    case setAllUnconnectedPinsNC
+    /// Schematic: clear every no-connect mark on those gates' pins
+    /// (Horizon's "Clear all NC pins").
+    case clearAllNCPins
     case toggleRectanglePlacementMode
     case moveSelectionBy(HorizontalPoint)
     /// Package editor: pick a padstack and place pads with it.

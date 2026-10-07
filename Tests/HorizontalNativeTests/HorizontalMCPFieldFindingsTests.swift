@@ -17,11 +17,16 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
 
     /// A one-gate part whose pins sit down the left edge pointing left, the
     /// way an MCU's pins do, named as given.
-    private func part(_ names: [String], value: String = "") -> Part {
+    private func part(_ names: [String], value: String = "", alternates: [String: [String]] = [:]) -> Part {
         let pins = names.map { _ in UUID().uuidString.lowercased() }
         let pads = names.map { _ in UUID().uuidString.lowercased() }
         var unit = HorizontalPoolItemFactory.newUnit()
-        for i in pins.indices { unit.pins[pins[i]] = HorizontalUnitPin(id: pins[i], primaryName: names[i]) }
+        for i in pins.indices {
+            unit.pins[pins[i]] = HorizontalUnitPin(id: pins[i], primaryName: names[i], direction: .bidirectional,
+                alternateNames: (alternates[names[i]] ?? []).map {
+                    HorizontalUnitPinAlternateName(id: UUID().uuidString.lowercased(), name: $0, direction: .bidirectional)
+                })
+        }
         let entity = HorizontalPoolItemFactory.newEntity(for: unit)
         let gate = entity.gates.keys.first!
         var symbol = HorizontalPoolItemFactory.newSymbol(for: unit)
@@ -244,6 +249,89 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         try apply([["op": "set_no_connect", "component": "U1", "pins": ["NRST", "PA14"], "no_connect": false]])
         pins = try XCTUnwrap(try result("get_component", ["refdes": "U1"]) as? JSONDictionary).dictionaryArray("pins")
         XCTAssertEqual(pins.first { $0.string("pin") == "NRST" }?.string("connection_state"), "unconnected")
+    }
+
+    func testPinAlternatesAreListedAndChosen() throws {
+        let mcu = part(["PA5", "PA13(JTMS/SWDIO)", "VSS"], alternates: [
+            "PA5": ["SPI1_SCK/I2S1_CK", "SPI6_SCK", "TIM2_CH1/TIM2_ETR", "TIM8_CH1N"],
+            "PA13(JTMS/SWDIO)": ["JTMS-SWDIO", "EVENTOUT"]
+        ])
+        try apply([
+            ["op": "ensure_component", "refdes": "U1", "part": mcu.part],
+            ["op": "place_symbol", "component": "U1", "x_mm": 100, "y_mm": 100]
+        ], ["pool_items": mcu.items])
+        func pins() throws -> [String: JSONDictionary] {
+            let rows = try XCTUnwrap(try result("get_component", ["refdes": "U1"]) as? JSONDictionary).dictionaryArray("pins")
+            return Dictionary(uniqueKeysWithValues: rows.map { ($0.string("pin") ?? "", $0) })
+        }
+        var rows = try pins()
+        XCTAssertEqual(Set(rows["PA5"]?["alternates"] as? [String] ?? []),
+                       ["SPI1_SCK/I2S1_CK", "SPI6_SCK", "TIM2_CH1/TIM2_ETR", "TIM8_CH1N"])
+        XCTAssertNil(rows["VSS"]?["alternates"])
+        XCTAssertNil(rows["PA5"]?["selected"])
+
+        // One "/" part finds the whole alternate; a pin named with a slash
+        // still resolves whole.
+        let set = try apply([["op": "set_pin_alternate", "component": "U1", "assignments": [
+            "PA5": "spi1_sck", "PA13(JTMS/SWDIO)": "JTMS-SWDIO"]]])
+        XCTAssertEqual((changes(set).first?["pins"] as? [JSONDictionary])?.count, 2)
+        rows = try pins()
+        XCTAssertEqual((rows["PA5"]?["selected"] as? JSONDictionary)?["alternates"] as? [String], ["SPI1_SCK/I2S1_CK"])
+        XCTAssertEqual(rows["PA5"]?.string("display_name"), "SPI1_SCK/I2S1_CK")
+        XCTAssertEqual(rows["PA13(JTMS/SWDIO)"]?.string("display_name"), "JTMS-SWDIO")
+
+        // What Horizon stores, in its own shape.
+        let block = try JSONHelper.loadDictionary(from: root.appendingPathComponent("top_block.json"))
+        let component = try XCTUnwrap(block.dictionary("components")?.values.compactMap { $0 as? JSONDictionary }.first { $0.string("refdes") == "U1" })
+        let entry = try XCTUnwrap(component.dictionary("alt_pins")?["\(mcu.gate)/\(mcu.pins[0])"] as? JSONDictionary)
+        XCTAssertEqual((entry["pin_names"] as? [String])?.count, 1)
+        XCTAssertEqual(entry.bool("use_primary_name"), false)
+        XCTAssertEqual(entry.bool("use_custom_name"), false)
+        XCTAssertEqual(entry.string("custom_direction"), "bidirectional")
+
+        // Several at once, with the primary name beside them and a custom name.
+        try apply([["op": "set_pin_alternate", "component": "U1", "pin": "PA5", "alternate": ["TIM2_CH1", "SPI1_SCK/I2S1_CK"],
+                    "use_primary_name": true, "custom_name": "ADC SCK", "custom_direction": "output"]])
+        rows = try pins()
+        XCTAssertEqual(rows["PA5"]?.string("display_name"), "PA5 · TIM2_CH1/TIM2_ETR · SPI1_SCK/I2S1_CK · ADC SCK")
+        XCTAssertTrue(try error([["op": "set_pin_alternate", "component": "U1", "pin": "PA5", "alternate": "SPI6_SCK",
+                                  "custom_direction": "sideways"]]).contains("not a pin direction"))
+
+        // Wrong names say what the pin offers, or which alternates a part is in.
+        XCTAssertTrue(try error([["op": "set_pin_alternate", "component": "U1", "pin": "PA5", "alternate": "USART2_TX"]]).contains("SPI6_SCK"))
+        XCTAssertTrue(try error([["op": "set_pin_alternate", "component": "U1", "pin": "VSS", "alternate": "X"]]).contains("no alternates"))
+        XCTAssertTrue(try error([["op": "set_pin_alternate", "component": "U1", "pin": "PA5", "alternate": "PA5", "assignments": ["PA5": NSNull()]]]).contains("not both"))
+
+        // null goes back to the primary name and leaves no entry.
+        try apply([["op": "set_pin_alternate", "component": "U1", "assignments": ["PA5": NSNull(), "PA13(JTMS/SWDIO)": "PA13(JTMS/SWDIO)"],
+                    "custom_name": NSNull()]])
+        rows = try pins()
+        XCTAssertNil(rows["PA5"]?["selected"])
+        XCTAssertNil(rows["PA13(JTMS/SWDIO)"]?["selected"])
+        let cleared = try JSONHelper.loadDictionary(from: root.appendingPathComponent("top_block.json"))
+        let after = try XCTUnwrap(cleared.dictionary("components")?.values.compactMap { $0 as? JSONDictionary }.first { $0.string("refdes") == "U1" })
+        XCTAssertEqual(after.dictionary("alt_pins")?.count ?? 0, 0)
+    }
+
+    func testSetAllNoConnectTakesOnlyFreePinsAsHorizonDoes() throws {
+        _ = try placedMCU()   // PA13 on SWDIO, PA14 on SWCLK; VSS, VSS and NRST free.
+        func states() throws -> [String: String] {
+            let rows = try XCTUnwrap(try result("get_component", ["refdes": "U1"]) as? JSONDictionary).dictionaryArray("pins")
+            return Dictionary(rows.map { ($0.string("gate_pin_path") ?? "", $0.string("connection_state") ?? "") }) { a, _ in a }
+        }
+        let marked = try apply([["op": "set_no_connect", "component": "U1", "all": true]])
+        XCTAssertEqual((changes(marked).first?["pins"] as? [String])?.count, 3)
+        var now = try states()
+        XCTAssertEqual(now.values.filter { $0 == "no_connect" }.count, 3)
+        XCTAssertEqual(now.values.filter { $0 == "connected" }.count, 2, "connected pins are left alone")
+
+        // Again changes nothing; clearing takes the marks and only them.
+        XCTAssertEqual((changes(try apply([["op": "set_no_connect", "component": "U1", "all": true]])).first?["pins"] as? [String])?.count, 0)
+        try apply([["op": "set_no_connect", "component": "U1", "all": true, "no_connect": false]])
+        now = try states()
+        XCTAssertEqual(now.values.filter { $0 == "no_connect" }.count, 0)
+        XCTAssertEqual(now.values.filter { $0 == "connected" }.count, 2)
+        XCTAssertTrue(try error([["op": "set_no_connect", "component": "U1", "all": true, "pin": "NRST"]]).contains("not both"))
     }
 
     func testRemapMatchesPinsByName() throws {
