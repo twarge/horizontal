@@ -39,6 +39,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case terminatePin = "terminate_pin"
     case setSymbolDisplay = "set_symbol_display"
     case setNoConnect = "set_no_connect"
+    case setPinAlternate = "set_pin_alternate"
     case remapPart = "remap_part"
     case placeText = "place_text"
     case removeText = "remove_text"
@@ -125,7 +126,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .removeJunction: "Remove a junction with the wires ending on it and the labels and power symbols sitting on it — net-less junctions included."
         case .pruneSheet: "Clear orphaned drawing from a sheet: wires with a dangling end, wiring islands that carry no net and reach no pin, labels on no net, and junctions nothing uses. unanchored and stubs widen it to wiring that names a net but reaches no pin, and wire ends to nowhere."
         case .terminatePin: "Draw a short wire straight out from a symbol pin and end it in a net label or power symbol facing away from the pin. Connects the pin to the net first when it is on none."
-        case .setNoConnect: "Mark component pins as deliberately not connected, or clear the mark. A pin on a net is refused unless disconnect is passed."
+        case .setNoConnect: "Mark component pins as deliberately not connected, or clear the mark. A pin on a net is refused unless disconnect is passed. all does it for every free pin of a gate or the whole component, as Horizon's Set all unconnected pins NC and Clear all NC pins do."
+        case .setPinAlternate: "Choose the function a pin is drawn as — an alternate name its unit offers, such as SPI1_SCK on an MCU port pin — or a custom name, or go back to the primary name. get_component lists each pin's alternates and what is selected."
         case .remapPart: "Replace a component's part, preserving connections, symbols and wires atomically. Pins are matched by name unless an explicit gate/pin identity map is given."
         case .placeText: "Write a text on a schematic sheet, or change one that is already there: move it, turn it, rewrite it. id names the text to change, from list_texts; give only what changes. x_mm, y_mm or both move it, and it keeps its uuid, layer and the rest. An id that names no text makes one under it, so a batch can name a text and edit or remove it later. Free text only: a symbol's own texts belong to the symbol."
         case .removeText: "Remove a text from a schematic sheet."
@@ -284,9 +286,17 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "style": "Power symbol style, as for place_power_symbol (optional)."]
         case .setNoConnect:
             return ["component": component, "pin": "One pin, as for connect.", "pins": "Several pins, as for connect.",
-                    "gate": "Gate, as for connect (optional).",
+                    "gate": "Gate, as for connect (optional); with all, only that gate's pins.",
+                    "all": "Every pin instead of pin or pins: marking takes the pins on no net and leaves connected ones alone; clearing takes every no-connect mark (default false).",
                     "no_connect": "true marks them not connected (default); false clears the mark.",
                     "disconnect": "Take a pin off its net to mark it (default false: a connected pin is refused)."]
+        case .setPinAlternate:
+            return ["component": component, "pin": "One pin, as for connect.", "gate": "Gate, as for connect (optional).",
+                    "alternate": "The alternate for pin: a name or uuid, or a list to show several. A name is matched whole first, then by one of its \"/\" parts when only one alternate has it (SPI1_SCK finds SPI1_SCK/I2S1_CK); the primary name selects it. null or [] clears.",
+                    "assignments": "Several pins at once: an object from pin, as for connect, to what alternate takes. Use instead of pin and alternate.",
+                    "use_primary_name": "Also show the primary name beside the alternates (optional; default false).",
+                    "custom_name": "A name of your own, shown with the alternates (optional; \"\" or null removes it).",
+                    "custom_direction": "The direction that custom name has: input, output, bidirectional, open_collector, passive, power_input, power_output or not_connected (optional; default unchanged, else bidirectional)."]
         case .remapPart:
             return ["component": component, "part": "Target imported pool part id.",
                     "pin_map": "Optional object mapping old gateUUID/pinUUID to new gateUUID/pinUUID. Pins it leaves out are matched by gate and pin name; every connected or drawn pin has to map one way or the other.",
@@ -465,6 +475,19 @@ struct HorizontalEditOperation {
                 }
             } else if ["layer", "index", "priority", "inner_layers"].contains(key) {
                 try HorizontalDispatchValidation.number(value, key: key, integer: true)
+            } else if key == "alternate" {
+                // A name, several, or null to go back to the primary name.
+                guard value is String || value is NSNull || (value as? [Any])?.allSatisfy({ $0 is String }) == true else {
+                    throw HorizontalDispatchError.invalidParams("alternate must be a name or uuid, a list of them, or null.")
+                }
+            } else if key == "assignments" {
+                guard let table = value as? JSONDictionary, !table.isEmpty, table.values.allSatisfy({
+                    $0 is String || $0 is NSNull || ($0 as? [Any])?.allSatisfy({ $0 is String }) == true
+                }) else {
+                    throw HorizontalDispatchError.invalidParams("assignments must be an object from pin to an alternate name, a list of them, or null.")
+                }
+            } else if value is NSNull, key == "custom_name" {
+                continue
             } else if ["fields", "pin_map", "symbols", "pad_map", "values"].contains(key) {
                 guard value is JSONDictionary else {
                     throw HorizontalDispatchError.invalidParams("\(key) must be an object.")
@@ -480,7 +503,7 @@ struct HorizontalEditOperation {
                 try HorizontalDispatchValidation.number(value, key: key)
             } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs", "exposed_copper_only",
                        "force", "cascade", "swap", "remove_routing", "display_all_pads", "no_connect", "disconnect",
-                       "unanchored", "stubs"].contains(key) {
+                       "unanchored", "stubs", "use_primary_name", "all"].contains(key) {
                 try HorizontalDispatchValidation.boolean(value, key: key)
             } else if value is NSNull, ["part", "group", "tag"].contains(key) {
                 continue
@@ -812,6 +835,8 @@ final class HorizontalProjectEditor {
             change.merge(try setSymbolDisplay(params)) { _, new in new }
         case .setNoConnect:
             change.merge(try setNoConnect(params)) { _, new in new }
+        case .setPinAlternate:
+            change.merge(try setPinAlternate(params)) { _, new in new }
         case .remapPart:
             change.merge(try remapPart(params)) { _, new in new }
         case .placeText:
@@ -1411,8 +1436,12 @@ final class HorizontalProjectEditor {
     private func setNoConnect(_ params: JSONDictionary) throws -> JSONDictionary {
         let componentID = try componentID(params)
         let references = (params["pins"] as? [String] ?? []) + (params.string("pin").map { [$0] } ?? [])
-        guard !references.isEmpty else { throw HorizontalDispatchError.invalidParams("set_no_connect needs \"pin\" or \"pins\".") }
         let mark = params.bool("no_connect") ?? true
+        if params.bool("all") == true {
+            guard references.isEmpty else { throw HorizontalDispatchError.invalidParams("set_no_connect takes all or pin/pins, not both.") }
+            return try setAllNoConnect(componentID: componentID, gate: params.string("gate"), mark: mark, params: params)
+        }
+        guard !references.isEmpty else { throw HorizontalDispatchError.invalidParams("set_no_connect needs \"pin\", \"pins\" or \"all\".") }
         let disconnect = params.bool("disconnect") ?? false
         let refdes = components()[componentID]?.string("refdes") ?? componentID
         var paths = [String]()
@@ -1444,6 +1473,156 @@ final class HorizontalProjectEditor {
         var change: JSONDictionary = ["component": componentID, "pins": paths, "no_connect": mark]
         if !taken.isEmpty { change["disconnected"] = taken }
         return change
+    }
+
+    /// Horizon's Set all unconnected pins NC and Clear all NC pins
+    /// (`ToolSetNotConnectedAll`): marking adds a null-net connection for each
+    /// pin with no connection at all; clearing removes each null-net one.
+    private func setAllNoConnect(componentID: String, gate: String?, mark: Bool, params: JSONDictionary) throws -> JSONDictionary {
+        guard let entityID = components()[componentID]?.string("entity"), let entity = pool.entity(entityID) else {
+            throw HorizontalDispatchError.notFound("Component \(componentID) has no entity in the project pool.")
+        }
+        let only = gate == nil ? nil : try self.gate(params, componentID: componentID).id
+        var connections = components()[componentID]?.dictionary("connections") ?? [:]
+        var keys = [String: String]()
+        for key in connections.keys { keys[key.lowercased()] = key }
+        var paths = [String]()
+        for (gateID, gate) in entity.gates.sorted(by: { $0.key < $1.key }) where only == nil || gateID == only {
+            guard let unitID = gate.unitID, let unit = pool.unit(unitID) else { continue }
+            for pinID in unit.pins.keys.sorted() {
+                let path = "\(gateID)/\(pinID)"
+                let key = keys[path]
+                if mark, key == nil {
+                    connections[path] = ["net": NSNull()]
+                    paths.append(path)
+                } else if !mark, let key, (connections[key] as? JSONDictionary)?.string("net") == nil {
+                    connections.removeValue(forKey: key)
+                    paths.append(path)
+                }
+            }
+        }
+        if !paths.isEmpty { try updateComponent(componentID) { $0["connections"] = connections } }
+        return ["component": componentID, "pins": paths, "no_connect": mark, "all": true]
+    }
+
+    // MARK: - Pin alternates
+
+    /// Horizon keeps a component's choice of pin function in `alt_pins`, keyed
+    /// by gate/pin path: the chosen alternates by uuid, whether the primary name
+    /// still shows, and a custom name. A pin with nothing chosen has no entry.
+    private func setPinAlternate(_ params: JSONDictionary) throws -> JSONDictionary {
+        let componentID = try componentID(params)
+        let refdes = components()[componentID]?.string("refdes") ?? componentID
+        var requests = [(pin: String, alternate: Any?)]()
+        if let assignments = params["assignments"] {
+            guard params["pin"] == nil, params["alternate"] == nil else {
+                throw HorizontalDispatchError.invalidParams("set_pin_alternate takes assignments or pin and alternate, not both.")
+            }
+            guard let table = assignments as? JSONDictionary, !table.isEmpty else {
+                throw HorizontalDispatchError.invalidParams("assignments must be an object from pin to alternate.")
+            }
+            requests = table.keys.sorted().map { ($0, table[$0]) }
+        } else if let pin = params.string("pin") {
+            requests = [(pin, params["alternate"])]
+        } else {
+            throw HorizontalDispatchError.invalidParams("set_pin_alternate needs \"pin\" or \"assignments\".")
+        }
+        let usePrimary = params.bool("use_primary_name")
+        let customName: String? = params["custom_name"] is NSNull ? "" : params.string("custom_name")
+        let customDirection = params.string("custom_direction")
+        if let customDirection, HorizontalPinDirection(rawValue: customDirection) == nil {
+            throw HorizontalDispatchError.invalidParams("custom_direction \(customDirection) is not a pin direction: "
+                + HorizontalPinDirection.allCases.map(\.rawValue).joined(separator: ", ") + ".")
+        }
+
+        var altPins = components()[componentID]?.dictionary("alt_pins") ?? [:]
+        var results = [JSONDictionary]()
+        var seen = Set<String>()
+        for request in requests {
+            var selector: JSONDictionary = ["pin": request.pin]
+            if let gate = params.string("gate") { selector["gate"] = gate }
+            let path = try pinPath(selector, componentID: componentID)
+            guard seen.insert(path).inserted else {
+                throw HorizontalDispatchError.invalidParams("\(refdes) pin \(pinName(path, componentID: componentID)) is assigned twice.")
+            }
+            let unitPin = try self.unitPin(path, componentID: componentID)
+            let wanted: [String]
+            switch request.alternate {
+            case nil, is NSNull: wanted = []
+            case let name as String: wanted = [name]
+            case let names as [Any]:
+                wanted = try names.map {
+                    guard let name = $0 as? String else { throw HorizontalDispatchError.invalidParams("An alternate is a name or uuid string.") }
+                    return name
+                }
+            default:
+                throw HorizontalDispatchError.invalidParams("An alternate is a name, a list of names, or null.")
+            }
+            var chosen = [HorizontalUnitPinAlternateName]()
+            var primary = usePrimary ?? false
+            for name in wanted {
+                if name.caseInsensitiveCompare(unitPin.name) == .orderedSame {
+                    primary = true
+                    continue
+                }
+                let alternate = try alternate(name, of: unitPin, pin: "\(refdes) pin \(unitPin.name)")
+                if !chosen.contains(where: { $0.id == alternate.id }) { chosen.append(alternate) }
+            }
+
+            let key = altPins.keys.first { $0.lowercased() == path } ?? path
+            let existing = altPins[key] as? JSONDictionary ?? [:]
+            let custom = customName ?? (existing.bool("use_custom_name") == true ? existing.string("custom_name") ?? "" : "")
+            altPins.removeValue(forKey: key)
+            // An alternate on its own replaces the primary name, as picking it
+            // in the app does. With nothing chosen the pin is back to its
+            // primary name, which is what no entry means.
+            if !chosen.isEmpty || !custom.isEmpty {
+                altPins[path] = [
+                    "custom_direction": customDirection ?? existing.string("custom_direction") ?? "bidirectional",
+                    "custom_name": custom,
+                    "pin_names": chosen.map { $0.id.lowercased() },
+                    "use_custom_name": !custom.isEmpty,
+                    "use_primary_name": primary
+                ] as JSONDictionary
+            }
+            var result: JSONDictionary = ["pin": path, "pin_name": unitPin.name, "alternates": chosen.map(\.name)]
+            if !custom.isEmpty { result["custom_name"] = custom }
+            if altPins[path] == nil { result["cleared"] = true } else { result["primary"] = primary }
+            results.append(result)
+        }
+        try updateComponent(componentID) { $0["alt_pins"] = altPins }
+        return ["component": componentID, "pins": results]
+    }
+
+    private func unitPin(_ path: String, componentID: String) throws -> HorizontalDispatchPoolIndex.Pin {
+        let pieces = path.split(separator: "/").map(String.init)
+        guard pieces.count == 2, let entityID = components()[componentID]?.string("entity"),
+              let unitID = pool.entity(entityID)?.gates[pieces[0].lowercased()]?.unitID,
+              let pin = pool.unit(unitID)?.pins[pieces[1].lowercased()] else {
+            throw HorizontalDispatchError.notFound("Pin \(path) is not in its unit.")
+        }
+        return pin
+    }
+
+    /// An alternate by its whole name, its uuid, or — when only one alternate
+    /// has it — one of the "/"-separated names it combines.
+    private func alternate(_ reference: String, of pin: HorizontalDispatchPoolIndex.Pin, pin label: String) throws -> HorizontalUnitPinAlternateName {
+        if let whole = pin.alternates.first(where: { $0.name.caseInsensitiveCompare(reference) == .orderedSame || $0.id.lowercased() == reference.lowercased() }) {
+            return whole
+        }
+        let partial = pin.alternates.filter { alternate in
+            alternate.name.split(separator: "/").contains { $0.caseInsensitiveCompare(reference) == .orderedSame }
+        }
+        if partial.count == 1 { return partial[0] }
+        let choices = pin.alternates.map(\.name).sorted()
+        guard !choices.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("\(label) has no alternates; custom_name gives it a name of your own.")
+        }
+        if partial.count > 1 {
+            throw HorizontalDispatchError.ambiguous("\(reference) is part of \(partial.count) alternates of \(label); name one whole.",
+                                                    candidates: partial.map(\.name).sorted())
+        }
+        throw HorizontalDispatchError.invalidParams("\(label) has no alternate \(reference). It offers: \(choices.joined(separator: ", ")).")
     }
 
     // MARK: - Pins

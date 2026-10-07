@@ -135,8 +135,15 @@ Schematic editing supports:
 - `terminate_pin {component, pin, net?, kind?, length_mm?}` draws a stub out of
   a pin, in the direction it points after the symbol's rotation and mirror,
   ending in a label or power symbol facing away from it.
-- `set_no_connect {component, pin | pins, no_connect?, disconnect?}` and
+- `set_no_connect {component, pin | pins | all, gate?, no_connect?, disconnect?}` (`all`: every pin on no net,
+  or every NC mark when clearing — Horizon's Set all unconnected pins NC / Clear all NC pins) and
   `set_symbol_display {component | symbol_instance, pin_display_mode?, display_all_pads?}`.
+- `set_pin_alternate {component, pin, alternate | assignments, use_primary_name?, custom_name?, custom_direction?}`
+  picks a pin's function from the alternates its unit offers. `alternate` is a
+  name (whole, or one "/" part of it when that is unique: `SPI1_SCK` finds
+  `SPI1_SCK/I2S1_CK`), a uuid, a list, or null for the primary name;
+  `assignments` maps many pins at once. `get_component(alternates=true)` lists
+  the choices, and a pin with one chosen gives `selected` and `display_name`.
 - `set_net_line_endpoint`: `{op, line, end: "from" | "to", endpoint, sheet?}`
   preserves the existing wire ID and net. Both ends must resolve to pins or
   junctions whose current logical nets agree with the wire.

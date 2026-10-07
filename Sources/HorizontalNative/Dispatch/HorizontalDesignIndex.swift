@@ -10,8 +10,31 @@ struct HorizontalDesignPin: Hashable {
     var netID: String?
     var physicalPads: [HorizontalDesignPad] = []
     var connectionState = "unconnected"
+    /// What the unit offers in place of the primary name.
+    var alternates: [HorizontalUnitPinAlternateName] = []
+    /// What the component picked from them: its `alt_pins` entry.
+    var selection: HorizontalDesignPinSelection?
 
     var gatePinPath: String { "\(gateID)/\(pinID)" }
+}
+
+/// A component's `alt_pins` entry for one pin, as Horizon stores it: the
+/// alternates chosen by uuid, whether the primary name still shows, and a
+/// custom name of the designer's own.
+struct HorizontalDesignPinSelection: Hashable {
+    var alternateIDs: [String]
+    var usePrimaryName: Bool
+    var useCustomName: Bool
+    var customName: String
+
+    init(json: JSONDictionary) {
+        alternateIDs = (json["pin_names"] as? [String] ?? []).map { $0.lowercased() }
+        usePrimaryName = json.bool("use_primary_name") ?? false
+        useCustomName = json.bool("use_custom_name") ?? false
+        customName = json.string("custom_name") ?? ""
+    }
+
+    var isEmpty: Bool { alternateIDs.isEmpty && !usePrimaryName && !(useCustomName && !customName.isEmpty) }
 }
 
 struct HorizontalDesignPad: Hashable {
@@ -251,9 +274,15 @@ struct HorizontalDesignIndex {
                         gateSuffix: gate.suffix,
                         pinName: pin.name,
                         direction: pin.direction,
-                        netID: nil
+                        netID: nil,
+                        alternates: pin.alternates
                     )
                 }
+            }
+            for (path, value) in blockEntry?.dictionary("alt_pins") ?? [:] {
+                guard let json = value as? JSONDictionary else { continue }
+                let selection = HorizontalDesignPinSelection(json: json)
+                if !selection.isEmpty { pins[path.lowercased()]?.selection = selection }
             }
             let namesFromSymbols = symbolPinNames[componentID] ?? [:]
             for (path, state) in info.connections {
@@ -465,6 +494,9 @@ final class HorizontalDispatchPoolIndex {
     struct Pin {
         var name: String
         var direction: String
+        /// The functions a component can pick for this pin instead of its
+        /// primary name, as the unit lists them (legacy `names` included).
+        var alternates: [HorizontalUnitPinAlternateName] = []
     }
 
     struct Unit {
@@ -538,7 +570,8 @@ final class HorizontalDispatchPoolIndex {
             for (pinID, pin) in json.dictionaryMap("pins") {
                 pins[pinID.lowercased()] = Pin(
                     name: pin.string("primary_name") ?? "",
-                    direction: pin.string("direction") ?? ""
+                    direction: pin.string("direction") ?? "",
+                    alternates: (try? HorizontalUnitPin(id: pinID, json: pin))?.alternateNames ?? []
                 )
             }
             units[uuid] = Unit(name: json.string("name") ?? "", pins: pins)

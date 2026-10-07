@@ -651,12 +651,16 @@ def get_component(refdes: str | None = None, path: str | None = None, id: str | 
                   pin_regex: Annotated[str | None, Field(description="Only pins whose name matches this regular expression, case-insensitively, e.g. \"^V(DD|SS)\".")] = None,
                   connected: Annotated[bool | None, Field(description="true: only pins on a net; false: only pins on none.")] = None,
                   group_pins: Annotated[bool, Field(description="Instead of the pin list, pin_groups: supply and ground pins by the net each is tied to, no-connects, pins on no net, and a count of signal pins — how a part's power is wired, at a glance.")] = False,
-                  all_pins: Annotated[bool, Field(description="Every pin even on a large part; otherwise a part with more than 64 pins lists only the pins on a net or marked no-connect.")] = False) -> dict[str, Any]:
+                  all_pins: Annotated[bool, Field(description="Every pin even on a large part; otherwise a part with more than 64 pins lists only the pins on a net or marked no-connect.")] = False,
+                  alternates: Annotated[bool, Field(description="List each pin's alternates — the functions set_pin_alternate can choose, e.g. SPI1_SCK/I2S1_CK on an MCU port pin. A pin with one chosen always gives selected and display_name.")] = False) -> dict[str, Any]:
     """One component in full: pins with their nets, symbol placements, board placement, part details. A part with
     more than 64 pins lists only its connected and no-connect pins unless all_pins, and says how many it left out;
-    pins, pin_regex and connected narrow the list, and group_pins summarises it."""
+    pins, pin_regex and connected narrow the list, and group_pins summarises it. A pin whose function was chosen
+    gives selected and display_name, the name its symbol draws; alternates lists the choices."""
     component = _resolve(path).component(refdes=refdes, id=id)
     every = component.get("pins") or []
+    if not alternates:
+        for pin in every: pin.pop("alternates", None)
     if pin_regex is not None:
         try: pattern = re.compile(pin_regex, re.I)
         except re.error as error: raise ValueError(f"pin_regex is not a regular expression: {error}") from error
@@ -1167,6 +1171,7 @@ def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool =
     component and pin instead of a symbol instance. Cleanup: remove_net_line, remove_junction, prune_sheet,
     remove_sheet with force, and retire_net, which takes the net's labels, wires, junctions and planes with it. Drawing:
     terminate_pin runs a stub from a pin to a label or power symbol. set_no_connect marks unused pins;
+    set_pin_alternate picks a pin's function (SPI1_SCK on PA5) from what get_component(alternates=true) lists;
     remap_part matches pins by name when pin_map is left out. Refer to sheets by name or uuid in a batch that
     adds or reorders sheets — page numbers move.
 
