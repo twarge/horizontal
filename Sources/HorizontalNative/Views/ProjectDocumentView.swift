@@ -1654,6 +1654,9 @@ struct ProjectWorkspaceView: View {
                                 drawNetLineCommand: schematicDrawNetLineCommand,
                                 placePartRequest: pendingPartPlacement,
                                 poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
+                                onRevealPoolSymbol: { symbolID, target in
+                                    revealPoolItem(.symbol, uuid: symbolID, in: target)
+                                },
                                 syncRevision: schematicSyncRevision
                             )
                         }
@@ -1810,7 +1813,7 @@ struct ProjectWorkspaceView: View {
                                 poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
                                 canRevealPoolPackages: true,
                                 onRevealPoolPackage: { packageID, target in
-                                    revealPoolPackage(packageID, in: target)
+                                    revealPoolItem(.package, uuid: packageID, in: target)
                                 }
                             )
                             .id(boardLoadID)
@@ -2206,24 +2209,25 @@ struct ProjectWorkspaceView: View {
         }
     }
 
-    /// The board's "Show in Pool Manager": the package in the registered
-    /// pool that carries it, in that pool's window; "Show in Project Pool
-    /// Manager": the project's own copy, in this window's Library pane. A
-    /// package no registered pool carries falls back to the Library pane.
-    private func revealPoolPackage(_ packageID: String, in target: HorizontalPoolPackageRevealTarget) {
-        let request = HorizontalPoolRevealRequest(category: .package, uuid: packageID)
+    /// "Show in Pool Manager" from a canvas: the item (a board's package, a
+    /// sheet's symbol) in the registered pool that carries it, in that pool's
+    /// window; "Show in Project Pool Manager": the project's own copy, in this
+    /// window's Library pane. An item no registered pool carries falls back
+    /// to the Library pane.
+    private func revealPoolItem(_ category: HorizontalPoolItemCategory, uuid: String, in target: HorizontalPoolRevealTarget) {
+        let request = HorizontalPoolRevealRequest(category: category, uuid: uuid)
         switch target {
         case .projectPool:
             revealInPools(request)
         case .registeredPool:
             let projectPoolURL = project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }
             let candidates = projectPoolURL.map { HorizontalPoolPadstacks.basePoolURLs(for: $0) } ?? HorizontalPoolRegistryStore.poolURLs()
-            let normalized = packageID.lowercased()
+            let normalized = uuid.lowercased()
             for poolURL in candidates {
                 let name = HorizontalPoolRegistryStore.poolInfo(at: poolURL).name
-                let carriesPackage = HorizontalPoolLibrary.items(inPool: poolURL, poolName: name)
-                    .contains { $0.category == .package && $0.uuid == normalized }
-                if carriesPackage {
+                let carriesItem = HorizontalPoolLibrary.items(inPool: poolURL, poolName: name)
+                    .contains { $0.category == category && $0.uuid == normalized }
+                if carriesItem {
                     HorizontalPoolWindowManager.shared.open(poolURL: poolURL, reveal: request, appearanceSettings: appearanceSettings)
                     return
                 }
