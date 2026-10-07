@@ -57,6 +57,9 @@ public extension HorizontalProjectArchive {
     ///   (pretty-printed, sorted keys, unescaped slashes, trailing newline), so
     ///   the first save after an edit rewrites only what actually changed.
     ///
+    /// The `.gitignore` is Horizon's, so the pool database and the editors'
+    /// sidecar files stay out of a repository the project is committed to.
+    ///
     /// `pool/pool.json` is the project pool, empty until a part placed from
     /// the Pools pane is cached into it (Horizon's project pool layout); the
     /// project file names it as `pool_directory` the way Horizon does.
@@ -200,6 +203,8 @@ public extension HorizontalProjectArchive {
                 "top_symbol.json": .regularFile(jsonData(symbol)),
                 "board.json": .regularFile(jsonData(board)),
                 "planes.json": .regularFile(jsonData(planes)),
+                // Horizon writes this with every new project (`Project::create`).
+                ".gitignore": .regularFile(HorizontalProjectGitignore.data),
                 projectPoolDirectoryName: .directory([
                     "pool.json": .regularFile(projectPoolData(pool))
                 ])

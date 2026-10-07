@@ -92,6 +92,12 @@ public struct HorizontalProjectArchive: Equatable, Sendable {
             }
             try builder.insertFileSystemItem(at: itemURL, relativePath: relativePath)
         }
+        // The project's `.gitignore` isn't a reference, but the app checks it
+        // the way Horizon does on open, and fixing it saves in place with the rest.
+        let gitignore = manifest.projectFileURL.deletingLastPathComponent().appendingPathComponent(".gitignore")
+        if FileManager.default.fileExists(atPath: gitignore.path), let relativePath = manifest.relativePath(for: gitignore) {
+            try builder.insertFileSystemItem(at: gitignore, relativePath: relativePath)
+        }
 
         return HorizontalProjectArchive(
             root: .directory(builder.children),
