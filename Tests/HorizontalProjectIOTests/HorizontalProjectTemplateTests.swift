@@ -14,6 +14,7 @@ final class HorizontalProjectTemplateTests: XCTestCase {
         XCTAssertEqual(
             archive.regularFilePaths,
             [
+                ".gitignore",
                 "blocks.json",
                 "board.json",
                 "planes.json",
@@ -77,7 +78,7 @@ final class HorizontalProjectTemplateTests: XCTestCase {
     func testEveryTemplateFileIsAJSONObjectWrittenAsHorizonWritesIt() throws {
         let archive = HorizontalProjectArchive.newProject()
 
-        for path in archive.regularFilePaths {
+        for path in archive.regularFilePaths where path.hasSuffix(".json") || path.hasSuffix(".hprj") {
             let data = try XCTUnwrap(archive.regularFileData(relativePath: path))
             let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any], "\(path) should be a JSON object")
             XCTAssertFalse(object.isEmpty, "\(path) should not be the empty fallback")

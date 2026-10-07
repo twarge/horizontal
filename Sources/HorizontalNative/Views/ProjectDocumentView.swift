@@ -612,6 +612,9 @@ struct ProjectWorkspaceView: View {
     /// Why a bus, ripper or net tie could not be drawn — the editor's own
     /// refusal, which is written for whoever has to fix the request.
     @State private var projectEditError: String?
+    /// Horizon's info bar for a `.gitignore` missing its recommended lines,
+    /// shown once when the document opens.
+    @State private var gitignoreNeedsFixing = false
     /// Gates the plane-pour indicator. Separate from `planePourProgress` because
     /// that is nil both when idle and when a pour is deliberately indeterminate.
     @State private var isPouringPlanes = false
@@ -947,6 +950,14 @@ struct ProjectWorkspaceView: View {
             .overlay(alignment: .bottom) {
                 HorizontalVoiceTranscriptOverlay(control: voiceControl)
             }
+            .overlay(alignment: .top) {
+                if gitignoreNeedsFixing {
+                    gitignoreInfoBar
+                        .padding(.top, canvasInsets.top + 8)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.snappy(duration: 0.18), value: gitignoreNeedsFixing)
         }
         // Must leave room for the navigator sidebar inside the window minimum
         // (980). This was also 980, so the detail alone claimed the whole
@@ -1146,6 +1157,7 @@ struct ProjectWorkspaceView: View {
     private func appear() {
         restoreFileViewStateIfNeeded()
         registerLiveDocument()
+        gitignoreNeedsFixing = !isReadOnly && document.archive.gitignoreNeedsFixing
         if navigatorSelection == nil {
             navigatorSelection = defaultNavigatorSelection
         }
@@ -1339,6 +1351,39 @@ struct ProjectWorkspaceView: View {
         HorizontalPoolLibrary.invalidateCache()
         HorizontalPoolPadstacks.invalidateCaches()
         try applyLiveArchive(updated, actionName: "Update Project Parts", beforeInstall: { try review.requireSourcesCurrent() })
+    }
+
+    /// Upstream's wording and choices (`info_bar_gitignore`): fix it, or leave
+    /// the file as it is.
+    private var gitignoreInfoBar: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.yellow)
+            Text("This project's gitignore is missing one or more recommended lines.")
+                .font(.callout)
+            Button("Fix") { fixGitignore() }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            Button("Dismiss") { gitignoreNeedsFixing = false }
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: Capsule())
+        .shadow(radius: 4, y: 1)
+    }
+
+    /// Appends the missing lines to the `.gitignore` beside the project file
+    /// as one undoable edit, which the document saves like any other.
+    private func fixGitignore() {
+        gitignoreNeedsFixing = false
+        var archive = document.archive
+        do {
+            guard try archive.fixGitignore() else { return }
+            try applyLiveArchive(archive, actionName: "Fix .gitignore")
+        } catch {
+            projectEditError = HorizontalCanvasProjectEdit.message(for: error)
+        }
     }
 
     private func applyLiveArchive(_ archive: HorizontalProjectArchive, loaded: HorizontalProject? = nil, actionName: String,
