@@ -792,6 +792,23 @@ enum HorizontalDispatchMethods {
             pinJSON["connection_state"] = pin.connectionState
             pinJSON["physical_pads"] = pin.physicalPads.map { ["id": $0.id, "name": $0.name] }
             pinJSON["mapping_status"] = pin.physicalPads.isEmpty ? "unresolved" : "resolved"
+            if !pin.alternates.isEmpty {
+                pinJSON["alternates"] = pin.alternates.map(\.name)
+            }
+            if let selection = pin.selection {
+                let names = pin.alternates.reduce(into: [String: String]()) { $0[$1.id.lowercased()] = $1.name }
+                let chosen = selection.alternateIDs.map { names[$0] ?? $0 }
+                pinJSON["selected"] = [
+                    "alternates": chosen,
+                    "primary": selection.usePrimaryName,
+                    "custom_name": selection.useCustomName && !selection.customName.isEmpty ? selection.customName : NSNull()
+                ] as JSONDictionary
+                // What a symbol showing selected names draws for the pin.
+                var shown = selection.usePrimaryName ? [pin.pinName] : []
+                shown += chosen
+                if selection.useCustomName, !selection.customName.isEmpty { shown.append(selection.customName) }
+                pinJSON["display_name"] = shown.joined(separator: " · ")
+            }
             if let netID = pin.netID {
                 pinJSON["net_id"] = netID
                 pinJSON["net"] = entry.index.net(id: netID)?.name ?? ""
