@@ -1907,86 +1907,68 @@ struct SchematicCanvasView: View {
         return editableTextProperty("customValue", "Custom Value", placement.customValue ?? "", multiline: true)
     }
 
+    /// One compact row per pin, under a "Pins" disclosure section: the pin's
+    /// functions (primary, alternates, custom) in a multi-select menu and the
+    /// custom name's direction beside it. There is no display-mode control:
+    /// a pin shows what its menu selects (Horizon's `selected_only`).
     private func editableSymbolPinNameProperties(for placement: HorizontalPlacement) -> [HorizontalSelectionProperty] {
         guard !placement.symbolPinNames.isEmpty else {
             return []
         }
 
-        let modeOptions = HorizontalSymbolPinDisplayMode.allCases.map {
-            HorizontalSelectionPropertyOption(id: $0.rawValue, title: $0.title)
-        }
-        var properties = [
-            HorizontalSelectionProperty(
-                id: "pinDisplayMode",
-                label: "Pin names",
-                editor: .choice(modeOptions),
-                value: .choice(placement.pinDisplayMode)
-            )
-        ]
-
-        for pin in placement.symbolPinNames {
+        let directions = pinDirectionOptions()
+        return placement.symbolPinNames.map { pin in
             let pinTitle = nonEmpty(pin.primaryName) ?? shortID(pin.id)
-            properties.append(
-                HorizontalSelectionProperty(
-                    id: symbolPinPropertyID(pinID: pin.id, field: "primary"),
-                    label: "\(pinTitle) Primary",
-                    editor: .bool,
-                    value: .bool(pin.state.usePrimaryName)
-                )
-            )
-            for option in pin.alternateNames {
-                properties.append(
-                    HorizontalSelectionProperty(
-                        id: symbolPinPropertyID(pinID: pin.id, field: "alt", extra: option.id),
-                        label: "\(pinTitle) \(option.name)",
-                        editor: .bool,
-                        value: .bool(pin.state.pinNames.contains { normalizedID($0) == normalizedID(option.id) })
-                    )
-                )
+            var functions = [HorizontalSelectionPropertyOption(id: "primary", title: pinTitle)]
+            var selected = Set<String>()
+            if pin.state.usePrimaryName {
+                selected.insert("primary")
             }
-            properties.append(
-                HorizontalSelectionProperty(
-                    id: symbolPinPropertyID(pinID: pin.id, field: "customEnabled"),
-                    label: "\(pinTitle) Custom",
-                    editor: .bool,
-                    value: .bool(pin.state.useCustomName)
-                )
-            )
-            properties.append(
-                HorizontalSelectionProperty(
-                    id: symbolPinPropertyID(pinID: pin.id, field: "customName"),
-                    label: "\(pinTitle) Name",
-                    editor: .text,
-                    value: .text(pin.state.customName)
-                )
-            )
-            properties.append(
-                HorizontalSelectionProperty(
-                    id: symbolPinPropertyID(pinID: pin.id, field: "customDirection"),
-                    label: "\(pinTitle) Direction",
-                    editor: .choice(pinDirectionOptions()),
-                    value: .choice(pin.state.customDirection)
-                )
+            for option in pin.alternateNames {
+                let functionID = "alt:\(option.id)"
+                functions.append(HorizontalSelectionPropertyOption(id: functionID, title: option.name))
+                if pin.state.pinNames.contains(where: { normalizedID($0) == normalizedID(option.id) }) {
+                    selected.insert(functionID)
+                }
+            }
+            functions.append(HorizontalSelectionPropertyOption(id: HorizontalPinFunctionsEditor.customFunctionID, title: "Custom"))
+            if pin.state.useCustomName {
+                selected.insert(HorizontalPinFunctionsEditor.customFunctionID)
+            }
+            return HorizontalSelectionProperty(
+                id: symbolPinPropertyID(pinID: pin.id),
+                label: pinTitle,
+                editor: .pinFunctions(HorizontalPinFunctionsEditor(
+                    fallbackTitle: pinTitle,
+                    functions: functions,
+                    directions: directions
+                )),
+                value: .pinFunctions(HorizontalPinFunctionsValue(
+                    selected: selected,
+                    customName: pin.state.customName,
+                    customDirection: pin.state.customDirection,
+                    pinDirection: pin.primaryDirection
+                )),
+                section: "Pins"
             )
         }
-
-        return properties
     }
 
-    private func symbolPinPropertyID(pinID: String, field: String, extra: String? = nil) -> String {
-        ["pinName", pinID, field, extra].compactMap { $0 }.joined(separator: ":")
+    /// `pinName:<pin>`; the row's parts arrive as `pinName:<pin>:<field>[:<extra>]`.
+    private func symbolPinPropertyID(pinID: String) -> String {
+        "pinName:\(pinID)"
     }
 
-    private func pinDirectionOptions() -> [HorizontalSelectionPropertyOption] {
+    private func pinDirectionOptions() -> [HorizontalPinDirectionOption] {
         [
-            HorizontalSelectionPropertyOption(id: "input", title: "Input"),
-            HorizontalSelectionPropertyOption(id: "output", title: "Output"),
-            HorizontalSelectionPropertyOption(id: "bidirectional", title: "Bidirectional"),
-            HorizontalSelectionPropertyOption(id: "passive", title: "Passive"),
-            HorizontalSelectionPropertyOption(id: "power_input", title: "Power Input"),
-            HorizontalSelectionPropertyOption(id: "power_output", title: "Power Output"),
-            HorizontalSelectionPropertyOption(id: "open_collector", title: "Open Collector"),
-            HorizontalSelectionPropertyOption(id: "not_connected", title: "Not Connected")
+            HorizontalPinDirectionOption(id: "input", title: "Input", symbol: "→"),
+            HorizontalPinDirectionOption(id: "output", title: "Output", symbol: "←"),
+            HorizontalPinDirectionOption(id: "bidirectional", title: "Bidirectional", symbol: "↔"),
+            HorizontalPinDirectionOption(id: "passive", title: "Passive", symbol: "—"),
+            HorizontalPinDirectionOption(id: "power_input", title: "Power Input", symbol: "⇒"),
+            HorizontalPinDirectionOption(id: "power_output", title: "Power Output", symbol: "⇐"),
+            HorizontalPinDirectionOption(id: "open_collector", title: "Open Collector", symbol: "◇"),
+            HorizontalPinDirectionOption(id: "not_connected", title: "Not Connected", symbol: "✕")
         ]
     }
 
@@ -6070,6 +6052,9 @@ struct SchematicCanvasView: View {
             return true
         }
 
+        // The inspector has no display-mode control: a pin shows what its
+        // function menu selects, so an edit settles the symbol on that mode.
+        sheet.symbols[symbolIndex].pinDisplayMode = HorizontalSymbolPinDisplayMode.selectedOnly.rawValue
         updateSymbolPinNameTexts(
             symbolID: sheet.symbols[symbolIndex].id,
             pins: sheet.symbols[symbolIndex].symbolPinNames,
