@@ -399,6 +399,39 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(compact[0]["from"], "U1.PA13(JTMS/SWDIO)")
         self.assertEqual(len(compact[0]["from_mm"]), 2)
 
+    async def test_pin_alternates_are_listed_on_request_and_chosen_by_name(self):
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        unit, entity, symbol = (str(uuid.uuid4()) for _ in range(3))
+        gate, pa5, vss, alt = (str(uuid.uuid4()) for _ in range(4))
+        items = [{"type": "unit", "uuid": unit, "name": "MCU", "manufacturer": "",
+                  "pins": {pa5: {"primary_name": "PA5", "direction": "bidirectional", "swap_group": 0,
+                                 "alt_names": {alt: {"name": "SPI1_SCK/I2S1_CK", "direction": "bidirectional"}}},
+                           vss: {"primary_name": "VSS", "direction": "power_input", "swap_group": 0}}},
+                 {"type": "entity", "uuid": entity, "name": "MCU", "manufacturer": "", "prefix": "U", "tags": [],
+                  "gates": {gate: {"name": "Main", "suffix": "", "swap_group": 0, "unit": unit}}},
+                 {"type": "symbol", "uuid": symbol, "name": "MCU", "unit": unit, "junctions": {}, "lines": {}, "arcs": {}, "texts": {},
+                  "polygons": {}, "pins": {p: {"position": [0, -i * 2540000], "length": 2540000, "orientation": "left",
+                                                "name_visible": True, "pad_visible": True} for i, p in enumerate([pa5, vss])}}]
+        await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id="mcu", pool_items=items,
+                        ops=[{"op": "ensure_component", "refdes": "U1", "entity": entity},
+                             {"op": "place_symbol", "component": "U1", "x_mm": 50, "y_mm": 50}])
+        plain = (await self.call("get_component", project_ref=self.ref, refdes="U1"))["data"]["pins"]
+        self.assertFalse(any("alternates" in p for p in plain))
+        listed = {p["pin"]: p for p in (await self.call("get_component", project_ref=self.ref, refdes="U1", alternates=True))["data"]["pins"]}
+        self.assertEqual(listed["PA5"]["alternates"], ["SPI1_SCK/I2S1_CK"])
+        self.assertNotIn("alternates", listed["VSS"])
+
+        both = await server.mcp.call_tool("apply_ops", {
+            "project_ref": self.ref, "expected_revision": (await self.call("project_files", project_ref=self.ref))["meta"]["revision"],
+            "operation_id": "both", "ops": [{"op": "set_pin_alternate", "component": "U1", "pin": "PA5", "assignments": {"PA5": "x"}}]})
+        self.assertTrue(both.is_error)
+        await self.call("apply_ops", project_ref=self.ref, operation_id="pick",
+                        expected_revision=(await self.call("project_files", project_ref=self.ref))["meta"]["revision"],
+                        ops=[{"op": "set_pin_alternate", "component": "U1", "assignments": {"PA5": "SPI1_SCK"}}])
+        pin = (await self.call("get_component", project_ref=self.ref, refdes="U1", pins="PA5"))["data"]["pins"][0]
+        self.assertEqual(pin["selected"], {"alternates": ["SPI1_SCK/I2S1_CK"], "primary": False, "custom_name": None})
+        self.assertEqual(pin["display_name"], "SPI1_SCK/I2S1_CK")
+
     async def test_the_schema_matches_the_engine_and_says_which_it_is(self):
         from horizontal.schemas import compare_vocabulary
         session = Session(isolated=True)

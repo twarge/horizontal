@@ -369,7 +369,7 @@ struct BoardCanvasView: View {
     var poolContext: HorizontalPoolEditorContext? = nil
     /// The host can show a package in a pool window (macOS project windows).
     var canRevealPoolPackages = false
-    var onRevealPoolPackage: (String, HorizontalPoolPackageRevealTarget) -> Void = { _, _ in }
+    var onRevealPoolPackage: (String, HorizontalPoolRevealTarget) -> Void = { _, _ in }
     @ObservedObject var toolSettings: HorizontalBoardToolSettings
 
     @State private var hoveredObject: HorizontalSelectableRef?
@@ -480,7 +480,7 @@ struct BoardCanvasView: View {
         modeProfile: HorizontalBoardModeProfile = .board,
         poolContext: HorizontalPoolEditorContext? = nil,
         canRevealPoolPackages: Bool = false,
-        onRevealPoolPackage: @escaping (String, HorizontalPoolPackageRevealTarget) -> Void = { _, _ in }
+        onRevealPoolPackage: @escaping (String, HorizontalPoolRevealTarget) -> Void = { _, _ in }
     ) {
         self.sourceBoard = board
         self.netClasses = netClasses
@@ -14356,9 +14356,9 @@ private extension HorizontalDimensionMode {
     }
 }
 
-/// Where "Show in Pool Manager" looks for a placed package's pool package.
-enum HorizontalPoolPackageRevealTarget {
-    /// The registered pool the package came from.
+/// Where "Show in Pool Manager" looks for a placed package's or symbol's pool item.
+enum HorizontalPoolRevealTarget {
+    /// The registered pool the item came from.
     case registeredPool
     /// The project's own pool (its cached copy).
     case projectPool
@@ -14380,7 +14380,7 @@ extension BoardCanvasView {
         selectedObjects.lazy.compactMap { packagePoolID(for: $0) }.first
     }
 
-    private func revealSelectedPackage(_ target: HorizontalPoolPackageRevealTarget) {
+    private func revealSelectedPackage(_ target: HorizontalPoolRevealTarget) {
         guard let packageID = selectedPackagePoolID() else {
             return
         }
