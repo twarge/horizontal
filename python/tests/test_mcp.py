@@ -344,7 +344,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         compact = (await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id="compact", ops=ops))["data"]
         self.assertEqual(compact["applied"], 31)
         self.assertNotIn("project", compact)
-        self.assertEqual(compact["normalized_ops"], [])
+        self.assertNotIn("normalized_ops", compact, "a compact commit leaves the echoed ops out rather than sending []")
         self.assertTrue(all("net" in change for change in compact["changes"][:30]))
         self.assertIn("timing", compact)
         self.assertLess(len(json.dumps(compact)), 8000)

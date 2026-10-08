@@ -542,7 +542,7 @@ def export_analysis(job_id: str, target_directory: str, include_schematic_images
                 params = {"sheet_id": sheet_id, "region": region, "dpi": 110, "max_pixels": 2048}
                 if block_id: params["block_id"] = block_id
                 image = project._call("render_sheet", **params)
-                images.append({**image, "snapshot_id": status["snapshot_id"], "block_id": block_id, "symbol_ids": [s["symbol_id"] for s in symbols]})
+                images.append({**image, "snapshot_id": status["snapshot_id"], "block_id": block_id, "symbol_ids": [s.get("symbol_instance") or s.get("symbol_id") for s in symbols]})
     return _jobs.export(job_id, target_directory, images=images)
 
 
@@ -1043,10 +1043,12 @@ def board_info(path: str | None = None) -> dict[str, Any]:
 
 
 @_tool
-def check(path: str | None = None) -> dict[str, Any]:
+def check(path: str | None = None, full: bool = False) -> dict[str, Any]:
     """Run the checks Horizontal has: load diagnostics, rules validation, annotation, single-pin nets, components with
-    no symbol on any sheet, unplaced packages, unrouted connections."""
-    return _resolve(path).check()
+    no symbol on any sheet, unplaced packages, unrouted connections. More than three findings with one title come
+    back as one message with count and the refdes or nets it names (details gives each its own detail where they
+    differ); counts counts every finding. full lists them one by one."""
+    return _resolve(path).check(full=full)
 
 
 @_tool
@@ -1191,6 +1193,10 @@ def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool =
     Project: set_project_meta sets the title-block values — project_title, rev and the rest, what $project_title
     stands for on the sheets and the board. set_export_settings changes the export settings Horizon EDA keeps
     in the project; export_settings shows them.
+
+    A batch that leaves every file as it was, such as an alternate a pin already has, replies unchanged: true and
+    adds no undo step when committed; set_pin_alternate names such pins in unchanged_pins. warnings says when a
+    symbol showing pins custom_only hides a chosen alternate.
 
     The reply is compact unless verbose: per op, its ids, scalars and counts, plus timing. A slow live commit
     is waited for (HORIZONTAL_MUTATION_TIMEOUT seconds, 180 by default), and a lost reply is resolved through
