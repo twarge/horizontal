@@ -284,7 +284,7 @@ enum HorizontalDispatchMutation {
             try beforeCommit()
             let archive = after.archive
             let count = result["applied"] as? Int ?? changed.count
-            let action = "Apply \(count) Edit\(count == 1 ? "" : "s")"
+            let action = result.string("undo_name") ?? "Apply \(count) Edit\(count == 1 ? "" : "s")"
             // The archive as loaded, before the dispatch layer's own
             // connectivity pass — what the app would load itself.
             let loaded = HorizontalUnsafeSendableBox(try after.materializedProject())

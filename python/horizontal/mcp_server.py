@@ -656,7 +656,9 @@ def get_component(refdes: str | None = None, path: str | None = None, id: str | 
     """One component in full: pins with their nets, symbol placements, board placement, part details. A part with
     more than 64 pins lists only its connected and no-connect pins unless all_pins, and says how many it left out;
     pins, pin_regex and connected narrow the list, and group_pins summarises it. A pin whose function was chosen
-    gives selected and display_name, the name its symbol draws; alternates lists the choices."""
+    gives selected and display_name, the name a symbol showing selected names draws; alternates lists the choices.
+    drawn_as lists the symbols that draw something else because of their pin_display_mode (each symbol gives its
+    own), and selected.redundant marks an entry that chooses nothing and so draws the primary name."""
     component = _resolve(path).component(refdes=refdes, id=id)
     every = component.get("pins") or []
     if not alternates:

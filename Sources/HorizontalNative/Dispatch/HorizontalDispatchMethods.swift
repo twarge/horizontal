@@ -572,7 +572,8 @@ enum HorizontalDispatchMethods {
         }
         return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params) { store in
             let written = try writePoolItems(targets, to: store)
-            return ["written": written, "skipped": targets.count - written.count, "applied": written.count]
+            return ["written": written, "skipped": targets.count - written.count, "applied": written.count,
+                    "undo_name": "Write Pool Items"]
         }
     }
 
@@ -797,18 +798,28 @@ enum HorizontalDispatchMethods {
             }
             if let selection = pin.selection {
                 let names = pin.alternates.reduce(into: [String: String]()) { $0[$1.id.lowercased()] = $1.name }
-                let chosen = selection.alternateIDs.map { names[$0] ?? $0 }
-                pinJSON["selected"] = [
-                    "alternates": chosen,
+                var selected: JSONDictionary = [
+                    "alternates": selection.alternateIDs.map { names[$0] ?? $0 },
                     "primary": selection.usePrimaryName,
                     "custom_name": selection.useCustomName && !selection.customName.isEmpty ? selection.customName : NSNull()
-                ] as JSONDictionary
+                ]
+                // An entry that chooses nothing draws the primary name, as no
+                // entry would; set_pin_alternate with alternate null removes it.
+                if selection.isRedundant { selected["redundant"] = true }
+                pinJSON["selected"] = selected
                 // What a symbol showing selected names draws for the pin.
-                var shown = selection.usePrimaryName ? [pin.pinName] : []
-                shown += chosen
-                if selection.useCustomName, !selection.customName.isEmpty { shown.append(selection.customName) }
-                pinJSON["display_name"] = shown.joined(separator: " · ")
+                pinJSON["display_name"] = pin.drawnName(mode: "selected_only")
             }
+            // A symbol in another pin_display_mode can draw something else:
+            // custom_only, for one, never shows an alternate.
+            let expected = pin.drawnName(mode: "selected_only")
+            let drawn = component.symbolPlacements.filter { $0.gateID == pin.gateID.lowercased() }.compactMap { placement -> JSONDictionary? in
+                let name = pin.drawnName(mode: placement.pinDisplayMode)
+                guard name != expected else { return nil }
+                return ["symbol_instance": placement.symbolID, "sheet": placement.sheetIndex,
+                        "pin_display_mode": placement.pinDisplayMode, "name": name]
+            }
+            if !drawn.isEmpty { pinJSON["drawn_as"] = drawn }
             if let netID = pin.netID {
                 pinJSON["net_id"] = netID
                 pinJSON["net"] = entry.index.net(id: netID)?.name ?? ""
@@ -1147,10 +1158,31 @@ enum HorizontalDispatchMethods {
                 return json
             }
             var result: JSONDictionary = ["applied": editor.changes.count, "changes": editor.changes, "normalized_ops": normalized,
-                                          "block": editor.blockID, "is_top_block": editor.isTopBlock]
+                                          "block": editor.blockID, "is_top_block": editor.isTopBlock,
+                                          "undo_name": undoName(operations, changes: editor.changes)]
             if !handles.isEmpty { result["handles"] = handles }
+            let warnings = editor.warnings()
+            if !warnings.isEmpty { result["warnings"] = warnings }
             return result
         }
+    }
+
+    /// What the app's Edit menu calls a batch: its op, or its kinds of op,
+    /// as Horizon titles its own tools ("Set Pin Alternate (31 pins)").
+    static func undoName(_ operations: [HorizontalEditOperation], changes: [JSONDictionary]) -> String {
+        func title(_ kind: HorizontalEditOperationKind) -> String {
+            kind.rawValue.split(separator: "_").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
+        }
+        var kinds = [HorizontalEditOperationKind]()
+        for operation in operations where !kinds.contains(operation.kind) { kinds.append(operation.kind) }
+        guard let first = kinds.first else { return "Apply Edits" }
+        if kinds.count == 1 {
+            if operations.count > 1 { return "\(title(first)) ×\(operations.count)" }
+            if let pins = changes.first?["pins"] as? [Any], pins.count > 1 { return "\(title(first)) (\(pins.count) pins)" }
+            return title(first)
+        }
+        let named = kinds.prefix(3).map(title).joined(separator: ", ")
+        return "\(named)\(kinds.count > 3 ? " and \(kinds.count - 3) more" : "") (\(operations.count) edits)"
     }
 
     private static func liveDocument(_ entry: HorizontalDispatchProjectEntry) throws -> HorizontalLiveDocument {
@@ -1885,7 +1917,8 @@ enum HorizontalDispatchMethods {
                 "x_mm": HorizontalDispatchJSON.mm(placement.position.x),
                 "y_mm": HorizontalDispatchJSON.mm(placement.position.y),
                 "angle_deg": HorizontalDispatchJSON.degrees(placement.angle),
-                "mirrored": placement.mirrored
+                "mirrored": placement.mirrored,
+                "pin_display_mode": placement.pinDisplayMode
             ]
         }
         return json
@@ -2327,7 +2360,7 @@ enum HorizontalDispatchMethods {
             }
             var result: JSONDictionary = ["poured": poured.planes.count,
                                           "fragments": poured.planes.reduce(0) { $0 + $1.fragments.count },
-                                          "applied": poured.planes.count]
+                                          "applied": poured.planes.count, "undo_name": "Update All Planes"]
             if poured.planes.isEmpty { result["note"] = "The board has no planes; place_plane defines one." }
             return result
         }
@@ -2386,7 +2419,7 @@ enum HorizontalDispatchMethods {
                 written = try editor.writeRoutedPaths(routed, net: netID, layer: layer, widthMM: width)
                 _ = try editor.write()
             }
-            return ["applied": written, "routed": routed.count, "segments": written,
+            return ["applied": written, "routed": routed.count, "segments": written, "undo_name": "Autoroute",
                     "attempted": airwires.count, "failed": failures.count, "unrouted": failures,
                     "width_mm": width, "layer": layer,
                     "note": failures.isEmpty

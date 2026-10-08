@@ -209,7 +209,7 @@ final class HorizontalLiveServerTests: XCTestCase {
         let result = try XCTUnwrap(edited["result"] as? [String: Any], "\(edited)")
         XCTAssertEqual(result["live"] as? Bool, true)
         XCTAssertEqual(applied.count, 1)
-        XCTAssertEqual(applied.first?.1, "Apply 1 Edit")
+        XCTAssertEqual(applied.first?.1, "Ensure Net", "the undo step is named after the op")
         XCTAssertEqual(try XCTUnwrap(document.archive().regularFileData(relativePath: "top_block.json")).count > 0, true)
 
         let nets = try send(["jsonrpc": "2.0", "id": 4, "method": "list_nets", "params": ["handle": handle!]], port: port, token: token)
