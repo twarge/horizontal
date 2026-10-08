@@ -35,6 +35,35 @@ struct HorizontalDesignPinSelection: Hashable {
     }
 
     var isEmpty: Bool { alternateIDs.isEmpty && !usePrimaryName && !(useCustomName && !customName.isEmpty) }
+
+    /// Draws just what no entry would: the primary name. The app's pin-function
+    /// dialog leaves entries like this behind, `pin_names` empty.
+    var isRedundant: Bool { alternateIDs.isEmpty && !(useCustomName && !customName.isEmpty) }
+}
+
+extension HorizontalDesignPin {
+    /// The name a symbol showing pins in `mode` draws for this pin: the sheet
+    /// loader's `expandedPinName`, without its overline markup.
+    func drawnName(mode: String) -> String {
+        let names = alternates.reduce(into: [String: String]()) { $0[$1.id.lowercased()] = $1.name }
+        switch mode {
+        case "all":
+            return (names.keys.sorted().compactMap { names[$0] } + ["(\(pinName))"]).joined(separator: " · ")
+        case "alt_only":
+            return names.keys.sorted().compactMap { names[$0] }.joined(separator: " · ")
+        case "custom_only":
+            if let customName = selection?.customName, !customName.isEmpty { return customName }
+            return pinName
+        default:
+            guard let selection, !selection.alternateIDs.isEmpty || selection.useCustomName || selection.usePrimaryName else {
+                return pinName
+            }
+            var shown = selection.usePrimaryName || mode == "both" ? [pinName] : []
+            shown += selection.alternateIDs.compactMap { names[$0] }
+            if selection.useCustomName, !selection.customName.isEmpty { shown.append(selection.customName) }
+            return shown.joined(separator: " · ")
+        }
+    }
 }
 
 struct HorizontalDesignPad: Hashable {
@@ -53,6 +82,8 @@ struct HorizontalDesignSymbolPlacement: Hashable {
     var sheetID: String = ""
     var blockID: String? = nil
     var symbolID: String = ""
+    /// Which pin names the symbol draws: selected_only, custom_only, both or all.
+    var pinDisplayMode: String = "selected_only"
 }
 
 struct HorizontalDesignBoardPlacement: Hashable {
@@ -198,7 +229,8 @@ struct HorizontalDesignIndex {
                         mirrored: symbol.mirrored,
                         sheetID: sheet.id,
                         blockID: project.schematics.isEmpty ? nil : entry.block.uuid,
-                        symbolID: symbol.id
+                        symbolID: symbol.id,
+                        pinDisplayMode: symbol.pinDisplayMode
                     ))
                     for pin in symbol.symbolPinNames {
                         symbolPinNames[componentID, default: [:]][pin.gatePinPath.lowercased()] = (pin.primaryName, pin.primaryDirection)
@@ -282,7 +314,8 @@ struct HorizontalDesignIndex {
             for (path, value) in blockEntry?.dictionary("alt_pins") ?? [:] {
                 guard let json = value as? JSONDictionary else { continue }
                 let selection = HorizontalDesignPinSelection(json: json)
-                if !selection.isEmpty { pins[path.lowercased()]?.selection = selection }
+                // Kept even when it draws nothing new, so get_component can say so.
+                pins[path.lowercased()]?.selection = selection
             }
             let namesFromSymbols = symbolPinNames[componentID] ?? [:]
             for (path, state) in info.connections {
