@@ -22,7 +22,7 @@ enum HorizontalDispatchChecks {
         }
     }
 
-    static func run(entry: HorizontalDispatchProjectEntry) -> JSONDictionary {
+    static func run(entry: HorizontalDispatchProjectEntry, full: Bool = false) -> JSONDictionary {
         let project = entry.project
         let index = entry.index
         var messages = [Message]()
@@ -110,9 +110,40 @@ enum HorizontalDispatchChecks {
         return [
             "ok": (counts["error"] ?? 0) == 0,
             "counts": ["error": counts["error"] ?? 0, "warning": counts["warning"] ?? 0, "info": counts["info"] ?? 0],
-            "messages": messages.map(\.json),
+            "messages": full ? messages.map(\.json) : grouped(messages),
             "note": "Horizontal has no geometric design rule check yet; these are load diagnostics, rules validation, and connectivity facts, plus the components and board packages nothing has placed. Poured planes count as copper for the rats' nest."
         ]
+    }
+
+    /// Findings that share a level, category and title, more than three of
+    /// them, as one message: 49 unplaced packages read as one line naming
+    /// them, not 49. The names keep their order; a detail they all share stays
+    /// detail, otherwise details gives each its own. counts still counts every
+    /// finding, and full lists them one by one.
+    static func grouped(_ messages: [Message]) -> [JSONDictionary] {
+        var runs = [String: [Message]]()
+        var order = [String]()
+        for message in messages {
+            let key = "\(message.level)|\(message.category)|\(message.title)"
+            if runs[key] == nil { order.append(key) }
+            runs[key, default: []].append(message)
+        }
+        return order.flatMap { key -> [JSONDictionary] in
+            let run = runs[key]!
+            guard run.count > 3 else { return run.map(\.json) }
+            let first = run[0]
+            var json: JSONDictionary = ["level": first.level, "category": first.category, "title": first.title, "count": run.count]
+            let names = run.map { $0.refdes ?? $0.net ?? "" }
+            if run.allSatisfy({ $0.refdes != nil }) { json["refdes"] = names }
+            else if run.allSatisfy({ $0.net != nil }) { json["nets"] = names }
+            if Set(run.map(\.detail)).count == 1 { json["detail"] = first.detail }
+            else if names.allSatisfy({ !$0.isEmpty }), Set(names).count == names.count {
+                json["details"] = Dictionary(uniqueKeysWithValues: zip(names, run.map(\.detail)))
+            } else {
+                json["details"] = run.map(\.detail)
+            }
+            return [json]
+        }
     }
 
     private static func rulesMessages(project: HorizontalProject, board: HorizontalBoard) -> [Message] {

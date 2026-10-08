@@ -117,7 +117,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .connect: "Connect a component pin to a net."
         case .disconnect: "Remove a pin's connection."
         case .placeSymbol: "Draw a component's gate on a schematic sheet, or move it if it is already drawn. A component connected without this is in the netlist but on no sheet."
-        case .setSymbolDisplay: "Change how a drawn symbol shows its pins: which pin names (pin_display_mode) and whether a multi-pad pin lists every pad number (display_all_pads)."
+        case .setSymbolDisplay: "Change how a drawn symbol shows its pins: which pin names (pin_display_mode) and whether a multi-pad pin lists every pad number (display_all_pads). The apply_ops reply gives warnings when custom_only hides alternates the symbol's pins have chosen."
         case .removeSymbol: "Take a component's gate off its sheet, with the net lines that ended on it. The component and its connections stay."
         case .drawNetLine: "Draw a wire between pins or junctions on one logical net. Does not change block connectivity. A junction with no net yet takes the wire's."
         case .placeJunction: "Create a schematic junction on a net, reusing a compatible or net-less junction at the same point."
@@ -1503,6 +1503,11 @@ final class HorizontalProjectEditor {
             }
         }
         if !paths.isEmpty { try updateComponent(componentID) { $0["connections"] = connections } }
+        // By name as a person reads them (PC1, PC3_C, PC8, …), not by uuid.
+        paths.sort {
+            let order = pinName($0, componentID: componentID).localizedStandardCompare(pinName($1, componentID: componentID))
+            return order == .orderedSame ? $0 < $1 : order == .orderedAscending
+        }
         return ["component": componentID, "pins": paths, "no_connect": mark, "all": true,
                 "pin_names": paths.map { pinName($0, componentID: componentID) }]
     }
@@ -1572,6 +1577,7 @@ final class HorizontalProjectEditor {
             }
 
             let key = altPins.keys.first { $0.lowercased() == path } ?? path
+            let before = altPins[key] as? NSDictionary
             let existing = altPins[key] as? JSONDictionary ?? [:]
             let custom = customName ?? (existing.bool("use_custom_name") == true ? existing.string("custom_name") ?? "" : "")
             altPins.removeValue(forKey: key)
@@ -1590,35 +1596,58 @@ final class HorizontalProjectEditor {
             var result: JSONDictionary = ["pin": path, "pin_name": unitPin.name, "alternates": chosen.map(\.name)]
             if !custom.isEmpty { result["custom_name"] = custom }
             if altPins[path] == nil { result["cleared"] = true } else { result["primary"] = primary }
+            // Asking for what the pin already has writes nothing.
+            if key == path, before == altPins[path] as? NSDictionary { result["unchanged"] = true }
             results.append(result)
         }
         try updateComponent(componentID) { $0["alt_pins"] = altPins }
-        return ["component": componentID, "pins": results]
+        var change: JSONDictionary = ["component": componentID, "pins": results]
+        let unchanged = results.filter { $0.bool("unchanged") == true }.compactMap { $0.string("pin_name") }
+        if !unchanged.isEmpty { change["unchanged_pins"] = unchanged }
+        return change
     }
 
     /// What the batch asked for that the sheets will not show. A symbol whose
     /// pin_display_mode is custom_only draws only custom names, so an
-    /// alternate set_pin_alternate chose stays invisible on it. Checked once
-    /// the whole batch has run, so a set_symbol_display in it counts.
+    /// alternate set_pin_alternate chose stays invisible on it, and so does
+    /// every alternate its gate already had when set_symbol_display turns it
+    /// custom_only. Checked once the whole batch has run, so a
+    /// set_symbol_display in it counts either way.
     func warnings() -> [String] {
         var wanted = [String: [String: String]]()   // component → gate/pin path → pin name
-        for change in changes where change.string("op") == HorizontalEditOperationKind.setPinAlternate.rawValue {
-            guard let componentID = change.string("component")?.lowercased() else { continue }
-            for pin in change["pins"] as? [JSONDictionary] ?? [] {
-                guard let path = pin.string("pin")?.lowercased(), !(pin["alternates"] as? [String] ?? []).isEmpty,
-                      pin.string("custom_name") == nil else { continue }
-                wanted[componentID, default: [:]][path] = pin.string("pin_name") ?? path
+        var turned = Set<String>()                  // symbol instances this batch made custom_only
+        for change in changes {
+            switch change.string("op") {
+            case HorizontalEditOperationKind.setPinAlternate.rawValue:
+                guard let componentID = change.string("component")?.lowercased() else { continue }
+                for pin in change["pins"] as? [JSONDictionary] ?? [] {
+                    guard let path = pin.string("pin")?.lowercased(), !(pin["alternates"] as? [String] ?? []).isEmpty,
+                          pin.string("custom_name") == nil else { continue }
+                    wanted[componentID, default: [:]][path] = pin.string("pin_name") ?? path
+                }
+            case HorizontalEditOperationKind.setSymbolDisplay.rawValue where change.string("pin_display_mode") == "custom_only":
+                for id in change["symbol_instances"] as? [String] ?? [] { turned.insert(id.lowercased()) }
+            default:
+                continue
             }
         }
-        guard !wanted.isEmpty, let schematic = files["schematic"] else { return [] }
+        guard !wanted.isEmpty || !turned.isEmpty, let schematic = files["schematic"] else { return [] }
         var warnings = [String]()
         let sheets = (schematic["sheets"] as? JSONDictionary ?? [:]).compactMap { id, value in (value as? JSONDictionary).map { (id, $0) } }
             .sorted { ($0.1.int("index") ?? 0, $0.0) < ($1.1.int("index") ?? 0, $1.0) }
         for (_, sheet) in sheets {
             for (instanceID, value) in (sheet["symbols"] as? JSONDictionary ?? [:]).sorted(by: { $0.key < $1.key }) {
                 guard let symbol = value as? JSONDictionary, let componentID = symbol.string("component")?.lowercased(),
-                      let pins = wanted[componentID], let gateID = symbol.string("gate")?.lowercased(),
+                      let gateID = symbol.string("gate")?.lowercased(),
                       (symbol.string("pin_display_mode") ?? "selected_only") == "custom_only" else { continue }
+                var pins = wanted[componentID] ?? [:]
+                if turned.contains(instanceID.lowercased()) {
+                    for (path, value) in components()[componentID]?.dictionary("alt_pins") ?? [:] {
+                        guard let entry = value as? JSONDictionary, !(entry["pin_names"] as? [Any] ?? []).isEmpty,
+                              !(entry.bool("use_custom_name") == true && !(entry.string("custom_name") ?? "").isEmpty) else { continue }
+                        pins[path.lowercased()] = pinName(path.lowercased(), componentID: componentID)
+                    }
+                }
                 let hidden = pins.filter { $0.key.hasPrefix(gateID + "/") }.values
                     .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
                 guard !hidden.isEmpty else { continue }
