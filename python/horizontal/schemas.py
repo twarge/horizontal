@@ -52,8 +52,9 @@ class PhysicalTerminal(Pad):
 
 
 class Pin(Record):
-    # A pin with alternates may also carry alternates (on request), selected and
-    # display_name; they are extras so pins without them stay as small as before.
+    # A pin with alternates may also carry alternates (on request), selected,
+    # display_name and drawn_as; they are extras so pins without them stay as
+    # small as before.
     pin: str
     gate_id: str
     pin_id: str

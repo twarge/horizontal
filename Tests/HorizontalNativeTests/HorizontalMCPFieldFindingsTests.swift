@@ -313,6 +313,78 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertEqual(after.dictionary("alt_pins")?.count ?? 0, 0)
     }
 
+    /// Billo's U8: one gate's symbol showed custom names only, so its
+    /// alternates were chosen and never drawn, and nothing said so; and the
+    /// app's pin-function dialog had left empty entries get_component hid.
+    func testPinAlternatesSayWhatEachSymbolDraws() throws {
+        let mcu = part(["PA0", "PA5", "VSS"], alternates: [
+            "PA0": ["TIM2_CH1/TIM2_ETR", "UART4_TX"], "PA5": ["SPI1_SCK/I2S1_CK", "TIM8_CH1N"]
+        ])
+        try apply([
+            ["op": "ensure_component", "refdes": "U1", "part": mcu.part],
+            ["op": "place_symbol", "component": "U1", "id": "s1", "x_mm": 100, "y_mm": 100],
+            ["op": "set_symbol_display", "symbol_instance": "s1", "pin_display_mode": "custom_only"]
+        ], ["pool_items": mcu.items])
+        func component() throws -> JSONDictionary { try XCTUnwrap(try result("get_component", ["refdes": "U1"]) as? JSONDictionary) }
+        func pins() throws -> [String: JSONDictionary] {
+            Dictionary(uniqueKeysWithValues: try component().dictionaryArray("pins").map { ($0.string("pin") ?? "", $0) })
+        }
+        let symbol = try XCTUnwrap(try component().dictionaryArray("symbols").first)
+        XCTAssertEqual(symbol.string("pin_display_mode"), "custom_only")
+        let instance = try XCTUnwrap(symbol.string("symbol_instance"))
+
+        // The choice lands, and the reply says the symbol will not draw it.
+        let chosen = try apply([["op": "set_pin_alternate", "component": "U1", "assignments": ["PA0": "TIM2_CH1", "PA5": "SPI1_SCK"]]])
+        let warning = try XCTUnwrap((chosen["warnings"] as? [String])?.first)
+        XCTAssertTrue(warning.contains("custom_only") && warning.contains("PA0, PA5") && warning.contains(instance), warning)
+        XCTAssertEqual(chosen.string("undo_name"), "Set Pin Alternate (2 pins)")
+        var rows = try pins()
+        XCTAssertEqual(rows["PA0"]?.string("display_name"), "TIM2_CH1/TIM2_ETR")
+        let drawn = try XCTUnwrap(rows["PA0"]?.dictionaryArray("drawn_as").first)
+        XCTAssertEqual(drawn.string("name"), "PA0")
+        XCTAssertEqual(drawn.string("pin_display_mode"), "custom_only")
+        XCTAssertEqual(drawn.string("symbol_instance"), instance)
+        XCTAssertNil(rows["VSS"]?["drawn_as"], "a pin with nothing chosen draws its name either way")
+
+        // Fixing the symbol in the same batch leaves nothing to warn about.
+        let fixed = try apply([["op": "set_pin_alternate", "component": "U1", "pin": "PA0", "alternate": "UART4_TX"],
+                               ["op": "set_symbol_display", "symbol_instance": instance, "pin_display_mode": "selected_only"]])
+        XCTAssertNil(fixed["warnings"])
+        XCTAssertEqual(fixed.string("undo_name"), "Set Pin Alternate, Set Symbol Display (2 edits)")
+        rows = try pins()
+        XCTAssertNil(rows["PA0"]?["drawn_as"])
+        // "both" puts the primary name in front.
+        try apply([["op": "set_symbol_display", "symbol_instance": instance, "pin_display_mode": "both"]])
+        XCTAssertEqual(try pins()["PA5"]?.dictionaryArray("drawn_as").first?.string("name"), "PA5 · SPI1_SCK/I2S1_CK")
+
+        // An entry that chooses nothing, as the app's dialog leaves, is shown
+        // and marked; null takes it out.
+        let empty: JSONDictionary = ["custom_direction": "bidirectional", "custom_name": "", "pin_names": [String](),
+                                     "use_custom_name": false, "use_primary_name": false]
+        try rewrite("top_block.json") { block in
+            var components = block.dictionary("components") ?? [:]
+            for (id, value) in components {
+                guard var item = value as? JSONDictionary, item.string("refdes") == "U1" else { continue }
+                var alt = item.dictionary("alt_pins") ?? [:]
+                alt["\(mcu.gate)/\(mcu.pins[2])"] = empty
+                item["alt_pins"] = alt
+                components[id] = item
+            }
+            block["components"] = components
+        }
+        let vss = try XCTUnwrap(try pins()["VSS"])
+        XCTAssertEqual((vss["selected"] as? JSONDictionary)?.bool("redundant"), true)
+        XCTAssertEqual(vss.string("display_name"), "VSS")
+        XCTAssertNil((try pins()["PA5"]?["selected"] as? JSONDictionary)?["redundant"])
+        try apply([["op": "set_pin_alternate", "component": "U1", "pin": "VSS", "alternate": NSNull()]])
+        XCTAssertNil(try pins()["VSS"]?["selected"])
+
+        // set_no_connect names the pins it took.
+        let marked = try apply([["op": "set_no_connect", "component": "U1", "all": true]])
+        XCTAssertEqual(Set(changes(marked).first?["pin_names"] as? [String] ?? []), ["PA0", "PA5", "VSS"])
+        XCTAssertEqual(marked.string("undo_name"), "Set No Connect (3 pins)")
+    }
+
     func testSetAllNoConnectTakesOnlyFreePinsAsHorizonDoes() throws {
         _ = try placedMCU()   // PA13 on SWDIO, PA14 on SWCLK; VSS, VSS and NRST free.
         func states() throws -> [String: String] {
