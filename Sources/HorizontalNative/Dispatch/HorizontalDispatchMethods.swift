@@ -311,9 +311,12 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "check",
-            summary: "Run the checks Horizontal has: load diagnostics, rules validation, annotation, single-pin nets, unplaced parts, unrouted connections.",
-            params: ["handle": "Project handle."],
-            handler: { session, params in HorizontalDispatchChecks.run(entry: try session.entry(for: params)) }
+            summary: "Run the checks Horizontal has: load diagnostics, rules validation, annotation, single-pin nets, unplaced parts, unrouted connections. More than three findings with one title come back as one message naming them all.",
+            params: ["handle": "Project handle.",
+                     "full": "List every finding as its own message instead of grouping repeats (default false)."],
+            handler: { session, params in
+                HorizontalDispatchChecks.run(entry: try session.entry(for: params), full: params.bool("full") ?? false)
+            }
         ),
         .init(
             name: "pool_write",
@@ -1178,7 +1181,11 @@ enum HorizontalDispatchMethods {
         guard let first = kinds.first else { return "Apply Edits" }
         if kinds.count == 1 {
             if operations.count > 1 { return "\(title(first)) ×\(operations.count)" }
-            if let pins = changes.first?["pins"] as? [Any], pins.count > 1 { return "\(title(first)) (\(pins.count) pins)" }
+            // Pins asked for what they already had are not part of the step.
+            if let pins = changes.first?["pins"] as? [Any] {
+                let changed = pins.filter { ($0 as? JSONDictionary)?.bool("unchanged") != true }.count
+                if changed > 1 { return "\(title(first)) (\(changed) pins)" }
+            }
             return title(first)
         }
         let named = kinds.prefix(3).map(title).joined(separator: ", ")
@@ -1906,11 +1913,10 @@ enum HorizontalDispatchMethods {
                 "sheet": placement.sheetIndex,
                 "sheet_name": placement.sheetName,
                 "sheet_id": placement.sheetID,
-                // The symbol instance on the sheet, not the pool symbol that
-                // draws it. `symbol_id` is the same value under the name it
-                // shipped with; analysis evidence still reads that one.
+                // The symbol instance on the sheet, and the pool symbol that
+                // draws it, under the names list_symbols gives them (id there).
                 "symbol_instance": placement.symbolID,
-                "symbol_id": placement.symbolID,
+                "symbol": placement.poolSymbolID as Any,
                 "block_id": placement.blockID as Any,
                 "gate_id": placement.gateID,
                 "gate_suffix": placement.gateSuffix,

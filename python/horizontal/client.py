@@ -501,8 +501,8 @@ class Project:
     def board_info(self) -> dict[str, Any]:
         return self._call("board_info")
 
-    def check(self) -> dict[str, Any]:
-        return self._call("check")
+    def check(self, full: bool = False) -> dict[str, Any]:
+        return self._call("check", full=True) if full else self._call("check")
 
     # Edits: operations as data, applied to the project files and reloaded.
 

@@ -232,6 +232,17 @@ enum HorizontalDispatchMutation {
         result["source"] = entry.live == nil ? "disk" : "live"
         result["live"] = entry.live != nil
         result["would_write"] = changed
+        // A batch can run and still leave every file as it was: an alternate
+        // the pin already has, a mode set and set back. Its commit writes
+        // nothing and adds no undo step, so the reply says so.
+        let unchanged = changed.isEmpty
+        if unchanged {
+            result["unchanged"] = true
+            result.removeValue(forKey: "undo_name")
+            if result["note"] == nil {
+                result["note"] = "The batch leaves the project as it was: nothing is written, and committing it adds no undo step."
+            }
+        }
         if params.string("detail") != "compact" { result["preview"] = changed.map { path -> JSONDictionary in
             let before = snapshot.archive.regularFileData(relativePath: path), afterData = after.archive.regularFileData(relativePath: path)
             var file = Self.fileDiff(before: before, after: afterData)
@@ -260,7 +271,7 @@ enum HorizontalDispatchMutation {
         result["status"] = "committed"
         result["durability"] = entry.live == nil ? "disk" : "unsaved_document"
         result["written"] = changed
-        result["after_revision"] = "\(entry.instanceID):\(entry.generation + 1):\(after.id)"
+        result["after_revision"] = unchanged ? entry.revision : "\(entry.instanceID):\(entry.generation + 1):\(after.id)"
         if let transaction {
             let updates = changed.map { path in
                 HorizontalProjectTransaction.Update(url: entry.project.baseURL.appendingPathComponent(path), before: snapshot.archive.regularFileData(relativePath: path), after: after.archive.regularFileData(relativePath: path)!)
@@ -274,12 +285,20 @@ enum HorizontalDispatchMutation {
                 let installed = try HorizontalDispatchSnapshot.capture(url: entry.url)
                 guard installed.id == after.id else { throw HorizontalProjectTransaction.Failure.conflict(entry.url.path) }
             }
-            entry.project = staged
-            entry.snapshot = after
-            entry.generation += 1
-            entry.invalidateIndex()
+            if !unchanged {
+                entry.project = staged
+                entry.snapshot = after
+                entry.generation += 1
+                entry.invalidateIndex()
+            }
             entry.cachedDiagnostics = (after.id, nextDiagnostics)
             lap("commit_ms")
+        } else if entry.live != nil, unchanged {
+            // Nothing to install, so the document and its undo stack stay as they are.
+            try beforeCommit()
+            lap("commit_ms")
+            result["timing"] = timing
+            entry.receipts[operationID!] = result
         } else if let live = entry.live {
             try beforeCommit()
             let archive = after.archive
