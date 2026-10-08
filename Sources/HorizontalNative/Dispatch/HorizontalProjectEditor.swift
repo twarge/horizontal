@@ -127,7 +127,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .pruneSheet: "Clear orphaned drawing from a sheet: wires with a dangling end, wiring islands that carry no net and reach no pin, labels on no net, and junctions nothing uses. unanchored and stubs widen it to wiring that names a net but reaches no pin, and wire ends to nowhere."
         case .terminatePin: "Draw a short wire straight out from a symbol pin and end it in a net label or power symbol facing away from the pin. Connects the pin to the net first when it is on none."
         case .setNoConnect: "Mark component pins as deliberately not connected, or clear the mark. A pin on a net is refused unless disconnect is passed. all does it for every free pin of a gate or the whole component, as Horizon's Set all unconnected pins NC and Clear all NC pins do."
-        case .setPinAlternate: "Choose the function a pin is drawn as — an alternate name its unit offers, such as SPI1_SCK on an MCU port pin — or a custom name, or go back to the primary name. get_component lists each pin's alternates and what is selected."
+        case .setPinAlternate: "Choose the function a pin is drawn as — an alternate name its unit offers, such as SPI1_SCK on an MCU port pin — or a custom name, or go back to the primary name. get_component lists each pin's alternates and what is selected. The apply_ops reply gives warnings when a placed symbol will not draw the choice (one showing pins custom_only)."
         case .remapPart: "Replace a component's part, preserving connections, symbols and wires atomically. Pins are matched by name unless an explicit gate/pin identity map is given."
         case .placeText: "Write a text on a schematic sheet, or change one that is already there: move it, turn it, rewrite it. id names the text to change, from list_texts; give only what changes. x_mm, y_mm or both move it, and it keeps its uuid, layer and the rest. An id that names no text makes one under it, so a batch can name a text and edit or remove it later. Free text only: a symbol's own texts belong to the symbol."
         case .removeText: "Remove a text from a schematic sheet."
@@ -292,7 +292,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "disconnect": "Take a pin off its net to mark it (default false: a connected pin is refused)."]
         case .setPinAlternate:
             return ["component": component, "pin": "One pin, as for connect.", "gate": "Gate, as for connect (optional).",
-                    "alternate": "The alternate for pin: a name or uuid, or a list to show several. A name is matched whole first, then by one of its \"/\" parts when only one alternate has it (SPI1_SCK finds SPI1_SCK/I2S1_CK); the primary name selects it. null or [] clears.",
+                    "alternate": "The alternate for pin: a name or uuid, or a list to show several. A name is matched whole first, then by one of its \"/\" parts when only one alternate has it (SPI1_SCK finds SPI1_SCK/I2S1_CK); the primary name selects it. null or [] clears, which also removes an entry get_component marks redundant.",
                     "assignments": "Several pins at once: an object from pin, as for connect, to what alternate takes. Use instead of pin and alternate.",
                     "use_primary_name": "Also show the primary name beside the alternates (optional; default false).",
                     "custom_name": "A name of your own, shown with the alternates (optional; \"\" or null removes it).",
@@ -1470,7 +1470,8 @@ final class HorizontalProjectEditor {
             paths.append(path)
         }
         try updateComponent(componentID) { $0["connections"] = connections }
-        var change: JSONDictionary = ["component": componentID, "pins": paths, "no_connect": mark]
+        var change: JSONDictionary = ["component": componentID, "pins": paths, "no_connect": mark,
+                                      "pin_names": paths.map { pinName($0, componentID: componentID) }]
         if !taken.isEmpty { change["disconnected"] = taken }
         return change
     }
@@ -1502,7 +1503,8 @@ final class HorizontalProjectEditor {
             }
         }
         if !paths.isEmpty { try updateComponent(componentID) { $0["connections"] = connections } }
-        return ["component": componentID, "pins": paths, "no_connect": mark, "all": true]
+        return ["component": componentID, "pins": paths, "no_connect": mark, "all": true,
+                "pin_names": paths.map { pinName($0, componentID: componentID) }]
     }
 
     // MARK: - Pin alternates
@@ -1592,6 +1594,42 @@ final class HorizontalProjectEditor {
         }
         try updateComponent(componentID) { $0["alt_pins"] = altPins }
         return ["component": componentID, "pins": results]
+    }
+
+    /// What the batch asked for that the sheets will not show. A symbol whose
+    /// pin_display_mode is custom_only draws only custom names, so an
+    /// alternate set_pin_alternate chose stays invisible on it. Checked once
+    /// the whole batch has run, so a set_symbol_display in it counts.
+    func warnings() -> [String] {
+        var wanted = [String: [String: String]]()   // component → gate/pin path → pin name
+        for change in changes where change.string("op") == HorizontalEditOperationKind.setPinAlternate.rawValue {
+            guard let componentID = change.string("component")?.lowercased() else { continue }
+            for pin in change["pins"] as? [JSONDictionary] ?? [] {
+                guard let path = pin.string("pin")?.lowercased(), !(pin["alternates"] as? [String] ?? []).isEmpty,
+                      pin.string("custom_name") == nil else { continue }
+                wanted[componentID, default: [:]][path] = pin.string("pin_name") ?? path
+            }
+        }
+        guard !wanted.isEmpty, let schematic = files["schematic"] else { return [] }
+        var warnings = [String]()
+        let sheets = (schematic["sheets"] as? JSONDictionary ?? [:]).compactMap { id, value in (value as? JSONDictionary).map { (id, $0) } }
+            .sorted { ($0.1.int("index") ?? 0, $0.0) < ($1.1.int("index") ?? 0, $1.0) }
+        for (_, sheet) in sheets {
+            for (instanceID, value) in (sheet["symbols"] as? JSONDictionary ?? [:]).sorted(by: { $0.key < $1.key }) {
+                guard let symbol = value as? JSONDictionary, let componentID = symbol.string("component")?.lowercased(),
+                      let pins = wanted[componentID], let gateID = symbol.string("gate")?.lowercased(),
+                      (symbol.string("pin_display_mode") ?? "selected_only") == "custom_only" else { continue }
+                let hidden = pins.filter { $0.key.hasPrefix(gateID + "/") }.values
+                    .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+                guard !hidden.isEmpty else { continue }
+                let refdes = components()[componentID]?.string("refdes") ?? componentID
+                let listed = hidden.prefix(8).joined(separator: ", ") + (hidden.count > 8 ? ", … (\(hidden.count) pins)" : "")
+                warnings.append("\(refdes)'s symbol \(instanceID) on sheet \(sheet.int("index") ?? 0) (\(sheet.string("name") ?? "")) "
+                    + "shows pin names custom_only, so it still draws the primary names for \(listed). "
+                    + "set_symbol_display with symbol_instance \(instanceID) and pin_display_mode selected_only draws the alternates.")
+            }
+        }
+        return warnings
     }
 
     private func unitPin(_ path: String, componentID: String) throws -> HorizontalDispatchPoolIndex.Pin {

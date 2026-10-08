@@ -71,7 +71,7 @@ enum HorizontalDispatchPool {
             }
             HorizontalPoolLibrary.invalidateCache()
             HorizontalPoolPadstacks.invalidateCaches()
-            return ["applied": ids.count,
+            return ["applied": ids.count, "undo_name": "Update Parts",
                     "affected_parts": review.affectedParts(selecting: ids).map(\.id),
                     "normalized_ops": [["op": "update_project_parts", "parts": ids.sorted(), "review_digest": review.digest,
                                          "allow_project_changes": allowChanges]]]
@@ -350,7 +350,7 @@ enum HorizontalDispatchPool {
                 "pool": item.poolName,
                 "already_cached": inProject.contains(key(.part, item.uuid)),
                 "written": written,
-                "applied": written.count
+                "applied": written.count, "undo_name": "Import Part"
             ]
         }
     }
