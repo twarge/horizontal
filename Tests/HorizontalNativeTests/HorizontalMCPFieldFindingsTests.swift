@@ -385,6 +385,73 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertEqual(marked.string("undo_name"), "Set No Connect (3 pins)")
     }
 
+    func testNoOpEditsHiddenAlternatesPinOrderAndGroupedChecks() throws {
+        let mcu = part(["PA10", "PA2", "PA1", "VSS"], alternates: ["PA2": ["USART2_TX"], "PA10": ["HRTIM_CHC2"]])
+        try apply([
+            ["op": "ensure_component", "refdes": "U1", "part": mcu.part],
+            ["op": "place_symbol", "component": "U1", "id": "s1", "x_mm": 100, "y_mm": 100],
+            ["op": "set_pin_alternate", "component": "U1", "assignments": ["PA2": "USART2_TX", "PA10": "HRTIM_CHC2"]]
+        ], ["pool_items": mcu.items])
+        let component = try XCTUnwrap(try result("get_component", ["refdes": "U1"]) as? JSONDictionary)
+
+        // 47: pins read as a person reads them.
+        XCTAssertEqual(component.dictionaryArray("pins").compactMap { $0.string("pin") }, ["PA1", "PA2", "PA10", "VSS"])
+
+        // 48: the symbol instance and the pool symbol, named as list_symbols names them.
+        let symbol = try XCTUnwrap(component.dictionaryArray("symbols").first)
+        XCTAssertNil(symbol["symbol_id"])
+        let listed = try XCTUnwrap((try result("list_symbols") as? [JSONDictionary])?.first)
+        XCTAssertEqual(symbol.string("symbol_instance"), listed.string("id"))
+        XCTAssertEqual(symbol.string("symbol"), listed.string("symbol"))
+        XCTAssertNotNil(symbol.string("symbol"))
+        let instance = try XCTUnwrap(symbol.string("symbol_instance"))
+
+        // 44: turning the symbol custom_only on its own hides the alternates
+        // its pins already have, and the reply says which.
+        let hidden = try apply([["op": "set_symbol_display", "symbol_instance": instance, "pin_display_mode": "custom_only"]])
+        let warning = try XCTUnwrap((hidden["warnings"] as? [String])?.first)
+        XCTAssertTrue(warning.contains("PA2, PA10") && warning.contains(instance), warning)
+        XCTAssertNil(try apply([["op": "set_symbol_display", "symbol_instance": instance,
+                                 "pin_display_mode": "selected_only"]])["warnings"])
+
+        // 46: asking for what a pin already has changes nothing, and says so.
+        let revision = try session.entry(handle: handle).revision
+        let same = try apply([["op": "set_pin_alternate", "component": "U1", "pin": "PA2", "alternate": "USART2_TX"]])
+        XCTAssertEqual(changes(same).first?.dictionaryArray("pins").first?.bool("unchanged"), true)
+        XCTAssertEqual(changes(same).first?["unchanged_pins"] as? [String], ["PA2"])
+        XCTAssertEqual(same.bool("unchanged"), true)
+        XCTAssertNil(same["undo_name"], "a batch that changes nothing adds no undo step")
+        XCTAssertEqual(same["would_write"] as? [String], [])
+        XCTAssertEqual(same.string("after_revision"), revision)
+        XCTAssertEqual(try session.entry(handle: handle).revision, revision)
+        // A mode set and set back nets to nothing too.
+        XCTAssertEqual(try apply([
+            ["op": "set_symbol_display", "symbol_instance": instance, "pin_display_mode": "custom_only"],
+            ["op": "set_symbol_display", "symbol_instance": instance, "pin_display_mode": "selected_only"]
+        ]).bool("unchanged"), true)
+        // Only the pins that change count toward the step's name.
+        let one = try apply([["op": "set_pin_alternate", "component": "U1",
+                              "assignments": ["PA2": "USART2_TX", "PA10": NSNull()]]])
+        XCTAssertNil(one["unchanged"])
+        XCTAssertEqual(one.string("undo_name"), "Set Pin Alternate")
+
+        // 47: set_no_connect all gives its pins by name, not by uuid.
+        let marked = try apply([["op": "set_no_connect", "component": "U1", "all": true]])
+        XCTAssertEqual(changes(marked).first?["pin_names"] as? [String], ["PA1", "PA2", "PA10", "VSS"])
+
+        // 49: more than three findings with one title come back as one.
+        try apply((2...5).map { ["op": "ensure_component", "refdes": "U\($0)", "part": mcu.part] })
+        let report = try XCTUnwrap(try result("check") as? JSONDictionary)
+        let undrawn = report.dictionaryArray("messages").filter { $0.string("title") == "Not drawn on a sheet" }
+        XCTAssertEqual(undrawn.count, 1)
+        XCTAssertEqual(undrawn.first?["count"] as? Int, 4)
+        XCTAssertEqual(undrawn.first?["refdes"] as? [String], ["U2", "U3", "U4", "U5"])
+        XCTAssertNotNil(undrawn.first?.string("detail"), "a detail they all share stays detail")
+        let full = try XCTUnwrap(try result("check", ["full": true]) as? JSONDictionary)
+        XCTAssertEqual(full.dictionaryArray("messages").filter { $0.string("title") == "Not drawn on a sheet" }.count, 4)
+        XCTAssertEqual((report["counts"] as? JSONDictionary)?["warning"] as? Int, (full["counts"] as? JSONDictionary)?["warning"] as? Int)
+    }
+
     func testSetAllNoConnectTakesOnlyFreePinsAsHorizonDoes() throws {
         _ = try placedMCU()   // PA13 on SWDIO, PA14 on SWCLK; VSS, VSS and NRST free.
         func states() throws -> [String: String] {

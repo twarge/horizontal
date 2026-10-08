@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Any, Generic, Literal, TypeVar
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_serializer, model_serializer, model_validator
 
 
 class Input(BaseModel):
@@ -151,6 +151,14 @@ class EditResult(Record):
         # Validate the full operation contract without adding optional defaults
         # to the replay payload: defaults would change its plan digest.
         return [op.model_dump(mode="json", by_alias=True, exclude_unset=True) for op in operations]
+
+    @model_serializer(mode="wrap")
+    def omit_ops_not_sent(self, handler):
+        # A compact commit leaves the echoed ops out; an empty list would read
+        # as "nothing was applied".
+        data = handler(self)
+        if "normalized_ops" not in self.model_fields_set: data.pop("normalized_ops", None)
+        return data
 
 
 class Region(Input):

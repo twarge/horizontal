@@ -82,6 +82,8 @@ struct HorizontalDesignSymbolPlacement: Hashable {
     var sheetID: String = ""
     var blockID: String? = nil
     var symbolID: String = ""
+    /// The pool symbol that draws it, as list_symbols gives it.
+    var poolSymbolID: String? = nil
     /// Which pin names the symbol draws: selected_only, custom_only, both or all.
     var pinDisplayMode: String = "selected_only"
 }
@@ -230,6 +232,7 @@ struct HorizontalDesignIndex {
                         sheetID: sheet.id,
                         blockID: project.schematics.isEmpty ? nil : entry.block.uuid,
                         symbolID: symbol.id,
+                        poolSymbolID: symbol.symbolID,
                         pinDisplayMode: symbol.pinDisplayMode
                     ))
                     for pin in symbol.symbolPinNames {
@@ -358,7 +361,12 @@ struct HorizontalDesignIndex {
                 if lhs.gateSuffix != rhs.gateSuffix {
                     return lhs.gateSuffix < rhs.gateSuffix
                 }
-                return (lhs.pinName, lhs.gatePinPath) < (rhs.pinName, rhs.gatePinPath)
+                // As a person reads them: PA2 before PA10.
+                switch lhs.pinName.localizedStandardCompare(rhs.pinName) {
+                case .orderedAscending: return true
+                case .orderedDescending: return false
+                case .orderedSame: return lhs.gatePinPath < rhs.gatePinPath
+                }
             }
             var placements = symbolPlacements[componentID] ?? []
             for index in placements.indices {
