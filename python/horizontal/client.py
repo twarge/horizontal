@@ -455,9 +455,9 @@ class Project:
         return self._call("list_parts", scope=scope)
 
     def search_pool(self, query: str | None = None, kind: str | None = None,
-                    pool_path: str | None = None, limit: int = 50) -> dict[str, Any]:
-        """Search every pool the project draws from, not just its own cache."""
-        params = {k: v for k, v in {"query": query, "kind": kind, "pool_path": pool_path}.items() if v is not None}
+                    pool_path: str | None = None, limit: int = 50, package: str | None = None) -> dict[str, Any]:
+        """Search every pool the project draws from, not just its own cache; package keeps parts in that package."""
+        params = {k: v for k, v in {"query": query, "kind": kind, "pool_path": pool_path, "package": package}.items() if v is not None}
         return self._call("search_pool", limit=limit, **params)
 
     def pool_item(self, uuid: str, kind: str | None = None, pool_path: str | None = None) -> dict[str, Any]:

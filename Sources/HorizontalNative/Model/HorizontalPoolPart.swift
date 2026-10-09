@@ -23,9 +23,19 @@ struct HorizontalPoolPart: Identifiable, Hashable {
     var entityID: String?
     var refdesPrefix: String
     var gates: [HorizontalPoolPartGate]
+    /// The package's uuid, a derived part's taken from its base.
+    var packageID: String? = nil
 
     var tagList: String {
         tags.joined(separator: ", ")
+    }
+
+    /// How search_pool's `package` names this part's package: by its name,
+    /// or by its uuid when it has none (`packageName` then shows the uuid's
+    /// first eight characters, which name nothing).
+    var searchPackage: String? {
+        guard let packageID else { return packageName.isEmpty ? nil : packageName }
+        return packageName.isEmpty || packageName == String(packageID.prefix(8)) ? packageID : packageName
     }
 
     /// One part from the project pool's cache, resolved the way `loadAll`
@@ -130,7 +140,8 @@ private final class PoolPartLoader {
             value: nonEmpty(details.value) ?? "",
             entityID: details.entityID,
             refdesPrefix: details.refdesPrefix,
-            gates: details.gates
+            gates: details.gates,
+            packageID: details.packageID
         )
     }
 

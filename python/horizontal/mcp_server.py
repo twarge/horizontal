@@ -721,13 +721,15 @@ def list_parts(path: str | None = None, scope: Literal["project", "pools", "all"
 
 @_tool
 def search_pool(path: str | None = None, query: str | None = None, kind: str | None = None,
-                pool_path: str | None = None, limit: int = 50) -> dict[str, Any]:
+                pool_path: str | None = None, limit: int = 50, package: str | None = None) -> dict[str, Any]:
     """Search every pool the project draws from — its own pool, the pools that pool includes, and the discovered base
     pools — for parts, entities, symbols, packages, padstacks, units, frames and decals. query is a case-insensitive
-    substring of name, description, manufacturer, tags or uuid. Items with in_project_pool false live in a base pool
-    and need import_pool_part first. The pools list says which pools were searched, and names any that could not be
-    read rather than reporting them as empty."""
-    params = {k: v for k, v in {"query": query, "kind": kind, "pool_path": pool_path}.items() if v is not None}
+    substring of name, description, manufacturer, tags or uuid, or a value however it is written (10 µF, 10uF).
+    package keeps only parts in that package, named as get_component gives it (C0402) or by uuid; a part row gives
+    its package and package_id, a derived part's taken from its base. Items with in_project_pool false live in a base
+    pool and need import_pool_part first. The pools list says which pools were searched, and names any that could not
+    be read rather than reporting them as empty."""
+    params = {k: v for k, v in {"query": query, "kind": kind, "pool_path": pool_path, "package": package}.items() if v is not None}
     return _resolve(path).search_pool(limit=limit, **params)
 
 
@@ -1210,31 +1212,36 @@ def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool =
 
 
 @_tool
-def set_component_value(refdes: str, value: str, path: str | None = None) -> dict[str, Any]:
-    """Set a component's value and write the project. A part's own value is the one shown; warnings says when it
-    hides this one."""
-    return _edit(_resolve(path), [{"op": "set_value", "component": refdes, "value": value}])
+def set_component_value(refdes: str, value: str, path: str | None = None, dry_run: bool = False) -> dict[str, Any]:
+    """Set a component's value and write the project; dry_run previews it and gives the plan_digest a commit takes.
+    A part's own value is the one shown; warnings says when it hides this one, and how to find a part with that
+    value in the same package."""
+    return _edit(_resolve(path), [{"op": "set_value", "component": refdes, "value": value}], dry_run=dry_run)
 
 
 @_tool
-def rename_net(net: str, name: str, path: str | None = None) -> dict[str, Any]:
-    """Rename a net and write the project."""
-    return _edit(_resolve(path), [{"op": "rename_net", "net": net, "name": name}])
+def rename_net(net: str, name: str, path: str | None = None, dry_run: bool = False) -> dict[str, Any]:
+    """Rename a net and write the project; dry_run previews it and gives the plan_digest a commit takes."""
+    return _edit(_resolve(path), [{"op": "rename_net", "net": net, "name": name}], dry_run=dry_run)
 
 
 @_tool
-def connect_pin(refdes: str, pin: str, net: str, path: str | None = None, create_net: bool = False) -> dict[str, Any]:
-    """Connect a component pin (pin name, or gate/pin) to a net and write the project."""
-    return _edit(_resolve(path), [{"op": "connect", "component": refdes, "pin": pin, "net": net, "create_net": create_net}])
+def connect_pin(refdes: str, pin: str, net: str, path: str | None = None, create_net: bool = False,
+                dry_run: bool = False) -> dict[str, Any]:
+    """Connect a component pin (pin name, or gate/pin) to a net and write the project; dry_run previews it and gives
+    the plan_digest a commit takes."""
+    return _edit(_resolve(path), [{"op": "connect", "component": refdes, "pin": pin, "net": net, "create_net": create_net}],
+                 dry_run=dry_run)
 
 
 @_tool
-def place_component(refdes: str, path: str | None = None, x_mm: float | None = None, y_mm: float | None = None, angle_deg: float | None = None, bottom: bool | None = None) -> dict[str, Any]:
-    """Place a component's package on the board, or move or rotate it if it is already placed. Its connections stay
-    airwires until something routes them: place_track and place_via draw copper one segment at a time, and
-    copy_group_layout clones the routing an already-laid-out group has."""
+def place_component(refdes: str, path: str | None = None, x_mm: float | None = None, y_mm: float | None = None, angle_deg: float | None = None, bottom: bool | None = None,
+                    dry_run: bool = False) -> dict[str, Any]:
+    """Place a component's package on the board, or move or rotate it if it is already placed; dry_run previews it and
+    gives the plan_digest a commit takes. Its connections stay airwires until something routes them: place_track and
+    place_via draw copper one segment at a time, and copy_group_layout clones the routing an already-laid-out group has."""
     fields = {k: v for k, v in {"x_mm": x_mm, "y_mm": y_mm, "angle_deg": angle_deg, "bottom": bottom}.items() if v is not None}
-    return _edit(_resolve(path), [{"op": "place_component", "component": refdes, **fields}])
+    return _edit(_resolve(path), [{"op": "place_component", "component": refdes, **fields}], dry_run=dry_run)
 
 
 @_tool
@@ -1301,10 +1308,12 @@ def list_groups(path: str | None = None) -> list[dict[str, Any]]:
 
 
 @_tool
-def copy_group_layout(source: str, target: str, path: str | None = None, x_mm: float | None = None, y_mm: float | None = None, angle_deg: float | None = None, include_routing: bool = True) -> dict[str, Any]:
-    """Lay out the target group like the source group: every member with a matching tag is placed at the same relative position and rotation, and by default the tracks and vias between the source's members are copied too. The target's anchor stays where it already is unless x_mm and y_mm are given."""
+def copy_group_layout(source: str, target: str, path: str | None = None, x_mm: float | None = None, y_mm: float | None = None, angle_deg: float | None = None, include_routing: bool = True,
+                      dry_run: bool = False) -> dict[str, Any]:
+    """Lay out the target group like the source group: every member with a matching tag is placed at the same relative position and rotation, and by default the tracks and vias between the source's members are copied too. The target's anchor stays where it already is unless x_mm and y_mm are given. dry_run previews it and gives the plan_digest a commit takes."""
     fields = {k: v for k, v in {"x_mm": x_mm, "y_mm": y_mm, "angle_deg": angle_deg}.items() if v is not None}
-    return _edit(_resolve(path), [{"op": "copy_group_layout", "source": source, "target": target, "include_routing": include_routing, **fields}])
+    return _edit(_resolve(path), [{"op": "copy_group_layout", "source": source, "target": target, "include_routing": include_routing, **fields}],
+                 dry_run=dry_run)
 
 
 def main() -> None:

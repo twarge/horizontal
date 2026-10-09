@@ -74,6 +74,11 @@ struct HorizontalPoolLibraryItem: Identifiable, Hashable, Sendable {
     var value: String = ""
     var partDescription: String = ""
     var parametric: [String: String] = [:]
+    /// A part's package uuid and base part uuid (lowercased, empty when it
+    /// has none). A derived part names only its base, which carries the
+    /// package; `HorizontalDispatchPool.packages` follows the chain.
+    var packageID: String = ""
+    var basePartID: String = ""
 }
 
 /// Cross-reference lookup over the browsed pools' items by kind and uuid, so
@@ -256,7 +261,9 @@ enum HorizontalPoolLibrary {
                 symbolUnitID: category == .symbol ? (json.string("unit")?.lowercased() ?? "") : "",
                 value: category == .part ? (attributeString(json["value"]) ?? "") : "",
                 partDescription: category == .part ? (attributeString(json["description"]) ?? "") : "",
-                parametric: category == .part ? (json["parametric"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String } : [:]
+                parametric: category == .part ? (json["parametric"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String } : [:],
+                packageID: category == .part ? (json.string("package")?.lowercased() ?? "") : "",
+                basePartID: category == .part ? (json.string("base")?.lowercased() ?? "") : ""
             )
             if isCacheCopy {
                 cachedKeys.insert(key)
