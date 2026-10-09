@@ -105,9 +105,10 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "search_pool",
-            summary: "Search every pool the project draws from — its own pool, the pools that pool includes, and the discovered base pools — for parts, entities, symbols, packages, padstacks, units, frames and decals. Items outside the project pool need import_pool_part before a component can use them.",
+            summary: "Search every pool the project draws from — its own pool, the pools that pool includes, and the discovered base pools — for parts, entities, symbols, packages, padstacks, units, frames and decals. A part row gives its package and package_id, a derived part's taken from its base. Items outside the project pool need import_pool_part before a component can use them.",
             params: ["handle": "Project handle.", "query": "Case-insensitive substring of name, description, manufacturer, tags, uuid or a part's value (optional). Spacing and µ/u are ignored, and a quantity such as 2.2uF, 2u2 or 10k also matches parts whose value, description or parametric data state the same amount.",
                      "kind": "One of \(HorizontalPoolItemCategory.allCases.map(\.rawValue).joined(separator: ", ")) (optional).",
+                     "package": "Only parts in this package, by its name in any case (C0402) or its uuid (optional). get_component gives a component's package.",
                      "pool_path": "Directory of one pool to search (optional). A pool the project already draws from narrows the search; any other pool directory is searched as well, which is how a worker process reaches a pool registered only in the app.",
                      "limit": "Maximum items to return; default 50, maximum 500."],
             handler: HorizontalDispatchPool.search
@@ -2841,12 +2842,13 @@ enum HorizontalDispatchMethods {
         }
         guard scope != "project" else { return rows }
         let (items, _, inProject) = HorizontalDispatchPool.scan(try HorizontalDispatchPool.poolURLs(for: entry))
+        let package = HorizontalDispatchPool.packages(items)
         var seen = Set(rows.compactMap { $0.string("id")?.lowercased() })
         let library = items
             .filter { $0.category == .part && seen.insert($0.uuid).inserted }
             .sorted { ($0.name.localizedLowercase, $0.uuid) < ($1.name.localizedLowercase, $1.uuid) }
             .map { item -> JSONDictionary in
-                var json = HorizontalDispatchPool.itemJSON(item, inProject: inProject)
+                var json = HorizontalDispatchPool.itemJSON(item, inProject: inProject, package: package(item))
                 json["id"] = item.uuid
                 json["mpn"] = item.name
                 json["description"] = item.detail

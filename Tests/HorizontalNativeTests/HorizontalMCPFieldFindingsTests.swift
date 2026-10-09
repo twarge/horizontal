@@ -13,11 +13,13 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         var gate: String
         var pins: [String]
         var names: [String]
+        var package = ""
     }
 
     /// A one-gate part whose pins sit down the left edge pointing left, the
     /// way an MCU's pins do, named as given.
-    private func part(_ names: [String], value: String = "", alternates: [String: [String]] = [:]) -> Part {
+    private func part(_ names: [String], value: String = "", alternates: [String: [String]] = [:],
+                      packageName: String = "") -> Part {
         let pins = names.map { _ in UUID().uuidString.lowercased() }
         let pads = names.map { _ in UUID().uuidString.lowercased() }
         var unit = HorizontalPoolItemFactory.newUnit()
@@ -38,6 +40,7 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         let shape = UUID().uuidString.lowercased()
         padstack.shapes[shape] = HorizontalPadstackShape(id: shape, form: .rectangle, params: [800_000, 900_000])
         var package = HorizontalPoolItemFactory.newPackage()
+        package.name = packageName
         for i in pads.indices {
             package.pads[pads[i]] = HorizontalPad(id: pads[i], name: String(i + 1), padstackID: padstack.uuid,
                 placement: HorizontalPlacementTransform(shift: HorizontalPoint(x: 0, y: Double(i) * 2_000_000), angle: 0, mirrored: false))
@@ -46,7 +49,7 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         for i in pins.indices { part.padMap[pads[i]] = HorizontalPartPadMapEntry(gateID: gate, pinID: pins[i]) }
         if !value.isEmpty { part.attributes[.value] = HorizontalPartAttribute(value: value) }
         return Part(items: [unit.json(), entity.json(), symbol.json(), padstack.json(), package.json(), part.json()],
-                    part: part.uuid, gate: gate, pins: pins, names: names)
+                    part: part.uuid, gate: gate, pins: pins, names: names, package: package.uuid)
     }
 
     private var root: URL!
@@ -540,7 +543,7 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         let missed = try XCTUnwrap(try result("check", ["full": true]) as? JSONDictionary).dictionaryArray("messages")
             .first { $0.string("title") == "Not reached by the plane" && $0.string("net") == "GND" }
         let detail = try XCTUnwrap(missed?.string("detail"))
-        XCTAssertTrue(detail.contains("R1.A to R2.A") || detail.contains("R2.A to R1.A"), detail)
+        XCTAssertTrue(detail.contains("(R1.A to R2.A)"), detail)
 
         // 58: a batch that turns the symbol custom_only and chooses an
         // alternate under it names that pin apart.
@@ -646,6 +649,72 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertNil(try refusal(["expected_revision": base.split(separator: ":").dropLast().joined(separator: ":") + ":0000"])
             .dictionary("data")?.dictionary("details")?["retry"])
         XCTAssertEqual(try apply(plan, ["expected_revision": now]).string("status"), "committed")
+    }
+
+    // MARK: - Round nineteen: notes 62 and 64
+
+    func testPlaneAirwireEndsReadInOrderAndAPartsPackageIsFoundThroughItsBase() throws {
+        // 62: five pads in a row on a plane net the fill misses. Whichever
+        // way the rats' nest runs each airwire, the ends and the airwires
+        // read in natural order, R9 before R10, and the same three are named.
+        let resistor = part(["A", "B"])
+        var ops = [JSONDictionary]()
+        for (i, refdes) in ["R8", "R9", "R10", "R11", "R12"].enumerated() {
+            ops += [["op": "ensure_component", "refdes": refdes, "part": resistor.part],
+                    ["op": "place_component", "component": refdes, "x_mm": 10 + 20 * Double(i), "y_mm": 10],
+                    ["op": "connect", "component": refdes, "pin": "A", "net": "GND", "create_net": i == 0]]
+        }
+        try apply(ops, ["pool_items": resistor.items])
+        let square: [JSONDictionary] = [[200, 200], [210, 200], [210, 210], [200, 210]].map { ["x_mm": $0[0], "y_mm": $0[1]] }
+        try apply([["op": "place_plane", "net": "GND", "layer": 0, "vertices": square]])
+        let missed = try XCTUnwrap(try result("check") as? JSONDictionary).dictionaryArray("messages")
+            .first { $0.string("title") == "Not reached by the plane" && $0.string("net") == "GND" }
+        XCTAssertEqual(missed?.string("detail"), "4 airwires on a net with a plane (R8.A to R9.A; R9.A to R10.A; R10.A to R11.A; "
+            + "… 1 more): the fill does not reach these pads, or the plane is not poured.")
+
+        // 64: a derived part carries only its base, which names the package.
+        // C1 is a 4.7 µF part derived from a C0402 base; another 10 µF part
+        // derives from the same base, and a third sits in a C0603.
+        let base = part(["A", "B"], packageName: "C0402")
+        let wide = part(["A", "B"], value: "10 µF", packageName: "C0603")
+        let baseItem = try HorizontalPoolPartItem(json: try XCTUnwrap(base.items.last))
+        func derived(_ mpn: String, _ value: String) -> HorizontalPoolPartItem {
+            var item = HorizontalPoolItemFactory.newPart(basedOn: baseItem)
+            item.attributes[.mpn] = HorizontalPartAttribute(value: mpn)
+            item.attributes[.value] = HorizontalPartAttribute(value: value)
+            return item
+        }
+        let small = derived("C1005X5R1A475K050BC", "4.7 µF"), ten = derived("C1005X5R1A106K050BC", "10 µF")
+        try apply([["op": "ensure_component", "refdes": "C1", "part": small.uuid]],
+                  ["pool_items": base.items + wide.items + [small.json(), ten.json()]])
+
+        func search(_ args: JSONDictionary) throws -> [JSONDictionary] {
+            try XCTUnwrap(try result("search_pool", args.merging(["kind": "part"]) { new, _ in new }) as? JSONDictionary)
+                .dictionaryArray("items")
+        }
+        let tens = try search(["query": "10 µF"])
+        XCTAssertEqual(Set(tens.compactMap { $0.string("uuid") }), [ten.uuid, wide.part], "\(tens)")
+        let row = try XCTUnwrap(tens.first { $0.string("uuid") == ten.uuid })
+        XCTAssertEqual(row.string("package"), "C0402", "taken from the base")
+        XCTAssertEqual(row.string("package_id"), base.package)
+        XCTAssertEqual(tens.first { $0.string("uuid") == wide.part }?.string("package"), "C0603")
+        for package in ["c0402", base.package] {
+            XCTAssertEqual(try search(["query": "10 µF", "package": package]).compactMap { $0.string("uuid") }, [ten.uuid], package)
+        }
+        XCTAssertNotNil(try call("search_pool", ["package": "C0402", "kind": "symbol"])["error"], "only parts have a package")
+
+        // The warning names C1's package and the search that keeps it.
+        let hidden = try XCTUnwrap(try apply([["op": "set_value", "component": "C1", "value": "10 µF"]], ["dry_run": true])["warnings"]
+            as? [String])
+        XCTAssertEqual(hidden, ["C1 is part C1005X5R1A475K050BC, whose own value 4.7 µF is the one shown, so the 10 µF set_value wrote "
+            + "does not show. set_part to a part with the value 10 µF changes what is shown; search_pool with query \"10 µF\" and "
+            + "package \"C0402\" lists those in C1's package, and a part in another one changes C1's footprint too."])
+        // A package with no name is named by its uuid, which the search takes too.
+        let unnamed = part(["A", "B"], value: "1 kΩ")
+        try apply([["op": "ensure_component", "refdes": "R1", "part": unnamed.part]], ["pool_items": unnamed.items])
+        let byID = try XCTUnwrap((try apply([["op": "set_value", "component": "R1", "value": "2 kΩ"]], ["dry_run": true])["warnings"]
+            as? [String])?.first)
+        XCTAssertTrue(byID.contains("and package \"\(unnamed.package)\" lists those in R1's package"), byID)
     }
 
     func testSetAllNoConnectTakesOnlyFreePinsAsHorizonDoes() throws {

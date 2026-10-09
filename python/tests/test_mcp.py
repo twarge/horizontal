@@ -529,7 +529,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_verbose_dry_run_previews_paths_and_file_text_only_on_request(self):
         tools = {t.name: t for t in await server.mcp.list_tools()}
         self.assertIn("file_text", tools["apply_ops"].input_schema["properties"])
-        self.assertNotIn("file_text", tools["rename_net"].input_schema["properties"], "only tools with a dry run take it")
+        self.assertNotIn("file_text", tools["get_net"].input_schema["properties"], "only tools with a dry run take it")
         revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
         ops = [{"op": "ensure_net", "name": "V"}]
         verbose = (await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id="paths",
@@ -759,6 +759,36 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
                         ops=[{"op": "place_text", "id": note, "x_mm": 181.25}])
         texts = (await self.call("list_texts", project_ref=self.ref))["data"]
         self.assertEqual([(t["id"], t["text"], t["x_mm"], t["y_mm"]) for t in texts], [(note, "Amplifier", 181.25, 137.5)])
+
+    async def test_every_edit_tool_can_preview_what_it_commits(self):
+        # set_component_value took a plan_digest but had no dry_run to make one,
+        # so a preview meant rebuilding its op for apply_ops.
+        tools = {t.name: t for t in await server.mcp.list_tools()}
+        for name in server._mutations:
+            properties = tools[name].input_schema["properties"]
+            self.assertIn("plan_digest", properties, name)
+            self.assertIn("dry_run", properties, name)
+            self.assertIn("file_text", properties, name)
+        self.assertIn("package", tools["search_pool"].input_schema["properties"])
+
+        revision = self.opened["data"]["revision"]
+        await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id=str(uuid.uuid4()),
+                        ops=[{"op": "ensure_net", "name": "OLD"}])
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        async def rename(**args):
+            # call() takes the tool's name as `name`, which rename_net needs too.
+            result = await server.mcp.call_tool("rename_net", {"project_ref": self.ref, "net": "OLD", "name": "NEW",
+                                                               "expected_revision": revision, "operation_id": str(uuid.uuid4()), **args})
+            self.assertFalse(result.is_error, result.structured_content)
+            return result.structured_content["data"]
+        preview = await rename(dry_run=True)
+        self.assertEqual(preview["status"], "preview")
+        self.assertEqual(preview["written"], [])
+        self.assertEqual([n["name"] for n in (await self.call("list_nets", project_ref=self.ref))["data"]], ["OLD"])
+        committed = await rename(plan_digest=preview["plan_digest"])
+        self.assertEqual(committed["status"], "committed")
+        self.assertTrue(committed["timing"].get("reused_dry_run"), committed["timing"])
+        self.assertEqual([n["name"] for n in (await self.call("list_nets", project_ref=self.ref))["data"]], ["NEW"])
 
     async def test_worker_restart_rebinds_a_disk_read(self):
         project = server._projects[self.ref]
