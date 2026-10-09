@@ -135,6 +135,8 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["data"]["required_native_api"], 2)
         self.assertNotIn('"token"', json.dumps(result))
         self.assertEqual(result["data"]["contexts"][0]["project_ref"], self.ref)
+        paths = [attempt["path"] for attempt in result["data"]["discovery"]]
+        self.assertEqual(len(paths), len(set(paths)), "each discovery file is tried once")
 
     async def test_analysis_runs_from_native_schematic_evidence(self):
         unit, entity, gate, pin1, pin2 = [str(uuid.uuid4()) for _ in range(5)]
