@@ -362,10 +362,13 @@ def connection_status() -> dict[str, Any]:
     info = find_live(attempts)
     # The app's own discovery file is in its sandbox container; the holder
     # records beside an open or configured project usually are not.
-    for candidate in [os.environ.get("HORIZONTAL_PROJECT")] + [p.path for p in _projects.values()]:
-        if info or not candidate:
-            continue
-        info = find_live_for(candidate, attempts)
+    # find_live has tried the discovery files once; each project adds only its
+    # holder records, and each project once.
+    candidates = [os.environ.get("HORIZONTAL_PROJECT")] + [p.path for p in _projects.values()]
+    for candidate in dict.fromkeys(str(Path(c).expanduser().resolve()) for c in candidates if c):
+        if info:
+            break
+        info = find_live_for(candidate, attempts, discovery=False)
     status: dict[str, Any] = {"mcp_version": importlib.metadata.version("mcp"), "required_native_api": 2,
                               "server": _server_identity(),
                               "discovery": attempts, "live": {"status": "unavailable", "reason": "No reachable live endpoint; app, automation, or document state is unknown"}}

@@ -295,15 +295,17 @@ def _reachable(info: dict[str, Any], diagnostics: list[dict[str, Any]] | None, p
     return {"host": info.get("host", "127.0.0.1"), "port": port, "token": token, "path": path}
 
 
-def find_live_for(project: str | Path, diagnostics: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+def find_live_for(project: str | Path, diagnostics: list[dict[str, Any]] | None = None,
+                  discovery: bool = True) -> dict[str, Any] | None:
     """The live channel serving `project`.
 
     The app's own discovery file is inside its sandbox container, which macOS
     refuses other processes, so a holder record beside the project carries the
     endpoint too. That record is the one a client which can read the project
-    can always read.
+    can always read. discovery=False skips the discovery files, for a caller
+    that has already tried them.
     """
-    info = find_live(diagnostics)
+    info = find_live(diagnostics) if discovery else None
     if info is not None:
         return info
     for holder in project_holders(project):
