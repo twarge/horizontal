@@ -140,14 +140,17 @@ the dry run staged and validated rather than doing it again
 dry run skips loading the edited project when the batch changes nothing
 (`timing.skipped_load`) or comes to the same files as a kept plan
 (`timing.reused_load`). A `STALE_REVISION` whose content is unchanged (an edit
-and its undo, say) says so with `details.snapshot_matches`; send the request
-again at the `actual` revision, with a fresh dry run for a `plan_digest`.
+and its undo, say) says so with `details.snapshot_matches`, and
+`details.retry` says what to send: `resend_at_actual`, the same request at the
+`actual` revision, or `dry_run_at_actual` when it carried a `plan_digest`, which
+needs a fresh dry run there first. `retryable` stays false, since the request
+as sent would be refused again.
 
 | Op | Effect |
 |---|---|
 | `ensure_component` | Create a block component from a pool part or entity, returning its id; idempotent by id or refdes |
 | `remove_component` | Remove the component, its symbols and the net lines on them, its board package, and turn tracks that ended on its pads into junction-ended tracks. `texts_within_mm` also removes free notes within that distance whose nearest symbol was this part's (`list_texts` reports each note's `near_symbol`) |
-| `set_value`, `set_refdes`, `set_part`, `set_no_populate` | Component fields; a part swap that changes the entity clears the connections |
+| `set_value`, `set_refdes`, `set_part`, `set_no_populate` | Component fields; a part swap that changes the entity clears the connections. A part's own value is the one shown, so `warnings` says when it hides one `set_value` set |
 | `set_group_tag` | Horizon's group and tag, the fields it uses to copy placement between identical sub-circuits; ids derive from the names |
 | `ensure_net`, `rename_net`, `set_net_class`, `retire_net` | Nets. Retiring one drops its connections, block ports and bus members, and the labels, power symbols, wires and junctions drawn for it; board copper on it is counted, and removed with `remove_routing` |
 | `connect`, `disconnect` | Pin connections; `create_net` makes the net when it is missing |

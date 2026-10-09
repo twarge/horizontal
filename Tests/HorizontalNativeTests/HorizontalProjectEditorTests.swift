@@ -230,8 +230,10 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual(try pinNets(r1), ["1": "P3V3", "2": "GND"])
         XCTAssertEqual(try component("R2")["value"] as? String, "22k")
         XCTAssertEqual(r1["value"] as? String, "RC0603FR-0710KL", "the part's value wins")
-        let partNote = try XCTUnwrap((edited["changes"] as? [[String: Any]])?.first { $0["component"] as? String == r1["id"] as? String && $0["op"] as? String == "set_value" })
-        XCTAssertNotNil(partNote["note"], "set_value on a part-backed component must say the part's value shows")
+        let hidden = (edited["warnings"] as? [String] ?? []).filter { $0.hasPrefix("R1 is part ") }
+        XCTAssertEqual(hidden.count, 1, "set_value on a part-backed component must warn that the part's value shows: \(edited)")
+        XCTAssertTrue(hidden.first?.contains("whose own value RC0603FR-0710KL is the one shown, so the ignored set_value wrote does not show") == true, "\(hidden)")
+        XCTAssertFalse((edited["warnings"] as? [String] ?? []).contains { $0.hasPrefix("R2 ") }, "R2 has no part, so its value shows")
         XCTAssertNotEqual(r1["group"] as? String, HorizontalProjectEditor.nullUUID)
         XCTAssertNotEqual(r1["tag"] as? String, HorizontalProjectEditor.nullUUID)
         let board = try XCTUnwrap(r1["board"] as? [String: Any])

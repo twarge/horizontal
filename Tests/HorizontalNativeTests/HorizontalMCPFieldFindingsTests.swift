@@ -583,6 +583,71 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertEqual(data?.dictionary("details")?.bool("snapshot_matches"), true, "\(failure)")
     }
 
+    // MARK: - Round eighteen: notes 60–61
+
+    func testSameContentStalenessSaysWhatToRetryAndAHiddenValueWarns() throws {
+        let capacitor = part(["A", "B"], value: "4.7 µF")
+        let plain = part(["A", "B"])
+        try apply([
+            ["op": "ensure_component", "refdes": "C1", "part": capacitor.part],
+            ["op": "ensure_component", "refdes": "C2", "part": capacitor.part]
+        ], ["pool_items": capacitor.items + plain.items])
+
+        // 61: a value the part's own value hides warns, once, by refdes.
+        let hidden = try apply([["op": "set_value", "component": "C1", "value": "10 µF"]], ["dry_run": true])
+        let warnings = try XCTUnwrap(hidden["warnings"] as? [String], "\(hidden)")
+        XCTAssertEqual(warnings.count, 1, "\(warnings)")
+        XCTAssertTrue(warnings[0].hasPrefix("C1 is part "), warnings[0])
+        XCTAssertTrue(warnings[0].contains("whose own value 4.7 µF is the one shown, so the 10 µF set_value wrote does not show. "
+            + "set_part to a part with the value 10 µF"), warnings[0])
+        XCTAssertNil(changes(hidden).first?["note"], "the warning replaces the note")
+        // The last value a batch sets is the one named; two components sort by refdes.
+        let two = try XCTUnwrap(try apply([
+            ["op": "set_value", "component": "C2", "value": "1 µF"],
+            ["op": "set_value", "component": "C1", "value": "2.2 µF"],
+            ["op": "set_value", "component": "C1", "value": "22 µF"]
+        ], ["dry_run": true])["warnings"] as? [String])
+        XCTAssertEqual(two.count, 2, "\(two)")
+        XCTAssertTrue(two[0].hasPrefix("C1 ") && two[0].contains("the 22 µF set_value wrote"), "\(two)")
+        XCTAssertTrue(two[1].hasPrefix("C2 "), "\(two)")
+        // The part's own value hides nothing, and nor does a part without one
+        // that a later op in the batch assigns.
+        XCTAssertNil(try apply([["op": "set_value", "component": "C1", "value": "4.7 µF"]], ["dry_run": true])["warnings"])
+        XCTAssertNil(try apply([
+            ["op": "set_value", "component": "C1", "value": "10 µF"],
+            ["op": "set_part", "component": "C1", "part": plain.part]
+        ], ["dry_run": true])["warnings"])
+
+        // 60: after an edit and its undo, a commit with a plan_digest is told
+        // to dry-run again, and one without to resend, neither retryable as sent.
+        try apply([["op": "set_value", "component": "C1", "value": "1 µF"]])
+        let base = try session.entry(handle: handle).revision
+        let plan: [JSONDictionary] = [["op": "ensure_net", "name": "LATER"]]
+        let digest = try XCTUnwrap(try apply(plan, ["dry_run": true]).string("plan_digest"))
+        try apply([["op": "set_value", "component": "C1", "value": "10 µF"]])
+        try apply([["op": "set_value", "component": "C1", "value": "1 µF"]])
+        let now = try session.entry(handle: handle).revision
+        XCTAssertEqual(now.split(separator: ":").last, base.split(separator: ":").last, "back to the same content")
+        func refusal(_ extra: JSONDictionary) throws -> JSONDictionary {
+            let response = try call("apply", (["ops": plan, "expected_revision": base] as JSONDictionary).merging(extra) { _, new in new })
+            return try XCTUnwrap(response["error"] as? JSONDictionary, "\(response)")
+        }
+        let planned = try refusal(["plan_digest": digest])
+        XCTAssertEqual(planned.dictionary("data")?.dictionary("details")?.string("retry"), "dry_run_at_actual", "\(planned)")
+        XCTAssertEqual(planned.dictionary("data")?.bool("retryable"), false)
+        XCTAssertTrue(planned.string("message")?.contains("Dry-run it again with expected_revision \(now), then commit with the plan_digest that gives.") == true,
+                      "\(planned)")
+        let plainCommit = try refusal([:])
+        XCTAssertEqual(plainCommit.dictionary("data")?.dictionary("details")?.string("retry"), "resend_at_actual", "\(plainCommit)")
+        XCTAssertEqual(plainCommit.dictionary("data")?.bool("retryable"), false)
+        XCTAssertTrue(plainCommit.string("message")?.hasSuffix("Send it again with expected_revision \(now).") == true, "\(plainCommit)")
+        // A different content is stale with no retry hint; resending at the
+        // actual revision commits.
+        XCTAssertNil(try refusal(["expected_revision": base.split(separator: ":").dropLast().joined(separator: ":") + ":0000"])
+            .dictionary("data")?.dictionary("details")?["retry"])
+        XCTAssertEqual(try apply(plan, ["expected_revision": now]).string("status"), "committed")
+    }
+
     func testSetAllNoConnectTakesOnlyFreePinsAsHorizonDoes() throws {
         _ = try placedMCU()   // PA13 on SWDIO, PA14 on SWCLK; VSS, VSS and NRST free.
         func states() throws -> [String: String] {

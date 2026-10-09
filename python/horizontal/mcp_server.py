@@ -1199,7 +1199,7 @@ def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool =
 
     A batch that leaves every file as it was, such as an alternate a pin already has, replies unchanged: true and
     adds no undo step when committed; set_pin_alternate names such pins in unchanged_pins. warnings says when a
-    symbol showing pins custom_only hides a chosen alternate.
+    symbol showing pins custom_only hides a chosen alternate, and when a part's own value hides one set_value set.
 
     The reply is compact unless verbose: per op, its ids, scalars and counts, plus timing. A slow live commit
     is waited for (HORIZONTAL_MUTATION_TIMEOUT seconds, 180 by default), and a lost reply is resolved through
@@ -1211,7 +1211,8 @@ def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool =
 
 @_tool
 def set_component_value(refdes: str, value: str, path: str | None = None) -> dict[str, Any]:
-    """Set a component's value and write the project."""
+    """Set a component's value and write the project. A part's own value is the one shown; warnings says when it
+    hides this one."""
     return _edit(_resolve(path), [{"op": "set_value", "component": refdes, "value": value}])
 
 

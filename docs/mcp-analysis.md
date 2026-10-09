@@ -57,7 +57,10 @@ Tool failures set MCP `isError` and retain a structured `error` containing
 `INVALID_ARGUMENT`, `NOT_FOUND`, `AMBIGUOUS_SELECTOR`, `INCOMPATIBLE_ENGINE`,
 `LIVE_UNAVAILABLE`, `LIVE_DOCUMENT_CHANGED`, `DOCUMENT_OPEN`, `AUTH_FAILED`,
 `CONNECTION_LOST`, `TIMEOUT`, `STALE_REVISION`, `READ_ONLY`, `SNAPSHOT_EXPIRED`,
-`UNSUPPORTED_MODEL`, and `RECOVERY_REQUIRED`.
+`UNSUPPORTED_MODEL`, and `RECOVERY_REQUIRED`. `retryable` means the request as
+sent may be sent again, as after a `TIMEOUT` or `CONNECTION_LOST`. A
+`STALE_REVISION` whose content is unchanged is not retryable as sent, and its
+`details.retry` (`resend_at_actual` or `dry_run_at_actual`) says what is.
 
 `DOCUMENT_OPEN` is the one that cannot be worked around by retrying: an editor
 has the project open, so its files are not the editor's state and writing them
