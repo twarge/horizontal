@@ -128,8 +128,12 @@ enum HorizontalDispatchChecks {
         ]
     }
 
-    /// Each airwire as "U8.VSS_12 to C61.N", at most three of them. An end
+    /// Each airwire as "C61.N to U8.VSS_12", at most three of them. An end
     /// that is no pad of the net (a via, a junction) is its position in mm.
+    /// The rats' nest runs an airwire either way and lists them in no set
+    /// order, which changes from one run of the app to the next, so the ends
+    /// and then the airwires are put in natural order: the same board reads
+    /// the same, and names the same three.
     static func airwireEnds(_ airwires: [HorizontalSegment], net: HorizontalDesignNet?, board: HorizontalBoard,
                             index: HorizontalDesignIndex) -> String {
         func key(_ point: HorizontalPoint) -> String { "\(Int64(point.x.rounded())):\(Int64(point.y.rounded()))" }
@@ -145,7 +149,17 @@ enum HorizontalDispatchChecks {
         func name(_ point: HorizontalPoint) -> String {
             namesAt[key(point)] ?? String(format: "(%.2f, %.2f) mm", point.x / 1_000_000, point.y / 1_000_000)
         }
-        let listed = airwires.prefix(3).map { "\(name($0.from)) to \(name($0.to))" }
+        func before(_ lhs: String, _ rhs: String) -> Bool { lhs.localizedStandardCompare(rhs) == .orderedAscending }
+        let pairs = airwires
+            .map { airwire -> (String, String) in
+                let from = name(airwire.from), to = name(airwire.to)
+                return before(to, from) ? (to, from) : (from, to)
+            }
+            .sorted { lhs, rhs in
+                let first = lhs.0.localizedStandardCompare(rhs.0)
+                return first == .orderedSame ? before(lhs.1, rhs.1) : first == .orderedAscending
+            }
+        let listed = pairs.prefix(3).map { "\($0.0) to \($0.1)" }
         return listed.joined(separator: "; ") + (airwires.count > 3 ? "; … \(airwires.count - 3) more" : "")
     }
 

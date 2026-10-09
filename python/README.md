@@ -60,6 +60,9 @@ selection can fall back to disk if the live document cannot be discovered.
 The sandboxed app needs access to the containing project folder to publish its
 live connection record (see [live discovery](../docs/automation.md#finding-the-channel-from-outside-the-container)).
 
+Every MCP edit tool takes `dry_run`, the single-purpose ones (`set_component_value`,
+`rename_net`, `connect_pin`, `place_component`, `copy_group_layout`) as well as
+`apply_ops`, and commits the `plan_digest` its own dry run gives.
 Dry runs return `status: "preview"`, `written: []`, and `would_write` paths.
 `applied` is the legacy count of staged changes in a preview. Feed
 `normalized_ops` back unchanged with `before_revision` as `expected_revision`
