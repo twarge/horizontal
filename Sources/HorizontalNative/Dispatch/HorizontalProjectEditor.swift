@@ -1653,8 +1653,15 @@ final class HorizontalProjectEditor {
                 guard !hidden.isEmpty else { continue }
                 let refdes = components()[componentID]?.string("refdes") ?? componentID
                 let listed = hidden.prefix(8).joined(separator: ", ") + (hidden.count > 8 ? ", … (\(hidden.count) pins)" : "")
+                // Among a gate's old alternates, the one this batch just chose
+                // is the easiest to miss, so it is named on its own.
+                let isTurned = turned.contains(instanceID.lowercased())
+                let chosen = isTurned ? (wanted[componentID] ?? [:]).filter { $0.key.hasPrefix(gateID + "/") }.values
+                    .sorted { $0.localizedStandardCompare($1) == .orderedAscending } : []
+                let including = chosen.isEmpty ? ""
+                    : ", including \(chosen.prefix(8).joined(separator: ", ")), which this batch chose"
                 warnings.append("\(refdes)'s symbol \(instanceID) on sheet \(sheet.int("index") ?? 0) (\(sheet.string("name") ?? "")) "
-                    + "shows pin names custom_only, so it \(turned.contains(instanceID.lowercased()) ? "now" : "still") draws the primary names for \(listed). "
+                    + "shows pin names custom_only, so it \(isTurned ? "now" : "still") draws the primary names for \(listed)\(including). "
                     + "set_symbol_display with symbol_instance \(instanceID) and pin_display_mode selected_only draws the alternates.")
             }
         }

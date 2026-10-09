@@ -94,7 +94,10 @@ enum HorizontalDispatchChecks {
                     pins = " (\(listed)\(net.pins.count > 6 ? ", … \(net.pins.count) pins" : ""))"
                 }
                 if netsWithPlanes.contains(netID) {
-                    messages.append(Message(level: "info", category: "routing", title: "Not reached by the plane", detail: "\(count) on a net with a plane\(pins): the fill does not reach these pads, or the plane is not poured.", net: name))
+                    // A plane net has hundreds of pins, so it is the airwires'
+                    // own ends that say which pads the fill misses.
+                    let ends = airwireEnds(airwires, net: net, board: board, index: index)
+                    messages.append(Message(level: "info", category: "routing", title: "Not reached by the plane", detail: "\(count) on a net with a plane (\(ends)): the fill does not reach these pads, or the plane is not poured.", net: name))
                 } else {
                     messages.append(Message(level: "warning", category: "routing", title: "Unrouted connections", detail: "\(count) \(airwires.count == 1 ? "remains" : "remain")\(pins).", net: name))
                 }
@@ -123,6 +126,27 @@ enum HorizontalDispatchChecks {
             "messages": full ? messages.map(\.json) : grouped(messages),
             "note": "Horizontal has no geometric design rule check yet; these are load diagnostics, rules validation, and connectivity facts, plus the components and board packages nothing has placed. Poured planes count as copper for the rats' nest."
         ]
+    }
+
+    /// Each airwire as "U8.VSS_12 to C61.N", at most three of them. An end
+    /// that is no pad of the net (a via, a junction) is its position in mm.
+    static func airwireEnds(_ airwires: [HorizontalSegment], net: HorizontalDesignNet?, board: HorizontalBoard,
+                            index: HorizontalDesignIndex) -> String {
+        func key(_ point: HorizontalPoint) -> String { "\(Int64(point.x.rounded())):\(Int64(point.y.rounded()))" }
+        var padNames = [String: String]()   // package/pad → refdes.pin
+        for pin in net?.pins ?? [] {
+            guard let package = index.component(id: pin.componentID)?.boardPlacement?.instanceID.lowercased(), !package.isEmpty else { continue }
+            for pad in pin.physicalPads { padNames["\(package)/\(pad.id.lowercased())"] = "\(pin.refdes).\(pin.pinName)" }
+        }
+        var namesAt = [String: String]()
+        for (path, point) in board.packagePadPositions {
+            if let name = padNames[path.lowercased()] { namesAt[key(point)] = name }
+        }
+        func name(_ point: HorizontalPoint) -> String {
+            namesAt[key(point)] ?? String(format: "(%.2f, %.2f) mm", point.x / 1_000_000, point.y / 1_000_000)
+        }
+        let listed = airwires.prefix(3).map { "\(name($0.from)) to \(name($0.to))" }
+        return listed.joined(separator: "; ") + (airwires.count > 3 ? "; … \(airwires.count - 3) more" : "")
     }
 
     /// Findings that share a level, category and title, more than three of

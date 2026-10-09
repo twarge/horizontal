@@ -136,7 +136,12 @@ comparison and the commit. A mutation that fails is recorded under its
 `unknown`, and the same id may be sent again. A commit that replays the dry
 run just made — same revision, same request, its `plan_digest` — installs what
 the dry run staged and validated rather than doing it again
-(`timing.reused_dry_run`).
+(`timing.reused_dry_run`). The last four dry runs at a revision are kept. A
+dry run skips loading the edited project when the batch changes nothing
+(`timing.skipped_load`) or comes to the same files as a kept plan
+(`timing.reused_load`). A `STALE_REVISION` whose content is unchanged (an edit
+and its undo, say) says so with `details.snapshot_matches`; send the request
+again at the `actual` revision, with a fresh dry run for a `plan_digest`.
 
 | Op | Effect |
 |---|---|
