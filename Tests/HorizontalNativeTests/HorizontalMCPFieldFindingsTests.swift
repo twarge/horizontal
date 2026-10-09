@@ -516,6 +516,73 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
                        "\(unrouted)")
     }
 
+    // MARK: - Round seventeen: notes 55–58
+
+    func testPlaneAirwireEndsSkippedLoadsSameSnapshotStalenessAndTheChosenPin() throws {
+        let mcu = part(["PA1", "PA2"], alternates: ["PA1": ["TIM2_CH2"], "PA2": ["USART2_TX"]])
+        let resistor = part(["A", "B"])
+        try apply([
+            ["op": "ensure_component", "refdes": "U1", "part": mcu.part],
+            ["op": "place_symbol", "component": "U1", "id": "s1", "x_mm": 100, "y_mm": 100],
+            ["op": "set_pin_alternate", "component": "U1", "pin": "PA2", "alternate": "USART2_TX"],
+            ["op": "ensure_component", "refdes": "R1", "part": resistor.part],
+            ["op": "ensure_component", "refdes": "R2", "part": resistor.part],
+            ["op": "place_component", "component": "R1", "x_mm": 10, "y_mm": 10],
+            ["op": "place_component", "component": "R2", "x_mm": 30, "y_mm": 10],
+            ["op": "connect", "component": "R1", "pin": "A", "net": "GND", "create_net": true],
+            ["op": "connect", "component": "R2", "pin": "A", "net": "GND"]
+        ], ["pool_items": mcu.items + resistor.items])
+        let instance = try XCTUnwrap((try result("list_symbols") as? [JSONDictionary])?.first?.string("id"))
+
+        // 55: a plane that misses both pads names them.
+        let square: [JSONDictionary] = [[50, 50], [60, 50], [60, 60], [50, 60]].map { ["x_mm": $0[0], "y_mm": $0[1]] }
+        try apply([["op": "place_plane", "net": "GND", "layer": 0, "vertices": square]])
+        let missed = try XCTUnwrap(try result("check", ["full": true]) as? JSONDictionary).dictionaryArray("messages")
+            .first { $0.string("title") == "Not reached by the plane" && $0.string("net") == "GND" }
+        let detail = try XCTUnwrap(missed?.string("detail"))
+        XCTAssertTrue(detail.contains("R1.A to R2.A") || detail.contains("R2.A to R1.A"), detail)
+
+        // 58: a batch that turns the symbol custom_only and chooses an
+        // alternate under it names that pin apart.
+        let both = try XCTUnwrap((try apply([
+            ["op": "set_symbol_display", "symbol_instance": instance, "pin_display_mode": "custom_only"],
+            ["op": "set_pin_alternate", "component": "U1", "pin": "PA1", "alternate": "TIM2_CH2"]
+        ], ["dry_run": true])["warnings"] as? [String])?.first)
+        XCTAssertTrue(both.contains("now draws the primary names for PA1, PA2, including PA1, which this batch chose."), both)
+
+        // 56: a batch that changes nothing loads nothing, and a second dry run
+        // that comes to the same files as a kept plan loads nothing either.
+        let noop = try apply([["op": "set_pin_alternate", "component": "U1", "pin": "PA2", "alternate": "USART2_TX"]], ["dry_run": true])
+        XCTAssertEqual(noop.dictionary("timing")?.bool("skipped_load"), true)
+        XCTAssertNil(noop.dictionary("timing")?["load_ms"])
+        let byRefdes = try apply([["op": "set_value", "component": "R1", "value": "10k"]], ["dry_run": true])
+        XCTAssertNotNil(byRefdes.dictionary("timing")?["load_ms"])
+        let r1 = try XCTUnwrap((try result("get_component", ["refdes": "R1"]) as? JSONDictionary)?.string("id"))
+        let byID: [JSONDictionary] = [["op": "set_value", "component": r1, "value": "10k"]]
+        let again = try apply(byID, ["dry_run": true])
+        XCTAssertEqual(again.dictionary("timing")?.bool("reused_load"), true, "\(again)")
+        XCTAssertNil(again.dictionary("timing")?["load_ms"])
+        XCTAssertEqual(again.string("after_snapshot_id"), byRefdes.string("after_snapshot_id"))
+        let committed = try apply(byID, ["plan_digest": try XCTUnwrap(again.string("plan_digest"))])
+        XCTAssertEqual(committed.dictionary("timing")?.bool("reused_dry_run"), true)
+
+        // 57: a plan made at content the project has come back to is refused,
+        // and the error says the content matches and what to do.
+        let base = try session.entry(handle: handle).revision
+        let plan: [JSONDictionary] = [["op": "ensure_net", "name": "LATER"]]
+        let digest = try XCTUnwrap(try apply(plan, ["dry_run": true]).string("plan_digest"))
+        try apply([["op": "set_value", "component": "R1", "value": "22k"]])
+        try apply([["op": "set_value", "component": "R1", "value": "10k"]])
+        let now = try session.entry(handle: handle).revision
+        XCTAssertEqual(now.split(separator: ":").last, base.split(separator: ":").last, "back to the same content")
+        let response = try call("apply", ["ops": plan, "plan_digest": digest, "expected_revision": base])
+        let failure = try XCTUnwrap(response["error"] as? JSONDictionary, "\(response)")
+        XCTAssertTrue(failure.string("message")?.contains("its content is as it was then") == true, "\(failure)")
+        XCTAssertTrue(failure.string("message")?.contains(now) == true, "\(failure)")
+        let data = failure.dictionary("data")
+        XCTAssertEqual(data?.dictionary("details")?.bool("snapshot_matches"), true, "\(failure)")
+    }
+
     func testSetAllNoConnectTakesOnlyFreePinsAsHorizonDoes() throws {
         _ = try placedMCU()   // PA13 on SWDIO, PA14 on SWCLK; VSS, VSS and NRST free.
         func states() throws -> [String: String] {
