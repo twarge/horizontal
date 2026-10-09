@@ -355,13 +355,19 @@ final class HorizontalDispatchProjectEntry {
             // instance:generation:snapshot. An edit and its undo move the
             // generation and leave the content as it was; the revision still
             // refuses, but a caller should know a fresh dry run is all it takes.
+            // retryable stays false, since the same request would be refused
+            // again; details.retry says what to send instead.
             let was = expected.split(separator: ":"), now = revision.split(separator: ":")
             if was.count == 3, now.count == 3, was[0] == now[0], was[2] == now[2] {
+                let planned = params.string("plan_digest") != nil
                 throw HorizontalDispatchError(
                     code: .staleRevision,
                     message: "Project changed since it was read, though its content is as it was then (most likely an edit and its undo). "
-                        + "Send it again with expected_revision \(revision); a commit with plan_digest needs a fresh dry run at that revision.",
-                    details: ["expected": expected, "actual": revision, "snapshot_matches": true])
+                        + (planned
+                            ? "Dry-run it again with expected_revision \(revision), then commit with the plan_digest that gives."
+                            : "Send it again with expected_revision \(revision)."),
+                    details: ["expected": expected, "actual": revision, "snapshot_matches": true,
+                              "retry": planned ? "dry_run_at_actual" : "resend_at_actual"])
             }
             throw HorizontalDispatchError(code: .staleRevision, message: "Project changed since it was read.", details: ["expected": expected, "actual": revision])
         }

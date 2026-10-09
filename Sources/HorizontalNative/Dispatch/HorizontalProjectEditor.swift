@@ -95,7 +95,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         switch self {
         case .ensureComponent: "Create a block component if it does not exist; returns its id."
         case .removeComponent: "Remove a component, its symbols, its board package, and the copper attached to it."
-        case .setValue: "Set a component's value."
+        case .setValue: "Set a component's value. A part's own value is the one shown, and the apply_ops reply gives warnings when it hides the value set."
         case .setRefdes: "Set a component's reference designator."
         case .setPart: "Assign a pool part (and its entity) to a component; null clears the part."
         case .setNoPopulate: "Mark a component do-not-populate or not."
@@ -694,13 +694,9 @@ final class HorizontalProjectEditor {
             try updateComponent(id) { $0["value"] = value }
             change["component"] = id
             change["value"] = value
-            // Horizon shows a part's own value over the component's, so a
-            // value set on a part-backed component only matters once the
-            // part is cleared or has no value of its own.
-            if let partID = components()[id]?.string("part")?.lowercased(),
-               let part = poolPart(partID), !part.value.isEmpty {
-                change["note"] = "The part \(part.mpn) defines the value \(part.value), which Horizontal shows instead."
-            }
+            // Horizon shows a part's own value over the component's. Whether
+            // that hides this one is said in warnings(), once the batch has
+            // run, since a set_part later in it can change the part.
         case .setRefdes:
             let id = try componentID(params)
             guard let refdes = params.string("refdes"), !refdes.isEmpty else {
@@ -1607,13 +1603,40 @@ final class HorizontalProjectEditor {
         return change
     }
 
-    /// What the batch asked for that the sheets will not show. A symbol whose
-    /// pin_display_mode is custom_only draws only custom names, so an
-    /// alternate set_pin_alternate chose stays invisible on it, and so does
-    /// every alternate its gate already had when set_symbol_display turns it
-    /// custom_only. Checked once the whole batch has run, so a
-    /// set_symbol_display in it counts either way.
+    /// What the batch asked for that the project will not show: alternates a
+    /// custom_only symbol hides, and values a part's own value hides.
+    /// Checked once the whole batch has run, so a later op in it counts.
     func warnings() -> [String] {
+        hiddenAlternateWarnings() + hiddenValueWarnings()
+    }
+
+    /// Horizon shows a part's own value wherever a value is shown, so one
+    /// set_value writes on a part-backed component changes the file and
+    /// nothing anyone sees. A value equal to the part's hides nothing.
+    private func hiddenValueWarnings() -> [String] {
+        var set = [String: String]()   // component → the last value the batch set
+        for change in changes where change.string("op") == HorizontalEditOperationKind.setValue.rawValue {
+            guard let id = change.string("component")?.lowercased(), let value = change.string("value") else { continue }
+            set[id] = value
+        }
+        return set.compactMap { id, value -> (String, String)? in
+            guard let component = components()[id], let partID = component.string("part")?.lowercased(),
+                  let part = poolPart(partID), !part.value.isEmpty, part.value != value else { return nil }
+            let refdes = component.string("refdes") ?? id
+            return (refdes, "\(refdes) is part \(part.mpn.isEmpty ? partID : part.mpn), whose own value \(part.value) is the one shown, "
+                + "so the \(value) set_value wrote does not show. set_part to a part with the value \(value) "
+                + "(search_pool finds one) changes what is shown.")
+        }
+        .sorted { $0.0.localizedStandardCompare($1.0) == .orderedAscending }
+        .map(\.1)
+    }
+
+    /// A symbol whose pin_display_mode is custom_only draws only custom
+    /// names, so an alternate set_pin_alternate chose stays invisible on it,
+    /// and so does every alternate its gate already had when
+    /// set_symbol_display turns it custom_only. A set_symbol_display anywhere
+    /// in the batch counts either way.
+    private func hiddenAlternateWarnings() -> [String] {
         var wanted = [String: [String: String]]()   // component → gate/pin path → pin name
         var turned = Set<String>()                  // symbol instances this batch made custom_only
         for change in changes {
