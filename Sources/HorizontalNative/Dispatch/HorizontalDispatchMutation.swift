@@ -172,8 +172,8 @@ enum HorizontalDispatchMutation {
         let after: HorizontalDispatchSnapshot
         let staged: HorizontalProject
         let nextDiagnostics: [String: Int]
-        if !dryRun, let plan = entry.stagedPlan, plan.revision == entry.revision, plan.keys.contains(requestKey),
-           params.string("plan_digest") == plan.digest {
+        if !dryRun, let digest = params.string("plan_digest"),
+           let plan = entry.stagedPlans.last(where: { $0.revision == entry.revision && $0.digest == digest && $0.keys.contains(requestKey) }) {
             result = plan.result
             after = plan.after
             staged = plan.staged
@@ -219,11 +219,18 @@ enum HorizontalDispatchMutation {
         if dryRun {
             // Kept for the commit that replays this plan, by either spelling of
             // the request: as sent, or with the normalized ops the reply gave.
-            entry.stagedPlan = HorizontalDispatchProjectEntry.StagedPlan(
-                keys: [requestKey, try planKeys(result["normalized_ops"])], digest: planDigest, revision: entry.revision,
-                after: after, staged: staged, diagnostics: nextDiagnostics, result: result)
-        } else {
-            entry.stagedPlan = nil
+            let keys: Set<String> = [requestKey, try planKeys(result["normalized_ops"])]
+            entry.stagedPlans.removeAll { $0.revision != entry.revision || !$0.keys.isDisjoint(with: keys) }
+            entry.stagedPlans.append(HorizontalDispatchProjectEntry.StagedPlan(
+                keys: keys, digest: planDigest, revision: entry.revision,
+                after: after, staged: staged, diagnostics: nextDiagnostics, result: result))
+            if entry.stagedPlans.count > HorizontalDispatchProjectEntry.stagedPlanLimit {
+                entry.stagedPlans.removeFirst(entry.stagedPlans.count - HorizontalDispatchProjectEntry.stagedPlanLimit)
+            }
+        } else if !changed.isEmpty {
+            // A commit that changes nothing keeps the revision, so the other
+            // plans staged at it still hold.
+            entry.stagedPlans.removeAll()
         }
         result["plan_digest"] = planDigest
         result["before_revision"] = entry.revision
@@ -269,7 +276,9 @@ enum HorizontalDispatchMutation {
         result["operation_id"] = operationID!
         result["payload_hash"] = payloadHash
         result["status"] = "committed"
-        result["durability"] = entry.live == nil ? "disk" : "unsaved_document"
+        // Nothing written is nothing to save: "unsaved_document" would send a
+        // caller to save a document that has no changes.
+        result["durability"] = changed.isEmpty ? "unchanged" : entry.live == nil ? "disk" : "unsaved_document"
         result["written"] = changed
         result["after_revision"] = unchanged ? entry.revision : "\(entry.instanceID):\(entry.generation + 1):\(after.id)"
         if let transaction {

@@ -314,8 +314,10 @@ final class HorizontalDispatchProjectEntry {
     /// project again just to count them.
     var cachedDiagnostics: (snapshotID: String, counts: [String: Int])?
 
-    /// The last dry run's staged edit, so a commit replaying it at the same
-    /// revision installs it rather than doing the work twice.
+    /// The latest dry runs' staged edits, newest last, so a commit replaying
+    /// one at the same revision installs it rather than doing the work twice.
+    /// More than one is kept because a caller often dry-runs a few variants
+    /// before committing the first.
     struct StagedPlan {
         var keys: Set<String>
         var digest: String
@@ -325,7 +327,8 @@ final class HorizontalDispatchProjectEntry {
         var diagnostics: [String: Int]
         var result: JSONDictionary
     }
-    var stagedPlan: StagedPlan?
+    var stagedPlans: [StagedPlan] = []
+    static let stagedPlanLimit = 4
     var frozen = false
     var origin: JSONDictionary?
     var readMetadata: JSONDictionary?

@@ -65,7 +65,8 @@ Dry runs return `status: "preview"`, `written: []`, and `would_write` paths.
 `normalized_ops` back unchanged with `before_revision` as `expected_revision`
 and the returned `plan_digest`; boolean fields remain JSON booleans. A commit
 returns `status: "committed"` and `durability: "disk"` or
-`"unsaved_document"`. Use a fresh `operation_id` for the commit.
+`"unsaved_document"`, or `"unchanged"` when the batch left every file as it
+was. Use a fresh `operation_id` for the commit.
 
 MCP edit replies are compact unless the tool is called with `verbose: true`:
 each change keeps its ids, scalars and counts, and the echoed operations, file
