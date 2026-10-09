@@ -80,13 +80,23 @@ enum HorizontalDispatchChecks {
             let netsWithPlanes = Set(board.planes.compactMap { $0.netID?.lowercased() })
             let airwiresByNet = Dictionary(grouping: board.airwires, by: { $0.netID?.lowercased() ?? "" })
             for (netID, airwires) in airwiresByNet where !netID.isEmpty {
-                let resolvedName = index.net(id: netID)?.name ?? ""
+                let net = index.net(id: netID)
+                let resolvedName = net?.name ?? ""
                 let name = resolvedName.isEmpty ? netID : resolvedName
                 let count = "\(airwires.count) airwire\(airwires.count == 1 ? "" : "s")"
+                // An unnamed net is only its uuid, which says nothing about
+                // where it is; its pins do.
+                var pins = ""
+                if resolvedName.isEmpty, let net, !net.pins.isEmpty {
+                    let listed = net.pins.map { "\($0.refdes).\($0.pinName)" }
+                        .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+                        .prefix(6).joined(separator: ", ")
+                    pins = " (\(listed)\(net.pins.count > 6 ? ", … \(net.pins.count) pins" : ""))"
+                }
                 if netsWithPlanes.contains(netID) {
-                    messages.append(Message(level: "info", category: "routing", title: "Not reached by the plane", detail: "\(count) on a net with a plane: the fill does not reach these pads, or the plane is not poured.", net: name))
+                    messages.append(Message(level: "info", category: "routing", title: "Not reached by the plane", detail: "\(count) on a net with a plane\(pins): the fill does not reach these pads, or the plane is not poured.", net: name))
                 } else {
-                    messages.append(Message(level: "warning", category: "routing", title: "Unrouted connections", detail: "\(count) remain.", net: name))
+                    messages.append(Message(level: "warning", category: "routing", title: "Unrouted connections", detail: "\(count) \(airwires.count == 1 ? "remains" : "remain")\(pins).", net: name))
                 }
             }
             messages.append(contentsOf: rulesMessages(project: project, board: board))
