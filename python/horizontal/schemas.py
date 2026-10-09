@@ -141,7 +141,7 @@ class EditResult(Record):
     dry_run: bool = False
     after_revision: str | None = None
     operation_id: str | None = None
-    durability: Literal["disk", "unsaved_document"] | None = None
+    durability: Literal["disk", "unsaved_document", "unchanged"] | None = None
     written: list[str] = Field(default_factory=list)
     would_write: list[str] = Field(default_factory=list)
     status: Literal["preview", "committed"] | None = None

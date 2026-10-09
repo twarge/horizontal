@@ -1654,7 +1654,7 @@ final class HorizontalProjectEditor {
                 let refdes = components()[componentID]?.string("refdes") ?? componentID
                 let listed = hidden.prefix(8).joined(separator: ", ") + (hidden.count > 8 ? ", … (\(hidden.count) pins)" : "")
                 warnings.append("\(refdes)'s symbol \(instanceID) on sheet \(sheet.int("index") ?? 0) (\(sheet.string("name") ?? "")) "
-                    + "shows pin names custom_only, so it still draws the primary names for \(listed). "
+                    + "shows pin names custom_only, so it \(turned.contains(instanceID.lowercased()) ? "now" : "still") draws the primary names for \(listed). "
                     + "set_symbol_display with symbol_instance \(instanceID) and pin_display_mode selected_only draws the alternates.")
             }
         }
