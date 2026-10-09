@@ -187,7 +187,8 @@ the dry run staged and validated rather than doing it again
 An edit against a document the app has open becomes one undoable step in that
 document and nothing more: the result says `durability: "unsaved_document"`
 and means it. `save` writes it, `project_info` reports `unsaved_changes`, and
-a task that edits a live document is not finished without one. A disk edit
+a task that edits a live document is not finished without one. A batch that
+changed nothing says `durability: "unchanged"` and needs no save. A disk edit
 needs none of this — it committed with its transaction — and `save` says so
 rather than failing.
 

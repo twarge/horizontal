@@ -452,6 +452,70 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertEqual((report["counts"] as? JSONDictionary)?["warning"] as? Int, (full["counts"] as? JSONDictionary)?["warning"] as? Int)
     }
 
+    // MARK: - Round sixteen: notes 50–54
+
+    func testNoOpDurabilityKeptPlansAndUnroutedNetsByPin() throws {
+        let mcu = part(["PA1", "PA2"], alternates: ["PA1": ["TIM2_CH2"], "PA2": ["USART2_TX"]])
+        try apply([
+            ["op": "ensure_component", "refdes": "U1", "part": mcu.part],
+            ["op": "place_symbol", "component": "U1", "id": "s1", "x_mm": 100, "y_mm": 100],
+            ["op": "set_pin_alternate", "component": "U1", "pin": "PA2", "alternate": "USART2_TX"]
+        ], ["pool_items": mcu.items])
+        let instance = try XCTUnwrap((try result("list_symbols") as? [JSONDictionary])?.first?.string("id"))
+
+        // 54: a batch that turns the symbol custom_only says it now draws the
+        // primary names; one that only chooses an alternate under it, still.
+        let turned = try XCTUnwrap((try apply([["op": "set_symbol_display", "symbol_instance": instance,
+                                                "pin_display_mode": "custom_only"]])["warnings"] as? [String])?.first)
+        XCTAssertTrue(turned.contains("now draws"), turned)
+        let chosen = try XCTUnwrap((try apply([["op": "set_pin_alternate", "component": "U1", "pin": "PA1",
+                                                "alternate": "TIM2_CH2"]])["warnings"] as? [String])?.first)
+        XCTAssertTrue(chosen.contains("still draws"), chosen)
+
+        // 50: a commit that changes nothing has nothing to save.
+        let same = try apply([["op": "set_pin_alternate", "component": "U1", "pin": "PA2", "alternate": "USART2_TX"]])
+        XCTAssertEqual(same.bool("unchanged"), true)
+        XCTAssertEqual(same.string("durability"), "unchanged")
+        XCTAssertEqual(try apply([["op": "ensure_net", "name": "REAL"]]).string("durability"), "disk")
+
+        // 53: the first of several dry runs is still there to commit, and a
+        // no-op commit in between leaves it there.
+        let first: [JSONDictionary] = [["op": "ensure_net", "name": "FIRST"]]
+        let firstDigest = try XCTUnwrap(try apply(first, ["dry_run": true]).string("plan_digest"))
+        _ = try apply([["op": "ensure_net", "name": "SECOND"]], ["dry_run": true])
+        let noop: [JSONDictionary] = [["op": "set_pin_alternate", "component": "U1", "pin": "PA2", "alternate": "USART2_TX"]]
+        let noopDigest = try XCTUnwrap(try apply(noop, ["dry_run": true]).string("plan_digest"))
+        XCTAssertEqual(try apply(noop, ["plan_digest": noopDigest]).dictionary("timing")?.bool("reused_dry_run"), true)
+        let committed = try apply(first, ["plan_digest": firstDigest])
+        XCTAssertEqual(committed.dictionary("timing")?.bool("reused_dry_run"), true)
+        XCTAssertNil(committed.dictionary("timing")?["load_ms"])
+        XCTAssertNotNil(try result("get_net", ["name": "FIRST"]))
+
+        // 51, 52: one airwire remains, and a net with no name is told by its pins.
+        let resistor = part(["A", "B"])
+        try apply([["op": "ensure_component", "refdes": "R1", "part": resistor.part],
+                   ["op": "ensure_component", "refdes": "R2", "part": resistor.part],
+                   ["op": "place_component", "component": "R1", "x_mm": 10, "y_mm": 10],
+                   ["op": "place_component", "component": "R2", "x_mm": 30, "y_mm": 10],
+                   ["op": "connect", "component": "R1", "pin": "A", "net": "SIG", "create_net": true],
+                   ["op": "connect", "component": "R2", "pin": "A", "net": "SIG"],
+                   ["op": "connect", "component": "R1", "pin": "B", "net": "NONAME", "create_net": true],
+                   ["op": "connect", "component": "R2", "pin": "B", "net": "NONAME"]], ["pool_items": resistor.items])
+        let unnamed = try XCTUnwrap((try result("get_net", ["name": "NONAME"]) as? JSONDictionary)?.string("id"))
+        try rewrite("top_block.json") { json in
+            var nets = try XCTUnwrap(json["nets"] as? JSONDictionary)
+            var net = try XCTUnwrap(nets[unnamed] as? JSONDictionary)
+            net["name"] = ""
+            nets[unnamed] = net
+            json["nets"] = nets
+        }
+        let unrouted = try XCTUnwrap(try result("check", ["full": true]) as? JSONDictionary).dictionaryArray("messages")
+            .filter { $0.string("title") == "Unrouted connections" }
+        XCTAssertEqual(unrouted.first { $0.string("net") == "SIG" }?.string("detail"), "1 airwire remains.")
+        XCTAssertEqual(unrouted.first { $0.string("net") == unnamed }?.string("detail"), "1 airwire remains (R1.B, R2.B).",
+                       "\(unrouted)")
+    }
+
     func testSetAllNoConnectTakesOnlyFreePinsAsHorizonDoes() throws {
         _ = try placedMCU()   // PA13 on SWDIO, PA14 on SWCLK; VSS, VSS and NRST free.
         func states() throws -> [String: String] {
@@ -799,10 +863,12 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertEqual(normalized[2].string("id"), handles["w1"])
         XCTAssertEqual(normalized[5].string("net"), "SWDIO", "a junction's name leaves nets alone")
 
-        // Another dry run in between, so the commit cannot reuse the staged
-        // plan. It still matches it: at one revision a name is one UUID. (An
-        // op given no id at all still gets a fresh one each time.)
-        _ = try apply([["op": "ensure_net", "name": "OTHER"]], ["dry_run": true])
+        // Enough dry runs in between that the staged plan is gone, so the
+        // commit redoes it. It still matches it: at one revision a name is one
+        // UUID. (An op given no id at all still gets a fresh one each time.)
+        for name in ["OTHER1", "OTHER2", "OTHER3", "OTHER4"] {
+            _ = try apply([["op": "ensure_net", "name": name]], ["dry_run": true])
+        }
         let committed = try apply(ops, ["plan_digest": try XCTUnwrap(preview.string("plan_digest"))])
         XCTAssertNil(committed.dictionary("timing")?["reused_dry_run"])
         XCTAssertEqual(committed["handles"] as? [String: String], handles)
