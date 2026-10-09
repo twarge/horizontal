@@ -71,7 +71,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `pour_planes` | fills every plane, as Update All Planes does |
 | `list_texts` | free text on the schematic sheets, with the ids the text ops take; texts smashed out of symbols only with `smashed` or in a `text` search, each with its part's `refdes`, or only one part's with `component`; `drawn` and `text` as for `list_board_texts` |
 | `list_parts` | parts the project can use; `scope` widens it from the project pool to the pools it draws from |
-| `search_pool` | search those pools by name, description, manufacturer, tag, uuid or a part's value, filtered by item kind. A quantity matches however it is written — `2.2 µF`, `2u2`, `2200nF` — against a part's value, description words or parametric data |
+| `search_pool` | search those pools by name, description, manufacturer, tag, uuid or a part's value, filtered by item kind. A quantity matches however it is written — `2.2 µF`, `2u2`, `2200nF` — against a part's value, description words or parametric data. A part row gives its `package` and `package_id`, a derived part's taken from its base, and `package` (a name such as `C0402`, or a uuid) keeps only the parts in it |
 | `import_pool_part` | copy a part and its whole dependency chain from a base pool into the project pool cache |
 | `board_info` | bounds, stackup, drawing layers, object counts |
 | `recompute_connectivity` | the editor's post-edit connectivity pass, in memory |
@@ -108,7 +108,8 @@ Poured plane copper counts: a pad or via of the plane's net inside one of
 its fragments on that layer is joined to everything else in that fragment,
 so a ground pad under a ground fill has no airwire. What remains on a plane
 net is a pad the fill does not reach or an unpoured plane; `check` reports
-those as informational and anything on a net without a plane as a warning.
+those as informational, naming up to three airwires by their ends in natural
+order, and anything on a net without a plane as a warning.
 
 ### What `check` covers
 
@@ -281,7 +282,8 @@ junction with it when nothing else needs it — the same rule the copper ops
 follow.
 
 Three things to know. Horizon shows a part's own value over the component's,
-so `set_value` on a part-backed component records a note saying so. A
+so `set_value` on a part-backed component warns that it does not show, with
+the `search_pool` that finds parts of that value in the component's package. A
 component created through the netlist alone is drawn on no sheet, which
 `place_symbol` fixes and `check` reports until it is. And a project an editor
 has open cannot be edited on disk: see below.

@@ -142,8 +142,10 @@ enum HorizontalDispatchPool {
         category.rawValue + "|" + uuid.lowercased()
     }
 
-    static func itemJSON(_ item: HorizontalPoolLibraryItem, inProject: Set<String>) -> JSONDictionary {
-        [
+    /// A part row carries its package, a derived part's taken from its base.
+    static func itemJSON(_ item: HorizontalPoolLibraryItem, inProject: Set<String>,
+                         package: PartPackage? = nil) -> JSONDictionary {
+        var json: JSONDictionary = [
             "uuid": item.uuid,
             "kind": item.category.rawValue,
             "name": item.name,
@@ -154,12 +156,58 @@ enum HorizontalDispatchPool {
             "pool_path": item.poolURL.path,
             "path": item.url.path,
             "in_project_pool": inProject.contains(key(item.category, item.uuid))
-        ].merging(item.category == .part ? ["value": item.value, "description": item.partDescription] : [:]) { old, _ in old }
+        ]
+        if item.category == .part {
+            json["value"] = item.value
+            json["description"] = item.partDescription
+            if let package {
+                json["package_id"] = package.id
+                if let name = package.name { json["package"] = name }
+            }
+        }
+        return json
     }
 
-    /// `search_pool`: the pools a project draws from, filtered by kind and a
+    /// A part's package: its uuid, and its name when a scanned pool holds it.
+    struct PartPackage: Equatable {
+        var id: String
+        var name: String?
+
+        /// Whether `reference` names this package, by name (any case) or uuid.
+        func matches(_ reference: String) -> Bool {
+            id == reference.lowercased() || name?.caseInsensitiveCompare(reference) == .orderedSame
+        }
+    }
+
+    /// Each scanned part's package. A derived part carries only its `base`,
+    /// so the chain is followed to the part that names one, through whichever
+    /// pool holds it; the first copy of a uuid wins, as the scan orders them.
+    static func packages(_ items: [HorizontalPoolLibraryItem]) -> (HorizontalPoolLibraryItem) -> PartPackage? {
+        var parts = [String: HorizontalPoolLibraryItem]()
+        var names = [String: String]()
+        for item in items {
+            switch item.category {
+            case .part where parts[item.uuid] == nil: parts[item.uuid] = item
+            case .package where names[item.uuid] == nil: names[item.uuid] = item.name
+            default: break
+            }
+        }
+        return { item in
+            guard item.category == .part else { return nil }
+            var current = item
+            var visited: Set<String> = [current.uuid]
+            while current.packageID.isEmpty, let base = parts[current.basePartID], visited.insert(base.uuid).inserted {
+                current = base
+            }
+            guard !current.packageID.isEmpty else { return nil }
+            let name = names[current.packageID]
+            return PartPackage(id: current.packageID, name: name?.isEmpty == false ? name : nil)
+        }
+    }
+
+    /// `search_pool`: the pools a project draws from, filtered by kind, a
     /// case-insensitive substring of name, description, manufacturer, tags or
-    /// uuid.
+    /// uuid, and a part's package.
     @Sendable static func search(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         let urls = try poolURLs(for: entry, params: params)
@@ -172,21 +220,33 @@ enum HorizontalDispatchPool {
             }
             kinds = [category]
         }
+        // Only a part has a package, so naming one narrows the search to parts.
+        let wantedPackage = (params.string("package") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !wantedPackage.isEmpty {
+            guard kinds.contains(.part) else {
+                throw HorizontalDispatchError.invalidParams(
+                    "package narrows a search to parts, so it cannot go with kind \(kinds.first?.rawValue ?? "")."
+                )
+            }
+            kinds = [.part]
+        }
         let limit = min(max(params.int("limit") ?? 50, 1), 500)
         let query = (params.string("query") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let (items, pools, inProject) = scan(urls)
+        let package = packages(items)
 
         var seen = Set<String>()
         let matched = items
             .filter { kinds.contains($0.category) && matches(query, $0) }
             // The project pool is scanned first, so its copy of a uuid wins.
             .filter { seen.insert(key($0.category, $0.uuid)).inserted }
+            .filter { wantedPackage.isEmpty || package($0)?.matches(wantedPackage) == true }
             .sorted { ($0.name.localizedLowercase, $0.uuid) < ($1.name.localizedLowercase, $1.uuid) }
         return [
             "pools": pools,
             "total": matched.count,
             "truncated": matched.count > limit,
-            "items": matched.prefix(limit).map { itemJSON($0, inProject: inProject) }
+            "items": matched.prefix(limit).map { itemJSON($0, inProject: inProject, package: package($0)) }
         ] as JSONDictionary
     }
 

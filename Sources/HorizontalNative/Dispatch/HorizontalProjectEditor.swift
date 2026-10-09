@@ -1613,6 +1613,10 @@ final class HorizontalProjectEditor {
     /// Horizon shows a part's own value wherever a value is shown, so one
     /// set_value writes on a part-backed component changes the file and
     /// nothing anyone sees. A value equal to the part's hides nothing.
+    /// The way out is another part, and a part in another package changes
+    /// the footprint too, so the warning gives the search that keeps the
+    /// package. It says nothing of whether one exists: finding out would
+    /// scan every pool from inside a dry run, and that search is one call.
     private func hiddenValueWarnings() -> [String] {
         var set = [String: String]()   // component → the last value the batch set
         for change in changes where change.string("op") == HorizontalEditOperationKind.setValue.rawValue {
@@ -1623,9 +1627,13 @@ final class HorizontalProjectEditor {
             guard let component = components()[id], let partID = component.string("part")?.lowercased(),
                   let part = poolPart(partID), !part.value.isEmpty, part.value != value else { return nil }
             let refdes = component.string("refdes") ?? id
+            let search = part.searchPackage.map {
+                "search_pool with query \"\(value)\" and package \"\($0)\" lists those in \(refdes)'s package, "
+                    + "and a part in another one changes \(refdes)'s footprint too."
+            } ?? "search_pool with query \"\(value)\" lists them."
             return (refdes, "\(refdes) is part \(part.mpn.isEmpty ? partID : part.mpn), whose own value \(part.value) is the one shown, "
                 + "so the \(value) set_value wrote does not show. set_part to a part with the value \(value) "
-                + "(search_pool finds one) changes what is shown.")
+                + "changes what is shown; \(search)")
         }
         .sorted { $0.0.localizedStandardCompare($1.0) == .orderedAscending }
         .map(\.1)
