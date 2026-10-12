@@ -29,7 +29,9 @@ struct HorizontalPoolPart: Identifiable, Hashable {
     /// (`override_prefix`, a derived part's possibly inherited), else nil.
     /// `refdesPrefix` already gives it when set.
     var prefixOverride: String? = nil
-    /// The part's exclude_bom and exclude_pnp flags, through its base.
+    /// The part's base_part, exclude_bom and exclude_pnp flags, through its
+    /// base.
+    var isBasePart = false
     var excludeFromBOM = false
     var excludeFromPnP = false
 
@@ -84,15 +86,15 @@ struct HorizontalPoolPart: Identifiable, Hashable {
                     }
                 return result
             }
-            let basePartIDs = Set(jsonByID.compactMap { _, json in
-                json.string("base")?.lowercased()
-            })
-
             let loader = PoolPartLoader(poolURL: poolURL, preloadedParts: Dictionary(uniqueKeysWithValues: jsonByID))
+            // A part flagged base_part (on itself or through its base) is
+            // there to derive others from, and Horizon's part browser leaves
+            // it out (`flag_base_part = 0`). A part merely used as a base,
+            // like an orderable part with variants, is still offered.
             return BoardLoadTimer.measure("  resolve pool parts (gates/symbols/packages)") {
                 jsonByID
-                    .filter { id, _ in !basePartIDs.contains(id) }
                     .compactMap { id, json in loader.part(id: id, json: json) }
+                    .filter { !$0.isBasePart }
                     .sorted { lhs, rhs in
                         let mpnOrder = lhs.mpn.localizedStandardCompare(rhs.mpn)
                         if mpnOrder != .orderedSame {
@@ -145,6 +147,7 @@ private final class PoolPartLoader {
             gates: details.gates,
             packageID: part.packageID,
             prefixOverride: part.prefix.flatMap(nonEmpty),
+            isBasePart: part.isBasePart,
             excludeFromBOM: part.excludeFromBOM,
             excludeFromPnP: part.excludeFromPnP
         )

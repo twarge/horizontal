@@ -701,6 +701,7 @@ final class HorizontalDispatchPoolIndex {
             gates: gates,
             packageID: part.packageID,
             prefixOverride: prefix,
+            isBasePart: part.isBasePart,
             excludeFromBOM: part.excludeFromBOM,
             excludeFromPnP: part.excludeFromPnP
         )

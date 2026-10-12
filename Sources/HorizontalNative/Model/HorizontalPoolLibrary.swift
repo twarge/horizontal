@@ -76,6 +76,9 @@ struct HorizontalPoolLibraryItem: Identifiable, Hashable, Sendable {
     var parametric: [String: String] = [:]
     /// A part's package uuid (lowercased, empty when it has none).
     var packageID: String = ""
+    /// A part flagged base_part, on itself or through its base: one to
+    /// derive others from, which Horizon's part browser doesn't offer.
+    var isBasePart = false
     /// What a part's own file says. A scan reads each file alone, so a
     /// derived part's name, manufacturer, value, description, tags and
     /// package are its file's until `resolvingInheritance` works them out
@@ -265,6 +268,7 @@ enum HorizontalPoolLibrary {
                 partDescription: category == .part ? (attributeString(json["description"]) ?? "") : "",
                 parametric: category == .part ? (json["parametric"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String } : [:],
                 packageID: category == .part ? (json.string("package")?.lowercased() ?? "") : "",
+                isBasePart: category == .part && HorizontalPartRecord(json: json).resolved(base: nil).isBasePart,
                 partRecord: category == .part ? HorizontalPartRecord(json: json) : nil
             )
             if isCacheCopy {
@@ -313,6 +317,7 @@ enum HorizontalPoolLibrary {
             item.partDescription = part.description
             item.tags = part.tags.joined(separator: " ")
             item.packageID = part.packageID ?? ""
+            item.isBasePart = part.isBasePart
             return item
         }
     }
