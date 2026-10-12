@@ -49,7 +49,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `list_sheets` | sheets in the PDF exporter's page order |
 | `list_components`, `get_component` | components with part details; one component with every pin, its net, symbol and board placements |
 | `list_nets`, `get_net`, `netlist` | nets with class and flags; one net with its pins, routing counts, and airwire geometry; the whole netlist |
-| `bom` | grouped the way the BOM exporter groups; a part flagged `exclude_bom` (a test pad, a mounting hole) is left out, as Horizon leaves it out, and `excluded` names those components |
+| `bom` | grouped the way the BOM exporter groups; a part flagged `exclude_bom` (a test pad, a mounting hole) is left out, as Horizon leaves it out, and so is a component with no part; `excluded` and `without_part` name those components |
 | `list_symbols` | symbol instances on the sheets: component, gate, placement, and the instance id the schematic ops take |
 | `list_junctions` | schematic junction IDs, positions, resolved nets and sheet identities for wire endpoints |
 | `list_net_lines` | the wires on the sheets, with what each end connects — a symbol pin (with its name), a junction, a bus ripper or a block port — and where each end is (`from_mm`, `to_mm`) |
@@ -70,7 +70,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `get_pool_item` | one pool item's own JSON — the bytes `pool_write` takes back |
 | `pour_planes` | fills every plane, as Update All Planes does |
 | `list_texts` | free text on the schematic sheets, with the ids the text ops take; texts smashed out of symbols only with `smashed` or in a `text` search, each with its part's `refdes`, or only one part's with `component`; `drawn` and `text` as for `list_board_texts` |
-| `list_parts` | parts the project can use; `scope` widens it from the project pool to the pools it draws from |
+| `list_parts` | parts the project can use; `scope` widens it from the project pool to the pools it draws from. A part flagged `base_part` is left out, as Horizon's part browser leaves it out, and `search_pool` marks it `base_part` |
 | `search_pool` | search those pools by name, description, manufacturer, tag, uuid or a part's value, filtered by item kind. A quantity matches however it is written — `2.2 µF`, `2u2`, `2200nF` — against a part's value, description words or parametric data. A part row gives its `package` and `package_id`, a derived part's taken from its base, and `package` (a name such as `C0402`, or a uuid) keeps only the parts in it |
 | `import_pool_part` | copy a part and its whole dependency chain from a base pool into the project pool cache |
 | `board_info` | bounds, stackup, drawing layers, object counts |
