@@ -1001,11 +1001,15 @@ final class HorizontalProjectEditor {
         }
         var entityID = params.string("entity")?.lowercased()
         let partID = params.string("part")?.lowercased()
+        // A part may set its own refdes prefix in place of its entity's, as
+        // Horizon's Component::get_prefix has it.
+        var prefix: String?
         if let partID {
             guard let part = poolPart(partID) else {
                 throw HorizontalDispatchError.notFound("No pool part \(partID).")
             }
             entityID = part.entityID?.lowercased() ?? entityID
+            prefix = part.prefixOverride
         }
         guard let entityID else {
             throw HorizontalDispatchError.invalidParams("ensure_component needs a \"part\" or an \"entity\".")
@@ -1020,7 +1024,7 @@ final class HorizontalProjectEditor {
             "entity": entityID,
             "group": nameID(params.string("group"), table: "group_names"),
             "pin_names": [String: Any](),
-            "refdes": params.string("refdes") ?? "\(entity.prefix.isEmpty ? "X" : entity.prefix)?",
+            "refdes": params.string("refdes") ?? "\(prefix ?? (entity.prefix.isEmpty ? "X" : entity.prefix))?",
             "tag": nameID(params.string("tag"), table: "tag_names"),
             "value": params.string("value") ?? ""
         ]
@@ -1066,8 +1070,13 @@ final class HorizontalProjectEditor {
         return ["symbols": symbols, "packages": packages]
     }
 
+    /// The project's part list leaves out a part another derives from, so
+    /// such a part is read from the pool index (the snapshot), then off disk.
     private func poolPart(_ id: String) -> HorizontalPoolPart? {
         if let part = project.poolParts.first(where: { $0.id.lowercased() == id }) {
+            return part
+        }
+        if let part = pool.poolPart(id) {
             return part
         }
         guard !(store is HorizontalArchiveFileStore), let poolURL else {

@@ -672,9 +672,45 @@ final class HorizontalDispatchPoolIndex {
         return resolved
     }
 
+    /// A project-pool part as `HorizontalPoolPart` gives it, read from this
+    /// index — so from the snapshot, staged pool items included. The
+    /// project's part list leaves out a part another derives from, and a
+    /// `.horizontal` package's pool can't be read off disk, so this is how an
+    /// edit names such a part.
+    func poolPart(_ id: String) -> HorizontalPoolPart? {
+        let id = id.lowercased()
+        guard let json = parts[id] else { return nil }
+        let part = HorizontalPartRecord.resolve(json) { parts[$0] }
+        let entity = part.entityID.flatMap { entities[$0] }
+        let packageName = part.packageID.flatMap { packages[$0]?.string("name") }.flatMap { $0.isEmpty ? nil : $0 }
+        let prefix = part.prefix.flatMap { $0.isEmpty ? nil : $0 }
+        let gates = (entity?.gates ?? [:]).map { gateID, gate in
+            HorizontalPoolPartGate(id: gateID, suffix: gate.suffix, unitID: gate.unitID ?? "",
+                                   symbolID: gate.unitID.flatMap { symbolsByUnit[$0]?.first })
+        }.sorted { $0.suffix.localizedStandardCompare($1.suffix) == .orderedAscending }
+        return HorizontalPoolPart(
+            id: id,
+            mpn: part.mpn.isEmpty ? String(id.prefix(8)) : part.mpn,
+            manufacturer: part.manufacturer,
+            partDescription: part.description,
+            packageName: packageName ?? part.packageID.map { String($0.prefix(8)) } ?? "",
+            tags: part.tags,
+            value: part.displayValue,
+            entityID: part.entityID,
+            refdesPrefix: prefix ?? entity.map { $0.prefix.isEmpty ? "U" : $0.prefix } ?? "U",
+            gates: gates,
+            packageID: part.packageID,
+            prefixOverride: prefix,
+            excludeFromBOM: part.excludeFromBOM,
+            excludeFromPnP: part.excludeFromPnP
+        )
+    }
+
+    /// What Horizon shows as the part's value (`Part::get_value`): its value
+    /// attribute through its base, or its MPN when it has none.
     func partValue(_ id: String) -> String? {
-        guard let value = resolvedPart(id)?["value"] as? [Any], value.count == 2 else { return nil }
-        return value[1] as? String
+        guard let part = parts[id.lowercased()] else { return nil }
+        return HorizontalPartRecord.resolve(part) { parts[$0] }.displayValue
     }
 
     func pads(partID: String, gatePinPath: String) -> [HorizontalDesignPad] {

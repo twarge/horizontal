@@ -1062,9 +1062,9 @@ struct HorizontalPoolBrowserView: View {
         defer { isLoading = false }
         let pools = browsedPools
         let loaded = await Task.detached(priority: .userInitiated) {
-            pools.flatMap { pool in
+            HorizontalPoolLibrary.resolvingInheritance(pools.flatMap { pool in
                 HorizontalPoolLibrary.items(inPool: pool.url, poolName: pool.name)
-            }
+            })
         }.value
         guard !Task.isCancelled else {
             return

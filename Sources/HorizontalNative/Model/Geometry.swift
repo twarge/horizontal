@@ -1184,6 +1184,11 @@ struct HorizontalComponentDetails: Hashable {
     /// The block's `connections` for the component: gate/pin uuid path to
     /// net id. What a package placed on the board takes its pad nets from.
     var connections: [String: String] = [:]
+    /// The part's exclude_bom and exclude_pnp flags, a derived part's
+    /// inherited from its base: Horizon leaves such a component (a test
+    /// pad, a mounting hole) out of the BOM and the pick-and-place file.
+    var excludeFromBOM = false
+    var excludeFromPnP = false
 
     var displayLabel: String {
         if !refdes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
