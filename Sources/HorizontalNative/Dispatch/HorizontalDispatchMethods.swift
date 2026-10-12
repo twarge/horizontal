@@ -93,13 +93,13 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "bom",
-            summary: "Bill of materials grouped by part, the way the BOM exporter groups it. Parts flagged exclude_bom, on themselves or on the part they derive from, are left out as Horizon leaves them out; excluded names those components.",
+            summary: "Bill of materials grouped by part, the way the BOM exporter groups it. Parts flagged exclude_bom, on themselves or on the part they derive from, are left out as Horizon leaves them out, and so are components with no part; excluded and without_part name those components.",
             params: ["handle": "Project handle.", "include_no_populate": "Include do-not-populate parts (default true)."],
             handler: bom
         ),
         .init(
             name: "list_parts",
-            summary: "Parts the project can use. By default only the project pool — the self-contained cache beside the project; scope \"pools\" or \"all\" also lists the base pools it draws from, which have to be imported before use.",
+            summary: "Parts the project can use. By default only the project pool — the self-contained cache beside the project; scope \"pools\" or \"all\" also lists the base pools it draws from, which have to be imported before use. Parts flagged base_part, there to derive others from, are left out as Horizon's part browser leaves them out; search_pool finds them.",
             params: ["handle": "Project handle.", "scope": "project (default), pools, or all."],
             handler: listParts
         ),
@@ -885,12 +885,18 @@ enum HorizontalDispatchMethods {
         var groups = [Key: [String]]()
         var noPopulate = [Key: Bool]()
         var excluded = [String]()
+        var withoutPart = [String]()
         for component in entry.index.sortedComponents {
             guard includeNoPopulate || !component.noPopulate else {
                 continue
             }
-            // Horizon's BOM leaves out a part flagged exclude_bom, set on it
-            // or on the part it derives from; this says which it left out.
+            // Horizon's BOM is a list of parts: it leaves out a component with
+            // none, and a part flagged exclude_bom, set on it or on the part it
+            // derives from. This says which it left out.
+            if component.partID == nil {
+                withoutPart.append(component.refdes)
+                continue
+            }
             if component.details?.excludeFromBOM == true {
                 excluded.append(component.refdes)
                 continue
@@ -927,7 +933,8 @@ enum HorizontalDispatchMethods {
             return left.localizedStandardCompare(right) == .orderedAscending
         }
         return ["rows": rows, "line_count": rows.count, "component_count": rows.reduce(0) { $0 + (($1["quantity"] as? Int) ?? 0) },
-                "excluded": excluded.sorted { $0.localizedStandardCompare($1) == .orderedAscending }]
+                "excluded": excluded.sorted { $0.localizedStandardCompare($1) == .orderedAscending },
+                "without_part": withoutPart.sorted { $0.localizedStandardCompare($1) == .orderedAscending }]
     }
 
     /// The top block as it stands in the selected source.
@@ -2852,8 +2859,10 @@ enum HorizontalDispatchMethods {
         let (items, _, inProject) = HorizontalDispatchPool.scan(try HorizontalDispatchPool.poolURLs(for: entry))
         let package = HorizontalDispatchPool.packages(items)
         var seen = Set(rows.compactMap { $0.string("id")?.lowercased() })
+        // A flagged base part is left out here as in the project rows, the
+        // way Horizon's part browser leaves it out.
         let library = items
-            .filter { $0.category == .part && seen.insert($0.uuid).inserted }
+            .filter { $0.category == .part && !$0.isBasePart && seen.insert($0.uuid).inserted }
             .sorted { ($0.name.localizedLowercase, $0.uuid) < ($1.name.localizedLowercase, $1.uuid) }
             .map { item -> JSONDictionary in
                 var json = HorizontalDispatchPool.itemJSON(item, inProject: inProject, package: package(item))

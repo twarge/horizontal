@@ -876,6 +876,47 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         }
     }
 
+    // MARK: - Round twenty-one: notes 72–73
+
+    func testOnlyFlaggedBasePartsAreHiddenAndAPartlessComponentIsNotOnTheBOM() throws {
+        // 72: a base flagged base_part and a part that inherits the flag are
+        // hidden; an orderable part with a variant derived from it is not.
+        let shape = part(["A", "B"], packageName: "C0402")
+        var flagged = try HorizontalPoolPartItem(json: try XCTUnwrap(shape.items.last))
+        flagged.attributes[.mpn] = HorizontalPartAttribute(value: "base 0402 capacitor")
+        flagged.flags[.basePart] = .set
+        var inheritsFlag = derived(from: flagged, mpn: "base 0402 capacitor, X7R")
+        inheritsFlag.flags[.basePart] = .inherit
+        var orderable = flagged
+        orderable.uuid = UUID().uuidString.lowercased()
+        orderable.attributes[.mpn] = HorizontalPartAttribute(value: "TPS62172DSGT")
+        orderable.flags[.basePart] = .clear
+        let variant = derived(from: orderable, mpn: "TPS62172DSGR")
+        let items = Array(shape.items.dropLast()) + [flagged, inheritsFlag, orderable, variant].map { $0.json() }
+        try apply([["op": "ensure_component", "refdes": "U2", "part": orderable.uuid]], ["pool_items": items])
+        for scope in ["project", "all"] {
+            let listed = try XCTUnwrap(try result("list_parts", ["scope": scope]) as? [JSONDictionary]).compactMap { $0.string("id") }
+            XCTAssertEqual(Set(listed), [orderable.uuid, variant.uuid], scope)
+        }
+        let found = try XCTUnwrap(try result("search_pool", ["query": "0402", "kind": "part"]) as? JSONDictionary).dictionaryArray("items")
+        XCTAssertEqual(Set(found.filter { $0.bool("base_part") == true }.compactMap { $0.string("uuid") }), [flagged.uuid, inheritsFlag.uuid],
+                       "search_pool still finds them, marked")
+        XCTAssertNil(found.first { $0.string("uuid") == orderable.uuid }?["base_part"])
+
+        // 73: a component with no part is not on the BOM, and bom says so.
+        let entity = try XCTUnwrap(shape.items[1].string("uuid"))
+        try apply([["op": "ensure_component", "refdes": "X1", "entity": entity]])
+        let bom = try XCTUnwrap(try result("bom") as? JSONDictionary)
+        XCTAssertEqual(bom["without_part"] as? [String], ["X1"])
+        XCTAssertEqual(bom.dictionaryArray("rows").flatMap { $0["refdes"] as? [String] ?? [] }, ["U2"])
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("r21-export-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: out) }
+        let exported = try XCTUnwrap(try result("export", ["sections": ["bom"], "target_directory": out.path]) as? JSONDictionary)
+        let file = try XCTUnwrap((exported["files"] as? [String])?.first, "\(exported)")
+        let text = try String(contentsOfFile: file.hasPrefix("/") ? file : out.appendingPathComponent(file).path, encoding: .utf8)
+        XCTAssertTrue(text.contains("U2") && !text.contains("X1"), text)
+    }
+
     func testSetAllNoConnectTakesOnlyFreePinsAsHorizonDoes() throws {
         _ = try placedMCU()   // PA13 on SWDIO, PA14 on SWCLK; VSS, VSS and NRST free.
         func states() throws -> [String: String] {

@@ -561,9 +561,10 @@ enum HorizontalExportBackend {
             guard includeNoPopulate || !component.noPopulate else {
                 continue
             }
-            // A part flagged exclude_bom (a test pad, a mounting hole) is
-            // left out, as Horizon's own BOM leaves it out.
-            guard component.details?.excludeFromBOM != true else {
+            // Horizon's BOM is a list of parts: a component with none is not
+            // on it, and nor is a part flagged exclude_bom (a test pad, a
+            // mounting hole).
+            guard component.partID != nil, component.details?.excludeFromBOM != true else {
                 continue
             }
             let details = component.details
