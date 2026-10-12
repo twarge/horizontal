@@ -3235,7 +3235,9 @@ struct HorizontalBoard {
                     packageName: partDetails?.packageName,
                     description: partDetails?.description,
                     datasheet: partDetails?.datasheet,
-                    connections: connections
+                    connections: connections,
+                    excludeFromBOM: partDetails?.part.excludeFromBOM ?? false,
+                    excludeFromPnP: partDetails?.part.excludeFromPnP ?? false
                 )
             )
             result[componentID] = componentInfo
@@ -3283,22 +3285,6 @@ struct HorizontalBoard {
                 result[normalizedID(item.key)] = name
             }
         }
-    }
-
-    private static func poolAttribute(_ value: Any?, inherited: String? = nil) -> (value: String?, inherited: Bool) {
-        if let value = value as? [Any], value.count >= 2 {
-            let inherits = value[0] as? Bool == true
-            if inherits {
-                return (inherited, true)
-            }
-            return (nonEmpty(stringValue(value[1])), false)
-        }
-
-        return (nonEmpty(value.flatMap(stringValue)), false)
-    }
-
-    private static func poolAttributeString(_ value: Any?, inherited: String? = nil) -> String? {
-        poolAttribute(value, inherited: inherited).value
     }
 
     private static func parseConnectionNetIDs(from map: [String: JSONDictionary]) -> [String: String] {
@@ -3705,42 +3691,19 @@ struct HorizontalBoard {
             .flatMap { loadPackage($0, poolURL: poolURL, cache: &packageCache) }?
             .string("name")
             ?? baseDetails?.packageName
-        let mpn = poolAttributeString(partJSON["MPN"], inherited: baseDetails?.mpn)
-        let valueAttribute = poolAttribute(partJSON["value"], inherited: baseDetails?.value)
+        let part = HorizontalPartRecord(json: partJSON).resolved(base: baseDetails?.part)
 
         let details = PartDetails(
-            value: resolvedPartValue(
-                valueAttribute.value,
-                inheritedFromBase: valueAttribute.inherited,
-                mpn: mpn,
-                baseDetails: baseDetails
-            ),
-            mpn: mpn,
-            manufacturer: poolAttributeString(partJSON["manufacturer"], inherited: baseDetails?.manufacturer),
+            value: nonEmpty(part.displayValue),
+            mpn: nonEmpty(part.mpn),
+            manufacturer: nonEmpty(part.manufacturer),
             packageName: packageName,
-            description: poolAttributeString(partJSON["description"], inherited: baseDetails?.description),
-            datasheet: poolAttributeString(partJSON["datasheet"], inherited: baseDetails?.datasheet)
+            description: nonEmpty(part.description),
+            datasheet: nonEmpty(part.datasheet),
+            part: part
         )
         detailsCache[partID] = details
         return details
-    }
-
-    private static func resolvedPartValue(
-        _ value: String?,
-        inheritedFromBase: Bool,
-        mpn: String?,
-        baseDetails: PartDetails?
-    ) -> String? {
-        if inheritedFromBase,
-           let value = nonEmpty(value),
-           let baseMPN = nonEmpty(baseDetails?.mpn),
-           value == baseMPN,
-           let mpn = nonEmpty(mpn),
-           mpn != baseMPN {
-            return mpn
-        }
-
-        return nonEmpty(value) ?? nonEmpty(mpn)
     }
 
     private static func resolvePackageID(
@@ -5650,6 +5613,9 @@ struct HorizontalBoard {
         var packageName: String?
         var description: String?
         var datasheet: String?
+        /// The part through its base, which a part derived from this one
+        /// resolves against.
+        var part: HorizontalResolvedPart
     }
 
     private struct BoardTextContext {

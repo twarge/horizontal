@@ -49,7 +49,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `list_sheets` | sheets in the PDF exporter's page order |
 | `list_components`, `get_component` | components with part details; one component with every pin, its net, symbol and board placements |
 | `list_nets`, `get_net`, `netlist` | nets with class and flags; one net with its pins, routing counts, and airwire geometry; the whole netlist |
-| `bom` | grouped the way the BOM exporter groups |
+| `bom` | grouped the way the BOM exporter groups; a part flagged `exclude_bom` (a test pad, a mounting hole) is left out, as Horizon leaves it out, and `excluded` names those components |
 | `list_symbols` | symbol instances on the sheets: component, gate, placement, and the instance id the schematic ops take |
 | `list_junctions` | schematic junction IDs, positions, resolved nets and sheet identities for wire endpoints |
 | `list_net_lines` | the wires on the sheets, with what each end connects — a symbol pin (with its name), a junction, a bus ripper or a block port — and where each end is (`from_mm`, `to_mm`) |
@@ -280,6 +280,14 @@ Net labels and power symbols both sit on a junction, and both share one with
 anything already at that point rather than stacking. Removing either takes the
 junction with it when nothing else needs it — the same rule the copper ops
 follow.
+
+A part derived from another reads through it everywhere — searches, part
+lists, component details, the BOM and pick-and-place, refdes prefixes — by
+Horizon's rules (`pool/part.cpp`): an attribute flagged inherited is the
+base's whatever copy the file stores, entity and package are the base's,
+tags add the base's with `inherit_tags`, and a flag or prefix set to inherit
+is the base's. Parametric data is never inherited.
+`HorizontalPartRecord.resolved` is the one place this is worked out.
 
 Three things to know. Horizon shows a part's own value over the component's,
 so `set_value` on a part-backed component warns that it does not show, with

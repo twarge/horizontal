@@ -93,7 +93,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "bom",
-            summary: "Bill of materials grouped by part, the way the BOM exporter groups it.",
+            summary: "Bill of materials grouped by part, the way the BOM exporter groups it. Parts flagged exclude_bom, on themselves or on the part they derive from, are left out as Horizon leaves them out; excluded names those components.",
             params: ["handle": "Project handle.", "include_no_populate": "Include do-not-populate parts (default true)."],
             handler: bom
         ),
@@ -884,8 +884,15 @@ enum HorizontalDispatchMethods {
         }
         var groups = [Key: [String]]()
         var noPopulate = [Key: Bool]()
+        var excluded = [String]()
         for component in entry.index.sortedComponents {
             guard includeNoPopulate || !component.noPopulate else {
+                continue
+            }
+            // Horizon's BOM leaves out a part flagged exclude_bom, set on it
+            // or on the part it derives from; this says which it left out.
+            if component.details?.excludeFromBOM == true {
+                excluded.append(component.refdes)
                 continue
             }
             let details = component.details
@@ -919,7 +926,8 @@ enum HorizontalDispatchMethods {
             let right = (rhs["refdes"] as? [String])?.first ?? ""
             return left.localizedStandardCompare(right) == .orderedAscending
         }
-        return ["rows": rows, "line_count": rows.count, "component_count": rows.reduce(0) { $0 + (($1["quantity"] as? Int) ?? 0) }]
+        return ["rows": rows, "line_count": rows.count, "component_count": rows.reduce(0) { $0 + (($1["quantity"] as? Int) ?? 0) },
+                "excluded": excluded.sorted { $0.localizedStandardCompare($1) == .orderedAscending }]
     }
 
     /// The top block as it stands in the selected source.
