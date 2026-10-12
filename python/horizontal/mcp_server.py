@@ -706,7 +706,8 @@ def netlist(path: str | None = None, include_unconnected: bool = False) -> dict[
 
 @_tool
 def bom(path: str | None = None, include_no_populate: bool = True) -> dict[str, Any]:
-    """Bill of materials grouped by part, as the BOM exporter groups it."""
+    """Bill of materials grouped by part, as the BOM exporter groups it. A part flagged exclude_bom (a test pad, a
+    mounting hole), or derived from one that is, is left out as Horizon leaves it out; excluded names those components."""
     return _resolve(path).bom(include_no_populate=include_no_populate)
 
 

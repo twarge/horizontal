@@ -74,11 +74,13 @@ struct HorizontalPoolLibraryItem: Identifiable, Hashable, Sendable {
     var value: String = ""
     var partDescription: String = ""
     var parametric: [String: String] = [:]
-    /// A part's package uuid and base part uuid (lowercased, empty when it
-    /// has none). A derived part names only its base, which carries the
-    /// package; `HorizontalDispatchPool.packages` follows the chain.
+    /// A part's package uuid (lowercased, empty when it has none).
     var packageID: String = ""
-    var basePartID: String = ""
+    /// What a part's own file says. A scan reads each file alone, so a
+    /// derived part's name, manufacturer, value, description, tags and
+    /// package are its file's until `resolvingInheritance` works them out
+    /// through its base.
+    var partRecord: HorizontalPartRecord?
 }
 
 /// Cross-reference lookup over the browsed pools' items by kind and uuid, so
@@ -263,7 +265,7 @@ enum HorizontalPoolLibrary {
                 partDescription: category == .part ? (attributeString(json["description"]) ?? "") : "",
                 parametric: category == .part ? (json["parametric"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String } : [:],
                 packageID: category == .part ? (json.string("package")?.lowercased() ?? "") : "",
-                basePartID: category == .part ? (json.string("base")?.lowercased() ?? "") : ""
+                partRecord: category == .part ? HorizontalPartRecord(json: json) : nil
             )
             if isCacheCopy {
                 cachedKeys.insert(key)
@@ -274,6 +276,44 @@ enum HorizontalPoolLibrary {
 
         return itemsByKey.values.sorted {
             ($0.name.localizedLowercase, $0.uuid) < ($1.name.localizedLowercase, $1.uuid)
+        }
+    }
+
+    /// Part items as Horizon's pool database records them: a derived
+    /// part's name (its MPN), manufacturer, value, description, tags and
+    /// package worked out through its base, where its own file may store
+    /// nothing or a stale copy. A base is looked up among `items` (the
+    /// first copy of a uuid, in scan order, so the project pool's wins),
+    /// which is why this runs over every scanned pool together. Parametric
+    /// data is never inherited and stays as the file has it.
+    static func resolvingInheritance(_ items: [HorizontalPoolLibraryItem]) -> [HorizontalPoolLibraryItem] {
+        var records = [String: HorizontalPartRecord]()
+        for item in items where item.category == .part && records[item.uuid] == nil {
+            records[item.uuid] = item.partRecord
+        }
+        var resolved = [String: HorizontalResolvedPart]()
+        var resolving = Set<String>()
+        func base(_ id: String?) -> HorizontalResolvedPart? {
+            guard let id, let record = records[id], resolving.count < 8, !resolving.contains(id) else { return nil }
+            if let done = resolved[id] { return done }
+            resolving.insert(id)
+            defer { resolving.remove(id) }
+            let part = record.resolved(base: base(record.baseID))
+            resolved[id] = part
+            return part
+        }
+        return items.map { item in
+            guard item.category == .part, let record = item.partRecord, record.baseID != nil else { return item }
+            let part = record.resolved(base: base(record.baseID))
+            var item = item
+            item.name = [part.mpn, part.value].first { !$0.isEmpty } ?? item.url.deletingPathExtension().lastPathComponent
+            item.detail = part.manufacturer
+            item.manufacturer = part.manufacturer
+            item.value = part.value
+            item.partDescription = part.description
+            item.tags = part.tags.joined(separator: " ")
+            item.packageID = part.packageID ?? ""
+            return item
         }
     }
 

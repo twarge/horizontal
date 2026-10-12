@@ -25,6 +25,13 @@ struct HorizontalPoolPart: Identifiable, Hashable {
     var gates: [HorizontalPoolPartGate]
     /// The package's uuid, a derived part's taken from its base.
     var packageID: String? = nil
+    /// The refdes prefix the part sets in place of its entity's
+    /// (`override_prefix`, a derived part's possibly inherited), else nil.
+    /// `refdesPrefix` already gives it when set.
+    var prefixOverride: String? = nil
+    /// The part's exclude_bom and exclude_pnp flags, through its base.
+    var excludeFromBOM = false
+    var excludeFromPnP = false
 
     var tagList: String {
         tags.joined(separator: ", ")
@@ -100,15 +107,9 @@ struct HorizontalPoolPart: Identifiable, Hashable {
 
 private final class PoolPartLoader {
     private struct PartDetails {
-        var value: String?
-        var mpn: String?
-        var manufacturer: String?
-        var description: String?
-        var entityID: String?
+        var part: HorizontalResolvedPart
         var refdesPrefix: String
-        var packageID: String?
         var packageName: String?
-        var tags: [String]
         var gates: [HorizontalPoolPartGate]
     }
 
@@ -129,22 +130,29 @@ private final class PoolPartLoader {
         guard let details = details(for: partID, fallbackJSON: json) else {
             return nil
         }
+        let part = details.part
 
         return HorizontalPoolPart(
             id: partID,
-            mpn: nonEmpty(details.mpn) ?? String(partID.prefix(8)),
-            manufacturer: nonEmpty(details.manufacturer) ?? "",
-            partDescription: nonEmpty(details.description) ?? "",
-            packageName: nonEmpty(details.packageName) ?? details.packageID.map { String($0.prefix(8)) } ?? "",
-            tags: details.tags,
-            value: nonEmpty(details.value) ?? "",
-            entityID: details.entityID,
+            mpn: nonEmpty(part.mpn) ?? String(partID.prefix(8)),
+            manufacturer: nonEmpty(part.manufacturer) ?? "",
+            partDescription: nonEmpty(part.description) ?? "",
+            packageName: nonEmpty(details.packageName) ?? part.packageID.map { String($0.prefix(8)) } ?? "",
+            tags: part.tags,
+            value: nonEmpty(part.displayValue) ?? "",
+            entityID: part.entityID,
             refdesPrefix: details.refdesPrefix,
             gates: details.gates,
-            packageID: details.packageID
+            packageID: part.packageID,
+            prefixOverride: part.prefix.flatMap(nonEmpty),
+            excludeFromBOM: part.excludeFromBOM,
+            excludeFromPnP: part.excludeFromPnP
         )
     }
 
+    /// The part resolved through its base as Horizon resolves it
+    /// (`HorizontalPartRecord.resolved`), with what the entity and package
+    /// files add: the prefix, the gates and the package name.
     private func details(
         for partID: String,
         fallbackJSON: JSONDictionary? = nil,
@@ -170,25 +178,16 @@ private final class PoolPartLoader {
             return nil
         }
 
-        let baseID = json.string("base").map(normalizedID)
-        let baseDetails = baseID.flatMap {
+        let record = HorizontalPartRecord(json: json)
+        let baseDetails = record.baseID.flatMap {
             details(for: $0, visited: visited.union([partID]))
         }
-        let entityID = json.string("entity").map(normalizedID) ?? baseDetails?.entityID
-        let packageID = json.string("package").map(normalizedID) ?? baseDetails?.packageID
-        let entityInfo = entityID.flatMap(loadEntityInfo)
-        let mpn = poolAttributeString(json["MPN"], inherited: baseDetails?.mpn)
-        let valueAttribute = poolAttributeString(json["value"], inherited: baseDetails?.value)
+        let part = record.resolved(base: baseDetails?.part)
+        let entityInfo = part.entityID.flatMap(loadEntityInfo)
         let resolved = PartDetails(
-            value: resolvedPartValue(valueAttribute, inherited: baseID != nil, mpn: mpn, baseValue: baseDetails?.value),
-            mpn: mpn,
-            manufacturer: poolAttributeString(json["manufacturer"], inherited: baseDetails?.manufacturer),
-            description: poolAttributeString(json["description"], inherited: baseDetails?.description),
-            entityID: entityID,
-            refdesPrefix: entityInfo?.prefix ?? baseDetails?.refdesPrefix ?? "U",
-            packageID: packageID,
-            packageName: packageID.flatMap(packageName(for:)) ?? baseDetails?.packageName,
-            tags: resolvedTags(from: json, baseTags: baseDetails?.tags ?? []),
+            part: part,
+            refdesPrefix: part.prefix.flatMap(nonEmpty) ?? entityInfo?.prefix ?? baseDetails?.refdesPrefix ?? "U",
+            packageName: part.packageID.flatMap(packageName(for:)) ?? baseDetails?.packageName,
             gates: entityInfo?.gates ?? baseDetails?.gates ?? []
         )
         detailsCache[partID] = resolved
@@ -274,67 +273,6 @@ private final class PoolPartLoader {
             result[unitID]?.sort { $0.localizedStandardCompare($1) == .orderedAscending }
         }
         return result
-    }
-
-    private func resolvedTags(from json: JSONDictionary, baseTags: [String]) -> [String] {
-        let tags = stringArray(json["tags"])
-        if json.bool("inherit_tags") == true {
-            return unique(baseTags + tags)
-        }
-        return unique(tags)
-    }
-
-    private func poolAttributeString(_ value: Any?, inherited: String? = nil) -> String? {
-        if let value = value as? [Any], value.count >= 2 {
-            if value[0] as? Bool == true {
-                return inherited
-            }
-            return nonEmpty(stringValue(value[1]))
-        }
-        return nonEmpty(value.flatMap(stringValue))
-    }
-
-    private func resolvedPartValue(_ value: String?, inherited: Bool, mpn: String?, baseValue: String?) -> String? {
-        if inherited,
-           let value = nonEmpty(value),
-           let baseValue = nonEmpty(baseValue),
-           value == baseValue,
-           let mpn = nonEmpty(mpn),
-           mpn != baseValue {
-            return mpn
-        }
-
-        return nonEmpty(value) ?? nonEmpty(mpn)
-    }
-
-    private func stringArray(_ value: Any?) -> [String] {
-        guard let values = value as? [Any] else {
-            return []
-        }
-        return values.compactMap { nonEmpty(stringValue($0)) }
-    }
-
-    private func unique(_ values: [String]) -> [String] {
-        var seen = Set<String>()
-        return values.filter { value in
-            let key = value.lowercased()
-            guard !seen.contains(key) else {
-                return false
-            }
-            seen.insert(key)
-            return true
-        }
-    }
-
-    private func stringValue(_ value: Any) -> String? {
-        switch value {
-        case let string as String:
-            return string
-        case let number as NSNumber:
-            return number.stringValue
-        default:
-            return nil
-        }
     }
 
     private func nonEmpty(_ value: String?) -> String? {

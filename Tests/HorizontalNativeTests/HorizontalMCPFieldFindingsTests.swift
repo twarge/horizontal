@@ -717,6 +717,165 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertTrue(byID.contains("and package \"\(unnamed.package)\" lists those in R1's package"), byID)
     }
 
+    // MARK: - Round twenty: note 65 and the rest of what a derived part inherits
+
+    /// A part derived from `base` the way Horizon's "create part from part"
+    /// writes one: every attribute inherited, with a copy of what the base
+    /// had then stored beside the flag — here a stale one.
+    private func derived(from base: HorizontalPoolPartItem, mpn: String? = nil, value: String? = nil,
+                         stale: String = "stale copy") -> HorizontalPoolPartItem {
+        var item = HorizontalPoolItemFactory.newPart(basedOn: base)
+        for kind in HorizontalPartAttributeKind.allCases {
+            item.attributes[kind] = HorizontalPartAttribute(inherited: true, value: "\(stale) \(kind.rawValue)")
+        }
+        if let mpn { item.attributes[.mpn] = HorizontalPartAttribute(value: mpn) }
+        if let value { item.attributes[.value] = HorizontalPartAttribute(value: value) }
+        item.tags = []
+        item.inheritTags = false
+        return item
+    }
+
+    func testPartInheritanceFollowsHorizonsRules() throws {
+        func record(_ item: HorizontalPoolPartItem) -> HorizontalPartRecord { HorizontalPartRecord(json: item.json()) }
+        var root = HorizontalPoolPartItem(uuid: "root", entityID: "entity", packageID: "package", mpn: "ROOT", manufacturer: "Maker")
+        root.tags = ["cap"]
+        root.flags[.excludeBOM] = .set
+        root.overridePrefix = .yes
+        root.prefix = "TP"
+        var middle = derived(from: root)
+        middle.inheritTags = true
+        middle.tags = ["mid"]
+        middle.flags[.excludeBOM] = .inherit
+        middle.overridePrefix = .inherit
+        var leaf = derived(from: middle, mpn: "LEAF")
+        leaf.inheritTags = true
+        leaf.flags[.excludeBOM] = .inherit
+        leaf.flags[.excludePNP] = .inherit
+        leaf.overridePrefix = .inherit
+        let resolvedRoot = record(root).resolved(base: nil)
+        let resolvedLeaf = record(leaf).resolved(base: record(middle).resolved(base: resolvedRoot))
+        XCTAssertEqual(resolvedLeaf.mpn, "LEAF")
+        XCTAssertEqual(resolvedLeaf.manufacturer, "Maker", "two levels up, whatever copy is stored")
+        XCTAssertEqual(resolvedLeaf.value, "")
+        XCTAssertEqual(resolvedLeaf.displayValue, "LEAF", "no value shows the MPN")
+        XCTAssertEqual(resolvedLeaf.tags, ["cap", "mid"])
+        XCTAssertEqual(resolvedLeaf.entityID, "entity")
+        XCTAssertEqual(resolvedLeaf.packageID, "package")
+        XCTAssertTrue(resolvedLeaf.excludeFromBOM)
+        XCTAssertFalse(resolvedLeaf.excludeFromPnP, "clear at the root")
+        XCTAssertEqual(resolvedLeaf.prefix, "TP")
+        // With no base to read, an inherited attribute is what the file
+        // stores and an inherited flag is clear, as Horizon has them.
+        let orphan = record(leaf).resolved(base: nil)
+        XCTAssertEqual(orphan.manufacturer, "stale copy manufacturer")
+        XCTAssertFalse(orphan.excludeFromBOM)
+        XCTAssertNil(orphan.prefix)
+        // The JSON form reads the chain through a lookup, and stops at a loop.
+        let byID = Dictionary(uniqueKeysWithValues: [root, middle, leaf].map { ($0.uuid, $0.json()) })
+        XCTAssertEqual(HorizontalPartRecord.resolve(leaf.json()) { byID[$0] }, resolvedLeaf)
+        var looped = leaf
+        looped.baseID = looped.uuid
+        XCTAssertEqual(HorizontalPartRecord.resolve(looped.json()) { _ in looped.json() }.manufacturer, "stale copy manufacturer",
+                       "a part that is its own base stops at the loop, with what it stores")
+    }
+
+    func testADerivedPartReadsThroughItsBaseInSearchesValuesTheBOMAndRefdes() throws {
+        // A C0402 capacitor base, and parts derived from it.
+        let shape = part(["A", "B"], packageName: "C0402")
+        var base = try HorizontalPoolPartItem(json: try XCTUnwrap(shape.items.last))
+        base.attributes[.mpn] = HorizontalPartAttribute(value: "C1005")
+        base.attributes[.manufacturer] = HorizontalPartAttribute(value: "TDK")
+        base.attributes[.description] = HorizontalPartAttribute(value: "Multilayer ceramic chip capacitor")
+        base.attributes[.datasheet] = HorizontalPartAttribute(value: "https://example.com/c1005.pdf")
+        base.tags = ["cap", "passive"]
+        var ten = derived(from: base, mpn: "C1005X5R1A106K050BC", value: "10 µF")
+        ten.inheritTags = true
+        ten.tags = ["x5r"]
+        // A base whose own value is 10 µF, and a part of the same value derived from it.
+        var tenBase = base
+        tenBase.uuid = UUID().uuidString.lowercased()
+        tenBase.attributes[.mpn] = HorizontalPartAttribute(value: "C1005 10 µF")
+        tenBase.attributes[.value] = HorizontalPartAttribute(value: "10 µF")
+        let sameValue = derived(from: tenBase, mpn: "C1005X5R1A106M050BC", value: "10 µF")
+        // A test pad that Horizon leaves out of the BOM and pick-and-place
+        // and names TP, and a smaller one that inherits all three.
+        let padShape = part(["1"], packageName: "TP1")
+        var pad = try HorizontalPoolPartItem(json: try XCTUnwrap(padShape.items.last))
+        pad.attributes[.mpn] = HorizontalPartAttribute(value: "Test pad")
+        pad.flags[.excludeBOM] = .set
+        pad.flags[.excludePNP] = .set
+        pad.overridePrefix = .yes
+        pad.prefix = "TP"
+        var smallPad = derived(from: pad, mpn: "Test pad 0.5")
+        smallPad.flags[.excludeBOM] = .inherit
+        smallPad.flags[.excludePNP] = .inherit
+        smallPad.overridePrefix = .inherit
+        let items = shape.items.dropLast() + padShape.items.dropLast()
+            + [base, ten, tenBase, sameValue, pad, smallPad].map { $0.json() }
+        try apply([
+            ["op": "ensure_component", "refdes": "C1", "part": ten.uuid],
+            ["op": "ensure_component", "refdes": "C2", "part": base.uuid],
+            ["op": "ensure_component", "refdes": "C3", "part": sameValue.uuid],
+            ["op": "ensure_component", "part": pad.uuid],
+            ["op": "ensure_component", "part": smallPad.uuid],
+            ["op": "ensure_component", "refdes": "C4", "part": ten.uuid]
+        ], ["pool_items": Array(items)])
+
+        // 65: search rows and matching go through the base, not the stale copies.
+        func search(_ query: String) throws -> [JSONDictionary] {
+            try XCTUnwrap(try result("search_pool", ["query": query, "kind": "part"]) as? JSONDictionary).dictionaryArray("items")
+        }
+        let row = try XCTUnwrap(try search("C1005X5R1A106K050BC").first { $0.string("uuid") == ten.uuid })
+        XCTAssertEqual(row.string("manufacturer"), "TDK")
+        XCTAssertEqual(row.string("detail"), "TDK")
+        XCTAssertEqual(row.string("description"), "Multilayer ceramic chip capacitor")
+        XCTAssertEqual(row.string("value"), "10 µF")
+        XCTAssertEqual(row["tags"] as? [String], ["cap", "passive", "x5r"])
+        XCTAssertEqual(row.string("package"), "C0402")
+        XCTAssertTrue(try search("TDK").contains { $0.string("uuid") == ten.uuid })
+        XCTAssertFalse(try search("stale copy").contains { $0.string("uuid") == ten.uuid }, "a stale copy is not what the part says")
+        let smallRow = try XCTUnwrap(try search("Test pad 0.5").first)
+        XCTAssertEqual(smallRow.string("value"), "", "the base's value, not the copy")
+
+        // The value shown: the part's own when it equals its base's, the MPN when it has none.
+        let parts = try XCTUnwrap(try result("list_parts") as? [JSONDictionary])
+        XCTAssertEqual(parts.first { $0.string("id") == sameValue.uuid }?.string("value"), "10 µF")
+        let c2 = try XCTUnwrap(try result("get_component", ["refdes": "C2"]) as? JSONDictionary)
+        XCTAssertEqual(c2.string("value"), "C1005")
+        XCTAssertEqual(c2.string("part_value"), "C1005", "Horizon shows the MPN of a part with no value")
+        XCTAssertEqual(c2.string("value_source"), "part")
+        let c1 = try XCTUnwrap(try result("get_component", ["refdes": "C1"]) as? JSONDictionary)
+        XCTAssertEqual(c1.string("manufacturer"), "TDK")
+        XCTAssertEqual(c1.string("description"), "Multilayer ceramic chip capacitor")
+        XCTAssertEqual(c1.string("datasheet"), "https://example.com/c1005.pdf")
+
+        // A part's prefix names a component made without a refdes, inherited or not.
+        let refdes = try XCTUnwrap(try result("list_components") as? [JSONDictionary]).compactMap { $0.string("refdes") }
+        XCTAssertEqual(refdes.filter { $0 == "TP?" }.count, 2, "\(refdes)")
+
+        // The BOM leaves out what Horizon's leaves out, and says which.
+        let bom = try XCTUnwrap(try result("bom") as? JSONDictionary)
+        XCTAssertEqual(bom["excluded"] as? [String], ["TP?", "TP?"])
+        let rows = bom.dictionaryArray("rows")
+        XCTAssertEqual(rows.flatMap { $0["refdes"] as? [String] ?? [] }.sorted(), ["C1", "C2", "C3", "C4"])
+        XCTAssertEqual(rows.first { ($0["refdes"] as? [String]) == ["C1", "C4"] }?.string("manufacturer"), "TDK")
+
+        // So do the exported BOM and pick-and-place files.
+        let placed = try XCTUnwrap(try result("list_components") as? [JSONDictionary]).compactMap { $0.string("id") }
+        try apply(placed.enumerated().map { ["op": "place_component", "component": $1, "x_mm": 10 + 5 * Double($0), "y_mm": 10] })
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("r20-export-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: out) }
+        let exported = try XCTUnwrap(try result("export", ["sections": ["bom", "pick_and_place"], "target_directory": out.path]) as? JSONDictionary)
+        let files = try XCTUnwrap(exported["files"] as? [String], "\(exported)")
+        XCTAssertGreaterThanOrEqual(files.count, 2, "\(files)")
+        for file in files {
+            let path = file.hasPrefix("/") ? file : out.appendingPathComponent(file).path
+            let text = try String(contentsOfFile: path, encoding: .utf8)
+            XCTAssertTrue(text.contains("C1") && text.contains("C3"), "\(file): \(text)")
+            XCTAssertFalse(text.contains("TP"), "\(file): \(text)")
+        }
+    }
+
     func testSetAllNoConnectTakesOnlyFreePinsAsHorizonDoes() throws {
         _ = try placedMCU()   // PA13 on SWDIO, PA14 on SWCLK; VSS, VSS and NRST free.
         func states() throws -> [String: String] {

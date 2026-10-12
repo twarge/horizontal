@@ -561,6 +561,11 @@ enum HorizontalExportBackend {
             guard includeNoPopulate || !component.noPopulate else {
                 continue
             }
+            // A part flagged exclude_bom (a test pad, a mounting hole) is
+            // left out, as Horizon's own BOM leaves it out.
+            guard component.details?.excludeFromBOM != true else {
+                continue
+            }
             let details = component.details
             let key = BOMRowKey(
                 mpn: nonEmpty(details?.mpn) ?? nonEmpty(component.partID) ?? "",
@@ -595,6 +600,10 @@ enum HorizontalExportBackend {
 
         let rows = board.packages.compactMap { package -> PnPRow? in
             guard settings.includeNoPopulate || package.componentDetails?.noPopulate != true else {
+                return nil
+            }
+            // A part flagged exclude_pnp is placed by hand or not at all.
+            guard package.componentDetails?.excludeFromPnP != true else {
                 return nil
             }
             return PnPRow(package: package, settings: settings)

@@ -790,6 +790,14 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(committed["timing"].get("reused_dry_run"), committed["timing"])
         self.assertEqual([n["name"] for n in (await self.call("list_nets", project_ref=self.ref))["data"]], ["NEW"])
 
+    async def test_the_bom_says_what_it_leaves_out(self):
+        # A part flagged exclude_bom is left out, as Horizon leaves it out;
+        # excluded says which components that was, here none.
+        tools = {t.name: t for t in await server.mcp.list_tools()}
+        self.assertIn("exclude_bom", tools["bom"].description)
+        bom = (await self.call("bom", project_ref=self.ref))["data"]
+        self.assertEqual((bom["rows"], bom["excluded"]), ([], []))
+
     async def test_worker_restart_rebinds_a_disk_read(self):
         project = server._projects[self.ref]
         before = project.summary["instance_id"]
