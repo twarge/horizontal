@@ -707,7 +707,8 @@ def netlist(path: str | None = None, include_unconnected: bool = False) -> dict[
 @_tool
 def bom(path: str | None = None, include_no_populate: bool = True) -> dict[str, Any]:
     """Bill of materials grouped by part, as the BOM exporter groups it. A part flagged exclude_bom (a test pad, a
-    mounting hole), or derived from one that is, is left out as Horizon leaves it out; excluded names those components."""
+    mounting hole), or derived from one that is, is left out as Horizon leaves it out, and so is a component with no
+    part; excluded and without_part name those components."""
     return _resolve(path).bom(include_no_populate=include_no_populate)
 
 
@@ -715,8 +716,9 @@ def bom(path: str | None = None, include_no_populate: bool = True) -> dict[str, 
 def list_parts(path: str | None = None, scope: Literal["project", "pools", "all"] = "project") -> list[dict[str, Any]]:
     """Parts the project can use. "project" (the default) lists only the project pool — the self-contained cache beside
     the project, which is all a component can name today. "pools" lists the base pools it draws from, "all" lists both;
-    a row with in_project_pool false needs import_pool_part before ensure_component can use it. Use search_pool to
-    search by name, manufacturer or tag rather than reading a long list."""
+    a row with in_project_pool false needs import_pool_part before ensure_component can use it. A part flagged base_part,
+    there to derive others from, is left out as Horizon's part browser leaves it out; search_pool finds it, marked
+    base_part. Use search_pool to search by name, manufacturer or tag rather than reading a long list."""
     return _resolve(path).parts(scope=scope)
 
 

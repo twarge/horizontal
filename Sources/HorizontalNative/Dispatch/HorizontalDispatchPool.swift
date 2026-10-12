@@ -161,6 +161,7 @@ enum HorizontalDispatchPool {
         if item.category == .part {
             json["value"] = item.value
             json["description"] = item.partDescription
+            if item.isBasePart { json["base_part"] = true }
             if let package {
                 json["package_id"] = package.id
                 if let name = package.name { json["package"] = name }
