@@ -278,6 +278,9 @@ struct HorizontalSchematic {
         var description: String?
         var datasheet: String?
         var parametricValues: [String: String]
+        /// The part through its base, which a part derived from this one
+        /// resolves against.
+        var part: HorizontalResolvedPart
     }
 
     private struct SchematicFrameArtwork {
@@ -526,7 +529,9 @@ struct HorizontalSchematic {
             mpn: part.mpn,
             manufacturer: part.manufacturer,
             packageName: part.packageName,
-            description: part.partDescription
+            description: part.partDescription,
+            excludeFromBOM: part.excludeFromBOM,
+            excludeFromPnP: part.excludeFromPnP
         )
         let component = SchematicComponentInfo(
             refdes: refdes,
@@ -2320,22 +2325,6 @@ struct HorizontalSchematic {
         }
     }
 
-    private static func poolAttribute(_ value: Any?, inherited: String? = nil) -> (value: String?, inherited: Bool) {
-        if let value = value as? [Any], value.count >= 2 {
-            let inherits = value[0] as? Bool == true
-            if inherits {
-                return (inherited, true)
-            }
-            return (nonEmpty(stringValue(value[1])), false)
-        }
-
-        return (nonEmpty(value.flatMap(stringValue)), false)
-    }
-
-    private static func poolAttributeString(_ value: Any?, inherited: String? = nil) -> String? {
-        poolAttribute(value, inherited: inherited).value
-    }
-
     private static func parseParametricValues(from json: JSONDictionary?) -> [String: String] {
         (json ?? [:]).reduce(into: [String: String]()) { result, item in
             if let value = stringValue(item.value) {
@@ -3280,7 +3269,9 @@ struct HorizontalSchematic {
                     packageName: partDetails?.packageName,
                     description: partDetails?.description,
                     datasheet: partDetails?.datasheet,
-                    parametricValues: partDetails?.parametricValues ?? [:]
+                    parametricValues: partDetails?.parametricValues ?? [:],
+                    excludeFromBOM: partDetails?.part.excludeFromBOM ?? false,
+                    excludeFromPnP: partDetails?.part.excludeFromPnP ?? false
                 )
             )
         }
@@ -3740,41 +3731,19 @@ struct HorizontalSchematic {
             .flatMap { loadPackage($0, poolURL: poolURL, cache: &packageCache) }?
             .string("name")
             ?? baseDetails?.packageName
-        let mpn = poolAttributeString(partJSON["MPN"], inherited: baseDetails?.mpn)
-        let valueAttribute = poolAttribute(partJSON["value"], inherited: baseDetails?.value)
+        let part = HorizontalPartRecord(json: partJSON).resolved(base: baseDetails?.part)
 
         return PartDetails(
-            value: resolvedPartValue(
-                valueAttribute.value,
-                inheritedFromBase: valueAttribute.inherited,
-                mpn: mpn,
-                baseDetails: baseDetails
-            ),
-            mpn: mpn,
-            manufacturer: poolAttributeString(partJSON["manufacturer"], inherited: baseDetails?.manufacturer),
+            value: nonEmpty(part.displayValue),
+            mpn: nonEmpty(part.mpn),
+            manufacturer: nonEmpty(part.manufacturer),
             packageName: packageName,
-            description: poolAttributeString(partJSON["description"], inherited: baseDetails?.description),
-            datasheet: poolAttributeString(partJSON["datasheet"], inherited: baseDetails?.datasheet),
-            parametricValues: parseParametricValues(from: partJSON.dictionary("parametric"))
+            description: nonEmpty(part.description),
+            datasheet: nonEmpty(part.datasheet),
+            // Horizon never inherits parametric data.
+            parametricValues: parseParametricValues(from: partJSON.dictionary("parametric")),
+            part: part
         )
-    }
-
-    private static func resolvedPartValue(
-        _ value: String?,
-        inheritedFromBase: Bool,
-        mpn: String?,
-        baseDetails: PartDetails?
-    ) -> String? {
-        if inheritedFromBase,
-           let value = nonEmpty(value),
-           let baseMPN = nonEmpty(baseDetails?.mpn),
-           value == baseMPN,
-           let mpn = nonEmpty(mpn),
-           mpn != baseMPN {
-            return mpn
-        }
-
-        return nonEmpty(value) ?? nonEmpty(mpn)
     }
 
     private static func loadPackage(

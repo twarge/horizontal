@@ -111,9 +111,10 @@ enum HorizontalDispatchPool {
         return urls
     }
 
-    /// Every item in those pools, tagged with the pool it came from. The
-    /// project pool comes first, so `seenInProject` marks the uuids a project
-    /// already carries.
+    /// Every item in those pools, tagged with the pool it came from, with a
+    /// derived part's attributes worked out through its base in whichever
+    /// pool holds it. The project pool comes first, so `seenInProject` marks
+    /// the uuids a project already carries.
     static func scan(_ poolURLs: [URL]) -> (items: [HorizontalPoolLibraryItem], pools: [JSONDictionary], inProject: Set<String>) {
         var items = [HorizontalPoolLibraryItem]()
         var pools = [JSONDictionary]()
@@ -135,7 +136,7 @@ enum HorizontalDispatchPool {
             }
             items.append(contentsOf: found)
         }
-        return (items, pools, inProject)
+        return (HorizontalPoolLibrary.resolvingInheritance(items), pools, inProject)
     }
 
     private static func key(_ category: HorizontalPoolItemCategory, _ uuid: String) -> String {
@@ -179,29 +180,18 @@ enum HorizontalDispatchPool {
         }
     }
 
-    /// Each scanned part's package. A derived part carries only its `base`,
-    /// so the chain is followed to the part that names one, through whichever
-    /// pool holds it; the first copy of a uuid wins, as the scan orders them.
+    /// Each scanned part's package, named by whichever pool holds it; the
+    /// first copy of a uuid wins, as the scan orders them. `scan` has
+    /// already taken a derived part's package from its base.
     static func packages(_ items: [HorizontalPoolLibraryItem]) -> (HorizontalPoolLibraryItem) -> PartPackage? {
-        var parts = [String: HorizontalPoolLibraryItem]()
         var names = [String: String]()
-        for item in items {
-            switch item.category {
-            case .part where parts[item.uuid] == nil: parts[item.uuid] = item
-            case .package where names[item.uuid] == nil: names[item.uuid] = item.name
-            default: break
-            }
+        for item in items where item.category == .package && names[item.uuid] == nil {
+            names[item.uuid] = item.name
         }
         return { item in
-            guard item.category == .part else { return nil }
-            var current = item
-            var visited: Set<String> = [current.uuid]
-            while current.packageID.isEmpty, let base = parts[current.basePartID], visited.insert(base.uuid).inserted {
-                current = base
-            }
-            guard !current.packageID.isEmpty else { return nil }
-            let name = names[current.packageID]
-            return PartPackage(id: current.packageID, name: name?.isEmpty == false ? name : nil)
+            guard item.category == .part, !item.packageID.isEmpty else { return nil }
+            let name = names[item.packageID]
+            return PartPackage(id: item.packageID, name: name?.isEmpty == false ? name : nil)
         }
     }
 

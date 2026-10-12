@@ -234,12 +234,17 @@ enum HorizontalPoolCacheUpdater {
         let ids = Set(visibleIDs).union(references.keys)
         var reviews = [HorizontalPartLibraryReview]()
         var sourceDigests = [URL: String]()
+        // A derived part's MPN may be its base's, so names resolve through it.
+        var partsByID = [String: JSONDictionary]()
+        for path in partPaths {
+            if let json = jsons[path], let uuid = json.string("uuid")?.lowercased(), partsByID[uuid] == nil { partsByID[uuid] = json }
+        }
 
         for id in ids.sorted() {
             guard let partPath = partPaths.first(where: { jsons[$0]?.string("uuid")?.lowercased() == id }),
                   let part = jsons[partPath] else { continue }
-            let mpn = part["MPN"] as? [Any]
-            var row = HorizontalPartLibraryReview(id: id, name: (mpn?.last as? String).flatMap { $0.isEmpty ? nil : $0 } ?? id,
+            let mpn = HorizontalPartRecord.resolve(part) { partsByID[$0] }.mpn
+            var row = HorizontalPartLibraryReview(id: id, name: mpn.isEmpty ? id : mpn,
                                                  status: .current, references: references[id] ?? [])
             row.dependencies = dependencies(of: id, jsons: jsons)
             guard partPath.hasPrefix("parts/cache/") else {
