@@ -131,12 +131,18 @@ class ProjectInfo(Record):
     project_ref: str | None = None
 
 
+class MethodOperation(Record):
+    """A mutation that is not an ops batch, echoed for its plan digest. Not an
+    apply_ops op, so it stays out of EditOperation and the ops digest."""
+    op: Literal["update_project_parts", "clean_up_project_pool"]
+
+
 class EditResult(Record):
     applied: int
     before_revision: str
     after_snapshot_id: str
     plan_digest: str
-    normalized_ops: list[EditOperation] = Field(default_factory=list)
+    normalized_ops: list[EditOperation | MethodOperation] = Field(default_factory=list)
     changes: list[dict[str, Any]] = Field(default_factory=list)
     dry_run: bool = False
     after_revision: str | None = None

@@ -73,7 +73,7 @@ _projects: dict[str, Project] = {}
 _active_project: ContextVar[Project | None] = ContextVar("horizontal_project", default=None)
 _edit_options: ContextVar[dict[str, Any]] = ContextVar("horizontal_edit", default={})
 _mutations = {"apply_ops", "set_component_value", "rename_net", "connect_pin", "place_component", "copy_group_layout",
-              "import_pool_part", "update_project_parts", "pool_write", "pour_planes", "autoroute"}
+              "import_pool_part", "update_project_parts", "clean_up_project_pool", "pool_write", "pour_planes", "autoroute"}
 _snapshots: dict[str, dict[str, Any]] = {}
 _jobs = AnalysisJobs()
 _tool_lock = threading.RLock()
@@ -805,6 +805,21 @@ def update_project_parts(parts: list[str], path: str | None = None, dry_run: boo
     options = {k: v for k, v in {"review_digest": review_digest, "pool_path": pool_path}.items() if v is not None}
     return _edit_call(_resolve(path), "update_project_parts", parts=parts, dry_run=dry_run,
                       allow_project_changes=allow_project_changes, **options)
+
+
+@_tool
+def clean_up_project_pool(remove: list[str] | None = None, path: str | None = None, dry_run: bool = False,
+                          review_digest: str | None = None) -> dict[str, Any]:
+    """Remove items in the project pool's cache that nothing in the design reaches, as Horizon's Clean up Pool
+    Cache does. That covers parts no component uses, with the entities, units, symbols, packages and 3D models
+    only they need, and frames, decals and padstacks nothing names. A unit keeps all its symbols, and a package
+    all its models. Project-local items are never offered.
+
+    A dry run lists them in items, each with an id, kind, name, paths and bytes. remove takes ids from it;
+    leave it out to remove every one. Pass the dry run's review_digest to refuse a pool or design that changed
+    since. One transaction and one live undo step; a live document's files go at its next save."""
+    options = {k: v for k, v in {"remove": remove, "review_digest": review_digest}.items() if v is not None}
+    return _edit_call(_resolve(path), "clean_up_project_pool", dry_run=dry_run, **options)
 
 
 @_tool

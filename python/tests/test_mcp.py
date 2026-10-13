@@ -200,6 +200,8 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         tools = {t.name: t for t in await server.mcp.list_tools()}
         self.assertTrue(tools["list_part_updates"].annotations.read_only_hint)
         self.assertFalse(tools["update_project_parts"].annotations.read_only_hint)
+        self.assertFalse(tools["clean_up_project_pool"].annotations.read_only_hint)
+        self.assertTrue(tools["clean_up_project_pool"].annotations.destructive_hint)
         for name in ("highlight", "select", "zoom_to", "show_panes", "show_sheet", "show_layers", "zoom"):
             self.assertIn(name, tools)
         self.assertIn("panes", tools["show_panes"].input_schema["required"])
@@ -208,9 +210,17 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("not open in Horizontal", str(refused.structured_content))
 
         # Bringing in a part is a mutation like any other: guarded, and named.
-        for name in ("import_pool_part", "pool_write", "update_project_parts"):
+        for name in ("import_pool_part", "pool_write", "update_project_parts", "clean_up_project_pool"):
             self.assertIn("expected_revision", tools[name].input_schema["required"])
             self.assertIn("operation_id", tools[name].input_schema["required"])
+        # A pool with nothing unused offers nothing, and the dry run says so.
+        cleanup = await server.mcp.call_tool("clean_up_project_pool", {
+            "project_ref": self.ref, "dry_run": True,
+            "expected_revision": (await self.call("project_files", project_ref=self.ref))["meta"]["revision"],
+            "operation_id": str(uuid.uuid4())})
+        self.assertFalse(cleanup.is_error, str(cleanup.structured_content))
+        self.assertEqual(cleanup.structured_content["data"]["items"], [])
+        self.assertIsInstance(cleanup.structured_content["data"]["review_digest"], str)
         missing = await server.mcp.call_tool("import_pool_part", {
             "project_ref": self.ref, "part": "no-such-part",
             "expected_revision": (await self.call("project_files", project_ref=self.ref))["meta"]["revision"],
@@ -449,6 +459,19 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(engine["ops_digest"], comparison["schema_digest"])
         tools = {t.name: t for t in await server.mcp.list_tools()}
         self.assertIn(comparison["schema_digest"], tools["apply_ops"].description)
+
+    async def test_method_level_mutations_echo_their_op_without_joining_apply_ops(self):
+        # update_project_parts and clean_up_project_pool echo one op naming the
+        # method, for their plan digest. The reply schema refused it before
+        # round 29, so neither could reply through MCP.
+        from horizontal.schemas import EditResult, schema_vocabulary
+        for op in ({"op": "update_project_parts", "parts": ["p"], "review_digest": "d", "allow_project_changes": False},
+                   {"op": "clean_up_project_pool", "remove": ["part|p"], "review_digest": "d"}):
+            result = EditResult.model_validate({"applied": 1, "before_revision": "r", "after_snapshot_id": "s",
+                                                "plan_digest": "p", "normalized_ops": [op]})
+            self.assertEqual(result.model_dump(mode="json")["normalized_ops"], [op])
+        self.assertNotIn("clean_up_project_pool", schema_vocabulary())
+        self.assertNotIn("update_project_parts", schema_vocabulary())
 
     async def test_status_names_the_server_and_notices_it_going_stale(self):
         status = (await self.call("connection_status"))["data"]
