@@ -526,7 +526,17 @@ enum HorizontalDispatchMethods {
         result["ops_digest"] = HorizontalEditOperationKind.vocabularyDigest
         let executable = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments.first ?? "")
         if let modified = (try? executable.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate {
-            result["build"] = ["executable": executable.lastPathComponent, "modified": ISO8601DateFormatter().string(from: modified)]
+            var build: JSONDictionary = ["executable": executable.lastPathComponent, "path": executable.path,
+                                         "modified": ISO8601DateFormatter().string(from: modified)]
+            // Which app answered: an installed copy and an Xcode build share a
+            // name and a bundle id, so only the path tells them apart.
+            if Bundle.main.bundleURL.pathExtension == "app" {
+                build["bundle"] = Bundle.main.bundleURL.path
+            }
+            if let version = Bundle.main.infoDictionary?["CFBundleVersion"] as? String {
+                build["bundle_version"] = version
+            }
+            result["build"] = build
         }
         if let identifier = Bundle.main.bundleIdentifier {
             result["host"] = identifier
@@ -2887,16 +2897,27 @@ enum HorizontalDispatchMethods {
         let projectPoolURL = entry.project.poolDirectory.map {
             entry.project.baseURL.appendingPathComponent($0, isDirectory: true).standardizedFileURL
         }
+        // Every scope scans the pools, so each row can name every pool holding
+        // the part: a project row would otherwise lose where a cached part came
+        // from. Scans are cached per pool. A project with no pool to start from
+        // still lists its parts.
+        let urls = scope == "project"
+            ? ((try? HorizontalDispatchPool.poolURLs(for: entry)) ?? [])
+            : try HorizontalDispatchPool.poolURLs(for: entry)
+        let (items, _, inProject) = HorizontalDispatchPool.scan(urls)
+        let holders = HorizontalPoolLibrary.holders(items)
         var rows = [JSONDictionary]()
         if scope != "pools" {
             let poolName = projectPoolURL.map { HorizontalPoolRegistryStore.poolInfo(at: $0).name } ?? ""
             rows = entry.project.poolParts
                 .sorted { $0.mpn.localizedStandardCompare($1.mpn) == .orderedAscending }
-                .map { partRow($0, poolName: poolName, poolURL: projectPoolURL) }
+                .map { part in
+                    partRow(part, poolName: poolName, poolURL: projectPoolURL,
+                            pools: HorizontalPoolLibrary.pools(holding: HorizontalPoolLibraryItem.key(.part, part.id),
+                                                               own: poolName, holders: holders))
+                }
         }
         guard scope != "project" else { return rows }
-        let urls = try HorizontalDispatchPool.poolURLs(for: entry)
-        let (items, _, inProject) = HorizontalDispatchPool.scan(urls)
         let package = HorizontalDispatchPool.packages(items)
         // The base pools only: a part the project has cached is listed as its
         // base pool holds it, marked in_project_pool. The project pool is
@@ -2909,24 +2930,14 @@ enum HorizontalDispatchMethods {
             .filter { $0.category == .part && !$0.isBasePart && $0.poolURL.standardizedFileURL.path != projectPool }
             .filter { seen.insert($0.uuid).inserted }
             .sorted { ($0.name.localizedLowercase, $0.uuid) < ($1.name.localizedLowercase, $1.uuid) }
-            .map { item -> JSONDictionary in
-                var json = HorizontalDispatchPool.itemJSON(item, inProject: inProject, package: package(item))
-                json["id"] = item.uuid
-                json["mpn"] = item.name
-                json["package"] = json["package"] ?? NSNull()
-                json["package_id"] = json["package_id"] ?? NSNull()
-                json["entity_id"] = item.partEntityID.isEmpty ? NSNull() : item.partEntityID
-                // These come from the entity, which a scan doesn't open.
-                json["refdes_prefix"] = NSNull()
-                json["gate_count"] = NSNull()
-                return json
-            }
+            .map { HorizontalDispatchPool.partRow($0, inProject: inProject, package: package($0), holders: holders) }
         return rows + library
     }
 
     /// A project part as a list_parts row, with the same keys a base-pool row
-    /// has, so a caller reads every row the same way.
-    static func partRow(_ part: HorizontalPoolPart, poolName: String, poolURL: URL?) -> JSONDictionary {
+    /// has, so a caller reads every row the same way. `pools` names every pool
+    /// holding it, the project pool first.
+    static func partRow(_ part: HorizontalPoolPart, poolName: String, poolURL: URL?, pools: [String]) -> JSONDictionary {
         var row = partJSON(part)
         row["uuid"] = part.id
         row["kind"] = HorizontalPoolItemCategory.part.rawValue
@@ -2934,6 +2945,7 @@ enum HorizontalDispatchMethods {
         row["detail"] = part.manufacturer
         row["package_id"] = part.packageID ?? NSNull()
         row["pool"] = poolName
+        row["pools"] = pools
         row["pool_path"] = poolURL?.path ?? NSNull()
         row["path"] = part.fileURL?.path ?? NSNull()
         row["in_project_pool"] = true

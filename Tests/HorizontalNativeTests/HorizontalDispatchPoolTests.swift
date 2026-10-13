@@ -365,6 +365,44 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         }
     }
 
+    func testEveryRowNamesThePoolsHoldingItAndSearchPartRowsReadAsListPartsRows() throws {
+        func search(_ query: String, kind: String) throws -> [[String: Any]] {
+            try XCTUnwrap((try result("search_pool", ["query": query, "kind": kind]) as? [String: Any])?["items"] as? [[String: Any]])
+        }
+        // 80: before the part is cached, Stock alone holds it.
+        XCTAssertEqual(try XCTUnwrap(try result("list_parts", ["scope": "pools"]) as? [[String: Any]]).first?["pools"] as? [String], ["Stock"])
+        XCTAssertEqual(try search("0710KL", kind: "part").first?["pools"] as? [String], ["Stock"])
+
+        // Once cached, every row names both pools, its own first, so the
+        // project's row still says where the part came from.
+        _ = try result("import_pool_part", ["part": "part-1"])
+        let project = try XCTUnwrap(try result("list_parts") as? [[String: Any]])
+        let projectPool = try XCTUnwrap(project.first?["pool"] as? String)
+        XCTAssertNotEqual(projectPool, "Stock")
+        XCTAssertEqual(project.first?["pools"] as? [String], [projectPool, "Stock"])
+        let pools = try XCTUnwrap(try result("list_parts", ["scope": "pools"]) as? [[String: Any]])
+        XCTAssertEqual(pools.first?["pools"] as? [String], ["Stock", projectPool])
+        let all = try XCTUnwrap(try result("list_parts", ["scope": "all"]) as? [[String: Any]])
+        XCTAssertEqual(all.first?["pools"] as? [String], [projectPool, "Stock"])
+
+        // 81: search_pool's part row is the project's copy, with the keys and
+        // the entity's facts a list_parts row has.
+        let found = try XCTUnwrap(try search("0710KL", kind: "part").first)
+        XCTAssertEqual(Set(found.keys), Set(project[0].keys))
+        XCTAssertEqual(found["pool"] as? String, projectPool)
+        XCTAssertEqual(found["pools"] as? [String], [projectPool, "Stock"])
+        XCTAssertEqual(found["refdes_prefix"] as? String, "R")
+        XCTAssertEqual(found["gate_count"] as? Int, 1)
+        for key in ["id", "mpn", "entity_id", "package", "package_id", "description", "manufacturer"] {
+            XCTAssertEqual(found[key] as? String, project[0][key] as? String, key)
+        }
+
+        // Any kind of item names its pools, a cached entity included.
+        let entity = try XCTUnwrap(try search("Resistor", kind: "entity").first)
+        XCTAssertEqual(entity["pools"] as? [String], [projectPool, "Stock"])
+        XCTAssertNil(entity["refdes_prefix"], "only a part row takes the part keys")
+    }
+
     func testAnExportToAFolderThisProcessCannotWriteIsAPermissionError() throws {
         // 76: refused before the exporters run, as a typed error, where it
         // used to come back as a status of "error" with Cocoa's wording.

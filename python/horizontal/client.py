@@ -21,6 +21,10 @@ _request_deadline: ContextVar[float | None] = ContextVar("horizontal_deadline", 
 # takes longer than any read does.
 MUTATIONS = frozenset({"apply", "pool_write", "import_pool_part", "pour_planes", "autoroute", "update_project_parts"})
 
+# What the engine puts in every reply's meta (HorizontalDispatchProjectEntry.metadata),
+# in the order its JSON gives them.
+META_KEYS = ("api_version", "frozen", "instance_id", "origin", "revision", "snapshot_id", "source")
+
 
 def mutation_timeout() -> float:
     """Seconds a mutation may take before the client stops waiting for it;
@@ -127,7 +131,9 @@ class Project:
         self.summary = summary
         self.handle: int = summary["handle"]
         self._generation = session.generation
-        self.last_metadata = {k: summary[k] for k in ("revision", "snapshot_id", "source", "instance_id", "frozen") if k in summary}
+        # The keys and order a reply's meta has, so a context reads the same
+        # before its first call as after it.
+        self.last_metadata = {k: summary[k] for k in META_KEYS if k in summary}
 
     def __repr__(self) -> str:
         return f"Project({self.summary.get('title')!r}, handle={self.handle})"
