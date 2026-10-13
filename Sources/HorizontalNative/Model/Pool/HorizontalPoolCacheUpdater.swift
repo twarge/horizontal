@@ -227,6 +227,19 @@ enum HorizontalPoolCacheUpdater {
         let sourceItems = pools.flatMap {
             HorizontalPoolLibrary.items(inPool: $0, poolName: HorizontalPoolRegistryStore.poolInfo(at: $0).name)
         }
+        let grouped = Dictionary(grouping: sourceItems) { $0.category.rawValue + "|" + $0.uuid }
+        // Where a part's pool looks for what it depends on, nearest first: the
+        // order a fresh import searches (`HorizontalPoolCacheImporter.plan`).
+        var precedenceByPool = [String: [String: Int]]()
+        func precedence(from pool: URL) -> [String: Int] {
+            if let known = precedenceByPool[pool.path] { return known }
+            var ranks = [String: Int]()
+            for (rank, url) in HorizontalPoolLibrary.editorPoolURLs(forPoolRoot: pool).enumerated() where ranks[url.path] == nil {
+                ranks[url.path] = rank
+            }
+            precedenceByPool[pool.path] = ranks
+            return ranks
+        }
         let jsons = files.compactMapValues { try? JSONHelper.loadDictionary(from: $0) }
         let partPaths = preferredPaths(jsons).filter { jsons[$0]?.string("type") == "part" }
         let baseIDs = Set(partPaths.compactMap { jsons[$0]?.string("base")?.lowercased() })
@@ -253,7 +266,7 @@ enum HorizontalPoolCacheUpdater {
                 continue
             }
             do {
-                // Provenance wins over browsing order. Legacy copies require a unique source.
+                // Provenance wins over browsing order. A legacy copy's part needs a unique source.
                 var preferred = [String: String]()
                 for path in row.dependencies {
                     if let origin = metadata.files[path], let json = jsons[path],
@@ -272,11 +285,11 @@ enum HorizontalPoolCacheUpdater {
                         }
                     }
                 }
-                let grouped = Dictionary(grouping: sourceItems) { $0.category.rawValue + "|" + $0.uuid }
                 let explicitPools = metadata.files[partPath] == nil ? sourceOverrides[id].map {
                     [$0] + HorizontalPoolLibrary.includedPoolURLs(for: $0)
                 } ?? [] : []
                 var resolved = [HorizontalPoolLibraryItem]()
+                var ambiguous = [[HorizontalPoolLibraryItem]]()
                 for (key, candidates) in grouped {
                     if let origin = preferred[key] {
                         if let match = candidates.first(where: { HorizontalPoolRegistryStore.poolInfo(at: $0.poolURL).uuid == origin }) {
@@ -288,13 +301,36 @@ enum HorizontalPoolCacheUpdater {
                         resolved.append(match)
                     } else if candidates.count == 1 {
                         resolved.append(candidates[0])
+                    } else {
+                        ambiguous.append(candidates)
                     }
                 }
                 guard let sourcePart = resolved.first(where: { $0.category == .part && $0.uuid == id }) else {
                     throw HorizontalDispatchError.failed("No unambiguous source for this part. Choose its source library to continue.")
                 }
+                // A dependency in several pools with no recorded origin (one an
+                // earlier import had already cached, say) comes from the pool a
+                // fresh import of this part would take it from.
+                let ranks = precedence(from: sourcePart.poolURL)
+                for candidates in ambiguous {
+                    if let nearest = candidates.filter({ ranks[$0.poolURL.path] != nil })
+                        .min(by: { ranks[$0.poolURL.path]! < ranks[$1.poolURL.path]! }) {
+                        resolved.append(nearest)
+                    }
+                }
                 let empty = HorizontalPoolCacheDestination(read: { _ in nil }, list: { _ in [] })
-                let planned = try HorizontalPoolCacheImporter.plan(sourcePart, into: poolURL, destination: empty, sourceItems: resolved)
+                let planned: [HorizontalPoolCacheFile]
+                do {
+                    planned = try HorizontalPoolCacheImporter.plan(sourcePart, into: poolURL, destination: empty, sourceItems: resolved)
+                } catch HorizontalPoolCacheImporterError.missing(let category, let uuid) {
+                    // The importer saw only what was resolved, so "not in any
+                    // browsed pool" would be wrong for an item several pools hold.
+                    let holders = grouped[category.rawValue + "|" + uuid.lowercased()] ?? []
+                    guard holders.count > 1 else { throw HorizontalPoolCacheImporterError.missing(category, uuid) }
+                    let names = holders.map { "\u{201C}\(HorizontalPoolRegistryStore.poolInfo(at: $0.poolURL).name)\u{201D}" }
+                    throw HorizontalDispatchError.failed(
+                        "The \(category.singularTitle.lowercased()) \(uuid) is in \(names.joined(separator: ", ")), and nothing records which one this part's copy came from. Choose its source library to continue.")
+                }
                 let plannedByPath = try Dictionary(uniqueKeysWithValues: planned.map {
                     (try HorizontalPoolCacheProvenance.relativePath($0.url, in: poolURL), $0.data)
                 })
