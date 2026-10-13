@@ -31,22 +31,45 @@ enum HorizontalDispatchPool {
         )
     }
 
+    /// A change gives its file's size before and after. The texts themselves
+    /// (139 KB of Billo's 159 KB review) come only with `include_contents`.
     @Sendable static func listUpdates(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         guard let snapshot = entry.snapshot else { throw HorizontalDispatchError.failed("No project snapshot.") }
         let review = try libraryReview(entry, params, archive: snapshot.archive)
-        return ["review_digest": review.digest, "parts": review.parts.map { part -> JSONDictionary in
+        let contents = params.bool("include_contents") ?? false
+        var result: JSONDictionary = ["review_digest": review.digest, "parts": review.parts.map { part -> JSONDictionary in
             ["uuid": part.id, "name": part.name, "status": part.status.rawValue,
              "references": part.references, "can_update": part.canUpdate,
              "needs_confirmation": part.needsConfirmation, "message": part.message,
              "changes": part.changes.map { change -> JSONDictionary in
-                 ["path": change.path, "name": change.title, "fields": change.fields,
-                  "locally_modified": change.locallyModified, "unverified": change.unverified,
-                  "blocking_reason": change.blockingReason as Any,
-                  "before": change.before.flatMap { String(data: $0, encoding: .utf8) } as Any,
-                  "after": String(data: change.after, encoding: .utf8) as Any]
+                 var json: JSONDictionary = [
+                     "path": change.path, "name": change.title, "fields": change.fields,
+                     "locally_modified": change.locallyModified, "unverified": change.unverified,
+                     "blocking_reason": change.blockingReason as Any,
+                     "before_bytes": change.before?.count as Any, "after_bytes": change.after.count]
+                 if contents {
+                     json["before"] = change.before.flatMap { String(data: $0, encoding: .utf8) } as Any
+                     json["after"] = String(data: change.after, encoding: .utf8) as Any
+                 }
+                 return json
              }]
-        }] as JSONDictionary
+        }]
+        if !review.missingPools.isEmpty {
+            result["missing_pools"] = missingPoolsJSON(review.missingPools)
+        }
+        return result
+    }
+
+    /// Pools that a pool the project draws from includes, and that this
+    /// process couldn't find, with what to do about each.
+    static func missingPoolsJSON(_ missing: [HorizontalMissingPool]) -> [JSONDictionary] {
+        missing.map { pool in
+            ["uuid": pool.uuid, "included_by": pool.includedBy,
+             "message": "\(pool.includedBy) includes pool \(pool.uuid), and no pool this process found has that uuid, "
+                + "so parts from it have no source. A worker process can't see the pools registered in the app: name "
+                + "the pool's directory with pool_path, or list it in HORIZONTAL_POOLS in the MCP server's environment."]
+        }
     }
 
     @Sendable static func updateParts(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
@@ -92,7 +115,6 @@ enum HorizontalDispatchPool {
                 throw HorizontalDispatchError.failed("The project pool or design changed since review. Run a dry run again.")
             }
             let poolURL = entry.project.baseURL.appendingPathComponent(directory)
-            var removed = [JSONDictionary]()
             var chosen = Set<String>()
             if !review.items.isEmpty || ids != nil {
                 let (paths, manifest) = try HorizontalPoolCacheCleanup.removal(review, removing: ids, archive: store.archive,
@@ -103,15 +125,15 @@ enum HorizontalDispatchPool {
                 HorizontalPoolLibrary.invalidateCache()
                 HorizontalPoolPadstacks.invalidateCaches()
             }
-            for item in review.items where chosen.contains(item.id) {
-                removed.append(["id": item.id, "kind": item.kind, "name": item.name, "paths": item.paths, "bytes": item.bytes])
-            }
+            // items already describes each one, so remove names them by id
+            // (field finding 96: the rows twice made Billo's dry run ~35 KB).
+            let removed = review.items.filter { chosen.contains($0.id) }
             return ["applied": chosen.count, "undo_name": "Clean Up Project Pool", "review_digest": review.digest,
                     "items": review.items.map { item -> JSONDictionary in
                         ["id": item.id, "kind": item.kind, "uuid": item.uuid as Any, "name": item.name,
                          "paths": item.paths, "bytes": item.bytes]
                     },
-                    "remove": removed,
+                    "remove": removed.map(\.id), "remove_bytes": removed.reduce(0) { $0 + $1.bytes },
                     "normalized_ops": [["op": "clean_up_project_pool", "remove": chosen.sorted(), "review_digest": review.digest]]]
         }
     }
@@ -120,10 +142,11 @@ enum HorizontalDispatchPool {
     /// pools that pool includes, then every discovered base pool. Matches the
     /// precedence the library browser and the padstack catalog use.
     ///
-    /// Discovery finds pools registered with the app, `HORIZON_POOL`, and
-    /// `horizon-pool` directories above the project. A worker process has its
-    /// own user defaults and so cannot see the app's registrations, which is
-    /// why `pool_path` names one directly.
+    /// Discovery finds pools registered with the app, `HORIZON_POOL`,
+    /// `HORIZONTAL_POOLS`, `horizon-pool` directories above the project, and
+    /// pools the project pool includes checked out nearby. A worker process
+    /// has its own user defaults and so cannot see the app's registrations,
+    /// which is why `pool_path` names one directly.
     static func poolURLs(for entry: HorizontalDispatchProjectEntry, params: JSONDictionary = [:]) throws -> [URL] {
         guard let poolDirectory = entry.project.poolDirectory else {
             throw HorizontalDispatchError.failed("The project has no pool directory.")
@@ -297,7 +320,7 @@ enum HorizontalDispatchPool {
             .filter { seen.insert(key($0.category, $0.uuid)).inserted }
             .filter { wantedPackage.isEmpty || package($0)?.matches(wantedPackage) == true }
             .sorted { ($0.name.localizedLowercase, $0.uuid) < ($1.name.localizedLowercase, $1.uuid) }
-        return [
+        var result: JSONDictionary = [
             "pools": pools,
             "total": matched.count,
             "truncated": matched.count > limit,
@@ -308,7 +331,13 @@ enum HorizontalDispatchPool {
                 let own = item.poolURL.standardizedFileURL.path == projectPool ? projectParts[item.uuid] : nil
                 return partRow(item, inProject: inProject, package: package(item), holders: holders, projectPart: own)
             }
-        ] as JSONDictionary
+        ]
+        // pool_path narrows the search on purpose, so what it leaves out isn't missing.
+        let missing = (params.string("pool_path") ?? "").isEmpty ? HorizontalPoolLibrary.missingIncludedPools(among: urls) : []
+        if !missing.isEmpty {
+            result["missing_pools"] = missingPoolsJSON(missing)
+        }
+        return result
     }
 
     private static func matches(_ query: String, _ item: HorizontalPoolLibraryItem) -> Bool {
@@ -420,7 +449,8 @@ enum HorizontalDispatchPool {
         guard !found.isEmpty else {
             throw HorizontalDispatchError.notFound(
                 "No part \(reference) in \(urls.map(\.lastPathComponent).joined(separator: ", ")). Use search_pool to find one, "
-                    + "or name the pool's directory with pool_path — a worker process cannot see the pools registered in the app."
+                    + "or name the pool's directory with pool_path or in HORIZONTAL_POOLS — a worker process cannot see the pools "
+                    + "registered in the app."
             )
         }
         // The scan is project-pool first, so more than one match means genuinely

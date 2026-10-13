@@ -230,6 +230,16 @@ def _git_commit() -> str | None:
         return None
 
 
+def _package_diff(start: str, now: str) -> list[str] | None:
+    """The package's files that differ between two commits, or None when git can't say."""
+    try:
+        run = subprocess.run(["git", "-C", str(_PACKAGE_DIR), "diff", "--name-only", "--relative", start, now, "--", "."],
+                             capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return sorted(line for line in run.stdout.splitlines() if line.strip()) if run.returncode == 0 else None
+
+
 _SOURCE_MTIME = _source_mtime()
 _COMMIT = _git_commit()
 _SCHEMA_DIGEST = vocabulary_digest(schema_vocabulary())
@@ -242,9 +252,18 @@ def _server_identity() -> dict[str, Any]:
                 "package": importlib.metadata.version("horizontal"), "package_dir": str(_PACKAGE_DIR),
                 "commit_at_start": _COMMIT, "commit_now": commit_now, "schema_digest": _SCHEMA_DIGEST,
                 "ops": len(schema_vocabulary())}
-    if changed or (commit_now and _COMMIT and commit_now != _COMMIT):
+    moved = bool(commit_now and _COMMIT and commit_now != _COMMIT)
+    # 91: a checkout that moves without touching this package (a merge of Swift
+    # work, say) leaves the code this server runs as it is on disk. Only git can
+    # say so; when it can't, a moved checkout still counts as stale.
+    between = _package_diff(_COMMIT, commit_now) if moved else []
+    if changed or between or (moved and between is None):
         identity["stale"] = True
-        identity["changed_since_start"] = changed
+        identity["changed_since_start"] = sorted(set(changed) | set(between or []))
+    elif moved:
+        identity["checkout_moved"] = True
+        identity["note"] = (f"The checkout moved from {_COMMIT} to {commit_now} after this server started, but none of the "
+                            "files it runs changed, so its tool schemas are current.")
     return identity
 
 
@@ -762,7 +781,8 @@ def search_pool(path: str | None = None, query: str | None = None, kind: str | N
     its package and package_id, a derived part's taken from its base. A part row has the keys a list_parts row has,
     plus base_part on a part flagged as one. Every item's pools names each searched pool holding it, its own first.
     Items with in_project_pool false live in a base pool and need import_pool_part first. The pools list says which
-    pools were searched, and names any that could not be read rather than reporting them as empty."""
+    pools were searched, and names any that could not be read rather than reporting them as empty; missing_pools
+    names any that a searched pool includes but this process couldn't find (see list_part_updates)."""
     params = {k: v for k, v in {"query": query, "kind": kind, "pool_path": pool_path, "package": package}.items() if v is not None}
     found = _resolve(path).search_pool(limit=limit, **params)
     if fields and isinstance(found, dict):
@@ -789,10 +809,18 @@ def import_pool_part(part: str, path: str | None = None, dry_run: bool = False) 
 
 
 @_tool
-def list_part_updates(path: str | None = None, pool_path: str | None = None) -> dict[str, Any]:
+def list_part_updates(path: str | None = None, pool_path: str | None = None,
+                      include_contents: Annotated[bool, Field(description="Give each change's whole file text, before and after. Billo's review is 159 KB with them and 19 KB without.")] = False) -> dict[str, Any]:
     """Review project parts and their dependencies against source libraries. Returns changes, affected
-    references, local-edit conflicts, unavailable sources, and review_digest. Does not change files."""
-    return _resolve(path).part_updates(pool_path=pool_path)
+    references, local-edit conflicts, unavailable sources, and review_digest. Does not change files.
+
+    A change names its file (path), the fields that differ and their sizes (before_bytes, null for a new item,
+    and after_bytes); include_contents adds the texts. missing_pools names a pool that a pool the project draws
+    from includes and that this process couldn't find: parts from it read sourceUnavailable. A worker (a disk
+    context) can't see the pools registered in the app; it finds an included pool checked out near the project,
+    and otherwise pool_path, or HORIZONTAL_POOLS (colon-separated directories) in this server's environment,
+    names it."""
+    return _resolve(path).part_updates(pool_path=pool_path, include_contents=include_contents)
 
 
 @_tool
@@ -816,8 +844,9 @@ def clean_up_project_pool(remove: list[str] | None = None, path: str | None = No
     all its models. Project-local items are never offered.
 
     A dry run lists them in items, each with an id, kind, name, paths and bytes. remove takes ids from it;
-    leave it out to remove every one. Pass the dry run's review_digest to refuse a pool or design that changed
-    since. One transaction and one live undo step; a live document's files go at its next save."""
+    leave it out to remove every one. The reply's remove gives the ids it removes (or would), and remove_bytes
+    their size. Pass the dry run's review_digest to refuse a pool or design that changed since. One transaction
+    and one live undo step; a live document's files go at its next save."""
     options = {k: v for k, v in {"remove": remove, "review_digest": review_digest}.items() if v is not None}
     return _edit_call(_resolve(path), "clean_up_project_pool", dry_run=dry_run, **options)
 
