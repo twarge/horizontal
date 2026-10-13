@@ -404,12 +404,16 @@ private struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
     var onFind: () -> Void
     var onDistractionFree: () -> Void
     var onHighlightSelection: () -> Void
+    var onUpdateAllPlanes: () -> Void
+    var onClearAllPlanes: () -> Void
 
     func makeNSView(context: Context) -> KeyCommandMonitorView {
         let view = KeyCommandMonitorView()
         view.onFind = onFind
         view.onDistractionFree = onDistractionFree
         view.onHighlightSelection = onHighlightSelection
+        view.onUpdateAllPlanes = onUpdateAllPlanes
+        view.onClearAllPlanes = onClearAllPlanes
         return view
     }
 
@@ -417,12 +421,16 @@ private struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
         nsView.onFind = onFind
         nsView.onDistractionFree = onDistractionFree
         nsView.onHighlightSelection = onHighlightSelection
+        nsView.onUpdateAllPlanes = onUpdateAllPlanes
+        nsView.onClearAllPlanes = onClearAllPlanes
     }
 
     final class KeyCommandMonitorView: NSView {
         var onFind: (() -> Void)?
         var onDistractionFree: (() -> Void)?
         var onHighlightSelection: (() -> Void)?
+        var onUpdateAllPlanes: (() -> Void)?
+        var onClearAllPlanes: (() -> Void)?
         private var monitor: Any?
 
         override func viewDidMoveToWindow() {
@@ -454,6 +462,13 @@ private struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
 
                 if characters == "l", modifiers.isEmpty, !self.isTextInputActive {
                     self.onHighlightSelection?()
+                    return nil
+                }
+
+                // Q and ⇧Q, the Design menu's Update and Clear All Planes. As
+                // menu shortcuts they would take Q from every text field.
+                if characters == "q", modifiers.isEmpty || modifiers == .shift, !self.isTextInputActive {
+                    (modifiers.isEmpty ? self.onUpdateAllPlanes : self.onClearAllPlanes)?()
                     return nil
                 }
 
@@ -785,7 +800,9 @@ struct ProjectWorkspaceView: View {
             .background(WorkspaceKeyCommandMonitor(
                 onFind: activateFind,
                 onDistractionFree: toggleDistractionFreeMode,
-                onHighlightSelection: highlightSelectedNet
+                onHighlightSelection: highlightSelectedNet,
+                onUpdateAllPlanes: updateAllBoardPlanes,
+                onClearAllPlanes: clearAllBoardPlanes
             ))
             .background(WindowSizeObserver(savedSize: windowSize, onSizeChange: updateWindowSize))
             .onAppear(perform: appear)

@@ -321,10 +321,11 @@ struct HorizontalViewCommands: Commands {
             .keyboardShortcut("a", modifiers: .command)
             .disabled(canvasCommandActions?.canSelectAll != true)
 
+            // ⇧L reaches it through the canvas: a menu shortcut with no ⌘
+            // would take ⇧L (a capital L) from every text field.
             Button("Select Net") {
                 canvasCommandActions?.dispatch(.selectNet)
             }
-            .keyboardShortcut("l", modifiers: .shift)
             .disabled(canvasCommandActions?.canSelectNet != true)
 
             Divider()
@@ -585,11 +586,12 @@ struct HorizontalViewCommands: Commands {
 
             // Pouring rewrites the board's fills, so it goes with the lock.
             // Clearing below does not: it empties what is drawn, nothing more.
+            // Q and ⇧Q are the workspace key monitor's, which leaves text
+            // fields alone; as menu shortcuts they took Q from every field.
             if !isLocked {
                 Button("Update All Planes") {
                     updateAllPlanesAction?()
                 }
-                .keyboardShortcut("q", modifiers: [])
                 .disabled(updateAllPlanesAction == nil || boardAvailable != true)
             }
 
@@ -601,7 +603,6 @@ struct HorizontalViewCommands: Commands {
             Button("Clear All Planes") {
                 clearAllPlanesAction?()
             }
-            .keyboardShortcut("q", modifiers: [.shift])
             .disabled(clearAllPlanesAction == nil || boardAvailable != true)
 
             Button("Board Rules…") {

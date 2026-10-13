@@ -3401,7 +3401,21 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
         var handlesSelectionDeletion = false
         var canvasUndoManager: UndoManager?
         var onCommand: ((HorizontalCanvasCommand) -> Void)?
-        var handlesInteractionKeys = false
+        /// An interaction is in progress (placing, moving, drawing). One
+        /// started from a pane, such as Place in the Pools pane, begins with
+        /// that pane's field focused, and its keys (R, E, Escape…) belong to
+        /// the interaction, so the canvas takes the focus. A click back in
+        /// the field gives the field its keys again.
+        var handlesInteractionKeys = false {
+            didSet {
+                guard handlesInteractionKeys, !oldValue, isTextInputActive else { return }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.handlesInteractionKeys, self.isTextInputActive, let window = self.window else { return }
+                    window.makeFirstResponder(self)
+                    self.onRequestKeyboardFocus?()
+                }
+            }
+        }
         var supportsTrackVias = false
         var hasKeyboardFocus = true
         var onRequestKeyboardFocus: (() -> Void)?
@@ -3705,18 +3719,16 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
         }
 
         private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
-            // While a text field is focused, let it keep the standard editing
-            // shortcuts (⌘A/⌘C/⌘V/⌘X/⌘D) instead of the canvas commands.
-            if isTextInputActive, isSelectAllCommand(event) || isClipboardCommand(event) {
+            // A focused text field keeps every key: its editing shortcuts
+            // (⌘A/⌘C/⌘V/⌘X/⌘D), Delete and plain letters alike, even during
+            // an interaction. Typing in a pane's search field must not
+            // rotate, delete or switch tools here.
+            guard !isTextInputActive else {
                 return event
             }
 
             if handlesInteractionKeys && isInteractionKey(event) {
                 return handleInteractionKeyDown(event)
-            }
-
-            guard !isTextInputActive else {
-                return event
             }
 
             let result = handleInteractionKeyDown(event)
@@ -3823,14 +3835,6 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
 
         private func canvasCommand(from event: NSEvent) -> HorizontalCanvasCommand? {
             HorizontalCanvasInputCore.command(keyEvent(from: event), supportsTrackVias: supportsTrackVias)
-        }
-
-        private func isSelectAllCommand(_ event: NSEvent) -> Bool {
-            HorizontalCanvasInputCore.isSelectAllCommand(keyEvent(from: event))
-        }
-
-        private func isClipboardCommand(_ event: NSEvent) -> Bool {
-            HorizontalCanvasInputCore.isClipboardCommand(keyEvent(from: event))
         }
 
         private func isEscapeKey(_ event: NSEvent) -> Bool {
