@@ -1937,11 +1937,14 @@ enum HorizontalDispatchMethods {
             "sheets": Array(Set(component.symbolPlacements.map(\.sheetIndex))).sorted(),
             "placed_on_board": component.boardPlacement != nil
         ]
-        let effective = component.partValue.isEmpty ? component.rawValue : component.partValue
+        // A part decides what the component shows (`Component::get_value`),
+        // its MPN when it stores no value; part_value is what it stores.
+        let shown = component.partDisplayValue
+        let effective = shown.isEmpty ? component.rawValue : shown
         json["raw_value"] = component.rawValue
         json["part_value"] = component.partValue
         json["effective_value"] = effective
-        json["value_source"] = component.partValue.isEmpty ? "component" : "part"
+        json["value_source"] = shown.isEmpty ? "component" : "part"
         json["electrical_value"] = HorizontalElectricalValue.parse(effective, refdes: component.refdes,
                                                                     parametric: component.details?.parametricValues ?? [:])
         json["block_id"] = component.blockID as Any

@@ -115,7 +115,10 @@ struct HorizontalDesignComponent {
     var group: String?
     var tag: String?
     var rawValue: String = ""
+    /// The value the component's part stores, empty when it has none.
     var partValue: String = ""
+    /// What the part makes the component show: its value, or its MPN.
+    var partDisplayValue: String = ""
     var blockID: String? = nil
     var physicalTerminals: [JSONDictionary] = []
 
@@ -390,6 +393,7 @@ struct HorizontalDesignIndex {
                 tag: blockEntry?.string("tag")?.lowercased(),
                 rawValue: blockEntry?.string("value") ?? info.value,
                 partValue: partID.flatMap { pool.partValue($0) } ?? "",
+                partDisplayValue: partID.flatMap { pool.partDisplayValue($0) } ?? "",
                 blockID: componentBlocks[componentID],
                 physicalTerminals: partID.map { pool.terminals(partID: $0) } ?? []
             )
@@ -708,9 +712,15 @@ final class HorizontalDispatchPoolIndex {
         )
     }
 
+    /// The value the part stores, through its base: empty when it has none.
+    func partValue(_ id: String) -> String? {
+        guard let part = parts[id.lowercased()] else { return nil }
+        return HorizontalPartRecord.resolve(part) { parts[$0] }.value
+    }
+
     /// What Horizon shows as the part's value (`Part::get_value`): its value
     /// attribute through its base, or its MPN when it has none.
-    func partValue(_ id: String) -> String? {
+    func partDisplayValue(_ id: String) -> String? {
         guard let part = parts[id.lowercased()] else { return nil }
         return HorizontalPartRecord.resolve(part) { parts[$0] }.displayValue
     }
