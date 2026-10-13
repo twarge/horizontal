@@ -917,6 +917,33 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertTrue(text.contains("U2") && !text.contains("X1"), text)
     }
 
+    // MARK: - Round twenty-two: note 77
+
+    func testAllPoolsShowsOneRowPerItemAndOnePoolShowsItsOwn() {
+        // 77: a part cached in the project pool and kept in a base pool is one
+        // row with every pool in view, the project pool's copy; viewing the
+        // base pool shows its own copy, as it holds it.
+        let projectPool = URL(fileURLWithPath: "/tmp/r22/Project/pool", isDirectory: true)
+        let basePool = URL(fileURLWithPath: "/tmp/r22/Twinleaf Pool", isDirectory: true)
+        func item(_ uuid: String, _ name: String, in pool: URL, category: HorizontalPoolItemCategory = .part) -> HorizontalPoolLibraryItem {
+            HorizontalPoolLibraryItem(
+                id: pool.path + "|" + category.rawValue + "|" + uuid, uuid: uuid, name: name, detail: "", tags: "",
+                category: category, poolName: pool.lastPathComponent, poolURL: pool,
+                url: pool.appendingPathComponent("parts/\(uuid).json")
+            )
+        }
+        let cached = item("b5464582", "TPS62172DSGT", in: projectPool)
+        let original = item("b5464582", "TPS62172DSGT", in: basePool)
+        let other = item("90155406", "GRM188R6YA106MA73D", in: basePool)
+        let unit = item("b5464582", "Same uuid, other kind", in: basePool, category: .unit)
+        let items = [cached, original, other, unit]   // Project pool first, as the browser scans.
+        XCTAssertEqual(HorizontalPoolBrowserView.visibleItems(items, viewing: nil).map(\.id), [cached.id, other.id, unit.id])
+        XCTAssertEqual(HorizontalPoolBrowserView.visibleItems(items, viewing: basePool).map(\.id), [original.id, other.id, unit.id])
+        XCTAssertEqual(HorizontalPoolBrowserView.visibleItems(items, viewing: projectPool).map(\.id), [cached.id])
+        XCTAssertEqual(HorizontalPoolBrowserView.visibleItems(items, viewing: URL(fileURLWithPath: "/tmp/r22/Twinleaf Pool/")).map(\.id),
+                       [original.id, other.id, unit.id], "a trailing slash names the same pool")
+    }
+
     func testSetAllNoConnectTakesOnlyFreePinsAsHorizonDoes() throws {
         _ = try placedMCU()   // PA13 on SWDIO, PA14 on SWCLK; VSS, VSS and NRST free.
         func states() throws -> [String: String] {

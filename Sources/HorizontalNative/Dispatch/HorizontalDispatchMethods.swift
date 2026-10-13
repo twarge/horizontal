@@ -1383,6 +1383,7 @@ enum HorizontalDispatchMethods {
         applyExportOptions(params["options"] as? JSONDictionary, to: &settings)
         let targetURL = try HorizontalExportSettings.exportTargetDirectory(for: entry.project, requestedPath: settings.targetDirectory)
         settings.targetDirectory = targetURL.path
+        try requireWritable(targetURL)
         let source = try entry.snapshot?.materializedProject() ?? entry.project
         let status = HorizontalExportBackend.export(sections: sections, settings: settings, project: source)
         let files = (try? FileManager.default.contentsOfDirectory(atPath: targetURL.path))?.sorted() ?? []
@@ -1392,6 +1393,40 @@ enum HorizontalDispatchMethods {
             "target_directory": targetURL.path,
             "files": files
         ]
+    }
+
+    /// Fails, as a typed error, when this process can't write to `url`.
+    ///
+    /// A sandboxed app can only write where it has been given access, and
+    /// the exporters would report that as a status of "error" with Cocoa's
+    /// wording, after trying. Checked first, it comes back as
+    /// PERMISSION_DENIED, which a client can act on: the MCP server then
+    /// exports from the project's files through its own worker.
+    static func requireWritable(_ url: URL) throws {
+        let probe = url.appendingPathComponent(".horizontal-export-probe-\(UUID().uuidString)")
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            try Data().write(to: probe)
+            try? FileManager.default.removeItem(at: probe)
+        } catch {
+            let nsError = error as NSError
+            let posix = (nsError.userInfo[NSUnderlyingErrorKey] as? NSError).flatMap { $0.domain == NSPOSIXErrorDomain ? $0.code : nil }
+                ?? (nsError.domain == NSPOSIXErrorDomain ? nsError.code : nil)
+            let denied = [CocoaError.fileWriteNoPermission.rawValue, CocoaError.fileReadNoPermission.rawValue].contains(nsError.code)
+                && nsError.domain == NSCocoaErrorDomain
+                || [Int(EPERM), Int(EACCES), Int(EROFS)].contains(posix ?? 0)
+            guard denied else { throw error }
+            let sandboxed = ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
+            let message = sandboxed
+                ? "Horizontal is sandboxed and has not been given access to \(url.path), so it cannot export there. "
+                    + "Leave target_directory out to use the export folder beside the project, or pick a folder Horizontal can write."
+                : "This process cannot write to \(url.path) (\(nsError.localizedDescription)), so it cannot export there."
+            throw HorizontalDispatchError(
+                code: .permissionDenied,
+                message: message,
+                details: ["target_directory": url.path, "sandboxed": sandboxed, "reason": nsError.localizedDescription]
+            )
+        }
     }
 
     @Sendable private static func renderSheet(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
@@ -2849,31 +2884,60 @@ enum HorizontalDispatchMethods {
         guard ["project", "pools", "all"].contains(scope) else {
             throw HorizontalDispatchError.invalidParams("scope must be project, pools, or all.")
         }
+        let projectPoolURL = entry.project.poolDirectory.map {
+            entry.project.baseURL.appendingPathComponent($0, isDirectory: true).standardizedFileURL
+        }
         var rows = [JSONDictionary]()
         if scope != "pools" {
+            let poolName = projectPoolURL.map { HorizontalPoolRegistryStore.poolInfo(at: $0).name } ?? ""
             rows = entry.project.poolParts
                 .sorted { $0.mpn.localizedStandardCompare($1.mpn) == .orderedAscending }
-                .map { partJSON($0).merging(["in_project_pool": true]) { _, new in new } }
+                .map { partRow($0, poolName: poolName, poolURL: projectPoolURL) }
         }
         guard scope != "project" else { return rows }
-        let (items, _, inProject) = HorizontalDispatchPool.scan(try HorizontalDispatchPool.poolURLs(for: entry))
+        let urls = try HorizontalDispatchPool.poolURLs(for: entry)
+        let (items, _, inProject) = HorizontalDispatchPool.scan(urls)
         let package = HorizontalDispatchPool.packages(items)
+        // The base pools only: a part the project has cached is listed as its
+        // base pool holds it, marked in_project_pool. The project pool is
+        // still scanned, since a derived part's base may live only there.
+        let projectPool = urls.first?.standardizedFileURL.path
         var seen = Set(rows.compactMap { $0.string("id")?.lowercased() })
         // A flagged base part is left out here as in the project rows, the
         // way Horizon's part browser leaves it out.
         let library = items
-            .filter { $0.category == .part && !$0.isBasePart && seen.insert($0.uuid).inserted }
+            .filter { $0.category == .part && !$0.isBasePart && $0.poolURL.standardizedFileURL.path != projectPool }
+            .filter { seen.insert($0.uuid).inserted }
             .sorted { ($0.name.localizedLowercase, $0.uuid) < ($1.name.localizedLowercase, $1.uuid) }
             .map { item -> JSONDictionary in
                 var json = HorizontalDispatchPool.itemJSON(item, inProject: inProject, package: package(item))
                 json["id"] = item.uuid
                 json["mpn"] = item.name
-                json["description"] = item.detail
+                json["package"] = json["package"] ?? NSNull()
+                json["package_id"] = json["package_id"] ?? NSNull()
+                json["entity_id"] = item.partEntityID.isEmpty ? NSNull() : item.partEntityID
+                // These come from the entity, which a scan doesn't open.
+                json["refdes_prefix"] = NSNull()
+                json["gate_count"] = NSNull()
                 return json
             }
-        // One row shape throughout: a part cached in the project pool carries
-        // the extra fields the project's own loader resolves.
         return rows + library
+    }
+
+    /// A project part as a list_parts row, with the same keys a base-pool row
+    /// has, so a caller reads every row the same way.
+    static func partRow(_ part: HorizontalPoolPart, poolName: String, poolURL: URL?) -> JSONDictionary {
+        var row = partJSON(part)
+        row["uuid"] = part.id
+        row["kind"] = HorizontalPoolItemCategory.part.rawValue
+        row["name"] = part.mpn
+        row["detail"] = part.manufacturer
+        row["package_id"] = part.packageID ?? NSNull()
+        row["pool"] = poolName
+        row["pool_path"] = poolURL?.path ?? NSNull()
+        row["path"] = part.fileURL?.path ?? NSNull()
+        row["in_project_pool"] = true
+        return row
     }
 
     static func partJSON(_ part: HorizontalPoolPart) -> JSONDictionary {

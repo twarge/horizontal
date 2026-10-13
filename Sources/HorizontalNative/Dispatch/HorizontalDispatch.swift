@@ -127,6 +127,7 @@ struct HorizontalDispatchError: Error, @unchecked Sendable {
         case readOnly = -32007
         case authFailed = -32008
         case documentOpen = -32009
+        case permissionDenied = -32010
 
         var label: String {
             switch self {
@@ -140,6 +141,7 @@ struct HorizontalDispatchError: Error, @unchecked Sendable {
             case .readOnly: "READ_ONLY"
             case .authFailed: "AUTH_FAILED"
             case .documentOpen: "DOCUMENT_OPEN"
+            case .permissionDenied: "PERMISSION_DENIED"
             default: "ENGINE_ERROR"
             }
         }

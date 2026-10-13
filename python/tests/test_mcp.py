@@ -6,8 +6,10 @@ import unittest
 import uuid
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from horizontal._native import HorizontalError
 from horizontal.client import Session
 from horizontal import mcp_server as server
 
@@ -461,6 +463,51 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any("restart" in w for w in stale["warnings"]))
             reopened = (await self.call("open_project", path=str(self.path), source="disk"))["data"]
             self.assertTrue(any("restart" in w for w in reopened["warnings"]))
+
+    async def test_a_context_whose_app_has_gone_reads_as_disconnected(self):
+        # 78: a live connection is only marked closed once a call fails on it.
+        gone = SimpleNamespace(session=SimpleNamespace(transport=SimpleNamespace(closed=False, alive=lambda: False)))
+        here = SimpleNamespace(session=SimpleNamespace(transport=SimpleNamespace(closed=False, alive=lambda: True)))
+        worker = SimpleNamespace(session=SimpleNamespace(transport=SimpleNamespace(closed=False)))
+        self.assertEqual([server._connected(p) for p in (gone, here, worker)], [False, True, True])
+        status = (await self.call("connection_status"))["data"]
+        self.assertTrue(status["contexts"][0]["connected"])
+
+    async def test_a_refused_live_export_runs_in_the_worker_when_the_files_match(self):
+        # 76: the app can only write where it has been given access. When its
+        # files hold what the document does, the worker exports them instead.
+        project = server._projects[self.ref]
+        refused = HorizontalError(-32010, "Horizontal is sandboxed and has not been given access to /tmp/x.",
+                                  {"code": "PERMISSION_DENIED", "details": {"target_directory": "/tmp/x", "sandboxed": True},
+                                   "retryable": False, "outcome": "not_committed"})
+        out = Path(self.temp.name) / "out"
+        with patch.dict(project.summary, {"live": True}), patch.object(project, "export", side_effect=refused):
+            exported = (await self.call("export", project_ref=self.ref, sections=["bom"], target_directory=str(out)))["data"]
+        self.assertEqual(exported["via"], "worker")
+        self.assertEqual(exported["status"], "success", exported)
+        self.assertEqual(exported["snapshot_id"], self.opened["data"]["snapshot_id"])
+        self.assertTrue(any(out.iterdir()))
+        self.assertEqual(len(server._projects), 1, "the worker's context is not left behind")
+
+        # When the document has changes its files lack, the files cannot stand in.
+        def changed():
+            project.last_metadata["snapshot_id"] = "0" * 64
+        with patch.dict(project.summary, {"live": True}), patch.object(project, "export", side_effect=refused), \
+                patch.object(project, "files", side_effect=changed):
+            result = await server.mcp.call_tool("export", {"project_ref": self.ref, "sections": ["bom"],
+                                                           "target_directory": str(Path(self.temp.name) / "out2")})
+        self.assertTrue(result.is_error)
+        error = result.structured_content["error"]
+        self.assertEqual(error["code"], "PERMISSION_DENIED")
+        self.assertIn("save first", error["message"])
+        self.assertEqual(error["details"]["document_snapshot"], "0" * 64)
+        self.assertFalse((Path(self.temp.name) / "out2").exists())
+
+        # Any other export failure is left as it was.
+        other = HorizontalError(-32602, "Unknown export section", {"code": "INVALID_ARGUMENT"})
+        with patch.dict(project.summary, {"live": True}), patch.object(project, "export", side_effect=other):
+            result = await server.mcp.call_tool("export", {"project_ref": self.ref, "sections": ["bom"]})
+        self.assertEqual(result.structured_content["error"]["code"], "INVALID_ARGUMENT")
 
     async def test_reopening_a_project_reuses_its_context(self):
         again = (await self.call("open_project", path=str(self.path), source="disk"))["data"]
