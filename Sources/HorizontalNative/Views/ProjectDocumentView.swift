@@ -400,12 +400,13 @@ private struct ToolbarSearchField: NSViewRepresentable {
     }
 }
 
-private struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
+struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
     var onFind: () -> Void
     var onDistractionFree: () -> Void
     var onHighlightSelection: () -> Void
     var onUpdateAllPlanes: () -> Void
     var onClearAllPlanes: () -> Void
+    var onTextInputFocusChange: (Bool) -> Void
 
     func makeNSView(context: Context) -> KeyCommandMonitorView {
         let view = KeyCommandMonitorView()
@@ -414,6 +415,7 @@ private struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
         view.onHighlightSelection = onHighlightSelection
         view.onUpdateAllPlanes = onUpdateAllPlanes
         view.onClearAllPlanes = onClearAllPlanes
+        view.onTextInputFocusChange = onTextInputFocusChange
         return view
     }
 
@@ -423,6 +425,7 @@ private struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
         nsView.onHighlightSelection = onHighlightSelection
         nsView.onUpdateAllPlanes = onUpdateAllPlanes
         nsView.onClearAllPlanes = onClearAllPlanes
+        nsView.onTextInputFocusChange = onTextInputFocusChange
     }
 
     final class KeyCommandMonitorView: NSView {
@@ -431,7 +434,13 @@ private struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
         var onHighlightSelection: (() -> Void)?
         var onUpdateAllPlanes: (() -> Void)?
         var onClearAllPlanes: (() -> Void)?
+        /// Whether a text field has the keyboard, so the canvas's
+        /// keyboard-focus badge can stand down: the keys go to one or the
+        /// other, never both.
+        var onTextInputFocusChange: ((Bool) -> Void)?
         private var monitor: Any?
+        private var firstResponderObservation: NSKeyValueObservation?
+        private var reportedTextInputFocus: Bool?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -447,8 +456,14 @@ private struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
 
         private func rebuildMonitor() {
             removeMonitor()
-            guard window != nil else {
+            guard let window else {
                 return
+            }
+
+            // Reported on the next turn: focus moves in the middle of view
+            // updates, and the field editor takes over from its field.
+            firstResponderObservation = window.observe(\.firstResponder, options: [.initial, .new]) { [weak self] _, _ in
+                DispatchQueue.main.async { self?.reportTextInputFocus() }
             }
 
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
@@ -497,7 +512,16 @@ private struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
             return firstResponder is NSTextView || firstResponder is NSTextField
         }
 
+        private func reportTextInputFocus() {
+            let focused = window != nil && isTextInputActive
+            guard focused != reportedTextInputFocus else { return }
+            reportedTextInputFocus = focused
+            onTextInputFocusChange?(focused)
+        }
+
         private func removeMonitor() {
+            firstResponderObservation = nil
+            reportedTextInputFocus = nil
             if let monitor {
                 NSEvent.removeMonitor(monitor)
                 self.monitor = nil
@@ -593,6 +617,8 @@ struct ProjectWorkspaceView: View {
     @State private var pendingPartPlacement: HorizontalPartPlacementRequest?
     @State private var canvasCommandActionsByPane = [HorizontalPane: HorizontalCanvasCommandActions]()
     @State private var activeCanvasCommandPane: HorizontalPane?
+    /// A text field has the keyboard, so no canvas shows the keyboard-focus badge.
+    @State private var isEditingText = false
     @State private var rightSidebarPane: HorizontalWorkspaceRightSidebar?
     @State private var rulesResultsState: HorizontalBoardRulesResultState?
     @State private var exportSettings: HorizontalExportSettings
@@ -802,7 +828,8 @@ struct ProjectWorkspaceView: View {
                 onDistractionFree: toggleDistractionFreeMode,
                 onHighlightSelection: highlightSelectedNet,
                 onUpdateAllPlanes: updateAllBoardPlanes,
-                onClearAllPlanes: clearAllBoardPlanes
+                onClearAllPlanes: clearAllBoardPlanes,
+                onTextInputFocusChange: { isEditingText = $0 }
             ))
             .background(WindowSizeObserver(savedSize: windowSize, onSizeChange: updateWindowSize))
             .onAppear(perform: appear)
@@ -1640,7 +1667,7 @@ struct ProjectWorkspaceView: View {
                     safeAreaInsets: fitSafeAreaInsets,
                     infoEnabled: selectedSchematic != nil,
                     showsTools: !isDistractionFree && !isWindowToolbarHidden,
-                    isKeyboardFocused: activeCanvasCommandPane == .schematic,
+                    isKeyboardFocused: activeCanvasCommandPane == .schematic && !isEditingText,
                     onToolbarHover: { setPointerInsideToolbar($0, for: .schematic) }
                 ) {
                     if let selectedSchematic {
@@ -1802,7 +1829,7 @@ struct ProjectWorkspaceView: View {
                     safeAreaInsets: fitSafeAreaInsets,
                     infoEnabled: project.board != nil,
                     showsTools: !isDistractionFree && !isWindowToolbarHidden,
-                    isKeyboardFocused: activeCanvasCommandPane == .board,
+                    isKeyboardFocused: activeCanvasCommandPane == .board && !isEditingText,
                     onToolbarHover: { setPointerInsideToolbar($0, for: .board) }
                 ) {
                     if let board = project.board {
