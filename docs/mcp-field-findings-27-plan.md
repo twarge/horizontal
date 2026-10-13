@@ -108,5 +108,8 @@ while live-checking rounds 23–26 on Billo, and are recorded in billo's
     temporary test and isn't committed.
 - **Results:** Swift 879 tests (6 skipped, 0 failures). No Python changed.
   The app builds in Xcode (Debug, with its own DerivedData under `/tmp`).
-  The release products are rebuilt after the live check of rounds 23–26
-  finishes, since the running server uses them.
+  The release products were rebuilt (`make native`, 09:06) once the live check
+  of rounds 23–26 had finished, since the running server used them.
+- **Live, on Billo** (app built from `38dbfbe`): `list_part_updates` gives 74
+  `current`, 7 `updateAvailable` and 0 `sourceUnavailable`, matching the
+  probe. The user can type everything in the search field.

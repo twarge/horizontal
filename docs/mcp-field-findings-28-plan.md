@@ -54,3 +54,7 @@ by the user while checking round 27 on Billo, and is recorded in billo's
   `onKeyPress(.escape)`, as `HorizontalSuggestionFields` does.
 - **Results:** Swift 881 tests (6 skipped, 0 failures). No Python changed.
   The app builds in Xcode (Debug, with its own DerivedData under `/tmp`).
+  The release products were rebuilt with round 27's (`make native`, 09:06).
+- **Live:** the user checked the build from `2a051cb` on Billo: a canvas click
+  and Escape leave the field, the badge hides while the field has the
+  keyboard, and typing works throughout.
