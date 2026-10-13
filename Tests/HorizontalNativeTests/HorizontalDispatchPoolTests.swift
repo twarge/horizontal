@@ -325,6 +325,69 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         XCTAssertNotNil(try call("list_parts", ["scope": "sideways"])["error"])
     }
 
+    // MARK: - Round twenty-two: notes 74–76
+
+    func testPoolRowsKeepTheirDescriptionListTheBasePoolsCopyAndShareOneShape() throws {
+        // 74: a base-pool row's description is the part's, not its manufacturer.
+        let before = try XCTUnwrap(try result("list_parts", ["scope": "pools"]) as? [[String: Any]])
+        XCTAssertEqual(before.map { $0["description"] as? String }, ["Thick film resistor"])
+        XCTAssertEqual(before.first?["manufacturer"] as? String, "Yageo")
+
+        // 75: once cached, "pools" still lists the part as Stock holds it,
+        // marked in_project_pool, and "all" lists it once, as the project's.
+        _ = try result("import_pool_part", ["part": "part-1"])
+        let pools = try XCTUnwrap(try result("list_parts", ["scope": "pools"]) as? [[String: Any]])
+        XCTAssertEqual(pools.count, 1)
+        XCTAssertEqual(pools.first?["pool"] as? String, "Stock")
+        XCTAssertEqual(pools.first?["in_project_pool"] as? Bool, true)
+        XCTAssertEqual(pools.first?["description"] as? String, "Thick film resistor")
+        let all = try XCTUnwrap(try result("list_parts", ["scope": "all"]) as? [[String: Any]])
+        XCTAssertEqual(all.count, 1, "the cached copy is not listed twice")
+        XCTAssertNotEqual(all.first?["pool"] as? String, "Stock")
+        XCTAssertTrue((all.first?["path"] as? String)?.hasSuffix("parts/cache/part-1.json") ?? false, "\(all)")
+
+        // 75: every row has the same keys; what only the entity says is null
+        // on a base-pool row.
+        let project = try XCTUnwrap(try result("list_parts") as? [[String: Any]])
+        XCTAssertEqual(Set(project[0].keys), Set(pools[0].keys))
+        XCTAssertEqual(Set(all[0].keys), Set(pools[0].keys))
+        XCTAssertEqual(project[0]["refdes_prefix"] as? String, "R")
+        XCTAssertEqual(project[0]["gate_count"] as? Int, 1)
+        XCTAssertTrue(pools[0]["refdes_prefix"] is NSNull)
+        XCTAssertTrue(pools[0]["gate_count"] is NSNull)
+        for row in [project[0], pools[0]] {
+            XCTAssertEqual(row["uuid"] as? String, "part-1")
+            XCTAssertEqual(row["id"] as? String, "part-1")
+            XCTAssertEqual(row["entity_id"] as? String, "ent-1")
+            XCTAssertEqual(row["package_id"] as? String, "pkg-1")
+            XCTAssertEqual(row["package"] as? String, "R0603")
+            XCTAssertEqual(row["kind"] as? String, "part")
+        }
+    }
+
+    func testAnExportToAFolderThisProcessCannotWriteIsAPermissionError() throws {
+        // 76: refused before the exporters run, as a typed error, where it
+        // used to come back as a status of "error" with Cocoa's wording.
+        let locked = root.appendingPathComponent("locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: locked.path)
+        addTeardownBlock { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
+        for target in [locked, locked.appendingPathComponent("inside", isDirectory: true)] {
+            let refused = try XCTUnwrap(try call("export", ["sections": ["bom"], "target_directory": target.path])["error"] as? [String: Any])
+            XCTAssertEqual(refused["code"] as? Int, -32010, "\(refused)")
+            let data = try XCTUnwrap(refused["data"] as? [String: Any])
+            XCTAssertEqual(data["code"] as? String, "PERMISSION_DENIED")
+            XCTAssertEqual((data["details"] as? [String: Any])?["target_directory"] as? String, target.path)
+            XCTAssertEqual((data["details"] as? [String: Any])?["sandboxed"] as? Bool, false)
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: locked.path), [], "nothing was written")
+
+        let open = root.appendingPathComponent("open", isDirectory: true)
+        let exported = try XCTUnwrap(try result("export", ["sections": ["bom"], "target_directory": open.path]) as? [String: Any])
+        XCTAssertEqual(exported["status"] as? String, "success", "\(exported)")
+        XCTAssertFalse((exported["files"] as? [String] ?? []).contains { $0.hasPrefix(".horizontal-export-probe") }, "the probe is removed")
+    }
+
     /// A worker process has its own user defaults, so it cannot see the pools
     /// the app registered. Naming the directory reaches them anyway.
     func testAnUnregisteredPoolIsReachableByPath() throws {
