@@ -154,16 +154,16 @@ struct HorizontalPoolBrowserView: View {
         var seen = Set<String>()
 
         func add(_ url: URL, name: String?, isProjectPool: Bool) {
-            let standardized = url.standardizedFileURL
-            guard seen.insert(standardized.path).inserted else {
+            let canonical = HorizontalPoolLibrary.canonicalURL(url)
+            guard seen.insert(canonical.path).inserted else {
                 return
             }
             result.append(
                 BrowsedPool(
-                    url: standardized,
-                    name: name ?? HorizontalPoolRegistryStore.poolInfo(at: standardized).name,
+                    url: canonical,
+                    name: name ?? HorizontalPoolRegistryStore.poolInfo(at: canonical).name,
                     isProjectPool: isProjectPool,
-                    accessError: HorizontalPoolLibrary.accessError(for: standardized)
+                    accessError: HorizontalPoolLibrary.accessError(for: canonical)
                 )
             )
         }
@@ -571,8 +571,11 @@ struct HorizontalPoolBrowserView: View {
                     )
                 }
             }
+            // A registered pool keeps the path it was added by; the browsed
+            // pools are canonical (`HorizontalPoolLibrary.canonicalURL`).
             let unbrowsedRegisteredPools = registry.pools.filter { registered in
-                !browsedPools.contains { $0.id == registered.id }
+                let path = HorizontalPoolLibrary.canonicalURL(registered.url).path
+                return !browsedPools.contains { $0.id == path }
             }
             if !unbrowsedRegisteredPools.isEmpty {
                 Section("Registered Pools") {
@@ -643,7 +646,9 @@ struct HorizontalPoolBrowserView: View {
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             }
             #endif
-            if let registered = registry.pools.first(where: { $0.url.standardizedFileURL.path == url.standardizedFileURL.path }) {
+            if let registered = registry.pools.first(where: {
+                HorizontalPoolLibrary.canonicalURL($0.url).path == HorizontalPoolLibrary.canonicalURL(url).path
+            }) {
                 Button("Remove", role: .destructive) {
                     registry.removePool(registered)
                     HorizontalPoolLibrary.invalidateCache()
