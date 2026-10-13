@@ -617,6 +617,8 @@ struct ProjectWorkspaceView: View {
     @State private var pendingPartPlacement: HorizontalPartPlacementRequest?
     @State private var canvasCommandActionsByPane = [HorizontalPane: HorizontalCanvasCommandActions]()
     @State private var activeCanvasCommandPane: HorizontalPane?
+    /// The project pool cleanup on show, reviewed when it opened.
+    @State private var poolCleanupReview: HorizontalPoolCacheCleanupReview?
     /// A text field has the keyboard, so no canvas shows the keyboard-focus badge.
     @State private var isEditingText = false
     @State private var rightSidebarPane: HorizontalWorkspaceRightSidebar?
@@ -819,6 +821,12 @@ struct ProjectWorkspaceView: View {
             .focusedSceneValue(\.horizonPowerNetsAction, showPowerNets)
             .focusedSceneValue(\.horizonClearAllPlanesAction, clearAllBoardPlanes)
             .focusedSceneValue(\.horizonBoardRulesAction, showBoardRulesWindow)
+            .focusedSceneValue(\.horizonCleanUpProjectPoolAction, poolCleanupAction)
+            .sheet(isPresented: Binding(get: { poolCleanupReview != nil }, set: { if !$0 { poolCleanupReview = nil } })) {
+                if let poolCleanupReview {
+                    HorizontalPoolCleanupSheet(review: poolCleanupReview, isReadOnly: isReadOnly, onRemove: cleanUpProjectPool)
+                }
+            }
     }
 
     private var workspaceWithWindowObservers: some View {
@@ -1397,6 +1405,34 @@ struct ProjectWorkspaceView: View {
         try applyLiveArchive(updated, actionName: "Update Project Parts", beforeInstall: { try review.requireSourcesCurrent() })
     }
 
+    /// The Parts pane's Clean Up… and the Design menu's Clean Up Project Pool…,
+    /// where the document can be edited and has a pool.
+    private var poolCleanupAction: (() -> Void)? {
+        guard !isReadOnly, project.poolDirectory != nil else { return nil }
+        return { showPoolCleanup() }
+    }
+
+    /// Opens the project pool cleanup on what nothing in the design reaches now.
+    private func showPoolCleanup() {
+        guard let directory = project.poolDirectory else { return }
+        var files = HorizontalPoolCacheUpdater.files(in: document.archive, poolDirectory: directory)
+        if files.isEmpty, let onDisk = try? HorizontalPoolCacheUpdater.filesOnDisk(in: project.baseURL.appendingPathComponent(directory)) {
+            files = onDisk
+        }
+        poolCleanupReview = HorizontalPoolCacheCleanup.review(archive: document.archive, project: project, files: files)
+    }
+
+    private func cleanUpProjectPool(_ review: HorizontalPoolCacheCleanupReview, _ ids: Set<String>) throws {
+        guard !isReadOnly, let directory = project.poolDirectory else {
+            throw HorizontalDispatchError.failed("This project's library is read-only.")
+        }
+        let cleaned = try HorizontalPoolCacheCleanup.applying(review, removing: ids, to: document.archive, project: project, poolDirectory: directory)
+        try HorizontalPoolCacheUpdater.validate(cleaned, against: project)
+        HorizontalPoolLibrary.invalidateCache()
+        HorizontalPoolPadstacks.invalidateCaches()
+        try applyLiveArchive(cleaned, actionName: "Clean Up Project Pool")
+    }
+
     /// Upstream's wording and choices (`info_bar_gitignore`): fix it, or leave
     /// the file as it is.
     private var gitignoreInfoBar: some View {
@@ -1648,7 +1684,8 @@ struct ProjectWorkspaceView: View {
                     libraryFiles: project.poolDirectory.map { HorizontalPoolCacheUpdater.files(in: document.archive, poolDirectory: $0) } ?? [:],
                     libraryReferences: HorizontalPoolCacheUpdater.references(in: document.archive, project: project),
                     libraryRevision: boardEditRevision + schematicEditRevision,
-                    onUpdateParts: updateProjectParts
+                    onUpdateParts: updateProjectParts,
+                    onCleanUp: poolCleanupAction
                 )
             }
         case .library:

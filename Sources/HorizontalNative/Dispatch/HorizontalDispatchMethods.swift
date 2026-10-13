@@ -148,6 +148,17 @@ enum HorizontalDispatchMethods {
             handler: HorizontalDispatchPool.updateParts
         ),
         .init(
+            name: "clean_up_project_pool",
+            summary: "Remove items in the project pool's cache that nothing in the design reaches, as Horizon's Clean up Pool Cache does: parts no component uses with their entities, units, symbols, packages and 3D models, and frames, decals and padstacks nothing names. A dry run lists them. One transaction and one live undo step.",
+            params: ["handle": "Project handle.",
+                     "remove": "Ids of the unused items to remove, from a dry run's items (optional; default every one).",
+                     "review_digest": "Digest a dry run returned (recommended).",
+                     "expected_revision": "The project revision this edit was planned against.",
+                     "operation_id": "Caller-chosen mutation ID.", "plan_digest": "Digest returned by a dry run (optional).",
+                     "dry_run": "List what would be removed without changing files (default false)."],
+            handler: HorizontalDispatchPool.cleanUp
+        ),
+        .init(
             name: "list_symbols",
             summary: "Symbol instances on the schematic sheets: which component and gate each draws, where, and the instance id place_symbol and draw_net_line refer to.",
             params: ["handle": "Project handle.", "sheet": "Optional sheet index.", "sheet_id": "Sheet UUID.", "name": "Sheet name.", "block_id": "Block UUID to disambiguate a sheet."],

@@ -116,7 +116,7 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         if method != "open_project" {
             params["handle"] = handle
         }
-        if ["apply", "import_pool_part", "update_project_parts"].contains(method) {
+        if ["apply", "import_pool_part", "update_project_parts", "clean_up_project_pool"].contains(method) {
             params["expected_revision"] = try HorizontalDispatchSession.shared.perform { try $0.entry(handle: handle).revision }
             params["operation_id"] = UUID().uuidString
         }
@@ -323,6 +323,163 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         XCTAssertEqual(all.first?["in_project_pool"] as? Bool, false)
         XCTAssertEqual(all.first?["pool"] as? String, "Stock")
         XCTAssertNotNil(try call("list_parts", ["scope": "sideways"])["error"])
+    }
+
+    // MARK: - Round twenty-nine: notes 92 and 94
+
+    private func editPackageJSON(_ relativePath: String, _ edit: (inout JSONDictionary) -> Void) throws {
+        let url = packageURL.appendingPathComponent(relativePath)
+        var json = try JSONHelper.loadDictionary(from: url)
+        edit(&json)
+        try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]).write(to: url)
+    }
+
+    /// What the design reaches stays: a component's part and its tree (the
+    /// block typed or not), the BOM's concrete part, a sheet's frame, a board
+    /// decal and a via's padstack. Only what nothing names is offered.
+    func testCleanUpReviewOffersOnlyWhatNothingInTheDesignReaches() throws {
+        _ = try result("import_pool_part", ["part": "part-1"])
+        _ = try result("apply", ["ops": [["op": "ensure_component", "refdes": "R1", "part": "part-1"]]])
+        let pool = "Untitled.horizontal/pool/"
+        for id in ["frame-used", "frame-unused"] {
+            try write(["type": "frame", "uuid": id, "name": id, "width": 297_000_000, "height": 210_000_000,
+                       "lines": [:], "arcs": [:], "texts": [:], "polygons": [:], "junctions": [:]], to: pool + "frames/cache/\(id).json")
+        }
+        try write(["type": "decal", "uuid": "decal-used", "name": "Logo", "polygons": [:], "lines": [:], "arcs": [:], "texts": [:], "junctions": [:]],
+                  to: pool + "decals/cache/decal-used.json")
+        for id in ["via-ps", "stray-ps"] {
+            try write(["type": "padstack", "padstack_type": "via", "uuid": id, "name": id, "shapes": [:], "holes": [:], "polygons": [:], "parameter_set": [:]],
+                      to: pool + "padstacks/cache/\(id).json")
+        }
+        var concrete = try JSONHelper.loadDictionary(from: packageURL.appendingPathComponent("pool/parts/cache/part-1.json"))
+        concrete["uuid"] = "concrete-1"
+        concrete["MPN"] = [false, "CONCRETE-1"]
+        try write(concrete, to: pool + "parts/cache/concrete-1.json")
+        concrete["uuid"] = "stray-part"
+        concrete["MPN"] = [false, "STRAY-1"]
+        try write(concrete, to: pool + "parts/cache/stray-part.json")
+        let model = packageURL.appendingPathComponent("pool/3d_models/cache/stock-pool/3d_models/stray.step")
+        try FileManager.default.createDirectory(at: model.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("solid".utf8).write(to: model)
+
+        try editPackageJSON("top_schematic.json") { json in
+            json["sheets"] = json.dictionaryMap("sheets").mapValues { sheet -> JSONDictionary in
+                var sheet = sheet
+                sheet["frame"] = "frame-used"
+                return sheet
+            }
+        }
+        try editPackageJSON("board.json") { json in
+            json["decals"] = ["d1": ["decal": "decal-used", "placement": ["shift": [0, 0], "angle": 0, "mirror": false], "scale": 1, "flags": 0]]
+            json["vias"] = ["v1": ["padstack": "via-ps", "junction": "j1", "parameter_set": [:], "from_rules": false, "locked": false, "source": "local"]]
+        }
+        try editPackageJSON("top_block.json") { json in
+            // Billo's block has no type key (note 92).
+            json.removeValue(forKey: "type")
+            json["bom_export_settings"] = ["concrete_parts": ["part-1": "concrete-1"]]
+        }
+
+        let archive = try HorizontalProjectArchive.snapshot(from: packageURL)
+        let project = try HorizontalProject.loadSnapshot(of: archive)
+        let files = HorizontalPoolCacheUpdater.files(in: archive, poolDirectory: "pool")
+        let review = HorizontalPoolCacheCleanup.review(archive: archive, project: project, files: files)
+        XCTAssertEqual(review.items.map(\.id), ["part|stray-part", "padstack|stray-ps", "frame|frame-unused",
+                                                "model|3d_models/cache/stock-pool/3d_models/stray.step"])
+        XCTAssertEqual(review.items.first?.name, "STRAY-1 / Yageo")
+        XCTAssertEqual(review.items.first?.paths, ["parts/cache/stray-part.json"])
+        XCTAssertEqual(review.items.last?.bytes, 5)
+
+        // Note 92: the components are found without the block's type key.
+        XCTAssertEqual(HorizontalPoolCacheUpdater.references(in: archive, project: project)["part-1"], ["R1"])
+        XCTAssertEqual(HorizontalPoolCacheUpdater.references(in: archive)["part-1"], nil, "without the project, an untyped block is not found")
+    }
+
+    func testCleanUpDryRunListsAndTheCommitRemovesFilesAndManifestEntries() throws {
+        let empty = try XCTUnwrap(try result("clean_up_project_pool", ["dry_run": true]) as? JSONDictionary)
+        XCTAssertEqual((empty["items"] as? [JSONDictionary])?.count, 0)
+        XCTAssertEqual(empty.bool("unchanged"), true)
+
+        _ = try result("import_pool_part", ["part": "part-1"])
+        let before = try HorizontalProjectArchive.snapshot(from: packageURL)
+        let dry = try XCTUnwrap(try result("clean_up_project_pool", ["dry_run": true]) as? JSONDictionary)
+        let ids = (dry["items"] as? [JSONDictionary])?.compactMap { $0.string("id") }
+        XCTAssertEqual(ids, ["part|part-1", "entity|ent-1", "unit|unit-1", "symbol|sym-1", "package|pkg-1", "padstack|ps-pool"])
+        let wouldWrite = try XCTUnwrap(dry["would_write"] as? [String])
+        XCTAssertTrue(wouldWrite.contains("pool/parts/cache/part-1.json"), "\(wouldWrite)")
+        XCTAssertTrue(wouldWrite.contains("pool/.horizontal/pool-cache.json"), "the manifest loses their entries")
+        XCTAssertEqual(before, try HorizontalProjectArchive.snapshot(from: packageURL), "a dry run writes nothing")
+        XCTAssertNotNil(try call("clean_up_project_pool", ["remove": ["part|nope"], "dry_run": true])["error"])
+
+        // Used by a component, the part and its tree stay.
+        _ = try result("apply", ["ops": [["op": "ensure_component", "refdes": "R1", "part": "part-1"]]])
+        XCTAssertEqual((try XCTUnwrap(try result("clean_up_project_pool", ["dry_run": true]) as? JSONDictionary)["items"] as? [JSONDictionary])?.count, 0)
+        _ = try result("apply", ["ops": [["op": "remove_component", "component": "R1"]]])
+
+        let plan = try XCTUnwrap(try result("clean_up_project_pool", ["dry_run": true, "remove": ["part|part-1", "symbol|sym-1"]]) as? JSONDictionary)
+        XCTAssertEqual((plan["remove"] as? [JSONDictionary])?.compactMap { $0.string("id") }, ["part|part-1", "symbol|sym-1"])
+        let committed = try XCTUnwrap(try result("clean_up_project_pool", [
+            "remove": ["part|part-1", "symbol|sym-1"], "plan_digest": try XCTUnwrap(plan.string("plan_digest")),
+            "review_digest": try XCTUnwrap(plan.string("review_digest"))
+        ]) as? JSONDictionary)
+        XCTAssertEqual(committed.string("status"), "committed")
+        let fileManager = FileManager.default
+        XCTAssertFalse(fileManager.fileExists(atPath: packageURL.appendingPathComponent("pool/parts/cache/part-1.json").path))
+        XCTAssertFalse(fileManager.fileExists(atPath: packageURL.appendingPathComponent("pool/symbols/cache/sym-1.json").path))
+        XCTAssertTrue(fileManager.fileExists(atPath: packageURL.appendingPathComponent("pool/entities/cache/ent-1.json").path))
+        let manifest = try HorizontalPoolCacheProvenance.load(Data(contentsOf: packageURL.appendingPathComponent("pool/.horizontal/pool-cache.json")))
+        XCTAssertNil(manifest.files["parts/cache/part-1.json"])
+        XCTAssertNotNil(manifest.files["entities/cache/ent-1.json"])
+        XCTAssertEqual((try result("list_parts") as? [[String: Any]])?.count, 0)
+
+        // Everything else goes too, and then nothing is left to offer.
+        _ = try result("clean_up_project_pool")
+        XCTAssertFalse(fileManager.fileExists(atPath: packageURL.appendingPathComponent("pool/packages/cache/pkg-1").path))
+        XCTAssertEqual((try XCTUnwrap(try result("clean_up_project_pool", ["dry_run": true]) as? JSONDictionary)["items"] as? [JSONDictionary])?.count, 0)
+    }
+
+    @MainActor func testMountedLiveCleanUpIsOneUndoStep() async throws {
+        _ = NSApplication.shared
+        _ = try result("import_pool_part", ["part": "part-1"])
+        let originalDisk = try HorizontalProjectArchive.snapshot(from: packageURL)
+        var project = try HorizontalProject.loadSnapshot(of: originalDisk)
+        project.rebaseURLs(onto: try HorizontalProject.load(from: packageURL))
+        let state = DocumentState(originalDisk)
+        let defaults = UserDefaults(suiteName: "cleanup-live-\(UUID().uuidString)")!
+        defaults.set(false, forKey: HorizontalOperationDefaults.readOnlyOperationKey)
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        let registeredDocument = NSDocument()
+        registeredDocument.fileURL = packageURL
+        registeredDocument.undoManager = undo
+        NSDocumentController.shared.addDocument(registeredDocument)
+        defer { NSDocumentController.shared.removeDocument(registeredDocument) }
+        let hosted = NSHostingView(rootView: UpdateWorkspace(state: state, project: project)
+            .environmentObject(HorizontalAppearanceSettings(defaults: defaults)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 650),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosted
+        window.orderFront(nil)
+        defer { window.close() }
+        let deadline = Date().addingTimeInterval(10)
+        while !HorizontalDispatchSession.shared.openEntries.contains(where: { $0.live != nil && $0.url.resolvingSymlinksInPath() == packageURL.resolvingSymlinksInPath() }), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        let live = try XCTUnwrap(HorizontalDispatchSession.shared.openEntries.first { $0.live != nil && $0.url.resolvingSymlinksInPath() == packageURL.resolvingSymlinksInPath() })
+        undo.beginUndoGrouping()
+        let response = HorizontalDispatch.call(["jsonrpc": "2.0", "id": 3, "method": "clean_up_project_pool", "params": [
+            "handle": live.handle, "expected_revision": live.revision, "operation_id": "live-cleanup"
+        ]])
+        undo.endUndoGrouping()
+        XCTAssertNil(response["error"], "\(response)")
+        let cleaned = state.document.archive
+        XCTAssertNil(cleaned.regularFileData(relativePath: "pool/parts/cache/part-1.json"))
+        XCTAssertNil(cleaned.regularFileData(relativePath: "pool/packages/cache/pkg-1/package.json"))
+        XCTAssertEqual(try HorizontalProjectArchive.snapshot(from: packageURL), originalDisk, "a live cleanup leaves the saved project alone")
+        XCTAssertTrue(undo.canUndo)
+        undo.undo()
+        XCTAssertNotNil(state.document.archive.regularFileData(relativePath: "pool/parts/cache/part-1.json"))
+        XCTAssertFalse(undo.canUndo, "one cleanup is one undo step")
     }
 
     // MARK: - Round twenty-two: notes 74–76

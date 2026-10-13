@@ -97,6 +97,8 @@ struct HorizontalIPadProjectView: View {
     @State private var libraryRevealRequest: HorizontalPoolRevealRequest?
     // App settings sheet (the iPad stand-in for the macOS Settings window).
     @State private var settingsSheetPresented = false
+    /// The project pool cleanup on show, reviewed when it opened.
+    @State private var poolCleanupReview: HorizontalPoolCacheCleanupReview?
     // Per-file view-state persistence (the same store the macOS workspace
     // uses): which panes are open, the split-separator positions, and the
     // right slide-over. Restored in loadProject; the flag keeps the save
@@ -268,6 +270,11 @@ struct HorizontalIPadProjectView: View {
         }
         .sheet(isPresented: $settingsSheetPresented) {
             settingsSheet
+        }
+        .sheet(isPresented: Binding(get: { poolCleanupReview != nil }, set: { if !$0 { poolCleanupReview = nil } })) {
+            if let poolCleanupReview {
+                HorizontalPoolCleanupSheet(review: poolCleanupReview, isReadOnly: isReadOnly, onRemove: cleanUpProjectPool)
+            }
         }
         // On a phone the navigator, the inspector and the export panel slide
         // up over the canvas instead of beside it; at the medium detent the
@@ -1004,7 +1011,8 @@ struct HorizontalIPadProjectView: View {
             libraryFiles: project.poolDirectory.map { HorizontalPoolCacheUpdater.files(in: document.archive, poolDirectory: $0) } ?? [:],
             libraryReferences: HorizontalPoolCacheUpdater.references(in: document.archive, project: project),
             libraryRevision: boardEditRevision + schematicEditRevision,
-            onUpdateParts: updateProjectParts
+            onUpdateParts: updateProjectParts,
+            onCleanUp: poolCleanupAction(for: project)
         )
     }
 
@@ -1269,6 +1277,29 @@ struct HorizontalIPadProjectView: View {
     /// reach, so they go through the automation channel's own edit vocabulary.
     /// It hands back a whole archive, so the project is reloaded from it
     /// rather than patched in place.
+    private func poolCleanupAction(for project: HorizontalProject) -> (() -> Void)? {
+        guard !isReadOnly, project.poolDirectory != nil else { return nil }
+        return { showPoolCleanup(project) }
+    }
+
+    private func showPoolCleanup(_ project: HorizontalProject) {
+        guard let directory = project.poolDirectory else { return }
+        poolCleanupReview = HorizontalPoolCacheCleanup.review(
+            archive: document.archive, project: project,
+            files: HorizontalPoolCacheUpdater.files(in: document.archive, poolDirectory: directory))
+    }
+
+    private func cleanUpProjectPool(_ review: HorizontalPoolCacheCleanupReview, _ ids: Set<String>) throws {
+        guard !isReadOnly, let current = project, let directory = current.poolDirectory else {
+            throw HorizontalDispatchError.failed("This project's library is read-only.")
+        }
+        let archive = try HorizontalPoolCacheCleanup.applying(review, removing: ids, to: document.archive, project: current, poolDirectory: directory)
+        try HorizontalPoolCacheUpdater.validate(archive, against: current)
+        HorizontalPoolLibrary.invalidateCache()
+        HorizontalPoolPadstacks.invalidateCaches()
+        try applyArchiveEdit(archive, to: current, actionName: "Clean Up Project Pool")
+    }
+
     private func updateProjectParts(_ review: HorizontalPoolCacheReview, _ ids: Set<String>, _ allowProjectChanges: Bool) throws {
         guard !isReadOnly, let current = project, let directory = current.poolDirectory else {
             throw HorizontalDispatchError.failed("This project's library is read-only.")

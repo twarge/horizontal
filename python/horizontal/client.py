@@ -19,7 +19,8 @@ _request_deadline: ContextVar[float | None] = ContextVar("horizontal_deadline", 
 # Methods that change the project. They get a longer budget than a read: a
 # live commit reloads the document in the app, and on a large design that
 # takes longer than any read does.
-MUTATIONS = frozenset({"apply", "pool_write", "import_pool_part", "pour_planes", "autoroute", "update_project_parts"})
+MUTATIONS = frozenset({"apply", "pool_write", "import_pool_part", "pour_planes", "autoroute", "update_project_parts",
+                       "clean_up_project_pool"})
 
 # What the engine puts in every reply's meta (HorizontalDispatchProjectEntry.metadata),
 # in the order its JSON gives them.
@@ -484,6 +485,19 @@ class Project:
                                    "plan_digest": plan_digest}.items() if v is not None}
         result = self._call("update_project_parts", parts=parts, dry_run=dry_run,
                             allow_project_changes=allow_project_changes,
+                            expected_revision=expected_revision or self.summary["revision"],
+                            operation_id=operation_id or str(uuid.uuid4()), **options)
+        if not dry_run and "project" in result:
+            self.summary = result["project"]
+        return result
+
+    def clean_up_project_pool(self, remove: list[str] | None = None, dry_run: bool = False, *,
+                              review_digest: str | None = None, expected_revision: str | None = None,
+                              operation_id: str | None = None, plan_digest: str | None = None) -> dict[str, Any]:
+        """Remove project pool cache items nothing in the design reaches; a dry run lists them."""
+        options = {k: v for k, v in {"remove": remove, "review_digest": review_digest,
+                                   "plan_digest": plan_digest}.items() if v is not None}
+        result = self._call("clean_up_project_pool", dry_run=dry_run,
                             expected_revision=expected_revision or self.summary["revision"],
                             operation_id=operation_id or str(uuid.uuid4()), **options)
         if not dry_run and "project" in result:
