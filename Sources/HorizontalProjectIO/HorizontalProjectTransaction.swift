@@ -8,9 +8,10 @@ public final class HorizontalProjectTransaction {
     public struct Update: Codable {
         public var path: String
         public var before: Data?
-        public var after: Data
+        /// Nil deletes the file.
+        public var after: Data?
 
-        public init(url: URL, before: Data?, after: Data) {
+        public init(url: URL, before: Data?, after: Data?) {
             path = url.standardizedFileURL.path
             self.before = before
             self.after = after
@@ -121,6 +122,15 @@ public final class HorizontalProjectTransaction {
         syncDirectory(url.deletingLastPathComponent())
     }
 
+    /// Writes an update's bytes, or deletes the file when it has none.
+    private func apply(_ data: Data?, to url: URL) throws {
+        if let data {
+            try durableWrite(data, to: url)
+        } else if FileManager.default.fileExists(atPath: url.path) {
+            try durableRemove(url)
+        }
+    }
+
     private func save(_ journal: Journal) throws {
         try durableWrite(JSONEncoder().encode(journal), to: journalURL)
     }
@@ -158,7 +168,7 @@ public final class HorizontalProjectTransaction {
         for update in journal.updates {
             let target = URL(fileURLWithPath: update.path)
             if journal.phase == "committed" {
-                try durableWrite(update.after, to: target)
+                try apply(update.after, to: target)
             } else if let before = update.before {
                 try durableWrite(before, to: target)
             } else if FileManager.default.fileExists(atPath: target.path) {
@@ -188,7 +198,7 @@ public final class HorizontalProjectTransaction {
             for (index, update) in updates.enumerated() {
                 // A non-cooperating writer can race even after the first check.
                 guard try bytes(at: update.path) == update.before else { throw Failure.conflict(update.path) }
-                try durableWrite(update.after, to: URL(fileURLWithPath: update.path))
+                try apply(update.after, to: URL(fileURLWithPath: update.path))
                 try afterReplace(index)
             }
             try validate()

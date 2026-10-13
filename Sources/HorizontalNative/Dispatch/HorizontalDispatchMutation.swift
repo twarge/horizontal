@@ -228,7 +228,9 @@ enum HorizontalDispatchMutation {
                 lap("diagnostics_ms")
             }
         }
-        let changed = after.files.filter { after.archive.regularFileData(relativePath: $0) != snapshot.archive.regularFileData(relativePath: $0) }
+        // A file the edit removed (a pool cleanup) is changed too.
+        let removed = snapshot.files.filter { after.archive.regularFileData(relativePath: $0) == nil }
+        let changed = (after.files.filter { after.archive.regularFileData(relativePath: $0) != snapshot.archive.regularFileData(relativePath: $0) } + removed).sorted()
         let plan: JSONDictionary = ["revision": entry.revision, "ops": result["normalized_ops"] ?? params["ops"] ?? [], "pool_items": params["pool_items"] ?? params["items"] ?? []]
         let planDigest = HorizontalProjectTransaction.digest(try JSONSerialization.data(withJSONObject: plan, options: [.sortedKeys]))
         if let expected = params.string("plan_digest"), expected != planDigest {
@@ -301,7 +303,7 @@ enum HorizontalDispatchMutation {
         result["after_revision"] = unchanged ? entry.revision : "\(entry.instanceID):\(entry.generation + 1):\(after.id)"
         if let transaction {
             let updates = changed.map { path in
-                HorizontalProjectTransaction.Update(url: entry.project.baseURL.appendingPathComponent(path), before: snapshot.archive.regularFileData(relativePath: path), after: after.archive.regularFileData(relativePath: path)!)
+                HorizontalProjectTransaction.Update(url: entry.project.baseURL.appendingPathComponent(path), before: snapshot.archive.regularFileData(relativePath: path), after: after.archive.regularFileData(relativePath: path))
             }
             // Hash the complete input set again under the writer lock, directly before commit.
             try entry.requireRevision(params)
@@ -312,6 +314,7 @@ enum HorizontalDispatchMutation {
                 let installed = try HorizontalDispatchSnapshot.capture(url: entry.url)
                 guard installed.id == after.id else { throw HorizontalProjectTransaction.Failure.conflict(entry.url.path) }
             }
+            after.archive.removeEmptyDirectories(leftBy: removed, in: entry.project.baseURL)
             if !unchanged {
                 entry.project = staged
                 entry.snapshot = after

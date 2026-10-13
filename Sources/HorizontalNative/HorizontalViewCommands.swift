@@ -32,6 +32,10 @@ private struct HorizontalUpdateAllPlanesActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
 
+private struct HorizontalCleanUpProjectPoolActionKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
 private struct HorizontalPowerNetsActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
@@ -192,6 +196,11 @@ extension FocusedValues {
         set { self[HorizontalUpdateAllPlanesActionKey.self] = newValue }
     }
 
+    var horizonCleanUpProjectPoolAction: (() -> Void)? {
+        get { self[HorizontalCleanUpProjectPoolActionKey.self] }
+        set { self[HorizontalCleanUpProjectPoolActionKey.self] = newValue }
+    }
+
     var horizonPowerNetsAction: (() -> Void)? {
         get { self[HorizontalPowerNetsActionKey.self] }
         set { self[HorizontalPowerNetsActionKey.self] = newValue }
@@ -254,6 +263,7 @@ struct HorizontalViewCommands: Commands {
     @FocusedValue(\.horizonListenAction) private var listenAction
     @FocusedValue(\.horizonToggleRightSidebarAction) private var toggleRightSidebarAction
     @FocusedValue(\.horizonUpdateAllPlanesAction) private var updateAllPlanesAction
+    @FocusedValue(\.horizonCleanUpProjectPoolAction) private var cleanUpProjectPoolAction
     @FocusedValue(\.horizonPowerNetsAction) private var powerNetsAction
     @FocusedValue(\.horizonClearAllPlanesAction) private var clearAllPlanesAction
     @FocusedValue(\.horizonBoardRulesAction) private var boardRulesAction
@@ -528,6 +538,13 @@ struct HorizontalViewCommands: Commands {
                 canvasCommandActions?.dispatch(.showInProjectPoolManager)
             }
             .disabled(canvasCommandActions?.canShowInProjectPoolManager != true)
+            // Removing pool items is an edit, so it goes with the lock.
+            if !isLocked {
+                Button("Clean Up Project Pool…") {
+                    cleanUpProjectPoolAction?()
+                }
+                .disabled(cleanUpProjectPoolAction == nil)
+            }
 
             if !isLocked {
                 Divider()

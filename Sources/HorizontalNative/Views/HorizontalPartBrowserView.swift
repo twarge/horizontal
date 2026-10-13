@@ -36,6 +36,8 @@ struct HorizontalPartBrowserView: View {
     var libraryReferences: [String: [String]] = [:]
     var libraryRevision = 0
     var onUpdateParts: (HorizontalPoolCacheReview, Set<String>, Bool) throws -> Void = { _, _, _ in }
+    /// Opens the project pool cleanup, where the document offers one.
+    var onCleanUp: (() -> Void)? = nil
 
     @State private var searchScope: HorizontalPartSearchScope = .all
     @State private var searchText = ""
@@ -167,6 +169,14 @@ struct HorizontalPartBrowserView: View {
             }
             .disabled(libraryReview == nil)
             .help("Review project parts against their source libraries")
+
+            if let onCleanUp {
+                Button(action: onCleanUp) {
+                    Label("Clean Up…", systemImage: "trash")
+                }
+                .disabled(isReadOnly)
+                .help("Remove project pool items nothing in the design uses")
+            }
 
             Button { refreshRevision += 1 } label: {
                 Image(systemName: "arrow.clockwise")

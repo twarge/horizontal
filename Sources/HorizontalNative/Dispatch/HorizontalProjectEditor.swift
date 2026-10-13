@@ -584,6 +584,13 @@ final class HorizontalArchiveFileStore: HorizontalProjectFileStore {
         }
         try archive.replaceRegularFileData(relativePath: path, with: data)
     }
+
+    func remove(_ url: URL) throws {
+        guard let path = relativePath(for: url) else {
+            throw HorizontalDispatchError.failed("Could not map \(url.path) into the document archive rooted at \(baseURL.path).")
+        }
+        try archive.removeRegularFile(relativePath: path)
+    }
 }
 
 /// Applies edit operations to the JSON files of a loaded project and writes

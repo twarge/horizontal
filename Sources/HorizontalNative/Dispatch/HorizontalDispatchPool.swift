@@ -20,7 +20,7 @@ enum HorizontalDispatchPool {
             poolURL: entry.project.baseURL.appendingPathComponent(directory),
             files: HorizontalPoolCacheUpdater.files(in: archive, poolDirectory: directory),
             sourcePools: try poolURLs(for: entry, params: params),
-            references: HorizontalPoolCacheUpdater.references(in: archive),
+            references: HorizontalPoolCacheUpdater.references(in: archive, project: entry.project),
             sourceOverrides: params.string("pool_path").map { path in
                 let source = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
                 let ids = HorizontalPoolCacheUpdater.files(in: archive, poolDirectory: directory).values.compactMap {
@@ -75,6 +75,44 @@ enum HorizontalDispatchPool {
                     "affected_parts": review.affectedParts(selecting: ids).map(\.id),
                     "normalized_ops": [["op": "update_project_parts", "parts": ids.sorted(), "review_digest": review.digest,
                                          "allow_project_changes": allowChanges]]]
+        }
+    }
+
+    @Sendable static func cleanUp(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        guard let directory = entry.project.poolDirectory else { throw HorizontalDispatchError.failed("The project has no pool directory.") }
+        let ids = (params["remove"] as? [String]).map(Set.init)
+        if params["remove"] != nil, ids == nil {
+            throw HorizontalDispatchError.invalidParams("remove is an array of item ids from a dry run's items.")
+        }
+        return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params) { store in
+            let files = HorizontalPoolCacheUpdater.files(in: store.archive, poolDirectory: directory)
+            let review = HorizontalPoolCacheCleanup.review(archive: store.archive, project: entry.project, files: files)
+            if let expected = params.string("review_digest"), expected != review.digest {
+                throw HorizontalDispatchError.failed("The project pool or design changed since review. Run a dry run again.")
+            }
+            let poolURL = entry.project.baseURL.appendingPathComponent(directory)
+            var removed = [JSONDictionary]()
+            var chosen = Set<String>()
+            if !review.items.isEmpty || ids != nil {
+                let (paths, manifest) = try HorizontalPoolCacheCleanup.removal(review, removing: ids, archive: store.archive,
+                                                                              project: entry.project, poolDirectory: directory)
+                for path in paths { try store.remove(poolURL.appendingPathComponent(path)) }
+                if let manifest { try store.write(manifest, to: poolURL.appendingPathComponent(HorizontalPoolCacheProvenance.path)) }
+                chosen = ids ?? Set(review.items.map(\.id))
+                HorizontalPoolLibrary.invalidateCache()
+                HorizontalPoolPadstacks.invalidateCaches()
+            }
+            for item in review.items where chosen.contains(item.id) {
+                removed.append(["id": item.id, "kind": item.kind, "name": item.name, "paths": item.paths, "bytes": item.bytes])
+            }
+            return ["applied": chosen.count, "undo_name": "Clean Up Project Pool", "review_digest": review.digest,
+                    "items": review.items.map { item -> JSONDictionary in
+                        ["id": item.id, "kind": item.kind, "uuid": item.uuid as Any, "name": item.name,
+                         "paths": item.paths, "bytes": item.bytes]
+                    },
+                    "remove": removed,
+                    "normalized_ops": [["op": "clean_up_project_pool", "remove": chosen.sorted(), "review_digest": review.digest]]]
         }
     }
 
