@@ -473,6 +473,39 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         status = (await self.call("connection_status"))["data"]
         self.assertTrue(status["contexts"][0]["connected"])
 
+    async def test_a_context_reads_the_same_before_and_after_its_first_call(self):
+        # 83: a context fresh from open_project lacked api_version and origin.
+        def context():
+            return next(c for c in status["contexts"] if c["project_ref"] == self.ref)
+        status = (await self.call("connection_status"))["data"]
+        fresh = context()
+        await self.call("list_sheets", project_ref=self.ref)
+        status = (await self.call("connection_status"))["data"]
+        self.assertEqual(list(fresh), list(context()))
+        self.assertIn("api_version", fresh)
+        self.assertIn("origin", fresh)
+
+    async def test_part_lists_narrow_to_a_pool_and_to_the_fields_asked_for(self):
+        # 81: the pool scopes run to a megabyte; a caller can take less.
+        project = server._projects[self.ref]
+        rows = [{"uuid": "a", "id": "a", "mpn": "TPS62172DSGT", "pool": "Project pool", "pools": ["Project pool", "Twinleaf Pool"], "path": "/p/a"},
+                {"uuid": "b", "id": "b", "mpn": "TPS62172QDSGTQ1", "pool": "Twinleaf Pool", "pools": ["Twinleaf Pool"], "path": "/t/b"},
+                {"uuid": "c", "id": "c", "mpn": "BLM18AG601SN1D", "pool": "Horizon", "pools": ["Horizon"], "path": "/h/c"}]
+        with patch.object(project, "parts", return_value=rows):
+            held = (await self.call("list_parts", project_ref=self.ref, scope="all", pool="twinleaf pool"))["data"]
+            self.assertEqual([r["mpn"] for r in held], ["TPS62172DSGT", "TPS62172QDSGTQ1"], "a cached part is held by its source too")
+            narrow = (await self.call("list_parts", project_ref=self.ref, scope="all", fields=["mpn"]))["data"]
+            self.assertEqual(narrow[0], {"uuid": "a", "mpn": "TPS62172DSGT"})
+            unknown = await server.mcp.call_tool("list_parts", {"project_ref": self.ref, "scope": "all", "pool": "Twinleaf"})
+            self.assertTrue(unknown.is_error)
+            self.assertEqual(unknown.structured_content["error"]["code"], "INVALID_ARGUMENT")
+            self.assertIn("Horizon, Project pool, Twinleaf Pool", unknown.structured_content["error"]["message"])
+        found = {"pools": [], "total": 1, "truncated": False,
+                 "items": [{"uuid": "a", "kind": "part", "name": "TPS62172DSGT", "pools": ["Project pool"], "path": "/p/a"}]}
+        with patch.object(project, "search_pool", return_value=found):
+            items = (await self.call("search_pool", project_ref=self.ref, query="tps", fields=["pools"]))["data"]["items"]
+            self.assertEqual(items, [{"uuid": "a", "kind": "part", "pools": ["Project pool"]}])
+
     async def test_a_refused_live_export_runs_in_the_worker_when_the_files_match(self):
         # 76: the app can only write where it has been given access. When its
         # files hold what the document does, the worker exports them instead.
