@@ -93,6 +93,49 @@ final class HorizontalProjectArchiveTests: XCTestCase {
         XCTAssertEqual(archive.regularFileData(relativePath: "nested/notes.txt"), Data("keep".utf8))
     }
 
+    /// A pool cleanup removes files from the archive; saving in place deletes
+    /// exactly those, with the directories the archive no longer has, and an
+    /// earlier archive (undo) writes them back.
+    func testRemovedFilesAreDeletedOnSaveAndAnEarlierArchiveRestoresThem() throws {
+        let root = try temporaryDirectory().appendingPathComponent("Cleanup")
+        try write("{\"uuid\":\"project\",\"name\":\"Cleanup\",\"pool_directory\":\"pool\"}",
+                  to: root.appendingPathComponent("Cleanup.hprj"))
+        try write("{\"type\":\"pool\"}", to: root.appendingPathComponent("pool/pool.json"))
+        try write("{\"type\":\"part\"}", to: root.appendingPathComponent("pool/parts/cache/used.json"))
+        try write("{\"type\":\"part\"}", to: root.appendingPathComponent("pool/parts/cache/unused.json"))
+        try write("{\"type\":\"package\"}", to: root.appendingPathComponent("pool/packages/cache/pkg/package.json"))
+        try write("{\"type\":\"padstack\"}", to: root.appendingPathComponent("pool/packages/cache/pkg/padstacks/pad.json"))
+        try write("{\"type\":\"package\"}", to: root.appendingPathComponent("pool/packages/cache/other/package.json"))
+
+        let original = try HorizontalProjectArchive.completeProject(from: root.appendingPathComponent("Cleanup.hprj"))
+        var cleaned = original
+        for path in ["pool/parts/cache/unused.json", "pool/packages/cache/pkg/package.json", "pool/packages/cache/pkg/padstacks/pad.json"] {
+            try cleaned.removeRegularFile(relativePath: path)
+        }
+        XCTAssertThrowsError(try cleaned.removeRegularFile(relativePath: "pool/parts/cache/missing.json"))
+        XCTAssertThrowsError(try cleaned.removeRegularFile(relativePath: "pool/packages/cache/other"), "only regular files")
+        XCTAssertNil(cleaned.regularFileData(relativePath: "pool/parts/cache/unused.json"))
+        XCTAssertNotNil(cleaned.regularFileData(relativePath: "pool/parts/cache/used.json"))
+        XCTAssertEqual(cleaned.removedRelativePaths.count, 3)
+
+        let changed = try cleaned.writeInPlace()
+        XCTAssertEqual(changed, ["pool/packages/cache/pkg/package.json", "pool/packages/cache/pkg/padstacks/pad.json", "pool/parts/cache/unused.json"])
+        let fileManager = FileManager.default
+        XCTAssertFalse(fileManager.fileExists(atPath: root.appendingPathComponent("pool/parts/cache/unused.json").path))
+        XCTAssertFalse(fileManager.fileExists(atPath: root.appendingPathComponent("pool/packages/cache/pkg").path))
+        XCTAssertTrue(fileManager.fileExists(atPath: root.appendingPathComponent("pool/packages/cache/other/package.json").path))
+        XCTAssertTrue(fileManager.fileExists(atPath: root.appendingPathComponent("pool/parts/cache/used.json").path))
+        XCTAssertEqual(try cleaned.writeInPlace(), [], "nothing left to delete")
+
+        // Undo: the earlier archive still holds the files and writes them back.
+        XCTAssertEqual(Set(try original.writeInPlace()), ["pool/packages/cache/pkg/package.json", "pool/packages/cache/pkg/padstacks/pad.json", "pool/parts/cache/unused.json"])
+        XCTAssertTrue(fileManager.fileExists(atPath: root.appendingPathComponent("pool/packages/cache/pkg/padstacks/pad.json").path))
+
+        // Writing a removed file again takes it off the list.
+        try cleaned.replaceRegularFileData(relativePath: "pool/parts/cache/unused.json", with: Data("{}".utf8))
+        XCTAssertFalse(cleaned.removedRelativePaths.contains("pool/parts/cache/unused.json"))
+    }
+
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("horizontal-tests-\(UUID().uuidString)")

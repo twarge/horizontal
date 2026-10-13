@@ -184,11 +184,17 @@ enum HorizontalPoolCacheUpdater {
         })
     }
 
+    /// Which components use each part, by part uuid. With a project, its block
+    /// list names the block files. Without one, a block is a JSON file typed
+    /// "block", and Horizon doesn't always write that key (Billo's has none).
     static func references(in archive: HorizontalProjectArchive, project: HorizontalProject? = nil) -> [String: [String]] {
         var result = [String: Set<String>]()
-        for path in archive.regularFilePaths where path.hasSuffix(".json") {
-            guard let data = archive.regularFileData(relativePath: path),
-                  let json = try? JSONHelper.loadDictionary(from: data), json.string("type") == "block" else { continue }
+        let blocks: [JSONDictionary] = project.map { Array(HorizontalPoolCacheUsage.blocks(in: archive, project: $0).values) }
+            ?? archive.regularFilePaths.filter { $0.hasSuffix(".json") }.compactMap { path in
+                archive.regularFileData(relativePath: path).flatMap { try? JSONHelper.loadDictionary(from: $0) }
+                    .flatMap { $0.string("type") == "block" ? $0 : nil }
+            }
+        for json in blocks {
             for (_, component) in json.dictionaryMap("components") {
                 if let part = component.string("part")?.lowercased(), let refdes = component.string("refdes") {
                     result[part, default: []].insert(refdes)
@@ -404,6 +410,14 @@ enum HorizontalPoolCacheUpdater {
     }
 
     private static func dependencies(of partID: String, jsons: [String: JSONDictionary]) -> Set<String> {
+        dependencies(of: [.init(type: "part", uuid: partID)], jsons: jsons)
+    }
+
+    /// The pool-relative paths `roots` reach: a part's base, entity and package,
+    /// an entity's units, every symbol of a unit, a package's padstacks and 3D
+    /// models. Frames, decals and padstacks are leaves. A project-local item
+    /// is preferred over a cached one with the same uuid.
+    static func dependencies(of roots: [HorizontalPoolItemReference], jsons: [String: JSONDictionary]) -> Set<String> {
         var visited = Set<String>()
         let paths = preferredPaths(jsons)
         func visit(_ type: String, _ uuid: String) {
@@ -437,7 +451,9 @@ enum HorizontalPoolCacheUpdater {
             default: break
             }
         }
-        visit("part", partID)
+        for root in roots {
+            visit(root.type, root.uuid)
+        }
         return visited
     }
 

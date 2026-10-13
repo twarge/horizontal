@@ -53,6 +53,33 @@ final class HorizontalProjectTransactionTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: a), Data("a1".utf8))
     }
 
+    /// An update without bytes deletes its file (a cleaned-up pool cache item),
+    /// rolls back by restoring it, and rolls forward by deleting it.
+    func testAnUpdateWithoutBytesDeletesItsFile() throws {
+        let (project, a, b) = try fixture()
+        let transaction = try HorizontalProjectTransaction(projectURL: project)
+        let changes = [HorizontalProjectTransaction.Update(url: a, before: Data("a0".utf8), after: nil),
+                       .init(url: b, before: Data("b0".utf8), after: Data("b1".utf8))]
+        XCTAssertThrowsError(try transaction.commit(changes, validate: { throw CocoaError(.fileReadCorruptFile) }))
+        XCTAssertEqual(try Data(contentsOf: a), Data("a0".utf8), "a failed commit puts the file back")
+        try transaction.commit(changes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: a.path))
+        XCTAssertEqual(try Data(contentsOf: b), Data("b1".utf8))
+
+        for phase in ["prepared", "committed"] {
+            let (project, a, _) = try fixture()
+            let directory = HorizontalProjectTransaction.transactionDirectory(project)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let updates = [HorizontalProjectTransaction.Update(url: a, before: Data("a0".utf8), after: nil)]
+            let journal: [String: Any] = ["updates": try JSONSerialization.jsonObject(with: JSONEncoder().encode(updates)), "phase": phase]
+            try JSONSerialization.data(withJSONObject: journal).write(to: directory.appendingPathComponent("journal.json"))
+            // The process died after deleting the file.
+            try FileManager.default.removeItem(at: a)
+            try HorizontalProjectTransaction(projectURL: project).recover()
+            XCTAssertEqual(FileManager.default.fileExists(atPath: a.path), phase == "prepared", phase)
+        }
+    }
+
     func testInterruptedPreparedAndCommittedJournalsRecoverOnNextOpen() throws {
         for phase in ["prepared", "committed"] {
             let (project, a, b) = try fixture()

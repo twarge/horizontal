@@ -41,6 +41,11 @@ public struct HorizontalProjectArchive: Equatable, Sendable {
     public var root: HorizontalProjectArchiveNode
     public var suggestedFilename: String?
     public var manifest: HorizontalProjectManifest?
+    /// Regular files removed since the archive was gathered, which an in-place
+    /// save deletes from disk. Undo installs an earlier archive, whose set
+    /// lacks them and whose tree still holds them, so the next save writes
+    /// them back.
+    public private(set) var removedRelativePaths: Set<String> = []
 
     public init(
         root: HorizontalProjectArchiveNode,
@@ -153,8 +158,9 @@ public struct HorizontalProjectArchive: Equatable, Sendable {
     /// Horizon project on disk needs.
     ///
     /// Files whose bytes already match disk are left alone, so saving an edit to
-    /// one board doesn't rewrite (and re-timestamp) an entire pool. Returns the
-    /// relative paths actually written.
+    /// one board doesn't rewrite (and re-timestamp) an entire pool. Files in
+    /// `removedRelativePaths` are deleted, with any directory they leave empty.
+    /// Returns the relative paths actually written or deleted.
     ///
     /// Requires the `manifest` recorded by `completeProject(from:)`; without it
     /// nothing maps archive paths back onto disk.
@@ -180,8 +186,38 @@ public struct HorizontalProjectArchive: Equatable, Sendable {
             updates.append(.init(url: url, before: before, after: data))
             written.append(relativePath)
         }
+        var deleted = [URL]()
+        for relativePath in removedRelativePaths.sorted() where !skippedRelativePaths.contains(relativePath) {
+            let url = manifest.baseURL.appendingPathComponent(relativePath)
+            var isDirectory = ObjCBool(false)
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+                continue
+            }
+            updates.append(.init(url: url, before: try Data(contentsOf: url), after: nil))
+            written.append(relativePath)
+            deleted.append(url)
+        }
         try transaction.commit(updates)
+        removeEmptyDirectories(leftBy: deleted.map { String($0.standardizedFileURL.path.dropFirst(manifest.baseURL.standardizedFileURL.path.count + 1)) },
+                               in: manifest.baseURL)
         return written.sorted()
+    }
+
+    /// Removes the directories on disk under `base` that deleting the files at
+    /// `relativePaths` left empty, as far up as the archive no longer has them.
+    public func removeEmptyDirectories(leftBy relativePaths: [String], in base: URL) {
+        let basePath = base.standardizedFileURL.path
+        for relativePath in relativePaths {
+            var directory = base.appendingPathComponent(relativePath).deletingLastPathComponent().standardizedFileURL
+            while directory.path.hasPrefix(basePath + "/") {
+                let relativePath = String(directory.path.dropFirst(basePath.count + 1))
+                guard !root.hasNode(components: relativePath.pathComponentsForArchive),
+                      let contents = try? FileManager.default.contentsOfDirectory(atPath: directory.path),
+                      contents.allSatisfy({ $0 == ".DS_Store" }),
+                      (try? FileManager.default.removeItem(at: directory)) != nil else { break }
+                directory = directory.deletingLastPathComponent()
+            }
+        }
     }
 
     public func write(to url: URL) throws {
@@ -215,6 +251,18 @@ public struct HorizontalProjectArchive: Equatable, Sendable {
     public mutating func replaceRegularFileData(relativePath: String, with data: Data) throws {
         let components = try Self.archivePathComponents(relativePath)
         try root.replaceRegularFileData(components: components, with: data)
+        removedRelativePaths.remove(components.joined(separator: "/"))
+    }
+
+    /// Takes a regular file out of the archive, and any directory that leaves
+    /// empty. An in-place save then deletes it from disk.
+    public mutating func removeRegularFile(relativePath: String) throws {
+        let components = try Self.archivePathComponents(relativePath)
+        guard root.regularFileData(components: components) != nil else {
+            throw HorizontalProjectArchiveError.invalidRelativePath(relativePath)
+        }
+        root.removeRegularFile(components: components)
+        removedRelativePaths.insert(components.joined(separator: "/"))
     }
 
     private static func node(from wrapper: FileWrapper, name: String) throws -> HorizontalProjectArchiveNode {
@@ -365,6 +413,29 @@ private struct ArchiveBuilder {
 }
 
 private extension HorizontalProjectArchiveNode {
+    func hasNode(components: ArraySlice<String>) -> Bool {
+        guard let first = components.first else { return true }
+        guard case .directory(let children) = self, let child = children[first] else { return false }
+        return child.hasNode(components: components.dropFirst())
+    }
+
+    /// Removes the file at `components`, pruning directories it leaves empty.
+    /// The caller has checked that a regular file is there.
+    mutating func removeRegularFile(components: ArraySlice<String>) {
+        guard case .directory(var children) = self, let first = components.first else { return }
+        if components.count == 1 {
+            children[first] = nil
+        } else if var child = children[first] {
+            child.removeRegularFile(components: components.dropFirst())
+            if case .directory(let grandchildren) = child, grandchildren.isEmpty {
+                children[first] = nil
+            } else {
+                children[first] = child
+            }
+        }
+        self = .directory(children)
+    }
+
     mutating func replaceRegularFileData(components: ArraySlice<String>, with data: Data) throws {
         guard let first = components.first else {
             self = .regularFile(data)
