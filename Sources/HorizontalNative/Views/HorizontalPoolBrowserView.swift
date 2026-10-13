@@ -472,6 +472,7 @@ struct HorizontalPoolBrowserView: View {
             TextField("Search \(category.title)", text: $searchText)
                 .textFieldStyle(.roundedBorder)
                 .frame(minWidth: compact ? 80 : 160)
+                .leavesFieldOnEscape()
 
             if isLoading {
                 ProgressView()
