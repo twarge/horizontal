@@ -524,7 +524,7 @@ struct HorizontalSchematic {
         let details = HorizontalComponentDetails(
             componentID: componentID,
             refdes: refdes,
-            value: part.value,
+            value: part.displayValue,
             partID: part.id,
             mpn: part.mpn,
             manufacturer: part.manufacturer,
@@ -535,7 +535,7 @@ struct HorizontalSchematic {
         )
         let component = SchematicComponentInfo(
             refdes: refdes,
-            value: part.value,
+            value: part.displayValue,
             partID: part.id,
             noPopulate: false,
             gateSuffixes: Dictionary(uniqueKeysWithValues: part.gates.map { ($0.id, $0.suffix) }),
