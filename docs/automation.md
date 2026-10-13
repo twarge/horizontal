@@ -41,7 +41,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 
 | Method | What it answers |
 |---|---|
-| `version`, `methods` | API version, the build's executable time, and `ops`/`ops_digest` fingerprinting the edit vocabulary; the method table |
+| `version`, `methods` | API version; the build's executable, its path and modification time, and in an app its `.app` `bundle` and `bundle_version`, which tell an installed copy from an Xcode build; and `ops`/`ops_digest` fingerprinting the edit vocabulary; the method table |
 | `open_project`, `new_project`, `close_project`, `reload_project`, `list_projects` | project handles; opening a path twice returns the same handle; `new_project` writes the template to a path that does not exist yet |
 | `save` | writes an open document to its file; a disk context reports `saved: false` because its edits were already written |
 | `project_info`, `project_files` | blocks, sheets, counts, diagnostics; files in the captured source |
@@ -70,8 +70,8 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `get_pool_item` | one pool item's own JSON — the bytes `pool_write` takes back |
 | `pour_planes` | fills every plane, as Update All Planes does |
 | `list_texts` | free text on the schematic sheets, with the ids the text ops take; texts smashed out of symbols only with `smashed` or in a `text` search, each with its part's `refdes`, or only one part's with `component`; `drawn` and `text` as for `list_board_texts` |
-| `list_parts` | parts the project can use; `scope` widens it from the project pool to the pools it draws from. A part flagged `base_part` is left out, as Horizon's part browser leaves it out, and `search_pool` marks it `base_part` |
-| `search_pool` | search those pools by name, description, manufacturer, tag, uuid or a part's value, filtered by item kind. A quantity matches however it is written — `2.2 µF`, `2u2`, `2200nF` — against a part's value, description words or parametric data. A part row gives its `package` and `package_id`, a derived part's taken from its base, and `package` (a name such as `C0402`, or a uuid) keeps only the parts in it |
+| `list_parts` | parts the project can use; `scope` widens it from the project pool to the pools it draws from. Every row's `pools` names each pool holding the part, its own first, so a cached part says where it came from. A part flagged `base_part` is left out, as Horizon's part browser leaves it out, and `search_pool` marks it `base_part`. The MCP tool also takes `pool` (only the parts one pool holds) and `fields` |
+| `search_pool` | search those pools by name, description, manufacturer, tag, uuid or a part's value, filtered by item kind. A quantity matches however it is written — `2.2 µF`, `2u2`, `2200nF` — against a part's value, description words or parametric data. A part row has the keys a `list_parts` row has, its `package` and `package_id` a derived part's taken from its base, and `package` (a name such as `C0402`, or a uuid) keeps only the parts in it. Every item's `pools` names each searched pool holding it |
 | `import_pool_part` | copy a part and its whole dependency chain from a base pool into the project pool cache |
 | `board_info` | bounds, stackup, drawing layers, object counts |
 | `recompute_connectivity` | the editor's post-edit connectivity pass, in memory |

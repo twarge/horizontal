@@ -87,6 +87,23 @@ struct HorizontalPoolLibraryItem: Identifiable, Hashable, Sendable {
     /// package are its file's until `resolvingInheritance` works them out
     /// through its base.
     var partRecord: HorizontalPartRecord?
+    /// Every browsed pool holding this item, its own first. A scan leaves it
+    /// empty; the Pools pane fills it (`HorizontalPoolBrowserView.visibleItems`),
+    /// so one row for a part cached in the project pool still names the pool
+    /// it came from.
+    var pools: [String] = []
+
+    /// What the Pools pane's Pool column shows and its search matches.
+    var poolsLabel: String {
+        pools.isEmpty ? poolName : pools.joined(separator: " · ")
+    }
+
+    /// The kind and uuid, which is what makes two copies the same item.
+    var itemKey: String { Self.key(category, uuid) }
+
+    static func key(_ category: HorizontalPoolItemCategory, _ uuid: String) -> String {
+        category.rawValue + "|" + uuid.lowercased()
+    }
 }
 
 /// Cross-reference lookup over the browsed pools' items by kind and uuid, so
@@ -220,6 +237,33 @@ enum HorizontalPoolLibrary {
         lock.lock()
         cache.removeValue(forKey: poolURL.standardizedFileURL.path)
         lock.unlock()
+    }
+
+    /// The names of the pools holding each item, by `itemKey`, in the order
+    /// `items` come: the project pool first, as every scan orders them. Horizon
+    /// keeps one row per uuid and marks where it came from; this is what lets
+    /// a single row say so.
+    static func holders(_ items: [HorizontalPoolLibraryItem]) -> [String: [String]] {
+        var names = [String: [String]]()
+        var seen = Set<String>()
+        for item in items where seen.insert(item.itemKey + "|" + item.poolURL.standardizedFileURL.path).inserted {
+            names[item.itemKey, default: []].append(item.poolName)
+        }
+        return names
+    }
+
+    /// The pools `holders` names for an item, `own` first.
+    static func pools(holding key: String, own: String, holders: [String: [String]]) -> [String] {
+        var others = holders[key] ?? []
+        if let index = others.firstIndex(of: own) { others.remove(at: index) }
+        return [own] + others
+    }
+
+    /// `item` naming every pool that holds it, its own first.
+    static func naming(_ item: HorizontalPoolLibraryItem, holders: [String: [String]]) -> HorizontalPoolLibraryItem {
+        var named = item
+        named.pools = pools(holding: item.itemKey, own: item.poolName, holders: holders)
+        return named
     }
 
     private static func scan(poolURL: URL, poolName: String) -> [HorizontalPoolLibraryItem] {

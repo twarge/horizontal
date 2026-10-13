@@ -944,6 +944,46 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
                        [original.id, other.id, unit.id], "a trailing slash names the same pool")
     }
 
+    func testARowNamesEveryPoolHoldingItAndTheSearchFindsItByAnyOfThem() {
+        // 80: one row for a part cached in the project pool used to name only
+        // the project pool, so "twinleaf tps62172" missed it under All Pools.
+        let projectPool = URL(fileURLWithPath: "/tmp/r23/Billo/pool", isDirectory: true)
+        let basePool = URL(fileURLWithPath: "/tmp/r23/Twinleaf Pool", isDirectory: true)
+        func item(_ uuid: String, _ name: String, in pool: URL, named poolName: String,
+                  category: HorizontalPoolItemCategory = .part, file: String? = nil) -> HorizontalPoolLibraryItem {
+            HorizontalPoolLibraryItem(
+                id: pool.path + "|" + category.rawValue + "|" + uuid, uuid: uuid, name: name, detail: "Texas Instruments", tags: "",
+                category: category, poolName: poolName, poolURL: pool,
+                url: pool.appendingPathComponent(file ?? "parts/\(uuid).json")
+            )
+        }
+        let cached = item("b5464582", "TPS62172DSGT", in: projectPool, named: "Project pool")
+        let original = item("b5464582", "TPS62172DSGT", in: basePool, named: "Twinleaf Pool")
+        let other = item("087d8fd4", "TPS62172QDSGTQ1", in: basePool, named: "Twinleaf Pool")
+        let unit = item("b5464582", "Same uuid, other kind", in: basePool, named: "Twinleaf Pool", category: .unit)
+        let items = [cached, original, other, unit]
+
+        let all = HorizontalPoolBrowserView.visibleItems(items, viewing: nil)
+        XCTAssertEqual(all.map(\.pools), [["Project pool", "Twinleaf Pool"], ["Twinleaf Pool"], ["Twinleaf Pool"]])
+        XCTAssertEqual(all.first?.poolsLabel, "Project pool · Twinleaf Pool")
+        // Viewing one pool, its own copy comes first.
+        XCTAssertEqual(HorizontalPoolBrowserView.visibleItems(items, viewing: basePool).first?.pools, ["Twinleaf Pool", "Project pool"])
+        XCTAssertEqual(HorizontalPoolBrowserView.visibleItems(items, viewing: projectPool).map(\.pools), [["Project pool", "Twinleaf Pool"]])
+
+        let search = { (text: String) in
+            all.filter { HorizontalPoolBrowserView.matches(text.split(separator: " ").map { $0.lowercased() }, $0) }.map(\.name)
+        }
+        XCTAssertEqual(search("twinleaf tps62172"), ["TPS62172DSGT", "TPS62172QDSGTQ1"])
+        XCTAssertEqual(search("project tps62172"), ["TPS62172DSGT"])
+        XCTAssertEqual(search("horizon tps62172"), [])
+
+        // A pool holding two copies of an item (its own and a cache copy) is
+        // named once; an unnamed item reads its own pool.
+        let twice = item("b5464582", "TPS62172DSGT", in: basePool, named: "Twinleaf Pool", file: "parts/cache/b5464582.json")
+        XCTAssertEqual(HorizontalPoolLibrary.holders([cached, original, twice])["part|b5464582"], ["Project pool", "Twinleaf Pool"])
+        XCTAssertEqual(cached.poolsLabel, "Project pool")
+    }
+
     func testSetAllNoConnectTakesOnlyFreePinsAsHorizonDoes() throws {
         _ = try placedMCU()   // PA13 on SWDIO, PA14 on SWCLK; VSS, VSS and NRST free.
         func states() throws -> [String: String] {
@@ -1238,6 +1278,16 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         let version = try XCTUnwrap(response["result"] as? JSONDictionary, "\(response)")
         XCTAssertEqual(version.string("ops_digest"), HorizontalEditOperationKind.vocabularyDigest)
         XCTAssertEqual(version.int("ops"), HorizontalEditOperationKind.allCases.count)
+
+        // 82: the build names the binary that answered by its whole path, and
+        // an app by its bundle, so an installed copy and an Xcode build differ.
+        let build = try XCTUnwrap(version.dictionary("build"))
+        let path = try XCTUnwrap(build.string("path"))
+        XCTAssertTrue(path.hasPrefix("/"), path)
+        XCTAssertEqual(build.string("executable"), URL(fileURLWithPath: path).lastPathComponent)
+        XCTAssertNotNil(build.string("modified"))
+        XCTAssertEqual(build.string("bundle") != nil, Bundle.main.bundleURL.pathExtension == "app",
+                       "only an app reports a bundle")
     }
 
     /// Schematic symbols turn the other way when mirrored (Horizon's file

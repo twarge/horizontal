@@ -216,30 +216,41 @@ struct HorizontalPoolBrowserView: View {
     /// row per item, the first pool's copy (the project pool comes first, and
     /// its copy is what the project uses, as Horizon's pool database keeps
     /// one row per uuid with the project pool's overriding); with one pool in
-    /// view, that pool's own items, cached copies and all.
+    /// view, that pool's own items, cached copies and all. Either way a row
+    /// names every pool holding the item, its own first, so a part cached in
+    /// the project pool still says where it came from.
     static func visibleItems(_ items: [HorizontalPoolLibraryItem], viewing poolURL: URL?) -> [HorizontalPoolLibraryItem] {
+        let holders = HorizontalPoolLibrary.holders(items)
         if let poolURL {
             let path = poolURL.standardizedFileURL.path
-            return items.filter { $0.poolURL.standardizedFileURL.path == path }
+            return items
+                .filter { $0.poolURL.standardizedFileURL.path == path }
+                .map { HorizontalPoolLibrary.naming($0, holders: holders) }
         }
         var seen = Set<String>()
-        return items.filter { seen.insert($0.category.rawValue + "|" + $0.uuid.lowercased()).inserted }
+        return items
+            .filter { seen.insert($0.itemKey).inserted }
+            .map { HorizontalPoolLibrary.naming($0, holders: holders) }
+    }
+
+    /// The search: every word is somewhere in the row, the pool column
+    /// included, so "twinleaf tps62172" finds a part Twinleaf Pool holds even
+    /// where the row shows the project pool's copy.
+    static func matches(_ terms: [String], _ item: HorizontalPoolLibraryItem) -> Bool {
+        guard !terms.isEmpty else { return true }
+        let haystack = [item.name, item.detail, item.manufacturer, item.tags, item.poolsLabel, item.uuid]
+            .joined(separator: "\n")
+            .lowercased()
+        return terms.allSatisfy(haystack.contains)
     }
 
     private var filteredItems: [HorizontalPoolLibraryItem] {
         let terms = searchText
             .split(whereSeparator: \.isWhitespace)
             .map { String($0).lowercased() }
-        let inCategory = Self.visibleItems(items, viewing: viewedPool?.url).filter { $0.category == category }
-        let filtered = terms.isEmpty
-            ? inCategory
-            : inCategory.filter { item in
-                let haystack = [item.name, item.detail, item.manufacturer, item.tags, item.poolName, item.uuid]
-                    .joined(separator: "\n")
-                    .lowercased()
-                return terms.allSatisfy(haystack.contains)
-            }
-        return filtered.sorted(using: sortOrder)
+        return Self.visibleItems(items, viewing: viewedPool?.url)
+            .filter { $0.category == category && Self.matches(terms, $0) }
+            .sorted(using: sortOrder)
     }
 
     private var selectedItem: HorizontalPoolLibraryItem? {
@@ -667,8 +678,11 @@ struct HorizontalPoolBrowserView: View {
             }
             .width(min: 120, ideal: 200)
 
-            TableColumn("Pool", value: \.poolName) { item in
-                tableText(item.poolName)
+            TableColumn("Pool", value: \.poolsLabel) { item in
+                tableText(item.poolsLabel)
+                    .help(item.pools.count > 1
+                          ? "This row is \(item.poolName)'s copy. Also in \(item.pools.dropFirst().joined(separator: ", "))."
+                          : "")
             }
             .width(min: 110, ideal: 160)
         }

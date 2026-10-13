@@ -369,8 +369,10 @@ def connection_status() -> dict[str, Any]:
     """Diagnose discovery, authentication, engine versions, binary selection and open contexts without opening a project. Tokens are never returned.
 
     A context's connected says whether its engine could answer now: a live one whose app has quit reads false. The
-    engine's build.modified is when its binary was last written, which for an app run from Xcode is the last Run, not
-    the last build of new code, so it cannot show whether the app is current."""
+    engine's build says which app answered: bundle is the .app it runs from, so an installed copy and an Xcode build
+    (DerivedData/…/Horizontal.app) can be told apart, with path its executable and bundle_version its build number.
+    build.modified is when that binary was last written, which for an app run from Xcode is the last Run, not the last
+    build of new code, so none of this shows whether the app is current."""
     attempts: list[dict[str, Any]] = []
     info = find_live(attempts)
     # The app's own discovery file is in its sandbox container; the holder
@@ -616,10 +618,10 @@ def list_sheets(path: str | None = None) -> list[dict[str, Any]]:
     return _resolve(path).sheets()
 
 
-def _only(record: dict[str, Any], fields: list[str] | None) -> dict[str, Any]:
+def _only(record: dict[str, Any], fields: list[str] | None, identity: tuple[str, ...] = ("id", "refdes")) -> dict[str, Any]:
     """The fields asked for, and always what identifies the record."""
     if not fields: return record
-    keep = set(fields) | {"id", "refdes"}
+    keep = set(fields) | set(identity)
     return {key: value for key, value in record.items() if key in keep}
 
 
@@ -726,29 +728,45 @@ def bom(path: str | None = None, include_no_populate: bool = True) -> dict[str, 
 
 
 @_tool
-def list_parts(path: str | None = None, scope: Literal["project", "pools", "all"] = "project") -> list[dict[str, Any]]:
+def list_parts(path: str | None = None, scope: Literal["project", "pools", "all"] = "project",
+               pool: Annotated[str | None, Field(description="Only parts this pool holds, named as a row's pools names it, e.g. \"Twinleaf Pool\".")] = None,
+               fields: Annotated[list[str] | None, Field(description="Only these keys of each row (uuid always), e.g. [\"mpn\", \"pools\"]. The pools scopes run to a megabyte in full.")] = None) -> list[dict[str, Any]]:
     """Parts the project can use. "project" (the default) lists only the project pool — the self-contained cache beside
     the project, which is all a component can name today. "pools" lists the base pools it draws from, a part the
     project has cached as its base pool holds it; "all" lists the project's parts, then the base pools' parts it does
     not have. A row with in_project_pool false needs import_pool_part before ensure_component can use it. Every row has
-    the same keys; refdes_prefix and gate_count come from the entity, so they are null on a base-pool row. A part
-    flagged base_part, there to derive others from, is left out as Horizon's part browser leaves it out; search_pool
-    finds it, marked base_part. Use search_pool to search by name, manufacturer or tag rather than reading a long list."""
-    return _resolve(path).parts(scope=scope)
+    the same keys; refdes_prefix and gate_count come from the entity, so they are null on a base-pool row. pools names
+    every pool holding the part, the row's own first, so a project row says where a cached part came from;
+    list_part_updates says whether the cached copy still matches it. A part flagged base_part, there to derive others
+    from, is left out as Horizon's part browser leaves it out; search_pool finds it, marked base_part. Use search_pool
+    to search by name, manufacturer or tag rather than reading a long list."""
+    rows = _resolve(path).parts(scope=scope)
+    if pool:
+        held = [row for row in rows if any(name.casefold() == pool.casefold() for name in row.get("pools") or [])]
+        if rows and not held:
+            known = sorted({name for row in rows for name in row.get("pools") or []})
+            raise ValueError(f"No part listed in scope {scope} is held by a pool named {pool!r}. These parts are held by: {', '.join(known)}.")
+        rows = held
+    return [_only(row, fields, identity=("uuid",)) for row in rows]
 
 
 @_tool
 def search_pool(path: str | None = None, query: str | None = None, kind: str | None = None,
-                pool_path: str | None = None, limit: int = 50, package: str | None = None) -> dict[str, Any]:
+                pool_path: str | None = None, limit: int = 50, package: str | None = None,
+                fields: Annotated[list[str] | None, Field(description="Only these keys of each item (uuid and kind always), e.g. [\"name\", \"pools\"].")] = None) -> dict[str, Any]:
     """Search every pool the project draws from — its own pool, the pools that pool includes, and the discovered base
     pools — for parts, entities, symbols, packages, padstacks, units, frames and decals. query is a case-insensitive
     substring of name, description, manufacturer, tags or uuid, or a value however it is written (10 µF, 10uF).
     package keeps only parts in that package, named as get_component gives it (C0402) or by uuid; a part row gives
-    its package and package_id, a derived part's taken from its base. Items with in_project_pool false live in a base
-    pool and need import_pool_part first. The pools list says which pools were searched, and names any that could not
-    be read rather than reporting them as empty."""
+    its package and package_id, a derived part's taken from its base. A part row has the keys a list_parts row has,
+    plus base_part on a part flagged as one. Every item's pools names each searched pool holding it, its own first.
+    Items with in_project_pool false live in a base pool and need import_pool_part first. The pools list says which
+    pools were searched, and names any that could not be read rather than reporting them as empty."""
     params = {k: v for k, v in {"query": query, "kind": kind, "pool_path": pool_path, "package": package}.items() if v is not None}
-    return _resolve(path).search_pool(limit=limit, **params)
+    found = _resolve(path).search_pool(limit=limit, **params)
+    if fields and isinstance(found, dict):
+        found = {**found, "items": [_only(item, fields, identity=("uuid", "kind")) for item in found.get("items", [])]}
+    return found
 
 
 @_tool
