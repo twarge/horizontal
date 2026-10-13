@@ -735,7 +735,8 @@ def list_parts(path: str | None = None, scope: Literal["project", "pools", "all"
     the project, which is all a component can name today. "pools" lists the base pools it draws from, a part the
     project has cached as its base pool holds it; "all" lists the project's parts, then the base pools' parts it does
     not have. A row with in_project_pool false needs import_pool_part before ensure_component can use it. Every row has
-    the same keys; refdes_prefix and gate_count come from the entity, so they are null on a base-pool row. pools names
+    the same keys; value is what the part stores, empty when it has none (a component on it shows its mpn), and
+    refdes_prefix and gate_count come from the entity, so they are null on a base-pool row. pools names
     every pool holding the part, the row's own first, so a project row says where a cached part came from;
     list_part_updates says whether the cached copy still matches it. A part flagged base_part, there to derive others
     from, is left out as Horizon's part browser leaves it out; search_pool finds it, marked base_part. Use search_pool
