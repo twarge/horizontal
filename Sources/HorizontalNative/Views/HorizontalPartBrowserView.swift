@@ -154,6 +154,7 @@ struct HorizontalPartBrowserView: View {
             TextField("Search Parts", text: $searchText)
                 .textFieldStyle(.roundedBorder)
                 .frame(minWidth: 100)
+                .leavesFieldOnEscape()
         }
     }
 

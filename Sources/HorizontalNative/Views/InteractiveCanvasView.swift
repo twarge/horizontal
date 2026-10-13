@@ -3614,6 +3614,7 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
                 // ignoresCanvasMouseEvents guard above, so sidebar clicks don't steal it).
                 if event.type == .leftMouseDown {
                     onRequestKeyboardFocus?()
+                    takeFocusFromTextInput(clickedAt: event.locationInWindow)
                 }
                 lastSampledCanvasLocation = canvasLocation
                 onCursorLocationChange?(canvasLocation)
@@ -3858,6 +3859,20 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
                 return false
             }
             return firstResponder is NSTextView || firstResponder is NSTextField
+        }
+
+        /// A click on the canvas ends editing in a field elsewhere (a pane's
+        /// search, the inspector), so the keyboard goes to the field or to
+        /// the canvas, never both. A click on a field drawn over the canvas
+        /// is that field's.
+        private func takeFocusFromTextInput(clickedAt locationInWindow: NSPoint) {
+            guard isTextInputActive, let window else { return }
+            var view = window.contentView?.hitTest(locationInWindow)
+            while let current = view {
+                if current is NSText || current is NSTextField { return }
+                view = current.superview
+            }
+            window.makeFirstResponder(self)
         }
 
         private func updateGridDivisor(from event: NSEvent) {
