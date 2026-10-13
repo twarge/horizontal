@@ -382,6 +382,29 @@ class LiveTransport(Transport):
                 raise transport_error("TIMEOUT" if isinstance(error, TimeoutError) else "CONNECTION_LOST",
                                       str(error), request, "indeterminate" if sent else "not_sent") from error
 
+    def alive(self) -> bool:
+        """Whether the app is still at the other end, without sending anything.
+
+        A socket whose peer has gone reads end-of-file at once, so a quit app
+        shows here even though `closed` only turns true when a call fails. A
+        call in progress holds the lock; the connection is in use, so alive.
+        """
+        import select
+        import socket
+
+        if self.closed: return False
+        if not self._lock.acquire(blocking=False): return True
+        try:
+            readable, _, _ = select.select([self._socket], [], [], 0)
+            if not readable: return True
+            return bool(self._socket.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT))
+        except BlockingIOError:
+            return True
+        except (OSError, ValueError):
+            return False
+        finally:
+            self._lock.release()
+
     def close(self) -> None:
         self.closed = True
         try:

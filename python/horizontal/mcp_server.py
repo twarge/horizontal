@@ -270,6 +270,15 @@ def _server_warnings(project: Project | None = None) -> list[str]:
     return warnings
 
 
+def _connected(project: Project) -> bool:
+    """Whether a context could answer now. A live connection whose app has quit is only marked closed once a call
+    fails on it, so the socket is asked directly."""
+    transport = project.session.transport
+    if transport.closed: return False
+    alive = getattr(transport, "alive", None)
+    return alive() if callable(alive) else True
+
+
 def _drop_context(ref: str) -> None:
     project = _projects.pop(ref)
     _snapshots.pop(ref, None)
@@ -357,7 +366,11 @@ def _edit_call(project: Project, method: str, **params: Any) -> dict[str, Any]:
 
 @_tool
 def connection_status() -> dict[str, Any]:
-    """Diagnose discovery, authentication, engine versions, binary selection and open contexts without opening a project. Tokens are never returned."""
+    """Diagnose discovery, authentication, engine versions, binary selection and open contexts without opening a project. Tokens are never returned.
+
+    A context's connected says whether its engine could answer now: a live one whose app has quit reads false. The
+    engine's build.modified is when its binary was last written, which for an app run from Xcode is the last Run, not
+    the last build of new code, so it cannot show whether the app is current."""
     attempts: list[dict[str, Any]] = []
     info = find_live(attempts)
     # The app's own discovery file is in its sandbox container; the holder
@@ -396,7 +409,7 @@ def connection_status() -> dict[str, Any]:
     status["binaries"] = binaries
     status["hard_deadlines"] = os.environ.get("HORIZONTAL_ISOLATED") != "0"
     status["contexts"] = [{"project_ref": id, "path": p.path, **p.last_metadata,
-                            "transport": type(p.session.transport).__name__, "connected": not p.session.transport.closed,
+                            "transport": type(p.session.transport).__name__, "connected": _connected(p),
                             "engine": p.session.engine,
                             "schema_matches": (p.session.engine or {}).get("ops_digest", _SCHEMA_DIGEST) == _SCHEMA_DIGEST}
                            for id, p in _projects.items()]
@@ -715,10 +728,12 @@ def bom(path: str | None = None, include_no_populate: bool = True) -> dict[str, 
 @_tool
 def list_parts(path: str | None = None, scope: Literal["project", "pools", "all"] = "project") -> list[dict[str, Any]]:
     """Parts the project can use. "project" (the default) lists only the project pool — the self-contained cache beside
-    the project, which is all a component can name today. "pools" lists the base pools it draws from, "all" lists both;
-    a row with in_project_pool false needs import_pool_part before ensure_component can use it. A part flagged base_part,
-    there to derive others from, is left out as Horizon's part browser leaves it out; search_pool finds it, marked
-    base_part. Use search_pool to search by name, manufacturer or tag rather than reading a long list."""
+    the project, which is all a component can name today. "pools" lists the base pools it draws from, a part the
+    project has cached as its base pool holds it; "all" lists the project's parts, then the base pools' parts it does
+    not have. A row with in_project_pool false needs import_pool_part before ensure_component can use it. Every row has
+    the same keys; refdes_prefix and gate_count come from the entity, so they are null on a base-pool row. A part
+    flagged base_part, there to derive others from, is left out as Horizon's part browser leaves it out; search_pool
+    finds it, marked base_part. Use search_pool to search by name, manufacturer or tag rather than reading a long list."""
     return _resolve(path).parts(scope=scope)
 
 
@@ -1061,8 +1076,44 @@ def check(path: str | None = None, full: bool = False) -> dict[str, Any]:
 
 @_tool
 def export(sections: list[str], path: str | None = None, target_directory: str | None = None) -> dict[str, Any]:
-    """Run the app's exporters. Sections: schematic_pdf, bom, gerber, odb, pick_and_place, board_step, board_drawing, board_dxf. Writes files; the target must be outside the project package."""
-    return _resolve(path).export(sections, target_directory=target_directory)
+    """Run the app's exporters. Sections: schematic_pdf, bom, gerber, odb, pick_and_place, board_step, board_drawing, board_dxf. Writes files; the target must be outside the project package.
+
+    A live export writes as the app, which is sandboxed and can only write where it has been given access. When it
+    cannot write to target_directory and the project's files hold exactly what the open document does, the export
+    runs in this server's worker from those files instead, and via says "worker". When the document has changes its
+    files lack, it fails with PERMISSION_DENIED: save first, or leave target_directory out to use the export folder
+    beside the project."""
+    project = _resolve(path)
+    try:
+        return project.export(sections, target_directory=target_directory)
+    except HorizontalError as error:
+        if not project.is_live or error.structured()["code"] != "PERMISSION_DENIED":
+            raise
+        return _export_from_files(project, sections, target_directory, error)
+
+
+def _export_from_files(project: Project, sections: list[str], target_directory: str | None,
+                       refused: HorizontalError) -> dict[str, Any]:
+    """The export the app was refused, run by the worker from the project's files, when they match the document."""
+    project.files()  # A read, so last_metadata names the document's snapshot as it is now.
+    document = project.last_metadata.get("snapshot_id")
+    worker = open_any(project.path, source="disk", isolated=os.environ.get("HORIZONTAL_ISOLATED") != "0")
+    try:
+        files = worker.summary.get("snapshot_id")
+        if not document or files != document:
+            details = refused.structured()["details"]
+            raise HorizontalError(refused.code, refused.message + " The project's files do not hold what the open document "
+                                  "does (document snapshot " + str(document) + ", files " + str(files) + "), so they cannot "
+                                  "be exported in its place: save first, then export again.",
+                                  {**(refused.data if isinstance(refused.data, dict) else {}),
+                                   "details": {**details, "document_snapshot": document, "file_snapshot": files}})
+        result = worker.export(sections, target_directory=target_directory)
+    finally:
+        worker.close()
+        worker.session.close()
+    return {**result, "via": "worker", "snapshot_id": files,
+            "note": "Horizontal could not write there, so this server's worker exported the project's files, which hold "
+                    "exactly what the open document does (snapshot " + files[:8] + "\u2026)."}
 
 
 @_tool

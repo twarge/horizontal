@@ -34,6 +34,8 @@ struct HorizontalPoolPart: Identifiable, Hashable {
     var isBasePart = false
     var excludeFromBOM = false
     var excludeFromPnP = false
+    /// The file the part was read from, when it came from a pool's cache.
+    var fileURL: URL? = nil
 
     var tagList: String {
         tags.joined(separator: ", ")
@@ -74,26 +76,33 @@ struct HorizontalPoolPart: Identifiable, Hashable {
                 return []
             }
 
-            let jsonByID = BoardLoadTimer.measure("  parse pool JSON files") { () -> [(String, JSONDictionary)] in
+            let jsonByID = BoardLoadTimer.measure("  parse pool JSON files") { () -> [(String, JSONDictionary, URL)] in
                 let result = partURLs
                     .filter { $0.pathExtension.lowercased() == "json" }
-                    .compactMap { url -> (String, JSONDictionary)? in
+                    .compactMap { url -> (String, JSONDictionary, URL)? in
                         guard let json = try? JSONHelper.loadDictionary(from: url) else {
                             return nil
                         }
                         let id = (json.string("uuid") ?? url.deletingPathExtension().lastPathComponent).lowercased()
-                        return (id, json)
+                        return (id, json, url)
                     }
                 return result
             }
-            let loader = PoolPartLoader(poolURL: poolURL, preloadedParts: Dictionary(uniqueKeysWithValues: jsonByID))
+            let loader = PoolPartLoader(
+                poolURL: poolURL,
+                preloadedParts: Dictionary(jsonByID.map { ($0.0, $0.1) }) { first, _ in first }
+            )
             // A part flagged base_part (on itself or through its base) is
             // there to derive others from, and Horizon's part browser leaves
             // it out (`flag_base_part = 0`). A part merely used as a base,
             // like an orderable part with variants, is still offered.
             return BoardLoadTimer.measure("  resolve pool parts (gates/symbols/packages)") {
                 jsonByID
-                    .compactMap { id, json in loader.part(id: id, json: json) }
+                    .compactMap { id, json, url -> HorizontalPoolPart? in
+                        var part = loader.part(id: id, json: json)
+                        part?.fileURL = url
+                        return part
+                    }
                     .filter { !$0.isBasePart }
                     .sorted { lhs, rhs in
                         let mpnOrder = lhs.mpn.localizedStandardCompare(rhs.mpn)
