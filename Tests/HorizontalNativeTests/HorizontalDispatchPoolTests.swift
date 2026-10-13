@@ -475,6 +475,44 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         let notAPool = try call("search_pool", ["pool_path": root.appendingPathComponent("nowhere").path])
         XCTAssertEqual((notAPool["error"] as? [String: Any])?["code"] as? Int, -32001)
     }
+
+    func testAPoolReachedThroughASymlinkIsScannedAndListedOnce() throws {
+        // 85: a pool whose root is a symlink scanned as empty, since the
+        // enumerator doesn't descend into a link, and reached two ways it was
+        // listed twice.
+        let stock = root.appendingPathComponent("stock", isDirectory: true)
+        let link = root.appendingPathComponent("stock-link", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: stock)
+        let canonical = HorizontalPoolLibrary.canonicalURL(stock).path
+        XCTAssertEqual(HorizontalPoolLibrary.canonicalURL(link).path, canonical)
+
+        HorizontalPoolRegistryStore.removePool(at: stock)
+        XCTAssertTrue(HorizontalPoolRegistryStore.addPool(at: link))
+        HorizontalPoolLibrary.invalidateCache()
+        func stockPools() throws -> [[String: Any]] {
+            let found = try XCTUnwrap(try result("search_pool", ["query": "0710KL"]) as? [String: Any])
+            XCTAssertEqual(found["total"] as? Int, 1, "the part is found through the link")
+            return (found["pools"] as? [[String: Any]] ?? []).filter { $0["uuid"] as? String == "stock-pool" }
+        }
+        var pools = try stockPools()
+        XCTAssertEqual(pools.count, 1)
+        XCTAssertEqual(pools.first?["path"] as? String, canonical, "listed as the directory it points to")
+        XCTAssertGreaterThan(pools.first?["item_count"] as? Int ?? 0, 0)
+
+        // Reached both ways, it is one pool.
+        XCTAssertTrue(HorizontalPoolRegistryStore.addPool(at: stock))
+        HorizontalPoolLibrary.invalidateCache()
+        pools = try stockPools()
+        XCTAssertEqual(pools.count, 1, "\(pools)")
+
+        // Scanned by the link, its items carry the canonical pool.
+        let items = HorizontalPoolLibrary.items(inPool: link, poolName: "Stock")
+        XCTAssertFalse(items.isEmpty)
+        XCTAssertEqual(Set(items.map(\.poolURL.path)), [canonical])
+        // And pool_path names it either way.
+        let named = try XCTUnwrap(try result("search_pool", ["query": "0710KL", "pool_path": link.path]) as? [String: Any])
+        XCTAssertEqual((named["items"] as? [[String: Any]])?.first?["uuid"] as? String, "part-1")
+    }
 }
 
 /// Reading a real board's rules.
