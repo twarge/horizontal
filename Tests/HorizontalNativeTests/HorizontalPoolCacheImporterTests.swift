@@ -293,6 +293,48 @@ final class HorizontalPoolCacheImporterTests: XCTestCase {
         XCTAssertEqual(try cachedReview(files: files, pools: [other, poolURL]).parts.first?.status, .sourceUnavailable)
     }
 
+    /// Billo's case: SMD rectangular is in Twinleaf Pool and the Horizon pool,
+    /// cached with no recorded origin, and 26 parts using it read "The
+    /// padstack … is not in any browsed pool."
+    func testDependencyInTwoPoolsWithoutOriginComesFromThePartsPool() throws {
+        try importFixture()
+        var files = try cachedFiles()
+        var provenance = try HorizontalPoolCacheProvenance.load(files[HorizontalPoolCacheProvenance.path])
+        XCTAssertNotNil(provenance.files.removeValue(forKey: "padstacks/cache/ps-pool.json"))
+        files[HorizontalPoolCacheProvenance.path] = try provenance.data()
+        try write(["type": "pool", "uuid": "other-pool", "name": "Other"], to: "other/pool.json")
+        var padstack = try JSONHelper.loadDictionary(from: poolURL.appendingPathComponent("padstacks/smd.json"))
+        try write(padstack, to: "other/padstacks/smd.json")
+        let other = temporaryRoot.appendingPathComponent("other")
+        let row = try XCTUnwrap(try cachedReview(files: files, pools: [other, poolURL]).parts.first)
+        XCTAssertEqual(row.status, .current, row.message)
+
+        padstack["name"] = "Stock updated"
+        try write(padstack, to: "stock/padstacks/smd.json")
+        let updated = try XCTUnwrap(try cachedReview(files: files, pools: [other, poolURL]).parts.first)
+        XCTAssertEqual(updated.status, .updateAvailable, updated.message)
+        XCTAssertEqual(updated.changes.map(\.path), ["padstacks/cache/ps-pool.json"])
+        XCTAssertEqual(updated.changes.first?.origin.poolUUID, "stock-pool")
+    }
+
+    func testDependencyOnlyInOtherPoolsNamesThemInsteadOfNone() throws {
+        try importFixture()
+        var files = try cachedFiles()
+        files.removeValue(forKey: HorizontalPoolCacheProvenance.path)
+        let padstack = try JSONHelper.loadDictionary(from: poolURL.appendingPathComponent("padstacks/smd.json"))
+        for name in ["Left", "Right"] {
+            try write(["type": "pool", "uuid": name.lowercased() + "-pool", "name": name], to: name.lowercased() + "/pool.json")
+            try write(padstack, to: name.lowercased() + "/padstacks/smd.json")
+        }
+        try FileManager.default.removeItem(at: poolURL.appendingPathComponent("padstacks/smd.json"))
+        HorizontalPoolLibrary.invalidateCache()
+        let pools = ["left", "right"].map { temporaryRoot.appendingPathComponent($0) } + [poolURL]
+        let row = try XCTUnwrap(try cachedReview(files: files, pools: pools).parts.first)
+        XCTAssertEqual(row.status, .sourceUnavailable)
+        XCTAssertTrue(row.message.contains("is in \u{201C}Left\u{201D}, \u{201C}Right\u{201D}"), row.message)
+        XCTAssertFalse(row.message.contains("not in any browsed pool"), row.message)
+    }
+
     func testSharedDependencyReportsAllAffectedParts() throws {
         try importFixture()
         var part = try JSONHelper.loadDictionary(from: poolURL.appendingPathComponent("parts/passive/res-10k.json"))

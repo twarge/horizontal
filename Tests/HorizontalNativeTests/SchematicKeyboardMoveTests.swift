@@ -269,6 +269,49 @@ final class SchematicKeyboardMoveTests: XCTestCase {
         XCTAssertEqual(moves.count, 5)
     }
 
+    /// Billo, 2026-10-13: during a placement, typing "tps62172" or Delete in a
+    /// pane's search field went to the canvas, as rotate, layer and delete.
+    func testFocusedTextFieldKeepsEveryKeyDuringAnInteraction() throws {
+        _ = NSApplication.shared
+        let monitor = TrackpadCanvasMonitor.MonitorView()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = monitor
+        defer { window.close() }
+        let handle = monitor.makeEventHandler()
+        var commands = 0
+        monitor.onCommand = { _ in commands += 1 }
+        var focusRequests = 0
+        monitor.onRequestKeyboardFocus = { focusRequests += 1 }
+        func event(_ code: UInt16, _ characters: String) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
+        }
+        let textView = NSTextView(frame: monitor.bounds)
+        monitor.addSubview(textView)
+
+        // An interaction that starts while the field has focus takes it, so R rotates.
+        XCTAssertTrue(window.makeFirstResponder(textView))
+        monitor.handlesInteractionKeys = true
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertTrue(window.firstResponder === monitor)
+        XCTAssertEqual(focusRequests, 1)
+        XCTAssertNil(handle(try event(15, "r")))
+        XCTAssertEqual(commands, 1)
+
+        // Clicked back into the field, the field gets everything.
+        XCTAssertTrue(window.makeFirstResponder(textView))
+        for (code, characters) in [(UInt16(17), "t"), (35, "p"), (1, "s"), (22, "6"), (15, "r"),
+                                   (51, "\u{7f}"), (53, "\u{1b}"), (36, "\r")] {
+            let typed = try event(code, characters)
+            XCTAssertTrue(handle(typed) === typed, "\(characters.debugDescription) belongs to the text field")
+        }
+        XCTAssertEqual(commands, 1)
+        XCTAssertEqual(focusRequests, 1, "only the start of an interaction moves the focus")
+    }
+
     func testPinLabelPreviewExtendsWireAndCommitUndoAndCancelPreservePin() async throws {
         guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
         _ = NSApplication.shared
