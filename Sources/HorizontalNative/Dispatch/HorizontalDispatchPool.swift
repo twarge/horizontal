@@ -140,12 +140,14 @@ enum HorizontalDispatchPool {
     }
 
     private static func key(_ category: HorizontalPoolItemCategory, _ uuid: String) -> String {
-        category.rawValue + "|" + uuid.lowercased()
+        HorizontalPoolLibraryItem.key(category, uuid)
     }
 
     /// A part row carries its package, a derived part's taken from its base.
+    /// `pools` names every scanned pool holding the item, the row's own first
+    /// (`HorizontalPoolLibrary.holders`), as the Pools pane's Pool column does.
     static func itemJSON(_ item: HorizontalPoolLibraryItem, inProject: Set<String>,
-                         package: PartPackage? = nil) -> JSONDictionary {
+                         package: PartPackage? = nil, holders: [String: [String]] = [:]) -> JSONDictionary {
         var json: JSONDictionary = [
             "uuid": item.uuid,
             "kind": item.category.rawValue,
@@ -154,6 +156,7 @@ enum HorizontalDispatchPool {
             "manufacturer": item.manufacturer,
             "tags": item.tags.split(whereSeparator: \.isWhitespace).map(String.init),
             "pool": item.poolName,
+            "pools": HorizontalPoolLibrary.naming(item, holders: holders).pools,
             "pool_path": item.poolURL.path,
             "path": item.url.path,
             "in_project_pool": inProject.contains(key(item.category, item.uuid))
@@ -167,6 +170,24 @@ enum HorizontalDispatchPool {
                 if let name = package.name { json["package"] = name }
             }
         }
+        return json
+    }
+
+    /// A scanned part as `list_parts` and `search_pool` both give it, with the
+    /// keys a project part's row has. Only an entity says the refdes prefix
+    /// and gate count, and a scan doesn't open entities, so they come from
+    /// `projectPart`, the project's own copy when this row is it, and are
+    /// null on a base-pool copy.
+    static func partRow(_ item: HorizontalPoolLibraryItem, inProject: Set<String>, package: PartPackage?,
+                        holders: [String: [String]], projectPart: HorizontalPoolPart? = nil) -> JSONDictionary {
+        var json = itemJSON(item, inProject: inProject, package: package, holders: holders)
+        json["id"] = item.uuid
+        json["mpn"] = item.name
+        json["package"] = json["package"] ?? NSNull()
+        json["package_id"] = json["package_id"] ?? NSNull()
+        json["entity_id"] = item.partEntityID.isEmpty ? NSNull() : item.partEntityID
+        json["refdes_prefix"] = projectPart.map { $0.refdesPrefix as Any } ?? NSNull()
+        json["gate_count"] = projectPart.map { $0.gates.count as Any } ?? NSNull()
         return json
     }
 
@@ -225,6 +246,11 @@ enum HorizontalDispatchPool {
         let query = (params.string("query") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let (items, pools, inProject) = scan(urls)
         let package = packages(items)
+        let holders = HorizontalPoolLibrary.holders(items)
+        // A part row reads as list_parts gives it, so the project's own copy
+        // carries what its entity says.
+        let projectPool = urls.first?.standardizedFileURL.path
+        let projectParts = Dictionary(entry.project.poolParts.map { ($0.id.lowercased(), $0) }) { first, _ in first }
 
         var seen = Set<String>()
         let matched = items
@@ -237,7 +263,13 @@ enum HorizontalDispatchPool {
             "pools": pools,
             "total": matched.count,
             "truncated": matched.count > limit,
-            "items": matched.prefix(limit).map { itemJSON($0, inProject: inProject, package: package($0)) }
+            "items": matched.prefix(limit).map { item -> JSONDictionary in
+                guard item.category == .part else {
+                    return itemJSON(item, inProject: inProject, holders: holders)
+                }
+                let own = item.poolURL.standardizedFileURL.path == projectPool ? projectParts[item.uuid] : nil
+                return partRow(item, inProject: inProject, package: package(item), holders: holders, projectPart: own)
+            }
         ] as JSONDictionary
     }
 
