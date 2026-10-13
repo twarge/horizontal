@@ -204,8 +204,18 @@ enum HorizontalPoolLibrary {
         }
     }
 
+    /// A pool directory as one URL however it was reached: symlinks resolved,
+    /// then standardized. A scan has to start from the real directory, since
+    /// FileManager's enumerator doesn't descend into a root that is a link,
+    /// and two spellings of one pool are one pool.
+    static func canonicalURL(_ url: URL) -> URL {
+        url.resolvingSymlinksInPath().standardizedFileURL
+    }
+
+    /// Every item in a pool, each with the pool's canonical URL.
     static func items(inPool poolURL: URL, poolName: String) -> [HorizontalPoolLibraryItem] {
-        let cacheKey = poolURL.standardizedFileURL.path
+        let poolURL = canonicalURL(poolURL)
+        let cacheKey = poolURL.path
 
         lock.lock()
         let cached = cache[cacheKey]
@@ -235,7 +245,7 @@ enum HorizontalPoolLibrary {
 
     static func invalidateCache(for poolURL: URL) {
         lock.lock()
-        cache.removeValue(forKey: poolURL.standardizedFileURL.path)
+        cache.removeValue(forKey: canonicalURL(poolURL).path)
         lock.unlock()
     }
 
@@ -488,9 +498,9 @@ extension HorizontalPoolLibrary {
         var result = [URL]()
         var seen = Set<String>()
         func add(_ url: URL) {
-            let standardized = url.standardizedFileURL
-            if seen.insert(standardized.path).inserted {
-                result.append(standardized)
+            let canonical = canonicalURL(url)
+            if seen.insert(canonical.path).inserted {
+                result.append(canonical)
             }
         }
         add(poolURL)
