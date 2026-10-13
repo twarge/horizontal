@@ -4586,10 +4586,19 @@ private struct NavigatorColorRow: View {
 /// at the leading edge of the detail, controls at its trailing edge. Dropping
 /// it for the opaque case rearranged every item into one packed row, so the two
 /// states differed in layout and not just in background.
-private struct WindowChromeConfigurator: NSViewRepresentable {
+///
+/// Pool item editors keep it too. They used to drop it for a plain title bar,
+/// and every one of them could then be resized but not dragged by its title
+/// bar, while project windows, which keep it, moved. An editor's title bar is
+/// opaque instead: never transparent, with the toolbar background visible
+/// (`ProjectDocumentView.body`), and its content below it in the safe area.
+///
+/// This runs on every SwiftUI update, so a property is written only when it
+/// differs; rewriting the style mask makes AppKit rebuild the title bar.
+struct WindowChromeConfigurator: NSViewRepresentable {
     var isTransparent: Bool
-    /// A plain title bar above the content (pool item editors), instead of
-    /// the full-size content view the canvas windows use.
+    /// An opaque title bar with the title shown (pool item editors), where the
+    /// canvas windows follow the Transparent Toolbar preference.
     var usesStandardTitleBar = false
 
     func makeNSView(context: Context) -> ConfiguringView {
@@ -4619,14 +4628,20 @@ private struct WindowChromeConfigurator: NSViewRepresentable {
                 return
             }
 
-            if usesStandardTitleBar {
-                window.styleMask.remove(.fullSizeContentView)
-                window.titlebarAppearsTransparent = false
-                window.titleVisibility = .visible
-                window.backgroundColor = .windowBackgroundColor
-            } else {
+            if !window.styleMask.contains(.fullSizeContentView) {
                 window.styleMask.insert(.fullSizeContentView)
-                window.titlebarAppearsTransparent = isTransparent
+            }
+            let transparent = isTransparent && !usesStandardTitleBar
+            if window.titlebarAppearsTransparent != transparent {
+                window.titlebarAppearsTransparent = transparent
+            }
+            if usesStandardTitleBar {
+                if window.titleVisibility != .visible {
+                    window.titleVisibility = .visible
+                }
+                if window.backgroundColor != .windowBackgroundColor {
+                    window.backgroundColor = .windowBackgroundColor
+                }
             }
         }
     }
