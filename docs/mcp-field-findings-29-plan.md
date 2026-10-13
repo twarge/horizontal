@@ -155,3 +155,28 @@ recorded in billo's `docs/horizontal-mcp-notes.md`.
   - **Against the BOM:** none of them is in it, and the parts the BOM leaves
     out (test pads, test point clamps, screw mounts, TC2030) are kept.
   - **References:** 69 parts have them, and U8 reads STM32H757AII6.
+- **Live, 2026-10-13:** server and Debug app at `3386800`, on Billo.
+  - **94, the dry run:** `clean_up_project_pool` gave the probe's 74 items.
+    `edit_ms` was 129, and `undo_name` "Clean Up Project Pool".
+    - **Against the files:** no component uses any of the 16 parts.
+    - **The frame:** six sheets use `51b16a87…`, the pool's `default_frame`,
+      which is kept. The offered frame, `6bec849d…`, is used by nothing.
+  - **95:** both method-level dry runs (`clean_up_project_pool`, and
+    `update_project_parts` for TPS62170DSGT) echo their op in
+    `normalized_ops`.
+  - **92:** 69 parts have `references`, and U8 reads STM32H757AII6. One more
+    row than before: TPS62172DSGT, which U2 uses itself, reads
+    `updateAvailable`. Before 92 it was taken for an unused base.
+  - **88, through the worker:** with `pool_path` Twinleaf Pool, the review is
+    byte-identical to the live one. Without it, 79 rows read
+    `sourceUnavailable` (round 30's item 97).
+  - **94 in the app (the user):** Remove Selected took all 74 and was saved
+    at 11:08.
+    - **On disk:** exactly the 74 files are gone, with no empty directory
+      left. The design files are untouched. Billo.hprj and the manifest were
+      rewritten with the same bytes, and the manifest now equals Billo's
+      last commit.
+    - **Reopened:** the snapshot is `088a45c7…`, the dry run's
+      `after_snapshot_id`. `pool_part_count` went 91 → 76, since one of the
+      16 was flagged `base_part`. `check` still gives 0 errors, 68 warnings
+      and 2 info.
