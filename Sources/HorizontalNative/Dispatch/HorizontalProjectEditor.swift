@@ -1634,13 +1634,13 @@ final class HorizontalProjectEditor {
         }
         return set.compactMap { id, value -> (String, String)? in
             guard let component = components()[id], let partID = component.string("part")?.lowercased(),
-                  let part = poolPart(partID), !part.value.isEmpty, part.value != value else { return nil }
+                  let part = poolPart(partID), !part.displayValue.isEmpty, part.displayValue != value else { return nil }
             let refdes = component.string("refdes") ?? id
             let search = part.searchPackage.map {
                 "search_pool with query \"\(value)\" and package \"\($0)\" lists those in \(refdes)'s package, "
                     + "and a part in another one changes \(refdes)'s footprint too."
             } ?? "search_pool with query \"\(value)\" lists them."
-            return (refdes, "\(refdes) is part \(part.mpn.isEmpty ? partID : part.mpn), whose own value \(part.value) is the one shown, "
+            return (refdes, "\(refdes) is part \(part.mpn.isEmpty ? partID : part.mpn), whose own value \(part.displayValue) is the one shown, "
                 + "so the \(value) set_value wrote does not show. set_part to a part with the value \(value) "
                 + "changes what is shown; \(search)")
         }

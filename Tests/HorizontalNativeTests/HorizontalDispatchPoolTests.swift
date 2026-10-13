@@ -403,6 +403,37 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         XCTAssertNil(entity["refdes_prefix"], "only a part row takes the part keys")
     }
 
+    func testAPartListGivesTheValueAPartStoresAndAComponentStillShowsItsMPN() throws {
+        // 84: a part that stores no value read its MPN as value on a project
+        // row and "" on a base-pool row. The MPN is in mpn already.
+        try write(
+            ["type": "part", "uuid": "part-2", "entity": "ent-1", "package": "pkg-1", "base": NSNull(),
+             "MPN": [false, "RC0603JR-070RL"], "value": [false, ""], "manufacturer": [false, "Yageo"],
+             "description": [false, "Zero ohm link"], "datasheet": [false, ""],
+             "tags": ["resistor"], "inherit_tags": false, "inherit_model": true,
+             "pad_map": ["pad-1": ["gate": "gate-1", "pin": "pin-1"], "pad-2": ["gate": "gate-1", "pin": "pin-2"]],
+             "parametric": [:]],
+            to: "stock/parts/res-0r.json"
+        )
+        HorizontalPoolLibrary.invalidateCache()
+        _ = try result("import_pool_part", ["part": "part-2"])
+        func row(_ params: [String: Any]) throws -> [String: Any]? {
+            try XCTUnwrap(try result("list_parts", params) as? [[String: Any]]).first { $0["uuid"] as? String == "part-2" }
+        }
+        XCTAssertEqual(try row([:])?["value"] as? String, "")
+        XCTAssertEqual(try row(["scope": "pools"])?["value"] as? String, "")
+        XCTAssertEqual(try row([:])?["mpn"] as? String, "RC0603JR-070RL")
+        let found = try XCTUnwrap((try result("search_pool", ["query": "070RL", "kind": "part"]) as? [String: Any])?["items"] as? [[String: Any]])
+        XCTAssertEqual(found.first?["value"] as? String, "")
+
+        // What a component on it shows is still Horizon's Part::get_value.
+        let part = try HorizontalDispatchSession.shared.perform { session in
+            try session.entry(handle: handle).project.poolParts.first { $0.id == "part-2" }
+        }
+        XCTAssertEqual(part?.value, "")
+        XCTAssertEqual(part?.displayValue, "RC0603JR-070RL")
+    }
+
     func testAnExportToAFolderThisProcessCannotWriteIsAPermissionError() throws {
         // 76: refused before the exporters run, as a typed error, where it
         // used to come back as a status of "error" with Cocoa's wording.

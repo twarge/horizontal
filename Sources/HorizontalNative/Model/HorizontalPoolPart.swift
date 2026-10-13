@@ -19,7 +19,12 @@ struct HorizontalPoolPart: Identifiable, Hashable {
     var partDescription: String
     var packageName: String
     var tags: [String]
+    /// The value the part stores, through its base: empty when it has none,
+    /// as a part list shows it beside the MPN.
     var value: String
+    /// What a component on this part shows (`Part::get_value`): its value, or
+    /// its MPN when it stores none.
+    var displayValue: String
     var entityID: String?
     var refdesPrefix: String
     var gates: [HorizontalPoolPartGate]
@@ -150,7 +155,8 @@ private final class PoolPartLoader {
             partDescription: nonEmpty(part.description) ?? "",
             packageName: nonEmpty(details.packageName) ?? part.packageID.map { String($0.prefix(8)) } ?? "",
             tags: part.tags,
-            value: nonEmpty(part.displayValue) ?? "",
+            value: nonEmpty(part.value) ?? "",
+            displayValue: nonEmpty(part.displayValue) ?? "",
             entityID: part.entityID,
             refdesPrefix: details.refdesPrefix,
             gates: details.gates,
