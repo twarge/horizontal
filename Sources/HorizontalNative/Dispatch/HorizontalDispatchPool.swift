@@ -96,7 +96,7 @@ enum HorizontalDispatchPool {
         guard let path = params.string("pool_path"), !path.isEmpty else {
             return urls
         }
-        let requested = URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true).standardizedFileURL
+        let requested = HorizontalPoolLibrary.canonicalURL(URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true))
         guard FileManager.default.fileExists(atPath: requested.appendingPathComponent("pool.json").path) else {
             throw HorizontalDispatchError.notFound("\(requested.path) carries no pool.json, so it is not a pool.")
         }

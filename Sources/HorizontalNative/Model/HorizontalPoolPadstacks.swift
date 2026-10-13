@@ -159,15 +159,17 @@ enum HorizontalPoolPadstacks {
     /// never returned.
     static func basePoolURLs(for poolURL: URL) -> [URL] {
         var results = [URL]()
-        var seen = Set([poolURL.standardizedFileURL.path])
+        var seen = Set([HorizontalPoolLibrary.canonicalURL(poolURL).path])
 
+        // A pool reached through a symlink is the directory it points to,
+        // listed once however many ways it is reached.
         func addIfPool(_ url: URL) {
-            let standardized = url.standardizedFileURL
-            guard FileManager.default.fileExists(atPath: standardized.appendingPathComponent("pool.json").path),
-                  seen.insert(standardized.path).inserted else {
+            let canonical = HorizontalPoolLibrary.canonicalURL(url)
+            guard FileManager.default.fileExists(atPath: canonical.appendingPathComponent("pool.json").path),
+                  seen.insert(canonical.path).inserted else {
                 return
             }
-            results.append(standardized)
+            results.append(canonical)
         }
 
         for registered in HorizontalPoolRegistryStore.poolURLs() {
