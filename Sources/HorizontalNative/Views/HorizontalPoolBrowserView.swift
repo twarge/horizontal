@@ -89,6 +89,9 @@ struct HorizontalPoolBrowserView: View {
     @State private var pendingReveal: HorizontalPoolRevealRequest?
     @State private var creationError: String?
     @State private var pickerRequest: PoolItemPickerRequest?
+    /// Pools > View: one browsed pool's own items (its `BrowsedPool.id`), or
+    /// nil for all of them, one row per item.
+    @State private var viewedPoolID: BrowsedPool.ID?
 
     /// A "choose an item" step of a creation flow (a symbol's unit, a part's
     /// entity and package).
@@ -204,11 +207,30 @@ struct HorizontalPoolBrowserView: View {
         HorizontalPoolLibrary.includedPoolURLs(for: poolURL)
     }
 
+    /// The pool Pools > View narrows the list to, or nil for all of them.
+    private var viewedPool: BrowsedPool? {
+        viewedPoolID.flatMap { id in browsedPools.first { $0.id == id } }
+    }
+
+    /// What the list shows before the search: with every pool in view, one
+    /// row per item, the first pool's copy (the project pool comes first, and
+    /// its copy is what the project uses, as Horizon's pool database keeps
+    /// one row per uuid with the project pool's overriding); with one pool in
+    /// view, that pool's own items, cached copies and all.
+    static func visibleItems(_ items: [HorizontalPoolLibraryItem], viewing poolURL: URL?) -> [HorizontalPoolLibraryItem] {
+        if let poolURL {
+            let path = poolURL.standardizedFileURL.path
+            return items.filter { $0.poolURL.standardizedFileURL.path == path }
+        }
+        var seen = Set<String>()
+        return items.filter { seen.insert($0.category.rawValue + "|" + $0.uuid.lowercased()).inserted }
+    }
+
     private var filteredItems: [HorizontalPoolLibraryItem] {
         let terms = searchText
             .split(whereSeparator: \.isWhitespace)
             .map { String($0).lowercased() }
-        let inCategory = items.filter { $0.category == category }
+        let inCategory = Self.visibleItems(items, viewing: viewedPool?.url).filter { $0.category == category }
         let filtered = terms.isEmpty
             ? inCategory
             : inCategory.filter { item in
@@ -391,8 +413,9 @@ struct HorizontalPoolBrowserView: View {
 
     private var emptyListDescription: String {
         var text = searchText.isEmpty
-            ? "None of the browsed pools contain \(category.title.lowercased())."
-            : "No \(category.title.lowercased()) match “\(searchText)”."
+            ? viewedPool.map { "\($0.name) contains no \(category.title.lowercased())." }
+                ?? "None of the browsed pools contain \(category.title.lowercased())."
+            : "No \(category.title.lowercased()) match “\(searchText)”\(viewedPool.map { " in \($0.name)" } ?? "")."
         let unreadable = unreadablePools
         if !unreadable.isEmpty {
             let names = unreadable.map { "“\($0.url.lastPathComponent)”" }.joined(separator: ", ")
@@ -420,28 +443,33 @@ struct HorizontalPoolBrowserView: View {
 
     // MARK: - Toolbar
 
+    /// Labels give way to icons when the pane is too narrow for them; the
+    /// menus keep their triangles, and each control's help names it.
     private var browserToolbar: some View {
+        ViewThatFits(in: .horizontal) {
+            toolbarRow(compact: false)
+            toolbarRow(compact: true)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    private func toolbarRow(compact: Bool) -> some View {
         HStack(spacing: 8) {
-            Picker("Kind", selection: $category) {
-                ForEach(HorizontalPoolItemCategory.allCases) { category in
-                    Label(category.title, systemImage: category.symbolName)
-                        .tag(category)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 130)
+            kindPicker(compact: compact)
 
             TextField("Search \(category.title)", text: $searchText)
                 .textFieldStyle(.roundedBorder)
+                .frame(minWidth: compact ? 80 : 160)
 
             if isLoading {
                 ProgressView()
                     .controlSize(.small)
             }
 
-            poolsMenu
+            poolsMenu(compact: compact)
 
-            newItemMenu
+            newItemMenu(compact: compact)
 
             if onPlacePart != nil {
                 Button {
@@ -449,14 +477,14 @@ struct HorizontalPoolBrowserView: View {
                         onPlacePart?(item)
                     }
                 } label: {
-                    Label("Place", systemImage: "plus.square.on.square")
+                    toolbarLabel("Place", systemImage: "plus.square.on.square", compact: compact)
                 }
                 .disabled(selectedItem.map { !canPlace($0) } ?? true)
                 .help("Place the selected part in the schematic (also double-click or Return in the list)")
             }
 
             Toggle(isOn: $showsPreview) {
-                Label("Preview", systemImage: "rectangle.bottomhalf.inset.filled")
+                toolbarLabel("Preview", systemImage: "rectangle.bottomhalf.inset.filled", compact: compact)
             }
             .toggleStyle(.button)
             .help("Show the selected item below the list")
@@ -465,16 +493,64 @@ struct HorizontalPoolBrowserView: View {
                 HorizontalPoolLibrary.invalidateCache()
                 scanGeneration += 1
             } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
+                toolbarLabel("Refresh", systemImage: "arrow.clockwise", compact: compact)
             }
             .help("Rescan the browsed pools")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
     }
 
-    private var poolsMenu: some View {
+    /// The item kind: a pop-up with its name, or, compact, a menu showing only
+    /// the kind's icon.
+    @ViewBuilder
+    private func kindPicker(compact: Bool) -> some View {
+        let picker = Picker("Kind", selection: $category) {
+            ForEach(HorizontalPoolItemCategory.allCases) { category in
+                Label(category.title, systemImage: category.symbolName)
+                    .tag(category)
+            }
+        }
+        if compact {
+            Menu {
+                picker
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+            } label: {
+                toolbarLabel(category.title, systemImage: category.symbolName, compact: true)
+            }
+            .fixedSize()
+            .help(category.title)
+        } else {
+            picker
+                .labelsHidden()
+                .frame(width: 130)
+        }
+    }
+
+    /// A toolbar control's label, its icon alone when compact. The style is
+    /// set on the label rather than the row so a menu's own items keep their
+    /// titles.
+    @ViewBuilder
+    private func toolbarLabel(_ title: String, systemImage: String, compact: Bool) -> some View {
+        if compact {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.iconOnly)
+        } else {
+            Label(title, systemImage: systemImage)
+        }
+    }
+
+    private func poolsMenu(compact: Bool) -> some View {
         Menu {
+            Picker("View", selection: $viewedPoolID) {
+                Text("All Pools").tag(BrowsedPool.ID?.none)
+                Divider()
+                ForEach(browsedPools.filter(\.isReadable)) { pool in
+                    Text(pool.isProjectPool ? "\(pool.name) (project)" : pool.name)
+                        .tag(Optional(pool.id))
+                }
+            }
+            .pickerStyle(.menu)
+            Divider()
             Section("Browsing") {
                 ForEach(browsedPools) { pool in
                     poolMenu(
@@ -501,14 +577,15 @@ struct HorizontalPoolBrowserView: View {
                 Label("Add Pool…", systemImage: "plus")
             }
         } label: {
-            Label("Pools", systemImage: "books.vertical")
+            toolbarLabel(viewedPool?.name ?? "Pools", systemImage: "books.vertical", compact: compact)
         }
-        .help("The pools being browsed; register more to make their padstacks and parts available")
+        .help(viewedPool.map { "Showing \($0.name) only. Pools > View > All Pools shows every pool." }
+            ?? "The pools being browsed; register more to make their padstacks and parts available")
     }
 
     /// Horizon's per-kind "Create" buttons, as one menu. With several
     /// writable pools browsed, each gets a submenu.
-    private var newItemMenu: some View {
+    private func newItemMenu(compact: Bool) -> some View {
         let pools = browsedPools.filter(\.isReadable)
         return Menu {
             if pools.count == 1, let pool = pools.first {
@@ -521,7 +598,7 @@ struct HorizontalPoolBrowserView: View {
                 }
             }
         } label: {
-            Label("New", systemImage: "plus")
+            toolbarLabel("New", systemImage: "plus", compact: compact)
         }
         .disabled(pools.isEmpty || appearanceSettings.isReadOnlyOperationEnabled)
         .help("Create a new pool item")
@@ -1043,13 +1120,20 @@ struct HorizontalPoolBrowserView: View {
         if let search = request.search {
             category = request.category
             searchText = search
+            viewedPoolID = nil
             selectedItemID = filteredItems.first?.id
             pendingReveal = nil
             return
         }
         let uuid = request.uuid.lowercased()
-        guard let item = items.first(where: { $0.category == request.category && $0.uuid == uuid }) else {
+        guard var item = items.first(where: { $0.category == request.category && $0.uuid == uuid }) else {
             return
+        }
+        if let viewed = viewedPool,
+           let own = Self.visibleItems(items, viewing: viewed.url).first(where: { $0.category == request.category && $0.uuid == uuid }) {
+            item = own
+        } else {
+            viewedPoolID = nil
         }
         category = request.category
         searchText = ""
@@ -1071,6 +1155,9 @@ struct HorizontalPoolBrowserView: View {
         }
         items = loaded
         index = HorizontalPoolLibraryIndex(items: loaded)
+        if let viewedPoolID, !pools.contains(where: { $0.id == viewedPoolID }) {
+            self.viewedPoolID = nil
+        }
         applyPendingReveal()
         // A reveal the scan could not satisfy is stale; don't keep trying.
         pendingReveal = nil

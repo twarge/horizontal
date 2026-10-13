@@ -42,6 +42,26 @@ class TransportTests(unittest.TestCase):
             self.assertFalse(transport.closed)
         finally: transport._lock.release()
 
+    def test_alive_sees_the_app_go_without_sending(self):
+        # 78: a quit app closes its end; the connection is only marked closed
+        # once a call fails on it, so alive asks the socket.
+        transport, server = self.live()
+        self.assertTrue(transport.alive())
+        server.close()
+        self.assertFalse(transport.alive())
+        self.assertFalse(transport.closed, "alive sends nothing and closes nothing")
+
+    def test_alive_does_not_eat_a_pending_reply_or_wait_on_a_call(self):
+        transport, server = self.live()
+        server.sendall(b'{"jsonrpc":"2.0","id":7,"result":{}}\n')
+        self.assertTrue(transport.alive())
+        self.assertEqual(transport._socket.recv(1, socket.MSG_PEEK), b"{", "the byte it looked at is still there")
+        transport._lock.acquire()
+        try:
+            self.assertTrue(transport.alive(), "a call in progress means the connection is in use")
+        finally:
+            transport._lock.release()
+
     def test_mismatched_response_invalidates_connection(self):
         transport, server = self.live()
         server.sendall(b'{"jsonrpc":"2.0","id":99,"result":{}}\n')
