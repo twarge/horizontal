@@ -193,12 +193,16 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         updates = (await self.call("list_part_updates", project_ref=self.ref))["data"]
         self.assertEqual(updates["parts"], [])
         self.assertIsInstance(updates["review_digest"], str)
+        # 93: the file texts come only on request.
+        texts = (await self.call("list_part_updates", project_ref=self.ref, include_contents=True))["data"]
+        self.assertEqual(texts["review_digest"], updates["review_digest"])
 
         # The live-only view verbs are all advertised, and all refuse a disk
         # project by saying so rather than by doing nothing. show_panes is the
         # one the app's own Siri shortcut runs.
         tools = {t.name: t for t in await server.mcp.list_tools()}
         self.assertTrue(tools["list_part_updates"].annotations.read_only_hint)
+        self.assertIn("include_contents", tools["list_part_updates"].input_schema["properties"])
         self.assertFalse(tools["update_project_parts"].annotations.read_only_hint)
         self.assertFalse(tools["clean_up_project_pool"].annotations.read_only_hint)
         self.assertTrue(tools["clean_up_project_pool"].annotations.destructive_hint)
@@ -220,6 +224,9 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             "operation_id": str(uuid.uuid4())})
         self.assertFalse(cleanup.is_error, str(cleanup.structured_content))
         self.assertEqual(cleanup.structured_content["data"]["items"], [])
+        # 96: remove names what goes by id; items already describes each one.
+        self.assertEqual(cleanup.structured_content["data"]["remove"], [])
+        self.assertEqual(cleanup.structured_content["data"]["remove_bytes"], 0)
         self.assertIsInstance(cleanup.structured_content["data"]["review_digest"], str)
         missing = await server.mcp.call_tool("import_pool_part", {
             "project_ref": self.ref, "part": "no-such-part",
@@ -486,6 +493,25 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any("restart" in w for w in stale["warnings"]))
             reopened = (await self.call("open_project", path=str(self.path), source="disk"))["data"]
             self.assertTrue(any("restart" in w for w in reopened["warnings"]))
+
+        # 91: a checkout that moved without touching the package (a merge of
+        # Swift work) leaves the server current, and it says so instead.
+        with patch.object(server, "_COMMIT", "0000000"), patch.object(server, "_package_diff", return_value=[]):
+            moved = (await self.call("connection_status"))["data"]
+            self.assertNotIn("stale", moved["server"])
+            self.assertTrue(moved["server"]["checkout_moved"])
+            self.assertIn("schemas are current", moved["server"]["note"])
+            self.assertFalse(any("restart" in w for w in moved.get("warnings", [])))
+        with patch.object(server, "_COMMIT", "0000000"), patch.object(server, "_package_diff", return_value=["mcp_server.py"]):
+            touched = (await self.call("connection_status"))["data"]
+            self.assertTrue(touched["server"]["stale"])
+            self.assertEqual(touched["server"]["changed_since_start"], ["mcp_server.py"])
+            self.assertTrue(any("restart" in w and "mcp_server.py" in w for w in touched["warnings"]))
+        with patch.object(server, "_COMMIT", "0000000"), patch.object(server, "_package_diff", return_value=None):
+            unknown = (await self.call("connection_status"))["data"]
+            self.assertTrue(unknown["server"]["stale"], "when git can't say, a moved checkout still counts")
+            self.assertTrue(any("commit 0000000 ->" in w for w in unknown["warnings"]))
+        self.assertEqual(server._package_diff("HEAD", "HEAD"), [])
 
     async def test_a_context_whose_app_has_gone_reads_as_disconnected(self):
         # 78: a live connection is only marked closed once a call fails on it.

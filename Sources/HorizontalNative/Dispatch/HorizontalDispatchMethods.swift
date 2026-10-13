@@ -132,8 +132,9 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "list_part_updates",
-            summary: "Compare project parts and their dependencies with their recorded source libraries. Reports changes, local edits, unavailable sources, affected references, and a review digest without changing the project.",
-            params: ["handle": "Project handle.", "pool_path": "Source pool directory when it is not registered (optional)."],
+            summary: "Compare project parts and their dependencies with their recorded source libraries. Reports changes (each with its file's size before and after), local edits, unavailable sources, included pools that couldn't be found, affected references, and a review digest without changing the project.",
+            params: ["handle": "Project handle.", "pool_path": "Source pool directory when it is not registered (optional).",
+                     "include_contents": "Give each change's whole file text before and after (default false)."],
             handler: HorizontalDispatchPool.listUpdates
         ),
         .init(

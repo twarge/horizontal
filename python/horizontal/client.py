@@ -472,9 +472,13 @@ class Project:
         params = {k: v for k, v in {"kind": kind, "pool_path": pool_path}.items() if v is not None}
         return self._call("get_pool_item", uuid=uuid, **params)
 
-    def part_updates(self, pool_path: str | None = None) -> dict[str, Any]:
-        """Review cached parts and dependencies without changing the project."""
-        return self._call("list_part_updates", **({"pool_path": pool_path} if pool_path else {}))
+    def part_updates(self, pool_path: str | None = None, include_contents: bool = False) -> dict[str, Any]:
+        """Review cached parts and dependencies without changing the project. Each change gives its file's size
+        before and after; include_contents adds the texts."""
+        params: dict[str, Any] = {"pool_path": pool_path} if pool_path else {}
+        if include_contents:
+            params["include_contents"] = True
+        return self._call("list_part_updates", **params)
 
     def update_project_parts(self, parts: list[str], dry_run: bool = False, *,
                              allow_project_changes: bool = False, review_digest: str | None = None,
