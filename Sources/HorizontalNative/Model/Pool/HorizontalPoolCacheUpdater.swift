@@ -63,13 +63,18 @@ struct HorizontalPoolCacheReview: Sendable {
     var parts: [HorizontalPartLibraryReview]
     var projectFiles: [String: Data]
     var sourceDigests: [URL: String]
+    /// Pools the reviewed pools include that the review couldn't find. Parts
+    /// from one read as unavailable; this names the reason once.
+    var missingPools: [HorizontalMissingPool]
 
     let digest: String
 
-    init(parts: [HorizontalPartLibraryReview], projectFiles: [String: Data], sourceDigests: [URL: String]) {
+    init(parts: [HorizontalPartLibraryReview], projectFiles: [String: Data], sourceDigests: [URL: String],
+         missingPools: [HorizontalMissingPool] = []) {
         self.parts = parts
         self.projectFiles = projectFiles
         self.sourceDigests = sourceDigests
+        self.missingPools = missingPools
         let changes = parts.flatMap(\.changes).map {
             "\($0.path):\(HorizontalProjectTransaction.digest($0.after)):\($0.origin.poolUUID):\($0.origin.sourcePath)"
         }.sorted()
@@ -230,6 +235,7 @@ enum HorizontalPoolCacheUpdater {
             let uuid = HorizontalPoolRegistryStore.poolInfo(at: pool).uuid
             if poolByUUID[uuid] == nil { poolByUUID[uuid] = pool }
         }
+        let missingPools = HorizontalPoolLibrary.missingIncludedPools(among: [poolURL] + pools)
         let sourceItems = pools.flatMap {
             HorizontalPoolLibrary.items(inPool: $0, poolName: HorizontalPoolRegistryStore.poolInfo(at: $0).name)
         }
@@ -279,7 +285,9 @@ enum HorizontalPoolCacheUpdater {
                        let type = json.string("type"), let uuid = json.string("uuid") {
                         preferred[type + "|" + uuid.lowercased()] = origin.poolUUID
                         guard let pool = poolByUUID[origin.poolUUID] else {
-                            throw HorizontalDispatchError.failed("Source library \(origin.poolUUID) is not registered or available.")
+                            let includer = missingPools.first { $0.uuid == origin.poolUUID.lowercased() }?.includedBy
+                            throw HorizontalDispatchError.failed("Source library \(origin.poolUUID) is not registered or available"
+                                + (includer.map { " (\($0) includes it)" } ?? "") + ".")
                         }
                         if let error = HorizontalPoolLibrary.accessError(for: pool) { throw HorizontalDispatchError.failed(error) }
                         let sourceURL = try sourceItems.first {
@@ -312,7 +320,8 @@ enum HorizontalPoolCacheUpdater {
                     }
                 }
                 guard let sourcePart = resolved.first(where: { $0.category == .part && $0.uuid == id }) else {
-                    throw HorizontalDispatchError.failed("No unambiguous source for this part. Choose its source library to continue.")
+                    let holders = grouped[HorizontalPoolItemCategory.part.rawValue + "|" + id] ?? []
+                    throw HorizontalDispatchError.failed(unresolvedSourceMessage(holders: holders, missingPools: missingPools))
                 }
                 // A dependency in several pools with no recorded origin (one an
                 // earlier import had already cached, say) comes from the pool a
@@ -389,7 +398,25 @@ enum HorizontalPoolCacheUpdater {
             }
             reviews.append(row)
         }
-        return .init(parts: reviews, projectFiles: files, sourceDigests: sourceDigests)
+        return .init(parts: reviews, projectFiles: files, sourceDigests: sourceDigests, missingPools: missingPools)
+    }
+
+    /// Why a cached part with no recorded origin has no source: no browsed
+    /// pool holds it, perhaps because a pool the project includes isn't
+    /// among them, or several do and nothing says which.
+    static func unresolvedSourceMessage(holders: [HorizontalPoolLibraryItem], missingPools: [HorizontalMissingPool]) -> String {
+        guard holders.isEmpty else {
+            var names = [String]()
+            for holder in holders where !names.contains(holder.poolName) { names.append(holder.poolName) }
+            return "No unambiguous source for this part: \(names.map { "\u{201C}\($0)\u{201D}" }.joined(separator: ", ")) hold it. "
+                + "Choose its source library to continue."
+        }
+        guard !missingPools.isEmpty else {
+            return "No browsed pool holds this part. Choose its source library to continue."
+        }
+        let pools = missingPools.map { "pool \($0.uuid), which \($0.includedBy) includes" }.joined(separator: " or ")
+        return "No browsed pool holds this part. It may come from \(pools), but no pool found here is that one. "
+            + "Choose its source library to continue."
     }
 
     private static func normalizedSource(_ data: Data, path: String, poolUUID: String) throws -> Data {

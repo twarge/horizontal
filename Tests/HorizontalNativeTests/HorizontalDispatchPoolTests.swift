@@ -183,6 +183,107 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         XCTAssertEqual((nextReview["parts"] as? [JSONDictionary])?.first?.string("status"), "current")
     }
 
+    /// 93: each change carried both whole files, 139 KB of Billo's 159 KB reply.
+    func testPartUpdateReviewGivesFileTextOnlyOnRequest() throws {
+        _ = try result("import_pool_part", ["part": "part-1"])
+        var source = try JSONHelper.loadDictionary(from: root.appendingPathComponent("stock/symbols/resistor.json"))
+        source["name"] = "Updated resistor symbol"
+        try write(source, to: "stock/symbols/resistor.json")
+        let review = try XCTUnwrap(try result("list_part_updates") as? JSONDictionary)
+        let change = try XCTUnwrap((review["parts"] as? [JSONDictionary])?.first?.dictionaryArray("changes").first)
+        XCTAssertNil(change["before"], "no file text unless asked")
+        XCTAssertNil(change["after"])
+        XCTAssertGreaterThan(change.int("before_bytes") ?? 0, 0)
+        XCTAssertGreaterThan(change.int("after_bytes") ?? 0, 0)
+        XCTAssertEqual(change.string("path"), "symbols/cache/sym-1.json")
+        XCTAssertNotNil(change["fields"])
+
+        let full = try XCTUnwrap(try result("list_part_updates", ["include_contents": true]) as? JSONDictionary)
+        let text = try XCTUnwrap((full["parts"] as? [JSONDictionary])?.first?.dictionaryArray("changes").first)
+        XCTAssertTrue((text.string("after") ?? "").contains("Updated resistor symbol"))
+        XCTAssertEqual(text.string("after")?.utf8.count, change.int("after_bytes"))
+        XCTAssertEqual(text.string("before")?.utf8.count, change.int("before_bytes"))
+        XCTAssertEqual(full.string("review_digest"), review.string("review_digest"), "the texts don't change the review")
+    }
+
+    /// 97: a worker can't see the pools registered in the app, so Billo's
+    /// review through one read 79 of 82 parts as having no source.
+    func testAnIncludedPoolBesideTheProjectIsFoundWithoutRegistration() throws {
+        // A uuid of its own, so no stray pool in the temporary directory, which
+        // the search reaches, can answer for it.
+        let stockUUID = "stock-\(UUID().uuidString.lowercased())"
+        try write(["type": "pool", "uuid": stockUUID, "name": "Stock"], to: "stock/pool.json")
+        HorizontalPoolLibrary.invalidateCache()
+        _ = try result("import_pool_part", ["part": "part-1"])
+        HorizontalPoolRegistryStore.removePool(at: root.appendingPathComponent("stock", isDirectory: true))
+        HorizontalPoolLibrary.invalidateCache()
+        HorizontalPoolLibrary.forgetNearbyPools()
+        addTeardownBlock { HorizontalPoolLibrary.forgetNearbyPools() }
+
+        // Neither registered nor included, the part's source is just gone.
+        let unseen = try XCTUnwrap((try result("list_part_updates") as? JSONDictionary)?["parts"] as? [JSONDictionary]).first
+        XCTAssertEqual(unseen?.string("status"), "sourceUnavailable")
+        XCTAssertEqual(unseen?.string("message"), "Source library \(stockUUID) is not registered or available.")
+
+        // Included by the project pool, it is found beside the project. A
+        // project pool's own uuid and the null uuid are never looked for.
+        let absent = "absent-\(UUID().uuidString.lowercased())"
+        try write(["type": "pool", "uuid": HorizontalProjectArchive.projectPoolUUID, "name": "Project pool",
+                   "pools_included": [stockUUID, absent.uppercased(), HorizontalProjectArchive.projectPoolUUID,
+                                      HorizontalProjectArchive.nullUUID]],
+                  to: "Untitled.horizontal/pool/pool.json")
+        HorizontalPoolLibrary.invalidateCache()
+        let review = try XCTUnwrap(try result("list_part_updates") as? JSONDictionary)
+        XCTAssertEqual((review["parts"] as? [JSONDictionary])?.first?.string("status"), "current")
+        let missing = try XCTUnwrap(review["missing_pools"] as? [JSONDictionary])
+        XCTAssertEqual(missing.map { $0.string("uuid") }, [absent])
+        XCTAssertEqual(missing.first?.string("included_by"), "Project pool")
+        XCTAssertTrue(missing.first?.string("message")?.contains("pool_path") == true)
+
+        let found = try XCTUnwrap(try result("search_pool", ["kind": "part"]) as? JSONDictionary)
+        let stock = try XCTUnwrap((found["pools"] as? [JSONDictionary])?.first { $0.string("uuid") == stockUUID })
+        XCTAssertEqual(stock.string("path"), HorizontalPoolLibrary.canonicalURL(root.appendingPathComponent("stock")).path)
+        XCTAssertEqual((found["missing_pools"] as? [JSONDictionary])?.map { $0.string("uuid") }, [absent])
+        let narrowed = try XCTUnwrap(try result("search_pool", ["kind": "part", "pool_path": stock.string("path") ?? ""]) as? JSONDictionary)
+        XCTAssertNil(narrowed["missing_pools"], "pool_path narrows the search on purpose")
+
+        // Out of reach, the included pool is named once rather than per part.
+        let deeper = root.appendingPathComponent("a/b/c", isDirectory: true)
+        try FileManager.default.createDirectory(at: deeper, withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: root.appendingPathComponent("stock"), to: deeper.appendingPathComponent("stock"))
+        HorizontalPoolLibrary.invalidateCache()
+        let lost = try XCTUnwrap(try result("list_part_updates") as? JSONDictionary)
+        XCTAssertEqual((lost["parts"] as? [JSONDictionary])?.first?.string("message"),
+                       "Source library \(stockUUID) is not registered or available (Project pool includes it).")
+        XCTAssertEqual(Set((lost["missing_pools"] as? [JSONDictionary])?.compactMap { $0.string("uuid") } ?? []), [stockUUID, absent])
+    }
+
+    func testAPartWithNoRecordedSourceSaysWhyItHasNone() {
+        let pool = { (name: String) in
+            HorizontalPoolLibraryItem(id: "part|p", uuid: "p", name: "P", detail: "", tags: "", category: .part, poolName: name,
+                                      poolURL: URL(fileURLWithPath: "/pools/\(name)"), url: URL(fileURLWithPath: "/pools/\(name)/p.json"))
+        }
+        let missing = [HorizontalMissingPool(uuid: "48801d92", includedBy: "Project pool")]
+        XCTAssertEqual(HorizontalPoolCacheUpdater.unresolvedSourceMessage(holders: [], missingPools: []),
+                       "No browsed pool holds this part. Choose its source library to continue.")
+        XCTAssertEqual(HorizontalPoolCacheUpdater.unresolvedSourceMessage(holders: [], missingPools: missing),
+                       "No browsed pool holds this part. It may come from pool 48801d92, which Project pool includes, "
+                           + "but no pool found here is that one. Choose its source library to continue.")
+        XCTAssertEqual(HorizontalPoolCacheUpdater.unresolvedSourceMessage(holders: [pool("A"), pool("B"), pool("A")], missingPools: missing),
+                       "No unambiguous source for this part: \u{201C}A\u{201D}, \u{201C}B\u{201D} hold it. Choose its source library to continue.")
+    }
+
+    func testHorizontalPoolsNamesPoolsAWorkerCannotOtherwiseSee() throws {
+        let elsewhere = root.appendingPathComponent("elsewhere/far/away/Other Pool", isDirectory: true)
+        try write(["type": "pool", "uuid": "other-pool", "name": "Other"], to: "elsewhere/far/away/Other Pool/pool.json")
+        let projectPool = packageURL.appendingPathComponent("pool", isDirectory: true)
+        let canonical = HorizontalPoolLibrary.canonicalURL(elsewhere).path
+        XCTAssertFalse(HorizontalPoolPadstacks.basePoolURLs(for: projectPool).contains { $0.path == canonical })
+        setenv("HORIZONTAL_POOLS", "/nonexistent:" + elsewhere.path, 1)
+        defer { unsetenv("HORIZONTAL_POOLS") }
+        XCTAssertTrue(HorizontalPoolPadstacks.basePoolURLs(for: projectPool).contains { $0.path == canonical })
+    }
+
     func testStaleLibraryReviewIsRefusedWithoutWriting() throws {
         _ = try result("import_pool_part", ["part": "part-1"])
         var source = try JSONHelper.loadDictionary(from: root.appendingPathComponent("stock/symbols/resistor.json"))
@@ -404,6 +505,9 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         let dry = try XCTUnwrap(try result("clean_up_project_pool", ["dry_run": true]) as? JSONDictionary)
         let ids = (dry["items"] as? [JSONDictionary])?.compactMap { $0.string("id") }
         XCTAssertEqual(ids, ["part|part-1", "entity|ent-1", "unit|unit-1", "symbol|sym-1", "package|pkg-1", "padstack|ps-pool"])
+        // 96: items describes each one, and remove names them by id.
+        XCTAssertEqual(dry["remove"] as? [String], ids)
+        XCTAssertEqual(dry["remove_bytes"] as? Int, (dry["items"] as? [JSONDictionary])?.reduce(0) { $0 + ($1["bytes"] as? Int ?? 0) })
         let wouldWrite = try XCTUnwrap(dry["would_write"] as? [String])
         XCTAssertTrue(wouldWrite.contains("pool/parts/cache/part-1.json"), "\(wouldWrite)")
         XCTAssertTrue(wouldWrite.contains("pool/.horizontal/pool-cache.json"), "the manifest loses their entries")
@@ -416,7 +520,10 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         _ = try result("apply", ["ops": [["op": "remove_component", "component": "R1"]]])
 
         let plan = try XCTUnwrap(try result("clean_up_project_pool", ["dry_run": true, "remove": ["part|part-1", "symbol|sym-1"]]) as? JSONDictionary)
-        XCTAssertEqual((plan["remove"] as? [JSONDictionary])?.compactMap { $0.string("id") }, ["part|part-1", "symbol|sym-1"])
+        XCTAssertEqual(plan["remove"] as? [String], ["part|part-1", "symbol|sym-1"])
+        let chosenBytes = (plan["items"] as? [JSONDictionary])?.filter { ["part|part-1", "symbol|sym-1"].contains($0.string("id") ?? "") }
+            .reduce(0) { $0 + ($1["bytes"] as? Int ?? 0) }
+        XCTAssertEqual(plan["remove_bytes"] as? Int, chosenBytes)
         let committed = try XCTUnwrap(try result("clean_up_project_pool", [
             "remove": ["part|part-1", "symbol|sym-1"], "plan_digest": try XCTUnwrap(plan.string("plan_digest")),
             "review_digest": try XCTUnwrap(plan.string("review_digest"))

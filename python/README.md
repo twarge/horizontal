@@ -32,6 +32,13 @@ The MCP server:
 is what `.mcp.json` at the repository root launches for Claude Code. Set
 `HORIZONTAL_PROJECT` to make the `path` argument of every tool optional.
 
+A disk context runs in a worker process, which can't see the pools registered
+in the app. It finds `$HORIZON_POOL`, a `horizon-pool` checkout above the
+project, and any pool the project pool includes that is checked out near it.
+For others, set `HORIZONTAL_POOLS` to their directories, colon-separated, or
+pass `pool_path`. `list_part_updates` and `search_pool` name an included pool
+they couldn't find in `missing_pools`.
+
 Version 0.2 requires native API 2. Rebuild both native products and the app,
 then restart the MCP client connection. MCP uses an isolated native worker by
 default; `HORIZONTAL_ISOLATED=0` opts into ctypes without hard cancellation.

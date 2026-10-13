@@ -152,11 +152,16 @@ enum HorizontalPoolPadstacks {
     }
 
     /// Base pools reachable from a project pool: pools the user registered in
-    /// the library browser first, then the directory named by `$HORIZON_POOL`,
-    /// then any `horizon-pool` directory (carrying a `pool.json`) next to the
-    /// project or up to a few levels above it — covering the common "checkout
-    /// of horizon-pool beside the projects" layout. The project pool itself is
+    /// the library browser first, then the directory named by `$HORIZON_POOL`
+    /// and those listed, colon-separated, in `$HORIZONTAL_POOLS`, then any
+    /// `horizon-pool` directory (carrying a `pool.json`) next to the project
+    /// or up to a few levels above it — covering the common "checkout of
+    /// horizon-pool beside the projects" layout. The project pool itself is
     /// never returned.
+    ///
+    /// `$HORIZONTAL_POOLS` is for a worker process, which has its own user
+    /// defaults and so can't see the pools registered in the app: the MCP
+    /// server's environment (its `.mcp.json` entry) can name them instead.
     static func basePoolURLs(for poolURL: URL) -> [URL] {
         var results = [URL]()
         var seen = Set([HorizontalPoolLibrary.canonicalURL(poolURL).path])
@@ -177,6 +182,9 @@ enum HorizontalPoolPadstacks {
         }
         if let environmentPool = ProcessInfo.processInfo.environment["HORIZON_POOL"], !environmentPool.isEmpty {
             addIfPool(URL(fileURLWithPath: environmentPool, isDirectory: true))
+        }
+        for path in (ProcessInfo.processInfo.environment["HORIZONTAL_POOLS"] ?? "").split(separator: ":") where !path.isEmpty {
+            addIfPool(URL(fileURLWithPath: (String(path) as NSString).expandingTildeInPath, isDirectory: true))
         }
         var ancestor = poolURL.deletingLastPathComponent()
         for _ in 0..<4 {

@@ -1,4 +1,5 @@
 import Foundation
+import HorizontalProjectIO
 
 /// The Horizon pool item kinds the library browser lists, in Horizon's pool
 /// manager order.
@@ -181,6 +182,13 @@ struct HorizontalPoolLibraryIndex: Sendable {
 /// the flat category directories of a horizon-pool checkout and a project
 /// pool's `cache/` copies with one walk. Results are cached per pool path;
 /// `invalidateCache` forces a rescan (the browser's Refresh).
+/// A pool another pool includes (`pools_included`) that none of the pools
+/// found has: not registered, not named in the environment, not nearby.
+struct HorizontalMissingPool: Equatable, Sendable {
+    var uuid: String
+    var includedBy: String
+}
+
 enum HorizontalPoolLibrary {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var cache = [String: [HorizontalPoolLibraryItem]]()
@@ -241,6 +249,9 @@ enum HorizontalPoolLibrary {
         lock.lock()
         cache.removeAll()
         lock.unlock()
+        nearbyLock.lock()
+        nearbyMisses.removeAll()
+        nearbyLock.unlock()
     }
 
     static func invalidateCache(for poolURL: URL) {
@@ -473,10 +484,11 @@ extension HorizontalPoolLibrary {
 
     /// The pools a standalone pool includes (`pools_included` uuids in its
     /// pool.json), found among the pools this app knows about: registered
-    /// ones, `$HORIZON_POOL`, and any horizon-pool checkout nearby.
+    /// ones, `$HORIZON_POOL`, `$HORIZONTAL_POOLS` and any horizon-pool
+    /// checkout nearby. One none of those has is looked for by uuid around
+    /// the pool (`nearbyPoolURLs`).
     static func includedPoolURLs(for poolURL: URL) -> [URL] {
-        let json = (try? JSONHelper.loadDictionary(from: poolURL.appendingPathComponent("pool.json"))) ?? [:]
-        let included = (json["pools_included"] as? [String] ?? []).map { $0.lowercased() }
+        let included = includedPoolUUIDs(of: poolURL)
         guard !included.isEmpty else {
             return []
         }
@@ -487,7 +499,141 @@ extension HorizontalPoolLibrary {
                 urlsByUUID[uuid] = url
             }
         }
+        let unresolved = Set(included.filter { urlsByUUID[$0] == nil })
+        if !unresolved.isEmpty {
+            urlsByUUID.merge(nearbyPoolURLs(withUUIDs: unresolved, around: poolURL)) { known, _ in known }
+        }
         return included.compactMap { urlsByUUID[$0] }
+    }
+
+    /// The uuids in a pool's `pools_included`, lowercased. Every project pool
+    /// shares one uuid, and the null uuid names nothing, so neither counts.
+    static func includedPoolUUIDs(of poolURL: URL) -> [String] {
+        let json = (try? JSONHelper.loadDictionary(from: poolURL.appendingPathComponent("pool.json"))) ?? [:]
+        let ignored: Set<String> = ["", HorizontalProjectArchive.projectPoolUUID, HorizontalProjectArchive.nullUUID]
+        return (json["pools_included"] as? [String] ?? []).map { $0.lowercased() }.filter { !ignored.contains($0) }
+    }
+
+    /// The pools that pools in `urls` include and `urls` lacks, each with the
+    /// name of a pool including it. A review names these once, rather than
+    /// telling every part taken from one that it has no source.
+    static func missingIncludedPools(among urls: [URL]) -> [HorizontalMissingPool] {
+        let present = Set(urls.map { HorizontalPoolRegistryStore.poolInfo(at: $0).uuid.lowercased() })
+        var missing = [HorizontalMissingPool]()
+        var seen = Set<String>()
+        for url in urls {
+            for uuid in includedPoolUUIDs(of: url) where !present.contains(uuid) && seen.insert(uuid).inserted {
+                missing.append(HorizontalMissingPool(uuid: uuid, includedBy: HorizontalPoolRegistryStore.poolInfo(at: url).name))
+            }
+        }
+        return missing
+    }
+
+    private static let nearbyLock = NSLock()
+    nonisolated(unsafe) private static var nearbyHits = [String: URL]()
+    nonisolated(unsafe) private static var nearbyMisses = Set<String>()
+
+    /// Included pools nothing registered names, found by uuid in the
+    /// directories around the pool: each of the four above it (where
+    /// horizon-pool is looked for too) and two levels into each. That finds a
+    /// pool checked out beside the project, as Twinleaf Pool is beside Billo,
+    /// even from a worker process, which can't see the pools the app has
+    /// registered.
+    ///
+    /// The walk stops short of the home directory, whose children are the
+    /// folders macOS asks permission for, and skips hidden directories and
+    /// symlinks. A hit is remembered for the life of the process and checked
+    /// again on use. A miss is remembered until `invalidateCache()`, so a
+    /// project including a pool this machine lacks isn't searched for again
+    /// until something asks the library to look afresh.
+    static func nearbyPoolURLs(withUUIDs uuids: Set<String>, around poolURL: URL) -> [String: URL] {
+        let pool = canonicalURL(poolURL)
+        var found = [String: URL]()
+        var wanted = Set<String>()
+        nearbyLock.lock()
+        for uuid in uuids {
+            let key = pool.path + "|" + uuid
+            if let hit = nearbyHits[key], HorizontalPoolRegistryStore.poolInfo(at: hit).uuid.lowercased() == uuid {
+                found[uuid] = hit
+            } else if !nearbyMisses.contains(key) {
+                wanted.insert(uuid)
+            }
+        }
+        nearbyLock.unlock()
+        guard !wanted.isEmpty else {
+            return found
+        }
+
+        let fileManager = FileManager.default
+        let home = userHomePath
+        var remaining = wanted
+        var scanned = [String: URL]()
+        var checked = Set([pool.path])
+        var listed = Set<String>()
+        func directories(in url: URL) -> [URL] {
+            guard listed.insert(url.path).inserted else {
+                return []
+            }
+            let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
+            let entries = (try? fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: keys,
+                                                                options: [.skipsHiddenFiles])) ?? []
+            return entries.filter { entry in
+                let values = try? entry.resourceValues(forKeys: Set(keys))
+                return values?.isDirectory == true && values?.isSymbolicLink != true
+            }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        }
+        func check(_ directory: URL) {
+            guard !remaining.isEmpty, checked.insert(directory.path).inserted,
+                  fileManager.fileExists(atPath: directory.appendingPathComponent("pool.json").path) else {
+                return
+            }
+            let uuid = HorizontalPoolRegistryStore.poolInfo(at: directory).uuid.lowercased()
+            if remaining.remove(uuid) != nil {
+                scanned[uuid] = directory
+            }
+        }
+        var ancestor = pool.deletingLastPathComponent()
+        for _ in 0..<4 {
+            guard !remaining.isEmpty, ancestor.pathComponents.count > 3,
+                  ancestor.path != home, !home.hasPrefix(ancestor.path + "/") else {
+                break
+            }
+            let children = directories(in: ancestor)
+            children.forEach(check)
+            for child in children where !remaining.isEmpty {
+                directories(in: child).forEach(check)
+            }
+            ancestor = ancestor.deletingLastPathComponent()
+        }
+
+        nearbyLock.lock()
+        for uuid in wanted {
+            let key = pool.path + "|" + uuid
+            if let url = scanned[uuid] {
+                nearbyHits[key] = url
+            } else {
+                nearbyMisses.insert(key)
+            }
+        }
+        nearbyLock.unlock()
+        return found.merging(scanned) { known, _ in known }
+    }
+
+    /// The user's own home directory, not a sandbox container's, which is
+    /// what `NSHomeDirectory()` gives the app.
+    private static var userHomePath: String {
+        guard let directory = getpwuid(getuid())?.pointee.pw_dir else {
+            return NSHomeDirectory()
+        }
+        return URL(fileURLWithPath: String(cString: directory)).standardizedFileURL.path
+    }
+
+    /// Forgets what `nearbyPoolURLs` found, hits included.
+    static func forgetNearbyPools() {
+        nearbyLock.lock()
+        nearbyHits.removeAll()
+        nearbyMisses.removeAll()
+        nearbyLock.unlock()
     }
 
     /// The pools an item editor indexes, root first so the item's own pool
