@@ -544,6 +544,65 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         XCTAssertEqual((try XCTUnwrap(try result("clean_up_project_pool", ["dry_run": true]) as? JSONDictionary)["items"] as? [JSONDictionary])?.count, 0)
     }
 
+    // MARK: - Round thirty-one: note 98
+
+    /// Hidden files aren't pool items. A `.DS_Store` at the pool's top, beside
+    /// the models or in a package's directory, and what a hidden folder holds,
+    /// is never offered or removed, and Finder rewriting one leaves the review
+    /// as it was. The cache manifest, in the hidden `.horizontal`, still counts.
+    func testCleanUpLeavesHiddenFilesAlone() throws {
+        _ = try result("import_pool_part", ["part": "part-1"])
+        let hidden = ["pool/.DS_Store", "pool/3d_models/cache/.DS_Store", "pool/3d_models/cache/.thumbnails/stray.step",
+                      "pool/packages/cache/pkg-1/.DS_Store", "pool/parts/cache/.DS_Store"]
+        func finder(_ text: String) throws {
+            for path in hidden {
+                let url = packageURL.appendingPathComponent(path)
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data(text.utf8).write(to: url)
+            }
+        }
+        try finder("finder")
+        let ids = ["part|part-1", "entity|ent-1", "unit|unit-1", "symbol|sym-1", "package|pkg-1", "padstack|ps-pool"]
+        let isHidden = { (path: String) in path.split(separator: "/").contains { $0.hasPrefix(".") } }
+
+        let archive = try HorizontalProjectArchive.snapshot(from: packageURL)
+        let project = try HorizontalProject.loadSnapshot(of: archive)
+        let files = HorizontalPoolCacheUpdater.files(in: archive, poolDirectory: "pool")
+        XCTAssertEqual(Set(hidden.map { String($0.dropFirst("pool/".count)) }).subtracting(files.keys), [], "the archive has them")
+        let review = HorizontalPoolCacheCleanup.review(archive: archive, project: project, files: files)
+        XCTAssertEqual(review.items.map(\.id), ids)
+        XCTAssertFalse(review.items.flatMap(\.paths).contains(where: isHidden), "\(review.items.flatMap(\.paths))")
+        XCTAssertNotNil(review.projectFiles[HorizontalPoolCacheProvenance.path], "the manifest still counts")
+
+        // Finder rewrites them after the review. It still stands, and the
+        // removal takes none of them.
+        try finder("finder, later")
+        let later = try HorizontalProjectArchive.snapshot(from: packageURL)
+        let laterFiles = HorizontalPoolCacheUpdater.files(in: later, poolDirectory: "pool")
+        XCTAssertNotEqual(laterFiles["3d_models/cache/.DS_Store"], files["3d_models/cache/.DS_Store"])
+        XCTAssertEqual(HorizontalPoolCacheCleanup.review(archive: later, project: project, files: laterFiles).digest, review.digest)
+        let removal = try HorizontalPoolCacheCleanup.removal(review, removing: nil, archive: later, project: project, poolDirectory: "pool")
+        XCTAssertFalse(removal.paths.contains(where: isHidden), "\(removal.paths)")
+        XCTAssertNotNil(removal.manifest, "the manifest loses their entries")
+
+        // Through MCP, once the context has read them: the same six, and the
+        // commit leaves every hidden file where it was.
+        _ = try result("reload_project")
+        let dry = try XCTUnwrap(try result("clean_up_project_pool", ["dry_run": true]) as? JSONDictionary)
+        XCTAssertEqual(dry["remove"] as? [String], ids)
+        let committed = try XCTUnwrap(try result("clean_up_project_pool", [
+            "plan_digest": try XCTUnwrap(dry.string("plan_digest")), "review_digest": try XCTUnwrap(dry.string("review_digest"))
+        ]) as? JSONDictionary)
+        XCTAssertEqual(committed.string("status"), "committed")
+        XCTAssertEqual((committed["written"] as? [String])?.filter(isHidden), ["pool/" + HorizontalPoolCacheProvenance.path],
+                       "of the hidden files, only the manifest is written")
+        let fileManager = FileManager.default
+        XCTAssertFalse(fileManager.fileExists(atPath: packageURL.appendingPathComponent("pool/packages/cache/pkg-1/package.json").path))
+        for path in hidden {
+            XCTAssertEqual(try? Data(contentsOf: packageURL.appendingPathComponent(path)), Data("finder, later".utf8), path)
+        }
+    }
+
     @MainActor func testMountedLiveCleanUpIsOneUndoStep() async throws {
         _ = NSApplication.shared
         _ = try result("import_pool_part", ["part": "part-1"])
