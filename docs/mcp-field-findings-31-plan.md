@@ -59,5 +59,5 @@ the live check of round 30 and is recorded in billo's
   wrote nothing): five parts, with `remove_bytes` 4,571. Before, it was six
   items and 10,719 bytes, the sixth being `3d_models/cache/.DS_Store`
   (6,148 bytes).
-- **Left for the app:** the Clean Up sheet uses the same review. The
-  user's Debug app needs an Xcode rebuild to show it.
+- **In the app (the user, 2026-10-13):** after an Xcode rebuild, the Clean
+  Up sheet works.
