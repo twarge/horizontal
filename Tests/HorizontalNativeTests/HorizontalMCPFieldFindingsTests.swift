@@ -19,7 +19,8 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
     /// A one-gate part whose pins sit down the left edge pointing left, the
     /// way an MCU's pins do, named as given.
     private func part(_ names: [String], value: String = "", alternates: [String: [String]] = [:],
-                      packageName: String = "") -> Part {
+                      packageName: String = "", mpn: String? = nil, parametric: [String: String] = [:],
+                      valueText: Bool = false) -> Part {
         let pins = names.map { _ in UUID().uuidString.lowercased() }
         let pads = names.map { _ in UUID().uuidString.lowercased() }
         var unit = HorizontalPoolItemFactory.newUnit()
@@ -48,7 +49,17 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         var part = HorizontalPoolItemFactory.newPart(entity: entity, packageID: package.uuid)
         for i in pins.indices { part.padMap[pads[i]] = HorizontalPartPadMapEntry(gateID: gate, pinID: pins[i]) }
         if !value.isEmpty { part.attributes[.value] = HorizontalPartAttribute(value: value) }
-        return Part(items: [unit.json(), entity.json(), symbol.json(), padstack.json(), package.json(), part.json()],
+        if let mpn { part.attributes[.mpn] = HorizontalPartAttribute(value: mpn) }
+        part.parametric = parametric
+        var symbolJSON = symbol.json()
+        if valueText {
+            // The text a symbol draws its value with, as pool symbols carry it.
+            symbolJSON["texts"] = [UUID().uuidString.lowercased(): [
+                "text": "$VALUE", "size": 1_500_000, "width": 0, "origin": "baseline", "font": "simplex", "layer": 0,
+                "placement": ["angle": 0, "mirror": false, "shift": [5_000_000, 2_540_000]]
+            ] as JSONDictionary]
+        }
+        return Part(items: [unit.json(), entity.json(), symbolJSON, padstack.json(), package.json(), part.json()],
                     part: part.uuid, gate: gate, pins: pins, names: names, package: package.uuid)
     }
 
@@ -1873,5 +1884,252 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
                 XCTAssertEqual(path.contains(point), HorizontalBoardOutlines.contains(point, in: points), "\(count) vertices at \(point)")
             }
         }
+    }
+
+    // MARK: - Round thirty-two: notes 99–101
+
+    /// 99: check reports what the schematic canvas draws, sheet by sheet,
+    /// where it draws it — on every sheet, and the same set the canvas has.
+    func testCheckReportsTheWarningsEachSheetDraws() throws {
+        _ = try placedMCU()
+        // PA14 gets a wire and a label; PA13 a wire on its net and no label.
+        let junction = UUID().uuidString.lowercased()
+        try apply([
+            ["op": "terminate_pin", "component": "U1", "pin": "PA14"],
+            ["op": "place_junction", "id": junction, "net": "SWDIO", "x_mm": 80, "y_mm": 100],
+            ["op": "draw_net_line", "from": ["kind": "pin", "component": "U1", "pin": "PA13(JTMS/SWDIO)"],
+             "to": ["kind": "junction", "junction": junction]],
+        ])
+        // A second page with a part whose four pins are on nets and drawn to none.
+        let quad = part(["A", "B", "C", "D"])
+        try apply([["op": "add_sheet", "name": "Power"],
+                   ["op": "ensure_component", "refdes": "U2", "part": quad.part],
+                   ["op": "place_symbol", "component": "U2", "sheet": "Power", "x_mm": 50, "y_mm": 50]]
+                  + ["A", "B", "C", "D"].map { ["op": "connect", "component": "U2", "pin": $0, "net": "N\($0)", "create_net": true] },
+                  ["pool_items": quad.items])
+
+        let full = try XCTUnwrap(try result("check", ["full": true]) as? JSONDictionary)
+        let drawn = full.dictionaryArray("messages").filter { $0.string("message") != nil }
+        XCTAssertTrue(drawn.allSatisfy { $0.string("category") == "schematic" && $0.string("level") == "warning" })
+
+        // The canvas's own warnings, sheet by sheet, are exactly these.
+        let project = try HorizontalProject.load(from: root)
+        let sheets = try XCTUnwrap(project.schematic?.sheets)
+        func key(_ sheet: Int, _ message: String, _ point: HorizontalPoint) -> String {
+            "\(sheet)|\(message)|\(HorizontalDispatchJSON.mm(point.x))|\(HorizontalDispatchJSON.mm(point.y))"
+        }
+        let canvas = Set(sheets.flatMap { sheet in
+            HorizontalSchematicWarnings.evaluate(sheet, allSheets: sheets).flatMap { warning in
+                warning.messages.map { key(sheet.index, $0, warning.position) }
+            }
+        })
+        let reported = Set(drawn.map {
+            key($0.int("sheet") ?? 0, $0.string("message") ?? "",
+                HorizontalPoint(x: ($0.double("x_mm") ?? 0) * 1_000_000, y: ($0.double("y_mm") ?? 0) * 1_000_000))
+        })
+        XCTAssertFalse(canvas.isEmpty)
+        XCTAssertEqual(reported, canvas)
+        XCTAssertEqual(drawn.count, reported.count, "one message per point and message")
+
+        // A wire on a named net with no label is Label missing, about that net.
+        let missing = try XCTUnwrap(drawn.first { $0.string("title") == "Label missing" })
+        XCTAssertEqual(missing.string("net"), "SWDIO")
+        XCTAssertEqual(missing.int("sheet"), 1)
+        XCTAssertEqual(missing.string("sheet_name"), "Sheet 1")
+        XCTAssertNotNil(missing.string("sheet_id"))
+        XCTAssertTrue(missing.string("detail")?.hasPrefix("Sheet 1 (Sheet 1) at (") ?? false, "\(missing)")
+        XCTAssertTrue(missing.string("detail")?.contains("net SWDIO") ?? false, "\(missing)")
+        XCTAssertFalse(drawn.contains { $0.string("message") == "Pin connected to net: SWCLK" }, "PA14 has its wire and label")
+
+        // A pin on a net with no wire names its net, its part and its pin.
+        let page2 = drawn.filter { $0.int("sheet") == 2 }
+        XCTAssertEqual(page2.count, 4)
+        let pinA = try XCTUnwrap(page2.first { $0.string("message") == "Pin connected to net: NA" })
+        XCTAssertEqual(pinA.string("title"), "Pin connected to net")
+        XCTAssertEqual(pinA.string("net"), "NA")
+        XCTAssertEqual(pinA.string("refdes"), "U2")
+        XCTAssertEqual(pinA.string("pin"), "A")
+        XCTAssertEqual(pinA.string("sheet_name"), "Power")
+        XCTAssertTrue(pinA.string("detail")?.hasSuffix(": Pin connected to net: NA (U2 pin A).") ?? false, "\(pinA)")
+
+        // More than three with one title come back as one, unless full.
+        let grouped = try XCTUnwrap(try result("check") as? JSONDictionary).dictionaryArray("messages")
+        let pins = grouped.filter { $0.string("title") == "Pin connected to net" }
+        XCTAssertEqual(pins.count, 1)
+        XCTAssertEqual(pins.first?.int("count"), drawn.filter { $0.string("title") == "Pin connected to net" }.count)
+        XCTAssertEqual((pins.first?["details"] as? [Any])?.count, pins.first?.int("count"))
+        XCTAssertEqual((full["counts"] as? JSONDictionary)?["warning"] as? Int,
+                       (try XCTUnwrap(try result("check") as? JSONDictionary)["counts"] as? JSONDictionary)?["warning"] as? Int)
+    }
+
+    /// 100: Horizon's custom value, filled in from the component and its part.
+    func testCustomValuesFillInAsHorizonsDo() throws {
+        let table = try XCTUnwrap(HorizontalParametricTable(name: "references", json: [
+            "display_name": "References",
+            "columns": [["name": "voltage", "display_name": "Output Voltage", "type": "quantity", "unit": "V", "digits": 3],
+                        ["name": "noise", "display_name": "Noise", "type": "quantity", "unit": "V", "digits": 2]]
+        ]))
+        var details = HorizontalComponentDetails(componentID: "c", refdes: "U3", value: "3.0 V", partID: "p",
+                                                 mpn: "LTC6655BHMS8-3", manufacturer: "Analog Devices",
+                                                 packageName: "MSOP-8", description: "Precision reference")
+        details.parametricFields = HorizontalSymbolCustomValue.parametricFields(
+            ["table": "references", "voltage": "3", "noise": "2.5e-07", "stray": "x"], tables: [table])
+        XCTAssertEqual(details.parametricFields, [
+            HorizontalParametricField(key: "noise", displayName: "Noise", value: "250 nV"),
+            HorizontalParametricField(key: "voltage", displayName: "Output Voltage", value: "3 V"),
+        ], "the table's columns, formatted, in key order")
+        func drawn(_ text: String) -> String { HorizontalSymbolCustomValue.interpolate(text, details: details) }
+        XCTAssertEqual(drawn("${value}\n${mpn}"), "3.0 V\nLTC6655BHMS8-3")
+        XCTAssertEqual(drawn("$VALUE ${MFR}, ${pkg}: ${desc}"), "3.0 V Analog Devices, MSOP-8: Precision reference")
+        XCTAssertEqual(drawn("${p:voltage} ±${p:noise}"), "3 V ±250 nV")
+        XCTAssertEqual(drawn("${p:stray} ${nope} $ ${open"), "${p:stray} ${nope} $ ${open", "what names nothing stays")
+
+        // Without a table, the stored values under their own keys.
+        XCTAssertEqual(HorizontalSymbolCustomValue.parametricFields(["table": "references", "voltage": "3"], tables: []),
+                       [HorizontalParametricField(key: "voltage", displayName: "voltage", value: "3")])
+
+        // Without a part, the part's fields read None.
+        let bare = HorizontalComponentDetails(componentID: "c", refdes: "R1", value: "10k", partID: nil)
+        XCTAssertEqual(HorizontalSymbolCustomValue.interpolate("${value} ${mpn} ${p:voltage}", details: bare), "10k None None")
+        XCTAssertEqual(HorizontalSymbolCustomValue.insertions(for: bare).map(\.label), ["Value"])
+        XCTAssertEqual(HorizontalSymbolCustomValue.insertions(for: details).map { ($0.prefix + " " + $0.label).trimmingCharacters(in: .whitespaces) },
+                       ["Value", "MPN", "Manufacturer", "Description", "Package", "Param: Noise", "Param: Output Voltage"])
+        XCTAssertEqual(HorizontalSymbolCustomValue.insertions(for: details).last?.text, "${p:voltage}\n")
+
+        // What $VALUE draws, and what the dialog opens with and stores.
+        XCTAssertEqual(HorizontalSymbolCustomValue.drawnValue(customValue: nil, details: details), "3.0 V")
+        XCTAssertEqual(HorizontalSymbolCustomValue.drawnValue(customValue: " \n", details: details), "3.0 V")
+        XCTAssertEqual(HorizontalSymbolCustomValue.editorText(nil), "${value}\n")
+        XCTAssertEqual(HorizontalSymbolCustomValue.editorText("${mpn}"), "${mpn}")
+        XCTAssertNil(HorizontalSymbolCustomValue.committedValue(edited: "${value}\n", stored: nil), "untouched, nothing to store")
+        XCTAssertEqual(HorizontalSymbolCustomValue.committedValue(edited: "${value}\n", stored: "${mpn}"), "${value}")
+        XCTAssertEqual(HorizontalSymbolCustomValue.committedValue(edited: "  ${value}\n${mpn}\n", stored: nil), "${value}\n${mpn}")
+        XCTAssertNil(HorizontalSymbolCustomValue.committedValue(edited: " \n", stored: "${mpn}"), "emptied, cleared")
+        let inserted = HorizontalSymbolCustomValue.inserting("${mpn}\n", into: "${value}\n", utf16Range: 9..<9)
+        XCTAssertEqual(inserted.text, "${value}\n${mpn}\n")
+        XCTAssertEqual(inserted.cursor, 16)
+        XCTAssertEqual(HorizontalSymbolCustomValue.inserting("X", into: "aµb", utf16Range: 1..<2).text, "aXb", "over the selection")
+    }
+
+    /// 100: set_custom_value through MCP, read back by get_component and
+    /// drawn by the sheet loader.
+    func testSetCustomValueIsStoredDrawnAndCleared() throws {
+        let reference = part(["IN", "OUT", "GND"], value: "3.0 V", mpn: "LTC6655BHMS8-3",
+                             parametric: ["table": "references", "voltage": "3.0"], valueText: true)
+        let instance = UUID().uuidString.lowercased()
+        try apply([["op": "ensure_component", "refdes": "U3", "part": reference.part],
+                   ["op": "place_symbol", "component": "U3", "x_mm": 40, "y_mm": 40, "id": instance]],
+                  ["pool_items": reference.items])
+        func symbol() throws -> JSONDictionary {
+            try XCTUnwrap(try XCTUnwrap(try result("get_component", ["refdes": "U3"]) as? JSONDictionary).dictionaryArray("symbols").first)
+        }
+        func stored() throws -> JSONDictionary {
+            let schematic = try JSONHelper.loadDictionary(from: root.appendingPathComponent("top_schematic.json"))
+            return try XCTUnwrap(schematic.dictionaryMap("sheets").values.first?.dictionaryMap("symbols")[instance])
+        }
+        func drawnTexts() throws -> [String] {
+            try XCTUnwrap(HorizontalProject.load(from: root).schematic?.sheets.first).symbolTexts.map(\.text)
+        }
+        XCTAssertTrue(try symbol()["custom_value"] is NSNull)
+        XCTAssertEqual(try symbol().string("drawn_value"), "3.0 V")
+        XCTAssertTrue(try drawnTexts().contains("3.0 V"))
+
+        let set = try apply([["op": "set_custom_value", "component": "U3", "custom_value": "  ${value}\n${mpn}\n"]])
+        XCTAssertEqual(changes(set).first?["symbol_instances"] as? [String], [instance])
+        XCTAssertEqual(changes(set).first?.string("custom_value"), "${value}\n${mpn}", "trimmed, as Horizon trims it")
+        XCTAssertEqual(set.string("undo_name"), "Set Custom Value")
+        XCTAssertEqual(try stored().string("custom_value"), "${value}\n${mpn}")
+        XCTAssertEqual(try symbol().string("custom_value"), "${value}\n${mpn}")
+        XCTAssertEqual(try symbol().string("drawn_value"), "3.0 V\nLTC6655BHMS8-3")
+        XCTAssertTrue(try drawnTexts().contains("3.0 V\nLTC6655BHMS8-3"), "the sheet draws what get_component says")
+
+        // A parametric column, without a table to format it, is its stored value.
+        try apply([["op": "set_custom_value", "symbol_instance": instance, "custom_value": "${p:voltage} V ref"]])
+        XCTAssertEqual(try symbol().string("drawn_value"), "3.0 V ref")
+        // With the project pool's table, it reads as Horizon formats it.
+        try JSONSerialization.data(withJSONObject: ["tables": ["references": [
+            "display_name": "References",
+            "columns": [["name": "voltage", "display_name": "Output Voltage", "type": "quantity", "unit": "V", "digits": 3]]
+        ]]]).write(to: root.appendingPathComponent("pool/tables.json"))
+        _ = try result("reload_project")
+        try apply([["op": "set_custom_value", "symbol_instance": instance, "custom_value": "${p:voltage} ref"]])
+        XCTAssertEqual(try symbol().string("drawn_value"), "3 V ref")
+
+        // "" and null clear it, leaving no key, as Horizon writes a symbol without one.
+        for cleared in ["", NSNull()] as [Any] {
+            try apply([["op": "set_custom_value", "component": "U3", "custom_value": "${mpn}"]])
+            try apply([["op": "set_custom_value", "component": "U3", "custom_value": cleared]])
+            XCTAssertNil(try stored()["custom_value"])
+            XCTAssertEqual(try symbol().string("drawn_value"), "3.0 V")
+        }
+        XCTAssertTrue(try error([["op": "set_custom_value", "component": "U3"]]).contains("custom_value"))
+        XCTAssertTrue(try error([["op": "set_custom_value", "symbol_instance": UUID().uuidString, "custom_value": "x"]]).contains("list_symbols"))
+        XCTAssertTrue(try error([["op": "set_custom_value", "component": "U3", "custom_value": 5]]).contains("string"))
+    }
+
+    /// 101: a sheet's frame is set, listed and taken away; one the project
+    /// pool can't draw is refused, by add_sheet too.
+    func testASheetsFrameIsSetListedRefusedAndCleared() throws {
+        var frame = HorizontalPoolItemFactory.newFrame()
+        frame.name = "A4 Landscape"
+        _ = try result("pool_write", ["items": [frame.json()]])
+        func listed() throws -> [JSONDictionary] { try XCTUnwrap(try result("list_sheets") as? [JSONDictionary]) }
+        func storedFrame() throws -> Any? {
+            let schematic = try JSONHelper.loadDictionary(from: root.appendingPathComponent("top_schematic.json"))
+            return schematic.dictionaryMap("sheets").values.first?["frame"]
+        }
+        XCTAssertTrue(try listed().first?["frame"] is NSNull, "the template's sheet has no frame")
+
+        let set = try apply([["op": "set_sheet_frame", "sheet": 1, "frame": frame.uuid.uppercased()]])
+        XCTAssertEqual(changes(set).first?.string("frame"), frame.uuid)
+        XCTAssertEqual(changes(set).first?.string("frame_name"), "A4 Landscape")
+        XCTAssertTrue(changes(set).first?["previous_frame"] is NSNull)
+        XCTAssertEqual(set.string("undo_name"), "Set Sheet Frame")
+        XCTAssertEqual(try storedFrame() as? String, frame.uuid)
+        XCTAssertEqual(try listed().first?.dictionary("frame")?.string("uuid"), frame.uuid)
+        XCTAssertEqual(try listed().first?.dictionary("frame")?.string("name"), "A4 Landscape")
+        let loaded = try XCTUnwrap(HorizontalProject.load(from: root).schematic)
+        XCTAssertFalse(try XCTUnwrap(loaded.sheets.first).frameLines.isEmpty, "the frame is drawn")
+        XCTAssertEqual(loaded.availableFrames, [HorizontalSheetFrameOption(id: frame.uuid, name: "A4 Landscape")])
+
+        // A frame the project pool doesn't have would draw nothing.
+        let absent = UUID().uuidString.lowercased()
+        XCTAssertTrue(try error([["op": "set_sheet_frame", "sheet": 1, "frame": absent]]).contains("search_pool"))
+        XCTAssertTrue(try error([["op": "add_sheet", "name": "Power", "frame": absent]]).contains(absent))
+        XCTAssertTrue(try error([["op": "set_sheet_frame", "sheet": 1, "frame": "A4"]]).contains("uuid"))
+        XCTAssertTrue(try error([["op": "set_sheet_frame", "frame": "none"]]).contains("sheet"))
+        XCTAssertEqual(try storedFrame() as? String, frame.uuid, "refusals change nothing")
+
+        // A new page follows the last one's frame, and none or null takes it away.
+        try apply([["op": "add_sheet", "name": "Power"]])
+        XCTAssertEqual(try listed().last?.dictionary("frame")?.string("uuid"), frame.uuid)
+        let cleared = try apply([["op": "set_sheet_frame", "sheet": "Power", "frame": "none"],
+                                 ["op": "set_sheet_frame", "sheet": 1, "frame": NSNull()]])
+        XCTAssertEqual(changes(cleared).first?.string("previous_frame"), frame.uuid)
+        XCTAssertNil(try storedFrame(), "Horizon writes no frame key for a sheet without one")
+        XCTAssertTrue(try listed().allSatisfy { $0["frame"] is NSNull })
+        XCTAssertTrue(try XCTUnwrap(HorizontalProject.load(from: root).schematic?.sheets.first).frameLines.isEmpty)
+    }
+
+    /// 101: the navigator's Frame menu, through the archive the app edits.
+    func testTheFrameMenuSetsAndClearsASheetsFrameInTheArchive() throws {
+        var frame = HorizontalPoolItemFactory.newFrame()
+        frame.name = "A3"
+        _ = try result("pool_write", ["items": [frame.json()]])
+        let project = try HorizontalProject.load(from: root)
+        let schematicURL = root.appendingPathComponent("top_schematic.json")
+        let sheetID = try XCTUnwrap(project.schematic?.sheets.first?.id)
+        var archive = try HorizontalProjectArchive.completeProject(from: root)
+        try HorizontalProjectJSONApplicator.apply(sheetFrame: frame.uuid, forSheetID: sheetID, schematicURL: schematicURL,
+                                                  in: project, to: &archive)
+        let framed = try XCTUnwrap(HorizontalProject.loadSnapshot(of: archive).schematic?.sheets.first)
+        XCTAssertEqual(framed.frameID, frame.uuid)
+        XCTAssertEqual(framed.frameName, "A3")
+        XCTAssertFalse(framed.frameLines.isEmpty)
+        try HorizontalProjectJSONApplicator.apply(sheetFrame: nil, forSheetID: sheetID, schematicURL: schematicURL,
+                                                  in: project, to: &archive)
+        let bare = try XCTUnwrap(HorizontalProject.loadSnapshot(of: archive).schematic?.sheets.first)
+        XCTAssertNil(bare.frameID)
+        XCTAssertTrue(bare.frameLines.isEmpty)
     }
 }

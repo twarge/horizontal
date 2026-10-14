@@ -23,6 +23,13 @@ struct HorizontalSchematicNoPopulateMark: Identifiable, Hashable {
     }
 }
 
+/// A pool frame a sheet can draw its title block with.
+struct HorizontalSheetFrameOption: Identifiable, Hashable {
+    /// The frame's uuid, lowercased.
+    var id: String
+    var name: String
+}
+
 struct HorizontalSchematicPartPlacementDraft {
     var sheet: HorizontalSchematicSheet
     var symbolInstanceID: String
@@ -99,6 +106,11 @@ struct HorizontalSchematicSheet: Identifiable {
     var frameLines: [HorizontalSegment]
     var framePolygons: [HorizontalPolygon]
     var frameTexts: [HorizontalText]
+    /// The pool frame the sheet names (`frame`, lowercased), and that
+    /// frame's name when the project pool has it. A sheet with no frame has
+    /// neither; one naming a frame the pool lacks has only the id.
+    var frameID: String? = nil
+    var frameName: String? = nil
     var texts: [HorizontalText]
     /// Pool editors only: the symbol's or frame's own polygons, editable as
     /// whole objects (`sheet/polygon/<uuid>` ids).
@@ -188,6 +200,9 @@ struct HorizontalSchematic {
     var placeableObjects: [HorizontalUnplacedObject]
     var unplacedObjects: [HorizontalUnplacedObject]
     var bounds: HorizontalRect
+    /// The frames a sheet can be given: the project pool's
+    /// (`frames/cache/`, where a sheet's frame is drawn from), by name.
+    var availableFrames: [HorizontalSheetFrameOption] = []
 
     private struct SchematicBlockInfo {
         var connectivityJSON: JSONDictionary = [:]
@@ -487,8 +502,40 @@ struct HorizontalSchematic {
             powerSymbolTexts: topSheet?.powerSymbolTexts ?? [],
             placeableObjects: placeableObjects,
             unplacedObjects: unplacedObjects,
-            bounds: topSheet?.bounds ?? .empty
+            bounds: topSheet?.bounds ?? .empty,
+            availableFrames: poolURL.map(projectPoolFrames(poolURL:)) ?? []
         )
+    }
+
+    /// Where a sheet's frame is drawn from: the project pool's cached copy,
+    /// `frames/cache/<uuid>.json`.
+    static func frameURL(_ frameID: String, poolURL: URL) -> URL {
+        poolURL
+            .appendingPathComponent("frames")
+            .appendingPathComponent("cache")
+            .appendingPathComponent("\(normalizedID(frameID)).json")
+    }
+
+    /// The frames a sheet of this project can draw: those in the project
+    /// pool's `frames/cache/`, under a file the loader finds by their uuid.
+    static func projectPoolFrames(poolURL: URL) -> [HorizontalSheetFrameOption] {
+        let directory = poolURL.appendingPathComponent("frames").appendingPathComponent("cache")
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        return urls.compactMap { url -> HorizontalSheetFrameOption? in
+            guard url.pathExtension.lowercased() == "json",
+                  let json = try? JSONHelper.loadDictionary(from: url),
+                  json.string("type") == "frame",
+                  let uuid = json.string("uuid"),
+                  url.deletingPathExtension().lastPathComponent.caseInsensitiveCompare(uuid) == .orderedSame else {
+                return nil
+            }
+            return HorizontalSheetFrameOption(id: normalizedID(uuid), name: json.string("name") ?? "")
+        }
+        .sorted { ($0.name.localizedLowercase, $0.id) < ($1.name.localizedLowercase, $1.id) }
     }
 
     static func load(from url: URL) throws -> HorizontalSchematic {
@@ -782,6 +829,7 @@ struct HorizontalSchematic {
                 )
             }
             let sheetIndex = sheet.int("index") ?? Int.max
+            let sheetFrameID = sheet.string("frame").map(normalizedID)
             let frameArtwork = BoardLoadTimer.measure("schematic sheets: frame artwork") {
                 parseFrameArtwork(
                     from: sheet.string("frame"),
@@ -954,6 +1002,8 @@ struct HorizontalSchematic {
                 frameLines: frameArtwork.lines,
                 framePolygons: frameArtwork.polygons,
                 frameTexts: frameArtwork.texts,
+                frameID: sheetFrameID,
+                frameName: sheetFrameID.flatMap { frameCache[$0]?.string("name") },
                 texts: texts,
                 netLabels: netLabels,
                 powerSymbols: powerSymbols.symbols,
@@ -3202,6 +3252,13 @@ struct HorizontalSchematic {
         return nil
     }
 
+    /// The parametric tables a project's parts are formatted through: the
+    /// project pool's own `tables.json`, then those of the pools it draws
+    /// from, the project's winning (`PoolParametric`).
+    static func parametricTables(projectPoolURL: URL) -> [HorizontalParametricTable] {
+        HorizontalPoolParametricTables.load(poolURLs: HorizontalPoolLibrary.editorPoolURLs(forPoolRoot: projectPoolURL).reversed())
+    }
+
     private static func parseBlockInfo(from blockURL: URL, poolURL: URL?) throws -> SchematicBlockInfo {
         let json = try JSONHelper.loadDictionary(from: blockURL)
         var packageCache = [String: JSONDictionary]()
@@ -3210,6 +3267,9 @@ struct HorizontalSchematic {
         var entityGateCache = [String: [String: (suffix: String, symbolID: String?)]]()
         var symbolsByUnitIDCache = [String: [String]]()
         var didLoadSymbolsByUnitID = false
+        // The parametric tables a custom value's ${p:…} formats through, read
+        // only once a part names a table.
+        var parametricTables: [HorizontalParametricTable]?
         let components = json.dictionaryMap("components").reduce(into: [String: SchematicComponentInfo]()) { result, item in
             let componentID = normalizedID(item.key)
             let entityID = item.value.string("entity").map(normalizedID)
@@ -3235,6 +3295,9 @@ struct HorizontalSchematic {
                 }
             }
             let componentValue = partDetails?.value ?? item.value.string("value") ?? ""
+            if partDetails?.parametricValues["table"] != nil, parametricTables == nil {
+                parametricTables = poolURL.map(Self.parametricTables(projectPoolURL:)) ?? []
+            }
             let altPins = item.value.dictionaryMap("alt_pins").reduce(into: [String: SchematicAltPinInfo]()) { result, item in
                 result[normalizedUUIDPath(item.key)] = SchematicAltPinInfo(
                     pinNames: (item.value["pin_names"] as? [String] ?? []).map(normalizedID),
@@ -3270,6 +3333,9 @@ struct HorizontalSchematic {
                     description: partDetails?.description,
                     datasheet: partDetails?.datasheet,
                     parametricValues: partDetails?.parametricValues ?? [:],
+                    parametricFields: HorizontalSymbolCustomValue.parametricFields(
+                        partDetails?.parametricValues ?? [:], tables: parametricTables ?? []
+                    ),
                     excludeFromBOM: partDetails?.part.excludeFromBOM ?? false,
                     excludeFromPnP: partDetails?.part.excludeFromPnP ?? false
                 )
@@ -3547,12 +3613,7 @@ struct HorizontalSchematic {
             return cached
         }
 
-        let frameURL = poolURL
-            .appendingPathComponent("frames")
-            .appendingPathComponent("cache")
-            .appendingPathComponent("\(frameID).json")
-
-        guard let resolvedURL = existingFileURL(frameURL),
+        guard let resolvedURL = existingFileURL(frameURL(frameID, poolURL: poolURL)),
               let frameJSON = try? JSONHelper.loadDictionary(from: resolvedURL) else {
             return nil
         }
@@ -3893,8 +3954,10 @@ struct HorizontalSchematic {
             return text
         }
 
-        if text == "$VALUE", let customValue = nonEmpty(customValue) {
-            return interpolateSymbolCustomValue(customValue, component: component)
+        if text == "$VALUE", nonEmpty(customValue) != nil {
+            return HorizontalSymbolCustomValue.drawnValue(customValue: customValue, details: component.details ?? HorizontalComponentDetails(
+                componentID: nil, refdes: component.refdes, value: component.value, partID: component.partID
+            ))
         }
 
         let values = symbolSubstitutionValues(for: component)
@@ -3920,88 +3983,6 @@ struct HorizontalSchematic {
             insertTextSubstitution(key: "MPN", value: mpn, into: &values)
         }
         return values
-    }
-
-    private static func interpolateSymbolCustomValue(
-        _ text: String,
-        component: SchematicComponentInfo
-    ) -> String {
-        interpolateText(text) { variable in
-            let key = variable.lowercased()
-            switch key {
-            case "value":
-                return component.value
-            case "pkg":
-                return component.details?.packageName ?? "None"
-            case "mpn":
-                return component.details?.mpn ?? "None"
-            case "mfr":
-                return component.details?.manufacturer ?? "None"
-            case "desc":
-                return component.details?.description ?? "None"
-            default:
-                if key.hasPrefix("p:") {
-                    let parametricKey = String(key.dropFirst(2))
-                    return component.details?.parametricValues[parametricKey]
-                }
-                return nil
-            }
-        }
-    }
-
-    private static func interpolateText(
-        _ text: String,
-        lookup: (String) -> String?
-    ) -> String {
-        var result = ""
-        var index = text.startIndex
-        while index < text.endIndex {
-            guard text[index] == "$" else {
-                result.append(text[index])
-                text.formIndex(after: &index)
-                continue
-            }
-
-            let dollarIndex = index
-            text.formIndex(after: &index)
-            guard index < text.endIndex else {
-                result.append("$")
-                break
-            }
-
-            if text[index] == "{" {
-                let variableStart = text.index(after: index)
-                guard let closeIndex = text[variableStart...].firstIndex(of: "}") else {
-                    result.append(contentsOf: text[dollarIndex...])
-                    break
-                }
-                let variable = String(text[variableStart..<closeIndex])
-                result.append(lookup(variable) ?? String(text[dollarIndex...closeIndex]))
-                index = text.index(after: closeIndex)
-                continue
-            }
-
-            guard isVariableCharacter(text[index]) else {
-                result.append("$")
-                result.append(text[index])
-                text.formIndex(after: &index)
-                continue
-            }
-
-            let variableStart = index
-            while index < text.endIndex, isVariableCharacter(text[index]) {
-                text.formIndex(after: &index)
-            }
-            let variable = String(text[variableStart..<index])
-            result.append(lookup(variable) ?? "$\(variable)")
-        }
-        return result
-    }
-
-    private static func isVariableCharacter(_ character: Character) -> Bool {
-        character.unicodeScalars.allSatisfy {
-            CharacterSet.alphanumerics.contains($0) || $0 == "_" || $0 == ":"
-        }
     }
 
     private static func insertTextSubstitution(

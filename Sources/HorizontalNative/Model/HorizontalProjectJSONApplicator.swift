@@ -387,6 +387,33 @@ enum HorizontalProjectJSONApplicator {
         try saveJSON(json, relativePath: path, to: &archive)
     }
 
+    /// Sets the pool frame a sheet's title block is drawn with (`frame`), or
+    /// takes it away when `frameID` is nil. Horizon writes no key for a
+    /// sheet without one.
+    static func apply(
+        sheetFrame frameID: String?,
+        forSheetID sheetID: String,
+        schematicURL: URL,
+        in project: HorizontalProject,
+        to archive: inout HorizontalProjectArchive
+    ) throws {
+        let path = try archivePath(for: schematicURL, project: project, archive: archive)
+        var json = try loadJSON(relativePath: path, fallbackURL: schematicURL, from: archive)
+        guard var sheets = json["sheets"] as? JSONDictionary,
+              let sheetKey = matchingKey(sheetID, in: sheets),
+              var sheetJSON = sheets[sheetKey] as? JSONDictionary else {
+            throw HorizontalProjectJSONApplyError.invalidJSON(path)
+        }
+        if let frameID {
+            sheetJSON["frame"] = frameID.lowercased()
+        } else {
+            sheetJSON.removeValue(forKey: "frame")
+        }
+        sheets[sheetKey] = sheetJSON
+        json["sheets"] = sheets
+        try saveJSON(json, relativePath: path, to: &archive)
+    }
+
     /// Rewrites every listed sheet's `index` to its position in
     /// `orderedSheetIDs` (1-based, Horizon's numbering). Sheets not listed keep
     /// their stored index.

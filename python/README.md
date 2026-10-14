@@ -149,6 +149,10 @@ Schematic editing supports:
 - `set_no_connect {component, pin | pins | all, gate?, no_connect?, disconnect?}` (`all`: every pin on no net,
   or every NC mark when clearing — Horizon's Set all unconnected pins NC / Clear all NC pins) and
   `set_symbol_display {component | symbol_instance, pin_display_mode?, display_all_pads?}`.
+- `set_custom_value {component | symbol_instance, gate?, custom_value}` sets
+  what a symbol's `$VALUE` text draws (`"${value}\n${mpn}"`; `""` or null
+  clears it), and `set_sheet_frame {sheet, frame}` gives a sheet a frame the
+  project pool has, or `"none"`.
 - `set_pin_alternate {component, pin, alternate | assignments, use_primary_name?, custom_name?, custom_direction?}`
   picks a pin's function from the alternates its unit offers. `alternate` is a
   name (whole, or one "/" part of it when that is unique: `SPI1_SCK` finds

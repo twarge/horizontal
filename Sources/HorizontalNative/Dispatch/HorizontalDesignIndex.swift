@@ -86,6 +86,11 @@ struct HorizontalDesignSymbolPlacement: Hashable {
     var poolSymbolID: String? = nil
     /// Which pin names the symbol draws: selected_only, custom_only, both or all.
     var pinDisplayMode: String = "selected_only"
+    /// The symbol's custom value as stored, nil when it has none.
+    var customValue: String? = nil
+    /// What its `$VALUE` text draws: the custom value filled in, or the
+    /// component's value.
+    var drawnValue: String = ""
 }
 
 struct HorizontalDesignBoardPlacement: Hashable {
@@ -155,6 +160,10 @@ struct HorizontalDesignSheet {
     /// Nil when the schematic stands alone (no blocks file).
     var blockID: String?
     var isTopBlock: Bool
+    /// The pool frame the sheet draws its title block with, and its name
+    /// when the project pool has it.
+    var frameID: String? = nil
+    var frameName: String? = nil
 }
 
 /// Everything the netlist-shaped dispatch methods answer from, built once per
@@ -212,7 +221,9 @@ struct HorizontalDesignIndex {
                     symbolCount: sheet.symbols.count,
                     blockName: entry.block.displayName,
                     blockID: project.schematics.isEmpty ? nil : entry.block.uuid,
-                    isTopBlock: entry.block.isTop
+                    isTopBlock: entry.block.isTop,
+                    frameID: sheet.frameID,
+                    frameName: sheet.frameName
                 ))
                 for (componentID, info) in sheet.componentInfo {
                     componentInfo[componentID.lowercased()] = info
@@ -236,7 +247,9 @@ struct HorizontalDesignIndex {
                         blockID: project.schematics.isEmpty ? nil : entry.block.uuid,
                         symbolID: symbol.id,
                         poolSymbolID: symbol.symbolID,
-                        pinDisplayMode: symbol.pinDisplayMode
+                        pinDisplayMode: symbol.pinDisplayMode,
+                        customValue: symbol.customValue,
+                        drawnValue: HorizontalSymbolCustomValue.drawnValue(customValue: symbol.customValue, details: symbol.componentDetails)
                     ))
                     for pin in symbol.symbolPinNames {
                         symbolPinNames[componentID, default: [:]][pin.gatePinPath.lowercased()] = (pin.primaryName, pin.primaryDirection)
