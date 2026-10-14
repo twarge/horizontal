@@ -5,7 +5,7 @@ import XCTest
 @testable import HorizontalNative
 
 /// The leading pane's canvas runs under the sidebar, and its event monitor sees
-/// every click in its bounds before the window does (106). A click over the
+/// every click in its bounds before the window does (120). A click over the
 /// sidebar is the sidebar's: a right-click there opens a row's context menu
 /// rather than the canvas's, and no click there takes the keyboard. Before, the
 /// monitor left only the strip under the toolbar alone, so it took a sheet

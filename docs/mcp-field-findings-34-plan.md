@@ -6,7 +6,7 @@ user's, from trying to set a frame on Billo's MCU Power sheet with round
 
 ## Findings and changes
 
-106. **Right-clicking a sheet in the sidebar did nothing.**
+120. **Right-clicking a sheet in the sidebar did nothing.**
      - **The symptom:** the row's context menu holds Rename… and round 32's
        Frame menu. It never opened, so neither could be reached from the
        sidebar.
