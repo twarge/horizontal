@@ -6145,6 +6145,7 @@ struct SchematicCanvasView: View {
         let newDisplayValue = displayedValue(for: sheet.symbols[index])
         updateSymbolValueText(
             symbolID: sheet.symbols[index].id,
+            valueTextIDs: sheet.symbols[index].valueTextIDs,
             oldValue: oldDisplayValue,
             newValue: newDisplayValue,
             sheet: &sheet
@@ -6158,10 +6159,21 @@ struct SchematicCanvasView: View {
 
     private func updateSymbolValueText(
         symbolID: String,
+        valueTextIDs: [String],
         oldValue: String,
         newValue: String,
         sheet: inout HorizontalSchematicSheet
     ) {
+        // The texts the loader found drawing $VALUE, by id, whatever they
+        // drew before — nothing, say, from a custom value of empty fields.
+        if !valueTextIDs.isEmpty {
+            let ids = Set(valueTextIDs.map(normalizedID))
+            for index in sheet.symbolTexts.indices where ids.contains(normalizedID(sheet.symbolTexts[index].id)) {
+                sheet.symbolTexts[index].text = newValue
+            }
+            return
+        }
+        // A symbol the loader didn't see: the text that drew the old value.
         guard !oldValue.isEmpty, oldValue != newValue else {
             return
         }

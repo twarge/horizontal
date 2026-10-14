@@ -1960,6 +1960,17 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertEqual((pins.first?["details"] as? [Any])?.count, pins.first?.int("count"))
         XCTAssertEqual((full["counts"] as? JSONDictionary)?["warning"] as? Int,
                        (try XCTUnwrap(try result("check") as? JSONDictionary)["counts"] as? JSONDictionary)?["warning"] as? Int)
+
+        // Two parts with one refdes are an annotation error, once; the canvas
+        // marks each symbol, and check leaves those marks out.
+        try apply([["op": "set_refdes", "component": "U2", "refdes": "U1"]])
+        let messages = try XCTUnwrap(try result("check", ["full": true]) as? JSONDictionary).dictionaryArray("messages")
+        XCTAssertEqual(messages.filter { $0.string("title") == "Duplicate reference designator" }.count, 1)
+        XCTAssertFalse(messages.contains { $0.string("title") == "Duplicate refdes" })
+        let reloaded = try HorizontalProject.load(from: root)
+        XCTAssertTrue(try XCTUnwrap(reloaded.schematic?.sheets).contains { sheet in
+            HorizontalSchematicWarnings.evaluate(sheet).contains { $0.messages.contains("Duplicate refdes U1") }
+        }, "the canvas still draws it")
     }
 
     /// 100: Horizon's custom value, filled in from the component and its part.
@@ -1975,13 +1986,13 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         details.parametricFields = HorizontalSymbolCustomValue.parametricFields(
             ["table": "references", "voltage": "3", "noise": "2.5e-07", "stray": "x"], tables: [table])
         XCTAssertEqual(details.parametricFields, [
-            HorizontalParametricField(key: "noise", displayName: "Noise", value: "250 nV"),
-            HorizontalParametricField(key: "voltage", displayName: "Output Voltage", value: "3 V"),
+            HorizontalParametricField(key: "noise", displayName: "Noise", value: "250.00 nV"),
+            HorizontalParametricField(key: "voltage", displayName: "Output Voltage", value: "3.000 V"),
         ], "the table's columns, formatted, in key order")
         func drawn(_ text: String) -> String { HorizontalSymbolCustomValue.interpolate(text, details: details) }
         XCTAssertEqual(drawn("${value}\n${mpn}"), "3.0 V\nLTC6655BHMS8-3")
         XCTAssertEqual(drawn("$VALUE ${MFR}, ${pkg}: ${desc}"), "3.0 V Analog Devices, MSOP-8: Precision reference")
-        XCTAssertEqual(drawn("${p:voltage} ±${p:noise}"), "3 V ±250 nV")
+        XCTAssertEqual(drawn("${p:voltage} ±${p:noise}"), "3.000 V ±250.00 nV")
         XCTAssertEqual(drawn("${p:stray} ${nope} $ ${open"), "${p:stray} ${nope} $ ${open", "what names nothing stays")
 
         // Without a table, the stored values under their own keys.
@@ -1992,6 +2003,15 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         let bare = HorizontalComponentDetails(componentID: "c", refdes: "R1", value: "10k", partID: nil)
         XCTAssertEqual(HorizontalSymbolCustomValue.interpolate("${value} ${mpn} ${p:voltage}", details: bare), "10k None None")
         XCTAssertEqual(HorizontalSymbolCustomValue.insertions(for: bare).map(\.label), ["Value"])
+        // A part named but not read gives nothing, so it counts as none.
+        var unread = details
+        unread.partMissing = true
+        XCTAssertEqual(HorizontalSymbolCustomValue.interpolate("${value} ${mpn} ${pkg} ${p:voltage}", details: unread), "3.0 V None None None")
+        XCTAssertEqual(HorizontalSymbolCustomValue.insertions(for: unread).map(\.label), ["Value"])
+        // With a part, a field it leaves empty reads empty, as in Horizon.
+        var sparse = details
+        sparse.description = nil
+        XCTAssertEqual(HorizontalSymbolCustomValue.interpolate("[${desc}]", details: sparse), "[]")
         XCTAssertEqual(HorizontalSymbolCustomValue.insertions(for: details).map { ($0.prefix + " " + $0.label).trimmingCharacters(in: .whitespaces) },
                        ["Value", "MPN", "Manufacturer", "Description", "Package", "Param: Noise", "Param: Output Voltage"])
         XCTAssertEqual(HorizontalSymbolCustomValue.insertions(for: details).last?.text, "${p:voltage}\n")
@@ -2042,6 +2062,16 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertEqual(try symbol().string("custom_value"), "${value}\n${mpn}")
         XCTAssertEqual(try symbol().string("drawn_value"), "3.0 V\nLTC6655BHMS8-3")
         XCTAssertTrue(try drawnTexts().contains("3.0 V\nLTC6655BHMS8-3"), "the sheet draws what get_component says")
+        // The loader says which text draws $VALUE, so the canvas redraws it by
+        // id, even after a custom value of empty fields has it draw nothing.
+        let loadedSheet = try XCTUnwrap(HorizontalProject.load(from: root).schematic?.sheets.first)
+        let valueTexts = try XCTUnwrap(loadedSheet.symbols.first?.valueTextIDs)
+        XCTAssertEqual(valueTexts.count, 1)
+        XCTAssertEqual(loadedSheet.symbolTexts.first { $0.id == valueTexts[0] }?.text, "3.0 V\nLTC6655BHMS8-3")
+        try apply([["op": "set_custom_value", "component": "U3", "custom_value": "${desc}"]])
+        let blank = try XCTUnwrap(HorizontalProject.load(from: root).schematic?.sheets.first)
+        XCTAssertEqual(blank.symbolTexts.first { $0.id == valueTexts[0] }?.text, "", "the part has no description")
+        XCTAssertEqual(blank.symbols.first?.valueTextIDs, valueTexts)
 
         // A parametric column, without a table to format it, is its stored value.
         try apply([["op": "set_custom_value", "symbol_instance": instance, "custom_value": "${p:voltage} V ref"]])
@@ -2053,7 +2083,7 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         ]]]).write(to: root.appendingPathComponent("pool/tables.json"))
         _ = try result("reload_project")
         try apply([["op": "set_custom_value", "symbol_instance": instance, "custom_value": "${p:voltage} ref"]])
-        XCTAssertEqual(try symbol().string("drawn_value"), "3 V ref")
+        XCTAssertEqual(try symbol().string("drawn_value"), "3.000 V ref", "fixed to the column's digits, as Horizon prints it")
 
         // "" and null clear it, leaving no key, as Horizon writes a symbol without one.
         for cleared in ["", NSNull()] as [Any] {
@@ -2065,6 +2095,10 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertTrue(try error([["op": "set_custom_value", "component": "U3"]]).contains("custom_value"))
         XCTAssertTrue(try error([["op": "set_custom_value", "symbol_instance": UUID().uuidString, "custom_value": "x"]]).contains("list_symbols"))
         XCTAssertTrue(try error([["op": "set_custom_value", "component": "U3", "custom_value": 5]]).contains("string"))
+        for mixed in [["component": "U3"], ["gate": "Main"]] as [JSONDictionary] {
+            let op: JSONDictionary = ["op": "set_custom_value", "symbol_instance": instance, "custom_value": "x"]
+            XCTAssertTrue(try error([op.merging(mixed) { new, _ in new }]).contains("not both"), "\(mixed)")
+        }
     }
 
     /// 101: a sheet's frame is set, listed and taken away; one the project

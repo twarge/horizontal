@@ -2109,6 +2109,9 @@ final class HorizontalProjectEditor {
         guard params.keys.contains("custom_value") else {
             throw HorizontalDispatchError.invalidParams("set_custom_value needs custom_value: the text, or \"\" or null to clear it.")
         }
+        guard params["symbol_instance"] == nil || (params["component"] == nil && params["gate"] == nil) else {
+            throw HorizontalDispatchError.invalidParams("Name a symbol_instance, or a component and optionally a gate, not both.")
+        }
         let value = HorizontalSymbolCustomValue.normalized(params["custom_value"] as? String)
         let targets = try symbolTargets(params)
         for target in targets {

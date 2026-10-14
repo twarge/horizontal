@@ -30,6 +30,8 @@ MPN under its value, and 101 from two of Billo's sheets having no frame.
       - `detail`, all of that as a sentence: "Sheet 2 (Power) at (x, y) mm:
         Pin connected to net: NA (U2 pin A)", or "Sheet 1 (Sheet 1) at (x, y)
         mm, net SWDIO" for a Label missing."
+    - **Left out:** Duplicate refdes, which check already reports as the
+      annotation error "Duplicate reference designator" (a review fix, below).
     - **Grouping:** check's existing rule applies. More than three with one
       title come back as one message with `count`, the `refdes` or `nets` they
       name, and `details`. Messages with the same name sort by block, sheet,
@@ -53,8 +55,9 @@ MPN under its value, and 101 from two of Billo's sheets having no frame.
        - A variable that names nothing stays as written.
      - **`${p:<column>}` reads as Horizon formats it:** a part's parametric
        values come through the pool's parametric table (Horizon's
-       `parametric_formatted`), so `voltage` "3.0" reads "3 V", under the
-       column's display name.
+       `parametric_formatted`), so `voltage` "3.0" reads "3.000 V" in a
+       three-digit column, under the column's display name. (The first cut
+       read "3 V"; see the review fixes below.)
        - The loader reads the tables (`tables.json` of the project pool and
          the pools it draws from, the project's winning) only once a part
          names a table, and keeps the result on `HorizontalComponentDetails`
@@ -167,8 +170,8 @@ MPN under its value, and 101 from two of Billo's sheets having no frame.
     - the trimmed value is stored and given back;
     - `drawn_value` is "3.0 V\nLTC6655BHMS8-3", and the loaded sheet draws
       that same text;
-    - `${p:voltage}` reads "3.0" without a table and "3 V" once the project
-      pool has one;
+    - `${p:voltage}` reads "3.0" without a table and "3.000 V" once the
+      project pool has one;
     - "" and null both remove the key;
     - a missing value, an unknown symbol instance and a non-string are
       refused.
@@ -224,3 +227,106 @@ MPN under its value, and 101 from two of Billo's sheets having no frame.
     choosing the frame the other sheets use, then undo.
   - **The server and the release products on `main`** need rebuilding after
     a merge, and the MCP server a new session, for the new ops and fields.
+
+## Review fixes
+
+1. **`${p:…}` didn't format as Horizon does.** `formatQuantity` printed the
+   fewest digits it needed ("10 kΩ"), and so did the part editor through it.
+   It is now a port of `PoolParametric::Column::format`
+   (`pool_parametric.cpp`):
+   - **SI columns:** the value is scaled to a prefix and printed fixed to the
+     column's digits, trailing zeros kept: "10.00 kΩ", "3.000 V".
+   - **Other columns:** digits are significant digits, as `%g` prints them
+     ("0.123 %", "1.23e+05 %").
+   - **`no_milli`:** milli becomes micro below 100 and the plain unit from
+     100 up.
+   - **The rest:**
+     - no digits means six;
+     - a negative keeps its sign;
+     - the number is followed by a space even when prefix and unit are empty;
+     - an empty value reads "N/A";
+     - a stored value that isn't a number reads as 0, as `istringstream`
+       leaves it.
+   - **Locale:** classic formatting with the user's decimal separator, as
+     Horizon's `get_locale()` gives it.
+   - **Unlike Horizon:** the scaling stops at tera. Horizon's loop runs on to
+     10^15, which has no prefix and throws.
+   - **The part editor's field** shows the same text, except that an empty
+     value stays empty to type into rather than reading "N/A". What is typed
+     still goes through `parseQuantity`, which reads "4.70 kΩ".
+2. **A custom value that drew nothing stopped later edits redrawing.** The
+   canvas found the `$VALUE` text by the value it last drew, and did nothing
+   when that was empty.
+   - **Now:** the loader records, on each placement, which texts draw
+     `$VALUE` (`valueTextIDs`): the symbol's own, or a smashed symbol's sheet
+     texts. The canvas redraws those by id.
+   - **Fallback:** the old match by drawn text is kept only for a symbol the
+     loader never saw.
+3. **A part named but not read still counted as a part.** It filled
+   `${mpn}` and the rest with nothing, and the dialog offered rows that
+   insert nothing.
+   - **Now:** `HorizontalComponentDetails.partMissing` is set when the
+     loader can't read the part, and `HorizontalSymbolCustomValue.hasPart`
+     (Horizon's `component->part`) counts only a part that was read. So an
+     unread part reads "None", and the dialog offers only Value.
+4. **Duplicate refdes twice, and the cost of check.**
+   - **The duplicate:** the sheet warning "Duplicate refdes" repeated the
+     annotation error "Duplicate reference designator". check leaves it out
+     now; the canvas still draws it.
+   - **The cost:** timed on Roxanne, read from disk and not written: 7
+     sheets, 276 symbols, 3,507 pins, 1,192 wires. The sheet warnings took
+     about 620 ms in a debug build, 329 ms of it on the FPGA sheet.
+     - **Where it went:** the pin loop parsed the pin's id again for every
+       wire, once per pin and wire, to ask whether any wire ended on it.
+       Finding a node's junction scanned every junction, labels were matched
+       segment by segment, and the root sort described each node twice per
+       comparison.
+     - **Now:** one pass collects every wire end, so a pin or port asks a set.
+       Junctions are found by point in a map built in the order the scan
+       went, so where several share a point the same one is found. Labels
+       and power symbols are sets of nodes. The roots are described once.
+     - **The answers are the same:** the warning tests pass unchanged, and
+       check still equals the canvas.
+     - **Timing:** 75 ms in a debug build (FPGA 33 ms). The whole check is
+       20 ms through the release CLI, over four runs. Roxanne draws no sheet
+       warnings, so this measures the evaluation, not a long report.
+5. **`set_custom_value` took a symbol_instance together with a component
+   or gate,** and quietly used the instance. Both the op and the Python
+   model now refuse the mix.
+6. **Frames come only from the project pool's `frames/cache/`.** That is
+   the loader's limit, and `set_sheet_frame`, `add_sheet` and the Frame menu
+   keep to it. Horizon also accepts a project-local frame, one kept elsewhere
+   in the project pool, which it finds through its pool database. A frame
+   like that is refused here, saying where it is.
+
+**Left as they are, as asked:**
+- **Whitespace-only custom value:** one in a file counts as none, though
+  Horizon would draw the whitespace.
+- **An unterminated `${`** is kept as written, where Horizon's
+  `interpolate_text` drops it and everything after it.
+- **Inserting with text selected** replaces the selection, where Horizon's
+  `insert_at_cursor` inserts beside it.
+
+**Tests:**
+- **`testParametricTablesLoadAndFormat`** checks Horizon's output for SI,
+  significant-digit, `no_milli`, negative, empty, non-numeric, no-digits,
+  no-unit, too-small and comma-separator cases.
+- **The round's tests** now read "3.000 V" and "250.00 nV".
+- **`testCustomValuesFillInAsHorizonsDo`** adds an unread part ("None", only
+  Value offered) and an empty field of a read part (empty).
+- **`testSetCustomValueIsStoredDrawnAndCleared`** adds:
+  - the loader naming the one text that draws `$VALUE`, which draws the
+    value;
+  - that text drawing "" for an empty `${desc}`, still under the same id;
+  - symbol_instance with a component, or with a gate, refused.
+- **`testCheckReportsTheWarningsEachSheetDraws`** adds two components given
+  one refdes: one annotation error, no "Duplicate refdes" in check, and the
+  canvas still drawing it.
+- **Python** adds symbol_instance with a gate to the schema refusals.
+
+**Results:**
+- **Swift:** 896 tests (6 skipped, 0 failures), 55.7 s of tests in a 1:09
+  run.
+- **Python:** 76 OK (`make python-test` 2:56, with the release rebuild).
+- **Xcode:** macOS 72 s (`/tmp/r32-mac-dd`) and iOS Simulator 26 s
+  (`/tmp/r32-ios-dd`), with no warnings in the files touched.

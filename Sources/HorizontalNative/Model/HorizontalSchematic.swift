@@ -352,6 +352,8 @@ struct HorizontalSchematic {
         var texts: [HorizontalText] = []
         var noPopulateMarks: [HorizontalSchematicNoPopulateMark] = []
         var pinPositions: [String: HorizontalPoint] = [:]
+        /// By symbol instance, the texts that draw its `$VALUE`.
+        var valueTextIDs: [String: [String]] = [:]
 
         static let empty = SchematicSymbolArtwork()
 
@@ -393,6 +395,14 @@ struct HorizontalSchematic {
             texts.append(contentsOf: other.texts)
             noPopulateMarks.append(contentsOf: other.noPopulateMarks)
             pinPositions.merge(other.pinPositions) { current, _ in current }
+            valueTextIDs.merge(other.valueTextIDs) { current, _ in current }
+        }
+
+        /// Tells each placement which of its texts draw `$VALUE`.
+        func attachValueTextIDs(to placements: inout [HorizontalPlacement]) {
+            for index in placements.indices {
+                placements[index].valueTextIDs = valueTextIDs[placements[index].id] ?? []
+            }
         }
     }
 
@@ -632,6 +642,7 @@ struct HorizontalSchematic {
             unitCache: &unitCache,
             unitPinInfoCache: &unitPinInfoCache
         )
+        artwork.attachValueTextIDs(to: &placements)
         guard let placement = placements.first else {
             return nil
         }
@@ -726,6 +737,7 @@ struct HorizontalSchematic {
             unitCache: &unitCache,
             unitPinInfoCache: &unitPinInfoCache
         )
+        artwork.attachValueTextIDs(to: &placements)
         guard let placement = placements.first else {
             return nil
         }
@@ -828,6 +840,7 @@ struct HorizontalSchematic {
                     unitPinInfoCache: &unitPinInfoCache
                 )
             }
+            artwork.attachValueTextIDs(to: &symbols)
             let sheetIndex = sheet.int("index") ?? Int.max
             let sheetFrameID = sheet.string("frame").map(normalizedID)
             let frameArtwork = BoardLoadTimer.measure("schematic sheets: frame artwork") {
@@ -1244,6 +1257,11 @@ struct HorizontalSchematic {
             packageCache: &packageCache
         )
 
+        // The texts that draw $VALUE, which a custom value redraws: the
+        // symbol's own, or the sheet texts a smashed symbol owns.
+        let valueTextIDs = symbolItem.bool("smashed") == true
+            ? symbolTextIDs(from: symbolItem).filter { sheetTextsByID[normalizedID($0)]?.string("text") == "$VALUE" }
+            : symbolResource.texts.filter { $0.value.string("text") == "$VALUE" }.keys.sorted().map { "\(symbolInstanceID)/text/\($0)" }
         let symbolTexts = symbolItem.bool("smashed") == true
             ? parseSmashedSymbolTexts(
                 from: symbolItem,
@@ -1286,7 +1304,8 @@ struct HorizontalSchematic {
                     symbolTransform: symbolTransform
                 )
                 : [],
-            pinPositions: pinArtwork.pinPositions
+            pinPositions: pinArtwork.pinPositions,
+            valueTextIDs: [symbolInstanceID: valueTextIDs]
         )
     }
 
@@ -3336,6 +3355,7 @@ struct HorizontalSchematic {
                     parametricFields: HorizontalSymbolCustomValue.parametricFields(
                         partDetails?.parametricValues ?? [:], tables: parametricTables ?? []
                     ),
+                    partMissing: partID != nil && partDetails == nil,
                     excludeFromBOM: partDetails?.part.excludeFromBOM ?? false,
                     excludeFromPnP: partDetails?.part.excludeFromPnP ?? false
                 )

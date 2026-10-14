@@ -403,6 +403,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
         for op in ({"op": "set_custom_value", "custom_value": "x"},
                    {"op": "set_custom_value", "component": "R1", "symbol_instance": "s", "custom_value": "x"},
+                   {"op": "set_custom_value", "symbol_instance": "s", "gate": "Main", "custom_value": "x"},
                    {"op": "set_custom_value", "component": "R1"},
                    {"op": "set_sheet_frame", "sheet": 1},
                    {"op": "set_sheet_frame", "sheet": 1, "frame": str(uuid.uuid4())}):
