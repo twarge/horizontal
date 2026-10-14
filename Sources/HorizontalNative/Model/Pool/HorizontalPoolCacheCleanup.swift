@@ -114,14 +114,27 @@ struct HorizontalPoolCacheCleanupReview: Sendable {
 /// Horizon's "Clean up Pool Cache": items in the project pool's cache that
 /// nothing in the design reaches. The rule is conservative. A used unit keeps
 /// all its symbols and a used package all its models, so switching either
-/// later needs no re-import. Project-local items, `pool.json` and the cache
-/// manifest are never offered.
+/// later needs no re-import. Project-local items, `pool.json`, the cache
+/// manifest and hidden files are never offered.
 enum HorizontalPoolCacheCleanup {
     private static let cacheKinds: [HorizontalPoolItemCategory] = [.part, .entity, .unit, .symbol, .package, .padstack, .frame, .decal]
     private static let modelCache = "3d_models/cache/"
 
+    /// The pool files a cleanup looks at: all but hidden ones (98). A Finder
+    /// `.DS_Store` isn't a pool item. Horizon's own cleanup offers one in
+    /// `3d_models/cache` as a 3D model. Here hidden files are never offered or
+    /// removed, and the review doesn't count them, so Finder writing one
+    /// between review and removal changes nothing. The cache manifest, in the
+    /// pool's hidden `.horizontal` folder, still counts.
+    static func reviewedFiles(_ files: [String: Data]) -> [String: Data] {
+        files.filter { path, _ in
+            path == HorizontalPoolCacheProvenance.path || !path.split(separator: "/").contains { $0.hasPrefix(".") }
+        }
+    }
+
     static func review(archive: HorizontalProjectArchive, project: HorizontalProject,
                        files: [String: Data]) -> HorizontalPoolCacheCleanupReview {
+        let files = reviewedFiles(files)
         let jsons = files.compactMapValues { try? JSONHelper.loadDictionary(from: $0) }
         let reached = HorizontalPoolCacheUpdater.dependencies(of: Array(HorizontalPoolCacheUsage.roots(in: archive, project: project)), jsons: jsons)
         // An item counts as used by kind and uuid, so a cached copy a
@@ -189,7 +202,7 @@ enum HorizontalPoolCacheCleanup {
     static func removal(_ review: HorizontalPoolCacheCleanupReview, removing ids: Set<String>?,
                         archive: HorizontalProjectArchive, project: HorizontalProject,
                         poolDirectory: String) throws -> (paths: [String], manifest: Data?) {
-        let files = HorizontalPoolCacheUpdater.files(in: archive, poolDirectory: poolDirectory)
+        let files = reviewedFiles(HorizontalPoolCacheUpdater.files(in: archive, poolDirectory: poolDirectory))
         guard files == review.projectFiles else {
             throw HorizontalDispatchError.failed("The project pool changed since it was reviewed. Review it again.")
         }
