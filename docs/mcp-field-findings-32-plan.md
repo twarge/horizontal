@@ -201,4 +201,26 @@ MPN under its value, and 101 from two of Billo's sheets having no frame.
     engine refuses an absent frame.
   - `test_the_schema_matches_the_engine_and_says_which_it_is` still matches
     with the two new ops.
-- **Results:** see below.
+
+## Results
+
+- **Swift:** 896 tests (6 skipped, 0 failures), 52.6 s of tests in a 1:26
+  run. That's the 889 before plus the seven above.
+- **Python:** 76 OK. `make python-test` took 4:14, most of it the release
+  build of the worktree's own dylib and CLI.
+- **Xcode:** the app builds for macOS (`/tmp/r32-mac-dd`, 103 s) and the iOS
+  Simulator (`/tmp/r32-ios-dd`, 48 s), with no warnings in the files this
+  round touched.
+- **Not yet checked live** (the work was done in a worktree, verified by
+  tests only, and Billo was not opened):
+  - **99:** `check` on Billo, and how many sheet warnings it adds to the 68
+    warnings it gave before. Also how long it takes, since it evaluates every
+    sheet the way the canvas evaluates the one on screen.
+  - **100:** the Edit Custom Value dialog on macOS and the iPad: the Insert
+    rows putting text at the cursor, the live preview, OK as one undo step,
+    and the "Edit…" button and context-menu item reaching it. Then the
+    LTC6655 showing "${value}\n${mpn}".
+  - **101:** the navigator's Frame menu on Billo's two sheets without a frame,
+    choosing the frame the other sheets use, then undo.
+  - **The server and the release products on `main`** need rebuilding after
+    a merge, and the MCP server a new session, for the new ops and fields.
