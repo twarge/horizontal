@@ -51,3 +51,13 @@ the live check of round 30 and is recorded in billo's
   - **Without the fix**, all four checks fail. The review offers the two
     model-cache files, the package takes its `.DS_Store`, the digest
     changes, and the removal refuses because the pool changed.
+- **Results:** Swift 889 tests (6 skipped, 0 failures) and Python 75 OK. The
+  app builds in Xcode for macOS (`/tmp/r31-mac-dd`, 96 s) and the iOS
+  Simulator (`/tmp/r31-ios-dd`, 47 s). The release products were rebuilt on
+  `main` at 21:37.
+- **Helios, through the rebuilt worker** (a disk context and a dry run that
+  wrote nothing): five parts, with `remove_bytes` 4,571. Before, it was six
+  items and 10,719 bytes, the sixth being `3d_models/cache/.DS_Store`
+  (6,148 bytes).
+- **Left for the app:** the Clean Up sheet uses the same review. The
+  user's Debug app needs an Xcode rebuild to show it.
