@@ -1,0 +1,15 @@
+{
+  "name": "twarge",
+  "description": "Claude Code plugins for Horizontal, the macOS PCB design tool.",
+  "owner": {
+    "name": "Tom Kornack",
+    "email": "tom@twarge.com"
+  },
+  "plugins": [
+    {
+      "name": "horizontal",
+      "source": "./python",
+      "description": "Drive Horizontal from Claude Code: the horizontal MCP server over the app's own model, with skills for connecting, design review, safe edits and fabrication outputs."
+    }
+  ]
+}
