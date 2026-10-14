@@ -108,8 +108,10 @@ struct HorizontalCanvasCommandActions {
     /// Selects these components — the board's packages, the schematic's
     /// symbols — and nothing else, so a selection made in one view lands in
     /// the others. A no-op when they are already the selection, which is
-    /// what keeps the canvases' reports from looping back into them.
-    var selectComponents: ((Set<String>) -> Void)? = nil
+    /// what keeps the canvases' reports from looping back into them. Returns
+    /// whether the canvas's selection changed, and so whether it will report
+    /// one the workspace gave it rather than one made there.
+    var selectComponents: ((Set<String>) -> Bool)? = nil
     var dispatch: (HorizontalCanvasCommand) -> Void
 }
 
