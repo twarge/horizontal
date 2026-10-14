@@ -426,6 +426,9 @@ struct HorizontalIPadProjectView: View {
                     },
                     onReorderSheets: { schematicURL, orderedIDs in
                         reorderSheets(orderedIDs, schematicURL: schematicURL)
+                    },
+                    onSetSheetFrame: { schematicURL, sheetID, frameID in
+                        setSheetFrame(frameID, sheetID: sheetID, schematicURL: schematicURL)
                     }
                 )
                 .listStyle(.sidebar)
@@ -1334,6 +1337,27 @@ struct HorizontalIPadProjectView: View {
             try applyArchiveEdit(archive, to: current, actionName: "Rename Sheet")
         } catch {
             loadError = "Couldn't rename the sheet: \(error.localizedDescription)"
+        }
+    }
+
+    /// The navigator's Frame menu, as on macOS: through the archive and a
+    /// reload, which draws the frame.
+    private func setSheetFrame(_ frameID: String?, sheetID: String, schematicURL: URL) {
+        guard !isReadOnly, let current = project else {
+            return
+        }
+        do {
+            var archive = document.archive
+            try HorizontalProjectJSONApplicator.apply(
+                sheetFrame: frameID,
+                forSheetID: sheetID,
+                schematicURL: schematicURL,
+                in: current,
+                to: &archive
+            )
+            try applyArchiveEdit(archive, to: current, actionName: "Set Sheet Frame")
+        } catch {
+            loadError = "Couldn't change the sheet's frame: \(error.localizedDescription)"
         }
     }
 

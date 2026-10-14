@@ -16,15 +16,63 @@ struct HorizontalSchematicWarningContext: Hashable {
     var missingPorts: [String: [String]] = [:]
 }
 
+/// One of Horizon's sheet warnings where the canvas draws it, with what it is
+/// about: `check` reports these one by one.
+struct HorizontalSchematicWarningFinding: Hashable {
+    var position: HorizontalPoint
+    /// What the canvas says, e.g. "Pin connected to net: VDD".
+    var message: String
+    /// The message without what it names ("Pin connected to net"), which
+    /// findings of one kind share.
+    var title: String
+    /// The net a warning about a net is about.
+    var netID: String? = nil
+    /// The component whose pin or symbol it is about.
+    var componentID: String? = nil
+    /// The pin's primary name, for a warning about a pin.
+    var pinName: String? = nil
+}
+
 /// Horizon's sheet warnings, derived from electrical endpoints rather than artwork overlap.
 enum HorizontalSchematicWarnings {
+    /// The warnings as the canvas draws them: one marker per point, carrying
+    /// every message found there.
     static func evaluate(_ sheet: HorizontalSchematicSheet, allSheets: [HorizontalSchematicSheet] = []) -> [HorizontalCanvasWarning] {
-        func key(_ point: HorizontalPoint) -> String { HorizontalCanvasModeSupport.pointKey(point) }
         var warnings: [String: HorizontalCanvasWarning] = [:]
-        func warn(_ point: HorizontalPoint, _ message: String) {
-            let id = key(point)
-            if warnings[id] == nil { warnings[id] = .init(position: point, messages: []) }
-            if warnings[id]?.messages.contains(message) == false { warnings[id]?.messages.append(message) }
+        for finding in findings(sheet, allSheets: allSheets) {
+            let id = HorizontalCanvasModeSupport.pointKey(finding.position)
+            if warnings[id] == nil { warnings[id] = .init(position: finding.position, messages: []) }
+            warnings[id]?.messages.append(finding.message)
+        }
+        return warnings.values.sorted { $0.id < $1.id }.map { warning in
+            var result = warning
+            result.messages.sort()
+            return result
+        }
+    }
+
+    /// Every warning on the sheet, once per point and message, in the order
+    /// found. `allSheets` is the block's sheets, for the warnings that look
+    /// across them (a port net's "show port" label may be on another page).
+    static func findings(_ sheet: HorizontalSchematicSheet, allSheets: [HorizontalSchematicSheet] = []) -> [HorizontalSchematicWarningFinding] {
+        func key(_ point: HorizontalPoint) -> String { HorizontalCanvasModeSupport.pointKey(point) }
+        var found: [HorizontalSchematicWarningFinding] = []
+        var seen = Set<String>()
+        func warn(_ point: HorizontalPoint, _ message: String, title: String? = nil, net: String? = nil, component: String? = nil,
+                  pin: String? = nil) {
+            guard seen.insert(key(point) + "|" + message).inserted else { return }
+            found.append(.init(position: point, message: message, title: title ?? message, netID: net, componentID: component, pinName: pin))
+        }
+        let symbolsByID = Dictionary(sheet.symbols.map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+        func symbol(of pin: HorizontalSegment) -> HorizontalPlacement? {
+            pin.id.lowercased().split(separator: "/").first.flatMap { symbolsByID[String($0)] }
+        }
+        func component(of pin: HorizontalSegment) -> String? { symbol(of: pin)?.componentID }
+        func name(of pin: HorizontalSegment) -> String? {
+            let parts = pin.id.lowercased().split(separator: "/")
+            guard parts.count >= 3 else { return nil }
+            let pinID = String(parts[2])
+            return symbol(of: pin)?.symbolPinNames.first { $0.id.lowercased() == pinID }?.primaryName
         }
         func contains(_ point: HorizontalPoint, _ line: HorizontalSegment) -> Bool {
             let vector = line.to - line.from
@@ -49,14 +97,15 @@ enum HorizontalSchematicWarnings {
         var pinKeys = Set<String>()
         for pin in sheet.symbolPins {
             guard pinEndpoint(pin) != nil else { continue }
-            if !pinKeys.insert(key(pin.from)).inserted { warn(pin.from, "Pin on pin") }
-            if junctionKeys.contains(key(pin.from)) { warn(pin.from, "Pin on junction") }
+            if !pinKeys.insert(key(pin.from)).inserted { warn(pin.from, "Pin on pin", component: component(of: pin), pin: name(of: pin)) }
+            if junctionKeys.contains(key(pin.from)) { warn(pin.from, "Pin on junction", component: component(of: pin), pin: name(of: pin)) }
             let lines = sheet.netLines.filter { connected(pin, $0) }
             if lines.isEmpty, let netID = pin.netID {
-                warn(pin.from, "Pin connected to net: \(sheet.netDetails[netID]?.name ?? netID)")
+                warn(pin.from, "Pin connected to net: \(sheet.netDetails[netID]?.name ?? netID)", title: "Pin connected to net",
+                     net: netID, component: component(of: pin), pin: name(of: pin))
             }
             if sheet.netLines.contains(where: { contains(pin.from, $0) && !connected(pin, $0) }) {
-                warn(pin.from, "Pin on line")
+                warn(pin.from, "Pin on line", component: component(of: pin), pin: name(of: pin))
             }
         }
         for port in sheet.blockSymbolPorts {
@@ -67,7 +116,7 @@ enum HorizontalSchematicWarnings {
                 $0.schematicFrom == endpoint || $0.schematicTo == endpoint
                     || ($0.schematicFrom == nil && key($0.from) == key(port.from))
                     || ($0.schematicTo == nil && key($0.to) == key(port.from))
-            }) { warn(port.from, "Port connected to net: \(sheet.netDetails[netID]?.name ?? netID)") }
+            }) { warn(port.from, "Port connected to net: \(sheet.netDetails[netID]?.name ?? netID)", title: "Port connected to net", net: netID) }
         }
         for line in sheet.netLines where key(line.from) == key(line.to) { warn(line.from, "Zero length line") }
 
@@ -102,7 +151,7 @@ enum HorizontalSchematicWarnings {
             let points = sheet.blockSymbolLines.filter { $0.id.hasPrefix("\(id)/") }.flatMap { [$0.from, $0.to] }
                 + sheet.blockSymbolPorts.filter { $0.id.hasPrefix("\(id)/") }.map(\.from)
                 + sheet.blockSymbolTexts.filter { $0.id.hasPrefix("\(id)/") }.map(\.position)
-            if !points.isEmpty { warn(HorizontalRect(points: points).center, "Missing ports: " + names.joined(separator: " ")) }
+            if !points.isEmpty { warn(HorizontalRect(points: points).center, "Missing ports: " + names.joined(separator: " "), title: "Missing ports") }
         }
 
         // Connected components retain distinct coincident pin and junction nodes.
@@ -159,14 +208,14 @@ enum HorizontalSchematicWarnings {
             .filter { $0.showsPort }.compactMap(\.netID))
         for segment in segments {
             guard let net = sheet.netDetails[segment.netID] else { continue }
-            if !net.name.isEmpty && !segment.hasLabel { warn(segment.position, "Label missing") }
-            if net.isPower && !segment.hasPower { warn(segment.position, "Power sym missing") }
+            if !net.name.isEmpty && !segment.hasLabel { warn(segment.position, "Label missing", net: net.id) }
+            if net.isPower && !segment.hasPower { warn(segment.position, "Power sym missing", net: net.id) }
             if net.name.isEmpty && (segmentsByNet[net.id]?.count ?? 0) > 1 && !segment.hasLabel {
-                warn(segment.position, "Ambiguous nets")
+                warn(segment.position, "Ambiguous nets", net: net.id)
             }
-            if duplicateNames.contains(net.id) { warn(segment.position, "Duplicate net name") }
+            if duplicateNames.contains(net.id) { warn(segment.position, "Duplicate net name", net: net.id) }
             if net.isPort && !portLabelNetIDs.contains(net.id) {
-                warn(segment.position, "Need 'show port' net label")
+                warn(segment.position, "Need 'show port' net label", net: net.id)
             }
         }
         let duplicateRefdes = Set(Dictionary(grouping: sheet.componentInfo.values.filter {
@@ -174,12 +223,8 @@ enum HorizontalSchematicWarnings {
         }, by: \.refdes).filter { $0.value.count > 1 }.keys)
         for symbol in sheet.symbols {
             if let componentID = symbol.componentID, let refdes = sheet.componentInfo[componentID]?.refdes,
-               duplicateRefdes.contains(refdes) { warn(symbol.position, "Duplicate refdes \(refdes)") }
+               duplicateRefdes.contains(refdes) { warn(symbol.position, "Duplicate refdes \(refdes)", title: "Duplicate refdes", component: componentID) }
         }
-        return warnings.values.sorted { $0.id < $1.id }.map { warning in
-            var result = warning
-            result.messages.sort()
-            return result
-        }
+        return found
     }
 }

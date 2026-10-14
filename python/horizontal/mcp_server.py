@@ -633,7 +633,8 @@ def project_files(path: str | None = None) -> dict[str, Any]:
 
 @_tool
 def list_sheets(path: str | None = None) -> list[dict[str, Any]]:
-    """Schematic sheets in page order."""
+    """Schematic sheets in page order. frame is the pool frame each draws its title block with — uuid and name,
+    null for none, and a null name for a frame the project pool lacks; set_sheet_frame changes it."""
     return _resolve(path).sheets()
 
 
@@ -695,7 +696,8 @@ def get_component(refdes: str | None = None, path: str | None = None, id: str | 
     pins, pin_regex and connected narrow the list, and group_pins summarises it. A pin whose function was chosen
     gives selected and display_name, the name a symbol showing selected names draws; alternates lists the choices.
     drawn_as lists the symbols that draw something else because of their pin_display_mode (each symbol gives its
-    own), and selected.redundant marks an entry that chooses nothing and so draws the primary name."""
+    own), and selected.redundant marks an entry that chooses nothing and so draws the primary name. Each of symbols
+    gives custom_value (null for none; set_custom_value sets it) and drawn_value, what its $VALUE text draws."""
     component = _resolve(path).component(refdes=refdes, id=id)
     every = component.get("pins") or []
     if not alternates:
@@ -1131,9 +1133,11 @@ def board_info(path: str | None = None) -> dict[str, Any]:
 @_tool
 def check(path: str | None = None, full: bool = False) -> dict[str, Any]:
     """Run the checks Horizontal has: load diagnostics, rules validation, annotation, single-pin nets, components with
-    no symbol on any sheet, unplaced packages, unrouted connections. More than three findings with one title come
-    back as one message with count and the refdes or nets it names (details gives each its own detail where they
-    differ); counts counts every finding. full lists them one by one."""
+    no symbol on any sheet, unplaced packages, unrouted connections, and the warnings the schematic canvas draws on
+    every sheet of every block — Label missing, Pin connected to net, Power sym missing and the rest — each with its
+    sheet and sheet_name, x_mm and y_mm, the canvas's message, and the net, refdes and pin it is about. More than
+    three findings with one title come back as one message with count and the refdes or nets it names (details
+    gives each its own detail where they differ); counts counts every finding. full lists them one by one."""
     return _resolve(path).check(full=full)
 
 
@@ -1314,7 +1318,11 @@ def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool =
 
     Project: set_project_meta sets the title-block values — project_title, rev and the rest, what $project_title
     stands for on the sheets and the board. set_export_settings changes the export settings Horizon EDA keeps
-    in the project; export_settings shows them.
+    in the project; export_settings shows them. set_sheet_frame gives a sheet a frame the project pool has, or none.
+
+    Symbols: set_custom_value gives a drawn symbol text its $VALUE draws instead of the value, as Horizon's Edit
+    Custom Value does: "${value}\\n${mpn}" shows the value over the MPN; ${mfr}, ${desc}, ${pkg} and ${p:<column>}
+    work too, and "" or null clears it.
 
     A batch that leaves every file as it was, such as an alternate a pin already has, replies unchanged: true and
     adds no undo step when committed; set_pin_alternate names such pins in unchanged_pins. warnings says when a

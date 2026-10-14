@@ -555,6 +555,8 @@ struct SchematicCanvasView: View {
     /// — currently AddText. macOS uses the synchronous NSAlert prompt, so this stays nil
     /// there.
     @State private var promptRequest: HorizontalCanvasPromptRequest?
+    /// The symbol the Edit Custom Value dialog is open on.
+    @State private var customValueEdit: HorizontalCustomValueEditTarget?
 
     var body: some View {
         let _ = selectableCache.activate(sheet)
@@ -931,6 +933,11 @@ struct SchematicCanvasView: View {
             onCanvasCommandActionsChange(nil)
         }
         .horizonCanvasPrompt($promptRequest)
+        .sheet(item: $customValueEdit) { target in
+            HorizontalCustomValueSheet(target: target, isReadOnly: isReadOnly) { value in
+                commitCustomValue(value, for: target)
+            }
+        }
         .overlay { inlineTextEditorOverlay }
         .onChange(of: canvasCommandActionsSignature) { _, _ in
             publishCanvasCommandActions()
@@ -1904,7 +1911,50 @@ struct SchematicCanvasView: View {
         guard placement.componentDetails != nil else {
             return nil
         }
-        return editableTextProperty("customValue", "Custom Value", placement.customValue ?? "", multiline: true)
+        var property = editableTextProperty("customValue", "Custom Value", placement.customValue ?? "", multiline: true)
+        // Horizon's Edit Custom Value dialog, for building one from the
+        // component's fields.
+        property.actionID = Self.editCustomValueActionID
+        property.actionTitle = "Edit…"
+        return property
+    }
+
+    static let editCustomValueActionID = "editCustomValue"
+
+    /// The symbol the Edit Custom Value dialog opens on: the one named, else
+    /// the selected (or hovered) symbol, as the pin-name editor finds its own.
+    private func customValueEditTarget(for ref: HorizontalSelectableRef? = nil) -> HorizontalCustomValueEditTarget? {
+        let symbol = ref.flatMap(pinNameEditorTarget(for:)) ?? pinNameEditorTarget()
+        guard let symbol, let details = symbol.componentDetails else {
+            return nil
+        }
+        return HorizontalCustomValueEditTarget(
+            ref: HorizontalSelectableRef(id: symbol.id, type: .schematicSymbol),
+            details: details,
+            customValue: symbol.customValue
+        )
+    }
+
+    private func beginEditCustomValue(for ref: HorizontalSelectableRef? = nil) {
+        guard !isReadOnly, !editorProfile.isPoolMode, moveState == nil, let target = customValueEditTarget(for: ref) else {
+            return
+        }
+        customValueEdit = target
+    }
+
+    /// OK in the dialog: the same edit as the inspector's Custom Value field,
+    /// one undo step.
+    private func commitCustomValue(_ value: String?, for target: HorizontalCustomValueEditTarget) {
+        guard HorizontalSymbolCustomValue.normalized(value) != HorizontalSymbolCustomValue.normalized(target.customValue) else {
+            return
+        }
+        applySelectionPropertyChange(HorizontalSelectionPropertyChange(
+            ref: target.ref,
+            type: .schematicSymbol,
+            propertyID: "customValue",
+            value: .text(value ?? ""),
+            applyToAll: false
+        ), actionName: "Edit Custom Value")
     }
 
     /// One compact row per pin, under a "Pins" disclosure section: the pin's
@@ -5789,7 +5839,15 @@ struct SchematicCanvasView: View {
     }
 
     private func applySelectionPropertyChange(_ change: HorizontalSelectionPropertyChange) {
+        applySelectionPropertyChange(change, actionName: "Edit Properties")
+    }
+
+    private func applySelectionPropertyChange(_ change: HorizontalSelectionPropertyChange, actionName: String) {
         guard !isReadOnly else {
+            return
+        }
+        if change.propertyID == Self.editCustomValueActionID {
+            beginEditCustomValue(for: change.ref)
             return
         }
         let previousSheet = editedSheet ?? sourceSheet
@@ -5816,7 +5874,7 @@ struct SchematicCanvasView: View {
                 changedComponentPinNames: &changedComponentPinNames
             )
         }
-        registerUndoSnapshot(previousSheet, actionName: "Edit Properties")
+        registerUndoSnapshot(previousSheet, actionName: actionName)
         editedSheet = draft
         invalidateSelectableCache()
         onSheetChange(draft)
@@ -6093,68 +6151,9 @@ struct SchematicCanvasView: View {
         )
     }
 
+    /// What the symbol's `$VALUE` text draws, as the sheet loader draws it.
     private func displayedValue(for symbol: HorizontalPlacement) -> String {
-        if let customValue = nonEmpty(symbol.customValue),
-           let component = symbol.componentDetails {
-            return interpolatedCustomValue(customValue, component: component)
-        }
-        return symbol.componentDetails?.value ?? ""
-    }
-
-    private func interpolatedCustomValue(_ customValue: String, component: HorizontalComponentDetails) -> String {
-        var result = customValue
-        for variable in customValueVariables(in: customValue).sorted(by: { $0.count > $1.count }) {
-            guard let value = customValueSubstitution(for: variable, component: component) else {
-                continue
-            }
-            result = result
-                .replacingOccurrences(of: "${\(variable)}", with: value)
-                .replacingOccurrences(of: "$\(variable)", with: value)
-        }
-        return result
-    }
-
-    private func customValueVariables(in text: String) -> Set<String> {
-        var variables = Set<String>()
-        let pattern = #"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_:]*)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return variables
-        }
-
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        for match in regex.matches(in: text, range: range) {
-            for index in 1..<match.numberOfRanges {
-                let matchRange = match.range(at: index)
-                guard matchRange.location != NSNotFound,
-                      let range = Range(matchRange, in: text) else {
-                    continue
-                }
-                variables.insert(String(text[range]))
-            }
-        }
-        return variables
-    }
-
-    private func customValueSubstitution(for variable: String, component: HorizontalComponentDetails) -> String? {
-        let key = variable.lowercased()
-        switch key {
-        case "value":
-            return component.value
-        case "pkg":
-            return component.packageName ?? "None"
-        case "mpn":
-            return component.mpn ?? "None"
-        case "mfr":
-            return component.manufacturer ?? "None"
-        case "desc":
-            return component.description ?? "None"
-        default:
-            guard key.hasPrefix("p:") else {
-                return nil
-            }
-            let parameterKey = String(key.dropFirst(2))
-            return component.parametricValues.first { $0.key.lowercased() == parameterKey }?.value
-        }
+        HorizontalSymbolCustomValue.drawnValue(customValue: symbol.customValue, details: symbol.componentDetails)
     }
 
     private func updateSymbolValueText(
@@ -7344,6 +7343,7 @@ struct SchematicCanvasView: View {
             moveNetSegmentToExistingNet: beginMoveNetSegmentToExistingNet,
             moveNetSegmentToNewNet: moveSelectedNetSegmentToNewNet,
             editSymbolPinNames: selectSymbolForPinNameEditing,
+            editCustomValue: { beginEditCustomValue() },
             toggleRectanglePlacementMode: toggleRectanglePlacementMode,
             moveSelectionBy: moveSelectionByGrid,
             placePowerSymbol: canPlacePowerSymbol ? { beginPlacePowerSymbol() } : nil,
@@ -7406,6 +7406,7 @@ struct SchematicCanvasView: View {
             handlers.moveNetSegmentToExistingNet = nil
             handlers.moveNetSegmentToNewNet = nil
             handlers.editSymbolPinNames = nil
+            handlers.editCustomValue = nil
         }
         if onRevealPoolSymbol != nil, selectedSymbolPoolID() != nil {
             handlers.showInPoolManager = { revealSelectedSymbol(.registeredPool) }
@@ -7543,6 +7544,9 @@ struct SchematicCanvasView: View {
         #if os(macOS)
         var entries: [HorizontalTargetItemMenuEntry] = [.select(title: "Select")]
         if !isReadOnly, ref.type == .text { entries.append(.command(title: "Edit…", .editText)) }
+        if canEditCustomValue(of: ref) {
+            entries.append(.command(title: "Edit Custom Value…", .editCustomValue))
+        }
         if !isReadOnly, !editorProfile.isPoolMode, onApplyProjectEdit != nil, ref.type == .schematicSymbol,
            let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
             // Offered only when they would change something, as upstream's
@@ -7565,8 +7569,16 @@ struct SchematicCanvasView: View {
         }
         return entries.count > 1 ? entries : []
         #else
-        return []
+        // The iPad's menu keeps candidates plain except where a symbol has
+        // something of its own to offer.
+        guard canEditCustomValue(of: ref) else { return [] }
+        return [.select(title: "Select"), .command(title: "Edit Custom Value…", .editCustomValue)]
         #endif
+    }
+
+    private func canEditCustomValue(of ref: HorizontalSelectableRef) -> Bool {
+        guard !isReadOnly, !editorProfile.isPoolMode, ref.type == .schematicSymbol else { return false }
+        return sheet.symbols.first { normalizedID($0.id) == normalizedID(ref.id) }?.componentDetails != nil
     }
 
     /// The pool symbol uuid behind a placed symbol.

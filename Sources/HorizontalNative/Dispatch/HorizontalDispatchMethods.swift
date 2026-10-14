@@ -60,7 +60,7 @@ enum HorizontalDispatchMethods {
             projectSummary(try session.entry(for: params))
         }),
         .init(name: "project_files", summary: "The files that make up the project on disk.", params: ["handle": "Project handle."], handler: projectFiles),
-        .init(name: "list_sheets", summary: "Schematic sheets in page order.", params: ["handle": "Project handle."], handler: { session, params in
+        .init(name: "list_sheets", summary: "Schematic sheets in page order, each with the frame its title block is drawn with (uuid and name, null for none). set_sheet_frame changes it.", params: ["handle": "Project handle."], handler: { session, params in
             try session.entry(for: params).index.sheets.map(sheetJSON)
         }),
         .init(
@@ -71,7 +71,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "get_component",
-            summary: "One component in full: pins with their nets, symbol placements, board placement.",
+            summary: "One component in full: pins with their nets, symbol placements (each with its custom_value and drawn_value, what its $VALUE text draws), board placement.",
             params: ["handle": "Project handle.", "refdes": "Reference designator, e.g. U1.", "id": "Component uuid (alternative to refdes)."],
             handler: getComponent
         ),
@@ -324,7 +324,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "check",
-            summary: "Run the checks Horizontal has: load diagnostics, rules validation, annotation, single-pin nets, unplaced parts, unrouted connections. More than three findings with one title come back as one message naming them all.",
+            summary: "Run the checks Horizontal has: load diagnostics, rules validation, annotation, single-pin nets, unplaced parts, unrouted connections, and the warnings the schematic canvas draws on every sheet of every block (Label missing, Pin connected to net, Power sym missing and the rest), each with its sheet, position in mm, what the canvas says and the net or part it is about. More than three findings with one title come back as one message naming them all.",
             params: ["handle": "Project handle.",
                      "full": "List every finding as its own message instead of grouping repeats (default false)."],
             handler: { session, params in
@@ -1928,7 +1928,11 @@ enum HorizontalDispatchMethods {
     }
 
     static func sheetJSON(_ sheet: HorizontalDesignSheet) -> JSONDictionary {
-        ["index": sheet.index, "name": sheet.name, "id": sheet.id, "symbol_count": sheet.symbolCount, "block": sheet.blockName, "block_id": sheet.blockID as Any, "is_top_block": sheet.isTopBlock]
+        // The frame the title block is drawn with: null for none, and a name
+        // of null for a frame the project pool doesn't have, which draws nothing.
+        let frame: Any = sheet.frameID.map { id -> JSONDictionary in ["uuid": id, "name": sheet.frameName.map { $0 as Any } ?? NSNull()] } ?? NSNull()
+        return ["index": sheet.index, "name": sheet.name, "id": sheet.id, "symbol_count": sheet.symbolCount, "block": sheet.blockName,
+                "block_id": sheet.blockID as Any, "is_top_block": sheet.isTopBlock, "frame": frame]
     }
 
     static func componentJSON(_ component: HorizontalDesignComponent, full: Bool, index: HorizontalDesignIndex? = nil) -> JSONDictionary {
@@ -2000,7 +2004,10 @@ enum HorizontalDispatchMethods {
                 "y_mm": HorizontalDispatchJSON.mm(placement.position.y),
                 "angle_deg": HorizontalDispatchJSON.degrees(placement.angle),
                 "mirrored": placement.mirrored,
-                "pin_display_mode": placement.pinDisplayMode
+                "pin_display_mode": placement.pinDisplayMode,
+                // set_custom_value sets it; drawn_value is what $VALUE draws.
+                "custom_value": placement.customValue.map { $0 as Any } ?? NSNull(),
+                "drawn_value": placement.drawnValue
             ]
         }
         return json

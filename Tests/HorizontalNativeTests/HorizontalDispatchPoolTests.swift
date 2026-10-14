@@ -408,6 +408,33 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         XCTAssertEqual(component["mpn"] as? String, "RC0603FR-0710KL")
     }
 
+    // MARK: - Round thirty-two: note 101
+
+    /// A sheet's frame is drawn from the project pool, so one only a base
+    /// pool has is refused, saying where it is and how to bring it in; once
+    /// pool_write has put it there, it is a sheet's frame like any other.
+    func testAFrameOnlyABasePoolHasIsRefusedUntilItIsBroughtIn() throws {
+        let frameID = "5e7c0a0e-1c2d-4e3f-8a9b-0000000000f1"
+        try write(["type": "frame", "uuid": frameID, "name": "Stock A4", "width": 297_000_000, "height": 210_000_000,
+                   "lines": [:], "arcs": [:], "texts": [:], "polygons": [:], "junctions": [:]], to: "stock/frames/a4.json")
+        HorizontalPoolLibrary.invalidateCache()
+        let refused = try call("apply", ["ops": [["op": "set_sheet_frame", "sheet": 1, "frame": frameID]]])
+        let message = try XCTUnwrap((refused["error"] as? [String: Any])?["message"] as? String, "\(refused)")
+        XCTAssertTrue(message.contains("Stock A4 (\(frameID)) is in Stock") && message.contains("pool_write"), message)
+        XCTAssertTrue((try result("list_sheets") as? [[String: Any]])?.first?["frame"] is NSNull)
+
+        let read = try XCTUnwrap(try result("get_pool_item", ["uuid": frameID, "kind": "frame"]) as? [String: Any])
+        let item = try XCTUnwrap(read["item"] as? [String: Any])
+        // The same apply can bring it in, as pool_items.
+        let applied = try XCTUnwrap(try result("apply", ["pool_items": [item],
+                                                         "ops": [["op": "set_sheet_frame", "sheet": 1, "frame": frameID]]]) as? [String: Any])
+        XCTAssertEqual(applied["applied"] as? Int, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: packageURL.appendingPathComponent("pool/frames/cache/\(frameID).json").path))
+        let frame = (try result("list_sheets") as? [[String: Any]])?.first?["frame"] as? [String: Any]
+        XCTAssertEqual(frame?["uuid"] as? String, frameID)
+        XCTAssertEqual(frame?["name"] as? String, "Stock A4")
+    }
+
     func testImportingTwiceIsIdempotentAndUnknownPartsAreNamed() throws {
         _ = try result("import_pool_part", ["part": "RC0603FR-0710KL"])
         let again = try XCTUnwrap(try result("import_pool_part", ["part": "part-1"]) as? [String: Any])

@@ -31,12 +31,19 @@ class Result(BaseModel, Generic[T]):
     meta: Metadata | None = None
 
 
+class SheetFrame(Record):
+    """The pool frame a sheet's title block is drawn with; name is null when the project pool lacks it."""
+    uuid: str
+    name: str | None = None
+
+
 class Sheet(Record):
     id: str
     index: int
     name: str
     block_id: str | None = None
     symbol_count: int
+    frame: SheetFrame | None = None
 
 
 class Pad(Record):
@@ -411,6 +418,22 @@ class SetSymbolDisplay(Input):
             raise ValueError("Name a component (and optionally a gate) or one symbol_instance.")
         if self.pin_display_mode is None and self.display_all_pads is None:
             raise ValueError("Set pin_display_mode or display_all_pads.")
+        return self
+
+
+class SetCustomValue(Input):
+    """A drawn symbol's custom value: what its $VALUE text draws instead of the value, with ${value}, ${mpn},
+    ${mfr}, ${desc}, ${pkg} and ${p:<column>} filled in. "" or null clears it."""
+    op: Literal["set_custom_value"]
+    component: StrictStr | None = None
+    gate: str | None = None
+    symbol_instance: str | None = None
+    custom_value: StrictStr | None
+
+    @model_validator(mode="after")
+    def target(self):
+        if (self.component is None) == (self.symbol_instance is None):
+            raise ValueError("Name a component (and optionally a gate) or one symbol_instance.")
         return self
 
 
@@ -867,6 +890,13 @@ class RenameSheet(Input):
     name: StrictStr
 
 
+class SetSheetFrame(Input):
+    """The frame a sheet's title block is drawn with: a frame uuid the project pool has, or "none" (or null)."""
+    op: Literal["set_sheet_frame"]
+    sheet: StrictStr | StrictInt
+    frame: StrictStr | None
+
+
 class RemoveSheet(Input):
     op: Literal["remove_sheet"]
     sheet: StrictStr | StrictInt
@@ -965,10 +995,10 @@ class CopyLayout(Input):
 EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | SetValue | SetRefdes | SetPart | SetPopulation |
                           SetGroup | EnsureNet | RenameNet | SetNetClass | RetireNet | Connect | Disconnect |
                           Place | PlaceSymbol | RemoveSymbol | DrawNetLine | PlaceJunction | SetNetLineEndpoint | RemapPart | PlaceText | RemoveText |
-                          RemoveNetLine | RemoveJunction | PruneSheet | TerminatePin | SetSymbolDisplay | SetNoConnect | SetPinAlternate |
+                          RemoveNetLine | RemoveJunction | PruneSheet | TerminatePin | SetSymbolDisplay | SetCustomValue | SetNoConnect | SetPinAlternate |
                           PlaceTrack | RemoveTrack | SetTrackWidth | PlaceVia | RemoveVia |
                           PlacePowerSymbol | PlaceNetLabel | RemoveSheetMark |
-                          AddSheet | RenameSheet | RemoveSheet |
+                          AddSheet | RenameSheet | SetSheetFrame | RemoveSheet |
                           PlacePolygon | RemovePolygon | PlacePlane | RemovePlane |
                           AddNetClass | RenameNetClass |
                           AddBlockInstance | RemoveBlockInstance | ConnectBlockPort |
