@@ -37,13 +37,19 @@ struct HorizontalParametricColumn: Hashable, Identifiable {
         items = (json["items"] as? [String]) ?? []
     }
 
-    /// `PoolParametric::Column::format`: an SI-prefixed quantity with the
-    /// column's digits and unit, or the raw string.
+    /// `PoolParametric::Column::format(const std::string &)`: "N/A" for no
+    /// value, a quantity read as a number (0 when it isn't one, as
+    /// `istringstream` leaves it) and formatted, anything else as stored.
     func format(_ raw: String) -> String {
-        guard kind == .quantity, let value = Double(raw) else {
+        if raw.isEmpty {
+            return "N/A"
+        }
+        guard kind == .quantity else {
             return raw
         }
-        return HorizontalPoolParametricTables.formatQuantity(value, unit: unit, digits: digits, usesSI: usesSI, noMilli: noMilli)
+        return HorizontalPoolParametricTables.formatQuantity(
+            HorizontalPoolParametricTables.leadingNumber(raw), unit: unit, digits: digits, usesSI: usesSI, noMilli: noMilli
+        )
     }
 }
 
@@ -89,20 +95,56 @@ enum HorizontalPoolParametricTables {
         (-15, "f"), (-12, "p"), (-9, "n"), (-6, "µ"), (-3, "m"), (0, ""), (3, "k"), (6, "M"), (9, "G"), (12, "T"),
     ]
 
-    static func formatQuantity(_ value: Double, unit: String, digits: Int, usesSI: Bool, noMilli: Bool) -> String {
-        guard usesSI, value != 0 else {
-            let plain = value.formatted(.number.precision(.fractionLength(0...digits)).grouping(.never))
-            return unit.isEmpty ? plain : plain + " " + unit
+    /// `PoolParametric::Column::format(double)`. With `use_si` the value is
+    /// scaled to an SI prefix and printed fixed to `digits` places, trailing
+    /// zeros kept ("4.70 kΩ"); without, `digits` is significant digits, as
+    /// `%g` prints them. A `no_milli` column turns milli into micro below 100
+    /// and into the plain unit from 100 up. The number, a space, then the
+    /// prefix and unit, even when both are empty. Horizon prints with the
+    /// classic locale but the user's decimal separator, and so does this.
+    static func formatQuantity(_ value: Double, unit: String, digits: Int, usesSI: Bool, noMilli: Bool,
+                               decimalSeparator: String = Locale.current.decimalSeparator ?? ".") -> String {
+        let negative = value < 0
+        var magnitude = abs(value)
+        var exponent = 0
+        if usesSI {
+            // Horizon's loop runs to 10^15, which has no prefix and throws;
+            // this stops at tera.
+            while magnitude >= 1e3, exponent < 12 {
+                magnitude /= 1e3
+                exponent += 3
+            }
+            if magnitude > 1e-15 {
+                while magnitude < 1, exponent >= -12 {
+                    magnitude *= 1e3
+                    exponent -= 3
+                }
+            }
         }
-        var exponent = Int(floor(log10(abs(value)) / 3)) * 3
-        exponent = min(max(exponent, -15), 12)
-        if noMilli, exponent == -3 {
-            exponent = 0
+        if exponent == -3, noMilli {
+            if magnitude < 100 {
+                magnitude *= 1e3
+                exponent -= 3
+            } else {
+                magnitude /= 1e3
+                exponent += 3
+            }
         }
-        let scaled = value / pow(10, Double(exponent))
         let prefix = prefixes.first { $0.exponent == exponent }?.symbol ?? ""
-        let number = scaled.formatted(.number.precision(.fractionLength(0...digits)).grouping(.never))
-        return number + " " + prefix + unit
+        let precision = digits >= 0 ? digits : 6
+        var number = String(format: usesSI ? "%.\(precision)f" : "%.\(precision)g", magnitude)
+        if decimalSeparator != "." {
+            number = number.replacingOccurrences(of: ".", with: decimalSeparator)
+        }
+        return (negative ? "-" : "") + number + " " + prefix + unit
+    }
+
+    /// The number a stored value starts with, read as `istringstream` with
+    /// the classic locale reads it; 0 when there is none.
+    static func leadingNumber(_ text: String) -> Double {
+        let scanner = Scanner(string: text)
+        scanner.locale = nil
+        return scanner.scanDouble() ?? 0
     }
 
     /// Parses a typed quantity ("4.7k", "10 µ", "22n", "1M") into a plain

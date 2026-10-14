@@ -119,6 +119,14 @@ part, single-pin and pinless nets, gates with no symbol on any sheet, packages
 not placed, and unrouted connections. There is no geometric design rule check
 in Horizontal yet, so none here either.
 
+It also gives the warnings the schematic canvas draws — Horizon's sheet
+warnings: Label missing, Pin connected to net, Power sym missing, Pin on line,
+Zero length line, Duplicate net name and the rest — on every sheet of every
+block. Each is one `schematic` warning with its `sheet`, `sheet_name`, `x_mm`
+and `y_mm`, the canvas's `message`, and the `net`, `refdes` and `pin` it is
+about; a sub-block's sheet adds `block`. Like every finding, more than three
+with one title are grouped unless `full`.
+
 ## Edits
 
 `apply` takes operations as data and writes only the files they touched, in
@@ -157,6 +165,7 @@ as sent would be refused again.
 | `connect`, `disconnect` | Pin connections; `create_net` makes the net when it is missing |
 | `place_symbol`, `remove_symbol` | Schematic placement: draw a gate on a sheet with the symbol for its unit, move it, or take it off with the net lines that ended on it. `id` gives a new instance its UUID or a name later ops in the batch use for it; `pin_display_mode` and `display_all_pads` set how its pins are labelled |
 | `set_symbol_display` | Change a drawn symbol's `pin_display_mode` or `display_all_pads` — hiding the pad-number list on a multi-pad pin, say |
+| `set_custom_value` | What a drawn symbol's `$VALUE` text draws instead of the value, as Horizon's Edit Custom Value sets it: `${value}`, `${mpn}`, `${mfr}`, `${desc}`, `${pkg}` and `${p:<column>}` filled in from the component and its part. `""` or null clears it; `get_component` gives each symbol's `custom_value` and `drawn_value` |
 | `draw_net_line` | A wire between typed pin or junction endpoints on one sheet and logical net; retains the legacy pin-to-pin form. A pin end is `{kind: pin, symbol, pin}` or `{kind: pin, component, gate?, pin}`, the pin by name or uuid. A junction with no net takes the wire's |
 | `place_junction`, `set_net_line_endpoint` | Create a schematic junction — reusing one at the point, and giving it the net if it had none — or retarget one end of an existing wire, preserving its identity and net |
 | `remove_net_line`, `remove_junction` | Take a wire off its sheet, or a junction with the wires, labels and power symbols on it (net-less junctions included); junctions left holding nothing go too |
@@ -168,6 +177,7 @@ as sent would be refused again.
 | `place_power_symbol`, `remove_power_symbol` | The ground or supply marker that says a point is on that net. Placing one marks the net as a power net, because that is what it means; the shape (`gnd`, `dot`, `antenna`, `earth`) belongs to the net, so every symbol on it matches |
 | `place_net_label`, `remove_net_label` | Names a net on the page — and, placed on more than one sheet, is how a net spans pages |
 | `add_sheet`, `rename_sheet`, `remove_sheet` | Pages. A new page takes the frame (title block) the last page uses, or `frame`; an `index` already taken inserts it there. A sheet with anything drawn on it is refused unless `force` clears it, and a schematic keeps at least one |
+| `set_sheet_frame` | A sheet's frame, or `"none"`. The frame must be in the project pool (`frames/cache/`), which is where a sheet's frame is drawn from; one only a base pool has is refused with where it is — `get_pool_item` and `pool_write` (or `pool_items`) bring it in. `list_sheets` gives each sheet's frame |
 | `place_text`, `remove_text` | Free text on a sheet: write one, or change the text, position, rotation, size, origin or font of one `list_texts` named. An `id` that names no text makes the text under it, so a batch can name one. A text Horizon extracted from a symbol with Smash belongs to that symbol and is refused |
 | `place_component`, `remove_placement` | Board placement in millimetres and degrees; a placed package moves, an unplaced one gets a package entry the loader completes from the part |
 | `place_track`, `remove_track`, `set_track_width` | One straight copper segment per op, between pads, junctions or points; a point becomes a junction, and a junction nothing holds any more is removed with the copper that held it |

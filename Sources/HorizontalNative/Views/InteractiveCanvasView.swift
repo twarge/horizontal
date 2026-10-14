@@ -104,6 +104,8 @@ enum HorizontalCanvasCommand {
     case moveNetSegmentToExistingNet
     case moveNetSegmentToNewNet
     case editSymbolPinNames
+    /// Schematic: Horizon's Edit Custom Value dialog for the selected symbol.
+    case editCustomValue
     /// Schematic: mark every pin of the selected symbols' gates that is on
     /// no net as not connected (Horizon's "Set all unconnected pins NC").
     case setAllUnconnectedPinsNC

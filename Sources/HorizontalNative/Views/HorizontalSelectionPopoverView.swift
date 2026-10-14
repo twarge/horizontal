@@ -71,6 +71,11 @@ struct HorizontalSelectionProperty: Identifiable, Equatable {
     /// change with this ID (the value is carried along but unused). The
     /// property builder owns the ID scheme, e.g. "removeParam:<key>".
     var removeID: String? = nil
+    /// When set, the row gets a button titled `actionTitle` that sends a
+    /// property change with this ID (the value is carried along but unused):
+    /// how a row opens a dialog of its own, e.g. "Edit…" beside a custom value.
+    var actionID: String? = nil
+    var actionTitle: String? = nil
     /// Properties sharing a section are listed together after the others,
     /// under a disclosure triangle with this title.
     var section: String? = nil
@@ -620,6 +625,8 @@ struct HorizontalSelectionPopoverView: View {
                     .foregroundStyle(foregroundColor.opacity(0.52))
                     .frame(width: 36, alignment: .leading)
 
+                actionButton(for: property, group: group, item: item)
+
                 allToggle(for: property, group: group, item: item)
 
                 removeButton(for: property, group: group, item: item)
@@ -786,6 +793,31 @@ struct HorizontalSelectionPopoverView: View {
                     ? "Disabled because only one \(group.title.lowercased()) is selected"
                     : "Apply changes to all selected \(group.pluralTitle.lowercased())"
             )
+    }
+
+    /// The button of a row carrying an `actionID`, e.g. a custom value's
+    /// "Edit…". It acts on the object shown, never on every selected one.
+    @ViewBuilder
+    private func actionButton(
+        for property: HorizontalSelectionProperty,
+        group: HorizontalSelectionDetailGroup,
+        item: HorizontalSelectionDetailItem
+    ) -> some View {
+        if let actionID = property.actionID {
+            let title = property.actionTitle ?? "Edit…"
+            Button(title) {
+                onChange(HorizontalSelectionPropertyChange(
+                    ref: item.ref,
+                    type: group.type,
+                    propertyID: actionID,
+                    value: property.value,
+                    applyToAll: false
+                ))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(chrome == .sidebar ? .small : .mini)
+            .help("\(title.replacingOccurrences(of: "…", with: "")) \(property.label)")
+        }
     }
 
     /// The (X) remove button for rows carrying a `removeID` (added parameters).
