@@ -1,0 +1,24 @@
+{
+  "name": "horizontal",
+  "displayName": "Horizontal",
+  "version": "0.2.0",
+  "description": "The horizontal MCP server over Horizontal's own model, with skills for connecting, design review, safe edits and fabrication outputs.",
+  "author": {
+    "name": "Tom Kornack",
+    "email": "tom@twarge.com"
+  },
+  "homepage": "https://github.com/twarge/horizontal/blob/main/docs/claude-code.md",
+  "repository": "https://github.com/twarge/horizontal",
+  "license": "Apache-2.0",
+  "keywords": ["pcb", "eda", "horizon-eda", "hardware", "schematic", "mcp"],
+  "mcpServers": {
+    "horizontal": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--frozen", "--quiet", "--project", "${CLAUDE_PLUGIN_ROOT}", "horizontal-mcp"],
+      "env": {
+        "UV_PROJECT_ENVIRONMENT": "${CLAUDE_PLUGIN_DATA}/venv"
+      }
+    }
+  }
+}

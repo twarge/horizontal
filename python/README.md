@@ -32,6 +32,14 @@ The MCP server:
 is what `.mcp.json` at the repository root launches for Claude Code. Set
 `HORIZONTAL_PROJECT` to make the `path` argument of every tool optional.
 
+This directory is also the root of the Claude Code plugin
+(`.claude-plugin/plugin.json`, `skills/`), which the marketplace at the
+repository root lists. Install it with:
+
+    /plugin install horizontal --marketplace twarge/horizontal
+
+See [../docs/claude-code.md](../docs/claude-code.md).
+
 A disk context runs in a worker process, which can't see the pools registered
 in the app. It finds `$HORIZON_POOL`, a `horizon-pool` checkout above the
 project, and any pool the project pool includes that is checked out near it.

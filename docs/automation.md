@@ -730,12 +730,21 @@ See [the Python/MCP edit contracts](../python/README.md#mcp-edit-contracts)
 for layer discovery, preview versus persistence fields, resolved track nets,
 pin/junction wire endpoints, and explicit part/gate/pin remapping.
 
-`.mcp.json` at the repository root launches `uv run --project python
-horizontal-mcp` for Claude Code. Each tool takes the project path; setting
-`HORIZONTAL_PROJECT` makes it optional, which is what the Sherlock repository's
-`.mcp.json` does. To register the server for every project instead:
+The Claude Code plugin ships the server with skills for connecting, reviews,
+edits and fabrication outputs; [claude-code.md](claude-code.md) has the
+install and how the plugin is laid out:
 
-    claude mcp add --scope user horizontal -- uv run --project ~/Repositories/horizontal/python horizontal-mcp
+    claude plugin marketplace add twarge/horizontal
+    claude plugin install horizontal@twarge
+
+`.mcp.json` at the repository root launches `uv run --project python
+horizontal-mcp` for work inside this checkout, and as a project server takes
+precedence over the plugin's. Each tool takes the project path; setting
+`HORIZONTAL_PROJECT` makes it optional, which is what the Sherlock repository's
+`.mcp.json` does.
+
+[mcp-app-store-study.md](mcp-app-store-study.md) works through running the
+server from inside the sandboxed app (`Horizontal --mcp`) instead.
 
 ## atopile
 

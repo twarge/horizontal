@@ -57,6 +57,7 @@ class TypedMCPServer(MCPServer):
 
 mcp = TypedMCPServer(
     name="horizontal",
+    version=importlib.metadata.version("horizontal"),
     instructions=(
         "Reads Horizon EDA projects (.hprj, .horizontal) through Horizontal's own model. "
         "Call open_project first, or set HORIZONTAL_PROJECT; then query components, nets, the netlist, "
