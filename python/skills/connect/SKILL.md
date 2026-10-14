@@ -7,7 +7,7 @@ description: Connect Claude to Horizontal and diagnose the connection. Use befor
 
 The horizontal MCP server reads and edits Horizon EDA projects (`.hprj`, `.horizontal`) through Horizontal's own model. It reaches a project one of two ways:
 
-- **live**: the document open in the Horizontal app, over the app's loopback channel. Reads see unsaved edits, `select`, `highlight` and `zoom_to` drive the canvases, and every `apply_ops` lands as one undoable step. Nothing reaches disk until `save`.
+- **live**: the document open in the Horizontal app, over the app's loopback channel. Reads see unsaved edits, `select`, `highlight` and `zoom_to` drive the canvases, and every `apply_ops` lands as one undoable step. The app autosaves in place, so committed edits can reach disk without `save`; call `save` to be sure, and to verify the files.
 - **disk**: the project's files, through the native engine in a worker process. Edits write files directly, and are refused with `DOCUMENT_OPEN` while the app holds the project, because the app would overwrite them.
 
 Work live whenever the user has the project open. Confirm it before editing.

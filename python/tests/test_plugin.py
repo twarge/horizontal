@@ -72,7 +72,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         # Reply fields the skills tell Claude to read are fields of the result models,
         # or of the engine's own project summary, which the Python side passes through.
         known |= set(re.findall(r"[a-z][a-z0-9_]+", (PACKAGE / "horizontal" / "schemas.py").read_text()))
-        known |= {"unsaved_changes"}
+        known |= {"unsaved_changes", "had_unsaved_changes"}
 
         for skill in sorted((PACKAGE / "skills").glob("*/SKILL.md")):
             unknown = set(IDENTIFIER.findall(skill.read_text())) - known
