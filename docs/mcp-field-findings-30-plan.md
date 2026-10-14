@@ -147,3 +147,33 @@ All four are recorded in billo's `docs/horizontal-mcp-notes.md`.
     reply equals the `pool_path` one, and equals the `include_contents` one
     without its texts.
   - **The search** costs about a quarter of a second, once per process.
+- **Live, 2026-10-13:** server (pid 48182) and Debug app at `1c61c62`.
+  - **93, on Billo:** the default review is 69 rows (61 `current`, 8
+    `updateAvailable`), small enough to read inline. Its 16 changes give
+    `before_bytes` and `after_bytes`, and no texts.
+    - **With `include_contents`:** 157,560 bytes. Every text is as long as
+      its size says, and without the texts the reply is about 18 KB.
+    - **The digest:** `71878885…` either way.
+  - **97, live:** no `missing_pools` in the review or in `search_pool`. The
+    app has Twinleaf Pool registered, and `search_pool` lists it at its path.
+  - **97, through a worker** (a disk context on Billo, no `pool_path`): the
+    same digest and counts, and no `missing_pools`. `search_pool` finds
+    Twinleaf Pool at `~/Repositories/twinleaf-horizon/Twinleaf Pool`.
+  - **96:** Billo has nothing to offer, so the dry runs were from disk on
+    other projects. None of them wrote anything, and git status stayed clean.
+    - **Roxanne:** nothing to offer, with `remove: []` and `remove_bytes: 0`.
+    - **Tilley:** one stray part (RMCF0201FT100R), with
+      `remove: ["part|055a6589…"]` and `remove_bytes: 805`.
+    - **Helios:** six items. `remove` is in `items` order, and
+      `remove_bytes` is 10,719, their total. `normalized_ops` keeps its sorted
+      order.
+    - **A `.DS_Store` among them:** one of Helios's six is
+      `3d_models/cache/.DS_Store`, offered as a model. Horizon's own clean-up
+      (`pool-prj-mgr-app_win.cpp`) lists every regular file in that folder
+      the same way, so it isn't filed.
+  - **91:** a throwaway detached commit (`838ff18`) changed only this file.
+    - **Moved there:** `connection_status` gave `checkout_moved: true` and
+      the note, not `stale`, and `open_project` gave no restart warning.
+    - **Back on `main`:** neither appears.
+    - **Not tried live:** a package change, which would leave the server
+      stale by mtime for the rest of the session. The Python test covers it.
