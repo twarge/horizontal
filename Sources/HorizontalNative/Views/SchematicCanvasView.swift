@@ -7305,8 +7305,9 @@ struct SchematicCanvasView: View {
         actions.selectComponents = { componentIDs in
             let wanted = Set(componentIDs.map(normalizedID))
             guard wanted != selectedComponentIDs, moveState == nil else {
-                return
+                return false
             }
+            let before = (selectedObjects, selectedUnplacedObjectID)
             clearNetSegmentSelection()
             selectedObjects = schematicSelectableScene().refs().filter { ref in
                 ref.type == .schematicSymbol && componentID(for: ref).map { wanted.contains(normalizedID($0)) } == true
@@ -7318,6 +7319,7 @@ struct SchematicCanvasView: View {
             // empty set, when the symbol is on another sheet or the part is
             // not placed — and the workspace would take that as the new
             // selection and clear every other view.
+            return before != (selectedObjects, selectedUnplacedObjectID)
         }
         return actions
     }

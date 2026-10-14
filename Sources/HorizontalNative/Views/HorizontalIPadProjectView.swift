@@ -89,6 +89,8 @@ struct HorizontalIPadProjectView: View {
     // on screen a shared command would be applied by BOTH of them, so a schematic edit
     // would also land on whatever the board had selected.
     @State private var selectionDetailsByPane = [HorizontalPane: HorizontalSelectionDetailState]()
+    /// Canvases `selectComponents` just changed on another view's behalf (104).
+    @State private var crossProbedPanes = Set<HorizontalPane>()
     @State private var selectionPropertyChangeCommands = [HorizontalPane: HorizontalSelectionPropertyChangeCommand]()
     // Part placement: the part browser sets a request, which the schematic canvas
     // picks up (via its onAppear/onChange) to start the place-on-canvas interaction.
@@ -602,12 +604,16 @@ struct HorizontalIPadProjectView: View {
         return orderedVisiblePanes.first { selectionDetailsByPane[$0]?.hasSelection == true }
     }
 
-    /// Records a canvas's selection and, when it actually selected something, moves the
-    /// focus (and so the inspector) to that pane. Mirrors the macOS workspace.
+    /// Records a canvas's selection and, when it actually selected something there, moves
+    /// the focus (and so the inspector) to that pane. A selection pushed into it from
+    /// another view leaves the focus alone (104). Mirrors the macOS workspace.
     private func setSelectionDetails(_ details: HorizontalSelectionDetailState, for pane: HorizontalPane) {
+        let pushed = crossProbedPanes.remove(pane) != nil
         if details.hasSelection {
             selectionDetailsByPane[pane] = details
-            focusedPane = pane
+            if !pushed {
+                focusedPane = pane
+            }
         } else {
             selectionDetailsByPane.removeValue(forKey: pane)
         }
@@ -1037,7 +1043,7 @@ struct HorizontalIPadProjectView: View {
                     selectionToolSettings: selectionToolSettings,
                     isReadOnly: isReadOnly,
                     onSelectedNetChange: { selectedNetIDs = $0 },
-                    onSelectedComponentChange: selectComponents,
+                    onSelectedComponentChange: { selectComponents($0, from: .schematic) },
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
                     onHighlightComponentCommand: { highlightedComponentIDs = $0 },
                     onSheetChange: { applyEditedSchematicSheet($0) },
@@ -1125,7 +1131,7 @@ struct HorizontalIPadProjectView: View {
                     selectionToolSettings: selectionToolSettings,
                     isReadOnly: isReadOnly,
                     onSelectedNetChange: { selectedNetIDs = $0 },
-                    onSelectedComponentChange: selectComponents,
+                    onSelectedComponentChange: { selectComponents($0, from: .board) },
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
                     onHighlightComponentCommand: { highlightedComponentIDs = $0 },
                     onBoardChange: { applyEditedBoard($0) },
@@ -1932,11 +1938,14 @@ struct HorizontalIPadProjectView: View {
 
 
     /// One selection for every view: see the macOS workspace's
-    /// `selectComponents`. A canvas already showing the set ignores it.
-    private func selectComponents(_ componentIDs: Set<String>) {
+    /// `selectComponents`. A canvas already showing the set ignores it, and every canvas
+    /// it changes other than `origin` is marked so its report doesn't take the focus.
+    private func selectComponents(_ componentIDs: Set<String>, from origin: HorizontalPane? = nil) {
         selectedComponentIDs = componentIDs
         for pane in [HorizontalPane.board, .schematic] {
-            canvasActions(for: pane)?.selectComponents?(componentIDs)
+            if canvasActions(for: pane)?.selectComponents?(componentIDs) == true, pane != origin {
+                crossProbedPanes.insert(pane)
+            }
         }
     }
 

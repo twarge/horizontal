@@ -194,6 +194,10 @@ struct BoardCanvasView: View {
         /// The move's live rats' nest (`BoardSelectableCache.requestMovingAirwires`),
         /// for a move that carries a package.
         var airwireRequest: Int? = nil
+        /// The board from before the move, once R, E or T has turned what is
+        /// being moved and so rewritten `originalBoard` (105). Undo goes back
+        /// to it, and a commit lands even when nothing moved after the turn.
+        var boardBeforeMove: HorizontalBoard? = nil
     }
 
     #if os(macOS)
@@ -2462,8 +2466,9 @@ struct BoardCanvasView: View {
         actions.selectComponents = { componentIDs in
             let wanted = Set(componentIDs.map(normalizedID))
             guard wanted != selectedComponentIDs, moveState == nil, pastePlacementState == nil else {
-                return
+                return false
             }
+            let before = (selectedObjects, selectedUnplacedObjectID)
             selectedObjects = boardSelectableScene().refs().filter { ref in
                 ref.type == .boardPackage && componentID(for: ref).map { wanted.contains(normalizedID($0)) } == true
             }
@@ -2474,6 +2479,7 @@ struct BoardCanvasView: View {
             // empty set, when the symbol is on another sheet or the part is
             // not placed — and the workspace would take that as the new
             // selection and clear every other view.
+            return before != (selectedObjects, selectedUnplacedObjectID)
         }
         return actions
     }
@@ -3886,11 +3892,13 @@ struct BoardCanvasView: View {
         // is correct — only the live render is stale. Force a scene rebuild from the
         // committed board whenever a package moved so the render matches the data.
         let movesPackage = selectedObjects.contains { $0.type == .boardPackage }
+        // A turn during the move (105) changed more than a patch can carry.
         let canPreserveCommittedMetalScene = drawsBoardLinesInMetal
             && plan.isPatchable
             && !movesPackage
+            && state.boardBeforeMove == nil
             && selectedObjects.allSatisfy(isBoardMetalMovePatchable)
-        if totalDelta == .zero {
+        if totalDelta == .zero, state.boardBeforeMove == nil {
             measure("clear move state") {
                 moveState = nil
             }
@@ -3923,7 +3931,9 @@ struct BoardCanvasView: View {
             state.originalBoard
         }
         measure("apply move") {
-            moveSelectedObjects(by: totalDelta, board: &draft)
+            if totalDelta != .zero {
+                moveSelectedObjects(by: totalDelta, board: &draft)
+            }
         }
         measure("assign edited board") {
             editedBoard = draft
@@ -3933,7 +3943,7 @@ struct BoardCanvasView: View {
             // finalize; don't register a "Move" here (there's no committed prior
             // position — the text was never on the board before this flow).
             if editTextRef == nil {
-                registerUndoSnapshot(state.originalBoard, actionName: "Move")
+                registerUndoSnapshot(state.boardBeforeMove ?? state.originalBoard, actionName: "Move")
             }
         }
         measure("clear move state") {
@@ -5870,6 +5880,35 @@ struct BoardCanvasView: View {
         guard !isReadOnly,
               !selectedObjects.isEmpty,
               let center = boardSelectionCenter() else {
+            return
+        }
+
+        if var state = moveState, packagePlacementState == nil {
+            // R, E and T while moving turn what is being moved, where the
+            // cursor has taken it, and the move carries on from the turned
+            // copy, as the schematic's does (105). The board itself is left
+            // alone until the commit, so Esc still puts everything back.
+            var draft = boardMovePreviewBoard(for: state)
+            // The centre of the selection where it is now: `board` is still the
+            // pre-move board while the move is patched in Metal.
+            let preview = draft
+            let movedCenter = HorizontalCanvasModeSupport.selectionCenter(
+                for: selectedObjects,
+                anchorPoints: { selectionAnchorPoints(for: $0, in: preview) }
+            ) ?? center
+            transform(movedCenter, &draft)
+            if state.boardBeforeMove == nil {
+                state.boardBeforeMove = state.originalBoard
+            }
+            state.originalBoard = draft
+            state.startPoint = state.lastPoint
+            moveState = state
+            invalidateSelectableCache()
+            state.residentMovePlan = boardResidentMovePlan(for: selectedObjects, in: draft)
+            state.airwireRequest = startMovingAirwires(plan: state.residentMovePlan, board: draft)
+            moveState = state
+            hoveredObject = nil
+            publishSelectionContext()
             return
         }
 
