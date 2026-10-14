@@ -1462,6 +1462,30 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual((try result("list_block_instances") as? [[String: Any]])?.count, 0)
     }
 
+    /// 99: check reports the sheet warnings of every block, naming the
+    /// block a sub-block's sheet belongs to.
+    func testCheckReportsSheetWarningsOnASubBlocksSheets() throws {
+        let sub = try addSecondBlock(named: "Regulator", portNet: "VOUT")
+        _ = try result("apply", ["block": "sub_block", "ops": [
+            ["op": "ensure_component", "refdes": "R7", "part": partID],
+            ["op": "place_symbol", "component": "R7", "x_mm": 30, "y_mm": 30],
+            ["op": "connect", "component": "R7", "pin": "1", "net": "VOUT"]
+        ]])
+        let report = try XCTUnwrap(try result("check", ["full": true]) as? [String: Any])
+        let messages = try XCTUnwrap(report["messages"] as? [[String: Any]])
+        let found = try XCTUnwrap(messages.first { $0["block_id"] as? String == sub.block && $0["refdes"] as? String == "R7" },
+                                  "\(messages)")
+        XCTAssertEqual(found["title"] as? String, "Pin connected to net")
+        XCTAssertEqual(found["message"] as? String, "Pin connected to net: VOUT")
+        XCTAssertEqual(found["net"] as? String, "VOUT")
+        XCTAssertEqual(found["pin"] as? String, "1")
+        XCTAssertEqual(found["block"] as? String, "sub_block")
+        XCTAssertEqual(found["sheet"] as? Int, 1)
+        XCTAssertTrue((found["detail"] as? String)?.hasPrefix("Block sub_block, sheet 1 (Sheet 1) at (") ?? false, "\(found)")
+        XCTAssertFalse(messages.contains { $0["message"] != nil && $0["block_id"] == nil && $0["refdes"] as? String == "R7" },
+                       "R7 is on the sub-block's sheet only")
+    }
+
     /// A block cannot use itself, and editing a sub-block edits that block.
     func testBlockScopingReachesTheSecondBlock() throws {
         let sub = try addSecondBlock(named: "Regulator", portNet: "VOUT")

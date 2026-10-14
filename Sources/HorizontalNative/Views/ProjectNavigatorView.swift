@@ -31,6 +31,8 @@ struct ProjectNavigatorView: View {
     var onRenameSheet: (URL, String, String) -> Void = { _, _, _ in }
     /// (schematic URL, sheet IDs in their new order)
     var onReorderSheets: (URL, [String]) -> Void = { _, _ in }
+    /// (schematic URL, sheet ID, frame uuid or nil for none)
+    var onSetSheetFrame: (URL, String, String?) -> Void = { _, _, _ in }
 
     @State private var renameTarget: SheetRenameTarget?
     @State private var renameDraft = ""
@@ -164,6 +166,40 @@ struct ProjectNavigatorView: View {
                     currentName: sheet.name
                 )
             }
+            frameMenu(for: sheet, schematicURL: schematicURL)
+        }
+    }
+
+    /// The project pool's frames: every block's sheets draw from the one pool.
+    private var availableFrames: [HorizontalSheetFrameOption] {
+        project.schematics.first?.schematic.availableFrames ?? project.schematic?.availableFrames ?? []
+    }
+
+    private static let noFrameTag = ""
+
+    /// Horizon's sheet frame choice: the project pool's frames, and None.
+    private func frameMenu(for sheet: HorizontalSchematicSheet, schematicURL: URL) -> some View {
+        let frames = availableFrames
+        let current = sheet.frameID ?? Self.noFrameTag
+        return Menu("Frame") {
+            Picker("Frame", selection: Binding(
+                get: { current },
+                set: { chosen in
+                    guard chosen != current else { return }
+                    onSetSheetFrame(schematicURL, sheet.id, chosen == Self.noFrameTag ? nil : chosen)
+                }
+            )) {
+                Text("None").tag(Self.noFrameTag)
+                ForEach(frames) { frame in
+                    Text(frame.name.isEmpty ? frame.id : frame.name).tag(frame.id)
+                }
+                // A frame the project pool lacks draws nothing, but it is
+                // still what the sheet names.
+                if let missing = sheet.frameID, !frames.contains(where: { $0.id == missing }) {
+                    Text("\(sheet.frameName ?? String(missing.prefix(8))) (not in the project pool)").tag(missing)
+                }
+            }
+            .pickerStyle(.inline)
         }
     }
 

@@ -930,6 +930,9 @@ struct ProjectWorkspaceView: View {
                 },
                 onReorderSheets: { schematicURL, orderedIDs in
                     reorderSheets(orderedIDs, schematicURL: schematicURL)
+                },
+                onSetSheetFrame: { schematicURL, sheetID, frameID in
+                    setSheetFrame(frameID, sheetID: sheetID, schematicURL: schematicURL)
                 }
             )
             // Without an explicit column width the sidebar is compressible to
@@ -3122,6 +3125,27 @@ struct ProjectWorkspaceView: View {
                 to: &archive
             )
             try applyLiveArchive(archive, actionName: "Rename Sheet")
+        } catch {
+            recordArchiveApplyFailure(error)
+        }
+    }
+
+    /// The navigator's Frame menu. Through the archive and a reload, like a
+    /// rename: the loader draws the frame and bakes the title block into it.
+    private func setSheetFrame(_ frameID: String?, sheetID: String, schematicURL: URL) {
+        guard !isReadOnly else {
+            return
+        }
+        do {
+            var archive = document.archive
+            try HorizontalProjectJSONApplicator.apply(
+                sheetFrame: frameID,
+                forSheetID: sheetID,
+                schematicURL: schematicURL,
+                in: project,
+                to: &archive
+            )
+            try applyLiveArchive(archive, actionName: "Set Sheet Frame")
         } catch {
             recordArchiveApplyFailure(error)
         }

@@ -1181,6 +1181,13 @@ struct HorizontalComponentDetails: Hashable {
     var description: String?
     var datasheet: String?
     var parametricValues: [String: String] = [:]
+    /// The part's parametric values as a symbol's custom value shows them
+    /// (`${p:…}`): formatted through the pool's parametric table when it can
+    /// be found (`HorizontalSymbolCustomValue.parametricFields`).
+    var parametricFields: [HorizontalParametricField] = []
+    /// A part is named but its file couldn't be read, so nothing comes from
+    /// it: a custom value's part fields read "None", as with no part.
+    var partMissing = false
     /// The block's `connections` for the component: gate/pin uuid path to
     /// net id. What a package placed on the board takes its pad nets from.
     var connections: [String: String] = [:]
@@ -1389,6 +1396,10 @@ struct HorizontalPlacement: Identifiable, Hashable {
     var componentID: String? = nil
     var componentDetails: HorizontalComponentDetails? = nil
     var customValue: String? = nil
+    /// A schematic symbol's texts that draw its `$VALUE` (its own, or a
+    /// smashed symbol's sheet texts), by the ids the sheet gives them: what
+    /// a custom value edit redraws.
+    var valueTextIDs: [String] = []
     var gateID: String? = nil
     var symbolID: String? = nil
     var pinDisplayMode: String = HorizontalSymbolPinDisplayMode.selectedOnly.rawValue

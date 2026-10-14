@@ -13,11 +13,38 @@ enum HorizontalDispatchChecks {
         var detail: String
         var refdes: String? = nil
         var net: String? = nil
+        /// Where a sheet warning is drawn.
+        var location: Location? = nil
+
+        struct Location {
+            var sheet: Int
+            var sheetName: String
+            var sheetID: String
+            /// The block whose sheet it is, when that is not the top block.
+            var block: String?
+            var blockID: String?
+            var position: HorizontalPoint
+            /// What the canvas says there.
+            var message: String
+            /// The pin's name, for a warning about a pin.
+            var pin: String?
+        }
 
         var json: JSONDictionary {
             var json: JSONDictionary = ["level": level, "category": category, "title": title, "detail": detail]
             if let refdes { json["refdes"] = refdes }
             if let net { json["net"] = net }
+            if let location {
+                json["sheet"] = location.sheet
+                json["sheet_name"] = location.sheetName
+                json["sheet_id"] = location.sheetID
+                json["x_mm"] = HorizontalDispatchJSON.mm(location.position.x)
+                json["y_mm"] = HorizontalDispatchJSON.mm(location.position.y)
+                json["message"] = location.message
+                if let pin = location.pin { json["pin"] = pin }
+                if let block = location.block { json["block"] = block }
+                if let blockID = location.blockID { json["block_id"] = blockID }
+            }
             return json
         }
     }
@@ -69,6 +96,8 @@ enum HorizontalDispatchChecks {
             }
         }
 
+        messages.append(contentsOf: schematicWarningMessages(project: project))
+
         if let board = project.board {
             for object in board.unplacedObjects {
                 messages.append(Message(level: "warning", category: "board", title: "Not placed on the board", detail: object.subtitle, refdes: object.label))
@@ -117,15 +146,66 @@ enum HorizontalDispatchChecks {
             if lhs.category != rhs.category {
                 return lhs.category < rhs.category
             }
-            return (lhs.refdes ?? lhs.net ?? lhs.title).localizedStandardCompare(rhs.refdes ?? rhs.net ?? rhs.title) == .orderedAscending
+            switch (lhs.refdes ?? lhs.net ?? lhs.title).localizedStandardCompare(rhs.refdes ?? rhs.net ?? rhs.title) {
+            case .orderedAscending: return true
+            case .orderedDescending: return false
+            case .orderedSame:
+                // Sheet warnings of one net or part read page by page, top to
+                // bottom, so a run of them comes back in the same order each time.
+                guard let left = lhs.location, let right = rhs.location else {
+                    return lhs.location == nil && rhs.location != nil
+                }
+                return (left.blockID ?? "", left.sheet, -left.position.y, left.position.x, lhs.title, left.message)
+                    < (right.blockID ?? "", right.sheet, -right.position.y, right.position.x, rhs.title, right.message)
+            }
         }
         let counts = Dictionary(grouping: messages, by: \.level).mapValues(\.count)
         return [
             "ok": (counts["error"] ?? 0) == 0,
             "counts": ["error": counts["error"] ?? 0, "warning": counts["warning"] ?? 0, "info": counts["info"] ?? 0],
             "messages": full ? messages.map(\.json) : grouped(messages),
-            "note": "Horizontal has no geometric design rule check yet; these are load diagnostics, rules validation, and connectivity facts, plus the components and board packages nothing has placed. Poured planes count as copper for the rats' nest."
+            "note": "Horizontal has no geometric design rule check yet; these are load diagnostics, rules validation, and connectivity facts, plus the components and board packages nothing has placed, and the warnings the schematic canvas draws on each sheet. Poured planes count as copper for the rats' nest."
         ]
+    }
+
+    /// The warnings the schematic canvas draws (Horizon's sheet warnings),
+    /// on every sheet of every block: one message each, with its sheet and
+    /// where on it, and the net or part it is about.
+    static func schematicWarningMessages(project: HorizontalProject) -> [Message] {
+        var messages = [Message]()
+        for entry in HorizontalDesignIndex.schematics(of: project) {
+            let sheets = entry.schematic.sheets
+            let block = entry.block.isTop ? nil : entry.block.displayName
+            for sheet in sheets {
+                // A duplicate refdes is already an annotation error, once
+                // per refdes; the canvas marks each symbol of it as well.
+                for finding in HorizontalSchematicWarnings.findings(sheet, allSheets: sheets) where finding.title != "Duplicate refdes" {
+                    let net = finding.netID.flatMap { sheet.netDetails[$0.lowercased()]?.name }.flatMap { $0.isEmpty ? nil : $0 }
+                    let refdes = finding.componentID.flatMap { sheet.componentInfo[$0.lowercased()]?.refdes }.flatMap { $0.isEmpty ? nil : $0 }
+                    let position = String(format: "(%.2f, %.2f) mm", finding.position.x / 1_000_000, finding.position.y / 1_000_000)
+                    // Where, what the canvas says there, and what it is about
+                    // when the message does not already name it.
+                    var detail = "\(block.map { "Block \($0), sheet" } ?? "Sheet") \(sheet.index) (\(sheet.name)) at \(position)"
+                    if finding.message != finding.title { detail += ": \(finding.message)" }
+                    var about = [String]()
+                    if let net, !finding.message.contains(net) { about.append("net \(net)") }
+                    if let refdes, !finding.message.contains(refdes) {
+                        about.append(finding.pinName.map { "\(refdes) pin \($0)" } ?? refdes)
+                    }
+                    if !about.isEmpty {
+                        detail += finding.message != finding.title ? " (\(about.joined(separator: ", ")))" : ", \(about.joined(separator: ", "))"
+                    }
+                    messages.append(Message(
+                        level: "warning", category: "schematic", title: finding.title, detail: detail + ".",
+                        refdes: refdes, net: net,
+                        location: .init(sheet: sheet.index, sheetName: sheet.name, sheetID: sheet.id,
+                                        block: block, blockID: entry.block.isTop ? nil : entry.block.uuid,
+                                        position: finding.position, message: finding.message, pin: finding.pinName)
+                    ))
+                }
+            }
+        }
+        return messages
     }
 
     /// Each airwire as "C61.N to U8.VSS_12", at most three of them. An end

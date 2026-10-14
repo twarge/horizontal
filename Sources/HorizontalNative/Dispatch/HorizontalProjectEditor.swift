@@ -38,6 +38,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case pruneSheet = "prune_sheet"
     case terminatePin = "terminate_pin"
     case setSymbolDisplay = "set_symbol_display"
+    case setCustomValue = "set_custom_value"
     case setNoConnect = "set_no_connect"
     case setPinAlternate = "set_pin_alternate"
     case remapPart = "remap_part"
@@ -58,6 +59,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case removeRule = "remove_rule"
     case addSheet = "add_sheet"
     case renameSheet = "rename_sheet"
+    case setSheetFrame = "set_sheet_frame"
     case removeSheet = "remove_sheet"
     case placeTrack = "place_track"
     case removeTrack = "remove_track"
@@ -118,6 +120,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .disconnect: "Remove a pin's connection."
         case .placeSymbol: "Draw a component's gate on a schematic sheet, or move it if it is already drawn. A component connected without this is in the netlist but on no sheet."
         case .setSymbolDisplay: "Change how a drawn symbol shows its pins: which pin names (pin_display_mode) and whether a multi-pad pin lists every pad number (display_all_pads). The apply_ops reply gives warnings when custom_only hides alternates the symbol's pins have chosen."
+        case .setCustomValue: "Give a drawn symbol a custom value: text that its $VALUE text draws instead of the value, with ${value}, ${mpn}, ${mfr}, ${desc}, ${pkg} and ${p:<parametric column>} filled in from the component and its part, as Horizon's Edit Custom Value does — \"${value}\\n${mpn}\" shows the value over the MPN. \"\" or null clears it. get_component gives each symbol's custom_value and drawn_value."
         case .removeSymbol: "Take a component's gate off its sheet, with the net lines that ended on it. The component and its connections stay."
         case .drawNetLine: "Draw a wire between pins or junctions on one logical net. Does not change block connectivity. A junction with no net yet takes the wire's."
         case .placeJunction: "Create a schematic junction on a net, reusing a compatible or net-less junction at the same point."
@@ -146,6 +149,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .setStackup: "Set how many inner copper layers the board has, and the copper and dielectric thicknesses."
         case .addSheet: "Add a schematic sheet, with the drawing frame the other sheets use. An index already taken inserts the sheet there and moves the later ones down."
         case .renameSheet: "Rename a schematic sheet."
+        case .setSheetFrame: "Give a sheet the drawing frame its title block is drawn with, or none. The frame has to be in the project pool, where a sheet's frame is drawn from; list_sheets gives the frames the sheets use."
         case .removeSheet: "Remove a schematic sheet. A sheet with anything drawn on it is refused unless force is passed, which clears it — symbols included, though their components stay in the block."
         case .placeTrack: "Route one straight copper segment on a layer between two points, pads or junctions. Manual routing: it draws what it is told and does not find a path."
         case .removeTrack: "Remove a copper segment, and any junction it leaves holding nothing."
@@ -252,6 +256,10 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "symbol_instance": "One symbol instance id instead of component and gate (optional).",
                     "pin_display_mode": "selected_only, custom_only, both or all (optional).",
                     "display_all_pads": "List every pad number on a multi-pad pin (optional)."]
+        case .setCustomValue:
+            return ["component": component, "gate": "Gate name, suffix or id; omitted, every drawn gate of the component.",
+                    "symbol_instance": "One symbol instance id instead of component and gate (optional).",
+                    "custom_value": "The text, e.g. \"${value}\\n${mpn}\"; \"\" or null clears it. Leading and trailing white space is trimmed, as Horizon trims it."]
         case .removeSymbol:
             return ["component": component, "gate": "Gate name, suffix or id; optional when the entity has one gate.",
                     "sheet": "Sheet index, name or uuid (optional; default every sheet).",
@@ -361,6 +369,9 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "frame": "Pool frame uuid for the title block, or \"none\" (optional; default the frame the last sheet uses)."]
         case .renameSheet:
             return ["sheet": "Sheet index, name or uuid.", "name": "New name."]
+        case .setSheetFrame:
+            return ["sheet": "Sheet index, name or uuid.",
+                    "frame": "Pool frame uuid, which the project pool must have, or \"none\" (or null) for no frame."]
         case .removeSheet:
             return ["sheet": "Sheet index, name or uuid.",
                     "force": "Remove it even when things are drawn on it (default false). Components whose symbols were there stay in the block, unplaced."]
@@ -486,7 +497,7 @@ struct HorizontalEditOperation {
                 }) else {
                     throw HorizontalDispatchError.invalidParams("assignments must be an object from pin to an alternate name, a list of them, or null.")
                 }
-            } else if value is NSNull, key == "custom_name" {
+            } else if value is NSNull, ["custom_name", "custom_value", "frame"].contains(key) {
                 continue
             } else if ["fields", "pin_map", "symbols", "pad_map", "values"].contains(key) {
                 guard value is JSONDictionary else {
@@ -836,6 +847,8 @@ final class HorizontalProjectEditor {
             change.merge(try terminatePin(params)) { _, new in new }
         case .setSymbolDisplay:
             change.merge(try setSymbolDisplay(params)) { _, new in new }
+        case .setCustomValue:
+            change.merge(try setCustomValue(params)) { _, new in new }
         case .setNoConnect:
             change.merge(try setNoConnect(params)) { _, new in new }
         case .setPinAlternate:
@@ -876,6 +889,8 @@ final class HorizontalProjectEditor {
             change.merge(try addSheet(params)) { _, new in new }
         case .renameSheet:
             change.merge(try renameSheet(params)) { _, new in new }
+        case .setSheetFrame:
+            change.merge(try setSheetFrame(params)) { _, new in new }
         case .removeSheet:
             change.merge(try removeSheet(params)) { _, new in new }
         case .placePolygon:
@@ -2051,23 +2066,29 @@ final class HorizontalProjectEditor {
         if let all = params.bool("display_all_pads") { item["display_all_pads"] = all }
     }
 
+    /// The drawn symbols an op names: one `symbol_instance`, or a
+    /// component's — only one gate's when `gate` is given.
+    private func symbolTargets(_ params: JSONDictionary) throws -> [(sheet: String, id: String, json: JSONDictionary)] {
+        if let instance = params.string("symbol_instance") {
+            let targets = try symbolInstances().filter { $0.id.caseInsensitiveCompare(instance) == .orderedSame }
+            guard !targets.isEmpty else { throw HorizontalDispatchError.notFound("No symbol instance \(instance). list_symbols returns them.") }
+            return targets
+        }
+        let componentID = try componentID(params)
+        let gateID = params.string("gate") == nil ? nil : try gate(params, componentID: componentID).id
+        let targets = try symbolInstances().filter {
+            $0.json.string("component")?.lowercased() == componentID
+                && (gateID == nil || $0.json.string("gate")?.lowercased() == gateID)
+        }
+        guard !targets.isEmpty else { throw HorizontalDispatchError.notFound("No symbol for \(componentID) is on a sheet.") }
+        return targets
+    }
+
     private func setSymbolDisplay(_ params: JSONDictionary) throws -> JSONDictionary {
         guard params["pin_display_mode"] != nil || params["display_all_pads"] != nil else {
             throw HorizontalDispatchError.invalidParams("set_symbol_display needs pin_display_mode or display_all_pads.")
         }
-        let targets: [(sheet: String, id: String, json: JSONDictionary)]
-        if let instance = params.string("symbol_instance") {
-            targets = try symbolInstances().filter { $0.id.caseInsensitiveCompare(instance) == .orderedSame }
-            guard !targets.isEmpty else { throw HorizontalDispatchError.notFound("No symbol instance \(instance). list_symbols returns them.") }
-        } else {
-            let componentID = try componentID(params)
-            let gateID = params.string("gate") == nil ? nil : try gate(params, componentID: componentID).id
-            targets = try symbolInstances().filter {
-                $0.json.string("component")?.lowercased() == componentID
-                    && (gateID == nil || $0.json.string("gate")?.lowercased() == gateID)
-            }
-            guard !targets.isEmpty else { throw HorizontalDispatchError.notFound("No symbol for \(componentID) is on a sheet.") }
-        }
+        let targets = try symbolTargets(params)
         for target in targets {
             try updateSheet(target.sheet) { sheet in
                 var symbols = sheet.dictionaryMap("symbols")
@@ -2079,6 +2100,34 @@ final class HorizontalProjectEditor {
         }
         return ["symbol_instances": targets.map(\.id).sorted(),
                 "pin_display_mode": params["pin_display_mode"] ?? NSNull(), "display_all_pads": params["display_all_pads"] ?? NSNull()]
+    }
+
+    /// Horizon's Edit Custom Value: the symbol's `custom_value`, stored
+    /// trimmed and only when there is one, as `SchematicSymbol::serialize`
+    /// writes it.
+    private func setCustomValue(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard params.keys.contains("custom_value") else {
+            throw HorizontalDispatchError.invalidParams("set_custom_value needs custom_value: the text, or \"\" or null to clear it.")
+        }
+        guard params["symbol_instance"] == nil || (params["component"] == nil && params["gate"] == nil) else {
+            throw HorizontalDispatchError.invalidParams("Name a symbol_instance, or a component and optionally a gate, not both.")
+        }
+        let value = HorizontalSymbolCustomValue.normalized(params["custom_value"] as? String)
+        let targets = try symbolTargets(params)
+        for target in targets {
+            try updateSheet(target.sheet) { sheet in
+                var symbols = sheet.dictionaryMap("symbols")
+                guard var item = symbols[target.id] else { return }
+                if let value {
+                    item["custom_value"] = value
+                } else {
+                    item.removeValue(forKey: "custom_value")
+                }
+                symbols[target.id] = item
+                sheet["symbols"] = symbols
+            }
+        }
+        return ["symbol_instances": targets.map(\.id).sorted(), "custom_value": value.map { $0 as Any } ?? NSNull()]
     }
 
     private func removeSymbol(_ componentID: String, _ params: JSONDictionary) throws -> JSONDictionary {
@@ -4168,12 +4217,9 @@ final class HorizontalProjectEditor {
         // The frame draws the title block. A new page looks like the others
         // unless told otherwise.
         let frame: String?
-        switch params.string("frame") {
-        case "none": frame = nil
-        case let requested?:
-            guard UUID(uuidString: requested) != nil else { throw HorizontalDispatchError.invalidParams("frame must be a pool frame uuid or \"none\".") }
-            frame = requested.lowercased()
-        case nil:
+        if params.keys.contains("frame") {
+            frame = try resolvedFrame(params["frame"])?.id
+        } else {
             frame = sheets.last?.json.string("frame")
         }
         let id = UUID().uuidString.lowercased()
@@ -4208,6 +4254,72 @@ final class HorizontalProjectEditor {
         }
         try updateSheet(id) { $0["name"] = name }
         return ["sheet": id, "name": name]
+    }
+
+    /// A sheet's frame, set or taken away. Horizon's sheet properties choose
+    /// it from the pool; here it is named by uuid.
+    private func setSheetFrame(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard params["sheet"] != nil else {
+            throw HorizontalDispatchError.invalidParams("set_sheet_frame needs sheet: an index, name or uuid.")
+        }
+        guard params.keys.contains("frame") else {
+            throw HorizontalDispatchError.invalidParams("set_sheet_frame needs frame: a pool frame uuid, or \"none\".")
+        }
+        let id = try sheetID(params)
+        let frame = try resolvedFrame(params["frame"])
+        let previous = try sheetsInOrder().first { $0.id == id }?.json.string("frame")
+        try updateSheet(id) { sheet in
+            if let frame {
+                sheet["frame"] = frame.id
+            } else {
+                sheet.removeValue(forKey: "frame")
+            }
+        }
+        return ["sheet": id, "frame": frame.map { $0.id as Any } ?? NSNull(), "frame_name": frame.map { $0.name as Any } ?? NSNull(),
+                "previous_frame": previous.map { $0 as Any } ?? NSNull()]
+    }
+
+    /// The frame a `frame` parameter names: nil for "none" or null, else a
+    /// frame the project pool holds where a sheet's frame is drawn from
+    /// (`frames/cache/<uuid>.json`). One that is not there is refused with
+    /// where it is, since a sheet naming it would draw no frame at all.
+    private func resolvedFrame(_ value: Any?) throws -> (id: String, name: String)? {
+        if value == nil || value is NSNull { return nil }
+        guard let text = (value as? String)?.trimmingCharacters(in: .whitespaces), !text.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("frame must be a pool frame uuid or \"none\".")
+        }
+        if text.caseInsensitiveCompare("none") == .orderedSame { return nil }
+        guard UUID(uuidString: text) != nil else {
+            throw HorizontalDispatchError.invalidParams("frame must be a pool frame uuid or \"none\".")
+        }
+        let frameID = text.lowercased()
+        guard let poolURL else {
+            throw HorizontalDispatchError.failed("The project has no pool directory, so it has no frames.")
+        }
+        if let data = try store.read(HorizontalSchematic.frameURL(frameID, poolURL: poolURL)),
+           let json = try? JSONHelper.loadDictionary(from: data), json.string("type") == "frame" {
+            return (frameID, json.string("name") ?? "")
+        }
+        let projectPool = HorizontalPoolLibrary.canonicalURL(poolURL).path
+        let holder = HorizontalPoolLibrary.editorPoolURLs(forPoolRoot: poolURL).lazy.compactMap { url in
+            HorizontalPoolLibrary.items(inPool: url, poolName: HorizontalPoolRegistryStore.poolInfo(at: url).name)
+                .first { $0.category == .frame && $0.uuid == frameID }
+        }.first
+        guard let holder else {
+            throw HorizontalDispatchError.notFound(
+                "No frame \(frameID) in the project pool or the pools it draws from. search_pool with kind frame lists the frames there are."
+            )
+        }
+        let name = holder.name.isEmpty ? frameID : "\(holder.name) (\(frameID))"
+        if holder.poolURL.standardizedFileURL.path == projectPool {
+            throw HorizontalDispatchError.notFound(
+                "Frame \(name) is in the project pool at \(holder.url.path), but a sheet's frame is drawn from frames/cache/\(frameID).json, where it is not."
+            )
+        }
+        throw HorizontalDispatchError.notFound(
+            "Frame \(name) is in \(holder.poolName), not the project pool, which is where a sheet's frame is drawn from. "
+                + "Bring it in first: get_pool_item reads it, and pool_write puts it in the project pool, or pass it as pool_items in this apply_ops."
+        )
     }
 
     private func removeSheet(_ params: JSONDictionary) throws -> JSONDictionary {

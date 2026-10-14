@@ -359,6 +359,58 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
                 "operation_id": str(uuid.uuid4()), "ops": [op]})
             self.assertTrue(result.is_error, op)
 
+    async def test_custom_values_sheet_frames_and_sheet_warnings_through_the_typed_surface(self):
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        unit, entity, symbol, frame = (str(uuid.uuid4()) for _ in range(4))
+        gate, pins, text = str(uuid.uuid4()), [str(uuid.uuid4()) for _ in range(2)], str(uuid.uuid4())
+        items = [{"type": "unit", "uuid": unit, "name": "R", "manufacturer": "",
+                  "pins": {p: {"primary_name": n, "direction": "passive", "swap_group": 0, "names": []} for p, n in zip(pins, ["1", "2"])}},
+                 {"type": "entity", "uuid": entity, "name": "Resistor", "manufacturer": "", "prefix": "R", "tags": [],
+                  "gates": {gate: {"name": "Main", "suffix": "", "swap_group": 0, "unit": unit}}},
+                 {"type": "symbol", "uuid": symbol, "name": "R", "unit": unit, "junctions": {}, "lines": {}, "arcs": {}, "polygons": {},
+                  "texts": {text: {"text": "$VALUE", "size": 1500000, "width": 0, "layer": 0, "origin": "baseline", "font": "simplex",
+                                   "placement": {"shift": [0, 2540000], "angle": 0, "mirror": False}}},
+                  "pins": {p: {"position": [0, -i * 2540000], "length": 2540000, "orientation": "left",
+                               "name_visible": True, "pad_visible": True} for i, p in enumerate(pins)}},
+                 {"type": "frame", "uuid": frame, "name": "A4", "width": 297000000, "height": 210000000,
+                  "junctions": {}, "lines": {}, "arcs": {}, "texts": {}, "polygons": {}}]
+        await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id="custom", pool_items=items,
+                        ops=[{"op": "ensure_component", "refdes": "R1", "entity": entity, "value": "10k"},
+                             {"op": "place_symbol", "component": "R1", "x_mm": 50, "y_mm": 50},
+                             {"op": "connect", "component": "R1", "pin": "1", "net": "N1", "create_net": True},
+                             {"op": "set_custom_value", "component": "R1", "custom_value": "${value}\n${mpn}"},
+                             {"op": "set_sheet_frame", "sheet": 1, "frame": frame}])
+        drawn = (await self.call("get_component", project_ref=self.ref, refdes="R1"))["data"]["symbols"][0]
+        self.assertEqual(drawn["custom_value"], "${value}\n${mpn}")
+        self.assertEqual(drawn["drawn_value"], "10k\nNone", "without a part, the part's fields read None")
+        self.assertEqual((await self.call("list_sheets", project_ref=self.ref))["data"][0]["frame"], {"uuid": frame, "name": "A4"})
+
+        # The canvas's warnings, where it draws them.
+        report = (await self.call("check", project_ref=self.ref, full=True))["data"]
+        pin = next(m for m in report["messages"] if m.get("message") == "Pin connected to net: N1")
+        self.assertEqual((pin["category"], pin["title"], pin["net"], pin["refdes"], pin["pin"], pin["sheet"]),
+                         ("schematic", "Pin connected to net", "N1", "R1", "1", 1))
+        self.assertIsInstance(pin["x_mm"], (int, float))
+
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id="clear",
+                        ops=[{"op": "set_custom_value", "component": "R1", "custom_value": None},
+                             {"op": "set_sheet_frame", "sheet": 1, "frame": "none"}])
+        self.assertIsNone((await self.call("get_component", project_ref=self.ref, refdes="R1"))["data"]["symbols"][0]["custom_value"])
+        self.assertIsNone((await self.call("list_sheets", project_ref=self.ref))["data"][0]["frame"])
+
+        # The schema says what each op needs before the engine is asked.
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        for op in ({"op": "set_custom_value", "custom_value": "x"},
+                   {"op": "set_custom_value", "component": "R1", "symbol_instance": "s", "custom_value": "x"},
+                   {"op": "set_custom_value", "symbol_instance": "s", "gate": "Main", "custom_value": "x"},
+                   {"op": "set_custom_value", "component": "R1"},
+                   {"op": "set_sheet_frame", "sheet": 1},
+                   {"op": "set_sheet_frame", "sheet": 1, "frame": str(uuid.uuid4())}):
+            result = await server.mcp.call_tool("apply_ops", {
+                "project_ref": self.ref, "expected_revision": revision, "operation_id": str(uuid.uuid4()), "ops": [op]})
+            self.assertTrue(result.is_error, op)
+
     async def test_edit_replies_are_compact_unless_verbose(self):
         revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
         ops = [{"op": "ensure_net", "name": f"N{i}"} for i in range(30)] + [{"op": "add_sheet", "name": "Cover", "index": 1}]
