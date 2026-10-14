@@ -601,6 +601,9 @@ struct ProjectWorkspaceView: View {
     @State private var findActivationID = 0
     @State private var fallbackUndoManager = UndoManager()
     @State private var selectionDetailsByPane = [HorizontalPane: HorizontalSelectionDetailState]()
+    /// Canvases `selectComponents` just changed on another view's behalf.
+    /// Their next selection report is the one they were given (104).
+    @State private var crossProbedPanes = Set<HorizontalPane>()
     @State private var selectionPropertyChangeCommands = [HorizontalPane: HorizontalSelectionPropertyChangeCommand]()
     @State private var schematicNetSegmentSelection: HorizontalNetSegmentSelectionSidebarState?
     @State private var schematicNetSegmentSelectionCommand: HorizontalNetSegmentSelectionCommand?
@@ -1731,7 +1734,7 @@ struct ProjectWorkspaceView: View {
                                 isReadOnly: isReadOnly,
                                 ignoresCanvasMouseEvents: panesWithPointerInsideToolbar.contains(.schematic) || pointerInsideRightSidebar,
                                 onSelectedNetChange: selectNet,
-                                onSelectedComponentChange: selectComponents,
+                                onSelectedComponentChange: { selectComponents($0, from: .schematic) },
                                 onHighlightNetCommand: highlightSelectedNet,
                                 onHighlightComponentCommand: highlightSelectedComponents,
                                 onSelectionClearedBySheetChange: clearSelectionKeepingHighlight,
@@ -1893,7 +1896,7 @@ struct ProjectWorkspaceView: View {
                                 isReadOnly: isReadOnly,
                                 ignoresCanvasMouseEvents: panesWithPointerInsideToolbar.contains(.board) || pointerInsideRightSidebar,
                                 onSelectedNetChange: selectNet,
-                                onSelectedComponentChange: selectComponents,
+                                onSelectedComponentChange: { selectComponents($0, from: .board) },
                                 onHighlightNetCommand: highlightSelectedNet,
                                 onHighlightComponentCommand: highlightSelectedComponents,
                                 onBoardChange: { board in
@@ -2305,10 +2308,15 @@ struct ProjectWorkspaceView: View {
     private func setSelectionDetails(_ details: HorizontalSelectionDetailState, for pane: HorizontalPane) {
         var selectionDetails = details
         selectionDetails.hovered = nil
+        // A selection pushed into this pane from another view (104) updates
+        // its inspector but leaves the keyboard where the user is working.
+        let pushed = crossProbedPanes.remove(pane) != nil
 
         if selectionDetails.hasSelection {
             selectionDetailsByPane[pane] = selectionDetails
-            activeCanvasCommandPane = pane
+            if !pushed {
+                activeCanvasCommandPane = pane
+            }
         } else {
             selectionDetailsByPane.removeValue(forKey: pane)
         }
@@ -2413,17 +2421,18 @@ struct ProjectWorkspaceView: View {
     /// it, a click in the 3D view or the live channel asks for a set, and
     /// either way the other canvases are told; a canvas already showing that
     /// selection ignores the request, which is what stops the round trip.
-    private func selectComponents(_ componentIDs: Set<String>) {
-        selectComponents(componentIDs, keepingHighlight: false)
-    }
-
-    private func selectComponents(_ componentIDs: Set<String>, keepingHighlight: Bool) {
+    /// `origin` is the canvas the selection was made in, if any: every other
+    /// canvas it changes is marked, so its report doesn't take the focus.
+    private func selectComponents(_ componentIDs: Set<String>, from origin: HorizontalPane? = nil,
+                                  keepingHighlight: Bool = false) {
         if componentIDs != selectedComponentIDs, !keepingHighlight {
             highlightedComponentIDs.removeAll()
         }
         selectedComponentIDs = componentIDs
         for pane in [HorizontalPane.board, .schematic] {
-            canvasCommandActionsByPane[pane]?.selectComponents?(componentIDs)
+            if canvasCommandActionsByPane[pane]?.selectComponents?(componentIDs) == true, pane != origin {
+                crossProbedPanes.insert(pane)
+            }
         }
     }
 
