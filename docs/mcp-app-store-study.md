@@ -171,7 +171,10 @@ authentication on a port.
 ## Field notes
 
 These turned up while driving the server against a real project (Cinnamon,
-2026-10-14).
+2026-10-14). The full list is items 106–119 in billo's
+`docs/horizontal-mcp-notes.md`. It also covers copper shorts that `check`
+cannot see, the save and autosave contract, `remap_part` and copper,
+junction handles, and stranded wiring.
 
 1. **One live document refused every write.**
    - Errors seen:

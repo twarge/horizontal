@@ -11,7 +11,7 @@ Every edit is planned, dry-run, committed in a small batch, verified, then saved
 
 Open with `source: "live"` when the user has the project open (see the `connect` skill). Confirm `data.source` is `"live"`, and keep the `revision` from the reply.
 
-A live edit is one undo step in the app and is not on disk until `save`. A disk edit is refused with `DOCUMENT_OPEN` while the app holds the project.
+A live edit is one undo step in the app. The app autosaves documents in place, so a committed edit can be on disk within seconds: do not count on undoing before anything is written. A disk edit is refused with `DOCUMENT_OPEN` while the app holds the project.
 
 ## 2. Gather what the ops will name
 
@@ -64,6 +64,6 @@ Changing a pad's net leaves its tracks on the old net. That is a silent short, b
 
 ## 8. Save and record
 
-1. `save`, then confirm `saved: true` and `verified: true`. A task that edits a live document is not finished without this.
+1. `save`, then confirm `verified: true`. A task that edits a live document is not finished without this. `saved: false` with `had_unsaved_changes: false` means the app had already autosaved the edits; check the files with `git status`.
 2. In git, commit on a branch rather than the default one. The message should say what changed, why, and what is left: routing, unplaced parts, follow-ups.
 3. Leave stale exports (PDFs, Gerbers, BOMs) alone until routing is done, then regenerate them with the `fab-outputs` skill.
