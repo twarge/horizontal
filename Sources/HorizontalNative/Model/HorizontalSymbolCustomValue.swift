@@ -35,7 +35,7 @@ enum HorizontalSymbolCustomValue {
     /// MPN, manufacturer, description, package and each parametric value.
     static func insertions(for details: HorizontalComponentDetails) -> [Insertion] {
         var rows = [Insertion(prefix: "", label: "Value", text: "${value}\n")]
-        guard details.partID != nil else {
+        guard hasPart(details) else {
             return rows
         }
         rows += [
@@ -110,7 +110,7 @@ enum HorizontalSymbolCustomValue {
     /// variable that names nothing, or a parametric column the part does not
     /// have, stays as written.
     static func interpolate(_ text: String, details: HorizontalComponentDetails) -> String {
-        let hasPart = details.partID != nil
+        let hasPart = hasPart(details)
         return interpolateText(text) { variable in
             let key = variable.lowercased()
             switch key {
@@ -137,6 +137,12 @@ enum HorizontalSymbolCustomValue {
                 return details.parametricFields.first { $0.key == column }?.value
             }
         }
+    }
+
+    /// Horizon's `component->part`: a part named and read. One whose file is
+    /// missing gives nothing, so it counts as none.
+    static func hasPart(_ details: HorizontalComponentDetails) -> Bool {
+        details.partID != nil && !details.partMissing
     }
 
     /// A part's parametric values as `${p:…}` shows them. With the part's

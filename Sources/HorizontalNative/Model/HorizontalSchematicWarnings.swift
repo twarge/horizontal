@@ -86,25 +86,42 @@ enum HorizontalSchematicWarnings {
             guard parts.count >= 3, parts[1] == "pin" else { return nil }
             return .pin("\(parts[0])/\(parts[2])")
         }
-        func connected(_ pin: HorizontalSegment, _ line: HorizontalSegment) -> Bool {
-            guard let endpoint = pinEndpoint(pin) else { return false }
+        /// Whether `line` ends on the pin at `endpoint`, whose point is `pointKey`.
+        func connected(_ endpoint: HorizontalSchematicEndpoint, _ pointKey: String, _ line: HorizontalSegment) -> Bool {
             if line.schematicFrom == endpoint || line.schematicTo == endpoint { return true }
             // Newly drawn wires have coordinates until the next save/reload.
-            return (line.schematicFrom == nil && key(line.from) == key(pin.from))
-                || (line.schematicTo == nil && key(line.to) == key(pin.from))
+            return (line.schematicFrom == nil && key(line.from) == pointKey)
+                || (line.schematicTo == nil && key(line.to) == pointKey)
+        }
+        // Every wire end at once, so whether any wire ends on a pin or port is
+        // a lookup rather than a pass over the wires for each one.
+        var storedEnds = Set<HorizontalSchematicEndpoint>()
+        var bareEndKeys = Set<String>()
+        for line in sheet.netLines {
+            if let from = line.schematicFrom { storedEnds.insert(from) } else { bareEndKeys.insert(key(line.from)) }
+            if let to = line.schematicTo { storedEnds.insert(to) } else { bareEndKeys.insert(key(line.to)) }
+        }
+        func anyWireEnds(on endpoint: HorizontalSchematicEndpoint, at pointKey: String) -> Bool {
+            storedEnds.contains(endpoint) || bareEndKeys.contains(pointKey)
         }
         let junctionKeys = Set(sheet.junctions.values.map(key))
+        // The junction at a point, the first `junctions` gives where several
+        // share one, as a scan of it would find.
+        var junctionAt = [String: String]()
+        for (id, point) in sheet.junctions where junctionAt[key(point)] == nil {
+            junctionAt[key(point)] = id
+        }
         var pinKeys = Set<String>()
         for pin in sheet.symbolPins {
-            guard pinEndpoint(pin) != nil else { continue }
-            if !pinKeys.insert(key(pin.from)).inserted { warn(pin.from, "Pin on pin", component: component(of: pin), pin: name(of: pin)) }
-            if junctionKeys.contains(key(pin.from)) { warn(pin.from, "Pin on junction", component: component(of: pin), pin: name(of: pin)) }
-            let lines = sheet.netLines.filter { connected(pin, $0) }
-            if lines.isEmpty, let netID = pin.netID {
+            guard let endpoint = pinEndpoint(pin) else { continue }
+            let pointKey = key(pin.from)
+            if !pinKeys.insert(pointKey).inserted { warn(pin.from, "Pin on pin", component: component(of: pin), pin: name(of: pin)) }
+            if junctionKeys.contains(pointKey) { warn(pin.from, "Pin on junction", component: component(of: pin), pin: name(of: pin)) }
+            if !anyWireEnds(on: endpoint, at: pointKey), let netID = pin.netID {
                 warn(pin.from, "Pin connected to net: \(sheet.netDetails[netID]?.name ?? netID)", title: "Pin connected to net",
                      net: netID, component: component(of: pin), pin: name(of: pin))
             }
-            if sheet.netLines.contains(where: { contains(pin.from, $0) && !connected(pin, $0) }) {
+            if sheet.netLines.contains(where: { contains(pin.from, $0) && !connected(endpoint, pointKey, $0) }) {
                 warn(pin.from, "Pin on line", component: component(of: pin), pin: name(of: pin))
             }
         }
@@ -112,11 +129,9 @@ enum HorizontalSchematicWarnings {
             let parts = port.id.lowercased().split(separator: "/")
             guard parts.count >= 3, parts[1] == "block-port", let netID = port.netID else { continue }
             let endpoint = HorizontalSchematicEndpoint.port("\(parts[0])/\(parts[2])")
-            if !sheet.netLines.contains(where: {
-                $0.schematicFrom == endpoint || $0.schematicTo == endpoint
-                    || ($0.schematicFrom == nil && key($0.from) == key(port.from))
-                    || ($0.schematicTo == nil && key($0.to) == key(port.from))
-            }) { warn(port.from, "Port connected to net: \(sheet.netDetails[netID]?.name ?? netID)", title: "Port connected to net", net: netID) }
+            if !anyWireEnds(on: endpoint, at: key(port.from)) {
+                warn(port.from, "Port connected to net: \(sheet.netDetails[netID]?.name ?? netID)", title: "Port connected to net", net: netID)
+            }
         }
         for line in sheet.netLines where key(line.from) == key(line.to) { warn(line.from, "Zero length line") }
 
@@ -137,8 +152,8 @@ enum HorizontalSchematicWarnings {
         for tie in sheet.netTies {
             let center = (tie.from + tie.to) * 0.5
             if key(tie.from) == key(tie.to) { warn(center, "Zero length net tie") }
-            let fromNet = sheet.junctions.first { key($0.value) == key(tie.from) }.flatMap { sheet.junctionNetIDs[$0.key] }
-            let toNet = sheet.junctions.first { key($0.value) == key(tie.to) }.flatMap { sheet.junctionNetIDs[$0.key] }
+            let fromNet = junctionAt[key(tie.from)].flatMap { sheet.junctionNetIDs[$0] }
+            let toNet = junctionAt[key(tie.to)].flatMap { sheet.junctionNetIDs[$0] }
             if !tie.netIDs.isEmpty && (fromNet == toNet || Set([fromNet, toNet].compactMap { $0 }) != tie.netIDs) {
                 warn(center, "Net tie connected to incorrect net")
             }
@@ -159,7 +174,7 @@ enum HorizontalSchematicWarnings {
         var positions: [HorizontalSchematicEndpoint: HorizontalPoint] = [:]
         var netIDs: [HorizontalSchematicEndpoint: String] = [:]
         func endpoint(_ stored: HorizontalSchematicEndpoint?, at point: HorizontalPoint) -> HorizontalSchematicEndpoint {
-            stored ?? sheet.junctions.first { key($0.value) == key(point) }.map { .junction($0.key) }
+            stored ?? junctionAt[key(point)].map { .junction($0) }
                 ?? .junction("coordinate:\(key(point))")
         }
         for (id, point) in sheet.junctions {
@@ -184,7 +199,11 @@ enum HorizontalSchematicWarnings {
         }
         var segments: [Segment] = []
         var visited = Set<HorizontalSchematicEndpoint>()
-        for root in positions.keys.sorted(by: { String(describing: $0) < String(describing: $1) }) {
+        let labelNodes = Set(sheet.netLabels.map { endpoint($0.junctionID.map { .junction($0) }, at: $0.position) })
+        let powerNodes = Set(sheet.powerSymbols.map { HorizontalSchematicEndpoint.junction($0.junctionID) })
+        // Each node's description once, rather than twice per comparison.
+        let roots = positions.keys.map { (String(describing: $0), $0) }.sorted { $0.0 < $1.0 }.map(\.1)
+        for root in roots {
             guard !visited.contains(root) else { continue }
             var pending = [root]
             var nodes = Set<HorizontalSchematicEndpoint>()
@@ -194,11 +213,11 @@ enum HorizontalSchematicWarnings {
             }
             visited.formUnion(nodes)
             guard let netID = nodes.compactMap({ netIDs[$0] }).sorted().first else { continue }
-            let labels = sheet.netLabels.filter { nodes.contains(endpoint($0.junctionID.map { .junction($0) }, at: $0.position)) }
-            let power = sheet.powerSymbols.contains { nodes.contains(.junction($0.junctionID)) }
+            let labelled = !nodes.isDisjoint(with: labelNodes)
+            let power = !nodes.isDisjoint(with: powerNodes)
             let ripper = nodes.contains { if case .busRipper = $0 { return true }; return false }
             segments.append(.init(position: positions[root] ?? .zero, netID: netID,
-                                  hasLabel: !labels.isEmpty || power || ripper, hasPower: power))
+                                  hasLabel: labelled || power || ripper, hasPower: power))
         }
         let duplicateNames = Set(Dictionary(grouping: sheet.netDetails.values.filter { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }, by: {
             $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()

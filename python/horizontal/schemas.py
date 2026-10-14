@@ -432,7 +432,7 @@ class SetCustomValue(Input):
 
     @model_validator(mode="after")
     def target(self):
-        if (self.component is None) == (self.symbol_instance is None):
+        if (self.component is None) == (self.symbol_instance is None) or (self.symbol_instance is not None and self.gate is not None):
             raise ValueError("Name a component (and optionally a gate) or one symbol_instance.")
         return self
 

@@ -305,9 +305,29 @@ final class HorizontalPoolPackageToolsTests: XCTestCase {
         let table = try XCTUnwrap(tables.first)
         XCTAssertEqual(table.columns.map(\.name), ["value", "tolerance", "package"])
         XCTAssertEqual(table.columns[2].items, ["0402", "0603"])
-        XCTAssertEqual(table.columns[0].format("4700"), "4.7 kΩ")
-        XCTAssertEqual(table.columns[0].format("0.001"), "1 mΩ")
+        // Horizon's PoolParametric::Column::format: SI columns fixed to their
+        // digits, trailing zeros kept; others to that many significant digits.
+        XCTAssertEqual(table.columns[0].format("4700"), "4.70 kΩ")
+        XCTAssertEqual(table.columns[0].format("0.001"), "1.00 mΩ")
+        XCTAssertEqual(table.columns[0].format("-10"), "-10.00 Ω")
+        XCTAssertEqual(table.columns[0].format(""), "N/A")
+        XCTAssertEqual(table.columns[0].format("x"), "0.00 Ω", "not a number reads as 0, as istringstream leaves it")
         XCTAssertEqual(table.columns[1].format("1"), "1 %")
+        XCTAssertEqual(table.columns[1].format("0.12345"), "0.123 %")
+        XCTAssertEqual(table.columns[1].format("123456"), "1.23e+05 %")
+        XCTAssertEqual(table.columns[2].format("0603"), "0603")
+        func quantity(_ value: Double, digits: Int = 3, si: Bool = true, noMilli: Bool = false, unit: String = "A") -> String {
+            HorizontalPoolParametricTables.formatQuantity(value, unit: unit, digits: digits, usesSI: si, noMilli: noMilli, decimalSeparator: ".")
+        }
+        XCTAssertEqual(quantity(0.05, noMilli: true), "50000.000 µA", "no_milli: below 100 milli reads as micro")
+        XCTAssertEqual(quantity(0.25, noMilli: true), "0.250 A", "and from 100 milli up as the plain unit")
+        XCTAssertEqual(quantity(0.25), "250.000 mA")
+        XCTAssertEqual(quantity(3, unit: ""), "3.000 ", "a space before the empty prefix and unit")
+        XCTAssertEqual(quantity(2.5e-7, digits: 2), "250.00 nA")
+        XCTAssertEqual(quantity(1e-18), "0.000 A", "too small to scale")
+        XCTAssertEqual(quantity(4.7e3, digits: -1), "4.700000 kA", "no digits: iostream's default six")
+        XCTAssertEqual(HorizontalPoolParametricTables.formatQuantity(1.5, unit: "V", digits: 1, usesSI: true, noMilli: false,
+                                                                    decimalSeparator: ","), "1,5 V", "the user's decimal separator")
 
         XCTAssertEqual(HorizontalPoolParametricTables.parseQuantity("4.7k"), 4_700)
         XCTAssertEqual(HorizontalPoolParametricTables.parseQuantity("4.7 kΩ"), 4_700)

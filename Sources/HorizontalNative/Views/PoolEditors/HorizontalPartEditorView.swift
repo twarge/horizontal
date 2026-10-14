@@ -661,7 +661,9 @@ struct HorizontalPartEditorView: View {
             .disabled(isReadOnly)
         case .quantity:
             HStack(spacing: 4) {
-                HorizontalCommittedTextField(text: column.format(raw), isReadOnly: isReadOnly) { value in
+                // Horizon's formatting, except that an empty field stays empty
+                // to type into rather than reading "N/A".
+                HorizontalCommittedTextField(text: raw.isEmpty ? "" : column.format(raw), isReadOnly: isReadOnly) { value in
                     update("Change \(column.displayName)") { edited in
                         let trimmed = value.trimmingCharacters(in: .whitespaces)
                         if trimmed.isEmpty {

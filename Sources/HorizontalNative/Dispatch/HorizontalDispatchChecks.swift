@@ -177,7 +177,9 @@ enum HorizontalDispatchChecks {
             let sheets = entry.schematic.sheets
             let block = entry.block.isTop ? nil : entry.block.displayName
             for sheet in sheets {
-                for finding in HorizontalSchematicWarnings.findings(sheet, allSheets: sheets) {
+                // A duplicate refdes is already an annotation error, once
+                // per refdes; the canvas marks each symbol of it as well.
+                for finding in HorizontalSchematicWarnings.findings(sheet, allSheets: sheets) where finding.title != "Duplicate refdes" {
                     let net = finding.netID.flatMap { sheet.netDetails[$0.lowercased()]?.name }.flatMap { $0.isEmpty ? nil : $0 }
                     let refdes = finding.componentID.flatMap { sheet.componentInfo[$0.lowercased()]?.refdes }.flatMap { $0.isEmpty ? nil : $0 }
                     let position = String(format: "(%.2f, %.2f) mm", finding.position.x / 1_000_000, finding.position.y / 1_000_000)
