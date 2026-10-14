@@ -1169,9 +1169,14 @@ struct InteractiveCanvasView: View {
         (placesUnplacedObjectsOnTrailingEdge ? insets.trailing : insets.leading) + 8
     }
 
+    /// The canvas runs under the toolbar and, in the leading pane, under the
+    /// sidebar, the same two edges the fit keeps the drawing out of. The mouse
+    /// there belongs to them: the canvas's event monitor sees every click in its
+    /// bounds before the window does, and a right-click it takes is gone, so
+    /// without the leading edge a sheet row's context menu never opened.
     private func canvasMouseExclusionInsets(for proxy: GeometryProxy) -> EdgeInsets {
         let safeAreaInsets = fitSafeAreaInsets ?? proxy.safeAreaInsets
-        return EdgeInsets(top: safeAreaInsets.top, leading: 0, bottom: 0, trailing: 0)
+        return EdgeInsets(top: safeAreaInsets.top, leading: safeAreaInsets.leading, bottom: 0, trailing: 0)
     }
 
     private func updateLiveViewport(_ update: (inout CanvasViewport) -> Void) {
