@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 struct HorizontalSettingsView: View {
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
@@ -29,6 +32,7 @@ struct HorizontalSettingsView: View {
                 Text("Serves the documents you have open to the MCP server and the Python package, over a loopback socket on 127.0.0.1 carrying a per-launch token. Reads see unsaved edits, and an edit arrives as one undoable step. With this off they still read and write project files on disk, but cannot see or change what is open in the app.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                ClaudeCodeSetup()
             }
             #endif
 
@@ -388,6 +392,40 @@ struct HorizontalSettingsView: View {
         return HorizontalBoardLayers.name(for: layer)
     }
 }
+
+#if os(macOS)
+/// How to connect Claude Code. The sandboxed app can neither run `claude` nor
+/// write its settings, so it shows the commands to copy into a terminal.
+private struct ClaudeCodeSetup: View {
+    static let commands = """
+        claude plugin marketplace add twarge/horizontal
+        claude plugin install horizontal@twarge
+        """
+    static let guide = URL(string: "https://github.com/twarge/horizontal/blob/main/docs/claude-code.md")!
+
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Claude Code")
+            Text(Self.commands)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+            HStack {
+                Button(copied ? "Copied" : "Copy Commands") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(Self.commands, forType: .string)
+                    copied = true
+                }
+                Link("Setup Guide", destination: Self.guide)
+            }
+            Text("Run these in a terminal, then start a new Claude Code session. The plugin's MCP server reaches the documents open here while Enable MCP Server is on, and needs uv installed.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+#endif
 
 private struct ColorMatrixColumn: Identifiable {
     var kind: HorizontalCanvasKind

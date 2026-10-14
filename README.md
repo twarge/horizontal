@@ -29,6 +29,14 @@ the same calls reach unsaved state and edits land on the undo stack.
 `make native python` builds it; `docs/automation.md` has the method list, the
 edit vocabulary, and what remains.
 
+For Claude Code, install the plugin, which brings the MCP server and skills
+for reviews, edits and fabrication outputs ([docs/claude-code.md](docs/claude-code.md)):
+
+```sh
+claude plugin marketplace add twarge/horizontal
+claude plugin install horizontal@twarge
+```
+
 ## Licensing
 
 Horizontal is Apache 2.0 — see `LICENSE`.
