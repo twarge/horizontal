@@ -6145,7 +6145,15 @@ extension HorizontalBoard {
         draft.keepouts.append(contentsOf: geometry.keepouts)
         draft.packagePadPositions.merge(geometry.padPositions) { _, new in new }
         draft.unplacedObjects = unplacedBoardObjects(placeableObjects: draft.placeableObjects, placedPackages: draft.packages)
-        draft.regenerateAirwires()
+        // The rats' nest as the placement's commit will make it, after the
+        // editor's connectivity pass. Horizon writes no net on a board
+        // junction, so a board as loaded has none, and the airwire pass alone
+        // joined no routed copper through a bend: placing a package on Billo
+        // drew 327 airwires where the board had 31 (125). Only the airwires
+        // come from the pass; the draft keeps its own nets until the commit.
+        var resolved = HorizontalBoardConnectivity.recompute(draft)
+        resolved.regenerateAirwires()
+        draft.airwires = resolved.airwires
         return HorizontalBoardPackagePlacementDraft(board: draft, placementID: placementID)
     }
 
