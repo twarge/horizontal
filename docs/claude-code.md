@@ -67,8 +67,12 @@ When Horizontal has the project open, the server works on that document.
 
 - Reads see unsaved edits.
 - Each edit is one step on the app's undo stack.
-- The app autosaves documents in place, so committed edits can reach disk
-  within seconds. Claude's `save` makes sure, and verifies the files.
+- The document autosaves those edits in place, as it does yours. Claude calls
+  `save` before committing or exporting, so the files are complete and
+  verified at that moment.
+- The open document doesn't notice its files changing on disk. Close the
+  project before a git `checkout`, `pull`, `stash` or `reset` that touches it,
+  or its next autosave writes the old copy back.
 
 With the project closed, the server works on the files directly. That needs
 the native engine (`libHorizontalPy.dylib` or the `horizontal` command line

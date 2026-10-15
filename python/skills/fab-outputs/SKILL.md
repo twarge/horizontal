@@ -9,7 +9,7 @@ description: Generate and check fabrication and documentation outputs for a Hori
 
 1. Connect (the `connect` skill) and open the project live if the user has it open.
 2. Run `check` with `full: true`. Do not export over errors or unrouted connections unless the user says to; list what `check` found. It has no geometric design rule check, so ask whether Horizon EDA's DRC has been run when clearances matter.
-3. If the document has unsaved changes, `save` first and confirm `verified: true`. A live export of unsaved work is refused when the app cannot write to the target folder.
+3. Call `save` and confirm `verified: true`, so the files hold the document and no autosave is pending. A live export that falls back to the server's worker needs exactly that, and is refused with `PERMISSION_DENIED` otherwise.
 
 ## 2. Decide names and places before writing
 
