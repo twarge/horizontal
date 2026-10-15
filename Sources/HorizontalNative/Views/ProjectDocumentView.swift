@@ -296,6 +296,14 @@ private enum ProjectLoadState {
     case needsFolderAccess(String)
 }
 
+/// The files changed on disk while the document had edits it hadn't written.
+private struct HorizontalDiskConflict {
+    /// What the files hold, to accept if the document keeps its own version.
+    var fingerprint: HorizontalProjectFingerprint
+    /// Lets the document's held saves go ahead.
+    var releaseSaves: () -> Void
+}
+
 private enum BoardSyncError: LocalizedError {
     case missingBoard
 
@@ -645,6 +653,14 @@ struct ProjectWorkspaceView: View {
     @State private var schematicSyncRevision = 0
     /// The live channel's handle for this document (docs/automation.md).
     @State private var liveHandle: Int?
+    /// Watches the project's files for changes something other than this
+    /// document makes, such as a git checkout (item 121).
+    @State private var fileWatcher: HorizontalProjectFileWatcher?
+    /// The files changed on disk while the document had edits it hadn't
+    /// written yet: the window asks which to keep, and saves wait for the answer.
+    @State private var diskConflict: HorizontalDiskConflict?
+    /// Why the files that changed on disk couldn't be loaded.
+    @State private var diskReloadError: String?
     @StateObject private var voiceControl = HorizontalVoiceControl()
     @StateObject private var liveUndoTarget = HorizontalUndoTarget<HorizontalLiveSnapshot>()
     /// The board's netlist reload from the schematic, waiting for edits to
@@ -844,7 +860,7 @@ struct ProjectWorkspaceView: View {
             ))
             .background(WindowSizeObserver(savedSize: windowSize, onSizeChange: updateWindowSize))
             .onAppear(perform: appear)
-            .onDisappear(perform: unregisterLiveDocument)
+            .onDisappear(perform: disappear)
     }
 
     /// What the panes and the window show.
@@ -917,6 +933,27 @@ struct ProjectWorkspaceView: View {
             } message: {
                 Text(projectEditError ?? "")
             }
+            .alert("“\(project.displayTitle)” Changed on Disk", isPresented: diskConflictPresented) {
+                Button("Reload from Disk", role: .destructive) { resolveDiskConflict(reload: true) }
+                Button("Keep My Version", role: .cancel) { resolveDiskConflict(reload: false) }
+            } message: {
+                Text("Another program, such as git, changed the project's files while this window had edits it hadn't saved yet. "
+                    + "Reloading takes the files as they are now and discards those edits. Keeping your version saves it over the files' changes.")
+            }
+            .alert("Couldn't Reload “\(project.displayTitle)”", isPresented: diskReloadErrorPresented) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Its files changed on disk, but they couldn't be loaded: \(diskReloadError ?? ""). "
+                    + "The window still shows the project as it was. Close it and open the project again once the files are complete.")
+            }
+    }
+
+    private var diskConflictPresented: Binding<Bool> {
+        Binding(get: { diskConflict != nil }, set: { _ in })
+    }
+
+    private var diskReloadErrorPresented: Binding<Bool> {
+        Binding(get: { diskReloadError != nil }, set: { if !$0 { diskReloadError = nil } })
     }
 
     private var workspaceContent: some View {
@@ -1215,9 +1252,103 @@ struct ProjectWorkspaceView: View {
     private func appear() {
         restoreFileViewStateIfNeeded()
         registerLiveDocument()
+        startFileWatcher()
         gitignoreNeedsFixing = !isReadOnly && document.archive.gitignoreNeedsFixing
         if navigatorSelection == nil {
             navigatorSelection = defaultNavigatorSelection
+        }
+    }
+
+    private func disappear() {
+        unregisterLiveDocument()
+        fileWatcher?.stop()
+        fileWatcher = nil
+        diskConflict?.releaseSaves()
+        diskConflict = nil
+    }
+
+    // MARK: - Changes on disk
+
+    /// The document autosaves in place, but nothing told it when something
+    /// else changed its files: it went on showing the old design, and its
+    /// next autosave wrote that back over a checkout (item 121). Now a change
+    /// from outside reloads a document with nothing unsaved, as Revert would,
+    /// and asks what to keep when it has edits its files don't.
+    private func startFileWatcher() {
+        guard fileWatcher == nil, HorizontalDocumentSaving.document(for: project.url) != nil else {
+            // An untitled document lives in a temporary folder of its own
+            // until its first save gives it a URL, and a new workspace.
+            return
+        }
+        let watcher = HorizontalProjectFileWatcher(projectURL: project.url, handlers: .init(
+            document: { document },
+            holdsCompleteArchive: { documentHoldsCompleteArchive },
+            hasUnsavedChanges: { HorizontalDocumentSaving.isEdited(url: project.url) },
+            changedOnDisk: { disk, fingerprint, hasUnsavedChanges in
+                if hasUnsavedChanges || diskConflict != nil {
+                    presentDiskConflict(fingerprint)
+                } else {
+                    reloadFromDisk(disk, fingerprint: fingerprint)
+                }
+            }
+        ))
+        watcher.start()
+        fileWatcher = watcher
+    }
+
+    /// A writable document gathers every file the project references when it
+    /// opens; one opened read-only holds only its `.hprj` and can't write.
+    private var documentHoldsCompleteArchive: Bool {
+        guard !isReadOnly, case .directory = document.archive.root else { return false }
+        return true
+    }
+
+    private func presentDiskConflict(_ fingerprint: HorizontalProjectFingerprint) {
+        if diskConflict != nil {
+            diskConflict?.fingerprint = fingerprint
+            return
+        }
+        diskConflict = HorizontalDiskConflict(fingerprint: fingerprint,
+                                              releaseSaves: HorizontalDocumentSaving.holdSaves(url: project.url))
+    }
+
+    private func resolveDiskConflict(reload: Bool) {
+        guard let conflict = diskConflict else { return }
+        if reload {
+            do {
+                // What the files hold now, which may have moved on since the
+                // window asked.
+                let disk = try HorizontalProjectArchive.completeProject(from: project.url)
+                reloadFromDisk(disk, fingerprint: HorizontalProjectFingerprint(archive: disk))
+            } catch {
+                diskReloadError = error.localizedDescription
+            }
+        } else {
+            fileWatcher?.accept(conflict.fingerprint)
+        }
+        diskConflict = nil
+        conflict.releaseSaves()
+    }
+
+    /// Takes the project as the files hold it, as Revert does: the canvases,
+    /// the live channel and the document all follow, and undo starts over,
+    /// since what it would take back is not what the files hold.
+    private func reloadFromDisk(_ disk: HorizontalProjectArchive, fingerprint: HorizontalProjectFingerprint) {
+        do {
+            var reloaded = try HorizontalProject.loadSnapshot(of: disk)
+            if project.poolModelFiles != nil
+                || HorizontalProject.poolModelsChanged(from: document.archive, to: disk, poolDirectory: project.poolDirectory) {
+                try reloaded.retainPoolModels(in: disk, reusing: project.poolModelFiles)
+            }
+            rebaseProjectURLs(&reloaded, onto: project)
+            installLiveSnapshot(HorizontalLiveSnapshot(archive: disk, project: reloaded), installsArchive: !isReadOnly)
+            HorizontalDocumentSaving.didReloadFromDisk(url: project.url)
+            documentUndoManager?.removeAllActions()
+            fallbackUndoManager.removeAllActions()
+            fileWatcher?.accept(fingerprint)
+            gitignoreNeedsFixing = !isReadOnly && disk.gitignoreNeedsFixing
+        } catch {
+            diskReloadError = error.localizedDescription
         }
     }
 
@@ -1477,6 +1608,23 @@ struct ProjectWorkspaceView: View {
         guard !isReadOnly else {
             throw HorizontalDispatchError.failed("Read-only operation is enabled in Horizontal.")
         }
+        guard diskConflict == nil else {
+            throw HorizontalDispatchError(
+                code: .staleRevision,
+                message: "The project's files changed on disk while it had edits it hadn't saved, and its window is asking "
+                    + "which to keep. Answer there, then read the project again."
+            )
+        }
+        // A change the watcher hasn't looked at yet, such as a checkout a
+        // moment ago: look now, rather than edit a document the files no
+        // longer match and autosave it over them.
+        if let fileWatcher, fileWatcher.checkNow() {
+            throw HorizontalDispatchError(
+                code: .staleRevision,
+                message: "The project's files changed on disk since this edit was prepared. Horizontal has reloaded them, "
+                    + "or is asking in its window whether to. Read the project again before editing."
+            )
+        }
         var previousProject = project
         // A commit hands over the project it loaded from this archive to
         // validate the edit; loading it again would double the wait.
@@ -1512,13 +1660,18 @@ struct ProjectWorkspaceView: View {
         #endif
     }
 
-    private func installLiveSnapshot(_ snapshot: HorizontalLiveSnapshot) {
+    /// `installsArchive` is false only for a read-only document reloading from
+    /// disk: it holds just its `.hprj`, and giving it the rest would mark it
+    /// edited with nothing it is allowed to save.
+    private func installLiveSnapshot(_ snapshot: HorizontalLiveSnapshot, installsArchive: Bool = true) {
         if let board = snapshot.project.board, let previous = project.board,
            HorizontalBoardPlaneInputs.signature(of: board) != HorizontalBoardPlaneInputs.signature(of: previous) {
             planePourCache = HorizontalPlanePourCache()
             planesNeedUpdate = !board.planes.isEmpty
         }
-        document.archive = snapshot.archive
+        if installsArchive {
+            document.archive = snapshot.archive
+        }
         project = snapshot.project
         boardEditRevision += 1
         boardSyncRevision += 1
