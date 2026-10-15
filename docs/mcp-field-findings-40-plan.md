@@ -197,6 +197,36 @@ billo's `docs/horizontal-mcp-notes.md`.
        - **Speed:** the rows the list starts from are now kept between scans
          (`visibleRows`) rather than worked out on every pass of the body, so
          each step of the arrows doesn't redo them.
+     - **Follow-up, Return:** with the canvas no longer taking a list's keys,
+       Return in the Pools list placed the Parts pane's part.
+       - **Why:** the Parts pane's Place had a window-wide Return shortcut
+         (`HorizontalPartBrowserView.swift:192` at `52ecb41`). A key
+         equivalent is tried before the focused list gets the key, so the
+         Pools list's own Return never ran.
+       - **Now:** the shortcut applies only while the keyboard is in the Parts
+         pane, its table or its search field (`@FocusState`,
+         `.keyboardShortcut(focus == nil ? nil : …)`). Return there still
+         places; double-click is unchanged, and so is the pool-link cells'
+         click handling.
+     - **Follow-up, a window's first keyboard:** does a project window open
+       with the navigator holding the keyboard, so 128's rule would keep the
+       canvases' keys from them until a click? It doesn't.
+       - **How it was established:** the real `ProjectWorkspaceView` is
+         mounted in a window and taken through what the window does when it
+         first becomes key. Its initial first responder, which SwiftUI sets to
+         its hosting view, takes the keyboard; then the window becomes key
+         and SwiftUI hears so.
+       - **What happens:** the hosting view keeps the keyboard; SwiftUI does
+         not pass it to the navigator's outline (`SwiftUIOutlineListView`).
+       - **The key view loop:** without Keyboard Navigation (System
+         Settings ▸ Keyboard; off on this Mac) the outline can't become a key
+         view, so the loop holds only the two canvases' monitors, and the
+         first key view is a canvas.
+       - **So** the outline has the keyboard only after a click on it, or a
+         Tab to it with Keyboard Navigation on. Either is the user putting
+         it there, and nothing was changed.
+       - **The limit:** a test's window can't become key, so these are the
+         steps AppKit and SwiftUI take, run by hand, not a real activation.
 
 ## Tests
 
@@ -227,7 +257,7 @@ billo's `docs/horizontal-mcp-notes.md`.
   - **Combining** with the search and Replace.
   - **Sorting:** by number with no value last, and in natural order.
   - **Stored quantities:** a stored quantity must be wholly a number.
-- **`HorizontalPoolBrowserPaneTests`** (new, macOS, five tests): the pane
+- **`HorizontalPoolBrowserPaneTests`** (new, macOS, six tests): the pane
   mounted on a small pool beside a canvas monitor holding the keyboard focus.
   - **126:** with R1 selected the list has the three resistors, not the
     capacitor, and R1's part is selected. What Place and Replace say when
@@ -240,13 +270,28 @@ billo's `docs/horizontal-mcp-notes.md`.
       the canvas's monitor passing them on.
     - **The search:** Down in it moves the keyboard into the list on its
       first row.
-- **`HorizontalKeyboardFocusTests`** (128, three new and one extended):
+    - **Return, follow-up:** `testReturnInThePoolsListLeavesThePartsPanesPlaceAlone`
+      mounts the Parts pane and the Pools pane side by side, each with a row
+      selected, and presses Return as the window does: the key equivalent
+      first, then the first responder.
+      - **With the Pools list focused,** the Parts pane doesn't place and
+        the Pools pane places its own part.
+      - **With the Parts pane's table, then its search field, focused,**
+        Return places the Parts pane's part.
+      - **With the old window-wide shortcut,** the Pools list's Return placed
+        the Parts pane's part and not its own.
+- **`HorizontalKeyboardFocusTests`** (128, four new and one extended):
   - **An `NSTableView` with the keyboard** takes Down, R and Delete from a
     focused canvas, while an interaction still takes Escape.
   - **A SwiftUI `Table`:** the same.
   - **Clicks:** one on the canvas takes the keyboard back from a list, and an
     interaction takes it.
   - **The workspace** reports a list's focus.
+  - **A window's first keyboard, follow-up:**
+    `testAProjectWindowOpensWithNoListHoldingTheKeyboard` mounts the real
+    workspace and takes it through becoming key. No list holds the keyboard,
+    and without Keyboard Navigation the outline isn't a key view and the
+    first key view is a canvas.
 - **Without the fixes:**
   - **128:** with the list checks taken out of the canvas's and the
     workspace's monitors, all four keyboard tests fail. The canvas took Down,
@@ -259,9 +304,9 @@ billo's `docs/horizontal-mcp-notes.md`.
     test and the pane's selection test fail (four rows, not three).
   - **127:** new behaviour throughout; there was nothing to take out.
 - **Results:**
-  - **Swift:** 932 tests (6 skipped, 0 failures), the 913 from before plus
-    the 19 new ones. The first commit alone builds and passes its keyboard
-    tests.
+  - **Swift:** 934 tests (6 skipped, 0 failures), the 913 from before plus
+    the 21 new ones (19, then the two follow-ups). The first commit alone
+    builds and passes its keyboard tests.
   - **App builds:** Xcode builds for macOS (`/tmp/r40-mac-dd`) and the iOS
     Simulator (`/tmp/r40-ios-dd`) succeed.
 - **Left for the app:**
@@ -297,15 +342,12 @@ billo's `docs/horizontal-mcp-notes.md`.
     - **The canvas:** click it, and R, M and the arrows work there again.
     - **Elsewhere:** the same in the navigator's outline and the Parts pane.
     - **Tab** from the search into the list: unverified.
-    - **Return with the Parts pane open too:** the Parts pane's Place has a
-      window-wide Return shortcut (`HorizontalPartBrowserView.swift:192`),
-      and a key equivalent is tried before the focused list's own Return. So
-      Return in the Pools list may place the Parts pane's part instead. Before,
-      the canvas's monitor took Return first. If it does, the Parts pane wants
-      a `primaryAction` on its table rather than the shortcut.
-    - **The navigator at launch:** if a window opens with the navigator
-      holding the keyboard, the canvas's keys wait for a click on it. The
-      badge shows which has them.
+    - **Return with the Parts pane open too:** Return in the Pools list
+      should place the Pools part, and Return in the Parts pane's table or
+      search field its own.
+    - **The navigator at launch:** the test says a window opens with no
+      list holding the keyboard. Confirm it in the app: open Billo and press
+      R or M on a selected part without clicking first.
   - **iPad:**
     - **Place, Replace and the parametric section** are the same view, and
       Replace lands through the iPad's own undoable `applyArchiveEdit`.
