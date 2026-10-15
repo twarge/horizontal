@@ -1,6 +1,7 @@
-# MCP field findings 35: R turns a moving part without rebuilding the scene
+# MCP field findings 36: R turns a moving part without rebuilding the scene
 
-Planning baseline: `6d468d8`. Written October 14, 2026. The item is the
+Merged as round 35 (`3db41ff`) and renumbered 36, since item 121's file
+watcher on `watch-project-files` is round 35. Planning baseline: `6d468d8`. Written October 14, 2026. The item is the
 user's, from moving parts on Billo's board in the app, and is numbered 122
 for billo's `docs/horizontal-mcp-notes.md`.
 
@@ -132,7 +133,8 @@ for billo's `docs/horizontal-mcp-notes.md`.
   - **Swift:** 904 tests (6 skipped, 0 failures), the 900 from before plus
     the four new.
   - **App builds:** Xcode builds for macOS (`/tmp/r35-mac-dd`) and the iOS
-    Simulator (`/tmp/r35-ios-dd`).
+    Simulator (`/tmp/r35-ios-dd`). Item 121's round 35 had built into the
+    same macOS folder first, so this build replaced its app.
   - **Not felt:** the tests show that R uploads nothing and that the preview
     is what the commit draws; whether the turn now feels like a move step is
     for the app to say.
