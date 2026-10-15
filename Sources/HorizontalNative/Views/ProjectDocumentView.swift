@@ -674,6 +674,11 @@ struct ProjectWorkspaceView: View {
     /// "Show in Project Pool Manager": the item the Library pane should select.
     @State private var libraryRevealRequest: HorizontalPoolRevealRequest?
     @State private var libraryPlacementError: String?
+    /// The selected components as the Pools pane's Replace sees them, read
+    /// from the archive when the selection or the schematic changes, and only
+    /// while the pane is open.
+    @State private var libraryPartReplacement: HorizontalPartReplacement?
+    @State private var libraryReplacementError: String?
     /// Why a bus, ripper or net tie could not be drawn — the editor's own
     /// refusal, which is written for whoever has to fix the request.
     @State private var projectEditError: String?
@@ -871,10 +876,18 @@ struct ProjectWorkspaceView: View {
         workspaceWithWindowObservers
             .onChange(of: navigatorSelection) { _, selection in
                 syncPanesForSelection(selection)
+                refreshLibraryPartReplacement()
             }
             .onChange(of: visiblePanes) { _, panes in
                 clearSelectionDetailsForHiddenPanes(panes)
                 saveFileViewState()
+                refreshLibraryPartReplacement()
+            }
+            .onChange(of: selectedComponentIDs) { _, _ in
+                refreshLibraryPartReplacement()
+            }
+            .onChange(of: schematicEditRevision) { _, _ in
+                refreshLibraryPartReplacement()
             }
             .onChange(of: columnVisibility) { _, _ in
                 saveFileViewState()
@@ -930,6 +943,14 @@ struct ProjectWorkspaceView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(libraryPlacementError ?? "")
+            }
+            .alert("Could Not Replace Part", isPresented: Binding(
+                get: { libraryReplacementError != nil },
+                set: { if !$0 { libraryReplacementError = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(libraryReplacementError ?? "")
             }
             .alert("Could Not Draw That", isPresented: projectEditErrorPresented) {
                 Button("OK", role: .cancel) {}
@@ -1856,7 +1877,7 @@ struct ProjectWorkspaceView: View {
                     root: .project(poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }),
                     safeAreaInsets: fitSafeAreaInsets,
                     revealRequest: libraryRevealRequest,
-                    onPlacePart: selectedSchematic == nil ? nil : { item in placePartFromLibrary(item) }
+                    partActions: libraryPartActions
                 )
             }
         case .schematic:
@@ -3786,10 +3807,42 @@ struct ProjectWorkspaceView: View {
         )
     }
 
-    /// "Place in Schematic" from the Library pane: the part and everything it
-    /// needs are cached into the project pool first (Horizon's project pool
-    /// cache), the open archive learns the new files, then the placement
-    /// starts exactly as from the Parts pane.
+    /// The Pools pane's Place and Replace.
+    private var libraryPartActions: HorizontalPoolPartActions {
+        HorizontalPoolPartActions(
+            place: isReadOnly || selectedSchematic == nil ? nil : { item in placePartFromLibrary(item) },
+            placeUnavailableReason: isReadOnly
+                ? "Read-only operation is enabled in Horizontal."
+                : selectedSchematic == nil ? "This project has no schematic to place parts in." : nil,
+            replacement: libraryPartReplacement,
+            replace: isReadOnly ? nil : { item, packageName, replacement in
+                replacePartsFromLibrary(item, packageName: packageName, replacement)
+            }
+        )
+    }
+
+    /// The block the schematic pane shows, for a selection made in a
+    /// sub-block's sheet.
+    private var selectedSchematicBlock: HorizontalProjectBlock? {
+        guard let url = selectedSchematic?.url.standardizedFileURL else {
+            return nil
+        }
+        return project.schematics.first { $0.schematic.url.standardizedFileURL == url }?.block
+    }
+
+    private func refreshLibraryPartReplacement() {
+        let replacement = visiblePanes.contains(.library)
+            ? HorizontalPartReplacement.current(componentIDs: selectedComponentIDs, archive: document.archive, project: project,
+                                                preferredBlock: selectedSchematicBlock)
+            : nil
+        if replacement != libraryPartReplacement {
+            libraryPartReplacement = replacement
+        }
+    }
+
+    /// "Place in Schematic" from the Library pane: the part is cached into
+    /// the project pool, then the placement starts exactly as from the Parts
+    /// pane.
     private func placePartFromLibrary(_ item: HorizontalPoolLibraryItem) {
         guard !isReadOnly else {
             return
@@ -3798,37 +3851,71 @@ struct ProjectWorkspaceView: View {
             libraryPlacementError = "This project has no schematic to place “\(item.name)” in."
             return
         }
-        let poolURL = project.baseURL.appendingPathComponent(project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName)
         do {
-            // Documents made before new projects carried a pool have none:
-            // make Horizon's project pool now, so the cache has a home.
-            try ensureProjectPool(at: poolURL)
-            let imported = try HorizontalPoolCacheImporter.cachePart(item, into: poolURL)
-            if case .directory = document.archive.root {
-                for url in imported.writtenFiles {
-                    if let relativePath = archiveRelativePath(for: url) {
-                        try document.archive.replaceRegularFileData(relativePath: relativePath, with: Data(contentsOf: url))
-                    }
+            beginPartPlacement(try cacheLibraryPart(item))
+        } catch {
+            libraryPlacementError = HorizontalCanvasProjectEdit.message(for: error)
+        }
+    }
+
+    /// Replace from the Pools pane, Horizon's Assign Part: the part is cached
+    /// into the project pool as Place caches it, then every selected
+    /// component is given it with `set_part`, as one undoable edit. The
+    /// entity stays, so their connections do, and the schematic and board
+    /// reload showing the part's MPN, value and package. A package change
+    /// under a routed component is refused before anything is written.
+    private func replacePartsFromLibrary(_ item: HorizontalPoolLibraryItem, packageName: String, _ replacement: HorizontalPartReplacement) {
+        guard !isReadOnly else {
+            return
+        }
+        if let refusal = replacement.refusal(for: item, packageName: packageName, project: project, archive: document.archive) {
+            libraryReplacementError = refusal
+            return
+        }
+        do {
+            let part = try cacheLibraryPart(item)
+            let edited = try HorizontalCanvasProjectEdit.archive(
+                applying: replacement.operations(partID: part.id),
+                to: document.archive,
+                in: project,
+                block: replacement.blockID
+            )
+            try applyLiveArchive(edited.archive, actionName: replacement.targets.count == 1 ? "Replace Part" : "Replace Parts")
+        } catch {
+            libraryReplacementError = HorizontalCanvasProjectEdit.message(for: error)
+        }
+    }
+
+    /// A Pools pane part and everything it needs cached into the project pool
+    /// (Horizon's project pool cache), the open archive told of the new
+    /// files, and the part as the project pool now has it.
+    private func cacheLibraryPart(_ item: HorizontalPoolLibraryItem) throws -> HorizontalPoolPart {
+        let poolURL = project.baseURL.appendingPathComponent(project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName)
+        // Documents made before new projects carried a pool have none: make
+        // Horizon's project pool now, so the cache has a home.
+        try ensureProjectPool(at: poolURL)
+        let imported = try HorizontalPoolCacheImporter.cachePart(item, into: poolURL)
+        if case .directory = document.archive.root {
+            for url in imported.writtenFiles {
+                if let relativePath = archiveRelativePath(for: url) {
+                    try document.archive.replaceRegularFileData(relativePath: relativePath, with: Data(contentsOf: url))
                 }
             }
-            if !imported.writtenFiles.isEmpty {
-                HorizontalPoolLibrary.invalidateCache()
-                HorizontalPoolPadstacks.invalidateCaches()
-            }
-            guard let part = HorizontalPoolPart.loadCached(id: item.uuid, from: poolURL) else {
-                libraryPlacementError = "“\(item.name)” could not be read from the project pool after caching."
-                return
-            }
-            if let index = project.poolParts.firstIndex(where: { $0.id == part.id }) {
-                project.poolParts[index] = part
-            } else {
-                project.poolParts.append(part)
-                project.poolParts.sort { $0.mpn.localizedStandardCompare($1.mpn) == .orderedAscending }
-            }
-            beginPartPlacement(part)
-        } catch {
-            libraryPlacementError = error.localizedDescription
         }
+        if !imported.writtenFiles.isEmpty {
+            HorizontalPoolLibrary.invalidateCache()
+            HorizontalPoolPadstacks.invalidateCaches()
+        }
+        guard let part = HorizontalPoolPart.loadCached(id: item.uuid, from: poolURL) else {
+            throw HorizontalDispatchError.failed("“\(item.name)” could not be read from the project pool after caching.")
+        }
+        if let index = project.poolParts.firstIndex(where: { $0.id == part.id }) {
+            project.poolParts[index] = part
+        } else {
+            project.poolParts.append(part)
+            project.poolParts.sort { $0.mpn.localizedStandardCompare($1.mpn) == .orderedAscending }
+        }
+        return part
     }
 
     /// Creates `pool/pool.json` (Horizon's project pool manifest) when the

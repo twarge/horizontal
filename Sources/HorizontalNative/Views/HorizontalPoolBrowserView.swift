@@ -55,20 +55,42 @@ extension EnvironmentValues {
     }
 }
 
+/// What a project window's Pools pane can do with a part, as Horizon's part
+/// browser has Place Part and Assign Part: place it on the schematic, or give
+/// it to the components selected in the workspace.
+struct HorizontalPoolPartActions {
+    /// Starts placing a part; nil when nothing can be placed, and then
+    /// `placeUnavailableReason` says why.
+    var place: ((HorizontalPoolLibraryItem) -> Void)?
+    var placeUnavailableReason: String?
+    /// The components selected in the workspace, nil when there are none.
+    var replacement: HorizontalPartReplacement?
+    /// Gives the selected components a part as one undoable edit. The string
+    /// is the part's package's name, for what Replace says when it can't
+    /// change a package.
+    var replace: ((HorizontalPoolLibraryItem, String, HorizontalPartReplacement) -> Void)?
+}
+
 /// The library browser: Horizon's pool manager for this app. Browses every
 /// pool a project can draw from — the project pool plus registered/discovered
 /// base pools — across the pool item kinds (units, symbols, entities,
 /// padstacks, packages, parts, frames, decals), with search, a preview of the
 /// selected item below the list, and a Pools menu to register additional
-/// pool directories (e.g. a horizon-pool checkout) or open one in its own
-/// window.
+/// pool directories (e.g. a horizon-pool checkout), rescan them or open one
+/// in its own window. Parts can also be searched parametrically, by a table's
+/// values, in a section left of the list.
+///
+/// In a project window, Place puts the selected part on the schematic. With
+/// components selected in the workspace the list shows only the parts that
+/// fit them, and Place becomes Replace, as Horizon's part browser shows only
+/// the entity's parts and makes Assign Part the suggested action.
 struct HorizontalPoolBrowserView: View {
     var root: HorizontalPoolBrowserRoot
     var safeAreaInsets: EdgeInsets = EdgeInsets()
     var revealRequest: HorizontalPoolRevealRequest? = nil
-    /// Set by a project window: "Place in Schematic" for parts (double-click,
-    /// the Place button, Return, the context menu). Nil in a pool window.
-    var onPlacePart: ((HorizontalPoolLibraryItem) -> Void)? = nil
+    /// Set by a project window: Place and Replace for parts (the toolbar's
+    /// button, double-click, Return, the context menu). Nil in a pool window.
+    var partActions: HorizontalPoolPartActions? = nil
 
     @ObservedObject private var registry = HorizontalPoolRegistry.shared
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
@@ -92,6 +114,23 @@ struct HorizontalPoolBrowserView: View {
     /// Pools > View: one browsed pool's own items (its `BrowsedPool.id`), or
     /// nil for all of them, one row per item.
     @State private var viewedPoolID: BrowsedPool.ID?
+    /// The selection whose banner was closed: Horizon's entity info bar,
+    /// whose close button goes back to showing every part and placing. A
+    /// different selection brings Replace back.
+    @State private var dismissedReplacementKey: String?
+    /// The parametric section: shown or behind its disclosure triangle, kept
+    /// across launches; the browsed pools' tables; the one chosen, nil for
+    /// every part; its filters and the list's sort.
+    @AppStorage("poolBrowser.showsParametricFilters") private var showsParametricFilters = false
+    @State private var parametricTables: [HorizontalParametricTable] = []
+    @State private var parametricTableName: String?
+    @State private var parametricFilters = HorizontalParametricFilters()
+    @State private var parametricSortOrder = [HorizontalParametricRowComparator(key: HorizontalParametricRowComparator.mpn)]
+    @FocusState private var isListFocused: Bool
+    /// `visibleItems` for the pool in view, kept from one scan or view
+    /// change to the next rather than worked out on every pass of the body:
+    /// with the arrows walking a list of thousands, each step is one.
+    @State private var visibleRows: [HorizontalPoolLibraryItem] = []
 
     /// A "choose an item" step of a creation flow (a symbol's unit, a part's
     /// entity and package).
@@ -244,13 +283,58 @@ struct HorizontalPoolBrowserView: View {
         return terms.allSatisfy(haystack.contains)
     }
 
-    private var filteredItems: [HorizontalPoolLibraryItem] {
-        let terms = searchText
+    /// What the list shows of `items`, before sorting: the kind, the
+    /// search, and, while components are being replaced, only the parts that
+    /// fit them.
+    static func listed(
+        _ items: [HorizontalPoolLibraryItem],
+        category: HorizontalPoolItemCategory,
+        search: String,
+        replacement: HorizontalPartReplacement?
+    ) -> [HorizontalPoolLibraryItem] {
+        let terms = search
             .split(whereSeparator: \.isWhitespace)
             .map { String($0).lowercased() }
-        return Self.visibleItems(items, viewing: viewedPool?.url)
-            .filter { $0.category == category && Self.matches(terms, $0) }
-            .sorted(using: sortOrder)
+        let replacement = category == .part ? replacement : nil
+        return items.filter { item in
+            item.category == category && Self.matches(terms, item) && (replacement?.isCompatible(item) ?? true)
+        }
+    }
+
+    private var listedItems: [HorizontalPoolLibraryItem] {
+        Self.listed(visibleRows, category: category, search: searchText, replacement: activeReplacement)
+    }
+
+    private func updateVisibleRows() {
+        visibleRows = Self.visibleItems(items, viewing: viewedPool?.url)
+    }
+
+    private var filteredItems: [HorizontalPoolLibraryItem] {
+        listedItems.sorted(using: sortOrder)
+    }
+
+    /// The selection Replace acts on: the window's, unless its banner was
+    /// closed for it.
+    private var activeReplacement: HorizontalPartReplacement? {
+        guard let replacement = partActions?.replacement, replacement.key != dismissedReplacementKey else {
+            return nil
+        }
+        return replacement
+    }
+
+    /// The parametric table the list shows, while parts are listed.
+    private var parametricTable: HorizontalParametricTable? {
+        guard category == .part, let parametricTableName else {
+            return nil
+        }
+        return parametricTables.first { $0.name == parametricTableName }
+    }
+
+    /// The table's parts among those listed, before its filters.
+    private func parametricRows(in table: HorizontalParametricTable) -> [HorizontalParametricRow] {
+        HorizontalPoolParametricSearch.rows(listedItems, table: table) { packageID in
+            packageID.isEmpty ? "" : index.name(.package, uuid: packageID) ?? ""
+        }
     }
 
     private var selectedItem: HorizontalPoolLibraryItem? {
@@ -271,6 +355,7 @@ struct HorizontalPoolBrowserView: View {
             browserToolbar
                 .padding(.top, safeAreaInsets.top)
             Divider()
+            replacementBanner
             if browsedPools.isEmpty {
                 noPoolsView
             } else if let pool = unreadableRootPool {
@@ -307,6 +392,22 @@ struct HorizontalPoolBrowserView: View {
         .onChange(of: revealRequest) { _, request in
             pendingReveal = request
             applyPendingReveal()
+        }
+        .onAppear(perform: adoptReplacement)
+        .onChange(of: viewedPoolID) { _, _ in
+            updateVisibleRows()
+        }
+        .onChange(of: partActions?.replacement?.key) { _, key in
+            // Closing the banner holds for that selection only: once the
+            // selection changes, coming back to it brings Replace back.
+            if key != dismissedReplacementKey {
+                dismissedReplacementKey = nil
+            }
+            adoptReplacement()
+        }
+        .onChange(of: parametricTableName) { _, _ in
+            parametricFilters.reset()
+            parametricSortOrder = [HorizontalParametricRowComparator(key: HorizontalParametricRowComparator.mpn)]
         }
         #if os(iOS)
         .fullScreenCover(item: $editingItem) { item in
@@ -366,7 +467,7 @@ struct HorizontalPoolBrowserView: View {
     private var splitContent: some View {
         #if os(macOS)
         VSplitView {
-            listContent
+            listArea
                 .frame(minHeight: 120)
             if showsPreview {
                 previewPane
@@ -376,7 +477,7 @@ struct HorizontalPoolBrowserView: View {
         #else
         GeometryReader { proxy in
             VStack(spacing: 0) {
-                listContent
+                listArea
                     .frame(height: showsPreview ? proxy.size.height * 0.55 : proxy.size.height)
                 if showsPreview {
                     Divider()
@@ -427,6 +528,12 @@ struct HorizontalPoolBrowserView: View {
             ? viewedPool.map { "\($0.name) contains no \(category.title.lowercased())." }
                 ?? "None of the browsed pools contain \(category.title.lowercased())."
             : "No \(category.title.lowercased()) match “\(searchText)”\(viewedPool.map { " in \($0.name)" } ?? "")."
+        if category == .part, let replacement = activeReplacement {
+            text = replacement.problem
+                ?? (searchText.isEmpty
+                    ? "No part for \(entityName(of: replacement)), the entity of \(replacement.refdesList), is in \(viewedPool?.name ?? "the browsed pools")."
+                    : "No part for \(entityName(of: replacement)) matches “\(searchText)”\(viewedPool.map { " in \($0.name)" } ?? "").")
+        }
         let unreadable = unreadablePools
         if !unreadable.isEmpty {
             let names = unreadable.map { "“\($0.url.lastPathComponent)”" }.joined(separator: ", ")
@@ -435,12 +542,75 @@ struct HorizontalPoolBrowserView: View {
         return text
     }
 
+    /// The list, with the parametric section on its left while parts are
+    /// listed. A chosen table shows its parts, narrowed by its filters, with
+    /// a column for each of its values.
     @ViewBuilder
-    private var listContent: some View {
+    private var listArea: some View {
+        if category == .part {
+            let table = parametricTable
+            let columns = table.map(HorizontalPoolParametricSearch.filterColumns(of:)) ?? []
+            let rows = table.map { HorizontalPoolParametricSearch.filter(parametricRows(in: $0), by: parametricFilters.applied) }
+            HStack(spacing: 0) {
+                HorizontalPoolParametricFilterView(
+                    isExpanded: $showsParametricFilters,
+                    tables: parametricTables,
+                    tableName: $parametricTableName,
+                    columns: columns,
+                    valuesRemaining: rows.map { HorizontalPoolParametricSearch.valuesRemaining($0, columns: columns) } ?? [:],
+                    filters: $parametricFilters
+                )
+                Divider()
+                if let table, let rows {
+                    parametricListContent(table, rows: rows)
+                } else {
+                    listContent
+                }
+            }
+        } else {
+            listContent
+        }
+    }
+
+    @ViewBuilder
+    private func parametricListContent(_ table: HorizontalParametricTable, rows: [HorizontalParametricRow]) -> some View {
         if isLoading && items.isEmpty {
             ProgressView("Scanning Pools…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if filteredItems.isEmpty {
+        } else if rows.isEmpty {
+            ContentUnavailableView(
+                "No \(table.displayName)",
+                systemImage: category.symbolName,
+                description: Text(parametricEmptyDescription(table))
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            parametricItemTable(table, rows: rows.sorted(using: parametricSortOrder))
+        }
+    }
+
+    private func parametricEmptyDescription(_ table: HorizontalParametricTable) -> String {
+        let name = table.displayName.lowercased()
+        if !parametricFilters.applied.isEmpty {
+            return "No \(name) pass the parametric filters. Take one off, or Reset."
+        }
+        let replacement = activeReplacement
+        if let problem = replacement?.problem {
+            return problem
+        }
+        return "No \(name)\(replacement.map { " for \(entityName(of: $0))" } ?? "")"
+            + "\(searchText.isEmpty ? "" : " match “\(searchText)”")"
+            + " in \(viewedPool?.name ?? "the browsed pools"). The list shows only the parts in the \(table.displayName) table; "
+            + "choose All Parts in the parametric section for every part."
+    }
+
+    @ViewBuilder
+    private var listContent: some View {
+        let rows = filteredItems
+        if isLoading && items.isEmpty {
+            ProgressView("Scanning Pools…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if rows.isEmpty {
             ContentUnavailableView(
                 searchText.isEmpty ? "No \(category.title)" : "No Matches",
                 systemImage: category.symbolName,
@@ -448,7 +618,7 @@ struct HorizontalPoolBrowserView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            itemTable
+            itemTable(rows)
         }
     }
 
@@ -473,6 +643,12 @@ struct HorizontalPoolBrowserView: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(minWidth: compact ? 80 : 160)
                 .leavesFieldOnEscape()
+                // Down from the search goes into the list, as in a Finder or
+                // Spotlight search, so the arrows can carry on through it.
+                .onKeyPress(.downArrow) {
+                    focusList()
+                    return .handled
+                }
 
             if isLoading {
                 ProgressView()
@@ -483,32 +659,62 @@ struct HorizontalPoolBrowserView: View {
 
             newItemMenu(compact: compact)
 
-            if onPlacePart != nil {
-                Button {
-                    if let item = selectedItem, canPlace(item) {
-                        onPlacePart?(item)
-                    }
-                } label: {
-                    toolbarLabel("Place", systemImage: "plus.square.on.square", compact: compact)
-                }
-                .disabled(selectedItem.map { !canPlace($0) } ?? true)
-                .help("Place the selected part in the schematic (also double-click or Return in the list)")
-            }
-
             Toggle(isOn: $showsPreview) {
                 toolbarLabel("Preview", systemImage: "rectangle.bottomhalf.inset.filled", compact: compact)
             }
             .toggleStyle(.button)
             .help("Show the selected item below the list")
 
-            Button {
-                HorizontalPoolLibrary.invalidateCache()
-                scanGeneration += 1
-            } label: {
-                toolbarLabel("Refresh", systemImage: "arrow.clockwise", compact: compact)
+            if partActions != nil {
+                partButton(compact: compact)
             }
-            .help("Rescan the browsed pools")
         }
+    }
+
+    /// Place, or Replace while components are selected: the pane's primary
+    /// action in a project window, there whether or not it can act now, its
+    /// help saying why not when it can't.
+    @ViewBuilder
+    private func partButton(compact: Bool) -> some View {
+        let item = selectedListedItem
+        if let replacement = activeReplacement {
+            let refusal = replaceRefusal(for: item, replacement)
+            Button {
+                if let item { replace(item, replacement) }
+            } label: {
+                toolbarLabel("Replace", systemImage: "arrow.triangle.2.circlepath", compact: compact)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(refusal != nil)
+            .help(refusal ?? "Give \(replacement.refdesList) the selected part, keeping their connections (also double-click or Return in the list)")
+        } else {
+            let reason = placeUnavailableReason(for: item)
+            Button {
+                if let item { place(item) }
+            } label: {
+                toolbarLabel("Place", systemImage: "plus.square.on.square", compact: compact)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(reason != nil)
+            .help(reason ?? "Place the selected part in the schematic (also double-click or Return in the list)")
+        }
+    }
+
+    /// What Replace and Place say the selected item is: only an item the list
+    /// shows, so a selection the search or the replacement filter hides is
+    /// never what they act on.
+    private var selectedListedItem: HorizontalPoolLibraryItem? {
+        guard let selectedItemID, let item = visibleRows.first(where: { $0.id == selectedItemID }),
+              !Self.listed([item], category: category, search: searchText, replacement: activeReplacement).isEmpty else {
+            return nil
+        }
+        if let table = parametricTable {
+            let row = HorizontalPoolParametricSearch.rows([item], table: table) { packageID in
+                packageID.isEmpty ? "" : index.name(.package, uuid: packageID) ?? ""
+            }
+            return HorizontalPoolParametricSearch.filter(row, by: parametricFilters.applied).isEmpty ? nil : item
+        }
+        return item
     }
 
     /// The item kind: a pop-up with its name, or, compact, a menu showing only
@@ -586,6 +792,11 @@ struct HorizontalPoolBrowserView: View {
                 }
             }
             Divider()
+            Button {
+                rescanPools()
+            } label: {
+                Label("Rescan Pools", systemImage: "arrow.clockwise")
+            }
             Button {
                 isImportingPool = true
             } label: {
@@ -667,8 +878,8 @@ struct HorizontalPoolBrowserView: View {
 
     // MARK: - Table
 
-    private var itemTable: some View {
-        Table(filteredItems, selection: $selectedItemID, sortOrder: $sortOrder) {
+    private func itemTable(_ rows: [HorizontalPoolLibraryItem]) -> some View {
+        Table(rows, selection: $selectedItemID, sortOrder: $sortOrder) {
             TableColumn("Name", value: \.name) { item in
                 tableText(item.name)
             }
@@ -702,13 +913,60 @@ struct HorizontalPoolBrowserView: View {
             }
         } primaryAction: { selection in
             if let item = item(for: selection) {
-                if canPlace(item) {
-                    onPlacePart?(item)
-                } else {
-                    editItem(item)
-                }
+                activate(item)
             }
         }
+        .focused($isListFocused)
+    }
+
+    /// A table's parts with its values, Horizon's parametric list: MPN,
+    /// manufacturer and package, then a column per value, each sorting by
+    /// number or naturally as its column does.
+    private func parametricItemTable(_ table: HorizontalParametricTable, rows: [HorizontalParametricRow]) -> some View {
+        Table(rows, selection: $selectedItemID, sortOrder: $parametricSortOrder) {
+            TableColumn("MPN", sortUsing: HorizontalParametricRowComparator(key: HorizontalParametricRowComparator.mpn)) { row in
+                tableText(row.item.name)
+            }
+            .width(min: 140, ideal: 200)
+
+            TableColumn("Manufacturer", sortUsing: HorizontalParametricRowComparator(key: HorizontalParametricFilterColumn.manufacturerName)) { row in
+                tableText(row.item.manufacturer)
+            }
+            .width(min: 100, ideal: 140)
+
+            TableColumn("Package", sortUsing: HorizontalParametricRowComparator(key: HorizontalParametricFilterColumn.packageName)) { row in
+                tableText(row.packageName)
+            }
+            .width(min: 90, ideal: 120)
+
+            TableColumnForEach(table.columns) { column in
+                TableColumn(column.displayName,
+                            sortUsing: HorizontalParametricRowComparator(key: column.name, isQuantity: column.kind == .quantity)) { row in
+                    HorizontalParametricValueText(column: HorizontalParametricFilterColumn(column), value: row.values[column.name] ?? "")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .width(min: 70, ideal: 100)
+            }
+
+            TableColumn("Pool", sortUsing: HorizontalParametricRowComparator(key: HorizontalParametricRowComparator.pool)) { row in
+                tableText(row.item.poolsLabel)
+            }
+            .width(min: 90, ideal: 140)
+        }
+        .id(table.name)
+        #if os(macOS)
+        .alternatingRowBackgrounds(.enabled)
+        #endif
+        .contextMenu(forSelectionType: HorizontalPoolLibraryItem.ID.self) { selection in
+            if let item = item(for: selection) {
+                itemContextMenu(item)
+            }
+        } primaryAction: { selection in
+            if let item = item(for: selection) {
+                activate(item)
+            }
+        }
+        .focused($isListFocused)
     }
 
     private func item(for selection: Set<HorizontalPoolLibraryItem.ID>) -> HorizontalPoolLibraryItem? {
@@ -723,9 +981,14 @@ struct HorizontalPoolBrowserView: View {
     /// pool, scrolled to the item), reveal the file, copy its identity.
     @ViewBuilder
     private func itemContextMenu(_ item: HorizontalPoolLibraryItem) -> some View {
+        if let replacement = activeReplacement, replaceRefusal(for: item, replacement) == nil {
+            Button("Replace \(replacement.refdesList)") {
+                replace(item, replacement)
+            }
+        }
         if canPlace(item) {
             Button("Place in Schematic") {
-                onPlacePart?(item)
+                place(item)
             }
         }
         Button("Edit…") {
@@ -826,10 +1089,178 @@ struct HorizontalPoolBrowserView: View {
         #endif
     }
 
-    // MARK: - Placing and related items
+    // MARK: - Placing, replacing and related items
+
+    /// Double-click or Return on a row: Replace while components are
+    /// selected, as Horizon's part browser assigns rather than places while
+    /// it shows an entity's parts, else Place, else the item's editor.
+    private func activate(_ item: HorizontalPoolLibraryItem) {
+        if let replacement = activeReplacement, item.category == .part {
+            if replaceRefusal(for: item, replacement) == nil {
+                replace(item, replacement)
+            } else {
+                #if os(macOS)
+                NSSound.beep()
+                #endif
+            }
+        } else if canPlace(item) {
+            place(item)
+        } else {
+            editItem(item)
+        }
+    }
 
     private func canPlace(_ item: HorizontalPoolLibraryItem) -> Bool {
-        onPlacePart != nil && item.category == .part && !appearanceSettings.isReadOnlyOperationEnabled
+        placeUnavailableReason(for: item) == nil
+    }
+
+    /// Why Place can't place `item`, or nil when it can: what the Place
+    /// button's help says while it is disabled.
+    static func placeUnavailableReason(for item: HorizontalPoolLibraryItem?, actions: HorizontalPoolPartActions?,
+                                       isReadOnly: Bool) -> String? {
+        guard let actions, actions.place != nil else {
+            return actions?.placeUnavailableReason ?? "Parts are placed from a project window."
+        }
+        if isReadOnly {
+            return "Read-only operation is enabled in Horizontal."
+        }
+        guard let item else {
+            return "Select a part to place it in the schematic."
+        }
+        guard item.category == .part else {
+            return "Only parts are placed. Choose Parts in the kind menu."
+        }
+        return nil
+    }
+
+    /// Why Replace can't give the selected components `item`, or nil.
+    static func replaceRefusal(for item: HorizontalPoolLibraryItem?, _ replacement: HorizontalPartReplacement,
+                               actions: HorizontalPoolPartActions?, isReadOnly: Bool) -> String? {
+        if let problem = replacement.problem {
+            return problem
+        }
+        guard actions?.replace != nil else {
+            return "Parts can't be replaced in this window."
+        }
+        if isReadOnly {
+            return "Read-only operation is enabled in Horizontal."
+        }
+        guard let item else {
+            return "Select a part to give to \(replacement.refdesList)."
+        }
+        return replacement.refusal(for: item)
+    }
+
+    private func placeUnavailableReason(for item: HorizontalPoolLibraryItem?) -> String? {
+        Self.placeUnavailableReason(for: item, actions: partActions, isReadOnly: appearanceSettings.isReadOnlyOperationEnabled)
+    }
+
+    private func replaceRefusal(for item: HorizontalPoolLibraryItem?, _ replacement: HorizontalPartReplacement) -> String? {
+        Self.replaceRefusal(for: item, replacement, actions: partActions, isReadOnly: appearanceSettings.isReadOnlyOperationEnabled)
+    }
+
+    private func place(_ item: HorizontalPoolLibraryItem) {
+        guard canPlace(item) else {
+            return
+        }
+        partActions?.place?(item)
+    }
+
+    private func replace(_ item: HorizontalPoolLibraryItem, _ replacement: HorizontalPartReplacement) {
+        guard replaceRefusal(for: item, replacement) == nil else {
+            return
+        }
+        partActions?.replace?(item, item.packageID.isEmpty ? "" : index.name(.package, uuid: item.packageID) ?? "", replacement)
+    }
+
+    /// The entity a replacement's components are on, by name.
+    private func entityName(of replacement: HorizontalPartReplacement) -> String {
+        guard let entityID = replacement.entityID else {
+            return "their entities"
+        }
+        return "“\(index.name(.entity, uuid: entityID) ?? String(entityID.prefix(8)))”"
+    }
+
+    /// Horizon's entity info bar: what the list is showing while components
+    /// are selected, and a button that goes back to every part and Place.
+    @ViewBuilder
+    private var replacementBanner: some View {
+        if category == .part, let replacement = activeReplacement {
+            HStack(spacing: 8) {
+                Image(systemName: replacement.problem == nil ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle")
+                    .foregroundStyle(replacement.problem == nil ? Color.accentColor : Color.orange)
+                Text(replacement.problem
+                     ?? "Only showing parts for entity \(entityName(of: replacement)), to replace \(replacement.refdesList).")
+                    .font(.callout)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    dismissedReplacementKey = replacement.key
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Show every part, and place rather than replace")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.accentColor.opacity(0.1))
+            Divider()
+        }
+    }
+
+    /// A new selection of components: show the parts that fit them, with the
+    /// one they have now selected, as Horizon's part chooser opens on the
+    /// component's part, and, with the parametric section open, the table
+    /// that part is in.
+    private func adoptReplacement() {
+        adoptReplacement(switchingKind: true)
+    }
+
+    /// `switchingKind` false: only what the scan can add, once the pools are
+    /// read, leaving the kind as the user has it.
+    private func adoptReplacement(switchingKind: Bool) {
+        guard let replacement = activeReplacement else {
+            return
+        }
+        if switchingKind {
+            category = .part
+        }
+        let currentParts = Set(replacement.targets.compactMap(\.partID))
+        if let selectedItem, !replacement.isCompatible(selectedItem) {
+            selectedItemID = nil
+        }
+        if currentParts.count == 1, let current = currentParts.first,
+           let row = visibleRows.first(where: { $0.category == .part && $0.uuid == current }) {
+            selectedItemID = row.id
+        }
+        if showsParametricFilters {
+            let tables = Set(currentParts.compactMap { index.item(.part, uuid: $0)?.parametric["table"] })
+            if tables.count == 1, let table = tables.first, parametricTables.contains(where: { $0.name == table }) {
+                parametricTableName = table
+            }
+        }
+    }
+
+    /// Down in the search field: the list takes the keyboard, its first row
+    /// selected when nothing is.
+    private func focusList() {
+        isListFocused = true
+        if selectedListedItem == nil {
+            if let table = parametricTable {
+                selectedItemID = HorizontalPoolParametricSearch.filter(parametricRows(in: table), by: parametricFilters.applied)
+                    .sorted(using: parametricSortOrder).first?.id
+            } else {
+                selectedItemID = filteredItems.first?.id
+            }
+        }
+    }
+
+    /// Pools > Rescan Pools: every pool read again from disk.
+    private func rescanPools() {
+        HorizontalPoolLibrary.invalidateCache()
+        scanGeneration += 1
     }
 
     /// The items this one refers to, for the context menu's "Show …" entries:
@@ -1141,6 +1572,7 @@ struct HorizontalPoolBrowserView: View {
             category = request.category
             searchText = search
             viewedPoolID = nil
+            updateVisibleRows()
             selectedItemID = filteredItems.first?.id
             pendingReveal = nil
             return
@@ -1154,6 +1586,7 @@ struct HorizontalPoolBrowserView: View {
             item = own
         } else {
             viewedPoolID = nil
+            updateVisibleRows()
         }
         category = request.category
         searchText = ""
@@ -1165,18 +1598,31 @@ struct HorizontalPoolBrowserView: View {
         isLoading = true
         defer { isLoading = false }
         let pools = browsedPools
-        let loaded = await Task.detached(priority: .userInitiated) {
-            HorizontalPoolLibrary.resolvingInheritance(pools.flatMap { pool in
-                HorizontalPoolLibrary.items(inPool: pool.url, poolName: pool.name)
-            })
+        let (loaded, tables) = await Task.detached(priority: .userInitiated) {
+            (
+                HorizontalPoolLibrary.resolvingInheritance(pools.flatMap { pool in
+                    HorizontalPoolLibrary.items(inPool: pool.url, poolName: pool.name)
+                }),
+                // The project pool's tables (or a pool's own) win over the
+                // pools it draws from, as `PoolParametric` reads them.
+                HorizontalPoolParametricTables.load(poolURLs: pools.filter(\.isReadable).map(\.url).reversed())
+            )
         }.value
         guard !Task.isCancelled else {
             return
         }
         items = loaded
         index = HorizontalPoolLibraryIndex(items: loaded)
+        parametricTables = tables
+        if let parametricTableName, !parametricTables.contains(where: { $0.name == parametricTableName }) {
+            self.parametricTableName = nil
+        }
         if let viewedPoolID, !pools.contains(where: { $0.id == viewedPoolID }) {
             self.viewedPoolID = nil
+        }
+        updateVisibleRows()
+        if selectedItemID == nil {
+            adoptReplacement(switchingKind: false)
         }
         applyPendingReveal()
         // A reveal the scan could not satisfy is stale; don't keep trying.
