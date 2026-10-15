@@ -190,9 +190,9 @@ final class SchematicKeyboardMoveTests: XCTestCase {
     /// it while the Metal scene filed the text's strokes without one, so a
     /// dragged text stayed put until the move committed. One text here stores
     /// a layer and one, as MCP's place_text wrote it, does not.
-    /// Up, R, Enter on a symbol, with or without the pointer resting on the
-    /// canvas, and what was committed.
-    private func upTurnEnter(restingPointer: Bool) async throws -> HorizontalSchematicSheet {
+    /// R on a symbol, with or without the pointer resting on the canvas, and
+    /// what was committed: in a move made with up (then Enter), or at rest.
+    private func upTurnEnter(restingPointer: Bool, moving: Bool = true) async throws -> HorizontalSchematicSheet {
         let state = State(fixture())
         let hosted = NSHostingView(rootView: Canvas(state: state)
             .environmentObject(HorizontalAppearanceSettings(defaults: UserDefaults(suiteName: UUID().uuidString)!)))
@@ -215,19 +215,34 @@ final class SchematicKeyboardMoveTests: XCTestCase {
         state.actions?.selectComponents?(["component"])
         let selected = await settle { state.actions?.canMoveSelection == true }
         XCTAssertTrue(selected)
-        try key(126, "\u{f700}")
-        let moving = await settle { state.actions?.canCommitInteraction == true }
-        XCTAssertTrue(moving)
+        if moving {
+            try key(126, "\u{f700}")
+            let started = await settle { state.actions?.canCommitInteraction == true }
+            XCTAssertTrue(started)
+        }
         if restingPointer {
             let event = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: NSPoint(x: 650, y: 450), modifierFlags: [],
                 timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
             _ = handle(event)
         }
         try key(15, "r")
-        try key(36, "\r")
+        if moving {
+            try key(36, "\r")
+        }
         let committed = await settle { state.committed != nil }
         XCTAssertTrue(committed)
         return try XCTUnwrap(state.committed)
+    }
+
+    /// R on a symbol at rest turns it about its own centre, wherever the
+    /// pointer rests on the canvas (124). Before, it turned about the pointer.
+    func testRAtRestTurnsTheSymbolInPlaceWhereverThePointerRests() async throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
+        _ = NSApplication.shared
+        let sheet = try await upTurnEnter(restingPointer: true, moving: false)
+        let symbol = try XCTUnwrap(sheet.symbols.first)
+        XCTAssertNotEqual(symbol.angle, 0, "R turned the symbol")
+        XCTAssertEqual(symbol.position, .zero, "in place, about its own centre")
     }
 
     /// A move made with the arrow keys turns about what it moves, wherever the
