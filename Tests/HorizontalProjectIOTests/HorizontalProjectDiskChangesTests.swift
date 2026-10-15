@@ -55,6 +55,36 @@ final class HorizontalProjectDiskChangesTests: XCTestCase {
         XCTAssertEqual(detector.classify(disk: try fingerprint(of: project.file), document: .init(archive: document)), .changedOnDisk)
     }
 
+    /// Replace in the Pools pane: the part is cached into the project pool,
+    /// on disk and in the document, and the edit that uses it waits for the
+    /// autosave. The files then hold the new part and the old block, neither
+    /// the document nor the baseline as a whole, and the user was asked
+    /// whether to reload (131). File by file, each holds a version the
+    /// document knows.
+    func testAPartTheAppCachesBeforeTheAutosaveIsTheDocumentsOwn() throws {
+        let project = try makeProject()
+        var document = try HorizontalProjectArchive.completeProject(from: project.file)
+        var detector = HorizontalProjectChangeDetector(baseline: try fingerprint(of: project.file))
+
+        let part = "{\"name\":\"Cached\"}", manifest = "{\"files\":{}}"
+        try write(part, to: project.root.appendingPathComponent("pool/parts/cached.json"))
+        try write(manifest, to: project.root.appendingPathComponent("pool/.horizontal/pool-cache.json"))
+        try document.replaceRegularFileData(relativePath: "pool/parts/cached.json", with: Data(part.utf8))
+        try document.replaceRegularFileData(relativePath: "pool/.horizontal/pool-cache.json", with: Data(manifest.utf8))
+        try document.replaceRegularFileData(relativePath: "top_block.json", with: Data("{\"name\":\"Uses the part\"}".utf8))
+        XCTAssertEqual(detector.classify(disk: try fingerprint(of: project.file), document: .init(archive: document)),
+                       .documentAhead, "the cached part is the document's, and its edit is still to be written")
+
+        // The autosave catches the files up.
+        detector.recordWrite(.init(archive: document))
+        _ = try document.projectFileWrapper()
+        XCTAssertEqual(detector.classify(disk: try fingerprint(of: project.file), document: .init(archive: document)), .inStep)
+
+        // A cached file changed from outside is still a change.
+        try write("{\"name\":\"Pulled over it\"}", to: project.root.appendingPathComponent("pool/parts/cached.json"))
+        XCTAssertEqual(detector.classify(disk: try fingerprint(of: project.file), document: .init(archive: document)), .changedOnDisk)
+    }
+
     func testFinderAndGitDroppingsAreNotChanges() throws {
         let project = try makeProject()
         let document = try HorizontalProjectArchive.completeProject(from: project.file)

@@ -60,6 +60,11 @@ public struct HorizontalProjectFingerprint: Equatable, Sendable {
 /// - **something the document wrote since** — an autosave of an earlier state,
 ///   overtaken by a newer edit before the check ran.
 ///
+/// - **a mix of those, file by file** — the app writes some files itself
+///   before the document's next autosave writes the rest: Place and Replace
+///   cache a part into the project pool, on disk and in the document, while
+///   the edit that uses it waits to autosave (131).
+///
 /// Anything else is a change from outside. `baseline` moves forward whenever
 /// the files are found in step with the document or with one of its writes.
 public struct HorizontalProjectChangeDetector: Sendable {
@@ -114,7 +119,25 @@ public struct HorizontalProjectChangeDetector: Sendable {
             writes.removeFirst(index + 1)
             return document == nil ? .inStep : .documentAhead
         }
+        if holdsOnlyKnownVersions(disk, document: document) {
+            baseline = disk
+            return document == nil ? .inStep : .documentAhead
+        }
         return .changedOnDisk
+    }
+
+    /// Whether every file, on its own, holds what the document holds, what it
+    /// held when last in step, or what the document wrote: a file that is
+    /// there or gone in one of those. A checkout or a pull writes something
+    /// none of them had, a pulled part included.
+    private func holdsOnlyKnownVersions(_ disk: HorizontalProjectFingerprint,
+                                        document: HorizontalProjectFingerprint?) -> Bool {
+        let known = [baseline] + writes + (document.map { [$0] } ?? [])
+        let paths = Set(disk.entries.keys).union(known.flatMap(\.entries.keys))
+        return paths.allSatisfy { path in
+            let held = disk.entries[path]
+            return known.contains { $0.entries[path] == held }
+        }
     }
 }
 
