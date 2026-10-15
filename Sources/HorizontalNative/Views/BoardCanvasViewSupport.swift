@@ -53,12 +53,41 @@ struct BoardMovePreviewCacheKey: Hashable {
     var selectedRefs: [HorizontalSelectableRef]
     var startPoint: HorizontalPoint
     var lastPoint: HorizontalPoint
+    /// How many times R or T has turned the move (122): each turn restarts the
+    /// points, so they alone could name a preview from before it.
+    var turns = 0
 }
 
 struct BoardMovePreviewSignature: Hashable {
     var selectedRefs: [HorizontalSelectableRef]
     var startPoint: HorizontalPoint
     var lastPoint: HorizontalPoint
+    /// As `BoardMovePreviewCacheKey.turns`.
+    var turns = 0
+}
+
+/// Names the texts a turn during a move redraws: the scene whose lines they
+/// replace, and the turn (122).
+struct BoardTurnedMoveTextsKey: Hashable {
+    var lineKey: Int
+    var turns: Int
+    var placement: HorizontalPlacementTransform
+}
+
+/// Where one text's strokes sit in the resident scene, so a turn during a move
+/// can redraw them as a rebuilt scene would (122): a quarter turn can carry a
+/// text into or out of the angles it is drawn the other way round at, and pad
+/// labels settle on their own readable angle, so turning the strokes with
+/// the rest of the part is not always what the scene would show.
+struct BoardMetalTextSpan: Hashable {
+    /// The `HorizontalText.id` the strokes were drawn from.
+    var textID: String
+    var compositeGroup: Int
+    var start: Int
+    var count: Int
+    /// The first stroke's index in the scene's `lines`, whose style the
+    /// redrawn strokes keep.
+    var lineIndex: Int
 }
 
 /// Render-cache key for the live paste-placement ghost: the clipboard ghost
@@ -136,6 +165,8 @@ struct BoardMetalSceneMetadata {
     var linePrimitivesByRef: [HorizontalSelectableRef: [HorizontalMetalLinePrimitive]] = [:]
     var trianglePrimitivesByRef: [HorizontalSelectableRef: [HorizontalMetalTrianglePrimitive]] = [:]
     var anchoredRectPrimitivesByRef: [HorizontalSelectableRef: [HorizontalMetalAnchoredRectPrimitive]] = [:]
+    /// The texts among each owner's line spans, one entry per text.
+    var textSpansByRef: [HorizontalSelectableRef: [BoardMetalTextSpan]] = [:]
 }
 
 func boardMetalShouldRetainLinePrimitives(for owner: HorizontalSelectableRef) -> Bool {
@@ -255,6 +286,14 @@ struct BoardMetalPlaneOutlineCacheKey: Hashable {
 
 typealias BoardPadOutlineFragmentsByLayer = Dictionary<Int?, [HorizontalPadOutlineFragment]>
 
+/// One text's strokes in a `BoardMetalElementBatch`: its id, and the lines it
+/// was stroked into.
+struct BoardMetalTextRun {
+    var textID: String
+    var lineStart: Int
+    var lineCount: Int
+}
+
 // One batch per element-type bucket. Visibility flags are NOT consulted during
 // the build; they only select which buckets are concatenated at draw time.
 struct BoardMetalElementBatch {
@@ -270,6 +309,10 @@ struct BoardMetalElementBatch {
     /// `filtered(minimumLabelSize:)`, which the concat step applies to the
     /// generated-label buckets so unreadable labels drop out when zoomed out.
     var lineLabelSizes: [Double] = []
+    /// Each text stroked into `lines` by `BoardCanvasView.appendText`, in
+    /// order, so the concat step can tell a move which of an owner's lines
+    /// are which text (122).
+    var textRuns: [BoardMetalTextRun] = []
 
     mutating func appendLine(
         _ primitive: HorizontalMetalLinePrimitive,
@@ -282,6 +325,12 @@ struct BoardMetalElementBatch {
     }
 
     mutating func append(contentsOf other: BoardMetalElementBatch) {
+        let lineOffset = lines.count
+        textRuns.append(contentsOf: other.textRuns.map { run in
+            var run = run
+            run.lineStart += lineOffset
+            return run
+        })
         lines.append(contentsOf: other.lines)
         triangles.append(contentsOf: other.triangles)
         anchoredRects.append(contentsOf: other.anchoredRects)
@@ -319,14 +368,25 @@ struct BoardMetalElementBatch {
         result.lines = []
         result.lineOwners = []
         result.lineLabelSizes = []
+        result.textRuns = []
         result.lines.reserveCapacity(lines.count)
         result.lineOwners.reserveCapacity(lines.count)
         result.lineLabelSizes.reserveCapacity(lines.count)
 
+        // A text's strokes share its size, so a run is kept or dropped whole.
+        var runIndex = 0
         for index in lines.indices {
             let labelSize = index < lineLabelSizes.count ? lineLabelSizes[index] : 0
+            while runIndex < textRuns.count, textRuns[runIndex].lineStart < index {
+                runIndex += 1
+            }
             if labelSize > 0 && labelSize < minimumLabelSize {
                 continue
+            }
+            if runIndex < textRuns.count, textRuns[runIndex].lineStart == index {
+                var run = textRuns[runIndex]
+                run.lineStart = result.lines.count
+                result.textRuns.append(run)
             }
             result.lines.append(lines[index])
             result.lineOwners.append(index < lineOwners.count ? lineOwners[index] : nil)
@@ -732,8 +792,12 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
     private var movingAirwiresRequest = 0
     private var movingAirwiresValue: (request: Int, airwires: HorizontalBoard.MovingAirwires)?
     private var movingAirwireSegmentsRequest: Int?
-    private var movingAirwireSegmentsOffset = HorizontalPoint.zero
+    private var movingAirwireSegmentsPlacement = HorizontalPlacementTransform.identity
     private var movingAirwireSegmentsValue = [HorizontalSegment]()
+    /// The texts a turn during a move redraws (122), for the scene and turn
+    /// they were made for; the move then only shifts them.
+    private var turnedMoveTextsKey: BoardTurnedMoveTextsKey?
+    private var turnedMoveTextsValue = [HorizontalMetalLineBufferPatch]()
     /// Increments when a move's live rats' nest lands, so the canvas redraws.
     @Published private(set) var movingAirwiresVersion: Int = 0
 
@@ -962,18 +1026,33 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         return movingAirwiresValue.airwires
     }
 
-    /// The live airwires with the move `offset` from its start, remembered
-    /// for the offset last asked about, since several body passes see each one.
-    func movingAirwireSegments(for request: Int, offset: HorizontalPoint) -> [HorizontalSegment]? {
+    /// The live airwires with the moving copper where `placement` puts it —
+    /// the move's offset from its start, and any turn made on the way —
+    /// remembered for the placement last asked about, since several body
+    /// passes see each one.
+    func movingAirwireSegments(for request: Int, placement: HorizontalPlacementTransform) -> [HorizontalSegment]? {
         guard let airwires = movingAirwires(for: request) else {
             return nil
         }
-        if movingAirwireSegmentsRequest != request || movingAirwireSegmentsOffset != offset {
-            movingAirwireSegmentsValue = airwires.airwires(offset: offset)
+        if movingAirwireSegmentsRequest != request || movingAirwireSegmentsPlacement != placement {
+            movingAirwireSegmentsValue = airwires.airwires(placement: placement)
             movingAirwireSegmentsRequest = request
-            movingAirwireSegmentsOffset = offset
+            movingAirwireSegmentsPlacement = placement
         }
         return movingAirwireSegmentsValue
+    }
+
+    /// The redrawn texts of a turn during a move, made once per turn and
+    /// scene rather than on every body pass.
+    func turnedMoveTexts(
+        key: BoardTurnedMoveTextsKey,
+        build: () -> [HorizontalMetalLineBufferPatch]
+    ) -> [HorizontalMetalLineBufferPatch] {
+        if turnedMoveTextsKey != key {
+            turnedMoveTextsValue = build()
+            turnedMoveTextsKey = key
+        }
+        return turnedMoveTextsValue
     }
 
     /// The last refreshed clip, if it was made with `clipping`. A clip made
@@ -1151,6 +1230,8 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         metalSelectionValue = .empty
         movePreviewKey = nil
         movePreviewValue = nil
+        turnedMoveTextsKey = nil
+        turnedMoveTextsValue = []
         selectionDetailsKey = nil
         selectionDetailsValue = .empty
         padOutlineFragmentsKey = nil

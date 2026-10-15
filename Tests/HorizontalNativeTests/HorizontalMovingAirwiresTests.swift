@@ -34,11 +34,23 @@ final class HorizontalMovingAirwiresTests: XCTestCase {
         segmentEnds: [String: (from: Bool, to: Bool)],
         by offset: HorizontalPoint
     ) -> HorizontalBoard {
+        moved(board, packageIDs: packageIDs, segmentEnds: segmentEnds,
+              placement: HorizontalPlacementTransform(shift: offset, angle: 0, mirrored: false))
+    }
+
+    /// `board` with `packageIDs` and the listed track ends where `placement`
+    /// puts them.
+    private func moved(
+        _ board: HorizontalBoard,
+        packageIDs: Set<String>,
+        segmentEnds: [String: (from: Bool, to: Bool)],
+        placement: HorizontalPlacementTransform
+    ) -> HorizontalBoard {
         var board = board
         for (path, position) in board.packagePadPositions {
             let packageID = String(path.split(separator: "/").first ?? "").lowercased()
             if packageIDs.contains(packageID) {
-                board.packagePadPositions[path] = position + offset
+                board.packagePadPositions[path] = placement.applying(to: position)
             }
         }
         for index in board.tracks.indices {
@@ -46,10 +58,10 @@ final class HorizontalMovingAirwiresTests: XCTestCase {
                 continue
             }
             if ends.from {
-                board.tracks[index].from = board.tracks[index].from + offset
+                board.tracks[index].from = placement.applying(to: board.tracks[index].from)
             }
             if ends.to {
-                board.tracks[index].to = board.tracks[index].to + offset
+                board.tracks[index].to = placement.applying(to: board.tracks[index].to)
             }
         }
         board.regenerateAirwires()
@@ -127,6 +139,40 @@ final class HorizontalMovingAirwiresTests: XCTestCase {
                 regenerated: moved(board, packageIDs: ["m"], segmentEnds: ends, by: offset).airwires,
                 nets: ["n"]
             )
+        }
+    }
+
+    /// R and T during a move (122) turn the moving copper, and its live rats'
+    /// nest follows: each pad's airwire leaves from where the turn put it.
+    func testFollowsAPackageTurnedOnTheWay() {
+        var board = HorizontalGerberExportFixture.board()
+        addPad("s1", "p1", at: HorizontalPoint(x: 0, y: 0), net: "n", to: &board)
+        addPad("s2", "p1", at: HorizontalPoint(x: 0, y: 10 * mm), net: "n2", to: &board)
+        addPad("m", "p1", at: HorizontalPoint(x: 8 * mm, y: 0), net: "n", to: &board)
+        addPad("m", "p2", at: HorizontalPoint(x: 12 * mm, y: 0), net: "n2", to: &board)
+        let ends: [String: (from: Bool, to: Bool)] = ["t1": (false, true)]
+        board.tracks = [HorizontalSegment(
+            id: "t1", from: HorizontalPoint(x: 20 * mm, y: 0), to: HorizontalPoint(x: 12 * mm, y: 0),
+            width: 0.2 * mm, layer: top, netID: "n2"
+        )]
+        board.regenerateAirwires()
+
+        let live = board.movingAirwires(packageIDs: ["m"], viaIDs: [], junctionIDs: [], segmentEnds: ends)
+        for (angle, shift) in [
+            (16_384, HorizontalPoint(x: 0, y: 0)),
+            (49_152, HorizontalPoint(x: 3 * mm, y: 2 * mm)),
+            (32_768, HorizontalPoint(x: 20 * mm, y: -4 * mm)),
+            (-16_384, HorizontalPoint(x: -6 * mm, y: 9 * mm)),
+        ] {
+            let placement = HorizontalPlacementTransform(shift: shift, angle: angle, mirrored: false)
+            let airwires = live.airwires(placement: placement)
+            assertSameRatsNest(
+                live: airwires,
+                regenerated: moved(board, packageIDs: ["m"], segmentEnds: ends, placement: placement).airwires,
+                nets: live.netIDs
+            )
+            let p1 = placement.applying(to: HorizontalPoint(x: 8 * mm, y: 0))
+            XCTAssertTrue(airwires.contains { $0.from == p1 || $0.to == p1 }, "n's airwire leaves from the turned pad")
         }
     }
 

@@ -551,6 +551,7 @@ enum HorizontalMoveRateDiagnostics {
         }
 
         counters.linePatchPrimitives += patches.linePatches.reduce(0) { $0 + $1.primitives.count }
+            + patches.lineRedrawPatches.reduce(0) { $0 + $1.primitives.count }
         counters.lineEndpointPatches += patches.lineEndpointPatches.count
         counters.lineTranslationPrimitives += patches.lineTranslationPatches.reduce(0) { $0 + $1.count }
         counters.trianglePatchPrimitives += patches.trianglePatches.reduce(0) { $0 + $1.primitives.count }

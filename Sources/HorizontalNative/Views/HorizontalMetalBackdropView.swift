@@ -257,13 +257,18 @@ struct HorizontalMetalBackdropView {
         private var screenLinePrimitiveCount = 0
         private var currentScreenLineKey: Int?
         private var currentBufferPatchKey: Int?
-        private var appliedTranslationDeltas = [HorizontalMetalTranslationPatchKey: SIMD2<Float>]()
+        private var appliedTranslations = [HorizontalMetalTranslationPatchKey: HorizontalMetalPlacementStep]()
         private var compositeBatchBuffers = [HorizontalMetalCompositeBatchBuffers]()
         private var compositeBatchStorageByGroup = [Int: HorizontalMetalCompositeBatchBuffers]()
         private var currentCompositeBatchKey: Int?
         /// Last scene submitted to a drawable, used to distinguish model
         /// updates from presentation in mounted-canvas regression tests.
         private(set) var presentedContentKey: Int?
+        /// How many times the layer-group buffers have been uploaded whole: a
+        /// new scene, or the base put back after a preview. Patches never
+        /// count, so a mounted-canvas test can tell a patched preview from a
+        /// rebuilt one (122).
+        private(set) var residentSceneUploads = 0
 
         /// Read the resident geometry for mounted-canvas regression checks.
         /// A scene key alone cannot detect a stale or displaced move preview.
@@ -808,6 +813,7 @@ struct HorizontalMetalBackdropView {
 
             resetIncrementalBufferPatchState()
             currentCompositeBatchKey = key
+            residentSceneUploads += 1
             guard let device else {
                 compositeBatchBuffers = []
                 return
@@ -948,21 +954,22 @@ struct HorizontalMetalBackdropView {
             }
 
             for patch in patches.lineTranslationPatches {
-                let delta = incrementalTranslationDelta(
+                let step = incrementalTranslationStep(
                     kind: 0,
                     compositeGroup: patch.compositeGroup,
                     start: patch.start,
                     count: patch.count,
-                    absoluteDelta: patch.delta
+                    absoluteDelta: patch.delta,
+                    angle: patch.angle
                 )
-                guard delta != .zero else { continue }
+                guard !step.isIdentity else { continue }
                 if patch.compositeGroup == 0 {
-                    translateLineSubrange(start: patch.start, count: patch.count, by: delta)
+                    translateLineSubrange(start: patch.start, count: patch.count, by: step)
                 } else {
                     compositeBatchStorageByGroup[patch.compositeGroup]?.translateLineSubrange(
                         start: patch.start,
                         count: patch.count,
-                        by: delta
+                        by: step
                     )
                 }
             }
@@ -980,92 +987,114 @@ struct HorizontalMetalBackdropView {
             }
 
             for patch in patches.triangleTranslationPatches {
-                let delta = incrementalTranslationDelta(
+                let step = incrementalTranslationStep(
                     kind: 1,
                     compositeGroup: patch.compositeGroup,
                     start: patch.start,
                     count: patch.count,
-                    absoluteDelta: patch.delta
+                    absoluteDelta: patch.delta,
+                    angle: patch.angle
                 )
-                guard delta != .zero else { continue }
+                guard !step.isIdentity else { continue }
                 if patch.compositeGroup == 0 {
-                    translateTriangleSubrange(start: patch.start, count: patch.count, by: delta)
+                    translateTriangleSubrange(start: patch.start, count: patch.count, by: step)
                 } else {
                     compositeBatchStorageByGroup[patch.compositeGroup]?.translateTriangleSubrange(
                         start: patch.start,
                         count: patch.count,
-                        by: delta
+                        by: step
                     )
                 }
             }
 
             for patch in patches.anchoredRectTranslationPatches {
-                let delta = incrementalTranslationDelta(
+                let step = incrementalTranslationStep(
                     kind: 2,
                     compositeGroup: patch.compositeGroup,
                     start: patch.start,
                     count: patch.count,
-                    absoluteDelta: patch.delta
+                    absoluteDelta: patch.delta,
+                    angle: patch.angle
                 )
-                guard delta != .zero else { continue }
+                guard !step.isIdentity else { continue }
                 if patch.compositeGroup == 0 {
-                    translateAnchoredRectSubrange(start: patch.start, count: patch.count, by: delta)
+                    translateAnchoredRectSubrange(start: patch.start, count: patch.count, by: step)
                 } else {
                     compositeBatchStorageByGroup[patch.compositeGroup]?.translateAnchoredRectSubrange(
                         start: patch.start,
                         count: patch.count,
-                        by: delta
+                        by: step
                     )
                 }
             }
 
             for patch in patches.handleTranslationPatches {
-                let delta = incrementalTranslationDelta(
+                let step = incrementalTranslationStep(
                     kind: 3,
                     compositeGroup: 0,
                     start: patch.start,
                     count: patch.count,
-                    absoluteDelta: patch.delta
+                    absoluteDelta: patch.delta,
+                    angle: patch.angle
                 )
-                guard delta != .zero else { continue }
-                translateHandleSubrange(start: patch.start, count: patch.count, by: delta)
+                guard !step.isIdentity else { continue }
+                translateHandleSubrange(start: patch.start, count: patch.count, by: step)
+            }
+
+            // Last, so a redrawn text is what shows even where a translation
+            // above also moved its primitives.
+            for patch in patches.lineRedrawPatches {
+                let primitives = patch.primitives.map(Self.shaderPrimitive)
+                if patch.compositeGroup == 0 {
+                    lineBufferStorage.replaceSubrange(start: patch.start, primitives: primitives)
+                } else {
+                    compositeBatchStorageByGroup[patch.compositeGroup]?.replaceLineSubrange(
+                        start: patch.start,
+                        primitives: primitives
+                    )
+                }
             }
         }
 
         private func resetIncrementalBufferPatchState() {
             currentBufferPatchKey = nil
-            appliedTranslationDeltas.removeAll(keepingCapacity: true)
+            appliedTranslations.removeAll(keepingCapacity: true)
         }
 
-        private func incrementalTranslationDelta(
+        /// What still has to be done to a run to take it from where the last
+        /// patch left it to where this one puts it. Patches are absolute — the
+        /// move so far, from the resident scene — while the buffers keep only
+        /// what was last applied.
+        private func incrementalTranslationStep(
             kind: Int,
             compositeGroup: Int,
             start: Int,
             count: Int,
-            absoluteDelta: HorizontalPoint
-        ) -> SIMD2<Float> {
+            absoluteDelta: HorizontalPoint,
+            angle: Int
+        ) -> HorizontalMetalPlacementStep {
             let key = HorizontalMetalTranslationPatchKey(
                 kind: kind,
                 compositeGroup: compositeGroup,
                 start: start,
                 count: count
             )
-            let absolute = SIMD2(Float(absoluteDelta.x), Float(absoluteDelta.y))
-            let previous = appliedTranslationDeltas[key] ?? .zero
-            appliedTranslationDeltas[key] = absolute
-            return absolute - previous
+            let absolute = HorizontalMetalPlacementStep(
+                angle: angle,
+                delta: SIMD2(Float(absoluteDelta.x), Float(absoluteDelta.y))
+            )
+            let previous = appliedTranslations[key] ?? .identity
+            appliedTranslations[key] = absolute
+            return absolute.after(undoing: previous)
         }
 
         private static func shaderPoint(_ point: HorizontalPoint?) -> SIMD2<Float>? {
             point.map { SIMD2(Float($0.x), Float($0.y)) }
         }
 
-        private func translateLineSubrange(start: Int, count: Int, by delta: SIMD2<Float>) {
+        private func translateLineSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
             lineBufferStorage.mutateSubrange(start: start, count: count) { primitives in
-                for index in primitives.indices {
-                    primitives[index].from += delta
-                    primitives[index].to += delta
-                }
+                step.apply(toLines: primitives)
             }
         }
 
@@ -1085,28 +1114,22 @@ struct HorizontalMetalBackdropView {
             }
         }
 
-        private func translateTriangleSubrange(start: Int, count: Int, by delta: SIMD2<Float>) {
+        private func translateTriangleSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
             triangleBufferStorage.mutateSubrange(start: start, count: count) { primitives in
-                for index in primitives.indices {
-                    primitives[index].a += delta
-                    primitives[index].b += delta
-                    primitives[index].c += delta
-                }
+                step.apply(toTriangles: primitives)
             }
         }
 
-        private func translateAnchoredRectSubrange(start: Int, count: Int, by delta: SIMD2<Float>) {
+        private func translateAnchoredRectSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
             anchoredRectBufferStorage.mutateSubrange(start: start, count: count) { primitives in
-                for index in primitives.indices {
-                    primitives[index].center += delta
-                }
+                step.apply(toAnchoredRects: primitives)
             }
         }
 
-        private func translateHandleSubrange(start: Int, count: Int, by delta: SIMD2<Float>) {
+        private func translateHandleSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
             handleBufferStorage.mutateSubrange(start: start, count: count) { primitives in
                 for index in primitives.indices {
-                    primitives[index].center += delta
+                    primitives[index].center = step.apply(to: primitives[index].center)
                 }
             }
         }
@@ -1936,22 +1959,15 @@ private final class HorizontalMetalCompositeBatchBuffers {
         anchoredRectStorage.replaceSubrange(start: start, primitives: primitives)
     }
 
-    func translateTriangleSubrange(start: Int, count: Int, by delta: SIMD2<Float>) {
+    func translateTriangleSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
         triangleStorage.mutateSubrange(start: start, count: count) { primitives in
-            for index in primitives.indices {
-                primitives[index].a += delta
-                primitives[index].b += delta
-                primitives[index].c += delta
-            }
+            step.apply(toTriangles: primitives)
         }
     }
 
-    func translateLineSubrange(start: Int, count: Int, by delta: SIMD2<Float>) {
+    func translateLineSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
         lineStorage.mutateSubrange(start: start, count: count) { primitives in
-            for index in primitives.indices {
-                primitives[index].from += delta
-                primitives[index].to += delta
-            }
+            step.apply(toLines: primitives)
         }
     }
 
@@ -1969,11 +1985,102 @@ private final class HorizontalMetalCompositeBatchBuffers {
         }
     }
 
-    func translateAnchoredRectSubrange(start: Int, count: Int, by delta: SIMD2<Float>) {
+    func translateAnchoredRectSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
         anchoredRectStorage.mutateSubrange(start: start, count: count) { primitives in
+            step.apply(toAnchoredRects: primitives)
+        }
+    }
+}
+
+/// A move's patch as the buffers take it: turned about the world origin by
+/// `angle` (65536 a whole turn), then shifted by `delta`. Quarter turns are
+/// exact, as `HorizontalPlacementTransform` keeps them, so the resident copy
+/// lands where the committed geometry will be drawn (122).
+private struct HorizontalMetalPlacementStep: Equatable {
+    var angle: Int
+    var delta: SIMD2<Float>
+
+    static let identity = HorizontalMetalPlacementStep(angle: 0, delta: .zero)
+
+    init(angle: Int, delta: SIMD2<Float>) {
+        self.angle = Self.wrapped(angle)
+        self.delta = delta
+    }
+
+    private static func wrapped(_ angle: Int) -> Int {
+        let wrapped = angle % 65_536
+        return wrapped < 0 ? wrapped + 65_536 : wrapped
+    }
+
+    var isIdentity: Bool {
+        angle == 0 && delta == .zero
+    }
+
+    func apply(to point: SIMD2<Float>) -> SIMD2<Float> {
+        Self.turned(point, by: angle) + delta
+    }
+
+    /// The step that takes what `previous` placed to where `self` places it.
+    /// With no turn on either side this is the difference of the shifts, as
+    /// the translation-only patches always were.
+    func after(undoing previous: HorizontalMetalPlacementStep) -> HorizontalMetalPlacementStep {
+        let turn = Self.wrapped(angle - previous.angle)
+        return HorizontalMetalPlacementStep(angle: turn, delta: delta - Self.turned(previous.delta, by: turn))
+    }
+
+    private static func turned(_ point: SIMD2<Float>, by angle: Int) -> SIMD2<Float> {
+        switch angle {
+        case 0:
+            return point
+        case 16_384:
+            return SIMD2(-point.y, point.x)
+        case 32_768:
+            return -point
+        case 49_152:
+            return SIMD2(point.y, -point.x)
+        default:
+            let radians = Double(angle) / 65_536 * 2 * .pi
+            let cosine = Float(cos(radians))
+            let sine = Float(sin(radians))
+            return SIMD2(point.x * cosine - point.y * sine, point.x * sine + point.y * cosine)
+        }
+    }
+
+    func apply(toLines primitives: UnsafeMutableBufferPointer<HorizontalMetalLineShaderPrimitive>) {
+        if angle == 0 {
             for index in primitives.indices {
-                primitives[index].center += delta
+                primitives[index].from += delta
+                primitives[index].to += delta
             }
+            return
+        }
+        for index in primitives.indices {
+            primitives[index].from = apply(to: primitives[index].from)
+            primitives[index].to = apply(to: primitives[index].to)
+        }
+    }
+
+    func apply(toTriangles primitives: UnsafeMutableBufferPointer<HorizontalMetalTriangleShaderPrimitive>) {
+        if angle == 0 {
+            for index in primitives.indices {
+                primitives[index].a += delta
+                primitives[index].b += delta
+                primitives[index].c += delta
+            }
+            return
+        }
+        for index in primitives.indices {
+            primitives[index].a = apply(to: primitives[index].a)
+            primitives[index].b = apply(to: primitives[index].b)
+            primitives[index].c = apply(to: primitives[index].c)
+        }
+    }
+
+    /// An anchored rect's size is in points on the screen, so only its centre
+    /// turns; the board draws them as squares.
+    func apply(toAnchoredRects primitives: UnsafeMutableBufferPointer<HorizontalMetalAnchoredRectShaderPrimitive>) {
+        for index in primitives.indices {
+            primitives[index].center = apply(to: primitives[index].center)
         }
     }
 }
