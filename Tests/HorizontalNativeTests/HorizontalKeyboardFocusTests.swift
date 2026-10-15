@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import HorizontalProjectIO
 import SwiftUI
 import XCTest
 @testable import HorizontalNative
@@ -183,6 +184,74 @@ final class HorizontalKeyboardFocusTests: XCTestCase {
         canvas.handlesInteractionKeys = true
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertTrue(window.firstResponder === canvas, "the interaction has the keyboard")
+    }
+
+    private final class DocumentState: ObservableObject {
+        @Published var document = HorizontalProjectDocument()
+    }
+
+    private struct Workspace: View {
+        @ObservedObject var state: DocumentState
+        var project: HorizontalProject
+        @State var panes: Set<HorizontalPane> = [.board, .schematic]
+        @State var nets = Set<String>()
+        @State var highlightedNets = Set<String>()
+        @State var components = Set<String>()
+        @State var highlightedComponents = Set<String>()
+        var body: some View {
+            ProjectWorkspaceView(project: project, document: $state.document, visiblePanes: $panes,
+                                 selectedNetIDs: $nets, highlightedNetIDs: $highlightedNets,
+                                 selectedComponentIDs: $components, highlightedComponentIDs: $highlightedComponents)
+        }
+    }
+
+    /// 128 gives a focused list its keys, which would leave the canvases
+    /// without theirs if a window opened with its navigator focused. It
+    /// doesn't: the window's first responder is SwiftUI's hosting view, which
+    /// keeps it when the window becomes key rather than passing it to the
+    /// navigator's outline, and the outline is in the key view loop only with
+    /// Keyboard Navigation on. Without it the loop holds just the canvases.
+    func testAProjectWindowOpensWithNoListHoldingTheKeyboard() async throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required for the canvases") }
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("initial-focus-\(UUID().uuidString).horizontal")
+        try HorizontalProjectArchive.newProject().write(to: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let state = DocumentState()
+        state.document.archive = try HorizontalProjectArchive.snapshot(from: root)
+        let project = try HorizontalProject.load(from: root)
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "initial-focus-\(UUID().uuidString)"))
+        let hosted = NSHostingView(rootView: Workspace(state: state, project: project)
+            .environmentObject(HorizontalAppearanceSettings(defaults: defaults)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 700),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosted
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        func lists(_ view: NSView) -> [NSTableView] { ((view as? NSTableView).map { [$0] } ?? []) + view.subviews.flatMap(lists) }
+        let deadline = Date().addingTimeInterval(10)
+        while lists(hosted).isEmpty, Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
+        let navigator = try XCTUnwrap(lists(hosted).first, "the navigator's outline")
+
+        // What the window does when it first becomes key: its initial first
+        // responder takes the keyboard, and SwiftUI hears the window is key.
+        let initial = try XCTUnwrap(window.initialFirstResponder)
+        XCTAssertTrue(initial === hosted)
+        XCTAssertTrue(window.makeFirstResponder(initial))
+        window.becomeKey()
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertFalse(window.firstResponder?.isKeyboardList ?? false,
+                       "the window opens with \(String(describing: window.firstResponder)) holding the keyboard")
+        XCTAssertFalse(window.firstResponder === navigator)
+
+        if !NSApp.isFullKeyboardAccessEnabled {
+            XCTAssertFalse(navigator.canBecomeKeyView, "without Keyboard Navigation the outline takes the keyboard only from a click")
+            XCTAssertTrue(window.makeFirstResponder(nil))
+            window.selectNextKeyView(nil)
+            XCTAssertTrue(window.firstResponder is TrackpadCanvasMonitor.MonitorView, "the first key view is a canvas")
+        }
     }
 
     func testWorkspaceReportsWhenATextFieldHasTheKeyboard() throws {
