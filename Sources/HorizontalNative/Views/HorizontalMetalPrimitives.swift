@@ -239,11 +239,17 @@ struct HorizontalMetalHandleBufferPatch: Hashable {
     var primitives: [HorizontalMetalHandlePrimitive]
 }
 
+/// Moves a run of resident primitives to where a move has taken them: turned
+/// about the world origin by `angle`, then shifted by `delta`, as
+/// `HorizontalPlacementTransform` places a point. `angle` is in the format's
+/// units (65536 a whole turn) and is exact at quarter turns; it is 0 unless R or
+/// T has turned what is moving (122).
 struct HorizontalMetalLineTranslationPatch: Hashable {
     var compositeGroup: Int
     var start: Int
     var count: Int
     var delta: HorizontalPoint
+    var angle: Int = 0
 }
 
 struct HorizontalMetalLineEndpointPatch: Hashable {
@@ -253,24 +259,30 @@ struct HorizontalMetalLineEndpointPatch: Hashable {
     var to: HorizontalPoint?
 }
 
+/// As `HorizontalMetalLineTranslationPatch`.
 struct HorizontalMetalTriangleTranslationPatch: Hashable {
     var compositeGroup: Int
     var start: Int
     var count: Int
     var delta: HorizontalPoint
+    var angle: Int = 0
 }
 
+/// As `HorizontalMetalLineTranslationPatch`.
 struct HorizontalMetalAnchoredRectTranslationPatch: Hashable {
     var compositeGroup: Int
     var start: Int
     var count: Int
     var delta: HorizontalPoint
+    var angle: Int = 0
 }
 
+/// As `HorizontalMetalLineTranslationPatch`.
 struct HorizontalMetalHandleTranslationPatch: Hashable {
     var start: Int
     var count: Int
     var delta: HorizontalPoint
+    var angle: Int = 0
 }
 
 struct HorizontalMetalBufferPatches: Hashable {
@@ -285,6 +297,12 @@ struct HorizontalMetalBufferPatches: Hashable {
     var triangleTranslationPatches: [HorizontalMetalTriangleTranslationPatch] = []
     var anchoredRectTranslationPatches: [HorizontalMetalAnchoredRectTranslationPatch] = []
     var handleTranslationPatches: [HorizontalMetalHandleTranslationPatch] = []
+    /// Lines written whole after every translation, over primitives a
+    /// translation patch may also cover: the texts a turn redraws so they read
+    /// the way a rebuilt scene would draw them (122). Each is written on every
+    /// pass while the patches last, so what the translations did to the same
+    /// primitives never shows.
+    var lineRedrawPatches: [HorizontalMetalLineBufferPatch] = []
 
     var isEmpty: Bool {
         linePatches.isEmpty
@@ -296,6 +314,7 @@ struct HorizontalMetalBufferPatches: Hashable {
             && triangleTranslationPatches.isEmpty
             && anchoredRectTranslationPatches.isEmpty
             && handleTranslationPatches.isEmpty
+            && lineRedrawPatches.isEmpty
     }
 }
 
