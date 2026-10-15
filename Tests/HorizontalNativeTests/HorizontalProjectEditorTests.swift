@@ -799,6 +799,53 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual(placed.airwires.count, 0)
     }
 
+    /// A board as loaded has no junction nets, since Horizon writes none, and
+    /// the placement draft made its rats' nest without the editor's
+    /// connectivity pass, so every routed bend came apart: placing a package
+    /// on Billo drew 327 airwires where the board had 31. A move's live
+    /// airwires skipped the bends the same way (125).
+    func testPlacingAPackageOnABoardAsLoadedKeepsItsRoutedCopperJoined() throws {
+        try placedDivider()
+        _ = try apply([
+            ["op": "ensure_component", "refdes": "R3", "part": partID],
+            ["op": "place_track", "from": ["component": "R1", "pad": "1"], "to": ["x_mm": 20, "y_mm": 20], "layer": 0, "width_mm": 0.25],
+            ["op": "place_track", "from": ["x_mm": 20, "y_mm": 20], "to": ["component": "R2", "pad": "1"], "layer": 0, "width_mm": 0.25]
+        ])
+        // The junctions as Horizon writes them: a position and nothing else.
+        let boardURL = packageURL.appendingPathComponent("board.json")
+        var file = try JSONHelper.loadDictionary(from: boardURL)
+        var junctions = try XCTUnwrap(file["junctions"] as? JSONDictionary)
+        for (id, value) in junctions {
+            junctions[id] = (value as? JSONDictionary)?.filter { $0.key != "net" }
+        }
+        file["junctions"] = junctions
+        try JSONSerialization.data(withJSONObject: file, options: [.sortedKeys]).write(to: boardURL)
+
+        let loaded = try HorizontalProject.load(from: packageURL)
+        let board = try XCTUnwrap(loaded.board)
+        XCTAssertTrue(board.junctionNetIDs.isEmpty)
+        XCTAssertEqual(board.airwires.count, 0, "the loader joins R1 to R2 through the bend")
+
+        let r3 = try XCTUnwrap(board.unplacedObjects.first { $0.label == "R3" })
+        let poolURL = try XCTUnwrap(loaded.poolDirectory.map { loaded.baseURL.appendingPathComponent($0) })
+        let draft = try XCTUnwrap(HorizontalBoard.placingPackage(
+            for: r3, in: board, at: HorizontalPoint(x: 50_000_000, y: 10_000_000), poolURL: poolURL))
+        XCTAssertEqual(draft.board.airwires.count, 0, "R3 is on no net, and the bend still joins R1 to R2")
+
+        // The canvas makes a move's live airwires after the same pass. Moving
+        // R1 moves the end of the track on its pad, as the move's plan has it.
+        let r1 = try XCTUnwrap(board.packages.first { $0.label == "R1" })
+        // R1 is at x = 10 mm, the bend at 20 and R2 at 30.
+        let onR1 = try XCTUnwrap(board.tracks.first { min($0.from.x, $0.to.x) < 15_000_000 })
+        let ends = [onR1.id: (from: onR1.from.x < 15_000_000, to: onR1.to.x < 15_000_000)]
+        func live(_ board: HorizontalBoard) -> Int {
+            board.movingAirwires(packageIDs: [r1.id], viaIDs: [], junctionIDs: [], segmentEnds: ends)
+                .airwires(offset: .zero).count
+        }
+        XCTAssertEqual(live(board), 1, "without the pass the bend joins nothing")
+        XCTAssertEqual(live(HorizontalBoardConnectivity.recompute(board)), 0)
+    }
+
     /// Placing a package in the app and saving wrote every board text as it
     /// draws: on Billo, 157 smashed "$RD"s became their refdes and
     /// "$project_title" became "Billo". It also gave 1,561 junctions a net,
