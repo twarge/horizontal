@@ -55,16 +55,18 @@ enum HorizontalCanvasProjectEdit {
     }
 
     /// `archive` with `operations` applied. `operations` are the same
-    /// `{"op": …}` dictionaries `apply_ops` takes.
+    /// `{"op": …}` dictionaries `apply_ops` takes, and `block` is its
+    /// `block`: the top block when nil.
     static func archive(
         applying operations: [JSONDictionary],
         to archive: HorizontalProjectArchive,
-        in project: HorizontalProject
+        in project: HorizontalProject,
+        block: String? = nil
     ) throws -> (archive: HorizontalProjectArchive, changes: [JSONDictionary]) {
         let parsed = try operations.map { try HorizontalEditOperation(json: $0) }
         let store = HorizontalArchiveFileStore(archive: archive, baseURL: project.baseURL)
         let snapshot = HorizontalDispatchSnapshot(archive: archive, baseURL: project.baseURL)
-        let editor = try HorizontalProjectEditor(project: project, store: store, snapshot: snapshot)
+        let editor = try HorizontalProjectEditor(project: project, store: store, snapshot: snapshot, block: block)
         try editor.apply(parsed)
         _ = try editor.write()
         return (store.archive, editor.changes)
