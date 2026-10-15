@@ -98,6 +98,17 @@ final class BoardMoveRotateTests: XCTestCase {
         return view.subviews.lazy.compactMap { self.monitor(in: $0) }.first
     }
 
+    /// Rests the pointer on the canvas away from the part, as a user's might
+    /// during a move made with the arrow keys. That move turns about what it
+    /// moves, not about the pointer (123). Before, R turned about wherever the
+    /// real pointer was, so these tests failed when it rested over their window.
+    private func restPointer(in window: NSWindow) throws {
+        let monitorView = try XCTUnwrap(window.contentView.flatMap { monitor(in: $0) })
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: NSPoint(x: 400, y: 300), modifierFlags: [],
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
+        _ = monitorView.makeEventHandler()(event)
+    }
+
     /// The renderer of the board's own scene, under the selection overlay.
     private func renderer(in view: NSView) -> HorizontalMetalBackdropView.Renderer? {
         if let metal = view as? MTKView, let renderer = metal.delegate as? HorizontalMetalBackdropView.Renderer,
@@ -159,6 +170,7 @@ final class BoardMoveRotateTests: XCTestCase {
         try key(126, "\u{f700}")   // up: a keyboard move
         let moving = await settle { state.actions?.canCommitInteraction == true }
         XCTAssertTrue(moving)
+        try restPointer(in: window)
         try key(15, "r")
         XCTAssertEqual(state.committed.count, 0, "R while moving commits nothing")
         XCTAssertEqual(state.actions?.canCommitInteraction, true, "and the move carries on")
@@ -209,6 +221,7 @@ final class BoardMoveRotateTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(300))
         let uploads = renderer.residentSceneUploads
 
+        try restPointer(in: window)
         try key(15, "r")
         let turned = await settle { outlineIsUpright(renderer.residentLineEndpoints(compositeGroup: silkscreen)) }
         XCTAssertTrue(turned, "the preview turns")
@@ -254,6 +267,7 @@ final class BoardMoveRotateTests: XCTestCase {
         defer { window.close() }
 
         try key(126, "\u{f700}")
+        try restPointer(in: window)
         try key(15, "r")
         try key(36, "\r")
         let committed = await settle { state.committed.count == 1 }
@@ -267,6 +281,7 @@ final class BoardMoveRotateTests: XCTestCase {
         defer { window.close() }
 
         try key(126, "\u{f700}")
+        try restPointer(in: window)
         try key(15, "r")
         try key(53, "\u{1b}")
         let stopped = await settle { state.actions?.canCommitInteraction != true }
