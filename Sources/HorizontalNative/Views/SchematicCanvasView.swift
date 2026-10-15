@@ -491,23 +491,6 @@ struct SchematicCanvasView: View {
         "\(sourceSheet.name)  sheets \(sourceAllSheets.count), symbols \(sourceSheet.symbols.count), nets \(sourceSheet.netLines.count), junctions \(sourceSheet.junctions.count), symbol pins \(sourceSheet.symbolPins.count), symbol texts \(sourceSheet.symbolTexts.count)"
     }
 
-    private var schematicMetalPatchIndicator: some View {
-        Label("Metal patch", systemImage: "bolt.fill")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(theme.textOverlay)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(.thinMaterial, in: Capsule())
-            .overlay {
-                Capsule()
-                    .stroke(theme.textOverlay.opacity(0.22), lineWidth: 1)
-            }
-            .padding(.leading, max(fitSafeAreaInsets?.leading ?? 0, CGFloat(0)) + 12)
-            .padding(.top, max(fitSafeAreaInsets?.top ?? 0, CGFloat(0)) + 12)
-            .help("Resident Metal range patching is active for this move")
-            .allowsHitTesting(false)
-    }
-
     private var drawsGridInMetal: Bool {
         #if canImport(MetalKit)
         displayOptions.grid && HorizontalMetalBackdropView.isSupported
@@ -846,11 +829,6 @@ struct SchematicCanvasView: View {
                 || drawNetLineState != nil
                 || drawGraphicsState != nil
         )
-        .overlay(alignment: .topLeading) {
-            if canPatchSchematicMoveInMetal && !metalBufferPatches.isEmpty {
-                schematicMetalPatchIndicator
-            }
-        }
         .onChange(of: sourceSheet.id) { _, _ in
             undoTarget.removeAllActions(from: undoManager)
             editedSheet = nil
