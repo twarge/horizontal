@@ -10448,7 +10448,12 @@ struct BoardCanvasView: View {
         }
         let movingSegmentEnds = segmentEnds
         return selectableCache.requestMovingAirwires {
-            board.movingAirwires(packageIDs: packageIDs, viaIDs: viaIDs, junctionIDs: junctionIDs, segmentEnds: movingSegmentEnds)
+            // After the editor's connectivity pass, as the commit makes the
+            // rats' nest: a board as loaded has no junction nets, and without
+            // them the live airwires skipped every routed bend (125). Off the
+            // main thread, like the rest of the request.
+            HorizontalBoardConnectivity.recompute(board)
+                .movingAirwires(packageIDs: packageIDs, viaIDs: viaIDs, junctionIDs: junctionIDs, segmentEnds: movingSegmentEnds)
         }
     }
 
