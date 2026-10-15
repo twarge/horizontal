@@ -70,6 +70,13 @@ struct HorizontalProjectDocument: FileDocument {
         return true
     }
 
+    /// Whether `other` holds this very archive, not just one equal to it.
+    /// Every archive assignment replaces the storage, so a copy taken before
+    /// an edit answers false afterwards, without comparing the bytes.
+    func hasSameArchive(as other: Self) -> Bool {
+        contents === other.contents
+    }
+
     init(rawProjectData: Data = Data()) {
         contents = Contents(HorizontalProjectArchive(regularFileData: rawProjectData))
     }

@@ -66,6 +66,13 @@ enum HorizontalDocumentSaving {
                 "The document system has no open document for \(url.path), so there is nothing to save."
             )
         }
+        guard !savesAreHeld(url: url) else {
+            throw HorizontalDispatchError(
+                code: .staleRevision,
+                message: "The project's files changed on disk while it had edits it hadn't saved, and its window is asking "
+                    + "which to keep. Answer there, then read the project again."
+            )
+        }
         guard document.isDocumentEdited else {
             return
         }
@@ -82,6 +89,80 @@ enum HorizontalDocumentSaving {
         if let modified = try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.modificationDate] as? Date {
             document.fileModificationDate = modified
         }
+    }
+
+    /// Saves held while a window asks whether to keep its edits or the files
+    /// that changed under it (item 121).
+    @MainActor private static var holds = [URL: SaveHold]()
+
+    /// Keeps the document at `url` from saving, autosave included, until the
+    /// returned closure runs. The document system runs its saves as
+    /// activities, one after another; this is one, so a save waits behind it
+    /// rather than writing the document's edits over the files' changes.
+    @MainActor
+    static func holdSaves(url: URL) -> () -> Void {
+        guard let document = document(for: url) else { return {} }
+        let key = canonical(url)
+        let hold = SaveHold()
+        holds[key] = hold
+        document.performActivity(withSynchronousWaiting: false) { finished in
+            hold.begin(finished)
+        }
+        return {
+            hold.end()
+            if holds[key] === hold { holds[key] = nil }
+        }
+    }
+
+    @MainActor
+    static func savesAreHeld(url: URL) -> Bool {
+        holds[canonical(url)] != nil
+    }
+
+    /// The document now holds what its files do, as after Revert: nothing to
+    /// save, nothing to undo, and a modification date that is the file's, so
+    /// the next save doesn't take the reload for another program's edit.
+    @MainActor
+    static func didReloadFromDisk(url: URL) {
+        guard let document = document(for: url) else { return }
+        document.undoManager?.removeAllActions()
+        document.updateChangeCount(.changeCleared)
+        if let fileURL = document.fileURL,
+           let modified = try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.modificationDate] as? Date {
+            document.fileModificationDate = modified
+        }
+    }
+
+    private static func canonical(_ url: URL) -> URL {
+        url.resolvingSymlinksInPath().standardizedFileURL
+    }
+}
+
+/// One held activity. Its end can come before the document starts it, when
+/// another activity was running; it then finishes as soon as it begins.
+private final class SaveHold: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished: (() -> Void)?
+    private var ended = false
+
+    func begin(_ finished: @escaping () -> Void) {
+        lock.lock()
+        guard !ended else {
+            lock.unlock()
+            finished()
+            return
+        }
+        self.finished = finished
+        lock.unlock()
+    }
+
+    func end() {
+        lock.lock()
+        ended = true
+        let finished = self.finished
+        self.finished = nil
+        lock.unlock()
+        finished?()
     }
 }
 #endif
