@@ -171,7 +171,7 @@ authentication on a port.
 ## Field notes
 
 These turned up while driving the server against a real project (Cinnamon,
-2026-10-14). The full list is items 106–119 in billo's
+2026-10-14). The full list is items 106–119 and 121 in billo's
 `docs/horizontal-mcp-notes.md`. It also covers copper shorts that `check`
 cannot see, the save and autosave contract, `remap_part` and copper,
 junction handles, and stranded wiring.
@@ -189,9 +189,13 @@ junction handles, and stranded wiring.
      rather than the tree gathered from its manifest.
    - **Recovery.** After the app relaunched and the project was reopened,
      every write worked.
-2. **`unsaved_changes` stayed `false`.** `open_project` on an already-open live
-   context reported `unsaved_changes: false` after live edits had committed.
-   `save` then reported `had_unsaved_changes: true`.
+2. **`unsaved_changes` came and went.** `open_project` reported it `false`
+   after live edits had committed, and a later `save` reported
+   `had_unsaved_changes: true`. Neither was wrong: the document autosaves in
+   place, so the flag is whether an autosave is still pending at that moment.
+   What does need fixing is anything that says a live edit waits for `save`,
+   and the fact that the open document doesn't notice its files changing on
+   disk (items 110 and 121 in the list).
 3. **The server's version was empty.** `initialize` reported
    `serverInfo.version` as `""`. It now comes from the package metadata
    (fixed in this branch).
