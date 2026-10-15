@@ -385,9 +385,9 @@ would reject.
 
 ### Who has the project open
 
-The app does not reload files that change under an open document, so a disk
-write while it holds a project loses one edit or the other. The live channel
-cannot answer whether it does — that channel is off until the user turns it
+An open document autosaves in place, so a disk write while the app holds a
+project would be overwritten by its next autosave. The live channel cannot
+answer whether the app holds it — that channel is off until the user turns it
 on, and its absence proves nothing. So every process that opens a document
 writes a record in the project's transaction directory and holds an advisory
 lock on it for as long as the document is open. `project_info` reports them as
@@ -399,6 +399,43 @@ process can lock belonged to one that has exited, and is deleted on sight.
 The transaction directory sits beside the project and keeps its lock and
 receipts for good, so it writes a `.gitignore` of `*` into itself — a project
 in a git working tree does not have to know it is there.
+
+### When the files change under an open document
+
+A writer that doesn't go through Horizontal — git checking out a branch,
+pulling, stashing or resetting, a sync client, a script — gets no
+`DOCUMENT_OPEN`. The open window notices instead.
+
+**How it notices:**
+- `HorizontalProjectFileWatcher` follows the project's folder through
+  FSEvents, which sees writes from any process, not only coordinated ones.
+- Once the folder has been quiet for half a second, it reads the project as
+  the files hold it.
+- It compares that with the document, file by file, through
+  `HorizontalProjectFingerprint`. Finder's `.DS_Store`, git's `.git`, safe-save
+  temporaries and what the project's `.gitignore` leaves out don't count.
+
+**Telling its own writes apart:** the document autosaves, so most changes are
+its own. `HorizontalProjectChangeDetector` expects the files to hold one of:
+- what the document holds;
+- what they held when last seen in step;
+- something the document wrote since. Every save posts the archive it writes,
+  autosaves included.
+
+Anything else is a change from outside.
+
+**What happens then:**
+- **Nothing unsaved:** the window reloads, as Revert does. The canvases and
+  the live channel show the files as they are, and undo starts over.
+- **Edits not yet autosaved:** the window asks whether to reload from disk or
+  keep its version, and holds the document's saves until it is answered.
+  Meanwhile the live channel refuses `apply` and `save` with `STALE_REVISION`.
+
+**A live edit right after a change:** an edit that arrives before the
+half-second check doesn't wait for it. `applyLiveArchive` reads the files then
+and there. If they changed, it reloads (or asks), and refuses the edit with
+`STALE_REVISION`, so the client reads the project again rather than
+autosaving an edit made against what is no longer there.
 
 ## Live channel
 
