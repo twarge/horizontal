@@ -67,7 +67,8 @@ workflow, supported models, and recovery guarantees.
 
 # MCP edit contracts
 
-Live commits update the open document and remain unsaved until `save`. Its
+Live commits update the open document, which autosaves in place as the app
+does for any edit. `save` writes now, before a commit or an export; its
 `verified: true` response checks that disk matches the document snapshot; it
 does not establish that a canvas frame has been presented.
 Use `source="live"` when an edit must reach the open window; automatic source

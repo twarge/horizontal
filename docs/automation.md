@@ -191,15 +191,18 @@ as sent would be refused again.
 | `set_project_meta` | The title-block values — `project_title`, `project_name`, `rev`, `author` and the rest — that `$project_title` and the like stand for on the sheets and the board. They live in the top block; where the schematic keeps its own copy of a key (for the whole schematic or one sheet), that copy changes too, since it wins on the sheets it covers. `null` or `""` removes a key |
 | `set_export_settings` | Merge fields into one kind of export settings Horizon EDA keeps (`export_settings` shows them). Only fields the settings already hold, each with a value of the type it has, because Horizon reads them back strictly; a project with none of that kind yet is refused |
 
-### A live edit is not saved until it is saved
+### A live edit is saved the way the app saves
 
 An edit against a document the app has open becomes one undoable step in that
-document and nothing more: the result says `durability: "unsaved_document"`
-and means it. `save` writes it, `project_info` reports `unsaved_changes`, and
-a task that edits a live document is not finished without one. A batch that
-changed nothing says `durability: "unchanged"` and needs no save. A disk edit
-needs none of this — it committed with its transaction — and `save` says so
-rather than failing.
+document, and the document autosaves in place as any Mac document does: its
+files follow within seconds, and undo still takes the edit back. The result
+says `durability: "unsaved_document"`, meaning the document holds the edit and
+writes it itself; `project_info`'s `unsaved_changes` is whether an autosave is
+still pending. `save` writes now and checks the file. Call it before the files
+go somewhere else — a commit, an export, a build — so they are complete at
+that moment rather than mid-autosave. A batch that changed nothing says
+`durability: "unchanged"`. A disk edit committed its files with its
+transaction, and `save` says so rather than failing.
 
 Saving goes through the document system rather than around it: SwiftUI's
 `DocumentGroup` offers no API for it, so the document is found by URL through

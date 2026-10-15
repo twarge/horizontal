@@ -605,9 +605,11 @@ def new_project(path: str, name: str | None = None) -> dict[str, Any]:
 
 @_tool
 def save(path: str | None = None) -> dict[str, Any]:
-    """Write a document open in Horizontal to its file, the way the Save command does. An edit through the live
-    channel is one undoable step in the app and nothing more until this runs, so a task that edits a live document
-    is not finished without it.
+    """Write a document open in Horizontal to its file now, the way the Save command does, and check the file
+    holds it. The app autosaves its documents in place like any Mac app, so a live edit reaches disk on its own
+    within seconds; call this before handing the files to something else — a git commit, an export, a build — so
+    they are written and verified at that moment. saved false with had_unsaved_changes false means autosave had
+    already written everything; verified true is the answer either way.
 
     Check source in the reply. "live" means a document was saved, and verified: the file is compared against the
     document afterwards rather than the document's own edited flag being trusted, so this can no longer claim
