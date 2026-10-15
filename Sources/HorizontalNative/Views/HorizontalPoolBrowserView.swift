@@ -78,7 +78,7 @@ struct HorizontalPoolPartActions {
 /// selected item below the list, and a Pools menu to register additional
 /// pool directories (e.g. a horizon-pool checkout), rescan them or open one
 /// in its own window. Parts can also be searched parametrically, by a table's
-/// values, in a section left of the list.
+/// values, in a bar under the toolbar.
 ///
 /// In a project window, Place puts the selected part on the schematic. With
 /// components selected in the workspace the list shows only the parts that
@@ -118,8 +118,8 @@ struct HorizontalPoolBrowserView: View {
     /// whose close button goes back to showing every part and placing. A
     /// different selection brings Replace back.
     @State private var dismissedReplacementKey: String?
-    /// The parametric section: shown or behind its disclosure triangle, kept
-    /// across launches; the browsed pools' tables; the one chosen, nil for
+    /// The parametric bar: shown or behind the toolbar's disclosure triangle,
+    /// kept across launches; the browsed pools' tables; the one chosen, nil for
     /// every part; its filters and the list's sort.
     @AppStorage("poolBrowser.showsParametricFilters") private var showsParametricFilters = false
     @State private var parametricTables: [HorizontalParametricTable] = []
@@ -355,6 +355,10 @@ struct HorizontalPoolBrowserView: View {
             browserToolbar
                 .padding(.top, safeAreaInsets.top)
             Divider()
+            if category == .part && showsParametricFilters {
+                parametricBar
+                Divider()
+            }
             replacementBanner
             if browsedPools.isEmpty {
                 noPoolsView
@@ -542,34 +546,30 @@ struct HorizontalPoolBrowserView: View {
         return text
     }
 
-    /// The list, with the parametric section on its left while parts are
-    /// listed. A chosen table shows its parts, narrowed by its filters, with
-    /// a column for each of its values.
+    /// The list. While parts are listed, a chosen table shows its parts,
+    /// narrowed by its filters, with a column for each of its values.
     @ViewBuilder
     private var listArea: some View {
-        if category == .part {
-            let table = parametricTable
-            let columns = table.map(HorizontalPoolParametricSearch.filterColumns(of:)) ?? []
-            let rows = table.map { HorizontalPoolParametricSearch.filter(parametricRows(in: $0), by: parametricFilters.applied) }
-            HStack(spacing: 0) {
-                HorizontalPoolParametricFilterView(
-                    isExpanded: $showsParametricFilters,
-                    tables: parametricTables,
-                    tableName: $parametricTableName,
-                    columns: columns,
-                    valuesRemaining: rows.map { HorizontalPoolParametricSearch.valuesRemaining($0, columns: columns) } ?? [:],
-                    filters: $parametricFilters
-                )
-                Divider()
-                if let table, let rows {
-                    parametricListContent(table, rows: rows)
-                } else {
-                    listContent
-                }
-            }
+        if category == .part, let table = parametricTable {
+            parametricListContent(table, rows: HorizontalPoolParametricSearch.filter(parametricRows(in: table), by: parametricFilters.applied))
         } else {
             listContent
         }
+    }
+
+    /// The parametric bar under the toolbar (130): the table, Search and
+    /// Reset with the filters applied, and a box of values for each column.
+    private var parametricBar: some View {
+        let table = parametricTable
+        let columns = table.map(HorizontalPoolParametricSearch.filterColumns(of:)) ?? []
+        let rows = table.map { HorizontalPoolParametricSearch.filter(parametricRows(in: $0), by: parametricFilters.applied) }
+        return HorizontalPoolParametricFilterView(
+            tables: parametricTables,
+            tableName: $parametricTableName,
+            columns: columns,
+            valuesRemaining: rows.map { HorizontalPoolParametricSearch.valuesRemaining($0, columns: columns) } ?? [:],
+            filters: $parametricFilters
+        )
     }
 
     @ViewBuilder
@@ -637,6 +637,10 @@ struct HorizontalPoolBrowserView: View {
 
     private func toolbarRow(compact: Bool) -> some View {
         HStack(spacing: 8) {
+            if category == .part {
+                parametricDisclosure
+            }
+
             kindPicker(compact: compact)
 
             TextField("Search \(category.title)", text: $searchText)
@@ -669,6 +673,40 @@ struct HorizontalPoolBrowserView: View {
                 partButton(compact: compact)
             }
         }
+    }
+
+    /// The parametric bar's triangle, at the toolbar's left while parts are
+    /// listed (130), with a filter mark while the bar is closed and a table
+    /// still narrows the list.
+    private var parametricDisclosure: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) { showsParametricFilters.toggle() }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: showsParametricFilters ? "chevron.down" : "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12, height: 16)
+                if !showsParametricFilters, parametricTable != nil {
+                    Image(systemName: parametricFilters.applied.isEmpty
+                          ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                        .foregroundStyle(.tint)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(parametricDisclosureHelp)
+    }
+
+    private var parametricDisclosureHelp: String {
+        if showsParametricFilters {
+            return "Hide the parametric filters"
+        }
+        if let table = parametricTable {
+            return "Show the parametric filters (showing \(table.displayName) only\(parametricFilters.applied.isEmpty ? "" : ", filtered"))"
+        }
+        return "Show the parametric filters"
     }
 
     /// Place, or Replace while components are selected: the pane's primary
