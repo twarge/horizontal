@@ -97,6 +97,10 @@ struct HorizontalIPadProjectView: View {
     @State private var placePartRequest: HorizontalPartPlacementRequest?
     @State private var libraryPlacementError: String?
     @State private var libraryRevealRequest: HorizontalPoolRevealRequest?
+    /// The selected components as the Pools pane's Replace sees them; see the
+    /// macOS workspace's.
+    @State private var libraryPartReplacement: HorizontalPartReplacement?
+    @State private var libraryReplacementError: String?
     // App settings sheet (the iPad stand-in for the macOS Settings window).
     @State private var settingsSheetPresented = false
     /// The project pool cleanup on show, reviewed when it opened.
@@ -130,6 +134,14 @@ struct HorizontalIPadProjectView: View {
                     Button("OK", role: .cancel) {}
                 } message: {
                     Text(libraryPlacementError ?? "")
+                }
+                .alert("Could Not Replace Part", isPresented: Binding(
+                    get: { libraryReplacementError != nil },
+                    set: { if !$0 { libraryReplacementError = nil } }
+                )) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(libraryReplacementError ?? "")
                 }
         }
     }
@@ -313,6 +325,13 @@ struct HorizontalIPadProjectView: View {
                 focusedPane = orderedVisiblePanes.first ?? focusedPane
             }
             scheduleViewStateSave()
+            refreshLibraryPartReplacement()
+        }
+        .onChange(of: selectedComponentIDs) { _, _ in
+            refreshLibraryPartReplacement()
+        }
+        .onChange(of: schematicEditRevision) { _, _ in
+            refreshLibraryPartReplacement()
         }
         .onChange(of: paneSizeFractions) { _, _ in
             scheduleViewStateSave()
@@ -927,7 +946,16 @@ struct HorizontalIPadProjectView: View {
                 root: .project(poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }),
                 safeAreaInsets: safeAreaInsets,
                 revealRequest: libraryRevealRequest,
-                onPlacePart: project.schematic == nil ? nil : { item in placePartFromLibrary(item, project: project) }
+                partActions: HorizontalPoolPartActions(
+                    place: isReadOnly || project.schematic == nil ? nil : { item in placePartFromLibrary(item, project: project) },
+                    placeUnavailableReason: isReadOnly
+                        ? "Read-only operation is enabled in Horizontal."
+                        : project.schematic == nil ? "This project has no schematic to place parts in." : nil,
+                    replacement: libraryPartReplacement,
+                    replace: isReadOnly ? nil : { item, packageName, replacement in
+                        replacePartsFromLibrary(item, packageName: packageName, replacement)
+                    }
+                )
             )
         case .schematic:
             schematicView(for: project, safeAreaInsets: safeAreaInsets)
@@ -945,48 +973,8 @@ struct HorizontalIPadProjectView: View {
             libraryPlacementError = "This project has no schematic to place “\(item.name)” in."
             return
         }
-        let poolURL = project.baseURL.appendingPathComponent(project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName)
         do {
-            // Documents made before new projects carried a pool have none:
-            // make Horizon's project pool now, so the cache has a home.
-            let manifestURL = poolURL.appendingPathComponent("pool.json")
-            if !FileManager.default.fileExists(atPath: manifestURL.path) {
-                let data = HorizontalProjectArchive.projectPoolData(HorizontalProjectDocument.projectPoolTemplate())
-                try FileManager.default.createDirectory(at: poolURL, withIntermediateDirectories: true)
-                try data.write(to: manifestURL, options: [.atomic])
-                if case .directory = document.archive.root {
-                    try document.archive.replaceRegularFileData(relativePath: "\(project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName)/pool.json", with: data)
-                }
-                HorizontalPoolLibrary.invalidateCache()
-            }
-            let imported = try HorizontalPoolCacheImporter.cachePart(item, into: poolURL)
-            if case .directory = document.archive.root {
-                for url in imported.writtenFiles {
-                    let base = project.baseURL.standardizedFileURL.path
-                    let target = url.standardizedFileURL.path
-                    let prefix = base.hasSuffix("/") ? base : base + "/"
-                    if target.hasPrefix(prefix) {
-                        try document.archive.replaceRegularFileData(relativePath: String(target.dropFirst(prefix.count)), with: Data(contentsOf: url))
-                    }
-                }
-            }
-            if !imported.writtenFiles.isEmpty {
-                HorizontalPoolLibrary.invalidateCache()
-                HorizontalPoolPadstacks.invalidateCaches()
-            }
-            guard let part = HorizontalPoolPart.loadCached(id: item.uuid, from: poolURL) else {
-                libraryPlacementError = "“\(item.name)” could not be read from the project pool after caching."
-                return
-            }
-            if var updated = self.project {
-                if let index = updated.poolParts.firstIndex(where: { $0.id == part.id }) {
-                    updated.poolParts[index] = part
-                } else {
-                    updated.poolParts.append(part)
-                }
-                self.project = updated
-            }
-            placePartRequest = HorizontalPartPlacementRequest(part: part)
+            placePartRequest = HorizontalPartPlacementRequest(part: try cacheLibraryPart(item, project: project))
             if isCompact {
                 visiblePanes = [.schematic]
             } else {
@@ -994,8 +982,91 @@ struct HorizontalIPadProjectView: View {
             }
             focusedPane = .schematic
         } catch {
-            libraryPlacementError = error.localizedDescription
+            libraryPlacementError = HorizontalCanvasProjectEdit.message(for: error)
         }
+    }
+
+    private func refreshLibraryPartReplacement() {
+        let replacement = visiblePanes.contains(.library)
+            ? project.flatMap {
+                HorizontalPartReplacement.current(componentIDs: selectedComponentIDs, archive: document.archive, project: $0)
+            }
+            : nil
+        if replacement != libraryPartReplacement {
+            libraryPartReplacement = replacement
+        }
+    }
+
+    /// The Pools pane's Replace: the macOS workspace's, landing as one
+    /// undoable edit through `applyArchiveEdit`.
+    private func replacePartsFromLibrary(_ item: HorizontalPoolLibraryItem, packageName: String, _ replacement: HorizontalPartReplacement) {
+        guard !isReadOnly, let current = project else {
+            return
+        }
+        if let refusal = replacement.refusal(for: item, packageName: packageName, project: current, archive: document.archive) {
+            libraryReplacementError = refusal
+            return
+        }
+        do {
+            let part = try cacheLibraryPart(item, project: current)
+            let withPart = self.project ?? current
+            let edited = try HorizontalCanvasProjectEdit.archive(
+                applying: replacement.operations(partID: part.id),
+                to: document.archive,
+                in: withPart,
+                block: replacement.blockID
+            )
+            try applyArchiveEdit(edited.archive, to: withPart,
+                                 actionName: replacement.targets.count == 1 ? "Replace Part" : "Replace Parts")
+        } catch {
+            libraryReplacementError = HorizontalCanvasProjectEdit.message(for: error)
+        }
+    }
+
+    /// A Pools pane part and everything it needs cached into the project
+    /// pool, the open archive told of the new files, and the part as the
+    /// project pool now has it.
+    private func cacheLibraryPart(_ item: HorizontalPoolLibraryItem, project: HorizontalProject) throws -> HorizontalPoolPart {
+        let poolURL = project.baseURL.appendingPathComponent(project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName)
+        // Documents made before new projects carried a pool have none:
+        // make Horizon's project pool now, so the cache has a home.
+        let manifestURL = poolURL.appendingPathComponent("pool.json")
+        if !FileManager.default.fileExists(atPath: manifestURL.path) {
+            let data = HorizontalProjectArchive.projectPoolData(HorizontalProjectDocument.projectPoolTemplate())
+            try FileManager.default.createDirectory(at: poolURL, withIntermediateDirectories: true)
+            try data.write(to: manifestURL, options: [.atomic])
+            if case .directory = document.archive.root {
+                try document.archive.replaceRegularFileData(relativePath: "\(project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName)/pool.json", with: data)
+            }
+            HorizontalPoolLibrary.invalidateCache()
+        }
+        let imported = try HorizontalPoolCacheImporter.cachePart(item, into: poolURL)
+        if case .directory = document.archive.root {
+            for url in imported.writtenFiles {
+                let base = project.baseURL.standardizedFileURL.path
+                let target = url.standardizedFileURL.path
+                let prefix = base.hasSuffix("/") ? base : base + "/"
+                if target.hasPrefix(prefix) {
+                    try document.archive.replaceRegularFileData(relativePath: String(target.dropFirst(prefix.count)), with: Data(contentsOf: url))
+                }
+            }
+        }
+        if !imported.writtenFiles.isEmpty {
+            HorizontalPoolLibrary.invalidateCache()
+            HorizontalPoolPadstacks.invalidateCaches()
+        }
+        guard let part = HorizontalPoolPart.loadCached(id: item.uuid, from: poolURL) else {
+            throw HorizontalDispatchError.failed("“\(item.name)” could not be read from the project pool after caching.")
+        }
+        if var updated = self.project {
+            if let index = updated.poolParts.firstIndex(where: { $0.id == part.id }) {
+                updated.poolParts[index] = part
+            } else {
+                updated.poolParts.append(part)
+            }
+            self.project = updated
+        }
+        return part
     }
 
     private func partsBrowser(for project: HorizontalProject, safeAreaInsets: EdgeInsets) -> some View {
