@@ -194,6 +194,45 @@ final class BoardMoveRotateTests: XCTestCase {
         XCTAssertFalse(state.undo.canUndo)
     }
 
+    /// R on a part at rest turns it about its own centre, wherever the pointer
+    /// rests on the canvas (124). Before, it turned about the pointer and the
+    /// part jumped.
+    func testRAtRestTurnsThePartInPlaceWhereverThePointerRests() async throws {
+        let state = State(fixture())
+        let (window, key) = try await mount(state)
+        defer { window.close() }
+
+        try restPointer(in: window)
+        try key(15, "r")
+        let committed = await settle { state.committed.count == 1 }
+        XCTAssertTrue(committed)
+        let placed = try XCTUnwrap(package(state.committed.last))
+        XCTAssertEqual(quarterTurns(placed.angle), 3, "turned a quarter")
+        XCTAssertEqual(placed.position, start, "in place, about its own centre")
+    }
+
+    /// A move that follows the pointer (M) still turns about the pointer, which
+    /// is holding what moves (124).
+    func testRInAMoveThatFollowsThePointerStillTurnsAboutThePointer() async throws {
+        let state = State(fixture())
+        let (window, key) = try await mount(state)
+        defer { window.close() }
+
+        try restPointer(in: window)
+        try key(46, "m")
+        let moving = await settle { state.actions?.canCommitInteraction == true }
+        XCTAssertTrue(moving)
+        // Back where the move began, as the real pointer may have wandered.
+        try restPointer(in: window)
+        try key(15, "r")
+        try key(36, "\r")
+        let committed = await settle { state.committed.count == 1 }
+        XCTAssertTrue(committed)
+        let placed = try XCTUnwrap(package(state.committed.last))
+        XCTAssertEqual(quarterTurns(placed.angle), 3, "turned a quarter")
+        XCTAssertNotEqual(placed.position, start, "about the pointer, away from the part, so not in place")
+    }
+
     func testRDuringAMoveTurnsTheResidentSceneInPlaceAndDrawsWhatTheCommitDraws() async throws {
         let state = State(fixture(artwork: true))
         let (window, key) = try await mount(state)
