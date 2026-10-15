@@ -5855,7 +5855,7 @@ struct BoardCanvasView: View {
             roundOffVertexState = state
             return
         }
-        let cursor = lastCursorWorldPoint
+        let cursor = transformPivotCursor
         transformSelection(actionName: "Mirror") { center, draft in
             mirrorSelectedObjects(around: cursor ?? center, board: &draft)
         }
@@ -5890,7 +5890,7 @@ struct BoardCanvasView: View {
             }
             return
         }
-        let cursor = lastCursorWorldPoint
+        let cursor = transformPivotCursor
         transformSelection(actionName: "Rotate", turn: BoardSelectionTurn(angle: Self.quarterTurnAngle, aboutCursor: true)) { center, draft in
             rotateSelectedObjects(around: cursor ?? center, by: Self.quarterTurnAngle, board: &draft)
         }
@@ -5933,8 +5933,16 @@ struct BoardCanvasView: View {
         #endif
     }
 
+    /// The point R, E and T turn and flip about, when not the selection's
+    /// centre: the cursor, except in a move made with the arrow keys. That move
+    /// follows the keys, not the pointer, which may be resting anywhere on the
+    /// canvas, so it turns about what it moves, as 105 meant (123).
+    private var transformPivotCursor: HorizontalPoint? {
+        moveState?.tracksCursor == false ? nil : lastCursorWorldPoint
+    }
+
     private func twirlSelection() {
-        let cursor = lastCursorWorldPoint
+        let cursor = transformPivotCursor
         transformSelection(actionName: "Twirl", turn: BoardSelectionTurn(angle: Self.quarterTurnAngle, aboutCursor: true)) { center, draft in
             rotateSelectedObjects(around: cursor ?? center, by: Self.quarterTurnAngle, board: &draft)
         }
@@ -5972,7 +5980,7 @@ struct BoardCanvasView: View {
                 // way the move itself is (122): the resident copy is drawn
                 // turned, and nothing is rebuilt. The pivot is the one the
                 // transform used.
-                let pivot = turn.aboutCursor ? (lastCursorWorldPoint ?? movedCenter) : movedCenter
+                let pivot = turn.aboutCursor ? (transformPivotCursor ?? movedCenter) : movedCenter
                 state.turn = BoardMoveTurn(
                     board: draft,
                     placement: turned(state.livePlacement, about: pivot, by: turn.angle),
