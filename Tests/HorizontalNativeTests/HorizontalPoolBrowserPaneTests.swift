@@ -121,9 +121,9 @@ final class HorizontalPoolBrowserPaneTests: XCTestCase {
         XCTAssertEqual(table.selectedRow, 0, "R1's own part, RES-1000, first by name")
     }
 
-    /// With the section open, Replace opens on the table R1's part is in:
-    /// the list grows a column per value, and the section a filter box for
-    /// the values left (one manufacturer and one package, so no box for them).
+    /// With the bar open, Replace opens on the table R1's part is in: the list
+    /// grows a column per value, and the bar a filter box for the values left
+    /// (one manufacturer and one package, so no box for them).
     func testTheParametricSectionGrowsTheTablesFiltersAndColumns() async throws {
         let (window, _) = mount(actions(Calls(), replacement: replacement), showingFilters: true)
         defer { window.close() }
@@ -132,6 +132,15 @@ final class HorizontalPoolBrowserPaneTests: XCTestCase {
         XCTAssertEqual(table.selectedRow, 0)
         let boxes = tables(in: try XCTUnwrap(window.contentView)).filter { $0 !== table }
         XCTAssertEqual(boxes.map(\.numberOfRows), [3], "the Value box")
+        // 130: the boxes are in a bar under the toolbar, above the list, not
+        // in a column beside it.
+        let box = try XCTUnwrap(boxes.first)
+        func frameInWindow(_ view: NSView) -> NSRect {
+            let shown = view.enclosingScrollView ?? view
+            return shown.convert(shown.bounds, to: nil)
+        }
+        XCTAssertGreaterThanOrEqual(frameInWindow(box).minY, frameInWindow(table).maxY - 1,
+                                    "the Value box sits above the list: \(frameInWindow(box)) over \(frameInWindow(table))")
 
         // Closed, with no table chosen, the list is the plain one and no
         // filter box shows.
