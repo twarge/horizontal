@@ -178,6 +178,10 @@ struct BoardCanvasView: View {
     /// re-concatenates only when it crosses a step (~19% of scale) instead of
     /// on every frame.
     private static let labelLODStepsPerOctave: Double = 4
+    /// The most text strokes a turn during a move redraws in place (122).
+    /// They are written again on every step of the move after it, so past
+    /// this (a whole board turned, say) the one rebuild costs less.
+    private static let maximumTurnedTextStrokes = 20_000
 
     private struct MoveState {
         var startPoint: HorizontalPoint
@@ -194,10 +198,52 @@ struct BoardCanvasView: View {
         /// The move's live rats' nest (`BoardSelectableCache.requestMovingAirwires`),
         /// for a move that carries a package.
         var airwireRequest: Int? = nil
-        /// The board from before the move, once R, E or T has turned what is
-        /// being moved and so rewritten `originalBoard` (105). Undo goes back
-        /// to it, and a commit lands even when nothing moved after the turn.
+        /// The board from before the move, once E (or a turn that can't be
+        /// patched) has rewritten `originalBoard` (105). Undo goes back to it,
+        /// and a commit lands even when nothing moved after it.
         var boardBeforeMove: HorizontalBoard? = nil
+        /// R and T as the move turned in place (122); nil until one does.
+        var turn: BoardMoveTurn? = nil
+
+        /// Where the move draws `originalBoard`'s copy of what moves: the turns
+        /// so far, then the shift since the last of them.
+        var livePlacement: HorizontalPlacementTransform {
+            let delta = lastPoint - startPoint
+            guard let turn else {
+                return HorizontalPlacementTransform(shift: delta, angle: 0, mirrored: false)
+            }
+            return HorizontalPlacementTransform(
+                shift: turn.placement.shift + delta,
+                angle: turn.placement.angle,
+                mirrored: false
+            )
+        }
+    }
+
+    /// A move's quarter turns, made in place (122). The resident scene, the
+    /// resident move plan and the live airwires stay those of `originalBoard`,
+    /// which is left alone; only where its copy of what moves is drawn changes.
+    /// Turning the model instead, as 105 did, rebuilt the whole scene on
+    /// every key press.
+    private struct BoardMoveTurn {
+        /// `originalBoard` with the move so far and the turns in it, made as
+        /// 105 made it. The commit, and a preview that can't be patched, carry
+        /// on from it.
+        var board: HorizontalBoard
+        /// Takes `originalBoard`'s copy of what moves to where `board` has it:
+        /// whole quarter turns, then a shift.
+        var placement: HorizontalPlacementTransform
+        /// How many turns, for the caches keyed on the move's points.
+        var count: Int
+    }
+
+    /// R, T and Rotate Around Center as turns, so a move can make them in place
+    /// (122). The transform each passes is still what changes the model.
+    private struct BoardSelectionTurn {
+        var angle: Int
+        /// About the cursor when there is one (R, T), or always about the
+        /// selection's centre.
+        var aboutCursor: Bool
     }
 
     #if os(macOS)
@@ -601,7 +647,8 @@ struct BoardCanvasView: View {
         return BoardMovePreviewSignature(
             selectedRefs: selectedObjects,
             startPoint: moveState.startPoint,
-            lastPoint: moveState.lastPoint
+            lastPoint: moveState.lastPoint,
+            turns: moveState.turn?.count ?? 0
         )
     }
 
@@ -745,7 +792,7 @@ struct BoardCanvasView: View {
             measuredBoardMetalLineBatch(renderLayers: metalRenderLayers)
         }
         let metalBufferPatches = measureBody("move patches") {
-            measuredBoardMetalMovePatches(metadata: metalLineBatch.metadata)
+            measuredBoardMetalMovePatches(lineBatch: metalLineBatch)
         }
         let metalHighlightBatch = measureBody("highlight batch") { boardMetalHighlightBatch() }
         let metalDimBatch = measureBody("dim batch") {
@@ -3688,7 +3735,7 @@ struct BoardCanvasView: View {
         guard let state = moveState else {
             return nil
         }
-        var draft = state.originalBoard
+        var draft = state.turn?.board ?? state.originalBoard
         let delta = state.lastPoint - state.startPoint
         if delta != .zero {
             moveSelectedObjects(by: delta, board: &draft)
@@ -3697,16 +3744,30 @@ struct BoardCanvasView: View {
     }
 
     /// R and E while placing: turn or flip the package about its own
-    /// origin, with no undo step of their own. One rebuild per key press; the
-    /// move then carries on from the turned package.
-    private func transformPlacingPackage(_ transform: (HorizontalPoint, inout HorizontalBoard) -> Void) {
+    /// origin, with no undo step of their own. R turns it in place, as a move
+    /// does (122); E rebuilds, and the move then carries on from the flipped
+    /// package.
+    private func transformPlacingPackage(
+        turn: BoardSelectionTurn? = nil,
+        _ transform: (HorizontalPoint, inout HorizontalBoard) -> Void
+    ) {
         guard let state = packagePlacementState,
-              let move = moveState,
+              var move = moveState,
               var draft = placingPackageBoard(),
               let package = draft.packages.first(where: { normalizedID($0.id) == normalizedID(state.placementID) }) else {
             return
         }
         transform(package.position, &draft)
+        if let turn, canTurnBoardMoveInPlace(by: turn.angle) {
+            move.turn = BoardMoveTurn(
+                board: draft,
+                placement: turned(move.livePlacement, about: package.position, by: turn.angle),
+                count: (move.turn?.count ?? 0) + 1
+            )
+            move.startPoint = move.lastPoint
+            moveState = move
+            return
+        }
         let origin = draft.packages.first(where: { normalizedID($0.id) == normalizedID(state.placementID) })?.position ?? package.position
         editedBoard = draft
         invalidateSelectableCache()
@@ -3892,13 +3953,15 @@ struct BoardCanvasView: View {
         // is correct — only the live render is stale. Force a scene rebuild from the
         // committed board whenever a package moved so the render matches the data.
         let movesPackage = selectedObjects.contains { $0.type == .boardPackage }
-        // A turn during the move (105) changed more than a patch can carry.
+        // A turn during the move (105, 122) changed more than a translation
+        // patch carries: the preserved scene would be the one from before it.
         let canPreserveCommittedMetalScene = drawsBoardLinesInMetal
             && plan.isPatchable
             && !movesPackage
             && state.boardBeforeMove == nil
+            && state.turn == nil
             && selectedObjects.allSatisfy(isBoardMetalMovePatchable)
-        if totalDelta == .zero, state.boardBeforeMove == nil {
+        if totalDelta == .zero, state.boardBeforeMove == nil, state.turn == nil {
             measure("clear move state") {
                 moveState = nil
             }
@@ -3928,7 +3991,7 @@ struct BoardCanvasView: View {
             return
         }
         var draft = measure("draft snapshot") {
-            state.originalBoard
+            state.turn?.board ?? state.originalBoard
         }
         measure("apply move") {
             if totalDelta != .zero {
@@ -3987,22 +4050,26 @@ struct BoardCanvasView: View {
     }
 
     private func boardMovePreviewBoard(for state: MoveState) -> HorizontalBoard {
+        // A turn made in place (122) is in its own board; the move carries on
+        // from there.
+        let base = state.turn?.board ?? state.originalBoard
         let totalDelta = state.lastPoint - state.startPoint
         guard totalDelta != .zero else {
-            return state.originalBoard
+            return base
         }
 
         return selectableCache.movePreview(
             key: BoardMovePreviewCacheKey(
-                boardID: state.originalBoard.uuid,
+                boardID: base.uuid,
                 revision: selectableCacheRevision,
-                counts: boardGeometryCounts(for: state.originalBoard),
+                counts: boardGeometryCounts(for: base),
                 selectedRefs: selectedObjects,
                 startPoint: state.startPoint,
-                lastPoint: state.lastPoint
+                lastPoint: state.lastPoint,
+                turns: state.turn?.count ?? 0
             )
         ) {
-            var previewBoard = state.originalBoard
+            var previewBoard = base
             moveSelectedObjects(by: totalDelta, board: &previewBoard)
             return previewBoard
         }
@@ -5818,20 +5885,20 @@ struct BoardCanvasView: View {
             return
         }
         if packagePlacementState != nil {
-            transformPlacingPackage { center, draft in
+            transformPlacingPackage(turn: BoardSelectionTurn(angle: Self.quarterTurnAngle, aboutCursor: false)) { center, draft in
                 rotateSelectedObjects(around: center, by: Self.quarterTurnAngle, board: &draft)
             }
             return
         }
         let cursor = lastCursorWorldPoint
-        transformSelection(actionName: "Rotate") { center, draft in
+        transformSelection(actionName: "Rotate", turn: BoardSelectionTurn(angle: Self.quarterTurnAngle, aboutCursor: true)) { center, draft in
             rotateSelectedObjects(around: cursor ?? center, by: Self.quarterTurnAngle, board: &draft)
         }
     }
 
     /// Rotate 90° around the selection center, independent of the cursor.
     private func rotateSelectionAroundCenter() {
-        transformSelection(actionName: "Rotate") { center, draft in
+        transformSelection(actionName: "Rotate", turn: BoardSelectionTurn(angle: Self.quarterTurnAngle, aboutCursor: false)) { center, draft in
             rotateSelectedObjects(around: center, by: Self.quarterTurnAngle, board: &draft)
         }
     }
@@ -5868,13 +5935,16 @@ struct BoardCanvasView: View {
 
     private func twirlSelection() {
         let cursor = lastCursorWorldPoint
-        transformSelection(actionName: "Twirl") { center, draft in
+        transformSelection(actionName: "Twirl", turn: BoardSelectionTurn(angle: Self.quarterTurnAngle, aboutCursor: true)) { center, draft in
             rotateSelectedObjects(around: cursor ?? center, by: Self.quarterTurnAngle, board: &draft)
         }
     }
 
+    /// `turn` says what `transform` does when it is a turn, so a move can
+    /// make it in place (122); anything else rebuilds the move.
     private func transformSelection(
         actionName: String,
+        turn: BoardSelectionTurn? = nil,
         _ transform: (HorizontalPoint, inout HorizontalBoard) -> Void
     ) {
         guard !isReadOnly,
@@ -5897,10 +5967,28 @@ struct BoardCanvasView: View {
                 anchorPoints: { selectionAnchorPoints(for: $0, in: preview) }
             ) ?? center
             transform(movedCenter, &draft)
+            if let turn, canTurnBoardMoveInPlace(by: turn.angle) {
+                // A quarter turn of what the scene can turn whole is made the
+                // way the move itself is (122): the resident copy is drawn
+                // turned, and nothing is rebuilt. The pivot is the one the
+                // transform used.
+                let pivot = turn.aboutCursor ? (lastCursorWorldPoint ?? movedCenter) : movedCenter
+                state.turn = BoardMoveTurn(
+                    board: draft,
+                    placement: turned(state.livePlacement, about: pivot, by: turn.angle),
+                    count: (state.turn?.count ?? 0) + 1
+                )
+                state.startPoint = state.lastPoint
+                moveState = state
+                hoveredObject = nil
+                publishSelectionContext()
+                return
+            }
             if state.boardBeforeMove == nil {
                 state.boardBeforeMove = state.originalBoard
             }
             state.originalBoard = draft
+            state.turn = nil
             state.startPoint = state.lastPoint
             moveState = state
             invalidateSelectableCache()
@@ -5927,6 +6015,48 @@ struct BoardCanvasView: View {
 
     private func boardSelectionCenter() -> HorizontalPoint? {
         HorizontalCanvasModeSupport.selectionCenter(for: selectedObjects, anchorPoints: selectionAnchorPoints)
+    }
+
+    /// Whether the move in progress can take a turn by `angle` in place (122):
+    /// a whole number of quarter turns, on a move patched in Metal, of things
+    /// whose turn in the model is the same rigid turn of what the scene drew.
+    /// Tracks, junctions and the rest are left to the rebuild: the model turns
+    /// a track's connections its own way, and keepouts, planes, dimensions
+    /// and decals don't turn at all.
+    private func canTurnBoardMoveInPlace(by angle: Int) -> Bool {
+        guard wrappedAngle(angle) % 16_384 == 0,
+              canPatchBoardMoveInMetal,
+              let moveState else {
+            return false
+        }
+        let turnsRigidly = selectedObjects.allSatisfy { ref in
+            switch ref.type {
+            case .boardPackage, .pad, .via, .boardHole, .boardLine, .boardArc, .text:
+                return true
+            default:
+                return false
+            }
+        }
+        guard turnsRigidly else {
+            return false
+        }
+        // The scene the move is patching, as the next body pass will ask for
+        // it: its texts are what the turn will redraw.
+        let textSpans = boardMetalLineBatch(renderLayers: boardMetalRenderLayers()).metadata.textSpansByRef
+        let strokes = moveState.residentMovePlan.translatedRefs.reduce(0) { total, ref in
+            total + (textSpans[ref]?.reduce(0) { $0 + $1.count } ?? 0)
+        }
+        return strokes <= Self.maximumTurnedTextStrokes
+    }
+
+    /// `placement` followed by a turn about `pivot`.
+    private func turned(_ placement: HorizontalPlacementTransform, about pivot: HorizontalPoint, by angle: Int) -> HorizontalPlacementTransform {
+        let turn = HorizontalPlacementTransform(shift: .zero, angle: angle, mirrored: false)
+        return HorizontalPlacementTransform(
+            shift: turn.applying(to: placement.shift - pivot) + pivot,
+            angle: placement.angle + angle,
+            mirrored: false
+        )
     }
 
     private func selectionAnchorPoints(for ref: HorizontalSelectableRef) -> [HorizontalPoint] {
@@ -8718,7 +8848,9 @@ struct BoardCanvasView: View {
 
         profile("copy lines and metadata") {
             for (_, batch) in activeBatches {
+                let batchLineBase = lines.count
                 lines.append(contentsOf: batch.lines)
+                var textRunIndex = 0
                 var runOwner: HorizontalSelectableRef?
                 var runGroup = 0
                 var runStart = 0
@@ -8750,10 +8882,29 @@ struct BoardCanvasView: View {
                     let group = primitive.compositeGroup
                     let start = lineCountsByGroup[group, default: 0]
                     lineCountsByGroup[group] = start + 1
+                    // A text's strokes are consecutive and share one group,
+                    // so its span starts where its first stroke lands.
+                    var textRun: BoardMetalTextRun?
+                    if textRunIndex < batch.textRuns.count,
+                       batch.textRuns[textRunIndex].lineStart == index {
+                        textRun = batch.textRuns[textRunIndex]
+                        textRunIndex += 1
+                    }
                     guard index < batch.lineOwners.count,
                           let owner = batch.lineOwners[index] else {
                         flushRun()
                         continue
+                    }
+                    if let textRun {
+                        metadata.textSpansByRef[owner, default: []].append(
+                            BoardMetalTextSpan(
+                                textID: textRun.textID,
+                                compositeGroup: group,
+                                start: start,
+                                count: textRun.lineCount,
+                                lineIndex: batchLineBase + index
+                            )
+                        )
                     }
 
                     if runOwner == owner,
@@ -9220,7 +9371,15 @@ struct BoardCanvasView: View {
             owner: HorizontalSelectableRef? = nil,
             to bucketKey: ReferenceWritableKeyPath<BoardMetalElementBuckets, BoardMetalElementBatch>
         ) {
-            for segment in HorizontalOutlineTextRenderer.outlineSegments(for: text) {
+            let segments = HorizontalOutlineTextRenderer.outlineSegments(for: text)
+            if !segments.isEmpty {
+                buckets[keyPath: bucketKey].textRuns.append(BoardMetalTextRun(
+                    textID: text.id,
+                    lineStart: buckets[keyPath: bucketKey].lines.count,
+                    lineCount: segments.count
+                ))
+            }
+            for segment in segments {
                 buckets[keyPath: bucketKey].appendLine(
                     HorizontalMetalLinePrimitive(
                         from: segment.0,
@@ -10134,13 +10293,13 @@ struct BoardCanvasView: View {
         return end - start
     }
 
-    private func measuredBoardMetalMovePatches(metadata: BoardMetalSceneMetadata) -> HorizontalMetalBufferPatches {
+    private func measuredBoardMetalMovePatches(lineBatch: BoardMetalLineBatch) -> HorizontalMetalBufferPatches {
         guard moveState != nil else {
             return .empty
         }
 
         let start = DispatchTime.now().uptimeNanoseconds
-        let patches = boardMetalMovePatches(metadata: metadata)
+        let patches = boardMetalMovePatches(lineBatch: lineBatch)
         HorizontalMoveRateDiagnostics.recordMetalPatches(
             .boardMove,
             nanoseconds: elapsedNanoseconds(from: start, to: DispatchTime.now().uptimeNanoseconds),
@@ -10150,13 +10309,15 @@ struct BoardCanvasView: View {
         return patches
     }
 
-    private func boardMetalMovePatches(metadata: BoardMetalSceneMetadata) -> HorizontalMetalBufferPatches {
+    private func boardMetalMovePatches(lineBatch: BoardMetalLineBatch) -> HorizontalMetalBufferPatches {
         guard canPatchBoardMoveInMetal,
               let moveState else {
             return .empty
         }
 
-        let totalDelta = moveState.lastPoint - moveState.startPoint
+        let metadata = lineBatch.metadata
+        // The move's shift, and any turn R or T made in place (122).
+        let placement = moveState.livePlacement
         let plan = moveState.residentMovePlan
         let refs = plan.translatedRefs.union(plan.segmentMoves.keys)
         guard !refs.isEmpty else {
@@ -10174,11 +10335,11 @@ struct BoardCanvasView: View {
                 if let segmentMove = plan.segmentMoves[ref] {
                     if let segment = segmentsByID[normalizedID(ref.id)],
                        segmentMove.isRigid(for: segment) {
-                        patches.lineTranslationPatches.append(contentsOf: metalLineTranslationPatches(spans: spans, delta: totalDelta))
+                        patches.lineTranslationPatches.append(contentsOf: metalLineTranslationPatches(spans: spans, placement: placement))
                     } else if let endpointPatch = boardMetalLineEndpointPatch(
                         for: ref,
                         move: segmentMove,
-                        by: totalDelta,
+                        placement: placement,
                         in: moveState.originalBoard,
                         spans: spans
                     ) {
@@ -10187,7 +10348,7 @@ struct BoardCanvasView: View {
                         let primitives = boardResidentMovedLinePrimitives(
                             for: ref,
                             move: segmentMove,
-                            by: totalDelta,
+                            placement: placement,
                             in: moveState.originalBoard,
                             retained: metadata.linePrimitivesByRef[ref]
                         ) ?? metadata.linePrimitivesByRef[ref] ?? []
@@ -10198,18 +10359,37 @@ struct BoardCanvasView: View {
                         patches.linePatches.append(contentsOf: metalLinePatches(spans: spans, primitives: primitives))
                     }
                 } else {
-                    patches.lineTranslationPatches.append(contentsOf: metalLineTranslationPatches(spans: spans, delta: totalDelta))
+                    patches.lineTranslationPatches.append(contentsOf: metalLineTranslationPatches(spans: spans, placement: placement))
                 }
             }
 
             if let spans = metadata.triangleSpansByRef[ref],
                plan.translatedRefs.contains(ref) {
-                patches.triangleTranslationPatches.append(contentsOf: metalTriangleTranslationPatches(spans: spans, delta: totalDelta))
+                patches.triangleTranslationPatches.append(contentsOf: metalTriangleTranslationPatches(spans: spans, placement: placement))
             }
 
             if let spans = metadata.anchoredRectSpansByRef[ref],
                plan.translatedRefs.contains(ref) {
-                patches.anchoredRectTranslationPatches.append(contentsOf: metalAnchoredRectTranslationPatches(spans: spans, delta: totalDelta))
+                patches.anchoredRectTranslationPatches.append(contentsOf: metalAnchoredRectTranslationPatches(spans: spans, placement: placement))
+            }
+        }
+
+        // The texts the turn redraws, shifted by the move since it.
+        if let turn = moveState.turn {
+            let delta = moveState.lastPoint - moveState.startPoint
+            let redraws = selectableCache.turnedMoveTexts(
+                key: BoardTurnedMoveTextsKey(lineKey: lineBatch.lineKey, turns: turn.count, placement: turn.placement)
+            ) {
+                boardTurnedTextRedraws(
+                    for: plan.translatedRefs,
+                    lineBatch: lineBatch,
+                    turnedBoard: turn.board
+                )
+            }
+            patches.lineRedrawPatches = delta == .zero ? redraws : redraws.map { patch in
+                var patch = patch
+                patch.primitives = patch.primitives.map { translated($0, by: delta) }
+                return patch
             }
         }
 
@@ -10266,7 +10446,7 @@ struct BoardCanvasView: View {
     private func boardMetalLineEndpointPatch(
         for ref: HorizontalSelectableRef,
         move: BoardResidentSegmentMove,
-        by delta: HorizontalPoint,
+        placement: HorizontalPlacementTransform,
         in board: HorizontalBoard,
         spans: [BoardMetalPrimitiveSpan]
     ) -> HorizontalMetalLineEndpointPatch? {
@@ -10281,29 +10461,29 @@ struct BoardCanvasView: View {
         return HorizontalMetalLineEndpointPatch(
             compositeGroup: firstSpan.compositeGroup,
             start: firstSpan.start,
-            from: move.movesFrom ? segment.from + delta : nil,
-            to: move.movesTo ? segment.to + delta : nil
+            from: move.movesFrom ? placement.applying(to: segment.from) : nil,
+            to: move.movesTo ? placement.applying(to: segment.to) : nil
         )
     }
 
     private func boardResidentMovedLinePrimitives(
         for ref: HorizontalSelectableRef,
         move: BoardResidentSegmentMove,
-        by delta: HorizontalPoint,
+        placement: HorizontalPlacementTransform,
         in board: HorizontalBoard,
         retained: [HorizontalMetalLinePrimitive]?
     ) -> [HorizontalMetalLinePrimitive]? {
         guard let segment = boardSegment(for: ref, in: board) else {
-            return retained?.map { translated($0, by: delta) }
+            return retained?.map { placed($0, by: placement) }
         }
 
         if move.isRigid(for: segment),
            let retained {
-            return retained.map { translated($0, by: delta) }
+            return retained.map { placed($0, by: placement) }
         }
 
         return boardMetalLinePrimitives(
-            for: boardResidentMovedSegment(segment, move: move, by: delta),
+            for: boardResidentMovedSegment(segment, move: move, placement: placement),
             type: ref.type
         )
     }
@@ -10311,19 +10491,98 @@ struct BoardCanvasView: View {
     private func boardResidentMovedSegment(
         _ segment: HorizontalSegment,
         move: BoardResidentSegmentMove,
-        by delta: HorizontalPoint
+        placement: HorizontalPlacementTransform
     ) -> HorizontalSegment {
         var segment = segment
         if move.movesFrom {
-            segment.from = segment.from + delta
+            segment.from = placement.applying(to: segment.from)
         }
         if move.movesTo {
-            segment.to = segment.to + delta
+            segment.to = placement.applying(to: segment.to)
         }
         if move.movesCenter {
-            segment.center = segment.center.map { $0 + delta }
+            segment.center = segment.center.map { placement.applying(to: $0) }
         }
         return segment
+    }
+
+    /// The strokes of the moving texts as a rebuilt scene would draw them
+    /// after the turn (122), to write over the turned copies. A quarter turn
+    /// moves a text's strokes rigidly only while it keeps reading the same
+    /// way: one turned into the angles drawn the other way round
+    /// (`HorizontalOutlineTextRenderer`'s `backwards`), or a pad label, which
+    /// settles on its own readable angle, is drawn differently. So each text
+    /// of a moving owner is drawn again, from where the turned model has it,
+    /// in the style the scene gave it. A text whose strokes don't match its
+    /// span one for one is left to the turned copy.
+    private func boardTurnedTextRedraws(
+        for refs: Set<HorizontalSelectableRef>,
+        lineBatch: BoardMetalLineBatch,
+        turnedBoard: HorizontalBoard
+    ) -> [HorizontalMetalLineBufferPatch] {
+        let spansByRef = lineBatch.metadata.textSpansByRef
+        let movingSpans = refs.flatMap { spansByRef[$0] ?? [] }
+        guard !movingSpans.isEmpty else {
+            return []
+        }
+        let packageIDs = Set(refs.filter { $0.type == .boardPackage }.map { normalizedID($0.id) })
+        let viaIDs = Set(refs.filter { $0.type == .via }.map { normalizedID($0.id) })
+        let textIDs = Set(refs.filter { $0.type == .text }.map { normalizedID($0.id) })
+
+        var turnedTexts = [String: HorizontalText]()
+        for text in turnedBoard.packageTexts {
+            if let packageID = packageID(forGeometryID: text.id), packageIDs.contains(normalizedID(packageID)) {
+                turnedTexts[normalizedID(text.id)] = text
+            }
+        }
+        // A text selected on its own: the board's, or a package editor's.
+        for text in turnedBoard.texts + turnedBoard.packageTexts where textIDs.contains(normalizedID(text.id)) {
+            turnedTexts[normalizedID(text.id)] = text
+        }
+        // A package with no geometry draws its name level beside its origin.
+        for package in turnedBoard.packages where packageIDs.contains(normalizedID(package.id)) {
+            let text = packageFallbackLabelText(package)
+            turnedTexts[normalizedID(text.id)] = text
+        }
+        if !packageIDs.isEmpty {
+            var padsOnly = turnedBoard
+            padsOnly.packagePads = turnedBoard.packagePads.filter { pad in
+                packageID(forGeometryID: pad.id).map { packageIDs.contains(normalizedID($0)) } == true
+            }
+            for text in packagePadLabelTextsByLayer(board: padsOnly).values.joined() {
+                turnedTexts[normalizedID(text.id)] = text
+            }
+        }
+        for via in turnedBoard.vias where viaIDs.contains(normalizedID(via.id)) {
+            if let text = viaLabelText(via) {
+                turnedTexts[normalizedID(text.id)] = text
+            }
+        }
+
+        var patches = [HorizontalMetalLineBufferPatch]()
+        for span in movingSpans {
+            guard let text = turnedTexts[normalizedID(span.textID)],
+                  lineBatch.lines.indices.contains(span.lineIndex) else {
+                continue
+            }
+            let segments = HorizontalOutlineTextRenderer.outlineSegments(for: text)
+            let style = lineBatch.lines[span.lineIndex]
+            guard segments.count == span.count,
+                  style.compositeGroup == span.compositeGroup else {
+                continue
+            }
+            patches.append(HorizontalMetalLineBufferPatch(
+                compositeGroup: span.compositeGroup,
+                start: span.start,
+                primitives: segments.map { segment in
+                    var primitive = style
+                    primitive.from = segment.0
+                    primitive.to = segment.1
+                    return primitive
+                }
+            ))
+        }
+        return patches
     }
 
     /// One-time id-keyed lookup of all segment-like geometry, so resolving a
@@ -11022,6 +11281,13 @@ struct BoardCanvasView: View {
         return primitive
     }
 
+    private func placed(_ primitive: HorizontalMetalLinePrimitive, by placement: HorizontalPlacementTransform) -> HorizontalMetalLinePrimitive {
+        var primitive = primitive
+        primitive.from = placement.applying(to: primitive.from)
+        primitive.to = placement.applying(to: primitive.to)
+        return primitive
+    }
+
     private func translated(_ primitive: HorizontalMetalTrianglePrimitive, by delta: HorizontalPoint) -> HorizontalMetalTrianglePrimitive {
         var primitive = primitive
         primitive.a = primitive.a + delta
@@ -11089,7 +11355,7 @@ struct BoardCanvasView: View {
 
     private func metalLineTranslationPatches(
         spans: [BoardMetalPrimitiveSpan],
-        delta: HorizontalPoint
+        placement: HorizontalPlacementTransform
     ) -> [HorizontalMetalLineTranslationPatch] {
         var patches = [HorizontalMetalLineTranslationPatch]()
         for span in spans where span.count > 0 {
@@ -11103,7 +11369,8 @@ struct BoardCanvasView: View {
                         compositeGroup: span.compositeGroup,
                         start: span.start,
                         count: span.count,
-                        delta: delta
+                        delta: placement.shift,
+                        angle: placement.angle
                     )
                 )
             }
@@ -11158,7 +11425,7 @@ struct BoardCanvasView: View {
 
     private func metalTriangleTranslationPatches(
         spans: [BoardMetalPrimitiveSpan],
-        delta: HorizontalPoint
+        placement: HorizontalPlacementTransform
     ) -> [HorizontalMetalTriangleTranslationPatch] {
         var patches = [HorizontalMetalTriangleTranslationPatch]()
         for span in spans where span.count > 0 {
@@ -11172,7 +11439,8 @@ struct BoardCanvasView: View {
                         compositeGroup: span.compositeGroup,
                         start: span.start,
                         count: span.count,
-                        delta: delta
+                        delta: placement.shift,
+                        angle: placement.angle
                     )
                 )
             }
@@ -11227,7 +11495,7 @@ struct BoardCanvasView: View {
 
     private func metalAnchoredRectTranslationPatches(
         spans: [BoardMetalPrimitiveSpan],
-        delta: HorizontalPoint
+        placement: HorizontalPlacementTransform
     ) -> [HorizontalMetalAnchoredRectTranslationPatch] {
         var patches = [HorizontalMetalAnchoredRectTranslationPatch]()
         for span in spans where span.count > 0 {
@@ -11241,7 +11509,8 @@ struct BoardCanvasView: View {
                         compositeGroup: span.compositeGroup,
                         start: span.start,
                         count: span.count,
-                        delta: delta
+                        delta: placement.shift,
+                        angle: placement.angle
                     )
                 )
             }
@@ -11805,7 +12074,9 @@ struct BoardCanvasView: View {
             return .empty
         }
 
-        let totalDelta = moveState.lastPoint - moveState.startPoint
+        // The selection turns with what it outlines (122): a quarter turn of a
+        // box is the box of the turned part.
+        let placement = moveState.livePlacement
         var patches = HorizontalMetalBufferPatches()
         if !baseSelectionBatch.lines.isEmpty {
             patches.lineTranslationPatches.append(
@@ -11813,7 +12084,8 @@ struct BoardCanvasView: View {
                     compositeGroup: 0,
                     start: lineStart,
                     count: baseSelectionBatch.lines.count,
-                    delta: totalDelta
+                    delta: placement.shift,
+                    angle: placement.angle
                 )
             )
         }
@@ -11822,7 +12094,8 @@ struct BoardCanvasView: View {
                 HorizontalMetalHandleTranslationPatch(
                     start: handleStart,
                     count: baseSelectionBatch.handles.count,
-                    delta: totalDelta
+                    delta: placement.shift,
+                    angle: placement.angle
                 )
             )
         }
@@ -12088,7 +12361,7 @@ struct BoardCanvasView: View {
            canPatchBoardMoveInMetal,
            let state = moveState,
            let airwireRequest = state.airwireRequest,
-           let airwires = selectableCache.movingAirwireSegments(for: airwireRequest, offset: state.lastPoint - state.startPoint) {
+           let airwires = selectableCache.movingAirwireSegments(for: airwireRequest, placement: state.livePlacement) {
             let color = HorizontalMetalRGBA(theme.airwire.opacity(0.72))
             for airwire in airwires {
                 lines.append(

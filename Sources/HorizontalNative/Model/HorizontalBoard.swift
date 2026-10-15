@@ -6262,10 +6262,12 @@ extension HorizontalBoard {
             var fills: [Fill]
 
             /// Elements are the fixed pieces (`0..<componentCount`) and then the
-            /// moving nodes, in order.
-            func airwires(offset: HorizontalPoint) -> [HorizontalSegment] {
+            /// moving nodes, in order. `placement` takes moving copper from
+            /// where it started to where the move has it now: a shift, and the
+            /// turns R and T made on the way (122).
+            func airwires(placement: HorizontalPlacementTransform) -> [HorizontalSegment] {
                 let pieceCount = componentCount
-                let moving = movingPoints.map { $0 + offset }
+                let moving = movingPoints.map { placement.applying(to: $0) }
                 var disjointSet = HorizontalBoard.BoardAirwireDisjointSet(count: pieceCount + moving.count)
 
                 // Moving copper on fixed copper or on itself.
@@ -6293,8 +6295,8 @@ extension HorizontalBoard {
                     return result
                 }
                 for segment in segments {
-                    let from = elements(at: segment.fromMoves ? segment.from + offset : segment.from)
-                    let to = elements(at: segment.toMoves ? segment.to + offset : segment.to)
+                    let from = elements(at: segment.fromMoves ? placement.applying(to: segment.from) : segment.from)
+                    let to = elements(at: segment.toMoves ? placement.applying(to: segment.to) : segment.to)
                     for lhs in from {
                         for rhs in to {
                             _ = disjointSet.union(lhs, rhs)
@@ -6383,7 +6385,13 @@ extension HorizontalBoard {
         /// The airwires of those nets with the moving copper `offset` from
         /// where it started.
         func airwires(offset: HorizontalPoint) -> [HorizontalSegment] {
-            nets.flatMap { $0.airwires(offset: offset) }
+            airwires(placement: HorizontalPlacementTransform(shift: offset, angle: 0, mirrored: false))
+        }
+
+        /// The airwires of those nets with the moving copper placed by
+        /// `placement`: shifted, and turned as R and T turned it (122).
+        func airwires(placement: HorizontalPlacementTransform) -> [HorizontalSegment] {
+            nets.flatMap { $0.airwires(placement: placement) }
         }
     }
 
