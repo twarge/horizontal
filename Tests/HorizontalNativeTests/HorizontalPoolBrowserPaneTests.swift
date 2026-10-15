@@ -18,6 +18,9 @@ final class HorizontalPoolBrowserPaneTests: XCTestCase {
     override func setUpWithError() throws {
         poolURL = FileManager.default.temporaryDirectory.appendingPathComponent("pools-pane-\(UUID().uuidString)", isDirectory: true)
         defaults = UserDefaults(suiteName: "HorizontalPoolBrowserPaneTests-\(UUID().uuidString)")
+        // A debug build edits only once read-only operation is turned off;
+        // with it on, a row's Return would open the item's editor.
+        defaults.set(false, forKey: HorizontalOperationDefaults.readOnlyOperationKey)
         HorizontalPoolLibrary.invalidateCache()
         try write(["type": "pool", "uuid": UUID().uuidString.lowercased(), "name": "Pane Pool"], to: "pool.json")
         try write(["tables": ["resistors": ["display_name": "Resistors", "columns": [
@@ -184,6 +187,75 @@ final class HorizontalPoolBrowserPaneTests: XCTestCase {
         }
         XCTAssertTrue(window.firstResponder === table, "the list has the keyboard: \(String(describing: window.firstResponder))")
         XCTAssertEqual(table.selectedRow, 0)
+    }
+
+    /// The Parts pane's Return places its part only while the keyboard is
+    /// in that pane. Its Place button's shortcut was window-wide, and with
+    /// 128 the canvas no longer swallows a Return the Pools list has, so
+    /// Return in the Pools list placed the Parts pane's selected part.
+    func testReturnInThePoolsListLeavesThePartsPanesPlaceAlone() async throws {
+        _ = NSApplication.shared
+        let calls = Calls()
+        var partsPlaced = [String]()
+        let part = HorizontalPoolPart(
+            id: "pp-1", mpn: "PARTS-PANE-PART", manufacturer: "Yageo", partDescription: "", packageName: "R0603", tags: [],
+            value: "", displayValue: "PARTS-PANE-PART", entityID: "e-res", refdesPrefix: "R",
+            gates: [HorizontalPoolPartGate(id: "g", suffix: "", unitID: "u", symbolID: "s")])
+        let parts = HorizontalPartBrowserView(parts: [part], onPlacePart: { partsPlaced.append($0.id) })
+        let pools = HorizontalPoolBrowserView(root: .pool(poolURL), partActions: actions(calls, replacement: nil))
+        let view = HStack(spacing: 0) {
+            parts.frame(width: 1100)
+            pools.frame(width: 1100)
+        }
+        .environmentObject(HorizontalAppearanceSettings(defaults: defaults))
+        .defaultAppStorage(defaults)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 2200, height: 700), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let hosted = NSHostingView(rootView: view)
+        hosted.frame = window.contentLayoutRect
+        window.contentView = hosted
+        window.orderFront(nil)
+        defer { window.close() }
+
+        let partsTable = try await list(in: window, columns: "MPN", rows: 1)
+        let poolsTable = try await list(in: window, columns: "Name", rows: 4)
+        partsTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        poolsTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        try await Task.sleep(for: .milliseconds(100))
+        let enter = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+            isARepeat: false, keyCode: 36))
+        // A key equivalent is tried before the first responder gets the key,
+        // as the window does it.
+        func pressReturn() async throws {
+            if !window.performKeyEquivalent(with: enter) {
+                window.sendEvent(enter)
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+
+        XCTAssertTrue(window.makeFirstResponder(poolsTable))
+        try await pressReturn()
+        XCTAssertEqual(partsPlaced, [], "Return in the Pools list is the Pools list's")
+        XCTAssertEqual(calls.placed, ["p-c"], "it places the Pools list's own part, CAP-100N")
+
+        // In the Parts pane, Return still places its part.
+        XCTAssertTrue(window.makeFirstResponder(partsTable))
+        try await Task.sleep(for: .milliseconds(100))
+        try await pressReturn()
+        XCTAssertEqual(partsPlaced, ["pp-1"])
+        XCTAssertEqual(calls.placed, ["p-c"])
+
+        // And from its search field.
+        func fields(_ view: NSView) -> [NSTextField] {
+            ((view as? NSTextField).flatMap { $0.isEditable ? [$0] : nil } ?? []) + view.subviews.flatMap(fields)
+        }
+        let partsSearch = try XCTUnwrap(fields(hosted).first { $0.convert($0.bounds, to: nil).midX < 1100 })
+        XCTAssertTrue(window.makeFirstResponder(partsSearch))
+        try await Task.sleep(for: .milliseconds(100))
+        try await pressReturn()
+        XCTAssertEqual(partsPlaced, ["pp-1", "pp-1"])
     }
 
     /// What the Place and Replace buttons say, and when they act.

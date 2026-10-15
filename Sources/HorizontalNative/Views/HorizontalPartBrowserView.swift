@@ -54,6 +54,16 @@ struct HorizontalPartBrowserView: View {
     @State private var sourceOverrides: [String: URL] = [:]
     @SceneStorage("Horizontal.partBrowser.columnCustomization")
     private var columnCustomization = TableColumnCustomization<HorizontalPoolPart>()
+    /// Where in this pane the keyboard is, if anywhere: Return places only
+    /// from here. A window-wide Return placed this pane's part from wherever
+    /// else the keyboard was, such as the Pools pane's list, which has its
+    /// own Return.
+    @FocusState private var focus: Focus?
+
+    private enum Focus: Hashable {
+        case search
+        case table
+    }
 
     private var filteredParts: [HorizontalPoolPart] {
         let terms = searchText
@@ -157,6 +167,7 @@ struct HorizontalPartBrowserView: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(minWidth: 100)
                 .leavesFieldOnEscape()
+                .focused($focus, equals: .search)
         }
     }
 
@@ -189,7 +200,7 @@ struct HorizontalPartBrowserView: View {
             } label: {
                 Label("Place", systemImage: "plus.square.on.square")
             }
-            .keyboardShortcut(.return, modifiers: [])
+            .keyboardShortcut(focus == nil ? nil : KeyboardShortcut(.return, modifiers: []))
             .disabled(!canPlaceSelectedPart)
         }
     }
@@ -281,6 +292,7 @@ struct HorizontalPartBrowserView: View {
         .alternatingRowBackgrounds(.enabled)
         #endif
         .textSelection(.enabled)
+        .focused($focus, equals: .table)
     }
 
     private var unavailableView: some View {
