@@ -414,7 +414,7 @@ struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
     var onHighlightSelection: () -> Void
     var onUpdateAllPlanes: () -> Void
     var onClearAllPlanes: () -> Void
-    var onTextInputFocusChange: (Bool) -> Void
+    var onControlKeyboardFocusChange: (Bool) -> Void
 
     func makeNSView(context: Context) -> KeyCommandMonitorView {
         let view = KeyCommandMonitorView()
@@ -423,7 +423,7 @@ struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
         view.onHighlightSelection = onHighlightSelection
         view.onUpdateAllPlanes = onUpdateAllPlanes
         view.onClearAllPlanes = onClearAllPlanes
-        view.onTextInputFocusChange = onTextInputFocusChange
+        view.onControlKeyboardFocusChange = onControlKeyboardFocusChange
         return view
     }
 
@@ -433,7 +433,7 @@ struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
         nsView.onHighlightSelection = onHighlightSelection
         nsView.onUpdateAllPlanes = onUpdateAllPlanes
         nsView.onClearAllPlanes = onClearAllPlanes
-        nsView.onTextInputFocusChange = onTextInputFocusChange
+        nsView.onControlKeyboardFocusChange = onControlKeyboardFocusChange
     }
 
     final class KeyCommandMonitorView: NSView {
@@ -442,13 +442,13 @@ struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
         var onHighlightSelection: (() -> Void)?
         var onUpdateAllPlanes: (() -> Void)?
         var onClearAllPlanes: (() -> Void)?
-        /// Whether a text field has the keyboard, so the canvas's
-        /// keyboard-focus badge can stand down: the keys go to one or the
-        /// other, never both.
-        var onTextInputFocusChange: ((Bool) -> Void)?
+        /// Whether a text field or a list (the Pools pane's table, the
+        /// navigator) has the keyboard, so the canvas's keyboard-focus badge
+        /// can stand down: the keys go to one or the other, never both.
+        var onControlKeyboardFocusChange: ((Bool) -> Void)?
         private var monitor: Any?
         private var firstResponderObservation: NSKeyValueObservation?
-        private var reportedTextInputFocus: Bool?
+        private var reportedControlFocus: Bool?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -471,7 +471,7 @@ struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
             // Reported on the next turn: focus moves in the middle of view
             // updates, and the field editor takes over from its field.
             firstResponderObservation = window.observe(\.firstResponder, options: [.initial, .new]) { [weak self] _, _ in
-                DispatchQueue.main.async { self?.reportTextInputFocus() }
+                DispatchQueue.main.async { self?.reportControlFocus() }
             }
 
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
@@ -483,14 +483,15 @@ struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
                 let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
                 let characters = event.charactersIgnoringModifiers?.lowercased()
 
-                if characters == "l", modifiers.isEmpty, !self.isTextInputActive {
+                if characters == "l", modifiers.isEmpty, !self.isControlActive {
                     self.onHighlightSelection?()
                     return nil
                 }
 
                 // Q and ⇧Q, the Design menu's Update and Clear All Planes. As
-                // menu shortcuts they would take Q from every text field.
-                if characters == "q", modifiers.isEmpty || modifiers == .shift, !self.isTextInputActive {
+                // menu shortcuts they would take Q from every text field, and
+                // from a list's type-select.
+                if characters == "q", modifiers.isEmpty || modifiers == .shift, !self.isControlActive {
                     (modifiers.isEmpty ? self.onUpdateAllPlanes : self.onClearAllPlanes)?()
                     return nil
                 }
@@ -513,23 +514,24 @@ struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
             }
         }
 
-        private var isTextInputActive: Bool {
+        /// A text field or a list has the keyboard, and with it its keys.
+        private var isControlActive: Bool {
             guard let firstResponder = window?.firstResponder else {
                 return false
             }
-            return firstResponder is NSTextView || firstResponder is NSTextField
+            return firstResponder is NSTextView || firstResponder is NSTextField || firstResponder.isKeyboardList
         }
 
-        private func reportTextInputFocus() {
-            let focused = window != nil && isTextInputActive
-            guard focused != reportedTextInputFocus else { return }
-            reportedTextInputFocus = focused
-            onTextInputFocusChange?(focused)
+        private func reportControlFocus() {
+            let focused = window != nil && isControlActive
+            guard focused != reportedControlFocus else { return }
+            reportedControlFocus = focused
+            onControlKeyboardFocusChange?(focused)
         }
 
         private func removeMonitor() {
             firstResponderObservation = nil
-            reportedTextInputFocus = nil
+            reportedControlFocus = nil
             if let monitor {
                 NSEvent.removeMonitor(monitor)
                 self.monitor = nil
@@ -630,8 +632,9 @@ struct ProjectWorkspaceView: View {
     @State private var activeCanvasCommandPane: HorizontalPane?
     /// The project pool cleanup on show, reviewed when it opened.
     @State private var poolCleanupReview: HorizontalPoolCacheCleanupReview?
-    /// A text field has the keyboard, so no canvas shows the keyboard-focus badge.
-    @State private var isEditingText = false
+    /// A text field or a list has the keyboard, so no canvas shows the
+    /// keyboard-focus badge.
+    @State private var isKeyboardInControl = false
     @State private var rightSidebarPane: HorizontalWorkspaceRightSidebar?
     @State private var rulesResultsState: HorizontalBoardRulesResultState?
     @State private var exportSettings: HorizontalExportSettings
@@ -671,6 +674,11 @@ struct ProjectWorkspaceView: View {
     /// "Show in Project Pool Manager": the item the Library pane should select.
     @State private var libraryRevealRequest: HorizontalPoolRevealRequest?
     @State private var libraryPlacementError: String?
+    /// The selected components as the Pools pane's Replace sees them, read
+    /// from the archive when the selection or the schematic changes, and only
+    /// while the pane is open.
+    @State private var libraryPartReplacement: HorizontalPartReplacement?
+    @State private var libraryReplacementError: String?
     /// Why a bus, ripper or net tie could not be drawn — the editor's own
     /// refusal, which is written for whoever has to fix the request.
     @State private var projectEditError: String?
@@ -856,7 +864,7 @@ struct ProjectWorkspaceView: View {
                 onHighlightSelection: highlightSelectedNet,
                 onUpdateAllPlanes: updateAllBoardPlanes,
                 onClearAllPlanes: clearAllBoardPlanes,
-                onTextInputFocusChange: { isEditingText = $0 }
+                onControlKeyboardFocusChange: { isKeyboardInControl = $0 }
             ))
             .background(WindowSizeObserver(savedSize: windowSize, onSizeChange: updateWindowSize))
             .onAppear(perform: appear)
@@ -868,10 +876,18 @@ struct ProjectWorkspaceView: View {
         workspaceWithWindowObservers
             .onChange(of: navigatorSelection) { _, selection in
                 syncPanesForSelection(selection)
+                refreshLibraryPartReplacement()
             }
             .onChange(of: visiblePanes) { _, panes in
                 clearSelectionDetailsForHiddenPanes(panes)
                 saveFileViewState()
+                refreshLibraryPartReplacement()
+            }
+            .onChange(of: selectedComponentIDs) { _, _ in
+                refreshLibraryPartReplacement()
+            }
+            .onChange(of: schematicEditRevision) { _, _ in
+                refreshLibraryPartReplacement()
             }
             .onChange(of: columnVisibility) { _, _ in
                 saveFileViewState()
@@ -927,6 +943,14 @@ struct ProjectWorkspaceView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(libraryPlacementError ?? "")
+            }
+            .alert("Could Not Replace Part", isPresented: Binding(
+                get: { libraryReplacementError != nil },
+                set: { if !$0 { libraryReplacementError = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(libraryReplacementError ?? "")
             }
             .alert("Could Not Draw That", isPresented: projectEditErrorPresented) {
                 Button("OK", role: .cancel) {}
@@ -1853,7 +1877,7 @@ struct ProjectWorkspaceView: View {
                     root: .project(poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }),
                     safeAreaInsets: fitSafeAreaInsets,
                     revealRequest: libraryRevealRequest,
-                    onPlacePart: selectedSchematic == nil ? nil : { item in placePartFromLibrary(item) }
+                    partActions: libraryPartActions
                 )
             }
         case .schematic:
@@ -1863,7 +1887,7 @@ struct ProjectWorkspaceView: View {
                     safeAreaInsets: fitSafeAreaInsets,
                     infoEnabled: selectedSchematic != nil,
                     showsTools: !isDistractionFree && !isWindowToolbarHidden,
-                    isKeyboardFocused: activeCanvasCommandPane == .schematic && !isEditingText,
+                    isKeyboardFocused: activeCanvasCommandPane == .schematic && !isKeyboardInControl,
                     onToolbarHover: { setPointerInsideToolbar($0, for: .schematic) }
                 ) {
                     if let selectedSchematic {
@@ -2025,7 +2049,7 @@ struct ProjectWorkspaceView: View {
                     safeAreaInsets: fitSafeAreaInsets,
                     infoEnabled: project.board != nil,
                     showsTools: !isDistractionFree && !isWindowToolbarHidden,
-                    isKeyboardFocused: activeCanvasCommandPane == .board && !isEditingText,
+                    isKeyboardFocused: activeCanvasCommandPane == .board && !isKeyboardInControl,
                     onToolbarHover: { setPointerInsideToolbar($0, for: .board) }
                 ) {
                     if let board = project.board {
@@ -3783,10 +3807,42 @@ struct ProjectWorkspaceView: View {
         )
     }
 
-    /// "Place in Schematic" from the Library pane: the part and everything it
-    /// needs are cached into the project pool first (Horizon's project pool
-    /// cache), the open archive learns the new files, then the placement
-    /// starts exactly as from the Parts pane.
+    /// The Pools pane's Place and Replace.
+    private var libraryPartActions: HorizontalPoolPartActions {
+        HorizontalPoolPartActions(
+            place: isReadOnly || selectedSchematic == nil ? nil : { item in placePartFromLibrary(item) },
+            placeUnavailableReason: isReadOnly
+                ? "Read-only operation is enabled in Horizontal."
+                : selectedSchematic == nil ? "This project has no schematic to place parts in." : nil,
+            replacement: libraryPartReplacement,
+            replace: isReadOnly ? nil : { item, packageName, replacement in
+                replacePartsFromLibrary(item, packageName: packageName, replacement)
+            }
+        )
+    }
+
+    /// The block the schematic pane shows, for a selection made in a
+    /// sub-block's sheet.
+    private var selectedSchematicBlock: HorizontalProjectBlock? {
+        guard let url = selectedSchematic?.url.standardizedFileURL else {
+            return nil
+        }
+        return project.schematics.first { $0.schematic.url.standardizedFileURL == url }?.block
+    }
+
+    private func refreshLibraryPartReplacement() {
+        let replacement = visiblePanes.contains(.library)
+            ? HorizontalPartReplacement.current(componentIDs: selectedComponentIDs, archive: document.archive, project: project,
+                                                preferredBlock: selectedSchematicBlock)
+            : nil
+        if replacement != libraryPartReplacement {
+            libraryPartReplacement = replacement
+        }
+    }
+
+    /// "Place in Schematic" from the Library pane: the part is cached into
+    /// the project pool, then the placement starts exactly as from the Parts
+    /// pane.
     private func placePartFromLibrary(_ item: HorizontalPoolLibraryItem) {
         guard !isReadOnly else {
             return
@@ -3795,37 +3851,71 @@ struct ProjectWorkspaceView: View {
             libraryPlacementError = "This project has no schematic to place “\(item.name)” in."
             return
         }
-        let poolURL = project.baseURL.appendingPathComponent(project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName)
         do {
-            // Documents made before new projects carried a pool have none:
-            // make Horizon's project pool now, so the cache has a home.
-            try ensureProjectPool(at: poolURL)
-            let imported = try HorizontalPoolCacheImporter.cachePart(item, into: poolURL)
-            if case .directory = document.archive.root {
-                for url in imported.writtenFiles {
-                    if let relativePath = archiveRelativePath(for: url) {
-                        try document.archive.replaceRegularFileData(relativePath: relativePath, with: Data(contentsOf: url))
-                    }
+            beginPartPlacement(try cacheLibraryPart(item))
+        } catch {
+            libraryPlacementError = HorizontalCanvasProjectEdit.message(for: error)
+        }
+    }
+
+    /// Replace from the Pools pane, Horizon's Assign Part: the part is cached
+    /// into the project pool as Place caches it, then every selected
+    /// component is given it with `set_part`, as one undoable edit. The
+    /// entity stays, so their connections do, and the schematic and board
+    /// reload showing the part's MPN, value and package. A package change
+    /// under a routed component is refused before anything is written.
+    private func replacePartsFromLibrary(_ item: HorizontalPoolLibraryItem, packageName: String, _ replacement: HorizontalPartReplacement) {
+        guard !isReadOnly else {
+            return
+        }
+        if let refusal = replacement.refusal(for: item, packageName: packageName, project: project, archive: document.archive) {
+            libraryReplacementError = refusal
+            return
+        }
+        do {
+            let part = try cacheLibraryPart(item)
+            let edited = try HorizontalCanvasProjectEdit.archive(
+                applying: replacement.operations(partID: part.id),
+                to: document.archive,
+                in: project,
+                block: replacement.blockID
+            )
+            try applyLiveArchive(edited.archive, actionName: replacement.targets.count == 1 ? "Replace Part" : "Replace Parts")
+        } catch {
+            libraryReplacementError = HorizontalCanvasProjectEdit.message(for: error)
+        }
+    }
+
+    /// A Pools pane part and everything it needs cached into the project pool
+    /// (Horizon's project pool cache), the open archive told of the new
+    /// files, and the part as the project pool now has it.
+    private func cacheLibraryPart(_ item: HorizontalPoolLibraryItem) throws -> HorizontalPoolPart {
+        let poolURL = project.baseURL.appendingPathComponent(project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName)
+        // Documents made before new projects carried a pool have none: make
+        // Horizon's project pool now, so the cache has a home.
+        try ensureProjectPool(at: poolURL)
+        let imported = try HorizontalPoolCacheImporter.cachePart(item, into: poolURL)
+        if case .directory = document.archive.root {
+            for url in imported.writtenFiles {
+                if let relativePath = archiveRelativePath(for: url) {
+                    try document.archive.replaceRegularFileData(relativePath: relativePath, with: Data(contentsOf: url))
                 }
             }
-            if !imported.writtenFiles.isEmpty {
-                HorizontalPoolLibrary.invalidateCache()
-                HorizontalPoolPadstacks.invalidateCaches()
-            }
-            guard let part = HorizontalPoolPart.loadCached(id: item.uuid, from: poolURL) else {
-                libraryPlacementError = "“\(item.name)” could not be read from the project pool after caching."
-                return
-            }
-            if let index = project.poolParts.firstIndex(where: { $0.id == part.id }) {
-                project.poolParts[index] = part
-            } else {
-                project.poolParts.append(part)
-                project.poolParts.sort { $0.mpn.localizedStandardCompare($1.mpn) == .orderedAscending }
-            }
-            beginPartPlacement(part)
-        } catch {
-            libraryPlacementError = error.localizedDescription
         }
+        if !imported.writtenFiles.isEmpty {
+            HorizontalPoolLibrary.invalidateCache()
+            HorizontalPoolPadstacks.invalidateCaches()
+        }
+        guard let part = HorizontalPoolPart.loadCached(id: item.uuid, from: poolURL) else {
+            throw HorizontalDispatchError.failed("“\(item.name)” could not be read from the project pool after caching.")
+        }
+        if let index = project.poolParts.firstIndex(where: { $0.id == part.id }) {
+            project.poolParts[index] = part
+        } else {
+            project.poolParts.append(part)
+            project.poolParts.sort { $0.mpn.localizedStandardCompare($1.mpn) == .orderedAscending }
+        }
+        return part
     }
 
     /// Creates `pool/pool.json` (Horizon's project pool manifest) when the
