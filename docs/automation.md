@@ -120,7 +120,7 @@ not placed, and unrouted connections. There is no geometric design rule check
 in Horizontal yet, so none here either.
 
 It also gives the warnings the schematic canvas draws — Horizon's sheet
-warnings: Label missing, Pin connected to net, Power sym missing, Pin on line,
+warnings: Label missing, Pin connected to net, Power sym missing, Pin on Line,
 Zero length line, Duplicate net name and the rest — on every sheet of every
 block. Each is one `schematic` warning with its `sheet`, `sheet_name`, `x_mm`
 and `y_mm`, the canvas's `message`, and the `net`, `refdes` and `pin` it is
