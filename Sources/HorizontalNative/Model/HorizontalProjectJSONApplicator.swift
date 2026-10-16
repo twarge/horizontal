@@ -280,6 +280,7 @@ enum HorizontalProjectJSONApplicator {
         )
         try patchSchematicComponentConnections(
             sheet.componentInfo,
+            removedConnections: sheet.removedConnections,
             schematicURL: schematicURL,
             project: project,
             archive: &archive
@@ -886,6 +887,7 @@ enum HorizontalProjectJSONApplicator {
 
     private static func patchSchematicComponentConnections(
         _ componentInfo: [String: SchematicComponentInfo],
+        removedConnections: [String: Set<String>],
         schematicURL: URL,
         project: HorizontalProject,
         archive: inout HorizontalProjectArchive
@@ -918,6 +920,14 @@ enum HorizontalProjectJSONApplicator {
                     entry["net"] = NSNull()
                 }
                 connections[key] = entry
+            }
+            // `info.connections` only lists what is there, so a pin that left
+            // its net is named in `removedConnections`; one connected again
+            // since is back in `info.connections` and stays.
+            for gatePinPath in removedConnections[componentID] ?? [] where info.connections[gatePinPath] == nil {
+                if let key = matchingKey(gatePinPath, in: connections) {
+                    connections.removeValue(forKey: key)
+                }
             }
             componentJSON["connections"] = connections
             componentMap[componentKey] = componentJSON
