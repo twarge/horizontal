@@ -781,6 +781,11 @@ struct SchematicCanvasView: View {
             targetItemMenu: { ref in
                 schematicTargetItemMenuEntries(for: ref)
             },
+            onTargetMenuHighlight: { ref in
+                if hoveredObject != ref {
+                    hoveredObject = ref
+                }
+            },
             onTargetMenuCommand: { ref, command in
                 switch command {
                 case .copySelection, .duplicateSelection:
