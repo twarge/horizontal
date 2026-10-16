@@ -68,10 +68,20 @@
 		<dict>
 			<key>UTTypeConformsTo</key>
 			<array>
-				<string>public.json</string>
+				<string>public.data</string>
+				<string>public.content</string>
 			</array>
 			<key>UTTypeDescription</key>
 			<string>PCB Project (.hprj)</string>
+			<!-- Declared as data, not JSON: a text type gets a text thumbnail in
+			     Finder and the Files app, and that hides any icon. UTTypeIcons
+			     has the system draw one: the app icon on a folded page, labelled
+			     HPRJ, as .horizontal gets. -->
+			<key>UTTypeIcons</key>
+			<dict>
+				<key>UTTypeIconText</key>
+				<string>hprj</string>
+			</dict>
 			<key>UTTypeIdentifier</key>
 			<string>com.twarge.hprj-project</string>
 			<key>UTTypeTagSpecification</key>
@@ -88,10 +98,16 @@
 		<dict>
 			<key>UTTypeConformsTo</key>
 			<array>
-				<string>public.json</string>
+				<string>public.data</string>
+				<string>public.content</string>
 			</array>
 			<key>UTTypeDescription</key>
 			<string>PCB Project (.hprj)</string>
+			<key>UTTypeIcons</key>
+			<dict>
+				<key>UTTypeIconText</key>
+				<string>hprj</string>
+			</dict>
 			<key>UTTypeIdentifier</key>
 			<string>org.horizon-eda.horizon-project</string>
 			<key>UTTypeTagSpecification</key>
