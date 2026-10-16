@@ -18,12 +18,23 @@ final class SchematicWarningsTests: XCTestCase {
         sheet.symbolPins = [.init(id: "s/pin/p", from: .zero, to: .init(x: 100, y: 0), width: 0, layer: nil, netID: "n")]
         sheet.netLines = [.init(id: "wire", from: .zero, to: .init(x: -100, y: 0), width: 0, layer: nil, netID: "n",
                                schematicFrom: .pin("s/p"), schematicTo: .junction("j"))]
-        XCTAssertFalse(messages(sheet).contains("Pin on line"))
+        XCTAssertFalse(messages(sheet).contains("Pin on Line"))
         XCTAssertFalse(messages(sheet).contains("Pin connected to net: n"))
         sheet.netLines[0].from = .init(x: 100, y: 0)
         sheet.netLines[0].schematicFrom = .junction("other")
-        XCTAssertTrue(messages(sheet).contains("Pin on line"))
+        XCTAssertTrue(messages(sheet).contains("Pin on Line"))
         XCTAssertTrue(messages(sheet).contains("Pin connected to net: n"))
+    }
+
+    /// Horizon's "Pin on Line" is a pin inside a wire; a wire ending at a
+    /// junction on the pin is "Pin on junction" alone.
+    func testWireEndingAtAJunctionOnAPinIsNotPinOnLine() {
+        var sheet = sheet()
+        sheet.junctions = ["j": .zero]
+        sheet.symbolPins = [.init(id: "s/pin/p", from: .zero, to: .init(x: 100, y: 0), width: 0, layer: nil)]
+        sheet.netLines = [.init(id: "wire", from: .zero, to: .init(x: -100, y: 0), width: 0, layer: nil, netID: "n",
+                               schematicFrom: .junction("j"), schematicTo: .junction("k"))]
+        XCTAssertEqual(messages(sheet), ["Pin on junction"])
     }
 
     func testPinLabelZeroWireWarningsDisappearAfterMovingLabel() {

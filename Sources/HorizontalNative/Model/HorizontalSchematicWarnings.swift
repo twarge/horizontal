@@ -74,10 +74,14 @@ enum HorizontalSchematicWarnings {
             let pinID = String(parts[2])
             return symbol(of: pin)?.symbolPinNames.first { $0.id.lowercased() == pinID }?.primaryName
         }
-        func contains(_ point: HorizontalPoint, _ line: HorizontalSegment) -> Bool {
+        /// Horizon's `LineNet::coord_on_line`: on the wire but not at either
+        /// end, so a wire ending at a junction on a pin is "Pin on junction"
+        /// alone.
+        func liesWithin(_ point: HorizontalPoint, _ line: HorizontalSegment) -> Bool {
             let vector = line.to - line.from
             let offset = point - line.from
-            return point.x >= min(line.from.x, line.to.x) && point.x <= max(line.from.x, line.to.x)
+            return key(point) != key(line.from) && key(point) != key(line.to)
+                && point.x >= min(line.from.x, line.to.x) && point.x <= max(line.from.x, line.to.x)
                 && point.y >= min(line.from.y, line.to.y) && point.y <= max(line.from.y, line.to.y)
                 && abs(vector.x * offset.y - vector.y * offset.x) < 1
         }
@@ -121,8 +125,8 @@ enum HorizontalSchematicWarnings {
                 warn(pin.from, "Pin connected to net: \(sheet.netDetails[netID]?.name ?? netID)", title: "Pin connected to net",
                      net: netID, component: component(of: pin), pin: name(of: pin))
             }
-            if sheet.netLines.contains(where: { contains(pin.from, $0) && !connected(endpoint, pointKey, $0) }) {
-                warn(pin.from, "Pin on line", component: component(of: pin), pin: name(of: pin))
+            if sheet.netLines.contains(where: { liesWithin(pin.from, $0) && !connected(endpoint, pointKey, $0) }) {
+                warn(pin.from, "Pin on Line", component: component(of: pin), pin: name(of: pin))
             }
         }
         for port in sheet.blockSymbolPorts {

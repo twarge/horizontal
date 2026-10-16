@@ -781,6 +781,11 @@ struct SchematicCanvasView: View {
             targetItemMenu: { ref in
                 schematicTargetItemMenuEntries(for: ref)
             },
+            onTargetMenuHighlight: { ref in
+                if hoveredObject != ref {
+                    hoveredObject = ref
+                }
+            },
             onTargetMenuCommand: { ref, command in
                 switch command {
                 case .copySelection, .duplicateSelection:
@@ -3164,6 +3169,7 @@ struct SchematicCanvasView: View {
     private func deleteSelectedObjects(from sheet: inout HorizontalSchematicSheet) -> Bool {
         var changed = false
         let refs = expandedSchematicDeleteRefs(from: uniqueRefs(selectedObjects), in: sheet)
+        let netLinesBefore = sheet.netLines
 
         for ref in refs {
             switch ref.type {
@@ -3220,6 +3226,7 @@ struct SchematicCanvasView: View {
         }
 
         if changed {
+            sheet.disconnectPinsLeftWithoutWires(netLinesBefore: netLinesBefore)
             changed = vacuumUnusedSchematicJunctions(in: &sheet) || changed
         }
 

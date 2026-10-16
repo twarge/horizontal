@@ -1513,10 +1513,19 @@ struct InteractiveCanvasView: View {
         _ = highlightDelegate // keep the (weakly-referenced) delegate alive across popUp
     }
 
+    /// A click on overlapping objects asks which one, as Horizon's clarify menu
+    /// does: one plain item per candidate that selects it, highlighted while
+    /// hovered. The per-object actions stay on the right-click menu.
     private func showSelectionTargetMenu(targets: [HorizontalSelectionTargetItem]) {
         let menu = NSMenu()
         var refForItem = [ObjectIdentifier: HorizontalSelectableRef]()
-        appendTargetMenuItems(targets, to: menu, refForItem: &refForItem)
+        for target in targets {
+            let item = makeTargetActionItem(target)
+            if let ref = target.ref {
+                refForItem[ObjectIdentifier(item)] = ref
+            }
+            menu.addItem(item)
+        }
 
         let highlightDelegate = CanvasMenuHighlightDelegate(refForItem: refForItem, onHighlight: onTargetMenuHighlight)
         menu.delegate = highlightDelegate
