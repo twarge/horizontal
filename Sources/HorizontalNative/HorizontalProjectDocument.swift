@@ -7,11 +7,13 @@ import UniformTypeIdentifiers
 
 extension UTType {
     static let horizontalProject = UTType(exportedAs: "com.twarge.horizontal-project", conformingTo: .package)
-    static let hprjProject = UTType(exportedAs: "com.twarge.hprj-project", conformingTo: .json)
+    /// Data, not JSON, as the Info.plists declare it: a text type gets a text
+    /// thumbnail in Finder and the Files app in place of the document icon.
+    static let hprjProject = UTType(exportedAs: "com.twarge.hprj-project", conformingTo: .data)
     /// Imported, not exported: `.hprj` is another program's format and this is
     /// the identifier it registers. Without it the app is not offered for files
     /// that program tagged, which is most of them.
-    static let legacyHorizonProject = UTType(importedAs: "org.horizon-eda.horizon-project", conformingTo: .json)
+    static let legacyHorizonProject = UTType(importedAs: "org.horizon-eda.horizon-project", conformingTo: .data)
 }
 
 struct HorizontalProjectDocument: FileDocument {

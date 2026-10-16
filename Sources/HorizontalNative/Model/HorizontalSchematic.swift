@@ -122,6 +122,10 @@ struct HorizontalSchematicSheet: Identifiable {
     /// Nets deleted on this sheet (power nets nothing uses): taken out of
     /// the block on save, since `netDetails` alone cannot say "gone".
     var removedNetIDs: Set<String> = []
+    /// Pin connections dropped on this sheet (the last wire to the pin was
+    /// deleted), as gate/pin paths by component: taken out of the block on
+    /// save unless the pin has been connected again since.
+    var removedConnections: [String: Set<String>] = [:]
     var powerSymbols: [HorizontalPowerSymbol]
     var powerSymbolLines: [HorizontalSegment]
     var powerSymbolCircles: [HorizontalCircle]
@@ -4627,6 +4631,88 @@ extension HorizontalSchematicSheet {
             connectorStyle: style
         ) {
             symbolTexts.append(text)
+        }
+    }
+
+    /// Horizon's `Schematic::delete_net_line`: a pin leaves its net when the
+    /// wire deleted was the last one ending on it, so it shows the open box
+    /// of an unconnected pin again rather than staying on the net with
+    /// nothing drawn to it. `netLinesBefore` is the sheet's wires before the
+    /// delete.
+    mutating func disconnectPinsLeftWithoutWires(netLinesBefore: [HorizontalSegment]) {
+        let normalizedID = HorizontalSchematic.normalizedID
+        let pointKey = HorizontalCanvasModeSupport.pointKey
+        let remainingIDs = Set(netLines.map { normalizedID($0.id) })
+        let removedLines = netLinesBefore.filter { !remainingIDs.contains(normalizedID($0.id)) }
+        guard !removedLines.isEmpty else {
+            return
+        }
+
+        // The placed pins, named "<symbol>/<pin>" as a wire's stored endpoint
+        // names them, and by their connection points.
+        var placedPins = Set<String>()
+        var pinAtPoint = [String: String]()
+        for segment in symbolPins {
+            let parts = normalizedID(segment.id).split(separator: "/").map(String.init)
+            guard parts.count >= 3, parts[1] == "pin" else {
+                continue
+            }
+            let pin = "\(parts[0])/\(parts[2])"
+            placedPins.insert(pin)
+            if pinAtPoint[pointKey(segment.from)] == nil {
+                pinAtPoint[pointKey(segment.from)] = pin
+            }
+        }
+        func pin(at endpoint: HorizontalSchematicEndpoint?, point: HorizontalPoint) -> String? {
+            switch endpoint {
+            case .pin(let id):
+                return normalizedID(id)
+            case nil:
+                // A wire drawn since the last load has only coordinates.
+                return pinAtPoint[pointKey(point)]
+            default:
+                return nil
+            }
+        }
+
+        var pins = Set<String>()
+        for line in removedLines {
+            if let from = pin(at: line.schematicFrom, point: line.from) { pins.insert(from) }
+            if let to = pin(at: line.schematicTo, point: line.to) { pins.insert(to) }
+        }
+        // A pin whose symbol went with the wire has nothing left to redraw.
+        for pinRef in pins where placedPins.contains(pinRef) {
+            let stillWired = netLines.contains {
+                pin(at: $0.schematicFrom, point: $0.from) == pinRef || pin(at: $0.schematicTo, point: $0.to) == pinRef
+            }
+            let parts = pinRef.split(separator: "/").map(String.init)
+            guard !stillWired,
+                  parts.count == 2,
+                  let symbol = symbols.first(where: { normalizedID($0.id) == parts[0] }),
+                  let componentID = symbol.componentID.map(normalizedID),
+                  let gateID = symbol.gateID.map(normalizedID) else {
+                continue
+            }
+            let gatePinPath = HorizontalSchematic.normalizedUUIDPath("\(gateID)/\(parts[1])")
+            guard componentInfo[componentID]?.connections[gatePinPath]?.netID != nil else {
+                continue
+            }
+            componentInfo[componentID]?.connections.removeValue(forKey: gatePinPath)
+            removedConnections[componentID, default: []].insert(gatePinPath)
+            func isPinGeometry(_ id: String) -> Bool {
+                schematicMetalSymbolID(forGeometryID: id) == parts[0]
+                    && Self.editorPinID(forGeometryID: id) == parts[1]
+            }
+            for index in symbolPins.indices where isPinGeometry(symbolPins[index].id) {
+                symbolPins[index].netID = nil
+            }
+            for index in symbolPinCircles.indices where isPinGeometry(symbolPinCircles[index].id) {
+                symbolPinCircles[index].netID = nil
+            }
+            for index in symbolTexts.indices where isPinGeometry(symbolTexts[index].id) {
+                symbolTexts[index].netID = nil
+            }
+            rebakePinConnector(symbolID: parts[0], pinID: parts[1])
         }
     }
 }
