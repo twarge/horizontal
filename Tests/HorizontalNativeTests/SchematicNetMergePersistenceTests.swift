@@ -39,10 +39,12 @@ final class SchematicNetMergePersistenceTests: XCTestCase {
                     "wa": ["from": ["pin": "s1/a"], "to": ["junc": "ja"]],
                     "wb": ["from": ["pin": "s2/a"], "to": ["junc": "jb"]],
                 ],
+                "net_labels": ["la": ["junction": "ja", "last_net": "a", "size": 1_500_000, "orientation": "left"]],
             ],
             "second": [
                 "name": "Two", "index": 2,
-                "junctions": ["far": ["position": [0, 0], "net": "b"]],
+                "junctions": ["far": ["position": [0, 0], "net": "b"], "fa": ["position": [5_000_000, 0]]],
+                "net_labels": ["lb": ["junction": "fa", "last_net": "a", "size": 1_500_000, "orientation": "right"]],
             ],
         ]
         try put("top_schematic.json", schematic)
@@ -213,6 +215,23 @@ final class SchematicNetMergePersistenceTests: XCTestCase {
         XCTAssertEqual(reloaded.symbolPins.first { $0.id.lowercased() == "s3/pin/a" }?.netID, "a")
         XCTAssertTrue(reloaded.symbolPins.filter { $0.id.lowercased().hasPrefix("s3/pin-connector/a") }.isEmpty,
                       "R3's pin no longer draws the open box of an unconnected pin")
+    }
+
+    /// What the canvas's net name field does: `rename_net` through the
+    /// project edit, then the reload, so every sheet shows the new name and
+    /// its labels their other-sheet references, which the name never holds.
+    func testRenamingANetShowsTheNewNameOnEverySheet() throws {
+        let (project, archive) = try project()
+        XCTAssertEqual(try sheetOne(project).netLabels.first?.text, "SIG_A [2]")
+        XCTAssertEqual(try sheetOne(project).netDetails["a"]?.name, "SIG_A", "the name has no sheet references")
+
+        let edited = try HorizontalCanvasProjectEdit.archive(applying: [["op": "rename_net", "net": "a", "name": "CLK"]],
+                                                             to: archive, in: project)
+        let reloaded = try HorizontalProject.loadSnapshot(of: edited.archive)
+        let sheets = try XCTUnwrap(reloaded.schematic?.sheets)
+        XCTAssertEqual(sheets.first { $0.name == "One" }?.netLabels.first?.text, "CLK [2]")
+        XCTAssertEqual(sheets.first { $0.name == "Two" }?.netLabels.first?.text, "CLK [1]")
+        XCTAssertTrue(sheets.allSatisfy { $0.netDetails["a"]?.name == "CLK" })
     }
 
     func testMergingANetTheProjectHadRewritesEveryFileThatNamesIt() throws {
