@@ -56,7 +56,7 @@ struct SchematicAltPinInfo {
     var customDirection: String
 }
 
-enum SchematicConnectionState {
+enum SchematicConnectionState: Equatable {
     case connected(String)
     case notConnected
 
@@ -4663,10 +4663,17 @@ extension HorizontalSchematicSheet {
                 pinAtPoint[pointKey(segment.from)] = pin
             }
         }
+        var junctionPointByID = [String: String]()
+        for (id, point) in junctions { junctionPointByID[normalizedID(id)] = pointKey(point) }
         func pin(at endpoint: HorizontalSchematicEndpoint?, point: HorizontalPoint) -> String? {
             switch endpoint {
             case .pin(let id):
                 return normalizedID(id)
+            case .junction(let id) where junctionPointByID[normalizedID(id)] != pointKey(point):
+                // The junction it named went (a pin placed on the wire's end
+                // took its place), so the end is where it is, as the writer
+                // resolves it.
+                return pinAtPoint[pointKey(point)]
             case nil:
                 // A wire drawn since the last load has only coordinates.
                 return pinAtPoint[pointKey(point)]
