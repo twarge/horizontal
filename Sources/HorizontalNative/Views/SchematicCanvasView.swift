@@ -1719,6 +1719,45 @@ struct SchematicCanvasView: View {
         return values.isEmpty ? nil : values.joined(separator: ", ")
     }
 
+    /// The net's name, editable where renaming it can reach every sheet
+    /// (`renameNet`). Nil for no net, a pool editor or a locked document.
+    private func netNameProperty(for netID: String?) -> HorizontalSelectionProperty? {
+        guard let netID, let detail = sheet.netDetails[normalizedID(netID)] else {
+            return nil
+        }
+        guard !isReadOnly, !editorProfile.isPoolMode, onApplyProjectEdit != nil else {
+            return readOnlyProperty("name", "Net name", nonEmpty(detail.name) ?? "unnamed net")
+        }
+        return editableTextProperty(Self.netNamePropertyID, "Net name", detail.name)
+    }
+
+    private static let netNamePropertyID = "netName"
+
+    /// Renames a net in the block, as Horizon's net name property does: every
+    /// label, power symbol and wire on it, on every sheet, shows the new name
+    /// at once, the labels with their other-sheet references worked out
+    /// again. Through the project edit, so the reload is one undo step.
+    private func renameNet(of ref: HorizontalSelectableRef, to rawName: String) {
+        guard !isReadOnly,
+              let onApplyProjectEdit,
+              let netID = netID(for: ref).map(normalizedID),
+              let detail = sheet.netDetails[netID] else {
+            return
+        }
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard name != detail.name else {
+            return
+        }
+        guard !name.isEmpty || !detail.isPower else {
+            onEditMessage("A power net needs a name.")
+            return
+        }
+        // The selection survives: the reload keeps every object's id.
+        hoveredObject = nil
+        adoptExternallyUpdatedSheet()
+        onApplyProjectEdit([["op": "rename_net", "net": netID, "name": name]], "Rename Net")
+    }
+
     private func netDisplayName(_ netID: String?) -> String? {
         guard let netID else {
             return nil
@@ -1760,7 +1799,7 @@ struct SchematicCanvasView: View {
                 editableAngleProperty("angle", "Angle", symbol.angle),
             ].compactMap { $0 } + editableSymbolPinNameProperties(for: symbol)
         case .lineNet:
-            return segmentProperties(for: ref, segments: sheet.netLines, title: "Net")
+            return segmentProperties(for: ref, segments: sheet.netLines, title: "Net", editsNetName: true)
         case .drawingLine:
             return segmentProperties(for: ref, segments: sheet.drawingLines, title: "Drawing line")
         case .drawingArc:
@@ -1773,8 +1812,10 @@ struct SchematicCanvasView: View {
             guard let label = sheet.netLabels.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return []
             }
+            // The net's own name: the label draws it with the port direction
+            // and the other sheets it is on, which are the label's, not the net's.
             return [
-                editableTextProperty("text", "Net name", label.text),
+                netNameProperty(for: label.netID) ?? readOnlyProperty("name", "Net name", label.text),
                 editableLengthProperty("size", "Size", label.size),
                 editableNetClassProperty(for: label.netID),
             ].compactMap { $0 }
@@ -1826,7 +1867,8 @@ struct SchematicCanvasView: View {
         for ref: HorizontalSelectableRef,
         segments: [HorizontalSegment],
         title: String,
-        editable: Bool = true
+        editable: Bool = true,
+        editsNetName: Bool = false
     ) -> [HorizontalSelectionProperty] {
         guard let segment = segments.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
             return []
@@ -1836,7 +1878,8 @@ struct SchematicCanvasView: View {
             ? editableLengthProperty("width", "Width", segment.width)
             : readOnlyProperty("width", "Width", segment.width > 0 ? lengthString(segment.width) : nil)
         return [
-            readOnlyProperty("name", title, netDisplayName(segment.netID) ?? shortID(segment.id)),
+            (editsNetName ? netNameProperty(for: segment.netID) : nil)
+                ?? readOnlyProperty("name", title, netDisplayName(segment.netID) ?? shortID(segment.id)),
             widthProperty,
             editableNetClassProperty(for: segment.netID),
             readOnlyProperty("length", "Length", lengthString(segment.length)),
@@ -6098,6 +6141,10 @@ struct SchematicCanvasView: View {
             beginEditCustomValue(for: change.ref)
             return
         }
+        if change.propertyID == Self.netNamePropertyID, case .text(let name) = change.value {
+            renameNet(of: change.ref, to: name)
+            return
+        }
         let previousSheet = editedSheet ?? sourceSheet
         var draft = previousSheet
         let refs = change.applyToAll
@@ -6692,9 +6739,8 @@ struct SchematicCanvasView: View {
             return
         }
 
+        // The name is the net's, renamed through `renameNet`.
         switch (propertyID, value) {
-        case ("text", .text(let text)):
-            labels[index].text = text
         case ("size", .length(let size)):
             labels[index].size = max(size, 0)
         default:
