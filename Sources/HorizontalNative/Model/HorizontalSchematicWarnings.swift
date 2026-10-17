@@ -90,20 +90,29 @@ enum HorizontalSchematicWarnings {
             guard parts.count >= 3, parts[1] == "pin" else { return nil }
             return .pin("\(parts[0])/\(parts[2])")
         }
+        var junctionKeyByID = [String: String]()
+        for (id, point) in sheet.junctions { junctionKeyByID[id.lowercased()] = key(point) }
+        /// The end as the writer will store it: an end naming a junction that
+        /// is no longer at that point is bare, and goes by its coordinates.
+        func storedEnd(_ endpoint: HorizontalSchematicEndpoint?, at point: HorizontalPoint) -> HorizontalSchematicEndpoint? {
+            if case .junction(let id) = endpoint, junctionKeyByID[id.lowercased()] != key(point) { return nil }
+            return endpoint
+        }
         /// Whether `line` ends on the pin at `endpoint`, whose point is `pointKey`.
         func connected(_ endpoint: HorizontalSchematicEndpoint, _ pointKey: String, _ line: HorizontalSegment) -> Bool {
-            if line.schematicFrom == endpoint || line.schematicTo == endpoint { return true }
+            let from = storedEnd(line.schematicFrom, at: line.from), to = storedEnd(line.schematicTo, at: line.to)
+            if from == endpoint || to == endpoint { return true }
             // Newly drawn wires have coordinates until the next save/reload.
-            return (line.schematicFrom == nil && key(line.from) == pointKey)
-                || (line.schematicTo == nil && key(line.to) == pointKey)
+            return (from == nil && key(line.from) == pointKey)
+                || (to == nil && key(line.to) == pointKey)
         }
         // Every wire end at once, so whether any wire ends on a pin or port is
         // a lookup rather than a pass over the wires for each one.
         var storedEnds = Set<HorizontalSchematicEndpoint>()
         var bareEndKeys = Set<String>()
         for line in sheet.netLines {
-            if let from = line.schematicFrom { storedEnds.insert(from) } else { bareEndKeys.insert(key(line.from)) }
-            if let to = line.schematicTo { storedEnds.insert(to) } else { bareEndKeys.insert(key(line.to)) }
+            if let from = storedEnd(line.schematicFrom, at: line.from) { storedEnds.insert(from) } else { bareEndKeys.insert(key(line.from)) }
+            if let to = storedEnd(line.schematicTo, at: line.to) { storedEnds.insert(to) } else { bareEndKeys.insert(key(line.to)) }
         }
         func anyWireEnds(on endpoint: HorizontalSchematicEndpoint, at pointKey: String) -> Bool {
             storedEnds.contains(endpoint) || bareEndKeys.contains(pointKey)
