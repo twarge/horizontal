@@ -96,6 +96,8 @@ struct HorizontalIPadProjectView: View {
     // picks up (via its onAppear/onChange) to start the place-on-canvas interaction.
     @State private var placePartRequest: HorizontalPartPlacementRequest?
     @State private var libraryPlacementError: String?
+    /// Why a schematic edit could not be made (a refused net merge, say).
+    @State private var schematicEditMessage: String?
     @State private var libraryRevealRequest: HorizontalPoolRevealRequest?
     /// The selected components as the Pools pane's Replace sees them; see the
     /// macOS workspace's.
@@ -134,6 +136,14 @@ struct HorizontalIPadProjectView: View {
                     Button("OK", role: .cancel) {}
                 } message: {
                     Text(libraryPlacementError ?? "")
+                }
+                .alert("Can't Make That Edit", isPresented: Binding(
+                    get: { schematicEditMessage != nil },
+                    set: { if !$0 { schematicEditMessage = nil } }
+                )) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(schematicEditMessage ?? "")
                 }
                 .alert("Could Not Replace Part", isPresented: Binding(
                     get: { libraryReplacementError != nil },
@@ -1121,6 +1131,10 @@ struct HorizontalIPadProjectView: View {
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
                     onHighlightComponentCommand: { highlightedComponentIDs = $0 },
                     onSheetChange: { applyEditedSchematicSheet($0) },
+                    onMergeNetsSheetChange: { sheet, merges, actionName in
+                        applyEditedSchematicSheet(sheet, mergingNets: merges, actionName: actionName)
+                    },
+                    onEditMessage: { schematicEditMessage = $0 },
                     onApplyProjectEdit: { operations, actionName in
                         applyProjectEdit(operations, actionName: actionName)
                     },
@@ -1514,6 +1528,26 @@ struct HorizontalIPadProjectView: View {
             schematicEditRevision += 1
         } catch {
             loadError = "Couldn't \(actionName.lowercased()): \(HorizontalCanvasProjectEdit.message(for: error))"
+        }
+    }
+
+    /// A schematic edit that merged nets the project already had: written,
+    /// rewritten wherever else the project names those nets, and reloaded.
+    private func applyEditedSchematicSheet(_ sheet: HorizontalSchematicSheet, mergingNets merges: [String: String], actionName: String) {
+        guard let current = project, let schematic = current.schematic else { return }
+        do {
+            var archive = document.archive
+            try HorizontalProjectJSONApplicator.apply(schematicSheet: sheet, schematicURL: schematic.url, in: current, to: &archive)
+            try HorizontalProjectJSONApplicator.apply(netMerges: merges, schematicURL: schematic.url, in: current, to: &archive)
+            var reloaded = try HorizontalProject.loadSnapshot(of: archive)
+            reloaded.rebaseURLs(onto: current)
+            document.archive = archive
+            project = reloaded
+            boardEditRevision += 1
+            boardSyncRevision += 1
+            schematicEditRevision += 1
+        } catch {
+            schematicEditMessage = "Couldn't \(actionName.lowercased()): \(HorizontalCanvasProjectEdit.message(for: error))"
         }
     }
 

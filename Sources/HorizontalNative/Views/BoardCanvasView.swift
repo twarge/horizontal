@@ -1004,6 +1004,7 @@ struct BoardCanvasView: View {
             canvasDisplayTransformReportTrigger: inlineTextEditorReportTrigger,
             allowsContextMenu: moveState == nil && drawGraphicsState == nil && drawTrackState == nil && pastePlacementState == nil && poolPlacementState == nil && roundOffVertexState == nil && packagePlacementState == nil,
             handlesInteractionKeys: moveState != nil || drawGraphicsState != nil || drawTrackState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || packagePlacementState != nil,
+            usesCrosshairCursor: drawGraphicsState != nil || drawTrackState != nil,
             hasKeyboardFocus: hasKeyboardFocus,
             onRequestKeyboardFocus: onRequestKeyboardFocus,
             samplesCursorContinuously: drawTrackState != nil

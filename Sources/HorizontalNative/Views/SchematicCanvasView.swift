@@ -31,6 +31,9 @@ struct SchematicCanvasView: View {
         var pastePlacement: HorizontalSchematicPastePlacement? = nil
         var pasteTransform = HorizontalPlacementTransform.identity
         var selectionBeforePaste: [HorizontalSelectableRef] = []
+        /// The wires each wire crosses with a hop, either way round, by id
+        /// (lowercased), as the sheet stood when the move began.
+        var wireHopPartners: [String: Set<String>] = [:]
     }
 
     #if os(macOS)
@@ -115,19 +118,14 @@ struct SchematicCanvasView: View {
         var keyDelta = HorizontalPoint.zero
     }
 
-    private enum DrawNetLineBendMode {
-        case xy
-        case yx
-    }
+    private typealias DrawNetLineBendMode = HorizontalSchematicWireTool.Bend
 
     private struct DrawNetLineState {
-        var originalSheet: HorizontalSchematicSheet
-        var anchor: HorizontalPoint?
-        var anchorJunctionID: String?
-        var netID: String?
+        var session: HorizontalSchematicWireTool.Session
         var cursor: HorizontalPoint?
-        var bendMode: DrawNetLineBendMode = .xy
-        var segmentCount = 0
+
+        var anchor: HorizontalPoint? { session.anchor }
+        var bendMode: DrawNetLineBendMode { session.bend }
     }
 
     private struct DrawGraphicsState {
@@ -225,6 +223,14 @@ struct SchematicCanvasView: View {
     /// Component deletion also changes the board and placement lists. The
     /// project host commits the edited sheet with those changes in one undo.
     var onDeleteSelection: ((HorizontalSchematicSheet) -> Void)? = nil
+    /// An edit that merged nets the project already had: the host writes the
+    /// sheet, rewrites the merged nets wherever else the project names them
+    /// (other sheets, the block, the board), and reloads, all as one undo
+    /// step under the given action name.
+    var onMergeNetsSheetChange: ((HorizontalSchematicSheet, [String: String], String) -> Void)? = nil
+    /// Why an edit could not be made, for the user (Horizon flashes these in
+    /// its tool bar).
+    var onEditMessage: (String) -> Void = { _ in }
     var onCopySelection: ((HorizontalSchematicSheet, [HorizontalSelectableRef], HorizontalPoint) -> HorizontalSchematicClipboard?)? = nil
     var onPreparePaste: ((HorizontalSchematicClipboard, HorizontalPoint, String) -> HorizontalSchematicPastePlacement?)? = nil
     var onClipboardError: (Error) -> Void = { _ in }
@@ -319,6 +325,8 @@ struct SchematicCanvasView: View {
         onSelectionClearedBySheetChange: (() -> Void)? = nil,
         onSheetChange: @escaping (HorizontalSchematicSheet) -> Void = { _ in },
         onDeleteSelection: ((HorizontalSchematicSheet) -> Void)? = nil,
+        onMergeNetsSheetChange: ((HorizontalSchematicSheet, [String: String], String) -> Void)? = nil,
+        onEditMessage: @escaping (String) -> Void = { _ in },
         onCopySelection: ((HorizontalSchematicSheet, [HorizontalSelectableRef], HorizontalPoint) -> HorizontalSchematicClipboard?)? = nil,
         onPreparePaste: ((HorizontalSchematicClipboard, HorizontalPoint, String) -> HorizontalSchematicPastePlacement?)? = nil,
         onClipboardError: @escaping (Error) -> Void = { _ in },
@@ -360,6 +368,8 @@ struct SchematicCanvasView: View {
         self.onSelectionClearedBySheetChange = onSelectionClearedBySheetChange
         self.onSheetChange = onSheetChange
         self.onDeleteSelection = onDeleteSelection
+        self.onMergeNetsSheetChange = onMergeNetsSheetChange
+        self.onEditMessage = onEditMessage
         self.onCopySelection = onCopySelection
         self.onPreparePaste = onPreparePaste
         self.onClipboardError = onClipboardError
@@ -497,6 +507,12 @@ struct SchematicCanvasView: View {
         #else
         false
         #endif
+    }
+
+    /// The preference for hops where wires of different nets cross; a symbol
+    /// or frame has no nets to cross.
+    private var drawsSchematicWireHops: Bool {
+        appearanceSettings.shouldDrawWireHops && !editorProfile.isPoolMode
     }
 
     private var drawsSchematicUnderlayLinesInMetal: Bool {
@@ -824,6 +840,7 @@ struct SchematicCanvasView: View {
             canvasDisplayTransformReportTrigger: inlineTextEditorReportTrigger,
             allowsContextMenu: placePartState == nil && placePinState == nil && placePowerSymbolState == nil && resizeSymbolState == nil && moveState == nil && drawNetLineState == nil && drawGraphicsState == nil,
             handlesInteractionKeys: placePartState != nil || placePinState != nil || placePowerSymbolState != nil || resizeSymbolState != nil || moveState != nil || drawNetLineState != nil || drawGraphicsState != nil,
+            usesCrosshairCursor: drawNetLineState != nil || drawGraphicsState != nil,
             hasKeyboardFocus: hasKeyboardFocus,
             onRequestKeyboardFocus: onRequestKeyboardFocus,
             samplesCursorContinuously: placePartState != nil
@@ -1249,10 +1266,6 @@ struct SchematicCanvasView: View {
             }
             .sorted { $0.title < $1.title }
         return HorizontalSelectionDetailState(hovered: nil, groups: groups)
-    }
-
-    private var selectedNetID: String? {
-        selectedNetIDs.first
     }
 
     private var selectedNetIDs: Set<String> {
@@ -2218,13 +2231,15 @@ struct SchematicCanvasView: View {
         publishSelectionContext()
     }
 
-    /// Horizon tidies wires after every edit: a move or rotate that folds a
-    /// jog flat leaves no zero-length wire, and a straight run through a bare
-    /// junction becomes one wire. A selected wire or junction that went is
-    /// dropped from the selection.
+    /// Horizon tidies wires after every edit: a wire with a junction or pin
+    /// of its net partway along it is split there, so wires laid over each
+    /// other heal and a wire ending on another's side makes a T; a move or
+    /// rotate that folds a jog flat leaves no zero-length wire, and a
+    /// straight run through a bare junction becomes one wire. A selected
+    /// wire or junction that went is dropped from the selection.
     private func simplifyNetLines(in sheet: inout HorizontalSchematicSheet) {
         guard !editorProfile.isPoolMode else { return }
-        let cleanup = sheet.simplifyNetLines()
+        let cleanup = sheet.healNetLines()
         guard !cleanup.isEmpty else { return }
         let lineIDs = Set(cleanup.removedNetLineIDs.map(normalizedID))
         let junctionIDs = Set(cleanup.removedJunctionIDs.map(normalizedID))
@@ -2232,6 +2247,190 @@ struct SchematicCanvasView: View {
             (ref.type == .lineNet && lineIDs.contains(normalizedID(ref.id)))
                 || (ref.type == .junction && junctionIDs.contains(normalizedID(ref.id)))
         }
+    }
+
+    private struct SchematicWiringResult {
+        var sheet: HorizontalSchematicSheet
+        /// Nets the project had before the edit that it merged away, by the
+        /// net each went into. Other sheets, the block and the board still
+        /// name them.
+        var externalMerges: [String: String]
+    }
+
+    /// Horizon's upkeep after a wiring edit (see
+    /// `HorizontalSchematicConnectivity`), over what changed since
+    /// `original`: what landed on one point connects, nets that now touch
+    /// merge — asking when both have names — whatever is wired to a net is
+    /// on it, and the wires heal. `completion` gets nil when Horizon would
+    /// refuse a merge or the user cancels one; the edit is then not made.
+    /// `newNetIDs` are nets the edit made itself, which give way to existing
+    /// ones and never need rewriting elsewhere.
+    private func connectSchematicWiring(
+        _ edited: HorizontalSchematicSheet,
+        since original: HorizontalSchematicSheet,
+        newNetIDs: Set<String> = [],
+        externalMerges: [String: String] = [:],
+        completion: @escaping (SchematicWiringResult?) -> Void
+    ) {
+        guard !editorProfile.isPoolMode else {
+            completion(SchematicWiringResult(sheet: edited, externalMerges: [:]))
+            return
+        }
+        var draft = edited
+        let touched = draft.touchedPointKeys(since: original)
+        draft.connectCoincident(at: touched)
+        resolveNetMerges(draft.netConflicts(touching: touched), in: draft, newNetIDs: newNetIDs) { merges in
+            guard let merges else {
+                completion(nil)
+                return
+            }
+            var result = SchematicWiringResult(sheet: draft, externalMerges: externalMerges)
+            for merge in merges {
+                result.sheet.mergeNet(merge.from, into: merge.into)
+                if !newNetIDs.contains(merge.from), original.netDetails[merge.from] != nil {
+                    result.externalMerges[merge.from] = merge.into
+                }
+            }
+            result.sheet.spreadNets(touching: touched)
+            simplifyNetLines(in: &result.sheet)
+            completion(result)
+        }
+    }
+
+    /// Hands an edit that merged nets the project already had to the host,
+    /// which rewrites them across the project and reloads it, on one undo
+    /// step. Returns false when there is nothing to hand over, or no host to
+    /// hand it to; the edit is then an ordinary sheet change.
+    private func commitMergingNets(_ result: SchematicWiringResult, actionName: String) -> Bool {
+        guard !result.externalMerges.isEmpty, let onMergeNetsSheetChange else {
+            return false
+        }
+        selectedObjects = []
+        hoveredObject = nil
+        adoptExternallyUpdatedSheet()
+        onMergeNetsSheetChange(result.sheet, result.externalMerges, actionName)
+        return true
+    }
+
+    /// `ToolHelperMerge::merge_nets` for each piece of wiring that joins
+    /// several nets: Horizon's rules decide which survives, and when both
+    /// have names the user does. Nil when a merge is refused or cancelled.
+    private func resolveNetMerges(
+        _ conflicts: [Set<String>],
+        in sheet: HorizontalSchematicSheet,
+        newNetIDs: Set<String>,
+        completion: @escaping ([(from: String, into: String)]?) -> Void
+    ) {
+        let resolution = NetMergeResolution(sets: conflicts, sheet: sheet)
+        func advance() {
+            while let nets = resolution.nextPair() {
+                switch resolution.sheet.netMergeVerdict(nets.net, into: nets.into, preferring: newNetIDs) {
+                case .merge(let from, let into):
+                    resolution.record(from: from, into: into)
+                case .refuse(let message):
+                    onEditMessage(message)
+                    completion(nil)
+                    return
+                case .ask(let net, let into):
+                    askWhichNetSurvives(net, into, in: resolution.sheet) { choice in
+                        guard let choice else {
+                            completion(nil)
+                            return
+                        }
+                        resolution.record(from: choice.from, into: choice.into)
+                        advance()
+                    }
+                    return
+                }
+            }
+            completion(resolution.merges)
+        }
+        advance()
+    }
+
+    /// The merges decided so far while working through the joined pieces.
+    private final class NetMergeResolution {
+        var sets: [Set<String>]
+        var sheet: HorizontalSchematicSheet
+        var merges: [(from: String, into: String)] = []
+
+        init(sets: [Set<String>], sheet: HorizontalSchematicSheet) {
+            self.sets = sets.map { Set($0.map { $0.lowercased() }) }.sorted { $0.sorted().lexicographicallyPrecedes($1.sorted()) }
+            self.sheet = sheet
+        }
+
+        func survivor(_ netID: String) -> String {
+            var current = netID
+            var seen = Set<String>()
+            while seen.insert(current).inserted, let merge = merges.first(where: { $0.from == current }) {
+                current = merge.into
+            }
+            return current
+        }
+
+        /// The next two nets still apart in some piece: the named one first
+        /// as Horizon's dialog offers it, else in a stable order.
+        func nextPair() -> (net: String, into: String)? {
+            while let first = sets.first {
+                let nets = Set(first.map(survivor))
+                guard nets.count > 1 else {
+                    sets.removeFirst()
+                    continue
+                }
+                let ordered = nets.sorted {
+                    let lhs = sheet.displayName(ofNet: $0), rhs = sheet.displayName(ofNet: $1)
+                    return lhs == rhs ? $0 < $1 : lhs.localizedStandardCompare(rhs) == .orderedAscending
+                }
+                return (ordered[1], ordered[0])
+            }
+            return nil
+        }
+
+        func record(from: String, into: String) {
+            merges.append((from, into))
+            sheet.mergeNet(from, into: into)
+        }
+    }
+
+    /// Horizon's merge dialog: two named nets meet, and one name has to go.
+    private func askWhichNetSurvives(
+        _ net: String,
+        _ into: String,
+        in sheet: HorizontalSchematicSheet,
+        completion: @escaping ((from: String, into: String)?) -> Void
+    ) {
+        let netName = sheet.displayName(ofNet: net)
+        let intoName = sheet.displayName(ofNet: into)
+        #if os(macOS)
+        switch HorizontalNetMergePrompt.run(netName: netName, intoName: intoName) {
+        case .mergeNetIntoOther:
+            completion((net, into))
+        case .mergeOtherIntoNet:
+            completion((into, net))
+        case nil:
+            completion(nil)
+        }
+        #else
+        let first = "\(net)>\(into)"
+        let second = "\(into)>\(net)"
+        promptRequest = HorizontalCanvasPromptRequest(
+            title: "Merge Nets",
+            confirmTitle: "Merge",
+            content: .optionPicker(
+                options: [
+                    HorizontalSelectionPropertyOption(id: first, title: "Merge “\(netName)” into “\(intoName)”"),
+                    HorizontalSelectionPropertyOption(id: second, title: "Merge “\(intoName)” into “\(netName)”"),
+                ],
+                selected: first
+            ) { chosen in
+                switch chosen {
+                case first: completion((net, into))
+                case second: completion((into, net))
+                default: completion(nil)
+                }
+            }
+        )
+        #endif
     }
 
     private func autoconnectPlacedSymbol(_ symbolID: String, sheet: inout HorizontalSchematicSheet) {
@@ -2253,19 +2452,29 @@ struct SchematicCanvasView: View {
             sheet.componentInfo[componentID]?.connections[gatePinPath] = .connected(connection.netID)
             setPlacedSymbolPin(pin.pinID, symbolID: symbolID, netID: connection.netID, sheet: &sheet)
             sheet.rebakePinConnector(symbolID: symbolID, pinID: pin.pinID)
-            if let junctionID = connection.junctionID, !connection.keepsJunction {
-                sheet.junctions.removeValue(forKey: junctionID)
-                sheet.junctionNetIDs.removeValue(forKey: junctionID)
-                removeJunctions(at: pin.point, sheet: &sheet)
+            if connection.junctionID != nil, !connection.keepsJunction {
+                removeJunctions(at: pin.point, handingWiresTo: "\(normalizedID(symbolID))/\(pin.pinID)", sheet: &sheet)
             }
         }
     }
 
-    private func removeJunctions(at point: HorizontalPoint, sheet: inout HorizontalSchematicSheet) {
+    /// The junctions on a pin a symbol was dropped on go, and the wires that
+    /// ended on them end on the pin (Horizon's `replace_junction`), so no
+    /// wire is left naming a junction that is gone.
+    private func removeJunctions(at point: HorizontalPoint, handingWiresTo pinPath: String, sheet: inout HorizontalSchematicSheet) {
         let key = pointKey(point)
         let matchingIDs = sheet.junctions
             .filter { pointKey($0.value) == key }
             .map(\.key)
+        let removed = Set(matchingIDs.map(normalizedID))
+        for index in sheet.netLines.indices {
+            if case .junction(let id) = sheet.netLines[index].schematicFrom, removed.contains(normalizedID(id)) {
+                sheet.netLines[index].schematicFrom = .pin(pinPath)
+            }
+            if case .junction(let id) = sheet.netLines[index].schematicTo, removed.contains(normalizedID(id)) {
+                sheet.netLines[index].schematicTo = .pin(pinPath)
+            }
+        }
         for junctionID in matchingIDs {
             sheet.junctions.removeValue(forKey: junctionID)
             sheet.junctionNetIDs.removeValue(forKey: junctionID)
@@ -2415,7 +2624,10 @@ struct SchematicCanvasView: View {
             connectionPlan: connectionPlan,
             connectionMovePlan: connectionMovePlan,
             fixedConnectionPointKeys: fixedConnectionPointKeys,
-            editTextRefOnCommit: editTextRefOnCommit
+            editTextRefOnCommit: editTextRefOnCommit,
+            wireHopPartners: drawsSchematicWireHops
+                ? HorizontalSchematicWireHops(lines: originalSheet.netLines).partnersByLineID
+                : [:]
         )
         HorizontalMoveRateDiagnostics.beginMove(
             tracksCursor: tracksCursor,
@@ -2541,21 +2753,37 @@ struct SchematicCanvasView: View {
         for ref in selectedObjects where ref.type == .schematicSymbol {
             autoconnectPlacedSymbol(ref.id, sheet: &draft)
         }
-        simplifyNetLines(in: &draft)
-        editedSheet = draft
-        if editTextRef == nil {
-            registerUndoSnapshot(state.undoSheet, actionName: "Move")
-        }
         moveState = nil
         HorizontalMoveRateDiagnostics.endMove(committed: true)
-        invalidateSelectableCache()
-        onSheetChange(draft)
-        publishSelectionContext()
         #if os(macOS)
         if editTextRef != nil {
+            editedSheet = draft
+            invalidateSelectableCache()
+            onSheetChange(draft)
+            publishSelectionContext()
             beginEditingPlacedText()
+            return
         }
         #endif
+        // Shown where it was dropped while a merge is asked about.
+        editedSheet = draft
+        invalidateSelectableCache()
+        connectSchematicWiring(draft, since: state.undoSheet) { result in
+            guard let result else {
+                editedSheet = state.editedSheetBeforeMove
+                invalidateSelectableCache()
+                publishSelectionContext()
+                return
+            }
+            if commitMergingNets(result, actionName: "Move") {
+                return
+            }
+            editedSheet = result.sheet
+            registerUndoSnapshot(state.undoSheet, actionName: "Move")
+            invalidateSelectableCache()
+            onSheetChange(result.sheet)
+            publishSelectionContext()
+        }
     }
 
     private func cancelMove() {
@@ -2608,80 +2836,53 @@ struct SchematicCanvasView: View {
               drawNetLineState == nil else {
             return
         }
-        drawNetLineState = DrawNetLineState(
-            originalSheet: sheet,
-            anchor: nil,
-            anchorJunctionID: nil,
-            netID: selectedNetID,
-            cursor: lastCursorWorldPoint
-        )
+        // Horizon's wire starts on no net: the first thing it touches gives
+        // it one.
+        drawNetLineState = DrawNetLineState(session: .init(sheet: sheet), cursor: lastCursorWorldPoint)
         selectedObjects = []
         hoveredObject = nil
         publishSelectionContext()
     }
 
+    /// A click of the wire tool, which `HorizontalSchematicWireTool.Session`
+    /// works out; the canvas asks when two named nets meet.
     private func addDrawNetLinePoint(_ point: HorizontalPoint) {
         guard !isReadOnly,
               var state = drawNetLineState else {
             return
         }
-
-        if state.anchor == nil {
-            state.anchor = point
-            state.anchorJunctionID = junctionID(at: point, in: sheet)
-            state.netID = drawNetID(at: point) ?? state.netID
-            state.cursor = point
-            state.bendMode = drawNetLineBendMode(at: point) ?? state.bendMode
-            drawNetLineState = state
-            return
+        if !state.session.hasChanges, state.session.anchor == nil {
+            // Between wires and with nothing drawn yet: start from the sheet
+            // as it is now, which a reload behind a merge may have replaced.
+            state.session = HorizontalSchematicWireTool.Session(sheet: editedSheet ?? sourceSheet)
         }
-
-        guard let anchor = state.anchor,
-              pointKey(anchor) != pointKey(point) else {
-            state.cursor = point
-            drawNetLineState = state
-            return
-        }
-
-        let previousSheet = editedSheet ?? sourceSheet
-        var draft = previousSheet
-        let endNetID = drawNetID(at: point)
-        let netID = state.netID ?? endNetID
-        let startJunctionID = ensureJunction(at: anchor, preferredID: state.anchorJunctionID, netID: netID, sheet: &draft)
-        let endJunctionID = ensureJunction(at: point, preferredID: junctionID(at: point, in: draft), netID: netID, sheet: &draft)
-        let path = drawNetLinePath(from: anchor, to: point, bendMode: state.bendMode)
-        var segmentCount = 0
-        var previousPoint = anchor
-        for pathPoint in path.dropFirst() {
-            if pointKey(pathPoint) != pointKey(point) {
-                _ = ensureJunction(at: pathPoint, preferredID: junctionID(at: pathPoint, in: draft), netID: netID, sheet: &draft)
-            }
-            if pointKey(previousPoint) != pointKey(pathPoint) {
-                draft.netLines.append(
-                    HorizontalSegment(
-                        id: UUID().uuidString.lowercased(),
-                        from: previousPoint,
-                        to: pathPoint,
-                        width: 0,
-                        layer: nil,
-                        netID: netID
-                    )
-                )
-                segmentCount += 1
-            }
-            previousPoint = pathPoint
-        }
-        editedSheet = draft
-        invalidateSelectableCache()
-
-        state.anchor = point
-        state.anchorJunctionID = endJunctionID
-        state.netID = netID
         state.cursor = point
-        state.segmentCount += segmentCount
-        drawNetLineState = state
+        let outcome = state.session.click(at: point)
+        applyDrawNetLineOutcome(outcome, state: state)
+    }
 
-        _ = startJunctionID
+    private func applyDrawNetLineOutcome(_ outcome: HorizontalSchematicWireTool.Session.Outcome, state: DrawNetLineState) {
+        var state = state
+        switch outcome {
+        case .done:
+            if state.session.hasChanges {
+                editedSheet = state.session.sheet
+                invalidateSelectableCache()
+            }
+            drawNetLineState = state
+        case .refused(let message):
+            drawNetLineState = state
+            onEditMessage(message)
+        case .ask(let net, let into):
+            drawNetLineState = state
+            askWhichNetSurvives(net, into, in: state.session.sheet) { choice in
+                guard drawNetLineState != nil else {
+                    return
+                }
+                let outcome = state.session.resolve(choice)
+                applyDrawNetLineOutcome(outcome, state: state)
+            }
+        }
     }
 
     private func commitDrawNetLine() {
@@ -2690,19 +2891,42 @@ struct SchematicCanvasView: View {
             return
         }
         drawNetLineState = nil
-        guard state.segmentCount > 0 else {
+        let session = state.session
+        guard session.hasChanges else {
+            if editedSheet != nil {
+                editedSheet = session.originalSheet
+                invalidateSelectableCache()
+            }
             return
         }
-        registerUndoSnapshot(state.originalSheet, actionName: "Draw Net Line")
-        onSheetChange(sheet)
-        publishSelectionContext()
+        connectSchematicWiring(
+            session.sheet,
+            since: session.originalSheet,
+            newNetIDs: session.newNetIDs,
+            externalMerges: session.externalMerges
+        ) { result in
+            guard let result else {
+                editedSheet = session.originalSheet
+                invalidateSelectableCache()
+                publishSelectionContext()
+                return
+            }
+            if commitMergingNets(result, actionName: "Draw Net Line") {
+                return
+            }
+            editedSheet = result.sheet
+            invalidateSelectableCache()
+            registerUndoSnapshot(session.originalSheet, actionName: "Draw Net Line")
+            onSheetChange(result.sheet)
+            publishSelectionContext()
+        }
     }
 
     private func cancelDrawNetLine() {
         guard let state = drawNetLineState else {
             return
         }
-        editedSheet = state.originalSheet
+        editedSheet = state.session.originalSheet
         drawNetLineState = nil
         invalidateSelectableCache()
         publishSelectionContext()
@@ -2714,7 +2938,8 @@ struct SchematicCanvasView: View {
             return
         }
         cancelPlacePowerSymbol()
-        drawNetLineState = nil
+        // Wires already laid stay, as Escape keeps them.
+        commitDrawNetLine()
         drawGraphicsState = DrawGraphicsState(
             primitive: primitive,
             originalSheet: sheet,
@@ -3146,6 +3371,9 @@ struct SchematicCanvasView: View {
         guard deleteSelectedObjects(from: &draft) else {
             return
         }
+        // Taking a branch off a T leaves a straight run through a bare
+        // junction, which Horizon joins into one wire again.
+        simplifyNetLines(in: &draft)
 
         if !editorProfile.isPoolMode,
            previousSheet.symbols.count != draft.symbols.count,
@@ -3598,13 +3826,20 @@ struct SchematicCanvasView: View {
         let previousSheet = editedSheet ?? sourceSheet
         var draft = previousSheet
         transform(center, &draft)
-        simplifyNetLines(in: &draft)
-        editedSheet = draft
-        invalidateSelectableCache()
-        hoveredObject = nil
-        registerUndoSnapshot(previousSheet, actionName: actionName)
-        onSheetChange(draft)
-        publishSelectionContext()
+        connectSchematicWiring(draft, since: previousSheet) { result in
+            guard let result else {
+                return
+            }
+            hoveredObject = nil
+            if commitMergingNets(result, actionName: actionName) {
+                return
+            }
+            editedSheet = result.sheet
+            invalidateSelectableCache()
+            registerUndoSnapshot(previousSheet, actionName: actionName)
+            onSheetChange(result.sheet)
+            publishSelectionContext()
+        }
     }
 
     private func schematicSelectionCenter() -> HorizontalPoint? {
@@ -5041,65 +5276,6 @@ struct SchematicCanvasView: View {
         sheet: inout HorizontalSchematicSheet
     ) -> String {
         mergeJunctions(at: point, preferredID: preferredID, netID: netID, sheet: &sheet)
-    }
-
-    private func drawNetLineBendMode(at point: HorizontalPoint) -> DrawNetLineBendMode? {
-        let key = pointKey(point)
-        let segments = sheet.symbolPins + sheet.blockSymbolPorts + sheet.powerSymbolLines
-        for segment in segments where pointKey(segment.from) == key || pointKey(segment.to) == key {
-            let vector = segment.to - segment.from
-            return abs(vector.y) >= abs(vector.x) ? .yx : .xy
-        }
-        return nil
-    }
-
-    private func drawNetLinePath(
-        from anchor: HorizontalPoint,
-        to point: HorizontalPoint,
-        bendMode: DrawNetLineBendMode
-    ) -> [HorizontalPoint] {
-        let bend: HorizontalPoint
-        switch bendMode {
-        case .xy:
-            bend = HorizontalPoint(x: point.x, y: anchor.y)
-        case .yx:
-            bend = HorizontalPoint(x: anchor.x, y: point.y)
-        }
-
-        if pointKey(bend) == pointKey(anchor) || pointKey(bend) == pointKey(point) {
-            return [anchor, point]
-        }
-        return [anchor, bend, point]
-    }
-
-    private func drawNetID(at point: HorizontalPoint) -> String? {
-        let key = pointKey(point)
-        if let junctionID = junctionID(at: point, in: sheet),
-           let netID = sheet.junctionNetIDs[junctionID] {
-            return netID
-        }
-
-        for label in sheet.netLabels where pointKey(label.position) == key {
-            return label.netID
-        }
-
-        let netBearingSegments = sheet.netLines
-            + sheet.symbolPins
-            + sheet.blockSymbolPorts
-            + sheet.busRipperLines
-            + sheet.powerSymbolLines
-        for segment in netBearingSegments where segment.netID != nil {
-            if pointKey(segment.from) == key || pointKey(segment.to) == key || pointLiesOnSegment(point, segment) {
-                return segment.netID
-            }
-        }
-
-        for circle in sheet.symbolPinCircles + sheet.powerSymbolCircles
-            where circle.netID != nil && pointKey(circle.center) == key {
-            return circle.netID
-        }
-
-        return nil
     }
 
     private func pointLiesOnSegment(_ point: HorizontalPoint, _ segment: HorizontalSegment) -> Bool {
@@ -6749,12 +6925,28 @@ struct SchematicCanvasView: View {
         publishSelectionContext()
     }
 
+    /// ⇧V, Horizon's "Move net segment to new net": the selected segment's
+    /// pins go onto a new net with no name, and its wires, junctions and
+    /// labels with them. Horizon ends the tool without a word when it cannot
+    /// apply; here the user is told why.
     private func moveSelectedNetSegmentToNewNet() {
-        guard !isReadOnly,
-              let segment = selectedSchematicNetSegment(in: sheet),
-              segment.hasPins,
-              !segment.hasPowerSymbol,
-              !segment.hasBusRipper else {
+        guard !isReadOnly else {
+            return
+        }
+        guard let segment = selectedSchematicNetSegment(in: sheet) else {
+            onEditMessage("Select a wire, junction or net label of one net segment to move it to a new net.")
+            return
+        }
+        guard !segment.hasPowerSymbol else {
+            onEditMessage("“\(segment.currentNetName)” has a power symbol on this segment, so it stays on its power net.")
+            return
+        }
+        guard !segment.hasBusRipper else {
+            onEditMessage("This segment is ripped from a bus, so it stays on the bus member's net.")
+            return
+        }
+        guard segment.hasPins else {
+            onEditMessage("This segment of “\(segment.currentNetName)” connects no pins, so there is nothing to put on a new net.")
             return
         }
 
@@ -7392,7 +7584,9 @@ struct SchematicCanvasView: View {
                 } else if drawGraphicsState != nil {
                     endDrawGraphicsInteraction()
                 } else if drawNetLineState != nil {
-                    cancelDrawNetLine()
+                    // Horizon's Escape ends the tool and keeps the wires
+                    // already laid; only the one following the cursor goes.
+                    commitDrawNetLine()
                 } else {
                     cancelMove()
                 }
@@ -7792,6 +7986,7 @@ struct SchematicCanvasView: View {
         let generalTextColor = symbolColor
         let fillsNetLabelBackground = appearanceSettings.shouldFillNetLabelBackground
         let fillsClosedSymbolBackground = appearanceSettings.shouldFillClosedSymbolBackground
+        let drawsWireHops = drawsSchematicWireHops
         // `symbolOwnerRef` below is a local func in each cache closure, and a
         // local func does not inherit the main actor the way the closure
         // around it does. Read the profile out here so it does not reach back
@@ -7818,7 +8013,8 @@ struct SchematicCanvasView: View {
             noPopulateColor: noPopulateColor,
             generalTextColor: generalTextColor,
             fillsNetLabelBackground: fillsNetLabelBackground,
-            fillsClosedSymbolBackground: fillsClosedSymbolBackground
+            fillsClosedSymbolBackground: fillsClosedSymbolBackground,
+            drawsWireHops: drawsWireHops
         )
         let symbolOwnerIDByNormalizedID = sheet.symbols.reduce(into: [String: String]()) { result, symbol in
             result[symbol.id.lowercased()] = symbol.id
@@ -8190,13 +8386,21 @@ struct SchematicCanvasView: View {
 
             if displayOptions.nets {
                 currentGroup = 5; currentOpacity = 0.75
+                let hops = drawsWireHops ? HorizontalSchematicWireHops(lines: sheet.netLines) : .empty
                 for segment in sheet.netLines {
-                    appendSegment(
-                        segment,
-                        color: isolatedNetLineIDs.contains(normalizedID(segment.id)) ? isolatedColor : netColor,
-                        minimumWidth: 1.4,
-                        owner: HorizontalSelectableRef(id: segment.id, type: .lineNet)
-                    )
+                    let color = isolatedNetLineIDs.contains(normalizedID(segment.id)) ? isolatedColor : netColor
+                    let owner = HorizontalSelectableRef(id: segment.id, type: .lineNet)
+                    if let lineHops = hops.hopsByLineID[segment.id.lowercased()] {
+                        appendPolyline(
+                            HorizontalSchematicWireHops.polyline(for: segment, hops: lineHops),
+                            color: color,
+                            width: segment.width,
+                            minimumWidth: 1.4,
+                            owner: owner
+                        )
+                    } else {
+                        appendSegment(segment, color: color, minimumWidth: 1.4, owner: owner)
+                    }
                 }
             }
 
@@ -8524,6 +8728,23 @@ struct SchematicCanvasView: View {
                         )
                     }
                 }
+                // A pin two wires leave is a joint too, its stem the third
+                // arm, though Horizon has no junction there to draw.
+                if !editorProfile.isPoolMode {
+                    let junctionKeys = Set(sheet.junctions.values.map(pointKey))
+                    for pin in sheet.symbolPins where pin.netID != nil {
+                        guard HorizontalSchematicSheet.SchematicPinRef(stemID: pin.id) != nil else { continue }
+                        let key = pointKey(pin.from)
+                        guard let info = junctionRenderInfo[key], info.connectionCount >= 2,
+                              info.connectionCount < 3 || !junctionKeys.contains(key) else { continue }
+                        appendFilledCircle(
+                            center: pin.from,
+                            radius: Self.junctionDotRadiusWorld,
+                            color: junctionMetalColor(for: info),
+                            owner: symbolOwnerRef(for: pin.id)
+                        )
+                    }
+                }
             }
             return (primitives, spansByRef, primitivesByRef)
         }
@@ -8640,6 +8861,22 @@ struct SchematicCanvasView: View {
         refs.formUnion(changedSchematicJunctionRefs(from: moveState.originalSheet, to: previewSheet))
         refs.formUnion(changedSchematicNetLabelRefs(from: moveState.originalSheet, to: previewSheet))
         refs.formUnion(changedSchematicBusLabelRefs(from: moveState.originalSheet, to: previewSheet))
+        // A hop is drawn where the wire it crosses was. While wires move,
+        // theirs and their partners' lie flat, and come back on the drop.
+        var flattenedWireRefs = Set<HorizontalSelectableRef>()
+        if !moveState.wireHopPartners.isEmpty {
+            let lineIDs = Dictionary(moveState.originalSheet.netLines.map { ($0.id.lowercased(), $0.id) }) { first, _ in first }
+            for ref in refs where ref.type == .lineNet {
+                guard let partners = moveState.wireHopPartners[ref.id.lowercased()] else { continue }
+                flattenedWireRefs.insert(ref)
+                for partner in partners {
+                    if let id = lineIDs[partner] {
+                        flattenedWireRefs.insert(HorizontalSelectableRef(id: id, type: .lineNet))
+                    }
+                }
+            }
+            refs.formUnion(flattenedWireRefs)
+        }
         guard !refs.isEmpty else {
             return .empty
         }
@@ -8648,6 +8885,12 @@ struct SchematicCanvasView: View {
         for ref in refs {
             if let spans = metadata.lineSpansByRef[ref] {
                 let primitives = HorizontalMoveProfiler.measure("patch.linePrimitives") {
+                    if flattenedWireRefs.contains(ref) {
+                        return paddedLinePrimitives(
+                            schematicMetalLinePrimitives(for: ref, in: previewSheet, isolatedNetLineIDs: isolatedNetLineIDs),
+                            toFill: spans
+                        )
+                    }
                     if !shapeChangedRefs.contains(ref),
                        let delta = movedSchematicRefDelta(ref: ref, from: moveState.originalSheet, to: previewSheet),
                        let retainedPrimitives = metadata.linePrimitivesByRef[ref] {
@@ -9274,6 +9517,23 @@ struct SchematicCanvasView: View {
         return primitives
     }
 
+    /// A wire drawn plain in the room its hops took: the rest of its spans
+    /// filled with nothing to see, so the patch still fits them.
+    private func paddedLinePrimitives(
+        _ primitives: [HorizontalMetalLinePrimitive],
+        toFill spans: [SchematicMetalPrimitiveSpan]
+    ) -> [HorizontalMetalLinePrimitive] {
+        let room = spans.reduce(0) { $0 + $1.count }
+        guard var blank = primitives.first, primitives.count < room else {
+            return primitives
+        }
+        blank.to = blank.from
+        blank.color = HorizontalMetalRGBA(red: 0, green: 0, blue: 0, alpha: 0)
+        blank.minimumWidth = 0
+        blank.width = 0
+        return primitives + Array(repeating: blank, count: room - primitives.count)
+    }
+
     private func metalLinePatches(
         spans: [SchematicMetalPrimitiveSpan],
         primitives: [HorizontalMetalLinePrimitive]
@@ -9435,8 +9695,10 @@ struct SchematicCanvasView: View {
             symbolColor: symbolColor,
             pinColor: pinColor,
             pinAnnotationColor: pinAnnotationColor,
-            backgroundColor: backgroundColor
+            backgroundColor: backgroundColor,
+            drawsWireHops: drawsSchematicWireHops
         )
+        let drawsWireHops = key.drawsWireHops
 
         return selectableCache.metalHighlight(key: key) {
             var lines = [HorizontalMetalLinePrimitive]()
@@ -9724,8 +9986,13 @@ struct SchematicCanvasView: View {
             }
 
             if displayOptions.nets {
+                let hops = drawsWireHops ? HorizontalSchematicWireHops(lines: sheet.netLines) : .empty
                 for segment in sheet.netLines where matches(segment.netID) {
-                    appendSegment(segment, color: highlightColor, minimumWidth: 3.2)
+                    if let lineHops = hops.hopsByLineID[segment.id.lowercased()] {
+                        appendPolyline(HorizontalSchematicWireHops.polyline(for: segment, hops: lineHops), color: highlightColor, minimumWidth: 3.2)
+                    } else {
+                        appendSegment(segment, color: highlightColor, minimumWidth: 3.2)
+                    }
                 }
             }
 
@@ -10090,7 +10357,7 @@ struct SchematicCanvasView: View {
            let cursor = state.cursor,
            pointKey(anchor) != pointKey(cursor) {
             let color = HorizontalMetalRGBA(theme.net.opacity(0.82))
-            let points = drawNetLinePath(from: anchor, to: cursor, bendMode: state.bendMode)
+            let points = HorizontalSchematicWireTool.path(from: anchor, to: cursor, bend: state.bendMode)
             for pair in zip(points, points.dropFirst()) {
                 appendSegment(from: pair.0, to: pair.1, color: color)
             }
@@ -10528,7 +10795,7 @@ struct SchematicCanvasView: View {
             return
         }
 
-        let points = drawNetLinePath(from: anchor, to: cursor, bendMode: state.bendMode)
+        let points = HorizontalSchematicWireTool.path(from: anchor, to: cursor, bend: state.bendMode)
         var path = Path()
         path.move(to: transform.point(points[0]))
         for point in points.dropFirst() {

@@ -394,6 +394,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
     @Published private var selectionHandleShape: HorizontalSelectionHandleShape
     @Published private var showsHoverPopover: Bool
     @Published private var fillsNetLabelBackground: Bool
+    @Published private var drawsWireHops: Bool
     @Published private var fillsClosedSymbolBackground: Bool
     @Published private var swapsViewControlsAndUnplacedReferences: Bool
     @Published private var transparentToolbar: Bool
@@ -420,6 +421,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
         selectionHandleShape = Self.loadSelectionHandleShape(defaults: defaults)
         showsHoverPopover = Self.loadShowsHoverPopover(defaults: defaults)
         fillsNetLabelBackground = Self.loadFillsNetLabelBackground(defaults: defaults)
+        drawsWireHops = defaults.object(forKey: Self.wireHopsDefaultsKey) as? Bool ?? true
         fillsClosedSymbolBackground = defaults.bool(forKey: Self.closedSymbolBackgroundDefaultsKey)
         swapsViewControlsAndUnplacedReferences = Self.loadSwapsViewControlsAndUnplacedReferences(defaults: defaults)
         transparentToolbar = Self.loadTransparentToolbar(defaults: defaults)
@@ -460,6 +462,11 @@ final class HorizontalAppearanceSettings: ObservableObject {
 
     var shouldFillNetLabelBackground: Bool {
         fillsNetLabelBackground
+    }
+
+    /// Wires of different nets that cross draw a hop on the schematic.
+    var shouldDrawWireHops: Bool {
+        drawsWireHops
     }
 
     var shouldFillClosedSymbolBackground: Bool {
@@ -577,6 +584,16 @@ final class HorizontalAppearanceSettings: ObservableObject {
             self.fillsNetLabelBackground
         } set: { fills in
             self.setFillsNetLabelBackground(fills)
+        }
+    }
+
+    func wireHopsBinding() -> Binding<Bool> {
+        Binding {
+            self.drawsWireHops
+        } set: { draws in
+            self.objectWillChange.send()
+            self.drawsWireHops = draws
+            self.defaults.set(draws, forKey: Self.wireHopsDefaultsKey)
         }
     }
 
@@ -1046,6 +1063,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
     private static let selectionHandleShapeDefaultsKey = "appearance.selectionHandleShape"
     private static let hoverPopoverDefaultsKey = "appearance.showsHoverPopover"
     private static let netLabelBackgroundDefaultsKey = "appearance.fillNetLabelBackground"
+    private static let wireHopsDefaultsKey = "appearance.schematicWireHops"
     private static let closedSymbolBackgroundDefaultsKey = "appearance.fillClosedSymbolBackground"
     private static let swapViewControlsAndUnplacedReferencesDefaultsKey = "appearance.swapViewControlsAndUnplacedReferences"
     private static let transparentToolbarDefaultsKey = "appearance.transparentToolbar"

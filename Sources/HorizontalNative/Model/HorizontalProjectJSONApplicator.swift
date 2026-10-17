@@ -536,6 +536,96 @@ enum HorizontalProjectJSONApplicator {
         json["net_classes"] = map
     }
 
+    /// Horizon's `Block::merge_nets` for nets a schematic edit joined, across
+    /// the files that name them: each key net goes into its value. The block
+    /// loses the merged net, and its components, block instances, buses,
+    /// ties and diff pairs name the survivor; so do every sheet's cached
+    /// wire and junction nets, labels and power symbols, which the loader
+    /// takes as given; and, for the top block, the board's planes, vias,
+    /// holes and rules, which Horizon cannot load naming a net the block
+    /// lacks.
+    static func apply(
+        netMerges: [String: String],
+        schematicURL: URL,
+        in project: HorizontalProject,
+        to archive: inout HorizontalProjectArchive
+    ) throws {
+        let merges = Dictionary(netMerges.map { ($0.key.lowercased(), $0.value.lowercased()) }) { first, _ in first }
+            .filter { $0.key != $0.value }
+        guard !merges.isEmpty else { return }
+        // A merge into a net that is itself merged goes all the way.
+        func survivor(_ netID: String) -> String {
+            var current = netID
+            var seen = Set<String>()
+            while let next = merges[current], seen.insert(current).inserted { current = next }
+            return current
+        }
+
+        let path = try archivePath(for: schematicURL, project: project, archive: archive)
+        var schematic = try loadJSON(relativePath: path, fallbackURL: schematicURL, from: archive)
+        if renameMergedNets(in: &schematic, survivor: survivor) {
+            try saveJSON(schematic, relativePath: path, to: &archive)
+        }
+
+        if let blockURL = blockURL(for: schematicURL, in: project) {
+            let blockPath = try archivePath(for: blockURL, project: project, archive: archive)
+            var block = try loadJSON(relativePath: blockPath, fallbackURL: blockURL, from: archive)
+            var changed = renameMergedNets(in: &block, survivor: survivor)
+            if var nets = block["nets"] as? JSONDictionary {
+                for key in nets.keys where merges[key.lowercased()] != nil {
+                    nets.removeValue(forKey: key)
+                    changed = true
+                }
+                block["nets"] = nets
+            }
+            if changed {
+                try saveJSON(block, relativePath: blockPath, to: &archive)
+            }
+        }
+
+        let standardized = schematicURL.standardizedFileURL
+        let isTop = project.schematics.first { $0.schematic.url.standardizedFileURL == standardized }?.block.isTop
+            ?? (project.schematic?.url.standardizedFileURL == standardized)
+        if isTop, let board = project.board {
+            let boardPath = try archivePath(for: board.url, project: project, archive: archive)
+            var json = try loadJSON(relativePath: boardPath, fallbackURL: board.url, from: archive)
+            if renameMergedNets(in: &json, survivor: survivor) {
+                try saveJSON(json, relativePath: boardPath, to: &archive)
+            }
+        }
+    }
+
+    /// Every key that names a net in Horizon's files.
+    private static let netReferenceKeys: Set<String> = ["net", "net_set", "last_net", "net_primary", "net_secondary", "diffpair"]
+
+    /// Rewrites, anywhere in `json`, a net reference whose net `survivor`
+    /// maps elsewhere. Returns whether anything changed.
+    private static func renameMergedNets(in json: inout JSONDictionary, survivor: (String) -> String) -> Bool {
+        var changed = false
+        func visit(_ value: Any) -> Any {
+            if var dictionary = value as? JSONDictionary {
+                for (key, item) in dictionary {
+                    if netReferenceKeys.contains(key), let netID = item as? String {
+                        let merged = survivor(netID.lowercased())
+                        if merged != netID.lowercased() {
+                            dictionary[key] = merged
+                            changed = true
+                        }
+                    } else if item is JSONDictionary || item is [Any] {
+                        dictionary[key] = visit(item)
+                    }
+                }
+                return dictionary
+            }
+            if let array = value as? [Any] {
+                return array.map(visit)
+            }
+            return value
+        }
+        json = visit(json) as? JSONDictionary ?? json
+        return changed
+    }
+
     private static func patchSchematicNets(
         _ netDetails: [String: HorizontalNetDetails],
         removedNetIDs: Set<String> = [],
