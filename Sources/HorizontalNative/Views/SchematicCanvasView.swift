@@ -34,6 +34,15 @@ struct SchematicCanvasView: View {
         /// The wires each wire crosses with a hop, either way round, by id
         /// (lowercased), as the sheet stood when the move began.
         var wireHopPartners: [String: Set<String>] = [:]
+        /// What Undo calls the move: "Move", or the edit it finishes.
+        var actionName = "Move"
+    }
+
+    /// Where a move an edit began with goes back to on Escape and Undo: the
+    /// sheet before the edit (Add Vertex's split), not the one it moves.
+    private struct MoveOrigin {
+        var undoSheet: HorizontalSchematicSheet
+        var editedSheet: HorizontalSchematicSheet?
     }
 
     #if os(macOS)
@@ -286,6 +295,8 @@ struct SchematicCanvasView: View {
     @State private var drawGraphicsState: DrawGraphicsState?
     @State private var lastCursorWorldPoint: HorizontalPoint?
     @State private var netSegmentSelection: NetSegmentSelectionState?
+    /// Where the last right-click landed, for a command its menu runs there.
+    @State private var contextMenuWorldPoint: HorizontalPoint?
     @State private var selectableCacheRevision = 0
     @State private var metalCacheRevision = 0
     #if os(macOS)
@@ -804,6 +815,10 @@ struct SchematicCanvasView: View {
             },
             onTargetMenuCommand: { ref, command in
                 switch command {
+                case .bendNetLine:
+                    // At the point right-clicked, not wherever the menu left the pointer.
+                    beginBendNetLine(on: ref, at: contextMenuWorldPoint)
+                    return
                 case .copySelection, .duplicateSelection:
                     if !selectedObjects.contains(ref) { setSelectedObject(ref) }
                 default:
@@ -2580,17 +2595,23 @@ struct SchematicCanvasView: View {
         invalidateSelectableCache()
     }
 
-    private func beginMove(tracksCursor: Bool = true, editTextRefOnCommit: String? = nil) {
+    private func beginMove(
+        tracksCursor: Bool = true,
+        editTextRefOnCommit: String? = nil,
+        startPoint: HorizontalPoint? = nil,
+        origin: MoveOrigin? = nil,
+        actionName: String = "Move"
+    ) {
         var originalSheet = sheet
-        let undoSheet = originalSheet
-        let editedSheetBeforeMove = editedSheet
+        let undoSheet = origin?.undoSheet ?? originalSheet
+        let editedSheetBeforeMove = origin.map(\.editedSheet) ?? editedSheet
         let moveSelection = expandedSchematicMoveSelection(selectedObjects, in: originalSheet)
         guard let start = HorizontalCanvasModeSupport.moveStartPoint(
             modeName: "schematic",
             isReadOnly: isReadOnly,
             moveIsActive: moveState != nil,
             selectedObjects: moveSelection,
-            lastCursorWorldPoint: lastCursorWorldPoint,
+            lastCursorWorldPoint: startPoint ?? lastCursorWorldPoint,
             selectionCenter: {
                 HorizontalCanvasModeSupport.selectionCenter(for: moveSelection, anchorPoints: selectionAnchorPoints)
             }
@@ -2627,7 +2648,8 @@ struct SchematicCanvasView: View {
             editTextRefOnCommit: editTextRefOnCommit,
             wireHopPartners: drawsSchematicWireHops
                 ? HorizontalSchematicWireHops(lines: originalSheet.netLines).partnersByLineID
-                : [:]
+                : [:],
+            actionName: actionName
         )
         HorizontalMoveRateDiagnostics.beginMove(
             tracksCursor: tracksCursor,
@@ -2636,6 +2658,62 @@ struct SchematicCanvasView: View {
         )
         hoveredObject = nil
         publishSelectionContext()
+    }
+
+    /// K, or Add Vertex on a wire's right-click menu: Horizon's "Bend net
+    /// line" (`ToolBendLineNet`). The wire is split by a new junction at the
+    /// point — the cursor for K, where the right-click landed for the menu —
+    /// and the corner follows the cursor until a click puts it down. Escape
+    /// takes the corner away again; one dropped back in line with the wire
+    /// goes when the wires heal. K takes the wire under the cursor, else the
+    /// one wire selected.
+    private func beginBendNetLine(on requestedLine: HorizontalSelectableRef? = nil, at requestedPoint: HorizontalPoint? = nil) {
+        guard !isReadOnly,
+              !editorProfile.isPoolMode,
+              moveState == nil,
+              placePartState == nil,
+              placePinState == nil,
+              placePowerSymbolState == nil,
+              resizeSymbolState == nil,
+              drawNetLineState == nil,
+              drawGraphicsState == nil else {
+            return
+        }
+        let lineRef: HorizontalSelectableRef? = requestedLine ?? {
+            if let hoveredObject, hoveredObject.type == .lineNet {
+                return hoveredObject
+            }
+            guard selectedObjects.count == 1, let selected = selectedObjects.first, selected.type == .lineNet else {
+                return nil
+            }
+            return selected
+        }()
+        guard let lineRef,
+              let point = requestedPoint ?? lastCursorWorldPoint,
+              let index = sheet.netLines.firstIndex(where: { normalizedID($0.id) == normalizedID(lineRef.id) }) else {
+            onEditMessage("Point at a wire, or select one, to add a vertex to it.")
+            return
+        }
+
+        let before = sheet
+        let editedBefore = editedSheet
+        var draft = before
+        let junctionID = HorizontalSchematicWireTool.splitWire(at: index, point: point, in: &draft)
+        editedSheet = draft
+        invalidateSelectableCache()
+        selectedObjects = [HorizontalSelectableRef(id: junctionID, type: .junction)]
+        selectedUnplacedObjectID = nil
+        hoveredObject = nil
+        beginMove(
+            tracksCursor: true,
+            startPoint: point,
+            origin: MoveOrigin(undoSheet: before, editedSheet: editedBefore),
+            actionName: "Add Vertex"
+        )
+        if moveState == nil {
+            editedSheet = editedBefore
+            invalidateSelectableCache()
+        }
     }
 
     private var canCopySchematicSelection: Bool {
@@ -2775,11 +2853,11 @@ struct SchematicCanvasView: View {
                 publishSelectionContext()
                 return
             }
-            if commitMergingNets(result, actionName: "Move") {
+            if commitMergingNets(result, actionName: state.actionName) {
                 return
             }
             editedSheet = result.sheet
-            registerUndoSnapshot(state.undoSheet, actionName: "Move")
+            registerUndoSnapshot(state.undoSheet, actionName: state.actionName)
             invalidateSelectableCache()
             onSheetChange(result.sheet)
             publishSelectionContext()
@@ -7542,6 +7620,7 @@ struct SchematicCanvasView: View {
             editText: { editSelectedText() },
             moveNetSegmentToExistingNet: beginMoveNetSegmentToExistingNet,
             moveNetSegmentToNewNet: moveSelectedNetSegmentToNewNet,
+            bendNetLine: { beginBendNetLine() },
             editSymbolPinNames: selectSymbolForPinNameEditing,
             editCustomValue: { beginEditCustomValue() },
             toggleRectanglePlacementMode: toggleRectanglePlacementMode,
@@ -7607,6 +7686,7 @@ struct SchematicCanvasView: View {
             handlers.managePowerNet = nil
             handlers.moveNetSegmentToExistingNet = nil
             handlers.moveNetSegmentToNewNet = nil
+            handlers.bendNetLine = nil
             handlers.editSymbolPinNames = nil
             handlers.editCustomValue = nil
         }
@@ -7726,7 +7806,8 @@ struct SchematicCanvasView: View {
     }
 
     private func targetMenuItems(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> [HorizontalSelectionTargetItem] {
-        HorizontalCanvasModeSupport.targetMenuItems(
+        contextMenuWorldPoint = point
+        return HorizontalCanvasModeSupport.targetMenuItems(
             scene: schematicSelectableScene(),
             at: point,
             worldUnitsPerPoint: worldUnitsPerPoint,
@@ -7746,6 +7827,7 @@ struct SchematicCanvasView: View {
         #if os(macOS)
         var entries: [HorizontalTargetItemMenuEntry] = [.select(title: "Select")]
         if !isReadOnly, ref.type == .text { entries.append(.command(title: "Edit…", .editText)) }
+        if canBendNetLine(ref) { entries.append(.command(title: "Add Vertex", .bendNetLine)) }
         if canEditCustomValue(of: ref) {
             entries.append(.command(title: "Edit Custom Value…", .editCustomValue))
         }
@@ -7771,11 +7853,18 @@ struct SchematicCanvasView: View {
         }
         return entries.count > 1 ? entries : []
         #else
-        // The iPad's menu keeps candidates plain except where a symbol has
-        // something of its own to offer.
+        // The iPad's menu keeps candidates plain except where a symbol or a
+        // wire has something of its own to offer.
+        if canBendNetLine(ref) {
+            return [.select(title: "Select"), .command(title: "Add Vertex", .bendNetLine)]
+        }
         guard canEditCustomValue(of: ref) else { return [] }
         return [.select(title: "Select"), .command(title: "Edit Custom Value…", .editCustomValue)]
         #endif
+    }
+
+    private func canBendNetLine(_ ref: HorizontalSelectableRef) -> Bool {
+        !isReadOnly && !editorProfile.isPoolMode && ref.type == .lineNet
     }
 
     private func canEditCustomValue(of ref: HorizontalSelectableRef) -> Bool {

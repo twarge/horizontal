@@ -103,6 +103,10 @@ enum HorizontalCanvasCommand {
     case showToolSettings
     case moveNetSegmentToExistingNet
     case moveNetSegmentToNewNet
+    /// Schematic: K, Horizon's "Bend net line" — a new corner on the wire
+    /// under the cursor (or the one selected) that follows the cursor until
+    /// a click puts it down.
+    case bendNetLine
     case editSymbolPinNames
     /// Schematic: Horizon's Edit Custom Value dialog for the selected symbol.
     case editCustomValue
@@ -1622,6 +1626,11 @@ struct InteractiveCanvasView: View {
             return item
         case .command(let title, let command):
             let item = NSMenuItem(title: title, action: #selector(CanvasMenuAction.invoke(_:)), keyEquivalent: "")
+            if case .bendNetLine = command {
+                // Shows the canvas's K, the key that does the same.
+                item.keyEquivalent = "k"
+                item.keyEquivalentModifierMask = []
+            }
             let action = CanvasMenuAction {
                 onTargetMenuCommand(ref, command)
             }
