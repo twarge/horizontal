@@ -682,6 +682,9 @@ struct ProjectWorkspaceView: View {
     /// Why a bus, ripper or net tie could not be drawn — the editor's own
     /// refusal, which is written for whoever has to fix the request.
     @State private var projectEditError: String?
+    /// Why a schematic edit was not made: a net merge Horizon refuses, a
+    /// command with nothing it can apply to.
+    @State private var schematicEditMessage: String?
     /// Horizon's info bar for a `.gitignore` missing its recommended lines,
     /// shown once when the document opens.
     @State private var gitignoreNeedsFixing = false
@@ -951,6 +954,14 @@ struct ProjectWorkspaceView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(libraryReplacementError ?? "")
+            }
+            .alert("Can't Make That Edit", isPresented: Binding(
+                get: { schematicEditMessage != nil },
+                set: { if !$0 { schematicEditMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(schematicEditMessage ?? "")
             }
             .alert("Could Not Draw That", isPresented: projectEditErrorPresented) {
                 Button("OK", role: .cancel) {}
@@ -1921,6 +1932,11 @@ struct ProjectWorkspaceView: View {
                                 onDeleteSelection: { sheet in
                                     deleteSchematicSelection(sheet, schematicURL: selectedSchematic.url)
                                 },
+                                onMergeNetsSheetChange: { sheet, merges, actionName in
+                                    applyEditedSchematicSheet(sheet, mergingNets: merges, actionName: actionName,
+                                                              schematicURL: selectedSchematic.url)
+                                },
+                                onEditMessage: { schematicEditMessage = $0 },
                                 onCopySelection: { sheet, refs, anchor in
                                     copySchematicSelection(refs, from: sheet, anchor: anchor, selectedSchematic: selectedSchematic)
                                 },
@@ -3176,6 +3192,27 @@ struct ProjectWorkspaceView: View {
                 in: project
             )
             try applyLiveArchive(archive, actionName: "Delete")
+        } catch {
+            projectEditError = HorizontalCanvasProjectEdit.message(for: error)
+        }
+    }
+
+    /// A schematic edit that merged nets the project already had: the sheet
+    /// is written, the merged nets are rewritten wherever else the project
+    /// names them, and the project reloads, so every sheet and the board see
+    /// one net, on one undo step.
+    private func applyEditedSchematicSheet(
+        _ sheet: HorizontalSchematicSheet,
+        mergingNets merges: [String: String],
+        actionName: String,
+        schematicURL: URL
+    ) {
+        guard !isReadOnly else { return }
+        do {
+            var archive = document.archive
+            try HorizontalProjectJSONApplicator.apply(schematicSheet: sheet, schematicURL: schematicURL, in: project, to: &archive)
+            try HorizontalProjectJSONApplicator.apply(netMerges: merges, schematicURL: schematicURL, in: project, to: &archive)
+            try applyLiveArchive(archive, actionName: actionName)
         } catch {
             projectEditError = HorizontalCanvasProjectEdit.message(for: error)
         }
