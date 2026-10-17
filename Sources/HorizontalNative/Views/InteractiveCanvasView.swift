@@ -500,6 +500,9 @@ struct InteractiveCanvasView: View {
     var canvasDisplayTransformReportTrigger: AnyHashable? = nil
     var allowsContextMenu = true
     var handlesInteractionKeys = false
+    /// A drawing tool is active: the pointer is a crosshair over the canvas
+    /// (macOS), so the point it draws to is plain.
+    var usesCrosshairCursor = false
     /// macOS: only the keyboard-focused pane's key monitor handles canvas commands
     /// (multiple panes are visible at once). Defaults true so single-pane hosts (iPad,
     /// a lone macOS pane) keep working. `onRequestKeyboardFocus` fires on interaction
@@ -841,6 +844,9 @@ struct InteractiveCanvasView: View {
                             reportCursorLocation(location, size: proxy.size, fitInsets: fitInsets)
                         }
                     )
+                    // The system crosshair while drawing: black arms edged in
+                    // white, so it reads on a light canvas and a dark one.
+                    .pointerStyle(usesCrosshairCursor ? .rectSelection : nil)
 
                     TrackpadCanvasMonitor(
                         onPan: { delta in

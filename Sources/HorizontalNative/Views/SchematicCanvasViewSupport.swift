@@ -59,6 +59,7 @@ struct SchematicMetalLineCacheKey: Hashable {
     var generalTextColor: HorizontalMetalRGBA
     var fillsNetLabelBackground: Bool
     var fillsClosedSymbolBackground: Bool
+    var drawsWireHops: Bool = false
 }
 
 struct SchematicMetalPrimitiveSpan: Hashable {
@@ -130,6 +131,7 @@ struct SchematicMetalHighlightCacheKey: Hashable {
     var pinColor: HorizontalMetalRGBA
     var pinAnnotationColor: HorizontalMetalRGBA
     var backgroundColor: HorizontalMetalRGBA
+    var drawsWireHops: Bool = false
 }
 
 struct SchematicMetalSelectionCacheKey: Hashable {

@@ -107,6 +107,10 @@ struct HorizontalSettingsView: View {
             Section("Schematic") {
                 Toggle("Fill Net Label Background", isOn: appearanceSettings.netLabelBackgroundBinding())
                 Toggle("Fill Closed Symbol Background", isOn: appearanceSettings.closedSymbolBackgroundBinding())
+                Toggle("Show Hops Where Wires Cross", isOn: appearanceSettings.wireHopsBinding())
+                Text("A wire hops over a wire of another net where the two cross, so the crossing can't be mistaken for a connection.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Hover") {
