@@ -223,6 +223,35 @@ final class SchematicConnectivityTests: XCTestCase {
         XCTAssertTrue(sheet.netConflicts(touching: [HorizontalCanvasModeSupport.pointKey(point(40, 40))]).isEmpty)
     }
 
+    // MARK: - Add Vertex (K)
+
+    func testAVertexAddedOffTheWireLeavesACorner() throws {
+        var sheet = sheet()
+        addJunction("j0", point(0, 0), net: "a", to: &sheet)
+        addJunction("j10", point(10, 0), net: "a", to: &sheet)
+        sheet.netLines = [wire("run", "j0", point(0, 0), "j10", point(10, 0), net: "a")]
+
+        let corner = HorizontalSchematicWireTool.splitWire(at: 0, point: point(4, 3), in: &sheet)
+        sheet.healNetLines()
+
+        XCTAssertEqual(spans(sheet), ["0,0-4,3", "10,0-4,3"])
+        XCTAssertEqual(sheet.junctionNetIDs[corner], "a")
+        XCTAssertEqual(sheet.netLines.first { $0.id == "run" }?.schematicTo, .junction(corner))
+    }
+
+    func testAVertexPutDownInLineWithTheWireGoesAgain() {
+        var sheet = sheet()
+        addJunction("j0", point(0, 0), net: "a", to: &sheet)
+        addJunction("j10", point(10, 0), net: "a", to: &sheet)
+        sheet.netLines = [wire("run", "j0", point(0, 0), "j10", point(10, 0), net: "a")]
+
+        let corner = HorizontalSchematicWireTool.splitWire(at: 0, point: point(4, 0), in: &sheet)
+        sheet.healNetLines()
+
+        XCTAssertEqual(spans(sheet), ["0,0-10,0"])
+        XCTAssertNil(sheet.junctions[corner])
+    }
+
     // MARK: - Deleting a wire whose junction went
 
     /// A wire that ended on a junction a pin was later dropped on: the

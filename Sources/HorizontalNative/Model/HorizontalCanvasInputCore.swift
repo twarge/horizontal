@@ -303,6 +303,7 @@ enum HorizontalCanvasInputCore {
         switch characters {
         case "e": return .mirrorSelection
         case "i": return .editSymbolPinNames
+        case "k": return .bendNetLine
         case "c": return .toggleRectanglePlacementMode
         case "l": return .highlightNet
         case "m": return .moveSelection

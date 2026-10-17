@@ -37,6 +37,7 @@ final class HorizontalCanvasInputCoreTests: XCTestCase {
         case .twirlSelection: return "twirl"
         case .toggleVia: return "via"
         case .updateAllPlanes: return "updatePlanes"
+        case .bendNetLine: return "bend"
         default: return "other"
         }
     }
@@ -92,6 +93,7 @@ final class HorizontalCanvasInputCoreTests: XCTestCase {
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("x"), supportsTrackVias: true)), "drawTrack")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("l"), supportsTrackVias: true)), "highlight")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("i"), supportsTrackVias: true)), "editPins")
+        XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("k"), supportsTrackVias: true)), "bend")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("c"), supportsTrackVias: true)), "toggleRect")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("/"), supportsTrackVias: true)), "flip")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("w"), supportsTrackVias: true)), "width")
