@@ -38,9 +38,7 @@ enum HorizontalBoardConnectivity {
 
     static func recompute(_ board: HorizontalBoard) -> HorizontalBoard {
         let built = graph(board)
-        let seeds = built.seeds, neighbors = built.neighbors, allKeys = built.allKeys
-        let trackIdx = built.trackIdx, viaIdx = built.viaIdx, viaHoleIdx = built.viaHoleIdx
-        let copperLayers = built.copperLayers
+        let allKeys = built.allKeys, copperLayers = built.copperLayers
 
         // --- Flood components; each gets its single pad net (else nil) --------
         var tracks = board.tracks

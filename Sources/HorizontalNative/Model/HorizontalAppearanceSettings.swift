@@ -813,19 +813,25 @@ final class HorizontalAppearanceSettings: ObservableObject {
         defaults.set(Self.hexString(from: color), forKey: sharedLayerDefaultsKey(layer: layer))
     }
 
+    // A segmented Picker on macOS writes its selection back through its
+    // binding while it updates the control: publishing for a value that
+    // hasn't changed would then publish from within a view update.
     private func setAppTheme(_ theme: HorizontalAppTheme) {
+        guard theme != appTheme else { return }
         objectWillChange.send()
         appTheme = theme
         defaults.set(theme.rawValue, forKey: appThemeDefaultsKey)
     }
 
     private func setCursorSize(_ newCursorSize: HorizontalCursorSize) {
+        guard newCursorSize != cursorSize else { return }
         objectWillChange.send()
         cursorSize = newCursorSize
         defaults.set(newCursorSize.rawValue, forKey: cursorSizeDefaultsKey)
     }
 
     private func setSelectionHandleShape(_ newShape: HorizontalSelectionHandleShape) {
+        guard newShape != selectionHandleShape else { return }
         objectWillChange.send()
         selectionHandleShape = newShape
         defaults.set(newShape.rawValue, forKey: Self.selectionHandleShapeDefaultsKey)
