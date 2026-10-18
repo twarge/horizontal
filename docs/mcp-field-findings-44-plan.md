@@ -3,11 +3,10 @@
 Planning baseline: `140127e`. Written October 17, 2026. These are the items
 still open in `horizontal-mcp-notes.md`:
 - **102 and 103:** from the Billo edits.
-- **106–119:** from the Cinnamon edits on October 14.
+- **106–119:** from the Cinnamon edits on October 14. 119 is closed as out
+  of scope.
 - **132–135:** from the Billo SYNC/FREQ edits on October 17.
 - **136–139:** added during this round by the session editing Billo.
-
-119 is left open with a proposal.
 
 ## Findings and changes
 
@@ -164,15 +163,10 @@ still open in `horizontal-mcp-notes.md`:
      - **Refused:** a point on a wire of another net, or a pin's end.
      - **`check`:** a warning about a stretch of wiring (Label missing, Power
        sym missing and the rest) names its wires in `net_lines`.
-119. **Left open.** `analyze_noise` still needs a model with evidence for
-     every amplifier.
-     - **Why:** pool parts have no place for noise data. Horizon's
-       parametric tables cover resistors, capacitors and inductors only.
-     - **Proposal:** an `opamps` table in the project pool's `tables.json`
-       with e_n, i_n, their 1/f corners and GBW, which the Pools pane's
-       parametric editing already handles as columns. A scenario model would
-       then name `from_part` and take evidence from the part's datasheet
-       field. That changes the pool schema, so it needs a decision.
+119. **Closed, out of scope.** `analyze_noise` still needs a model with
+     evidence for every amplifier. Putting noise parameters on pool parts, so
+     a scenario could name parts instead, is out of scope for Horizontal, by
+     the user's decision, so nothing changes.
 132. **`place_via` ignored the via rules.**
      - **The default:** a new via takes the padstack and parameter set of
        the first enabled via rule matching its net (`viaRule`, through

@@ -508,6 +508,43 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         compact = (await self.call("list_net_lines", project_ref=self.ref))["data"]
         self.assertEqual(compact[0]["from"], "U1.PA13(JTMS/SWDIO)")
         self.assertEqual(len(compact[0]["from_mm"]), 2)
+        # A field no record has is refused, naming the keys there are (143).
+        for tool, args in [("get_component", {"refdes": "U1"}), ("list_components", {})]:
+            wrong = await server.mcp.call_tool(tool, {"project_ref": self.ref, "fields": ["value", "pins_connected"], **args})
+            self.assertTrue(wrong.is_error, tool)
+            self.assertIn("pins_connected", str(wrong.content))
+            self.assertIn("Keys:", str(wrong.content))
+        # group_pins answers in pin_groups, whatever fields names.
+        grouped = (await self.call("get_component", project_ref=self.ref, refdes="U1", group_pins=True, fields=["value"]))["data"]
+        self.assertIn("pin_groups", grouped)
+        self.assertIn("value", grouped)
+
+    async def test_a_commit_names_its_dry_run_by_digest_alone(self):
+        dry = (await self.call("apply_ops", project_ref=self.ref, dry_run=True,
+                               ops=[{"op": "ensure_net", "name": "BYDIGEST"}, {"op": "add_sheet", "name": "Two"}]))["data"]
+        committed = (await self.call("apply_ops", project_ref=self.ref, plan_digest=dry["plan_digest"],
+                                     expected_revision=dry["before_revision"], operation_id="by-digest"))["data"]
+        self.assertEqual(committed["status"], "committed")
+        self.assertTrue(committed["timing"]["reused_dry_run"])
+        nets = (await self.call("list_nets", project_ref=self.ref))["data"]
+        self.assertIn("BYDIGEST", [net["name"] for net in nets])
+        # Without a plan_digest there is nothing to commit.
+        bare = await server.mcp.call_tool("apply_ops", {"project_ref": self.ref, "expected_revision": committed["after_revision"],
+                                                        "operation_id": "bare"})
+        self.assertTrue(bare.is_error)
+        # A digest from an earlier revision names no staged plan.
+        stale = await server.mcp.call_tool("apply_ops", {"project_ref": self.ref, "plan_digest": dry["plan_digest"],
+                                                         "expected_revision": committed["after_revision"], "operation_id": "stale"})
+        self.assertTrue(stale.is_error)
+        self.assertIn("No dry run at this revision", str(stale.structured_content or stale.content))
+        # pool_write commits its dry run the same way.
+        unit = str(uuid.uuid4())
+        pool_dry = (await self.call("pool_write", project_ref=self.ref, dry_run=True, items=[
+            {"type": "unit", "uuid": unit, "name": "Lone", "manufacturer": "", "pins": {}}]))["data"]
+        written = (await self.call("pool_write", project_ref=self.ref, plan_digest=pool_dry["plan_digest"],
+                                   expected_revision=pool_dry["before_revision"], operation_id="pool-by-digest"))["data"]
+        self.assertTrue(written["timing"]["reused_dry_run"])
+        self.assertEqual((await self.call("get_pool_item", project_ref=self.ref, uuid=unit))["data"]["item"]["name"], "Lone")
 
     async def test_pin_alternates_are_listed_on_request_and_chosen_by_name(self):
         revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]

@@ -67,17 +67,17 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `list_holes`, `list_keepouts` | holes through the board and the areas copper may not enter |
 | `list_planes`, `list_polygons` | copper pours (and whether each is actually filled) and board polygons; layer 100 is the outline |
 | `board_rules` | the design rules as data — one entry per rule, not per kind — the net classes they select, and the stackup |
-| `get_pool_item` | one pool item's own JSON — the bytes `pool_write` takes back |
+| `get_pool_item` | one pool item's own JSON — the bytes `pool_write` takes back. `pool_write` also takes `{"from": uuid, "patch": {...}, "uuid"?}`: that item merged with the patch as RFC 7396 merges (objects key by key, `null` removing a key), written over it or, under a new `uuid`, beside it |
 | `pour_planes` | fills every plane, as Update All Planes does |
 | `list_texts` | free text on the schematic sheets, with the ids the text ops take; texts smashed out of symbols only with `smashed` or in a `text` search, each with its part's `refdes`, or only one part's with `component`; `drawn` and `text` as for `list_board_texts` |
-| `list_parts` | parts the project can use; `scope` widens it from the project pool to the pools it draws from. Every row's `pools` names each pool holding the part, its own first, so a cached part says where it came from. A part flagged `base_part` is left out, as Horizon's part browser leaves it out, and `search_pool` marks it `base_part`. The MCP tool also takes `pool` (only the parts one pool holds) and `fields` |
+| `list_parts` | parts the project can use; `scope` widens it from the project pool to the pools it draws from. Every row's `pools` names each pool holding the part, its own first, so a cached part says where it came from. A part flagged `base_part` is left out, as Horizon's part browser leaves it out, and `search_pool` marks it `base_part`. The MCP tool also takes `pool` (only the parts one pool holds) and `fields`, which refuses a key no row has and names the keys there are |
 | `search_pool` | search those pools by name, description, manufacturer, tag, uuid or a part's value, filtered by item kind. A quantity matches however it is written — `2.2 µF`, `2u2`, `2200nF` — against a part's value, description words or parametric data. A part row has the keys a `list_parts` row has, its `package` and `package_id` a derived part's taken from its base, and `package` (a name such as `C0402`, or a uuid) keeps only the parts in it. Every item's `pools` names each searched pool holding it |
 | `import_pool_part` | copy a part and its whole dependency chain from a base pool into the project pool cache |
 | `board_info` | bounds, stackup, drawing layers, object counts |
 | `recompute_connectivity` | the editor's post-edit connectivity pass, in memory |
 | `check` | see below |
 | `export` | the app's exporters into a directory outside the project |
-| `render_sheet`, `render_board` | PNG, base64 or written to a path, via the PDF exporters and Core Graphics; `region` renders part of a sheet or board |
+| `render_sheet`, `render_board` | PNG, base64 or written to a path, via the PDF exporters and Core Graphics; `region` renders part of a sheet or board. A board render draws the package, assembly and courtyard layers as outlines, so the pads and tracks under a package body show |
 | `list_groups` | Horizon groups (sub-circuit instances) with members by tag and placement |
 | `zoom_to`, `render_viewport` | Live channel: frame a component or net in a pane, or with `pane: "all"` in every showing pane that can show it, the 3D view included; render what a pane shows |
 
@@ -145,7 +145,11 @@ comparison and the commit. A mutation that fails is recorded under its
 `unknown`, and the same id may be sent again. A commit that replays the dry
 run just made — same revision, same request, its `plan_digest` — installs what
 the dry run staged and validated rather than doing it again
-(`timing.reused_dry_run`). The last four dry runs at a revision are kept. A
+(`timing.reused_dry_run`). Such a commit may send the `plan_digest` alone,
+without the `ops` (or `pool_write`'s `items`) again: at the revision the dry
+run was made at, the digest names its staged plan, and at any other, or once
+the plan is no longer kept, it is a `STALE_REVISION` that says so. The last
+four dry runs at a revision are kept. A
 dry run skips loading the edited project when the batch changes nothing
 (`timing.skipped_load`) or comes to the same files as a kept plan
 (`timing.reused_load`). A `STALE_REVISION` whose content is unchanged (an edit
@@ -171,21 +175,21 @@ as sent would be refused again.
 | `place_junction`, `set_net_line_endpoint` | Create a schematic junction — reusing one at the point, and giving it the net if it had none, when the batch's name for it then means the one reused — or retarget one end of an existing wire, preserving its identity and net. `place_junction` with the id of a junction that is there moves it, with the wires, labels and power symbols on it |
 | `remove_net_line`, `remove_junction` | Take a wire off its sheet, or a junction with the wires, labels and power symbols on it (net-less junctions included); junctions left holding nothing go too |
 | `prune_sheet` | Clear what a sheet draws for nothing: wires with a dangling end, wiring that reaches no pin and carries no net, labels on no net, symbols of removed components and unused junctions — on one sheet or all. `unanchored` also removes wiring that names a net but reaches no pin (a GND symbol on a stub), `stubs` trims dead-end wire runs back to where they branch |
-| `terminate_pin` | A stub wire straight out from a pin, ending in a net label or power symbol that faces away from it. Connects the pin first when it is on no net |
+| `terminate_pin` | A stub wire straight out from a pin, ending in a net label or power symbol that faces away from it. Connects the pin first when it is on no net. `offsheet_refs` is passed to the label |
 | `set_no_connect` | Mark pins deliberately unconnected — a connection naming no net, as the app's no-connect tool writes — or clear the mark; `all` takes every pin of a gate or component on no net, or clears every mark, as Horizon's Set all unconnected pins NC and Clear all NC pins do |
 | `set_pin_alternate` | Choose what a pin is drawn as — an alternate its unit offers (SPI1_SCK on an MCU port pin), several, a custom name and direction, or back to the primary name — writing the component's `alt_pins` as the app's pin-function menu does; one pin, or `assignments` for many |
 | `remap_part` | Substitute an imported part, preserving connections, symbols, wires and copper atomically. Pins `pin_map` leaves out are matched by gate and pin name, and a single-gate part takes every old gate's pins, the extra gates' symbols coming off with their wiring; a connected pin with no counterpart is named and nothing changes. The same package keeps every pad; otherwise a routed pad whose pin settles nothing goes to the pad of its name. Tracks on pads the new part lacks are refused by name, or removed with `copper: "drop"`; vias under the old footprint are listed |
 | `place_power_symbol`, `remove_power_symbol` | The ground or supply marker that says a point is on that net. Placing one marks the net as a power net, because that is what it means; the shape (`gnd`, `dot`, `antenna`, `earth`) belongs to the net, so every symbol on it matches |
-| `place_net_label`, `remove_net_label` | Names a net on the page — and, placed on more than one sheet, is how a net spans pages. Placed on a wire of its net it splits the wire and joins it there, as a power symbol does; on a wire of another net, or on a pin's end, it is refused |
+| `place_net_label`, `remove_net_label` | Names a net on the page — and, placed on more than one sheet, is how a net spans pages. Placed on a wire of its net it splits the wire and joins it there, as a power symbol does; on a wire of another net, or on a pin's end, it is refused. Given the `id` of a label that is there, it changes that label's orientation, size or `offsheet_refs`, or moves it to `x_mm`, `y_mm` on its sheet; its net stays |
 | `add_sheet`, `rename_sheet`, `remove_sheet` | Pages. A new page takes the frame (title block) the last page uses, or `frame`; an `index` already taken inserts it there. A sheet with anything drawn on it is refused unless `force` clears it, and a schematic keeps at least one |
 | `set_sheet_frame` | A sheet's frame, or `"none"`. The frame must be in the project pool (`frames/cache/`), which is where a sheet's frame is drawn from; one only a base pool has is refused with where it is — `get_pool_item` and `pool_write` (or `pool_items`) bring it in. `list_sheets` gives each sheet's frame |
-| `place_text`, `remove_text` | Free text on a sheet: write one, or change the text, position, rotation, size, origin or font of one `list_texts` named. An `id` that names no text makes the text under it, so a batch can name one. A text Horizon extracted from a symbol with Smash belongs to that symbol and is refused |
+| `place_text`, `remove_text` | Free text on a sheet: write one, or change the text, position, rotation, size, origin or font of one `list_texts` named. An `id` that names no text makes the text under it, so a batch can name one. A text Horizon extracted from a symbol with Smash belongs to that symbol and is refused. The text starts at `x_mm` and runs right, since `origin` places it vertically only; the reply gives the box it covers, `extent_mm`, and the symbols, labels, power symbols and texts it `overlaps` |
 | `place_component`, `remove_placement` | Board placement in millimetres and degrees; a placed package moves, an unplaced one gets a package entry the loader completes from the part |
 | `place_track`, `remove_track`, `set_track_width` | One straight copper segment per op, between pads, junctions or points; a point becomes a junction, and a junction nothing holds any more is removed with the copper that held it |
 | `place_board_text`, `remove_board_text` | Free text on a board layer — silkscreen, assembly, fabrication notes |
 | `place_dimension`, `remove_dimension` | A measurement between two points, in distance, horizontal or vertical mode |
 | `add_bus`, `add_bus_member`, `remove_bus` | A named bundle the nets in it travel as one line. The nets stay separate nets; the bus is how they are drawn |
-| `place_bus_label`, `place_bus_ripper` | Naming a bus on a sheet, and taking one member off it so that net can be wired alone |
+| `place_bus_label`, `place_bus_ripper` | Naming a bus on a sheet, and taking one member off it so that net can be wired alone. `place_bus_label` with the `id` of a bus label changes or moves it, as `place_net_label` does |
 | `add_net_tie`, `remove_net_tie`, `place_net_tie` | Two nets joined on the board and kept apart in the schematic — a single-point ground join, say |
 | `place_hole`, `remove_hole` | A hole through the board, its size taken from a padstack. A hole with a net is plated onto it; one without is a mounting hole |
 | `place_keepout`, `remove_keepout` | An area copper may not enter, on one layer or on all of them |
@@ -246,8 +250,8 @@ nothing, and the error names it by its place in the batch — `ops[3]
 place_junction: No net NOPE.` — with `op_index` and `op` in its details.
 
 An op that makes something under an id — `place_junction`, `place_symbol`,
-`draw_net_line`, `place_text`, `place_board_text`, `ensure_component`,
-`ensure_net` and the `add_` ops — may give a short name instead of a UUID
+`draw_net_line`, `place_text`, `place_board_text`, `place_net_label`,
+`place_bus_label`, `ensure_component`, `ensure_net` and the `add_` ops — may give a short name instead of a UUID
 (`"id": "j1"`), and later ops in the batch use the name wherever they refer to
 that kind of thing: a wire end's `junction` or `symbol`, a `line`, a
 `component` or `net`, the `id` of `remove_text`. A name stands only for its own

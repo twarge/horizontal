@@ -17,7 +17,7 @@ enum HorizontalEditHandles {
     enum Kind: String {
         case component, net, bus, busMember = "bus_member", netTie = "net_tie", netClass = "net_class"
         case symbol, netLine = "net_line", junction, blockInstance = "block_instance"
-        case text, boardText = "board_text"
+        case text, boardText = "board_text", netLabel = "net_label", busLabel = "bus_label"
     }
 
     /// The ops whose id names the thing they make.
@@ -25,7 +25,8 @@ enum HorizontalEditHandles {
         "ensure_component": .component, "ensure_net": .net, "add_bus": .bus, "add_bus_member": .busMember,
         "add_net_tie": .netTie, "add_net_class": .netClass, "place_symbol": .symbol, "draw_net_line": .netLine,
         "place_junction": .junction, "add_block_instance": .blockInstance,
-        "place_text": .text, "place_board_text": .boardText
+        "place_text": .text, "place_board_text": .boardText,
+        "place_net_label": .netLabel, "place_bus_label": .busLabel
     ]
 
     /// Ops whose id names an existing thing rather than a new one: the
@@ -33,7 +34,7 @@ enum HorizontalEditHandles {
     /// on. A text op both makes and edits under its id, so a later place_text
     /// with the same name edits the text an earlier one made.
     static let idReferences: [String: Kind] = [
-        "remove_text": .text, "remove_board_text": .boardText,
+        "remove_text": .text, "remove_board_text": .boardText, "remove_net_label": .netLabel,
         "remove_net_line": .netLine, "set_net_line_endpoint": .netLine, "remove_junction": .junction,
         "remove_bus": .bus, "remove_net_tie": .netTie,
         "remove_block_instance": .blockInstance, "remove_block_symbol": .blockInstance

@@ -107,7 +107,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .addBus: "Create a bus — a named bundle the nets in it travel as one line on a sheet."
         case .removeBus: "Remove a bus, its members, and the labels and rippers drawn for it."
         case .addBusMember: "Put a net in a bus under a member name."
-        case .placeBusLabel: "Label a bus on a sheet, the way a net label names a net."
+        case .placeBusLabel: "Label a bus on a sheet, the way a net label names a net. id naming a bus label that is there changes its orientation, size or place."
         case .placeBusRipper: "Take one member off a bus at a point, so it can be wired on its own."
         case .addNetTie: "Tie two nets together — joined on the board, kept apart in the schematic, which is what a tie is for."
         case .removeNetTie: "Remove a net tie and the symbols drawn for it."
@@ -134,11 +134,11 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .setNoConnect: "Mark component pins as deliberately not connected, or clear the mark. A pin on a net is refused unless disconnect is passed. all does it for every free pin of a gate or the whole component, as Horizon's Set all unconnected pins NC and Clear all NC pins do."
         case .setPinAlternate: "Choose the function a pin is drawn as — an alternate name its unit offers, such as SPI1_SCK on an MCU port pin — or a custom name, or go back to the primary name. get_component lists each pin's alternates and what is selected. The apply_ops reply gives warnings when a placed symbol will not draw the choice (one showing pins custom_only)."
         case .remapPart: "Replace a component's part, preserving connections, symbols and wires atomically. Pins are matched by name unless an explicit gate/pin identity map is given."
-        case .placeText: "Write a text on a schematic sheet, or change one that is already there: move it, turn it, rewrite it. id names the text to change, from list_texts; give only what changes. x_mm, y_mm or both move it, and it keeps its uuid, layer and the rest. An id that names no text makes one under it, so a batch can name a text and edit or remove it later. Free text only: a symbol's own texts belong to the symbol."
+        case .placeText: "Write a text on a schematic sheet, or change one that is already there: move it, turn it, rewrite it. id names the text to change, from list_texts; give only what changes. x_mm, y_mm or both move it, and it keeps its uuid, layer and the rest. An id that names no text makes one under it, so a batch can name a text and edit or remove it later. Free text only: a symbol's own texts belong to the symbol. The text starts at x_mm and runs right (origin is vertical alone); the reply gives the box it covers, extent_mm, and the symbols, labels, power symbols and texts it overlaps."
         case .removeText: "Remove a text from a schematic sheet."
         case .placePowerSymbol: "Draw a power symbol on a sheet: the ground or supply marker that says a point is on that net. Marks the net as a power net, since that is what one means."
         case .removePowerSymbol: "Remove a power symbol from its sheet."
-        case .placeNetLabel: "Label a net on a sheet. A label is how a net is named on the page, and how one net spans several sheets."
+        case .placeNetLabel: "Label a net on a sheet. A label is how a net is named on the page, and how one net spans several sheets. id naming a label that is there changes it in place — its orientation, size, off-sheet refs or place — as place_text changes a text."
         case .removeNetLabel: "Remove a net label from its sheet."
         case .addBlockInstance: "Use another block inside this one: one instance of it, with its own reference designator."
         case .removeBlockInstance: "Remove a block instance and every symbol drawn for it."
@@ -229,8 +229,10 @@ enum HorizontalEditOperationKind: String, CaseIterable {
             return ["bus": "Bus name or id.", "name": "Member name within the bus.", "net": "Net name or id it carries.",
                     "id": "Member UUID to use, or a name later ops in the batch can use for it (optional)."]
         case .placeBusLabel:
-            return ["bus": "Bus name or id.", "sheet": "Sheet index, name or uuid (optional; default the first sheet).",
-                    "x_mm": "X position.", "y_mm": "Y position.",
+            return ["bus": "Bus name or id. Optional when id names a bus label to change.",
+                    "id": "A bus label id, from list_buses, to change in place: its orientation, size or place (optional; a new label otherwise, under this id when it is a UUID or a name for later ops).",
+                    "sheet": "Sheet index, name or uuid (optional; default the first sheet).",
+                    "x_mm": "X position. A new label needs both.", "y_mm": "Y position.",
                     "orientation": "right, left, up or down (optional; default right).",
                     "size_mm": "Cap height (optional; default 1.5)."]
         case .placeBusRipper:
@@ -323,6 +325,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "kind": "label or power (optional; default power for a power net, label otherwise).",
                     "length_mm": "How far out from the pin the wire runs (optional; default 2.54).",
                     "size_mm": "Label cap height (optional; default 1.5).",
+                    "offsheet_refs": "Show the other sheets the net appears on beside the label, as for place_net_label (optional; default true).",
                     "style": "Power symbol style, as for place_power_symbol (optional)."]
         case .setNoConnect:
             return ["component": component, "pin": "One pin, as for connect.", "pins": "Several pins, as for connect.",
@@ -351,7 +354,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "y_mm": "Y position. A new text needs both; for one that is there, either alone moves it along that axis.",
                     "angle_deg": "Rotation (optional, default 0 or unchanged).", "mirror": "Mirror the text (optional).",
                     "size_mm": "Cap height (optional; default 1.5).", "width_mm": "Stroke width (optional; default 0, which is Horizon's automatic width).",
-                    "origin": "baseline, center or bottom (optional; default center).",
+                    "origin": "baseline, center or bottom (optional; default center). It places the text vertically only: x_mm is always where the text starts, its left end before any turn.",
                     "font": "simplex, complex, complex_italic, complex_small, complex_small_italic, duplex, triplex or triplex_italic (optional; default simplex)."]
         case .removeText:
             return ["id": "Text id, from list_texts.", "sheet": "Sheet index, name or uuid (optional; default every sheet)."]
@@ -364,11 +367,14 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .removePowerSymbol:
             return ["id": "Power symbol id, from list_power_symbols."]
         case .placeNetLabel:
-            return ["net": "Net name or id.", "sheet": "Sheet index, name or uuid (optional; default the first sheet).",
-                    "x_mm": "X position.", "y_mm": "Y position.",
-                    "orientation": "right, left, up or down (optional; default right).",
-                    "size_mm": "Cap height (optional; default 1.5).",
-                    "offsheet_refs": "Show the other sheets this net appears on (optional; default true)."]
+            return ["net": "Net name or id. Optional when id names a label to change, which keeps its net.",
+                    "id": "A net label id, from list_net_labels, to change in place: its orientation, size, off-sheet refs or place, keeping its id (optional; a new label otherwise, under this id when it is a UUID or a name for later ops).",
+                    "sheet": "Sheet index, name or uuid (optional; default the first sheet).",
+                    "x_mm": "X position. A new label needs both; a label that is there moves along the axes given, onto a junction or wire there.",
+                    "y_mm": "Y position.",
+                    "orientation": "right, left, up or down (optional; default right, or unchanged).",
+                    "size_mm": "Cap height (optional; default 1.5, or unchanged).",
+                    "offsheet_refs": "Show the other sheets this net appears on (optional; default true, or unchanged)."]
         case .removeNetLabel:
             return ["id": "Net label id, from list_net_labels."]
         case .addBlockInstance:
@@ -1542,6 +1548,7 @@ final class HorizontalProjectEditor {
             placed = try placePowerSymbol(mark)
         case "label":
             if let size = params.double("size_mm") { mark["size_mm"] = size }
+            if let refs = params.bool("offsheet_refs") { mark["offsheet_refs"] = refs }
             placed = try placeNetLabel(mark)
         default:
             throw HorizontalDispatchError.invalidParams("kind must be label or power.")
@@ -3576,8 +3583,85 @@ final class HorizontalProjectEditor {
             sheet["texts"] = texts
         }
         let (x, y) = Self.shift(placement)
-        return ["text_id": id, "sheet": targetSheet, "text": item.string("text") as Any, "created": existing == nil,
-                "x_mm": x / 1_000_000, "y_mm": y / 1_000_000]
+        var change: JSONDictionary = ["text_id": id, "sheet": targetSheet, "text": item.string("text") as Any, "created": existing == nil,
+                                      "x_mm": x / 1_000_000, "y_mm": y / 1_000_000]
+        // Where it runs, and what it runs into: the text starts at x and goes
+        // right, whatever its origin, so a note is easy to lay over a part.
+        if let extent = Self.drawnText(item, id: id).map({ HorizontalRect(points: $0.renderBoundsPoints) }) {
+            change["extent_mm"] = Self.rectJSON(extent)
+            let overlaps = try overlaps(extent, onSheet: targetSheet, exceptText: id)
+            if !overlaps.isEmpty { change["overlaps"] = overlaps }
+        }
+        return change
+    }
+
+    /// A sheet text as the canvas draws it, from its JSON.
+    private static func drawnText(_ item: JSONDictionary, id: String) -> HorizontalText? {
+        guard let placement = HorizontalPlacementTransform(json: item.dictionary("placement")), let text = item.string("text"),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let drawn = HorizontalPlacementTransform.identity.accumulatedText(with: placement)
+        return HorizontalText(id: id, text: text, position: drawn.shift, size: item.double("size") ?? 1_000_000, layer: item.int("layer"),
+                              angle: drawn.angle, mirrored: drawn.mirrored, width: item.double("width") ?? 0,
+                              origin: item.horizonTextOrigin(), font: item.horizonTextFont(),
+                              allowUpsideDown: item.bool("allow_upside_down") ?? false)
+    }
+
+    private static func rectJSON(_ rect: HorizontalRect) -> JSONDictionary {
+        ["min_x": HorizontalDispatchJSON.mm(rect.minX), "min_y": HorizontalDispatchJSON.mm(rect.minY),
+         "max_x": HorizontalDispatchJSON.mm(rect.maxX), "max_y": HorizontalDispatchJSON.mm(rect.maxY)]
+    }
+
+    /// What a box on a sheet covers: symbols by the box their pin ends span
+    /// (a part's body lies between its pins) widened by half a grid step,
+    /// net labels by their name's run from their junction, power symbols
+    /// near their junction, and other texts by what they draw.
+    private func overlaps(_ box: HorizontalRect, onSheet sheetID: String, exceptText: String) throws -> [JSONDictionary] {
+        guard let sheet = try sheetsInOrder().first(where: { $0.id == sheetID })?.json else { return [] }
+        var found = [JSONDictionary]()
+        let half = 1_270_000.0
+        for (id, symbol) in sheet.dictionaryMap("symbols") {
+            let reach = HorizontalSchematicTextProximity.reach(of: symbol, pool: pool)
+            guard !reach.isEmpty, Self.around(reach, by: half).intersects(box) else { continue }
+            let component = symbol.string("component")?.lowercased()
+            found.append(["kind": "symbol", "symbol_instance": id,
+                          "refdes": component.flatMap { components()[$0]?.string("refdes") } as Any])
+        }
+        let junctions = sheet.dictionaryMap("junctions").reduce(into: [String: HorizontalPoint]()) { result, entry in
+            if let point = entry.value["position"] as? [Any], point.count == 2 {
+                result[entry.key.lowercased()] = HorizontalPoint(x: JSONHelper.doubleValue(point[0]), y: JSONHelper.doubleValue(point[1]))
+            }
+        }
+        for (id, label) in sheet.dictionaryMap("net_labels") {
+            guard let at = label.string("junction").flatMap({ junctions[$0.lowercased()] }) else { continue }
+            let net = label.string("last_net")?.lowercased()
+            let name = net.flatMap { nets()[$0]?.string("name") } ?? ""
+            let size = label.double("size") ?? 1_500_000
+            let run = Double(max(name.count, 1)) * size * 0.95 + size
+            let direction: (x: Double, y: Double) = ["left": (-1, 0), "up": (0, 1), "down": (0, -1)][label.string("orientation") ?? ""] ?? (1, 0)
+            let far = HorizontalPoint(x: at.x + direction.x * run, y: at.y + direction.y * run)
+            guard Self.around([at, far], by: size * 0.6).intersects(box) else { continue }
+            found.append(["kind": "net_label", "net_label": id, "net": name])
+        }
+        for (id, symbol) in sheet.dictionaryMap("power_symbols") {
+            guard let at = symbol.string("junction").flatMap({ junctions[$0.lowercased()] }),
+                  Self.around([at], by: 2_540_000).intersects(box) else { continue }
+            found.append(["kind": "power_symbol", "power_symbol": id,
+                          "net": symbol.string("net").flatMap { nets()[$0.lowercased()]?.string("name") } as Any])
+        }
+        for (id, text) in sheet.dictionaryMap("texts") where id.lowercased() != exceptText.lowercased() {
+            guard let drawn = Self.drawnText(text, id: id), HorizontalRect(points: drawn.renderBoundsPoints).intersects(box) else { continue }
+            found.append(["kind": "text", "text_id": id, "text": drawn.text])
+        }
+        return found.sorted { ($0.string("kind") ?? "", $0.string("refdes") ?? $0.string("net") ?? $0.string("text") ?? "")
+            < ($1.string("kind") ?? "", $1.string("refdes") ?? $1.string("net") ?? $1.string("text") ?? "") }
+    }
+
+    /// The box points span, widened on every side. A rect of points in a
+    /// line has no area, and HorizontalRect leaves an empty rect as it is.
+    private static func around(_ points: [HorizontalPoint], by amount: Double) -> HorizontalRect {
+        let xs = points.map(\.x), ys = points.map(\.y)
+        return HorizontalRect(points: [HorizontalPoint(x: (xs.min() ?? 0) - amount, y: (ys.min() ?? 0) - amount),
+                                       HorizontalPoint(x: (xs.max() ?? 0) + amount, y: (ys.max() ?? 0) + amount)])
     }
 
     /// Free texts that sit by a component's symbols — within the radius, and
@@ -3845,17 +3929,77 @@ final class HorizontalProjectEditor {
         return change
     }
 
+    /// A net or bus label already on a sheet, changed in place as place_text
+    /// changes a text: its orientation, size and off-sheet refs, and with
+    /// x_mm or y_mm its place, onto the junction or wire there. It keeps its
+    /// id and, a net label, its net. Nil when `id` names no label of the kind.
+    private func editSheetLabel(_ params: JSONDictionary, key: String, id reference: String) throws -> JSONDictionary? {
+        guard let holder = try sheetsInOrder().first(where: { $0.json.dictionaryMap(key).keys.contains { $0.lowercased() == reference } }),
+              let id = holder.json.dictionaryMap(key).keys.first(where: { $0.lowercased() == reference }),
+              var item = holder.json.dictionaryMap(key)[id] else { return nil }
+        let isNet = key == "net_labels"
+        if params["sheet"] != nil, try sheetID(params) != holder.id {
+            throw HorizontalDispatchError.invalidParams("\(id) is on another sheet; a label moves on its own sheet. remove it, and place one there.")
+        }
+        let junctions = holder.json.dictionaryMap("junctions")
+        let oldJunction = item.string("junction")
+        let connectivity = HorizontalSchematicNetConnectivity(sheet: holder.json, block: block)
+        let net = isNet ? (oldJunction.flatMap { connectivity.net(at: ["junc": $0]) } ?? item.string("last_net"))?.lowercased() : nil
+        if isNet, params["net"] != nil, try netID(params).lowercased() != net {
+            throw HorizontalDispatchError.invalidParams("Net label \(id) is on \(net.flatMap { nets()[$0]?.string("name") } ?? "no net"); a label keeps its junction's net. remove_net_label it and place one for the other net.")
+        }
+        if !isNet, params["bus"] != nil, try busID(params).lowercased() != item.string("bus")?.lowercased() {
+            throw HorizontalDispatchError.invalidParams("Bus label \(id) names another bus; remove it and place one for this bus.")
+        }
+        if params["orientation"] != nil {
+            item["orientation"] = try markOption(params, key: "orientation", allowed: Self.markOrientations, default: "right")
+        }
+        if let size = params.double("size_mm") {
+            guard size > 0 else { throw HorizontalDispatchError.invalidParams("size_mm must be more than zero.") }
+            item["size"] = Self.nanometres(size)
+        }
+        if isNet, let refs = params.bool("offsheet_refs") { item["offsheet_refs"] = refs }
+        var moved: String?
+        if params["x_mm"] != nil || params["y_mm"] != nil {
+            let current = oldJunction.flatMap { key in junctions.first { $0.key.lowercased() == key.lowercased() }?.value["position"] as? [Any] } ?? [0, 0]
+            let x = params.double("x_mm") ?? JSONHelper.doubleValue(current.first ?? 0) / 1_000_000
+            let y = params.double("y_mm") ?? JSONHelper.doubleValue(current.count > 1 ? current[1] : 0) / 1_000_000
+            let junction = try ensureSheetJunction(holder.id, x: x, y: y, net: net)
+            if junction.lowercased() != oldJunction?.lowercased() {
+                item["junction"] = junction
+                moved = junction
+            }
+        }
+        try updateSheet(holder.id) { sheet in
+            var map = sheet.dictionaryMap(key)
+            map[id] = item
+            sheet[key] = map
+        }
+        var change: JSONDictionary = [isNet ? "net_label" : "bus_label": id, "sheet": holder.id, "created": false,
+                                      "junction": item.string("junction") as Any, "orientation": item.string("orientation") as Any]
+        if isNet { change["net"] = net as Any }
+        if let moved, let oldJunction {
+            change["junctions_removed"] = try collectSheetJunctions(holder.id, candidates: [oldJunction.lowercased()])
+            change["moved_to"] = moved
+        }
+        if !splitWires.isEmpty { change["split_net_line"] = splitWires.removeLast() }
+        return change
+    }
+
     private func placeNetLabel(_ params: JSONDictionary) throws -> JSONDictionary {
+        if let reference = params.string("id")?.lowercased(), let edited = try editSheetLabel(params, key: "net_labels", id: reference) {
+            return edited
+        }
         let net = try netID(params)
         let sheetID = try sheetID(params)
         guard let x = params.double("x_mm"), let y = params.double("y_mm") else {
-            throw HorizontalDispatchError.invalidParams("place_net_label needs \"x_mm\" and \"y_mm\".")
+            throw HorizontalDispatchError.invalidParams("place_net_label needs \"x_mm\" and \"y_mm\" for a new label.")
         }
         let orientation = try markOption(params, key: "orientation", allowed: Self.markOrientations, default: "right")
         let sizeMM = params.double("size_mm") ?? 1.5
         guard sizeMM > 0 else { throw HorizontalDispatchError.invalidParams("size_mm must be more than zero.") }
         let junction = try ensureSheetJunction(sheetID, x: x, y: y, net: net)
-        let id = UUID().uuidString.lowercased()
+        let id = try editObjectID(params)
         try updateSheet(sheetID) { sheet in
             var labels = sheet["net_labels"] as? JSONDictionary ?? [:]
             labels[id] = ["junction": junction, "last_net": net, "size": Self.nanometres(sizeMM),
@@ -4455,6 +4599,10 @@ final class HorizontalProjectEditor {
     }
 
     private func placeBusMark(_ params: JSONDictionary, kind: BusMark) throws -> JSONDictionary {
+        if kind == .label, let reference = params.string("id")?.lowercased(),
+           let edited = try editSheetLabel(params, key: "bus_labels", id: reference) {
+            return edited
+        }
         let bus = try busID(params)
         let sheetID = try sheetID(params)
         guard let x = params.double("x_mm"), let y = params.double("y_mm") else {
@@ -4472,7 +4620,7 @@ final class HorizontalProjectEditor {
         // A ripper's junction carries the member's net, because that is what
         // comes off the bus there; a label's carries none.
         let junction = try ensureSheetJunction(sheetID, x: x, y: y, net: member?.net ?? nil)
-        let id = UUID().uuidString.lowercased()
+        let id = kind == .label ? try editObjectID(params) : UUID().uuidString.lowercased()
         let key = kind == .label ? "bus_labels" : "bus_rippers"
         try updateSheet(sheetID) { sheet in
             var map = sheet[key] as? JSONDictionary ?? [:]

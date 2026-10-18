@@ -659,15 +659,32 @@ def _only(record: dict[str, Any], fields: list[str] | None, identity: tuple[str,
     return {key: value for key, value in record.items() if key in keep}
 
 
+# Keys a component has only sometimes: a board placement once placed, what
+# get_component's pin options add.
+_COMPONENT_OPTIONAL = {"board", "pins", "physical_terminals", "symbols", "pin_groups", "pins_omitted", "note"}
+
+
+def _check_fields(records: list[dict[str, Any]], fields: list[str] | None, optional: set[str] = frozenset()) -> None:
+    """Refuses a field no record has, naming the keys there are: one asked for and missing was dropped without a
+    word, and a reply narrowed to nothing reads like an answer."""
+    if not fields or not records: return
+    known = set(optional).union(*(record.keys() for record in records))
+    unknown = [field for field in fields if field not in known]
+    if unknown:
+        raise ValueError(f"fields names {', '.join(unknown)}, which {'is' if len(unknown) == 1 else 'are'} not a key here. "
+                         f"Keys: {', '.join(sorted(known))}.")
+
+
 @_tool
 def list_components(path: str | None = None, sheet: int | None = None, sheet_id: str | None = None, block_id: str | None = None, name: str | None = None,
-                    fields: Annotated[list[str] | None, Field(description="Only these keys of each component (id and refdes always), e.g. [\"value\", \"mpn\"].")] = None,
+                    fields: Annotated[list[str] | None, Field(description="Only these keys of each component (id and refdes always), e.g. [\"value\", \"mpn\"]; one that isn't a key is refused with the keys there are.")] = None,
                     refdes_prefix: Annotated[str | None, Field(description="Only components whose refdes starts with this, e.g. \"C\".")] = None,
                     include_terminals: Annotated[bool, Field(description="Include every package pad of every component (physical_terminals) — large for big packages; get_component reads one part's pins and pads.")] = False) -> list[dict[str, Any]]:
     """Every component with refdes, value, MPN, package, pin and connected-pin counts, and where it is placed.
     Optionally only those with a symbol on one sheet. Package pads are left out unless include_terminals."""
     components = _resolve(path).components(sheet=sheet, sheet_id=sheet_id, block_id=block_id, name=name)
     if refdes_prefix: components = [c for c in components if str(c.get("refdes", "")).upper().startswith(refdes_prefix.upper())]
+    _check_fields(components, fields, _COMPONENT_OPTIONAL)
     if not include_terminals:
         components = [{k: v for k, v in c.items() if k not in {"pins", "physical_terminals"}} for c in components]
     return [_only(c, fields) for c in components]
@@ -698,7 +715,7 @@ def _pin_groups(pins: list[dict[str, Any]]) -> dict[str, Any]:
 
 @_tool
 def get_component(refdes: str | None = None, path: str | None = None, id: str | None = None,
-                  fields: Annotated[list[str] | None, Field(description="Only these top-level keys (id and refdes always), e.g. [\"pins\", \"symbols\"].")] = None,
+                  fields: Annotated[list[str] | None, Field(description="Only these top-level keys (id and refdes always), e.g. [\"pins\", \"symbols\"]; one that isn't a key is refused with the keys there are. group_pins keeps pin_groups whatever this says.")] = None,
                   pins: Annotated[str | None, Field(description="Only pins whose name contains this, case-insensitively, e.g. \"PA1\".")] = None,
                   pin_regex: Annotated[str | None, Field(description="Only pins whose name matches this regular expression, case-insensitively, e.g. \"^V(DD|SS)\".")] = None,
                   connected: Annotated[bool | None, Field(description="true: only pins on a net; false: only pins on none.")] = None,
@@ -735,6 +752,9 @@ def get_component(refdes: str | None = None, path: str | None = None, id: str | 
         component["pins_omitted"] = len(every) - len(component["pins"])
         component["note"] = (f"{component['pins_omitted']} pins on no net were left out; pass all_pins, connected=false, "
                              "or pins/pin_regex to see them.")
+    _check_fields([component], fields, _COMPONENT_OPTIONAL)
+    # group_pins answers in pin_groups, which fields has no reason to name.
+    if fields and group_pins: fields = [*fields, "pin_groups", "pins_omitted"]
     return _only(component, fields)
 
 
@@ -779,6 +799,7 @@ def list_parts(path: str | None = None, scope: Literal["project", "pools", "all"
     from, is left out as Horizon's part browser leaves it out; search_pool finds it, marked base_part. Use search_pool
     to search by name, manufacturer or tag rather than reading a long list."""
     rows = _resolve(path).parts(scope=scope)
+    _check_fields(rows, fields, {"uuid"})
     if pool:
         held = [row for row in rows if any(name.casefold() == pool.casefold() for name in row.get("pools") or [])]
         if rows and not held:
@@ -804,6 +825,7 @@ def search_pool(path: str | None = None, query: str | None = None, kind: str | N
     params = {k: v for k, v in {"query": query, "kind": kind, "pool_path": pool_path, "package": package}.items() if v is not None}
     found = _resolve(path).search_pool(limit=limit, **params)
     if fields and isinstance(found, dict):
+        _check_fields(found.get("items", []), fields, {"uuid", "kind"})
         found = {**found, "items": [_only(item, fields, identity=("uuid", "kind")) for item in found.get("items", [])]}
     return found
 
@@ -870,11 +892,17 @@ def clean_up_project_pool(remove: list[str] | None = None, path: str | None = No
 
 
 @_tool
-def pool_write(items: list[dict[str, Any]], path: str | None = None, dry_run: bool = False) -> dict[str, Any]:
+def pool_write(items: list[dict[str, Any]] = [], path: str | None = None, dry_run: bool = False) -> dict[str, Any]:
     """Write pool items — unit, entity, symbol, part, package, padstack — into the project pool cache and reload.
-    Each item is the pool item's own JSON, with its "type" and "uuid". Use this to author a part the pools do not
-    have; import_pool_part is the way to bring in one they do."""
-    return _edit_call(_resolve(path), "pool_write", items=items, dry_run=dry_run)
+    Each item is the pool item's own JSON, with its "type" and "uuid"; or {"from": <uuid>, "patch": {...},
+    "uuid": <new uuid>}, the item from (as get_pool_item reads it) merged with the patch as RFC 7396 merges —
+    objects key by key, null removing a key — written over it, or beside it under a new uuid to derive one. Use
+    this to author a part the pools do not have; import_pool_part is the way to bring in one they do. A commit may
+    leave items out and name its dry run by plan_digest alone."""
+    # An empty list rather than an optional one keeps the advertised schema a plain array.
+    if not items and (dry_run or not _edit_options.get().get("plan_digest")):
+        raise ValueError("Pass items, or commit a dry run by its plan_digest alone.")
+    return _edit_call(_resolve(path), "pool_write", **({"items": items} if items else {}), dry_run=dry_run)
 
 
 @_tool
@@ -1313,7 +1341,7 @@ def list_ops(path: str | None = None) -> list[dict[str, Any]]:
 
 
 @_tool
-def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool = False,
+def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: bool = False,
               pool_items: list[dict[str, Any]] | None = None, block: str | None = None) -> dict[str, Any]:
     """Apply edit operations. Each op is {"op": name, ...params}; see list_ops. Components and nets may be named by
     refdes or net name, or by id — eight or more of an id's leading digits will do, "33b623e6…" as a reply shortens
@@ -1322,7 +1350,8 @@ def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool =
     one undoable step, which the document autosaves; a project open in an editor cannot be edited on disk at all, and
     the attempt fails with DOCUMENT_OPEN naming the holder. dry_run validates without changing anything and reports
     any holder in blocked_by; it needs neither expected_revision nor operation_id, and its before_revision is the one
-    to commit with. A commit sends the same ops with the dry run's plan_digest.
+    to commit with. A commit names the dry run by its plan_digest and may leave ops out, while the revision is the
+    one it was planned at; sending the same ops with it works too.
 
     What these ops cover: the block (components, nets, connections), schematic symbols, the wires between their
     pins, free text on the sheets, board package placement, and copper — tracks and vias. Routing here is manual:
@@ -1360,7 +1389,10 @@ def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool =
 
     Texts: place_text and place_board_text also change a text that is already there. Name it by the id list_texts
     or list_board_texts gives, and pass only what changes: x_mm, y_mm or both move it, and it keeps its uuid, its
-    layer and everything else. A text smashed out of a symbol or package moves with its part instead.
+    layer and everything else. A text smashed out of a symbol or package moves with its part instead. A text starts
+    at x_mm and runs right — origin places it vertically only — and place_text's reply gives the box it covers
+    (extent_mm) and what it overlaps. place_net_label and place_bus_label with the id of a label change it in place
+    the same way: orientation, size, off-sheet refs, place.
 
     Project: set_project_meta sets the title-block values — project_title, rev and the rest, what $project_title
     stands for on the sheets and the board. set_export_settings changes the export settings Horizon EDA keeps
@@ -1378,7 +1410,9 @@ def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool =
     normalized_ops come only with verbose. A slow live commit is waited for (HORIZONTAL_MUTATION_TIMEOUT seconds,
     180 by default), and a lost reply is resolved through transaction_status before this returns."""
     # by_alias: a track end is spelled "from", which is a Swift and Python keyword.
-    encoded = [op.model_dump(exclude_unset=True, by_alias=True) if isinstance(op, BaseModel) else op for op in ops]
+    if not ops and (dry_run or not _edit_options.get().get("plan_digest")):
+        raise ValueError("Pass ops, or commit a dry run by its plan_digest alone.")
+    encoded = None if not ops else [op.model_dump(exclude_unset=True, by_alias=True) if isinstance(op, BaseModel) else op for op in ops]
     return _edit(_resolve(path), encoded, dry_run=dry_run, pool_items=pool_items, block=block)
 
 

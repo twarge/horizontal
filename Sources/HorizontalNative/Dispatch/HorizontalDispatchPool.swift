@@ -407,6 +407,19 @@ enum HorizontalDispatchPool {
             }
             kinds = [category]
         }
+        let found = try item(uuid, kinds: kinds, entry: entry, params: params)
+        let item = found.item
+        return ["uuid": item.uuid, "kind": item.category.rawValue, "name": item.name,
+                "pool": item.poolName, "pool_path": item.poolURL.path, "path": item.url.path,
+                "in_project_pool": found.inProject,
+                "item": found.json] as JSONDictionary
+    }
+
+    /// One pool item by uuid from the pools the project draws from, and its
+    /// JSON. A project-pool item is read through the snapshot, so an unsaved
+    /// change to it is what comes back; a base pool's is read from its file.
+    static func item(_ uuid: String, kinds: [HorizontalPoolItemCategory], entry: HorizontalDispatchProjectEntry,
+                     params: JSONDictionary = [:]) throws -> (item: HorizontalPoolLibraryItem, json: JSONDictionary, inProject: Bool) {
         let urls = try poolURLs(for: entry, params: params)
         let (items, _, inProject) = scan(urls)
         let matches = items.filter { kinds.contains($0.category) && $0.uuid == uuid }
@@ -417,8 +430,6 @@ enum HorizontalDispatchPool {
             throw HorizontalDispatchError.ambiguous("More than one kind of pool item has the uuid \(uuid); pass \"kind\".",
                                                     candidates: matches.map { $0.category.rawValue })
         }
-        // A project-pool item is read through the snapshot, so an unsaved
-        // change to it is what comes back; a base pool's is read from its file.
         let json: JSONDictionary
         if let snapshot = entry.snapshot, let cached = snapshot.json(at: item.url) {
             json = cached
@@ -428,10 +439,19 @@ enum HorizontalDispatchPool {
             }
             json = loaded
         }
-        return ["uuid": item.uuid, "kind": item.category.rawValue, "name": item.name,
-                "pool": item.poolName, "pool_path": item.poolURL.path, "path": item.url.path,
-                "in_project_pool": inProject.contains(key(item.category, item.uuid)),
-                "item": json] as JSONDictionary
+        return (item, json, inProject.contains(key(item.category, item.uuid)))
+    }
+
+    /// RFC 7396 merge patch: an object merges into the object there key by
+    /// key, null removes a key, and anything else takes the place of what
+    /// was there.
+    static func mergePatch(_ target: Any?, _ patch: Any) -> Any {
+        guard let patch = patch as? JSONDictionary else { return patch }
+        var result = target as? JSONDictionary ?? [:]
+        for (key, value) in patch {
+            if value is NSNull { result.removeValue(forKey: key) } else { result[key] = mergePatch(result[key], value) }
+        }
+        return result
     }
 
     /// `import_pool_part`: stage a part and everything it needs — entity,

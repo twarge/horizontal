@@ -338,7 +338,8 @@ enum HorizontalDispatchMethods {
         .init(
             name: "pool_write",
             summary: "Write pool items (unit, entity, symbol, part, package, padstack) into the project pool cache and reload. Items already present with the same bytes are skipped. A live document takes them as one undoable step.",
-            params: ["handle": "Project handle.", "items": "Array of pool item objects, each with \"type\" and \"uuid\".",
+            params: ["handle": "Project handle.",
+                     "items": "Array of pool item objects, each with \"type\" and \"uuid\"; or {\"from\": <uuid>, \"patch\": {…}, \"uuid\"?: <new uuid>}, the item from merged with the patch (RFC 7396: null removes a key), written over it or, under a new uuid, beside it. Optional on a commit naming its dry run's plan_digest.",
                      "dry_run": "Report the files it would write without writing (default false)."],
             handler: poolWrite
         ),
@@ -355,7 +356,7 @@ enum HorizontalDispatchMethods {
             summary: "Apply edit operations to the project files and reload. Components and nets may be named by refdes or net name. Writes only the files that changed; dry_run reports without writing.",
             params: [
                 "handle": "Project handle.",
-                "ops": "Array of operations, each {\"op\": name, ...params}; see list_ops.",
+                "ops": "Array of operations, each {\"op\": name, ...params}; see list_ops. A commit may leave them out and name its dry run by plan_digest alone, while the revision is the one it was planned at.",
                 "block": "Block uuid or name to edit (optional; default the top block). A sub-block has no board, so board operations are refused for one.",
                 "pool_items": "Pool items to install in the same transaction.",
                 "dry_run": "Validate and report without writing (default false)."
@@ -592,15 +593,18 @@ enum HorizontalDispatchMethods {
 
     @Sendable private static func poolWrite(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
-        guard let items = params["items"] as? [Any], !items.isEmpty else {
-            throw HorizontalDispatchError.invalidParams("Pass \"items\", a non-empty array of pool item objects.")
+        let items = params["items"] as? [Any] ?? []
+        guard !items.isEmpty || HorizontalDispatchMutation.committingByDigestAlone(params, payload: "items") else {
+            throw HorizontalDispatchError.invalidParams(
+                "Pass \"items\", a non-empty array of pool item objects, or commit a dry run by its plan_digest alone.")
         }
         let targets = try poolTargets(items, entry: entry)
         defer {
             HorizontalPoolLibrary.invalidateCache()
             HorizontalPoolPadstacks.invalidateCaches()
         }
-        return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params) { store in
+        let byDigestAlone = HorizontalDispatchMutation.committingByDigestAlone(params, payload: "items")
+        return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params, byDigestAlone: byDigestAlone) { store in
             let written = try writePoolItems(targets, to: store)
             return ["written": written, "skipped": targets.count - written.count, "applied": written.count,
                     "undo_name": "Write Pool Items"]
@@ -613,8 +617,26 @@ enum HorizontalDispatchMethods {
         }
         var targets = [(URL, Data)]()
         for (index, raw) in items.enumerated() {
-            guard let json = raw as? JSONDictionary else {
+            guard var json = raw as? JSONDictionary else {
                 throw HorizontalDispatchError.invalidParams("Item \(index) is not an object.")
+            }
+            // An item named by another and a merge patch: the base's JSON,
+            // patched, under the base's uuid to change it or a new one to
+            // derive from it. A part with one gate fewer is a few lines.
+            if let base = json.string("from")?.lowercased() {
+                let unknown = Set(json.keys).subtracting(["from", "uuid", "patch", "type"])
+                guard unknown.isEmpty else {
+                    throw HorizontalDispatchError.invalidParams(
+                        "Item \(index) names a base with \"from\", so it takes only uuid, patch and type, not \(unknown.sorted().joined(separator: ", ")).")
+                }
+                guard json["patch"] == nil || json["patch"] is JSONDictionary else {
+                    throw HorizontalDispatchError.invalidParams("Item \(index)'s patch must be an object, merged into the base as RFC 7396 merges.")
+                }
+                let kinds = json.string("type").flatMap(HorizontalPoolItemCategory.init(rawValue:)).map { [$0] } ?? HorizontalPoolItemCategory.allCases
+                let found = try HorizontalDispatchPool.item(base, kinds: kinds, entry: entry)
+                var patched = HorizontalDispatchPool.mergePatch(found.json, json["patch"] ?? JSONDictionary()) as? JSONDictionary ?? found.json
+                patched["uuid"] = json.string("uuid")?.lowercased() ?? found.item.uuid
+                json = patched
             }
             guard let type = json.string("type"), let category = HorizontalPoolItemCategory(rawValue: type) else {
                 throw HorizontalDispatchError.invalidParams("Item \(index) has no pool item \"type\".")
@@ -1199,8 +1221,10 @@ enum HorizontalDispatchMethods {
 
     @Sendable private static func applyOperations(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
-        guard let rawOps = params["ops"] as? [Any], !rawOps.isEmpty else {
-            throw HorizontalDispatchError.invalidParams("Pass \"ops\", a non-empty array of operations.")
+        let rawOps = params["ops"] as? [Any] ?? []
+        guard !rawOps.isEmpty || HorizontalDispatchMutation.committingByDigestAlone(params, payload: "ops") else {
+            throw HorizontalDispatchError.invalidParams(
+                "Pass \"ops\", a non-empty array of operations, or commit a dry run by its plan_digest alone.")
         }
         // Names a batch gives what it makes become UUIDs before anything runs.
         let (resolvedOps, handles) = try HorizontalEditHandles.resolve(rawOps, revision: entry.revision)
@@ -1214,7 +1238,8 @@ enum HorizontalDispatchMethods {
                 throw error.inOperation(index, json.string("op") ?? "?")
             }
         }
-        return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params) { store in
+        let byDigestAlone = HorizontalDispatchMutation.committingByDigestAlone(params, payload: "ops")
+        return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params, byDigestAlone: byDigestAlone) { store in
             if let items = params["pool_items"] as? [JSONDictionary] {
                 _ = try writePoolItems(poolTargets(items, entry: entry), to: store)
             }

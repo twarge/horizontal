@@ -609,6 +609,7 @@ class TerminatePin(ComponentOp):
     kind: Literal["label", "power"] | None = None
     length_mm: float | None = Field(default=None, gt=0)
     size_mm: float | None = Field(default=None, gt=0)
+    offsheet_refs: bool | None = None
     style: Literal["gnd", "dot", "antenna", "earth"] | None = None
 
 
@@ -698,14 +699,23 @@ class PlacePowerSymbol(Input):
 
 
 class PlaceNetLabel(Input):
+    """A net label at a point, or, with the id of one that is there, that label changed in place: its orientation,
+    size, off-sheet refs or place. It keeps its id and its net."""
     op: Literal["place_net_label"]
-    net: StrictStr
+    id: str | None = None
+    net: StrictStr | None = None
     sheet: StrictStr | StrictInt | None = None
-    x_mm: float
-    y_mm: float
+    x_mm: float | None = None
+    y_mm: float | None = None
     orientation: Orientation | None = None
     size_mm: float | None = None
     offsheet_refs: bool | None = None
+
+    @model_validator(mode="after")
+    def new_or_edit(self):
+        if self.id is None and (self.net is None or self.x_mm is None or self.y_mm is None):
+            raise ValueError("A new net label needs net, x_mm and y_mm; an id names one to change.")
+        return self
 
 
 class RemoveSheetMark(Input):
@@ -828,13 +838,21 @@ class AddBusMember(Input):
 
 
 class PlaceBusLabel(Input):
+    """A bus label at a point, or, with the id of one that is there, that label changed in place."""
     op: Literal["place_bus_label"]
-    bus: StrictStr
+    id: str | None = None
+    bus: StrictStr | None = None
     sheet: StrictStr | StrictInt | None = None
-    x_mm: float
-    y_mm: float
+    x_mm: float | None = None
+    y_mm: float | None = None
     orientation: Orientation | None = None
     size_mm: float | None = None
+
+    @model_validator(mode="after")
+    def new_or_edit(self):
+        if self.id is None and (self.bus is None or self.x_mm is None or self.y_mm is None):
+            raise ValueError("A new bus label needs bus, x_mm and y_mm; an id names one to change.")
+        return self
 
 
 class PlaceBusRipper(Input):
