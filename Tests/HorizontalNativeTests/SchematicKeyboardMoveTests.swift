@@ -234,6 +234,80 @@ final class SchematicKeyboardMoveTests: XCTestCase {
         return try XCTUnwrap(state.committed)
     }
 
+    /// E on a part whose two pins swap ends, each with a label on it (a
+    /// junction at the pin's end and a wire of no length, as Billo's U13 has).
+    /// The labels go with their pins and flip to read away from the part.
+    /// Before, the first pin's junction merged on arrival with the one still
+    /// waiting to leave, wiring the two nets together, and the labels kept
+    /// pointing back across the part.
+    func testEFlipsAPartWhosePinsSwapEndsWithTheirLabels() async throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
+        _ = NSApplication.shared
+        var sheet = HorizontalSchematicSheet.poolEditorSheet(id: "sheet", name: "Sheet", gridSpacing: 1_250_000)
+        let left = HorizontalPoint(x: -2_500_000, y: 0), right = HorizontalPoint(x: 2_500_000, y: 0)
+        sheet.symbols = [.init(id: "symbol", position: .zero, angle: 0, mirrored: false, label: "U1", componentID: "component")]
+        sheet.symbolLines = [.init(id: "symbol/line/body", from: .init(x: -1_250_000, y: -1_250_000),
+                                  to: .init(x: 1_250_000, y: 1_250_000), width: 0, layer: nil)]
+        sheet.symbolPins = [
+            .init(id: "symbol/pin/a", from: left, to: .init(x: -1_250_000, y: 0), width: 0, layer: nil, netID: "na"),
+            .init(id: "symbol/pin/b", from: right, to: .init(x: 1_250_000, y: 0), width: 0, layer: nil, netID: "nb"),
+        ]
+        sheet.netDetails = ["na": .init(id: "na", name: "A", netClassID: nil, netClassName: nil, isPower: false),
+                            "nb": .init(id: "nb", name: "B", netClassID: nil, netClassName: nil, isPower: false)]
+        sheet.junctions = ["ja": left, "jb": right]
+        sheet.junctionNetIDs = ["ja": "na", "jb": "nb"]
+        sheet.netLines = [
+            .init(id: "wa", from: left, to: left, width: 0, layer: nil, netID: "na", schematicFrom: .pin("symbol/a"), schematicTo: .junction("ja")),
+            .init(id: "wb", from: right, to: right, width: 0, layer: nil, netID: "nb", schematicFrom: .pin("symbol/b"), schematicTo: .junction("jb")),
+        ]
+        sheet.netLabels = [
+            .init(id: "la", text: "A", position: left, size: 1_500_000, orientation: "left", netID: "na", junctionID: "ja"),
+            .init(id: "lb", text: "B", position: right, size: 1_500_000, orientation: "right", netID: "nb", junctionID: "jb"),
+        ]
+        let state = State(sheet)
+        let hosted = NSHostingView(rootView: Canvas(state: state)
+            .environmentObject(HorizontalAppearanceSettings(defaults: UserDefaults(suiteName: UUID().uuidString)!)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        hosted.frame = window.contentLayoutRect
+        window.contentView = hosted
+        window.orderFront(nil)
+        defer { window.close() }
+        let mounted = await settle { state.actions != nil }
+        XCTAssertTrue(mounted)
+        state.actions?.selectComponents?(["component"])
+        let selected = await settle { state.actions?.canMoveSelection == true }
+        XCTAssertTrue(selected)
+        state.actions?.dispatch(.mirrorSelection)
+        let committed = await settle { state.committed != nil }
+        XCTAssertTrue(committed)
+        let flipped = try XCTUnwrap(state.committed)
+
+        XCTAssertEqual(flipped.symbols.first?.position, .zero, "flipped in place")
+        XCTAssertEqual(flipped.symbols.first?.mirrored, true)
+        XCTAssertEqual(flipped.junctions.count, 2, "the two nets' junctions stay apart")
+        XCTAssertEqual(flipped.junctions["ja"], right)
+        XCTAssertEqual(flipped.junctions["jb"], left)
+        let labels = Dictionary(uniqueKeysWithValues: flipped.netLabels.map { ($0.id, $0) })
+        XCTAssertEqual(labels["la"]?.position, right)
+        XCTAssertEqual(labels["la"]?.orientation, "right", "reading away from the part")
+        XCTAssertEqual(labels["la"]?.junctionID, "ja")
+        XCTAssertEqual(labels["lb"]?.position, left)
+        XCTAssertEqual(labels["lb"]?.orientation, "left")
+        XCTAssertEqual(labels["lb"]?.junctionID, "jb")
+        // The wires may be rewritten as they heal, so each is found by its ends.
+        func wire(_ pin: String, _ junction: String) -> HorizontalSegment? {
+            let ends: Set<HorizontalSchematicEndpoint> = [.pin(pin), .junction(junction)]
+            return flipped.netLines.first { line in
+                Set([line.schematicFrom, line.schematicTo].compactMap { $0 }) == ends
+            }
+        }
+        XCTAssertEqual(flipped.netLines.count, 2)
+        XCTAssertEqual(wire("symbol/a", "ja").map { [$0.from, $0.to] }, [right, right])
+        XCTAssertEqual(wire("symbol/b", "jb").map { [$0.from, $0.to] }, [left, left])
+    }
+
     /// R on a symbol at rest turns it about its own centre, wherever the
     /// pointer rests on the canvas (124). Before, it turned about the pointer.
     func testRAtRestTurnsTheSymbolInPlaceWhereverThePointerRests() async throws {

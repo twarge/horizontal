@@ -4536,7 +4536,8 @@ struct SchematicCanvasView: View {
     }
 
     private func mirrorSelectedObjects(around center: HorizontalPoint, sheet: inout HorizontalSchematicSheet) {
-        var transformedJunctionKeys = Set<String>()
+        var transformedJunctionKeys: Set<String> = [Self.defersJunctionMergesKey]
+        defer { mergeJunctionsLeftTogether(by: transformedJunctionKeys, sheet: &sheet) }
         let selectedPowerSymbolAnchorKeys = selectedPowerSymbolAnchorKeys(in: sheet)
 
         for ref in uniqueSelectedObjectRefs() {
@@ -4591,7 +4592,8 @@ struct SchematicCanvasView: View {
         sheet: inout HorizontalSchematicSheet,
         originFor refOrigin: (HorizontalSelectableRef) -> HorizontalPoint?
     ) {
-        var transformedJunctionKeys = Set<String>()
+        var transformedJunctionKeys: Set<String> = [Self.defersJunctionMergesKey]
+        defer { mergeJunctionsLeftTogether(by: transformedJunctionKeys, sheet: &sheet) }
         let selectedPowerSymbolAnchorKeys = selectedPowerSymbolAnchorKeys(in: sheet)
 
         for ref in uniqueSelectedObjectRefs() {
@@ -4750,7 +4752,8 @@ struct SchematicCanvasView: View {
                 movedKeys: &transformedJunctionKeys,
                 attachedPowerSymbolTransform: .mirroredAround(center)
             )
-        } else {
+        } else if transformedJunctionKeys.insert("net-line:\(normalizedID(original.id)):from").inserted {
+            // Not where the part it ends on has already taken it.
             sheet.netLines[index].from = mirrored(original.from, around: center)
         }
 
@@ -4763,7 +4766,8 @@ struct SchematicCanvasView: View {
                 movedKeys: &transformedJunctionKeys,
                 attachedPowerSymbolTransform: .mirroredAround(center)
             )
-        } else if let updatedIndex = sheet.netLines.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
+        } else if transformedJunctionKeys.insert("net-line:\(normalizedID(original.id)):to").inserted,
+                  let updatedIndex = sheet.netLines.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
             sheet.netLines[updatedIndex].to = mirrored(original.to, around: center)
         }
     }
@@ -4789,7 +4793,8 @@ struct SchematicCanvasView: View {
                 movedKeys: &transformedJunctionKeys,
                 attachedPowerSymbolTransform: .rotatedAround(center, by: angleDelta)
             )
-        } else {
+        } else if transformedJunctionKeys.insert("net-line:\(normalizedID(original.id)):from").inserted {
+            // Not where the part it ends on has already taken it.
             sheet.netLines[index].from = rotated(original.from, around: center, by: angleDelta)
         }
 
@@ -4802,7 +4807,8 @@ struct SchematicCanvasView: View {
                 movedKeys: &transformedJunctionKeys,
                 attachedPowerSymbolTransform: .rotatedAround(center, by: angleDelta)
             )
-        } else if let updatedIndex = sheet.netLines.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
+        } else if transformedJunctionKeys.insert("net-line:\(normalizedID(original.id)):to").inserted,
+                  let updatedIndex = sheet.netLines.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
             sheet.netLines[updatedIndex].to = rotated(original.to, around: center, by: angleDelta)
         }
     }
@@ -4979,7 +4985,8 @@ struct SchematicCanvasView: View {
             movedKeys: &transformedJunctionKeys,
             attachedPowerSymbolTransform: .mirroredAround(center)
         )
-        if let updatedIndex = sheet.netLabels.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
+        if transformedJunctionKeys.insert(Self.turnedLabelKey(original.id)).inserted,
+           let updatedIndex = sheet.netLabels.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
             sheet.netLabels[updatedIndex].orientation = mirroredOrientation(original.orientation)
         }
     }
@@ -5004,7 +5011,8 @@ struct SchematicCanvasView: View {
             movedKeys: &transformedJunctionKeys,
             attachedPowerSymbolTransform: .rotatedAround(center, by: angleDelta)
         )
-        if let updatedIndex = sheet.netLabels.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
+        if transformedJunctionKeys.insert(Self.turnedLabelKey(original.id)).inserted,
+           let updatedIndex = sheet.netLabels.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
             sheet.netLabels[updatedIndex].orientation = rotatedOrientation(original.orientation, by: angleDelta)
         }
     }
@@ -5028,7 +5036,8 @@ struct SchematicCanvasView: View {
             movedKeys: &transformedJunctionKeys,
             attachedPowerSymbolTransform: .mirroredAround(center)
         )
-        if let updatedIndex = sheet.busLabels.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
+        if transformedJunctionKeys.insert(Self.turnedLabelKey(original.id)).inserted,
+           let updatedIndex = sheet.busLabels.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
             sheet.busLabels[updatedIndex].orientation = mirroredOrientation(original.orientation)
         }
     }
@@ -5053,7 +5062,8 @@ struct SchematicCanvasView: View {
             movedKeys: &transformedJunctionKeys,
             attachedPowerSymbolTransform: .rotatedAround(center, by: angleDelta)
         )
-        if let updatedIndex = sheet.busLabels.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
+        if transformedJunctionKeys.insert(Self.turnedLabelKey(original.id)).inserted,
+           let updatedIndex = sheet.busLabels.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
             sheet.busLabels[updatedIndex].orientation = rotatedOrientation(original.orientation, by: angleDelta)
         }
     }
@@ -5549,20 +5559,70 @@ struct SchematicCanvasView: View {
                 continue
             }
             sheet.netLabels[index].position = sheet.netLabels[index].position + delta
+            // A label on a pin turns and flips with the part, as an attached
+            // power symbol does, and keeps reading away from it.
+            if let turned = turnedLabelOrientation(sheet.netLabels[index].orientation, by: attachedPowerSymbolTransform),
+               movedKeys.insert(Self.turnedLabelKey(sheet.netLabels[index].id)).inserted {
+                sheet.netLabels[index].orientation = turned
+            }
         }
         for index in sheet.busLabels.indices where pointKey(sheet.busLabels[index].position) == key {
             guard movedKeys.insert("bus-label:\(normalizedID(sheet.busLabels[index].id))").inserted else {
                 continue
             }
             sheet.busLabels[index].position = sheet.busLabels[index].position + delta
+            if let turned = turnedLabelOrientation(sheet.busLabels[index].orientation, by: attachedPowerSymbolTransform),
+               movedKeys.insert(Self.turnedLabelKey(sheet.busLabels[index].id)).inserted {
+                sheet.busLabels[index].orientation = turned
+            }
         }
-        if let preferredID = movedJunctionIDs.first {
+        // A turn or a flip can take one pin's end to where another's was:
+        // merging there now would take in the junction that is yet to move
+        // away, wiring the two nets together. Those merge when all is moved.
+        if let preferredID = movedJunctionIDs.first, !movedKeys.contains(Self.defersJunctionMergesKey) {
             mergeJunctions(
                 at: point + delta,
                 preferredID: preferredID,
                 netID: sheet.junctionNetIDs[preferredID],
                 sheet: &sheet
             )
+        }
+    }
+
+    /// In `movedKeys`: merge the junctions a transform leaves together only
+    /// when it is finished (`mergeJunctionsLeftTogether`).
+    private static let defersJunctionMergesKey = "defer-junction-merges"
+
+    /// In `movedKeys`: a label whose orientation the transform has turned.
+    private static func turnedLabelKey(_ labelID: String) -> String {
+        "label-turned:\(labelID.lowercased())"
+    }
+
+    /// A label's orientation after a flip or a quarter turn; nil for a move,
+    /// which leaves it as it is.
+    private func turnedLabelOrientation(_ orientation: String, by transform: AttachedPowerSymbolTransform?) -> String? {
+        switch transform {
+        case .mirroredAround:
+            mirroredOrientation(orientation)
+        case .rotatedAround(_, let angleDelta):
+            rotatedOrientation(orientation, by: angleDelta)
+        case .translatedBy, nil:
+            nil
+        }
+    }
+
+    /// Merges each set of junctions a transform moved onto one point, the
+    /// moved one kept, once every point has gone where it goes.
+    private func mergeJunctionsLeftTogether(by movedKeys: Set<String>, sheet: inout HorizontalSchematicSheet) {
+        let together = Dictionary(grouping: sheet.junctions.keys.sorted()) { pointKey(sheet.junctions[$0] ?? .zero) }
+            .filter { $0.value.count > 1 }
+        for key in together.keys.sorted() {
+            guard let ids = together[key],
+                  let moved = ids.first(where: { movedKeys.contains("junction:\(normalizedID($0))") }),
+                  let point = sheet.junctions[moved] else {
+                continue
+            }
+            mergeJunctions(at: point, preferredID: moved, netID: sheet.junctionNetIDs[moved], sheet: &sheet)
         }
     }
 
