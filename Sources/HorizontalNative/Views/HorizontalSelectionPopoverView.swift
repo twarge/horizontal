@@ -52,6 +52,9 @@ struct HorizontalSelectionPropertyOption: Identifiable, Equatable {
 
 enum HorizontalSelectionPropertyEditor: Equatable {
     case text
+    /// Text sent only on Return or when the field loses focus, for a change
+    /// too heavy for every keystroke: renaming a net reloads the project.
+    case committedText
     case multilineText
     case bool
     case length
@@ -860,6 +863,10 @@ struct HorizontalSelectionPopoverView: View {
         switch property.editor {
         case .text:
             TextPropertyField(text: textBinding(for: property, group: group, item: item), font: editorFont)
+        case .committedText:
+            CommittedTextPropertyField(value: textBinding(for: property, group: group, item: item).wrappedValue, font: editorFont) {
+                sendChange(.text($0), property: property, group: group, item: item)
+            }
         case .multilineText:
             TextPropertyField(text: textBinding(for: property, group: group, item: item), font: editorFont)
         case .bool:
@@ -1123,6 +1130,60 @@ private struct NumericPropertyField: View {
 
     private static func format(_ value: Double, _ digits: Int) -> String {
         value.formatted(.number.precision(.fractionLength(digits)))
+    }
+}
+
+/// A text field backed by a local buffer, as `NumericPropertyField` is: the
+/// model hears of the text only on Return or when the field loses focus, and
+/// the field takes the model's value again only while it isn't being edited.
+/// Escape puts the model's value back.
+private struct CommittedTextPropertyField: View {
+    let value: String
+    let font: Font
+    let onCommit: (String) -> Void
+
+    @State private var text = ""
+    @State private var lastCommitted = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        TextField("", text: $text)
+            .textFieldStyle(.roundedBorder)
+            .font(font)
+            .lineLimit(1)
+            .focused($focused)
+            .onAppear {
+                text = value
+                lastCommitted = value
+            }
+            .onChange(of: value) { _, newValue in
+                lastCommitted = newValue
+                if !focused {
+                    text = newValue
+                }
+            }
+            .onChange(of: focused) { _, isFocused in
+                if !isFocused {
+                    commit()
+                }
+            }
+            .onSubmit {
+                commit()
+                DispatchQueue.main.async { focused = true }
+            }
+            #if os(macOS)
+            .onExitCommand {
+                text = value
+            }
+            #endif
+    }
+
+    private func commit() {
+        guard text != lastCommitted else {
+            return
+        }
+        lastCommitted = text
+        onCommit(text)
     }
 }
 
