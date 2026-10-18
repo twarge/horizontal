@@ -458,8 +458,14 @@ struct HorizontalIPadProjectView: View {
                     onReorderSheets: { schematicURL, orderedIDs in
                         reorderSheets(orderedIDs, schematicURL: schematicURL)
                     },
-                    onSetSheetFrame: { schematicURL, sheetID, frameID in
-                        setSheetFrame(frameID, sheetID: sheetID, schematicURL: schematicURL)
+                    onSetSheetFrame: { schematicURL, sheetID, frame in
+                        setSheetFrame(frame, sheetID: sheetID, schematicURL: schematicURL)
+                    },
+                    onAddSheet: { schematicURL in
+                        addSheet(schematicURL: schematicURL)
+                    },
+                    onRemoveSheet: { schematicURL, sheetID in
+                        removeSheet(sheetID, schematicURL: schematicURL)
                     }
                 )
                 .listStyle(.sidebar)
@@ -1432,15 +1438,19 @@ struct HorizontalIPadProjectView: View {
     }
 
     /// The navigator's Frame menu, as on macOS: through the archive and a
-    /// reload, which draws the frame.
-    private func setSheetFrame(_ frameID: String?, sheetID: String, schematicURL: URL) {
+    /// reload, which draws the frame, with a base pool's frame cached into
+    /// the project pool in the same edit.
+    private func setSheetFrame(_ frame: HorizontalSheetFrameOption?, sheetID: String, schematicURL: URL) {
         guard !isReadOnly, let current = project else {
             return
         }
         do {
             var archive = document.archive
+            if let source = frame?.source {
+                try HorizontalProjectJSONApplicator.cacheFrame(source, in: current, to: &archive)
+            }
             try HorizontalProjectJSONApplicator.apply(
-                sheetFrame: frameID,
+                sheetFrame: frame?.id,
                 forSheetID: sheetID,
                 schematicURL: schematicURL,
                 in: current,
@@ -1449,6 +1459,38 @@ struct HorizontalIPadProjectView: View {
             try applyArchiveEdit(archive, to: current, actionName: "Set Sheet Frame")
         } catch {
             loadError = "Couldn't change the sheet's frame: \(error.localizedDescription)"
+        }
+    }
+
+    /// The navigator's New Sheet, as on macOS. Returns the new sheet's ID.
+    private func addSheet(schematicURL: URL) -> String? {
+        guard !isReadOnly, let current = project else {
+            return nil
+        }
+        do {
+            var archive = document.archive
+            let sheetID = try HorizontalProjectJSONApplicator.addSheet(schematicURL: schematicURL, in: current, to: &archive)
+            try applyArchiveEdit(archive, to: current, actionName: "New Sheet")
+            return sheetID
+        } catch {
+            loadError = "Couldn't add a sheet: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// The navigator's Delete Sheet, for an empty sheet.
+    private func removeSheet(_ sheetID: String, schematicURL: URL) -> Bool {
+        guard !isReadOnly, let current = project else {
+            return false
+        }
+        do {
+            var archive = document.archive
+            try HorizontalProjectJSONApplicator.removeSheet(sheetID, schematicURL: schematicURL, in: current, to: &archive)
+            try applyArchiveEdit(archive, to: current, actionName: "Delete Sheet")
+            return true
+        } catch {
+            loadError = "Couldn't delete the sheet: \(error.localizedDescription)"
+            return false
         }
     }
 

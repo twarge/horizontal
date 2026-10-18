@@ -1,4 +1,5 @@
 import SwiftUI
+import HorizontalProjectIO
 
 /// What the project navigator can select. The macOS workspace's sidebar and
 /// the iPad's left-hand panel both list a project this way.
@@ -31,11 +32,20 @@ struct ProjectNavigatorView: View {
     var onRenameSheet: (URL, String, String) -> Void = { _, _, _ in }
     /// (schematic URL, sheet IDs in their new order)
     var onReorderSheets: (URL, [String]) -> Void = { _, _ in }
-    /// (schematic URL, sheet ID, frame uuid or nil for none)
-    var onSetSheetFrame: (URL, String, String?) -> Void = { _, _, _ in }
+    /// (schematic URL, sheet ID, the frame or nil for none). A frame with a
+    /// `source` is in a base pool, and the host caches it first.
+    var onSetSheetFrame: (URL, String, HorizontalSheetFrameOption?) -> Void = { _, _, _ in }
+    /// (schematic URL) → the new sheet's ID, or nil when it wasn't made.
+    var onAddSheet: (URL) -> String? = { _ in nil }
+    /// (schematic URL, sheet ID) → whether the sheet was deleted.
+    var onRemoveSheet: (URL, String) -> Bool = { _, _ in false }
 
     @State private var renameTarget: SheetRenameTarget?
     @State private var renameDraft = ""
+    /// The frames the project's base pools hold, for the Frame menu; read off
+    /// the main thread, since it scans the pools.
+    @State private var basePoolFrames: [HorizontalSheetFrameOption] = []
+    @ObservedObject private var poolRegistry = HorizontalPoolRegistry.shared
 
     private struct SheetRenameTarget: Identifiable {
         var schematicURL: URL
@@ -73,6 +83,13 @@ struct ProjectNavigatorView: View {
                             )
                             .tag(ProjectNavigatorSelection.block(schematic.block.uuid))
                             .disabled(!isAvailable(schematic.block))
+                            .contextMenu {
+                                if allowsSheetEditing, isAvailable(schematic.block) {
+                                    newSheetButton(schematicURL: schematic.schematic.url) {
+                                        .sheet(blockID: schematic.block.uuid, sheetID: $0)
+                                    }
+                                }
+                            }
                         }
 
                         ForEach(sheets) { sheet in
@@ -87,7 +104,9 @@ struct ProjectNavigatorView: View {
                                 .tag(ProjectNavigatorSelection.sheet(blockID: schematic.block.uuid, sheetID: sheet.id))
                                 .disabled(!isAvailable(schematic.block))
                                 .contextMenu {
-                                    sheetContextMenu(for: sheet, schematicURL: schematic.schematic.url)
+                                    sheetContextMenu(for: sheet, in: schematic.schematic.sheets, schematicURL: schematic.schematic.url) {
+                                        .sheet(blockID: schematic.block.uuid, sheetID: $0)
+                                    }
                                 }
                             }
                         }
@@ -104,6 +123,11 @@ struct ProjectNavigatorView: View {
                             title: schematic.url.lastPathComponent,
                             detail: "Schematic"
                         )
+                        .contextMenu {
+                            if allowsSheetEditing {
+                                newSheetButton(schematicURL: schematic.url) { .standaloneSheet($0) }
+                            }
+                        }
                     }
                     ForEach(schematic.sheets.filter { matchesSearch("sheet", $0.name) }) { sheet in
                         NavigatorRow(
@@ -114,7 +138,7 @@ struct ProjectNavigatorView: View {
                         )
                         .tag(ProjectNavigatorSelection.standaloneSheet(sheet.id))
                         .contextMenu {
-                            sheetContextMenu(for: sheet, schematicURL: schematic.url)
+                            sheetContextMenu(for: sheet, in: schematic.sheets, schematicURL: schematic.url) { .standaloneSheet($0) }
                         }
                     }
                     .onMove(perform: sheetMoveHandler(orderedIDs: schematic.sheets.map(\.id), schematicURL: schematic.url))
@@ -153,10 +177,31 @@ struct ProjectNavigatorView: View {
             Button("Rename") { commitRename() }
             Button("Cancel", role: .cancel) { renameTarget = nil }
         }
+        .task(id: allowsSheetEditing ? [projectPoolURL.path] + poolRegistry.pools.map(\.url.path) : []) {
+            guard allowsSheetEditing else {
+                basePoolFrames = []
+                return
+            }
+            let poolURL = projectPoolURL
+            basePoolFrames = await Task.detached(priority: .utility) {
+                HorizontalSchematic.basePoolFrames(poolURL: poolURL)
+            }.value
+        }
     }
 
+    private var projectPoolURL: URL {
+        project.baseURL.appendingPathComponent(project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName, isDirectory: true)
+    }
+
+    /// `select` turns a sheet ID into the selection that shows it, so a new
+    /// sheet can be shown and a deleted one's neighbour selected.
     @ViewBuilder
-    private func sheetContextMenu(for sheet: HorizontalSchematicSheet, schematicURL: URL) -> some View {
+    private func sheetContextMenu(
+        for sheet: HorizontalSchematicSheet,
+        in sheets: [HorizontalSchematicSheet],
+        schematicURL: URL,
+        selecting select: @escaping (String) -> ProjectNavigatorSelection
+    ) -> some View {
         if allowsSheetEditing {
             Button("Rename…") {
                 renameDraft = sheet.name
@@ -167,7 +212,41 @@ struct ProjectNavigatorView: View {
                 )
             }
             frameMenu(for: sheet, schematicURL: schematicURL)
+            Divider()
+            newSheetButton(schematicURL: schematicURL, selecting: select)
+            deleteSheetButton(for: sheet, in: sheets, schematicURL: schematicURL, selecting: select)
         }
+    }
+
+    /// Horizon's Add Sheet: a page after the last, which is then shown.
+    private func newSheetButton(schematicURL: URL, selecting select: @escaping (String) -> ProjectNavigatorSelection) -> some View {
+        Button("New Sheet") {
+            if let sheetID = onAddSheet(schematicURL) {
+                selection = select(sheetID)
+            }
+        }
+    }
+
+    /// Horizon's Delete Sheet, for a page with no symbols on it, and never
+    /// the last. A deleted sheet that was showing hands the selection to the
+    /// page before it, or the one after.
+    private func deleteSheetButton(
+        for sheet: HorizontalSchematicSheet,
+        in sheets: [HorizontalSchematicSheet],
+        schematicURL: URL,
+        selecting select: @escaping (String) -> ProjectNavigatorSelection
+    ) -> some View {
+        let isEmpty = sheet.symbols.isEmpty && sheet.blockSymbolLines.isEmpty && sheet.blockSymbolPorts.isEmpty
+        return Button("Delete Sheet", role: .destructive) {
+            let wasSelected = selection == select(sheet.id)
+            let position = sheets.firstIndex { $0.id == sheet.id } ?? 0
+            let remaining = sheets.filter { $0.id != sheet.id }
+            guard onRemoveSheet(schematicURL, sheet.id), wasSelected, !remaining.isEmpty else {
+                return
+            }
+            selection = select(remaining[min(max(position - 1, 0), remaining.count - 1)].id)
+        }
+        .disabled(sheets.count < 2 || !isEmpty)
     }
 
     /// The project pool's frames: every block's sheets draw from the one pool.
@@ -177,16 +256,29 @@ struct ProjectNavigatorView: View {
 
     private static let noFrameTag = ""
 
-    /// Horizon's sheet frame choice: the project pool's frames, and None.
+    /// Horizon's sheet frame choice, which browses the whole pool: None and
+    /// the project pool's frames, then, by pool, the frames the pools it
+    /// draws from hold and it hasn't cached yet. Choosing one of those caches
+    /// it into the project pool.
     private func frameMenu(for sheet: HorizontalSchematicSheet, schematicURL: URL) -> some View {
         let frames = availableFrames
         let current = sheet.frameID ?? Self.noFrameTag
+        let cached = Set(frames.map(\.id))
+        var poolNames = [String]()
+        var framesByPool = [String: [HorizontalSheetFrameOption]]()
+        for frame in basePoolFrames where !cached.contains(frame.id) {
+            let pool = frame.source?.poolName ?? ""
+            if framesByPool[pool] == nil { poolNames.append(pool) }
+            framesByPool[pool, default: []].append(frame)
+        }
         return Menu("Frame") {
             Picker("Frame", selection: Binding(
                 get: { current },
                 set: { chosen in
                     guard chosen != current else { return }
-                    onSetSheetFrame(schematicURL, sheet.id, chosen == Self.noFrameTag ? nil : chosen)
+                    onSetSheetFrame(schematicURL, sheet.id, chosen == Self.noFrameTag
+                        ? nil
+                        : frames.first { $0.id == chosen } ?? HorizontalSheetFrameOption(id: chosen, name: ""))
                 }
             )) {
                 Text("None").tag(Self.noFrameTag)
@@ -200,6 +292,15 @@ struct ProjectNavigatorView: View {
                 }
             }
             .pickerStyle(.inline)
+            ForEach(poolNames, id: \.self) { pool in
+                Section(pool.isEmpty ? "Pool" : pool) {
+                    ForEach((framesByPool[pool] ?? []).sorted { ($0.name.localizedLowercase, $0.id) < ($1.name.localizedLowercase, $1.id) }) { frame in
+                        Button(frame.name.isEmpty ? frame.id : frame.name) {
+                            onSetSheetFrame(schematicURL, sheet.id, frame)
+                        }
+                    }
+                }
+            }
         }
     }
 

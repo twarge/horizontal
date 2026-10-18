@@ -93,6 +93,20 @@ enum HorizontalPoolCacheImporter {
         return session.planned
     }
 
+    /// The files caching a frame would add: the frame, in
+    /// `frames/cache/<uuid>.json` where a sheet's frame is drawn from, and
+    /// its provenance. A frame depends on nothing else.
+    static func planFrame(
+        _ item: HorizontalPoolLibraryItem,
+        into projectPoolURL: URL,
+        destination: HorizontalPoolCacheDestination = .disk
+    ) throws -> [HorizontalPoolCacheFile] {
+        var session = Session(projectPoolURL: projectPoolURL, index: HorizontalPoolLibraryIndex(items: [item]), destination: destination)
+        try session.cacheFrame(item.uuid)
+        try session.finishProvenance()
+        return session.planned
+    }
+
     /// `plan` with the destination reading through a caller's own store.
     static func plan(
         _ item: HorizontalPoolLibraryItem,
@@ -160,6 +174,10 @@ enum HorizontalPoolCacheImporter {
                 .map { URL(fileURLWithPath: $0) }
             var seen = Set(staged.map(\.path))
             return staged + destination.list(directory).filter { seen.insert($0.standardizedFileURL.path).inserted }
+        }
+
+        mutating func cacheFrame(_ frameID: String) throws {
+            _ = try cacheFlatItem(.frame, uuid: frameID)
         }
 
         // MARK: Parts
