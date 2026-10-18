@@ -74,10 +74,14 @@ enum HorizontalDispatchRender {
         let selected = try resolveBoardLayers(project: project, names: layerNames, ids: layerIDs)
         let pdfURL = try exportPDF(project: project, section: .boardDrawing) { settings in
             settings.boardDrawing.mirrored = mirrored
-            if let selected {
-                for index in settings.boardDrawing.layers.indices {
-                    settings.boardDrawing.layers[index].enabled = selected.contains(settings.boardDrawing.layers[index].layer)
-                }
+            for index in settings.boardDrawing.layers.indices {
+                let layer = settings.boardDrawing.layers[index].layer
+                if let selected { settings.boardDrawing.layers[index].enabled = selected.contains(layer) }
+                // A package body, its assembly drawing and courtyard filled in
+                // the copper's colour cover the pads and tracks under them (a
+                // WLCSP's outline hid all its balls); a render is for reading
+                // the copper, so they are drawn as outlines.
+                if Self.outlinedLayers.contains(layer) { settings.boardDrawing.layers[index].mode = .outline }
             }
         }
         defer { try? FileManager.default.removeItem(at: pdfURL.deletingLastPathComponent()) }
@@ -86,6 +90,11 @@ enum HorizontalDispatchRender {
         let crop = region.map { pageRect(for: $0, bounds: boardPageBounds(board), margin: 36) }
         return try rasterize(pdfURL: pdfURL, page: 1, dpi: dpi, maxPixels: maxPixels, crop: crop, overlay: overlay)
     }
+
+    static let outlinedLayers: Set<Int> = [
+        HorizontalBoardLayers.topPackage, HorizontalBoardLayers.topAssembly, HorizontalBoardLayers.topCourtyard,
+        HorizontalBoardLayers.bottomPackage, HorizontalBoardLayers.bottomAssembly, HorizontalBoardLayers.bottomCourtyard
+    ]
 
     /// The colour airwires are drawn in on a render: on the exporter's white
     /// page the canvas's cyan barely shows, so a deeper blue, dashed as the

@@ -78,10 +78,10 @@ what clears it — see [the automation guide](automation.md).
    result includes before/after snapshot IDs, `handles` for the names the batch
    gave things, and `plan_digest`; `verbose` adds the normalized operations and
    changed-file previews.
-3. Commit the same operations with `before_revision` as `expected_revision`,
-   the `plan_digest`, `dry_run=false`, and a commit operation ID. Include the
-   same pool items if the plan creates or changes pool data. The commit
-   installs what the dry run staged.
+3. Commit with `before_revision` as `expected_revision`, the `plan_digest`,
+   `dry_run=false`, and a commit operation ID. The digest alone names the
+   staged plan, so the operations and pool items can be left out; sending them
+   again works too. The commit installs what the dry run staged.
 4. Retain the receipt. After a lost response, call `transaction_status` with
    that operation ID. `unknown` does not establish that an edit was absent.
 
@@ -95,7 +95,7 @@ operation ID when one is omitted. For an explicit Python review/commit:
 revision = project.info()["revision"]
 preview = project.apply(ops, dry_run=True, expected_revision=revision)
 receipt = project.apply(
-    preview["normalized_ops"], expected_revision=revision,
+    None, expected_revision=revision,
     plan_digest=preview["plan_digest"], operation_id="unique-commit-id",
 )
 ```

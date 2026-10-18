@@ -540,14 +540,17 @@ class Project:
         """The edit vocabulary `apply` accepts."""
         return self.session.call("list_ops")
 
-    def apply(self, ops: list[dict[str, Any]], dry_run: bool = False, *, expected_revision: str | None = None,
+    def apply(self, ops: list[dict[str, Any]] | None, dry_run: bool = False, *, expected_revision: str | None = None,
               operation_id: str | None = None, plan_digest: str | None = None,
               pool_items: list[dict[str, Any]] | None = None, block: str | None = None,
               detail: str | None = None) -> dict[str, Any]:
-        """Apply edit operations; each is {"op": name, ...params}. Writes only changed files.
+        """Apply edit operations; each is {"op": name, ...params}. Writes only changed files. ops None commits the
+        dry run plan_digest names, at the revision it was made.
         detail="compact" returns ids and counts without echoing the ops or the project summary. A dry run's
         preview gives each file's changed JSON paths; detail="files" adds its whole text before and after."""
-        params: dict[str, Any] = {"ops": list(ops), "dry_run": dry_run, **self._guarded(dry_run, expected_revision, operation_id)}
+        # A commit may name its dry run by plan_digest alone and send no ops.
+        params: dict[str, Any] = {"dry_run": dry_run, **self._guarded(dry_run, expected_revision, operation_id)}
+        if ops is not None: params["ops"] = list(ops)
         if plan_digest is not None: params["plan_digest"] = plan_digest
         if pool_items is not None: params["pool_items"] = pool_items
         if block is not None: params["block"] = block

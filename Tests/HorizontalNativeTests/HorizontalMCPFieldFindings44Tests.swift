@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import HorizontalProjectIO
 import XCTest
 @testable import HorizontalNative
@@ -626,5 +627,119 @@ final class HorizontalMCPFieldFindings44Tests: XCTestCase {
         let tracks = try XCTUnwrap(try result("list_tracks", ["component": "U1", "pads": ["3"]]) as? JSONDictionary).dictionaryArray("tracks")
         XCTAssertEqual(tracks.count, 1, "the track on pad 3 stays on pad 3")
         XCTAssertNotNil((try result("get_component", ["refdes": "U1"]) as? JSONDictionary)?.dictionary("board")?.string("package_id"))
+    }
+    // MARK: - Round 45: items 140–145
+
+    func testATextSaysWhereItRunsAndWhatItCovers() throws {
+        let resistor = part(["A", "B"])
+        try apply([["op": "ensure_component", "refdes": "R1", "part": resistor.part],
+                   ["op": "place_symbol", "component": "R1", "x_mm": 100, "y_mm": 100]], ["pool_items": resistor.items])
+        let clear = try XCTUnwrap(changes(try apply([["op": "place_text", "text": "A note", "x_mm": 20, "y_mm": 20]])).first)
+        let extent = try XCTUnwrap(clear.dictionary("extent_mm"))
+        XCTAssertLessThan(abs((extent.double("min_x") ?? 0) - 20), 1, "it starts at x, whatever its origin: \(extent)")
+        XCTAssertGreaterThan(extent.double("max_x") ?? 0, 25)
+        XCTAssertNil(clear["overlaps"])
+        let over = try XCTUnwrap(changes(try apply([["op": "place_text", "text": "Across the part", "x_mm": 96, "y_mm": 99]])).first)
+        let overlaps = try XCTUnwrap(over["overlaps"] as? [JSONDictionary])
+        XCTAssertEqual(overlaps.first { $0.string("kind") == "symbol" }?.string("refdes"), "R1")
+    }
+
+    func testTerminatePinTakesOffsheetRefsAndALabelChangesInPlace() throws {
+        let resistor = part(["A", "B"])
+        let made = try apply([["op": "ensure_component", "refdes": "R1", "part": resistor.part],
+                              ["op": "place_symbol", "component": "R1", "x_mm": 100, "y_mm": 100],
+                              ["op": "connect", "component": "R1", "pin": "A", "net": "SYNC", "create_net": true],
+                              ["op": "ensure_net", "name": "OTHER"],
+                              ["op": "terminate_pin", "component": "R1", "pin": "A", "offsheet_refs": false]], ["pool_items": resistor.items])
+        let label = try XCTUnwrap(changes(made)[4].string("net_label"))
+        func stored() throws -> JSONDictionary {
+            let sheets = try read("top_schematic.json").dictionaryMap("sheets")
+            return try XCTUnwrap(sheets.values.compactMap { $0.dictionaryMap("net_labels")[label] }.first)
+        }
+        XCTAssertEqual(try stored().bool("offsheet_refs"), false, "141")
+        // 142: turned and resized where it is, under its own id.
+        let edited = try XCTUnwrap(changes(try apply([["op": "place_net_label", "id": label, "orientation": "right", "size_mm": 2]])).first)
+        XCTAssertEqual(edited.string("net_label"), label)
+        XCTAssertEqual(edited.bool("created"), false)
+        XCTAssertEqual(try stored().string("orientation"), "right")
+        XCTAssertEqual(try stored().int("size"), 2_000_000)
+        XCTAssertTrue(try error([["op": "place_net_label", "id": label, "net": "OTHER"]]).contains("keeps its junction's net"))
+        // Moved along x: onto a junction there, and the old one goes.
+        let moved = try XCTUnwrap(changes(try apply([["op": "place_net_label", "id": label, "x_mm": 90]])).first)
+        XCTAssertNotNil(moved["moved_to"])
+        XCTAssertEqual((try result("list_net_labels") as? [JSONDictionary])?.count, 1)
+        // A new label can be named, and a later op finds it by the name.
+        try apply([["op": "place_net_label", "id": "l1", "net": "OTHER", "x_mm": 10, "y_mm": 10],
+                   ["op": "place_net_label", "id": "l1", "orientation": "up"]])
+        XCTAssertEqual((try result("list_net_labels") as? [JSONDictionary])?.first { $0.string("net_name") == "OTHER" }?.string("orientation"), "up")
+    }
+
+    func testPoolWriteDerivesAnItemFromAnotherWithAPatch() throws {
+        let resistor = part(["A", "B"])
+        try apply([["op": "ensure_component", "refdes": "R1", "part": resistor.part]], ["pool_items": resistor.items])
+        let derived = UUID().uuidString.lowercased()
+        let written = try XCTUnwrap(try result("pool_write", ["items": [
+            ["from": resistor.part, "uuid": derived, "patch": ["MPN": [false, "DERIVED-1"], "tags": NSNull()]]
+        ]]) as? JSONDictionary)
+        XCTAssertEqual((written["written"] as? [String])?.count, 1, "\(written)")
+        let item = try XCTUnwrap((try result("get_pool_item", ["uuid": derived]) as? JSONDictionary)?.dictionary("item"))
+        XCTAssertEqual((item["MPN"] as? [Any])?.last as? String, "DERIVED-1")
+        XCTAssertNil(item["tags"], "null removes a key")
+        XCTAssertEqual(item.string("entity"), try XCTUnwrap(resistor.items[5].string("entity")), "the rest is the base's")
+        let wrong = try call("pool_write", ["items": [["from": resistor.part, "name": "x"]]])
+        XCTAssertTrue(((wrong["error"] as? JSONDictionary)?.string("message") ?? "").contains("takes only uuid, patch and type"))
+    }
+
+    func testACommitCanNameItsDryRunByDigestAlone() throws {
+        let ops: [JSONDictionary] = [["op": "ensure_net", "name": "BYDIGEST"], ["op": "add_sheet", "name": "Two"]]
+        let dry = try apply(ops, ["dry_run": true])
+        let digest = try XCTUnwrap(dry.string("plan_digest"))
+        let committed = try XCTUnwrap(try result("apply", ["plan_digest": digest, "expected_revision": try XCTUnwrap(dry.string("before_revision")),
+                                                           "operation_id": UUID().uuidString]) as? JSONDictionary)
+        XCTAssertEqual(committed.string("status"), "committed")
+        XCTAssertEqual(committed.dictionary("timing")?.bool("reused_dry_run"), true)
+        XCTAssertNotNil(try result("get_net", ["name": "BYDIGEST"]))
+        // At another revision the digest names nothing, and says so.
+        let stale = try call("apply", ["plan_digest": digest])
+        XCTAssertTrue(((stale["error"] as? JSONDictionary)?.string("message") ?? "").contains("No dry run at this revision"), "\(stale)")
+        // Every other edit is still matched by its request, even one with no
+        // ops of its own: pour_planes with a digest no plan has is planned
+        // again and found not to match.
+        let pour = try call("pour_planes", ["plan_digest": String(repeating: "0", count: 64),
+                                            "expected_revision": try session.entry(handle: handle).revision, "operation_id": UUID().uuidString])
+        XCTAssertTrue(((pour["error"] as? JSONDictionary)?.string("message") ?? "").contains("does not match this edit"), "\(pour)")
+        // A pool_write commits the same way.
+        let resistor = part(["A"])
+        let poolDry = try XCTUnwrap(try result("pool_write", ["items": resistor.items, "dry_run": true]) as? JSONDictionary)
+        let poolCommit = try XCTUnwrap(try result("pool_write", ["plan_digest": try XCTUnwrap(poolDry.string("plan_digest"))]) as? JSONDictionary)
+        XCTAssertEqual(poolCommit.dictionary("timing")?.bool("reused_dry_run"), true)
+        XCTAssertNotNil(try result("get_pool_item", ["uuid": resistor.part]))
+    }
+    func testABoardRenderDrawsAPackageBodyAsItsOutline() throws {
+        let resistor = part(["A"])
+        var items = resistor.items
+        let corners = [[-3_000_000, -3_000_000], [3_000_000, -3_000_000], [3_000_000, 3_000_000], [-3_000_000, 3_000_000]]
+        items[4]["polygons"] = [UUID().uuidString.lowercased(): [
+            "layer": HorizontalBoardLayers.topPackage, "parameter_class": "",
+            "vertices": corners.map { ["type": "line", "position": $0, "arc_center": [0, 0], "arc_reverse": false] }
+        ] as JSONDictionary]
+        try apply([["op": "ensure_component", "refdes": "R1", "part": resistor.part],
+                   ["op": "place_component", "component": "R1", "x_mm": 20, "y_mm": 20]], ["pool_items": items])
+        func dark(_ region: [Double]) throws -> Int {
+            let render = try XCTUnwrap(try result("render_board", [
+                "layer_ids": [HorizontalBoardLayers.topPackage], "dpi": 300,
+                "region": ["min_x_mm": region[0], "min_y_mm": region[1], "max_x_mm": region[2], "max_y_mm": region[3]]
+            ]) as? JSONDictionary)
+            let png = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(render.string("png_base64"))))
+            let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(try XCTUnwrap(CGImageSourceCreateWithData(png as CFData, nil)), 0, nil))
+            var pixels = [UInt8](repeating: 0, count: image.width * image.height * 4)
+            let context = try XCTUnwrap(CGContext(data: &pixels, width: image.width, height: image.height, bitsPerComponent: 8,
+                                                  bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            return stride(from: 0, to: pixels.count, by: 4).filter { Int(pixels[$0]) + Int(pixels[$0 + 1]) + Int(pixels[$0 + 2]) < 300 }.count
+        }
+        XCTAssertGreaterThan(try dark([15, 15, 25, 25]), 0, "the body's outline is drawn")
+        XCTAssertEqual(try dark([18.5, 18.5, 21.5, 21.5]), 0, "and nothing inside it, where its pads are")
     }
 }

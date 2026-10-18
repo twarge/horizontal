@@ -2,8 +2,17 @@ import Foundation
 import HorizontalProjectIO
 
 enum HorizontalDispatchMutation {
+    /// A commit that names its dry run by plan_digest and sends nothing else:
+    /// the plan staged at this revision is what it installs, so the ops or
+    /// items need not travel twice.
+    static func committingByDigestAlone(_ params: JSONDictionary, payload: String) -> Bool {
+        params[payload] == nil && params["pool_items"] == nil && params.string("plan_digest") != nil && params.bool("dry_run") != true
+    }
+
+    /// `byDigestAlone` is for apply and pool_write, whose ops or items a
+    /// commit may leave out; every other edit is matched by its request.
     static func execute(session: HorizontalDispatchSession, entry: HorizontalDispatchProjectEntry,
-                        params: JSONDictionary, beforeCommit: () throws -> Void = {},
+                        params: JSONDictionary, byDigestAlone: Bool = false, beforeCommit: () throws -> Void = {},
                         build: (HorizontalArchiveFileStore) throws -> JSONDictionary) throws -> JSONDictionary {
         let dryRun = params.bool("dry_run") ?? false
         let operationID = params.string("operation_id")
@@ -11,7 +20,11 @@ enum HorizontalDispatchMutation {
         let transaction = entry.live == nil ? try HorizontalProjectTransaction(projectURL: entry.url) : nil
         defer { withExtendedLifetime(transaction) {} }
         try transaction?.recover()
-        let payload = params.filter { !["handle", "include_metadata", "operation_id", "plan_digest", "deadline_unix_ms", "detail"].contains($0.key) }
+        // A commit by digest alone is that digest: two of them under one
+        // operation_id are different requests.
+        let payload = params.filter {
+            !["handle", "include_metadata", "operation_id", "deadline_unix_ms", "detail"].contains($0.key) && ($0.key != "plan_digest" || byDigestAlone)
+        }
         let payloadHash = HorizontalProjectTransaction.digest(try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]))
         if let operationID {
             let existing: JSONDictionary?
@@ -26,7 +39,7 @@ enum HorizontalDispatchMutation {
         do {
             let result = try perform(session: session, entry: entry, params: params, transaction: transaction,
                                      payloadHash: payloadHash, dryRun: dryRun, operationID: operationID,
-                                     beforeCommit: beforeCommit, build: build)
+                                     byDigestAlone: byDigestAlone, beforeCommit: beforeCommit, build: build)
             if let operationID { entry.failedOperations.removeValue(forKey: operationID) }
             return shaped(result, params)
         } catch {
@@ -128,7 +141,7 @@ enum HorizontalDispatchMutation {
 
     private static func perform(session: HorizontalDispatchSession, entry: HorizontalDispatchProjectEntry, params: JSONDictionary,
                                 transaction: HorizontalProjectTransaction?, payloadHash: String, dryRun: Bool, operationID: String?,
-                                beforeCommit: () throws -> Void,
+                                byDigestAlone: Bool, beforeCommit: () throws -> Void,
                                 build: (HorizontalArchiveFileStore) throws -> JSONDictionary) throws -> JSONDictionary {
         var timing = JSONDictionary()
         var clock = Date()
@@ -189,13 +202,23 @@ enum HorizontalDispatchMutation {
         let after: HorizontalDispatchSnapshot
         let staged: HorizontalProject
         let nextDiagnostics: [String: Int]
+        // A commit naming its plan by digest alone takes the plan with that
+        // digest at this revision, whatever was sent with its dry run.
+        var reused: HorizontalDispatchProjectEntry.StagedPlan?
         if !dryRun, let digest = params.string("plan_digest"),
-           let plan = entry.stagedPlans.last(where: { $0.revision == entry.revision && $0.digest == digest && $0.keys.contains(requestKey) }) {
+           let plan = entry.stagedPlans.last(where: { $0.revision == entry.revision && $0.digest == digest && (byDigestAlone || $0.keys.contains(requestKey)) }) {
+            reused = plan
             result = plan.result
             after = plan.after
             staged = plan.staged
             nextDiagnostics = plan.diagnostics
             timing["reused_dry_run"] = true
+        } else if byDigestAlone, params.string("plan_digest") != nil {
+            throw HorizontalDispatchError(
+                code: .staleRevision,
+                message: "No dry run at this revision has that plan_digest, so there is nothing to commit by it alone: the project changed "
+                    + "since, or the plan was one of more than \(HorizontalDispatchProjectEntry.stagedPlanLimit) made at it. Dry-run it again, or send the ops with it.",
+                details: ["revision": entry.revision])
         } else {
             let store = HorizontalArchiveFileStore(archive: snapshot.archive, baseURL: entry.project.baseURL)
             result = try build(store)
@@ -249,7 +272,8 @@ enum HorizontalDispatchMutation {
         let removed = snapshot.files.filter { after.archive.regularFileData(relativePath: $0) == nil }
         let changed = (after.files.filter { after.archive.regularFileData(relativePath: $0) != snapshot.archive.regularFileData(relativePath: $0) } + removed).sorted()
         let plan: JSONDictionary = ["revision": entry.revision, "ops": result["normalized_ops"] ?? params["ops"] ?? [], "pool_items": params["pool_items"] ?? params["items"] ?? []]
-        let planDigest = HorizontalProjectTransaction.digest(try JSONSerialization.data(withJSONObject: plan, options: [.sortedKeys]))
+        let planDigest = try reused?.digest
+            ?? HorizontalProjectTransaction.digest(try JSONSerialization.data(withJSONObject: plan, options: [.sortedKeys]))
         if let expected = params.string("plan_digest"), expected != planDigest {
             throw HorizontalDispatchError(code: .staleRevision, message: "Dry-run plan does not match this edit.")
         }

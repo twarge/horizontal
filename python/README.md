@@ -77,7 +77,9 @@ and need neither `expected_revision` nor `operation_id`: without a revision
 the plan is made against the project as it is. `applied` is the legacy count
 of staged changes in a preview. Commit the same ops with `before_revision` as
 `expected_revision` and the returned `plan_digest`; the commit installs what
-the dry run staged. A commit returns `status: "committed"` and
+the dry run staged. The commit may also leave the ops out (`items`, for
+`pool_write`) and send the `plan_digest` alone, while the revision is the
+one the dry run was made at. A commit returns `status: "committed"` and
 `durability: "disk"` or `"document"` (the open document holds the edit and
 autosaves it; an older app says `"unsaved_document"`), or `"unchanged"` when
 the batch left every file as it was. Use a fresh `operation_id` for the commit.
@@ -110,7 +112,9 @@ returns that context and its `project_ref`.
 Reads are summaries by default. `list_components` leaves out package pads
 (`include_terminals`). `get_component` lists only a large part's connected and
 no-connect pins (`all_pins` for every one), narrows with `pins`, `pin_regex` and
-`connected`, and `group_pins` summarises supply and ground pins by net.
+`connected`, and `group_pins` summarises supply and ground pins by net, in a
+`pin_groups` that `fields` keeps whatever it names. A `fields` entry no record
+has is refused with the keys there are, rather than dropped.
 `list_net_lines` gives one-line ends ("U8.PA13", "junction:<id>") and
 `[x, y]` points; the mark lists drop repeated sheet and net uuids. `verbose`
 returns the full rows. `find_dangling` and `find_overlaps` answer the usual
@@ -147,7 +151,7 @@ Schematic editing supports:
   `prune_sheet {sheet?}` delete drawing: a junction goes with its wires,
   labels and power symbols, and junctions left holding nothing are collected.
   `remove_sheet {sheet, force: true}` clears a page outright.
-- `terminate_pin {component, pin, net?, kind?, length_mm?}` draws a stub out of
+- `terminate_pin {component, pin, net?, kind?, length_mm?, offsheet_refs?}` draws a stub out of
   a pin, in the direction it points after the symbol's rotation and mirror,
   ending in a label or power symbol facing away from it.
 - `set_no_connect {component, pin | pins | all, gate?, no_connect?, disconnect?}` (`all`: every pin on no net,
