@@ -80,6 +80,14 @@ final class GridSnappingTests: XCTestCase {
         XCTAssertEqual(fine.x, 400_123)
     }
 
+    private func point(_ x: Double, _ y: Double) -> HorizontalPoint {
+        HorizontalPoint(x: x, y: y)
+    }
+
+    private func gridSnap(_ point: HorizontalPoint) -> HorizontalPoint {
+        HorizontalCanvasInputCore.snapToGrid(point, grid: grid(spacing: 1_000_000), divisor: 1)
+    }
+
     func testCursorTrackedMoveHoistsGrabbedPointOntoGrid() {
         let grabbedVertex = HorizontalPoint(x: 400_000, y: 600_000)
         let snappedCursor = snap(grabbedVertex.x, grabbedVertex.y)
@@ -106,5 +114,76 @@ final class GridSnappingTests: XCTestCase {
 
         XCTAssertEqual(initial.startPoint, grabbedVertex)
         XCTAssertEqual(initial.lastPoint, grabbedVertex)
+    }
+
+    private func pivot(
+        _ points: [String: [HorizontalPoint]],
+        types: [String: HorizontalObjectType] = [:],
+        snap: (HorizontalPoint, [HorizontalPoint]) -> HorizontalPoint
+    ) -> HorizontalPoint? {
+        let refs = points.keys.sorted().map { HorizontalSelectableRef(id: $0, type: types[$0] ?? .schematicSymbol) }
+        return HorizontalCanvasModeSupport.selectionPivot(for: refs, origins: { points[$0.id] ?? [] }, snapToGrid: snap)
+    }
+
+    private func turned(_ point: HorizontalPoint, about pivot: HorizontalPoint) -> HorizontalPoint {
+        HorizontalPoint(x: pivot.x - (point.y - pivot.y), y: pivot.y + (point.x - pivot.x))
+    }
+
+    /// Two parts three grid steps apart have their middle half a step off the
+    /// grid; turned about it, both left the grid. On a sheet the pivot goes
+    /// onto the grid, and both stay on it.
+    func testAGroupTurnsAboutAGridPoint() throws {
+        let left = point(0, 0)
+        let right = point(3_000_000, 0)
+        let center = try XCTUnwrap(pivot(["a": [left], "b": [right]]) { center, _ in self.gridSnap(center) })
+
+        XCTAssertEqual(gridSnap(center), center)
+        for origin in [left, right] {
+            let after = turned(origin, about: center)
+            XCTAssertEqual(gridSnap(after), after, "\(origin) stays on the grid")
+        }
+    }
+
+    /// One part — or several on one origin — turns about its own origin, on
+    /// the grid or not.
+    func testOnePartTurnsAboutItsOwnOrigin() {
+        let origin = point(1_100_000, 2_300_000)
+        let snapped = pivot(["a": [origin], "b": [origin]]) { center, _ in self.gridSnap(center) }
+        XCTAssertEqual(snapped, origin)
+    }
+
+    /// On a board a group goes onto the grid only when every origin is on it;
+    /// parts placed off the grid turn about their exact middle.
+    func testABoardGroupOffTheGridTurnsAboutItsExactMiddle() {
+        func boardSnap(_ center: HorizontalPoint, _ origins: [HorizontalPoint]) -> HorizontalPoint {
+            origins.allSatisfy { HorizontalCanvasModeSupport.isOnGrid($0, snapToGrid: gridSnap) } ? gridSnap(center) : center
+        }
+        XCTAssertEqual(pivot(["a": [point(0, 0)], "b": [point(3_000_000, 0)]], snap: boardSnap),
+                       point(2_000_000, 0))
+        XCTAssertEqual(pivot(["a": [point(100_000, 0)], "b": [point(3_100_000, 0)]], snap: boardSnap),
+                       point(1_600_000, 0))
+    }
+
+    /// A free text beside the parts doesn't pull the pivot; texts alone turn
+    /// about their own middle.
+    func testFreeTextsCountOnlyWhenNothingElseIsSelected() {
+        let types: [String: HorizontalObjectType] = ["note": .text, "other": .text]
+        let exact: (HorizontalPoint, [HorizontalPoint]) -> HorizontalPoint = { center, _ in center }
+        XCTAssertEqual(pivot(["a": [point(2_000_000, 1_000_000)], "note": [point(9_300_000, 7_700_000)]], types: types, snap: exact),
+                       point(2_000_000, 1_000_000))
+        XCTAssertEqual(pivot(["note": [point(0, 0)], "other": [point(4_000_000, 0)]], types: types, snap: exact),
+                       point(2_000_000, 0))
+    }
+
+    /// M picks up, and T turns about, the selection's own point under the
+    /// cursor, else the grid point under it — not another object's point the
+    /// cursor snapped to, which would carry the selection off the grid by how
+    /// far that point sits off it.
+    func testTheCursorHoldsTheSelectionByItsOwnPointOrAGridPoint() {
+        let vertex = point(400_000, 600_000)
+        XCTAssertEqual(HorizontalCanvasModeSupport.cursorAnchor(cursor: vertex, cursorIsOnSelection: true, snapToGrid: gridSnap),
+                       vertex)
+        XCTAssertEqual(HorizontalCanvasModeSupport.cursorAnchor(cursor: vertex, cursorIsOnSelection: false, snapToGrid: gridSnap),
+                       point(0, 1_000_000))
     }
 }

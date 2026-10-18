@@ -144,6 +144,10 @@ struct HorizontalSelectable: Hashable {
     var boxSize: HorizontalPoint
     var angle: Double
     var handlePoints: [HorizontalPoint]
+    /// The points the cursor snaps to on this object, when its type's rule
+    /// (`anchorSnapPoints`) doesn't give them: an arc's ends and centre, a
+    /// package's origin and pads.
+    var snapAnchors: [HorizontalPoint]? = nil
 
     init(
         ref: HorizontalSelectableRef,
@@ -271,27 +275,36 @@ struct HorizontalSelectable: Hashable {
         corners()
     }
 
-    var snapPoints: [HorizontalPoint] {
-        var points = handlePoints
-        points.append(center)
-        points.append(boxCenter)
-        if !isPoint {
-            points.append(contentsOf: corners)
+    /// The points the cursor snaps to on this object: where it is placed and
+    /// where it joins things, as Horizon's snap targets are — a wire's or a
+    /// track's ends, a junction, an origin (a symbol's, a package's, a text's,
+    /// a label's, a via's), a pin's or a pad's centre, a polygon's corners,
+    /// arc centres and edge midpoints. Not the selection box: its corners sit
+    /// half its padding off the grid, and its centre, like a wire's midpoint,
+    /// is half a grid step off whenever the object spans an odd number of
+    /// them, so a move the cursor snapped to one left the grid. Bus rippers
+    /// and block symbols give none of their own: the sheet's connection
+    /// points cover them.
+    var anchorSnapPoints: [HorizontalPoint] {
+        if let snapAnchors {
+            return snapAnchors
         }
-        return deduplicated(points)
-    }
-
-    private func deduplicated(_ points: [HorizontalPoint]) -> [HorizontalPoint] {
-        var seen = Set<String>()
-        var result = [HorizontalPoint]()
-        for point in points where seen.insert(pointKey(point)).inserted {
-            result.append(point)
+        switch ref.type {
+        case .lineNet, .drawingLine, .track, .boardLine, .boardNetTie, .connectionLine:
+            // The point selectable at a line's middle is its grab handle.
+            return isPoint ? [] : handlePoints
+        case .schematicNetTie, .dimension:
+            return Array(handlePoints.prefix(2))
+        case .keepout, .boardPanel:
+            return handlePoints
+        case .polygonEdge:
+            // An arc edge's centre is a selectable of its own.
+            return isLine ? [center] : []
+        case .busRipper, .blockSymbolPort, .schematicBlockSymbol, .boardDecal, .plane:
+            return []
+        default:
+            return [center]
         }
-        return result
-    }
-
-    private func pointKey(_ point: HorizontalPoint) -> String {
-        "\(Int64(point.x.rounded())):\(Int64(point.y.rounded()))"
     }
 }
 

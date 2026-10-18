@@ -39,7 +39,7 @@ struct HorizontalCanvasSelectableScene {
     func snapTargets(pointKey: (HorizontalPoint) -> String) -> [HorizontalPoint] {
         var seen = Set<String>()
         return selectables
-            .flatMap(\.snapPoints)
+            .flatMap(\.anchorSnapPoints)
             .filter { seen.insert(pointKey($0)).inserted }
     }
 }
@@ -678,6 +678,45 @@ enum HorizontalCanvasModeSupport {
         return start
     }
 
+    /// The point R and E turn and flip a selection at rest about. One object,
+    /// or several that share their origin, turns about that origin. A group
+    /// turns about the middle of its origins, which `snapToGrid` moves onto
+    /// the grid when it should: the middle is half a grid step off whenever
+    /// the group spans an odd number of steps, and a quarter turn about such a
+    /// point puts everything that was on the grid half a step off it. Free
+    /// texts count only when nothing else is selected, so a note beside a
+    /// circuit doesn't pull the pivot off the circuit.
+    static func selectionPivot(
+        for refs: [HorizontalSelectableRef],
+        origins: (HorizontalSelectableRef) -> [HorizontalPoint],
+        snapToGrid: (_ center: HorizontalPoint, _ origins: [HorizontalPoint]) -> HorizontalPoint
+    ) -> HorizontalPoint? {
+        let placed = refs.filter { $0.type != .text }
+        let points = (placed.isEmpty ? refs : placed).flatMap(origins)
+        guard let first = points.first else {
+            return nil
+        }
+        let firstKey = pointKey(first)
+        if points.allSatisfy({ pointKey($0) == firstKey }) {
+            return first
+        }
+        return snapToGrid(HorizontalRect(points: points).center, points)
+    }
+
+    /// The point the cursor holds a selection by, for M, and turns it about,
+    /// for T (Horizon's "rotate around cursor"): the selection's own point
+    /// when the cursor rests on one — a vertex picked up, a part turned about
+    /// its pin — else the grid point under it, never another object's point
+    /// the cursor snapped to. Held by one of those, a move would shift the
+    /// whole selection by how far that point sits off the grid.
+    static func cursorAnchor(
+        cursor: HorizontalPoint,
+        cursorIsOnSelection: Bool,
+        snapToGrid: (HorizontalPoint) -> HorizontalPoint
+    ) -> HorizontalPoint {
+        cursorIsOnSelection ? cursor : snapToGrid(cursor)
+    }
+
     /// Keeps the point grabbed from the selection as the drag origin while a
     /// cursor-tracked move starts at the cursor's snapped position. This makes
     /// an off-grid vertex move onto the grid instead of carrying its offset
@@ -691,6 +730,11 @@ enum HorizontalCanvasModeSupport {
             startPoint: startPoint,
             lastPoint: tracksCursor ? snappedCursorPoint : startPoint
         )
+    }
+
+    /// Whether `point` sits on a grid point, as `snapToGrid` rounds.
+    static func isOnGrid(_ point: HorizontalPoint, snapToGrid: (HorizontalPoint) -> HorizontalPoint) -> Bool {
+        pointKey(snapToGrid(point)) == pointKey(point)
     }
 
     static func hitSelectable(
@@ -1271,12 +1315,14 @@ enum HorizontalCanvasModeSupport {
 
     static func arcSelectables(_ arcs: [HorizontalArc], type: HorizontalObjectType) -> [HorizontalSelectable] {
         arcs.map { arc in
-            HorizontalSelectable.bounds(
+            var selectable = HorizontalSelectable.bounds(
                 ref: HorizontalSelectableRef(id: arc.id, type: type, layer: arc.layer),
                 points: arc.polyline(precision: 24),
                 fallbackCenter: arc.projectedCenter,
                 fallbackSize: max(arc.width, 1_000_000)
             )
+            selectable.snapAnchors = [arc.from, arc.to, arc.center]
+            return selectable
         }
     }
 
