@@ -128,13 +128,18 @@ enum HorizontalDispatchPool {
             // items already describes each one, so remove names them by id
             // (field finding 96: the rows twice made Billo's dry run ~35 KB).
             let removed = review.items.filter { chosen.contains($0.id) }
-            return ["applied": chosen.count, "undo_name": "Clean Up Project Pool", "review_digest": review.digest,
-                    "items": review.items.map { item -> JSONDictionary in
+            // A call that names what it removes has read the list already: a
+            // compact reply describes only those, and counts the rest.
+            let listed = ids != nil && params.string("detail") == "compact" ? removed : review.items
+            var result: JSONDictionary = ["applied": chosen.count, "undo_name": "Clean Up Project Pool", "review_digest": review.digest,
+                    "items": listed.map { item -> JSONDictionary in
                         ["id": item.id, "kind": item.kind, "uuid": item.uuid as Any, "name": item.name,
                          "paths": item.paths, "bytes": item.bytes]
                     },
                     "remove": removed.map(\.id), "remove_bytes": removed.reduce(0) { $0 + $1.bytes },
                     "normalized_ops": [["op": "clean_up_project_pool", "remove": chosen.sorted(), "review_digest": review.digest]]]
+            if listed.count != review.items.count { result["unused_count"] = review.items.count }
+            return result
         }
     }
 

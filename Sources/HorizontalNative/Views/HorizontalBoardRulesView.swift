@@ -3151,6 +3151,12 @@ enum HorizontalBoardRulesValidator {
                 if rule.bool("enabled") == nil {
                     messages.append(.init(level: .warning, title: "Rule instance has no enabled flag", detail: "GTK serializes every rule instance with enabled=true or enabled=false."))
                 }
+                // Horizon gives every via a rule matches that rule's padstack,
+                // so a rule naming none leaves them with no shape at all.
+                if selectedKind == .via, rule.bool("enabled") ?? true,
+                   ["", "00000000-0000-0000-0000-000000000000"].contains(rule.string("padstack") ?? "") {
+                    messages.append(.init(level: .error, title: "Via rule has no padstack", detail: "The vias it matches would take their padstack from it and get none. Choose one."))
+                }
             }
         }
 

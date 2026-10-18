@@ -29,6 +29,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case connect = "connect"
     case disconnect = "disconnect"
     case placeSymbol = "place_symbol"
+    case moveSymbols = "move_symbols"
     case removeSymbol = "remove_symbol"
     case drawNetLine = "draw_net_line"
     case placeJunction = "place_junction"
@@ -96,7 +97,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     var summary: String {
         switch self {
         case .ensureComponent: "Create a block component if it does not exist; returns its id."
-        case .removeComponent: "Remove a component, its symbols, its board package, and the copper attached to it."
+        case .removeComponent: "Remove a component, its symbols, its board package, and the copper attached to it. The wiring that served only it goes too — wires that reach no pin once it is gone, with their labels and power symbols, and dead ends that ran to it — unless keep_wiring."
         case .setValue: "Set a component's value. A part's own value is the one shown, and the apply_ops reply gives warnings when it hides the value set."
         case .setRefdes: "Set a component's reference designator."
         case .setPart: "Assign a pool part (and its entity) to a component; null clears the part."
@@ -119,11 +120,12 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .connect: "Connect a component pin to a net."
         case .disconnect: "Remove a pin's connection."
         case .placeSymbol: "Draw a component's gate on a schematic sheet, or move it if it is already drawn. A component connected without this is in the netlist but on no sheet."
+        case .moveSymbols: "Move symbols by an offset, or onto another sheet, with the wiring that belongs only to them: the junctions of the stubs and islands that serve no other part, and the wires, net labels and power symbols on those junctions. A wire to wiring that stays stretches to it; moving to another sheet cuts it instead, and the reply names each cut end with its net, for a label there. place_symbol moves one symbol alone."
         case .setSymbolDisplay: "Change how a drawn symbol shows its pins: which pin names (pin_display_mode) and whether a multi-pad pin lists every pad number (display_all_pads). The apply_ops reply gives warnings when custom_only hides alternates the symbol's pins have chosen."
         case .setCustomValue: "Give a drawn symbol a custom value: text that its $VALUE text draws instead of the value, with ${value}, ${mpn}, ${mfr}, ${desc}, ${pkg} and ${p:<parametric column>} filled in from the component and its part, as Horizon's Edit Custom Value does — \"${value}\\n${mpn}\" shows the value over the MPN. \"\" or null clears it. get_component gives each symbol's custom_value and drawn_value."
-        case .removeSymbol: "Take a component's gate off its sheet, with the net lines that ended on it. The component and its connections stay."
+        case .removeSymbol: "Take a component's gate off its sheet, with the net lines that ended on it and the wiring left serving nothing — what find_dangling would call new debris — unless keep_wiring. The component and its connections stay."
         case .drawNetLine: "Draw a wire between pins or junctions on one logical net. Does not change block connectivity. A junction with no net yet takes the wire's."
-        case .placeJunction: "Create a schematic junction on a net, reusing a compatible or net-less junction at the same point."
+        case .placeJunction: "Create a schematic junction on a net, reusing a compatible or net-less junction at the same point. An id that names a junction already on a sheet moves it, and the wires, labels and power symbols on it go with it."
         case .setNetLineEndpoint: "Retarget one end of an existing wire, keeping its id and logical net."
         case .removeNetLine: "Remove a wire from its sheet, and any junction at its ends that it leaves holding nothing."
         case .removeJunction: "Remove a junction with the wires ending on it and the labels and power symbols sitting on it — net-less junctions included."
@@ -143,8 +145,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .connectBlockPort: "Connect a block instance's port to a net in the block that uses it. Ports are how a sub-block reaches the design around it."
         case .placeBlockSymbol: "Draw a block instance on a sheet, using the symbol that block defines for itself."
         case .removeBlockSymbol: "Take a block instance's symbol off its sheet. The instance stays."
-        case .addRule: "Add a board design rule of a kind, with the defaults the app's own rules editor would give it."
-        case .setRule: "Change fields of a board design rule. The board is refused if the change makes the rules invalid."
+        case .addRule: "Add a board design rule of a kind, with the defaults the app's own rules editor would give it and the fields given merged in, ordered after the rules of its kind already there. A via rule gets the padstack the board's via rules already use unless fields names one."
+        case .setRule: "Change fields of a board design rule, merging objects key by key. The board is refused if the change makes the rules invalid. A change to the via rules gives the vias that take their shape from them the padstack and parameters of the rule that now matches."
         case .removeRule: "Remove a board design rule."
         case .setStackup: "Set how many inner copper layers the board has, and the copper and dielectric thicknesses."
         case .addSheet: "Add a schematic sheet, with the drawing frame the other sheets use. An index already taken inserts the sheet there and moves the later ones down."
@@ -154,7 +156,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .placeTrack: "Route one straight copper segment on a layer between two points, pads or junctions. Manual routing: it draws what it is told and does not find a path."
         case .removeTrack: "Remove a copper segment, and any junction it leaves holding nothing."
         case .setTrackWidth: "Set a copper segment's width."
-        case .placeVia: "Put a via at a point, on a net, joining the layers its padstack spans."
+        case .placeVia: "Put a via at a point, on a net, joining the layers its padstack spans. Its shape comes from the via rule that matches its net, unless a via definition or a size of its own is given; the reply says which and gives the size."
         case .removeVia: "Remove a via, and the junction it sat on when nothing else needs it."
         case .placePolygon: "Draw a closed polygon on a board layer. Layer 100 is the board outline, which is what gives a board its shape."
         case .removePolygon: "Remove a board polygon. A polygon a plane pours into belongs to that plane."
@@ -177,14 +179,34 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         }
     }
 
+    /// The field an op names what it acts on with, for the ops whose field is
+    /// not `id`. Each of them takes `id` for it too, so a caller doesn't have
+    /// to know that remove_net_line says line and remove_track says track.
+    static let targetFields: [Self: String] = [
+        .removeNetLine: "line", .setNetLineEndpoint: "line", .removeJunction: "junction",
+        .removeTrack: "track", .setTrackWidth: "track", .removeVia: "via",
+        .removePolygon: "polygon", .removePlane: "plane", .removeHole: "hole", .removeKeepout: "keepout",
+        .removeDimension: "dimension", .removeBus: "bus", .removeNetTie: "net_tie",
+        .removeBlockInstance: "instance", .removeBlockSymbol: "instance"
+    ]
+
     var params: [String: String] {
-        let component = "Reference designator or component id."
+        var params = ownParams
+        if let field = Self.targetFields[self] {
+            params["id"] = "The same as \(field), which it stands in for: every op takes id for what it acts on (optional)."
+        }
+        return params
+    }
+
+    private var ownParams: [String: String] {
+        let component = "Reference designator, or component id (eight or more of its leading digits will do)."
         switch self {
         case .ensureComponent:
             return ["id": "Component UUID to use, or a name for it that later ops in the batch can use as its component (optional).", "refdes": "Reference designator (optional; defaults to the entity's prefix plus ?).", "part": "Pool part id.", "entity": "Pool entity id (when there is no part).", "value": "Value (optional).", "group": "Group name (optional).", "tag": "Tag name (optional)."]
         case .removeComponent:
             return ["component": component,
-                    "texts_within_mm": "Also remove free text this close to the component's symbols when they are the nearest symbol to it — the notes that described the part (optional)."]
+                    "texts_within_mm": "Also remove free text this close to the component's symbols when they are the nearest symbol to it — the notes that described the part (optional).",
+                    "keep_wiring": "Leave the wiring that served only this part — the islands that reach no pin once it is gone, with their labels and power symbols, and the dead ends that ran to it (default false: they go with it)."]
         case .removePlacement:
             return ["component": component]
         case .setValue:
@@ -251,6 +273,13 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "id": "Symbol instance UUID for a gate drawn for the first time, or a name such as \"u1a\" that later ops in the batch use for it in a wire end's symbol (optional).",
                     "pin_display_mode": "selected_only, custom_only, both or all (optional; default selected_only for a new symbol).",
                     "display_all_pads": "List every pad number on a pin that has several (optional; Horizon's default is true)."]
+        case .moveSymbols:
+            return ["symbols": "What to move: symbol instance ids from list_symbols, or components by refdes or id, each standing for every gate of it drawn on the sheet.",
+                    "sheet": "The sheet they are on, by index, name or uuid (optional when they are all on one).",
+                    "dx_mm": "How far right to move them (optional; default 0).", "dy_mm": "How far up (optional; default 0).",
+                    "to_sheet": "Another sheet to move them onto, by index, name or uuid (optional; default the sheet they are on). The offset applies there too.",
+                    "junctions": "More junction ids to carry, beyond the ones that belong only to these symbols (optional).",
+                    "texts": "Free text ids to carry with them, such as notes about them (optional)."]
         case .setSymbolDisplay:
             return ["component": component, "gate": "Gate name, suffix or id; omitted, every drawn gate of the component.",
                     "symbol_instance": "One symbol instance id instead of component and gate (optional).",
@@ -263,7 +292,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .removeSymbol:
             return ["component": component, "gate": "Gate name, suffix or id; optional when the entity has one gate.",
                     "sheet": "Sheet index, name or uuid (optional; default every sheet).",
-                    "texts_within_mm": "Also remove free text this close to the removed symbols when they are the nearest symbol to it (optional)."]
+                    "texts_within_mm": "Also remove free text this close to the removed symbols when they are the nearest symbol to it (optional).",
+                    "keep_wiring": "Leave the wiring that served only these symbols, as remove_component does (default false: it goes with them)."]
         case .drawNetLine:
             return ["component": component, "pin": "Pin as for connect.", "gate": "The pin's gate, as for connect (optional).",
                     "to_component": "The other end's component.",
@@ -272,7 +302,9 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "from": "{kind: pin, symbol, pin} — pin a uuid or a name — or {kind: pin, component, gate?, pin} to find the symbol, or {kind: junction, junction}; use from/to OR the legacy component/pin fields. A junction with no net takes the other end's.",
                     "to": "The other typed endpoint, on the same sheet and net."]
         case .placeJunction:
-            return ["id": "Junction UUID, or a name such as \"j1\" that later ops in the batch use as a wire end's junction (optional).", "sheet": "Sheet index, name or uuid (optional).", "net": "Net name or id.", "x_mm": "X position.", "y_mm": "Y position."]
+            return ["id": "Junction UUID, or a name such as \"j1\" that later ops in the batch use as a wire end's junction (optional). The id of a junction already on a sheet moves that junction.",
+                    "sheet": "Sheet index, name or uuid (optional).", "net": "Net name or id; optional when moving a junction, where it has to be the junction's own.",
+                    "x_mm": "X position.", "y_mm": "Y position."]
         case .setNetLineEndpoint:
             return ["line": "Wire id from list_net_lines.", "end": "from or to.", "endpoint": "An endpoint as for draw_net_line.", "sheet": "Optional sheet selector."]
         case .removeNetLine:
@@ -309,7 +341,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
             return ["component": component, "part": "Target imported pool part id.",
                     "pin_map": "Optional object mapping old gateUUID/pinUUID to new gateUUID/pinUUID. Pins it leaves out are matched by gate and pin name; every connected or drawn pin has to map one way or the other.",
                     "symbols": "Optional object mapping target gate UUIDs to symbol UUIDs.",
-                    "pad_map": "Optional old pad UUID to target pad UUID map for ambiguous physical pin mappings."]
+                    "pad_map": "Optional old pad UUID to target pad UUID map for ambiguous physical pin mappings. A routed pad whose pin settles nothing goes to the pad of the same name.",
+                    "copper": "What to do with tracks on pads the new part has nothing for, such as an exposed pad: refuse (default; the error names the pads) or drop, which removes them with the remap."]
         case .placeText:
             return ["text": "The text to write. Optional when changing an existing text's placement only.",
                     "id": "Text id to change (optional; a new text otherwise). list_texts returns them.",
@@ -354,10 +387,11 @@ enum HorizontalEditOperationKind: String, CaseIterable {
             return ["instance": "Block instance id or refdes.", "sheet": "Sheet index, name or uuid (optional; default every sheet)."]
         case .addRule:
             return ["kind": "Rule kind, e.g. clearance_copper or track_width. board_rules lists the kinds.",
-                    "id": "Rule id to use, for a kind that holds several (optional)."]
+                    "id": "Rule id to use, for a kind that holds several (optional).",
+                    "fields": "Object of fields to merge into the defaults, as set_rule merges them, so a rule is made whole in one op (optional)."]
         case .setRule:
             return ["kind": "Rule kind.", "id": "Rule id, for a kind that holds several. board_rules returns them.",
-                    "fields": "Object of fields to merge into the rule. board_rules shows what a rule of that kind holds."]
+                    "fields": "Object of fields to merge into the rule. An object merges into the object there key by key — a match's net, a parameter set's via_diameter — and anything else replaces what was there. board_rules shows what a rule of that kind holds."]
         case .removeRule:
             return ["kind": "Rule kind.", "id": "Rule id, for a kind that holds several."]
         case .setStackup:
@@ -434,7 +468,10 @@ enum HorizontalEditOperationKind: String, CaseIterable {
             return ["track": "Track id, from list_tracks.", "width_mm": "New width."]
         case .placeVia:
             return ["x_mm": "X position.", "y_mm": "Y position.", "net": "Net name or id the via carries.",
-                    "padstack": "Pool padstack uuid (optional; defaults to what the board's other vias use)."]
+                    "definition": "A board via definition to take the padstack and size from, by name (\"mini\") or uuid (optional).",
+                    "diameter_mm": "The via's own diameter, which makes its shape its own rather than the rules' (optional).",
+                    "hole_mm": "The via's own drill diameter, likewise (optional).",
+                    "padstack": "Pool padstack uuid for a via shaped by itself (optional). Without any of these the via takes the padstack and size of the first via rule that matches its net, as Horizon gives it them."]
         case .removeVia:
             return ["via": "Via id, from list_vias."]
         case .placeComponent:
@@ -469,6 +506,14 @@ struct HorizontalEditOperation {
             throw HorizontalDispatchError.invalidParams("Unknown op \(name). Known: \(HorizontalEditOperationKind.allCases.map(\.rawValue).joined(separator: ", ")).")
         }
         self.kind = kind
+        var json = json
+        if let field = HorizontalEditOperationKind.targetFields[kind], let id = json["id"] {
+            if let given = json[field], (given as? String)?.caseInsensitiveCompare(id as? String ?? "") != .orderedSame {
+                throw HorizontalDispatchError.invalidParams("\(name) names what it acts on by \(field) or by id; give one of them.")
+            }
+            json[field] = id
+            json.removeValue(forKey: "id")
+        }
         let unknown = Set(json.keys).subtracting(Set(kind.params.keys).union(["op"]))
         guard unknown.isEmpty else { throw HorizontalDispatchError.invalidParams("Unknown \(name) fields: \(unknown.sorted().joined(separator: ", ")).") }
         for (key, value) in json where key != "op" {
@@ -483,6 +528,14 @@ struct HorizontalEditOperation {
             } else if key == "pins" {
                 guard let pins = value as? [Any], !pins.isEmpty, pins.allSatisfy({ $0 is String }) else {
                     throw HorizontalDispatchError.invalidParams("pins must be a non-empty array of pin names or ids.")
+                }
+            } else if ["symbols", "junctions", "texts"].contains(key), kind == .moveSymbols {
+                guard let list = value as? [Any], list.allSatisfy({ $0 is String }), key != "symbols" || !list.isEmpty else {
+                    throw HorizontalDispatchError.invalidParams("\(key) must be an array of ids\(key == "symbols" ? ", not empty" : "").")
+                }
+            } else if key == "to_sheet" {
+                guard value is String || value is NSNumber else {
+                    throw HorizontalDispatchError.invalidParams("to_sheet must be a sheet index, name or uuid.")
                 }
             } else if ["layer", "index", "priority", "inner_layers"].contains(key) {
                 try HorizontalDispatchValidation.number(value, key: key, integer: true)
@@ -499,7 +552,7 @@ struct HorizontalEditOperation {
                 }
             } else if value is NSNull, ["custom_name", "custom_value", "frame"].contains(key) {
                 continue
-            } else if ["fields", "pin_map", "symbols", "pad_map", "values"].contains(key) {
+            } else if ["fields", "pin_map", "symbols", "pad_map", "values"].contains(key), kind != .moveSymbols {
                 guard value is JSONDictionary else {
                     throw HorizontalDispatchError.invalidParams("\(key) must be an object.")
                 }
@@ -510,11 +563,11 @@ struct HorizontalEditOperation {
                     throw HorizontalDispatchError.invalidParams("\(key) must be an object.")
                 }
             } else if ["x_mm", "y_mm", "angle_deg", "size_mm", "width_mm", "copper_mm", "substrate_mm",
-                       "label_distance_mm", "length_mm", "texts_within_mm"].contains(key) {
+                       "label_distance_mm", "length_mm", "texts_within_mm", "diameter_mm", "hole_mm", "dx_mm", "dy_mm"].contains(key) {
                 try HorizontalDispatchValidation.number(value, key: key)
             } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs", "exposed_copper_only",
                        "force", "cascade", "swap", "remove_routing", "display_all_pads", "no_connect", "disconnect",
-                       "unanchored", "stubs", "use_primary_name", "all"].contains(key) {
+                       "unanchored", "stubs", "use_primary_name", "all", "keep_wiring"].contains(key) {
                 try HorizontalDispatchValidation.boolean(value, key: key)
             } else if value is NSNull, ["part", "group", "tag"].contains(key) {
                 continue
@@ -681,6 +734,8 @@ final class HorizontalProjectEditor {
 
     func apply(_ operations: [HorizontalEditOperation]) throws {
         for (index, operation) in operations.enumerated() {
+            var operation = operation
+            if !reusedIDs.isEmpty { operation.params = withReusedIDs(operation.params) }
             do {
                 try apply(operation)
             } catch let error as HorizontalDispatchError {
@@ -702,8 +757,10 @@ final class HorizontalProjectEditor {
             let id = try componentID(params)
             change["component"] = id
             let notes = try textsNear(componentID: id, gateID: nil, sheet: nil, params)
+            let before = try debris(onSheetsDrawing: id, gate: nil, keep: params.bool("keep_wiring") ?? false)
             change["removed"] = removeComponent(id)
             if !notes.isEmpty { change["texts_removed"] = try removeFreeTexts(notes) }
+            if let wiring = try clearDebris(since: before) { change["wiring_removed"] = wiring }
         case .setValue:
             let id = try componentID(params)
             guard let value = params["value"] as? String else {
@@ -795,7 +852,7 @@ final class HorizontalProjectEditor {
             let id = try componentID(params)
             let pin = try pinPath(params, componentID: id)
             let net: String
-            if let existing = try? netID(params) {
+            if let existing = try existingNetID(params) {
                 net = existing
             } else if params.bool("create_net") ?? false, let name = params.string("net") {
                 net = try ensureNet(["name": name]).0
@@ -807,6 +864,7 @@ final class HorizontalProjectEditor {
                 connections[pin] = ["net": net]
                 component["connections"] = connections
             }
+            touchedPins.insert("\(id)|\(pin.lowercased())")
             change["component"] = id
             change["pin"] = pin
             change["net"] = net
@@ -818,19 +876,24 @@ final class HorizontalProjectEditor {
                 connections.removeValue(forKey: pin)
                 component["connections"] = connections
             }
+            touchedPins.insert("\(id)|\(pin.lowercased())")
             change["component"] = id
             change["pin"] = pin
         case .placeSymbol:
             let id = try componentID(params)
             change["component"] = id
             change.merge(try placeSymbol(id, params)) { _, new in new }
+        case .moveSymbols:
+            change.merge(try moveSymbols(params)) { _, new in new }
         case .removeSymbol:
             let id = try componentID(params)
             change["component"] = id
             let gateID = params.string("gate") == nil ? nil : try gate(params, componentID: id).id
             let notes = try textsNear(componentID: id, gateID: gateID, sheet: params["sheet"] == nil ? nil : try sheetID(params), params)
+            let before = try debris(onSheetsDrawing: id, gate: gateID, keep: params.bool("keep_wiring") ?? false)
             change["removed"] = try removeSymbol(id, params)
             if !notes.isEmpty { change["texts_removed"] = try removeFreeTexts(notes) }
+            if let wiring = try clearDebris(since: before) { change["wiring_removed"] = wiring }
         case .drawNetLine:
             change.merge(try drawNetLine(params)) { _, new in new }
         case .placeJunction:
@@ -948,6 +1011,25 @@ final class HorizontalProjectEditor {
         changes.append(change)
     }
 
+    /// Ids a batch gave things that turned out to be there already, each with
+    /// the one it is: a junction placed where one stands is that junction, so
+    /// a later op naming the id it was given means the one reused.
+    private(set) var reusedIDs: [String: String] = [:]
+
+    /// `json` with every id the batch gave a reused thing replaced by that
+    /// thing's own: what later ops see, and what the normalized ops replay.
+    func withReusedIDs(_ json: JSONDictionary) -> JSONDictionary {
+        func replaced(_ value: Any) -> Any {
+            switch value {
+            case let text as String: return reusedIDs[text.lowercased()] ?? text
+            case let map as JSONDictionary: return map.mapValues(replaced)
+            case let list as [Any]: return list.map(replaced)
+            default: return value
+            }
+        }
+        return json.mapValues(replaced)
+    }
+
     // MARK: - Writing
 
     /// Writes every changed file and returns their paths. Files are written
@@ -1000,6 +1082,10 @@ final class HorizontalProjectEditor {
         }
         if byRefdes.count > 1 {
             throw HorizontalDispatchError.invalidParams("\(byRefdes.count) components are named \(reference); use the id.")
+        }
+        // An id copied from a reply as "33b623e6…" names the one id it begins.
+        if let match = try HorizontalDispatchValidation.id(matchingPrefix: reference, in: all.keys, kind: "component") {
+            return match
         }
         throw HorizontalDispatchError.notFound("No component \(reference).")
     }
@@ -1132,7 +1218,22 @@ final class HorizontalProjectEditor {
         if byName.count > 1 {
             throw HorizontalDispatchError.invalidParams("\(byName.count) nets are named \(reference); use the id.")
         }
+        // An unnamed net has only its id, which a reply shortens to its first
+        // eight digits; that names it when no other net's id begins the same.
+        if let match = try HorizontalDispatchValidation.id(matchingPrefix: reference, in: all.keys, kind: "net") {
+            return match
+        }
         throw HorizontalDispatchError.notFound("No net \(reference).")
+    }
+
+    /// The net `params` names, or nil when it names none, so a caller can
+    /// make it; a name or short id that fits several nets is still an error.
+    private func existingNetID(_ params: JSONDictionary) throws -> String? {
+        do {
+            return try netID(params)
+        } catch let error as HorizontalDispatchError where error.code == .notFound {
+            return nil
+        }
     }
 
     private func updateNet(_ id: String, _ body: (inout JSONDictionary) -> Void) throws {
@@ -1388,7 +1489,7 @@ final class HorizontalProjectEditor {
         let current = connection?.string("net")?.lowercased()
         let net: String
         if params["net"] != nil {
-            if let existing = try? netID(params) {
+            if let existing = try existingNetID(params) {
                 net = existing.lowercased()
             } else if params.bool("create_net") ?? false, let name = params.string("net") {
                 net = try ensureNet(["name": name]).0
@@ -1637,8 +1738,51 @@ final class HorizontalProjectEditor {
     /// What the batch asked for that the project will not show: alternates a
     /// custom_only symbol hides, and values a part's own value hides.
     /// Checked once the whole batch has run, so a later op in it counts.
+    /// Pins whose net an op changed, as "component|gate/pin", for the copper
+    /// warnings once the batch is done.
+    private var touchedPins = Set<String>()
+
+    /// A pin moved to another net, or off its net, with copper ending on its
+    /// pad: the tracks still join it to what they joined it to before, so now
+    /// they short two nets. The netlist never sees that, and only `check`'s
+    /// copper pass would say so afterwards.
+    private func copperWarnings() -> [String] {
+        guard isTopBlock, !touchedPins.isEmpty, let board = files["board"] else { return [] }
+        let packages = board.dictionaryMap("packages")
+        let tracks = board.dictionaryMap("tracks")
+        let loaded = Dictionary((project.board?.tracks ?? []).map { ($0.id.lowercased(), $0.netID?.lowercased()) }, uniquingKeysWith: { first, _ in first })
+        func name(_ net: String?) -> String {
+            guard let net else { return "no net" }
+            let name = nets()[net]?.string("name") ?? ""
+            return name.isEmpty ? net : name
+        }
+        var warnings = [String]()
+        for key in touchedPins.sorted() {
+            let pieces = key.split(separator: "|").map(String.init)
+            guard pieces.count == 2, let component = components()[pieces[0]], let partID = component.string("part"),
+                  let package = packages.first(where: { $0.value.string("component")?.lowercased() == pieces[0] })?.key.lowercased() else { continue }
+            let net = component.dictionary("connections")?.first { $0.key.lowercased() == pieces[1] }
+                .flatMap { ($0.value as? JSONDictionary)?.string("net")?.lowercased() }
+            let refdes = component.string("refdes") ?? pieces[0]
+            for pad in pool.terminals(partID: partID) where pad.string("gate_pin_path")?.lowercased() == pieces[1] {
+                guard let padID = pad.string("id")?.lowercased() else { continue }
+                let onPad = tracks.filter { _, track in
+                    ["from", "to"].contains { track.dictionary($0)?.string("pad")?.lowercased() == "\(package)/\(padID)" }
+                }
+                let carried = Set(onPad.compactMap { id, track in loaded[id.lowercased()] ?? track.string("net")?.lowercased() })
+                guard !onPad.isEmpty, carried.contains(where: { $0 != net }) else { continue }
+                let padName = pad.string("name") ?? padID
+                warnings.append(
+                    "\(refdes) pad \(padName) is now on \(name(net)), and \(onPad.count) track\(onPad.count == 1 ? "" : "s") on it carr\(onPad.count == 1 ? "ies" : "y") "
+                        + "\(carried.map(name).sorted().joined(separator: ", ")): \(onPad.keys.sorted().prefix(4).joined(separator: ", ")). "
+                        + "list_tracks with component \(refdes), pads [\"\(padName)\"] and connected finds that copper; until it goes, check reports the short.")
+            }
+        }
+        return warnings
+    }
+
     func warnings() -> [String] {
-        hiddenAlternateWarnings() + hiddenValueWarnings()
+        hiddenAlternateWarnings() + hiddenValueWarnings() + copperWarnings()
     }
 
     /// Horizon shows a part's own value wherever a value is shown, so one
@@ -2130,6 +2274,235 @@ final class HorizontalProjectEditor {
         return ["symbol_instances": targets.map(\.id).sorted(), "custom_value": value.map { $0 as Any } ?? NSNull()]
     }
 
+    /// Moves symbols with what belongs only to them. A junction belongs to
+    /// them when its wiring serves no part they leave behind: an island of
+    /// wiring that reaches only their pins (and labels or power symbols) goes
+    /// whole; in wiring that also reaches pins that stay, so do the dead-end
+    /// runs hanging off it toward their pins, back to where they branch, and
+    /// the branch point stays. Labels and power symbols stand on junctions,
+    /// and wires end on pins and junctions, so they follow; a wire between a
+    /// junction that moves and one that stays stretches. Onto another sheet,
+    /// such a wire can't follow, and is cut.
+    private func moveSymbols(_ params: JSONDictionary) throws -> JSONDictionary {
+        let references = params["symbols"] as? [String] ?? []
+        let explicitSheet = params["sheet"] == nil ? nil : try sheetID(params)
+        var instances = [(sheet: String, id: String, json: JSONDictionary)]()
+        for reference in references {
+            let byID = try symbolInstances().filter { $0.id.caseInsensitiveCompare(reference) == .orderedSame && (explicitSheet == nil || $0.sheet == explicitSheet) }
+            if !byID.isEmpty { instances += byID; continue }
+            let component = try componentID(reference: reference)
+            let drawn = try symbolInstances().filter { $0.json.string("component")?.lowercased() == component && (explicitSheet == nil || $0.sheet == explicitSheet) }
+            guard !drawn.isEmpty else {
+                throw HorizontalDispatchError.notFound("\(reference) has no symbol\(explicitSheet == nil ? "" : " on that sheet") to move.")
+            }
+            instances += drawn
+        }
+        let sheets = Set(instances.map(\.sheet))
+        guard sheets.count == 1, let source = sheets.first else {
+            throw HorizontalDispatchError.invalidParams("The symbols are on \(sheets.count) sheets; pass sheet, or move each sheet's on its own.")
+        }
+        let target = params["to_sheet"] == nil ? source : try sheetID(["sheet": params["to_sheet"]!])
+        let dx = Self.nanometres(params.double("dx_mm") ?? 0), dy = Self.nanometres(params.double("dy_mm") ?? 0)
+        guard let sheet = try sheetsInOrder().first(where: { $0.id == source })?.json else {
+            throw HorizontalDispatchError.notFound("No sheet \(source).")
+        }
+        let moved = Set(instances.map { $0.id.lowercased() })
+        let junctionKeys = Dictionary(sheet.dictionaryMap("junctions").keys.map { ($0.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+        let lines = sheet.dictionaryMap("net_lines")
+
+        // The wiring as a graph of junctions, with what each touches.
+        var neighbours = [String: Set<String>]()
+        var touchesMoved = Set<String>(), anchored = Set<String>()
+        func kind(_ end: JSONDictionary?) -> (junction: String?, moved: Bool) {
+            guard let end else { return (nil, false) }
+            if let junction = end.string("junc")?.lowercased() { return (junction, false) }
+            if let pin = end.string("pin")?.lowercased(), let symbol = pin.split(separator: "/").first.map(String.init) {
+                return (nil, moved.contains(symbol))
+            }
+            return (nil, false)
+        }
+        for line in lines.values {
+            let a = kind(line.dictionary("from")), b = kind(line.dictionary("to"))
+            for (this, other) in [(a, b), (b, a)] {
+                guard let junction = this.junction else { continue }
+                neighbours[junction, default: []].formUnion([])
+                if let next = other.junction { neighbours[junction, default: []].insert(next) }
+                else if other.moved { touchesMoved.insert(junction) }
+                else { anchored.insert(junction) }
+            }
+        }
+        // A bus label or ripper, or a net tie, holds its junction where it is.
+        for key in ["bus_labels", "bus_rippers"] {
+            for mark in sheet.dictionaryMap(key).values { if let junction = mark.string("junction")?.lowercased() { anchored.insert(junction) } }
+        }
+        for tie in sheet.dictionaryMap("net_ties").values {
+            for end in ["from", "to"] { if let junction = tie.string(end)?.lowercased() { anchored.insert(junction) } }
+        }
+        var carried = Set((params["junctions"] as? [String] ?? []).map { $0.lowercased() })
+        for junction in carried where junctionKeys[junction] == nil {
+            throw HorizontalDispatchError.notFound("No junction \(junction) on the sheet the symbols are on.")
+        }
+        var seen = Set<String>()
+        for start in neighbours.keys.sorted() where !seen.contains(start) {
+            var island = Set<String>(), pending = [start]
+            while let node = pending.popLast() {
+                guard island.insert(node).inserted else { continue }
+                pending.append(contentsOf: neighbours[node] ?? [])
+            }
+            seen.formUnion(island)
+            guard !island.isDisjoint(with: touchesMoved) else { continue }
+            guard !island.isDisjoint(with: anchored) else { carried.formUnion(island); continue }
+            // Peel the dead ends back to the wiring that joins what stays.
+            var degree = island.reduce(into: [String: Int]()) { $0[$1] = neighbours[$1]?.intersection(island).count ?? 0 }
+            var peeled = Set<String>(), leaves = island.filter { (degree[$0] ?? 0) <= 1 && !anchored.contains($0) }.sorted()
+            while let leaf = leaves.popLast() {
+                guard peeled.insert(leaf).inserted else { continue }
+                for next in neighbours[leaf] ?? [] where island.contains(next) && !peeled.contains(next) {
+                    degree[next, default: 0] -= 1
+                    if degree[next, default: 0] <= 1, !anchored.contains(next) { leaves.append(next) }
+                }
+            }
+            var branchSeen = Set<String>()
+            for root in peeled.sorted() where !branchSeen.contains(root) {
+                var branch = Set<String>(), stack = [root]
+                while let node = stack.popLast() {
+                    guard peeled.contains(node), branch.insert(node).inserted else { continue }
+                    stack.append(contentsOf: neighbours[node] ?? [])
+                }
+                branchSeen.formUnion(branch)
+                if !branch.isDisjoint(with: touchesMoved) { carried.formUnion(branch) }
+            }
+        }
+
+        func movedEnd(_ end: JSONDictionary?) -> Bool {
+            let end = kind(end)
+            return end.moved || end.junction.map(carried.contains) == true
+        }
+        let symbolTexts = Set(instances.flatMap { ($0.json["texts"] as? [String] ?? []).map { $0.lowercased() } })
+        let texts = symbolTexts.union((params["texts"] as? [String] ?? []).map { $0.lowercased() })
+        let sheetTextKeys = Set(sheet.dictionaryMap("texts").keys.map { $0.lowercased() })
+        for text in texts where !sheetTextKeys.contains(text) {
+            throw HorizontalDispatchError.notFound("No text \(text) on the sheet the symbols are on.")
+        }
+        func shifted(_ point: Any?) -> [Int]? {
+            guard let point = point as? [Any], point.count == 2 else { return nil }
+            return [Int(JSONHelper.doubleValue(point[0])) + dx, Int(JSONHelper.doubleValue(point[1])) + dy]
+        }
+        func shiftPlacement(_ item: inout JSONDictionary) {
+            var placement = item.dictionary("placement") ?? ["angle": 0, "mirror": false, "shift": [0, 0]]
+            placement["shift"] = shifted(placement["shift"]) ?? [dx, dy]
+            item["placement"] = placement
+        }
+        var carriedLines = [String](), stretched = [String](), cut = [JSONDictionary]()
+        let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block)
+        for (id, line) in lines {
+            let a = movedEnd(line.dictionary("from")), b = movedEnd(line.dictionary("to"))
+            if a && b { carriedLines.append(id) }
+            else if a || b {
+                guard target != source else { stretched.append(id); continue }
+                // The end that goes, named as a reply names a wire end.
+                let goes = a ? line.dictionary("from") : line.dictionary("to")
+                var end: JSONDictionary = ["net_line": id]
+                if let net = goes.flatMap({ connectivity.net(at: $0) }) ?? line.string("net") {
+                    end["net"] = net
+                    end["net_name"] = nets()[net.lowercased()]?.string("name") ?? ""
+                }
+                if let junction = goes?.string("junc") { end["junction"] = junctionKeys[junction.lowercased()] ?? junction }
+                if let pin = goes?.string("pin") {
+                    let pieces = pin.lowercased().split(separator: "/").map(String.init)
+                    if let instance = instances.first(where: { $0.id.lowercased() == pieces.first }),
+                       let component = instance.json.string("component")?.lowercased(), let gate = instance.json.string("gate"), pieces.count == 2 {
+                        end["pin"] = "\(components()[component]?.string("refdes") ?? component).\(pinName("\(gate.lowercased())/\(pieces[1])", componentID: component))"
+                    }
+                }
+                if let position = wireEndPosition(goes, sheet: sheet) {
+                    end["x_mm"] = HorizontalDispatchJSON.mm(position.x + Double(dx))
+                    end["y_mm"] = HorizontalDispatchJSON.mm(position.y + Double(dy))
+                }
+                cut.append(end)
+            }
+        }
+        let marks = ["net_labels", "power_symbols"].reduce(into: [String: [String]]()) { result, key in
+            result[key] = sheet.dictionaryMap(key).filter { $0.value.string("junction").map { carried.contains($0.lowercased()) } == true }.keys.sorted()
+        }
+        let ties = sheet.dictionaryMap("net_ties").filter { _, tie in
+            ["from", "to"].allSatisfy { tie.string($0).map { carried.contains($0.lowercased()) } == true }
+        }.keys.sorted()
+
+        if target == source {
+            try updateSheet(source) { sheet in
+                var symbols = sheet.dictionaryMap("symbols")
+                for key in symbols.keys where moved.contains(key.lowercased()) { shiftPlacement(&symbols[key]!) }
+                sheet["symbols"] = symbols
+                var junctions = sheet.dictionaryMap("junctions")
+                for key in junctions.keys where carried.contains(key.lowercased()) {
+                    let position = shifted(junctions[key]?["position"])
+                    junctions[key]?["position"] = position
+                }
+                sheet["junctions"] = junctions
+                var textMap = sheet.dictionaryMap("texts")
+                for key in textMap.keys where texts.contains(key.lowercased()) { shiftPlacement(&textMap[key]!) }
+                sheet["texts"] = textMap
+            }
+        } else {
+            guard let destination = try sheetsInOrder().first(where: { $0.id == target })?.json else {
+                throw HorizontalDispatchError.notFound("No sheet \(target).")
+            }
+            for (key, ids) in [("symbols", moved), ("junctions", carried), ("texts", texts)] {
+                let clash = Set(destination.dictionaryMap(key).keys.map { $0.lowercased() }).intersection(ids)
+                guard clash.isEmpty else { throw HorizontalDispatchError.invalidParams("The other sheet already has \(key) \(clash.sorted().joined(separator: ", ")).") }
+            }
+            var taken = JSONDictionary()
+            try updateSheet(source) { sheet in
+                func take(_ key: String, _ ids: Set<String>, _ transform: (inout JSONDictionary) -> Void = { _ in }) {
+                    var map = sheet.dictionaryMap(key), out = [String: JSONDictionary]()
+                    for id in map.keys where ids.contains(id.lowercased()) {
+                        var item = map.removeValue(forKey: id)!
+                        transform(&item)
+                        out[id] = item
+                    }
+                    sheet[key] = map
+                    taken[key] = out
+                }
+                take("symbols", moved, shiftPlacement)
+                take("junctions", carried) { $0["position"] = shifted($0["position"]) }
+                take("texts", texts, shiftPlacement)
+                take("net_lines", Set(carriedLines.map { $0.lowercased() }))
+                take("net_labels", Set(marks["net_labels"]!.map { $0.lowercased() }))
+                take("power_symbols", Set(marks["power_symbols"]!.map { $0.lowercased() }))
+                take("net_ties", Set(ties.map { $0.lowercased() }))
+                // What reached across is cut.
+                var remaining = sheet.dictionaryMap("net_lines")
+                for end in cut { if let id = end.string("net_line") { remaining.removeValue(forKey: id) } }
+                sheet["net_lines"] = remaining
+            }
+            try updateSheet(target) { sheet in
+                for (key, value) in taken {
+                    var map = sheet.dictionaryMap(key)
+                    for (id, item) in value as? [String: JSONDictionary] ?? [:] { map[id] = item }
+                    sheet[key] = map
+                }
+            }
+            // A junction the cut wires leave holding nothing goes.
+            let farEnds = cut.compactMap { $0.string("net_line") }.flatMap { lines[$0].map(Self.lineJunctions) ?? [] }
+            try collectSheetJunctions(source, candidates: Set(farEnds).subtracting(carried))
+        }
+        var change: JSONDictionary = ["sheet": source, "symbols": instances.map(\.id).sorted(),
+                                      "junctions": carried.compactMap { junctionKeys[$0] }.sorted(),
+                                      "net_lines": carriedLines.sorted(), "net_labels": marks["net_labels"]!,
+                                      "power_symbols": marks["power_symbols"]!,
+                                      "dx_mm": HorizontalDispatchJSON.mm(Double(dx)), "dy_mm": HorizontalDispatchJSON.mm(Double(dy))]
+        if !texts.isEmpty { change["texts"] = texts.sorted() }
+        if !ties.isEmpty { change["net_ties"] = ties }
+        if target != source { change["to_sheet"] = target }
+        if !stretched.isEmpty { change["stretched_net_lines"] = stretched.sorted() }
+        if !cut.isEmpty {
+            change["cut"] = cut.sorted { ($0.string("net_line") ?? "") < ($1.string("net_line") ?? "") }
+            change["note"] = "\(cut.count) wire\(cut.count == 1 ? "" : "s") reached wiring that stays on the other sheet and \(cut.count == 1 ? "was" : "were") cut; each cut end is given with its net and where it is now. terminate_pin, or place_net_label there with a wire to it, joins it to its net on this sheet."
+        }
+        return change
+    }
+
     private func removeSymbol(_ componentID: String, _ params: JSONDictionary) throws -> JSONDictionary {
         // No gate named means every gate of this component comes off.
         let gateID = params.string("gate") == nil ? nil : try gate(params, componentID: componentID).id
@@ -2395,13 +2768,53 @@ final class HorizontalProjectEditor {
         return change
     }
 
+    /// place_junction on a junction that is there: it goes to the point, and
+    /// the wires, labels and power symbols standing on it with it, since they
+    /// name it rather than a place.
+    private func moveJunction(_ id: String, on sheet: String, to point: [Int], _ params: JSONDictionary) throws -> JSONDictionary {
+        guard let json = try sheetsInOrder().first(where: { $0.id == sheet })?.json,
+              let key = json.dictionaryMap("junctions").keys.first(where: { $0.lowercased() == id }) else {
+            throw HorizontalDispatchError.notFound("No junction \(id).")
+        }
+        let connectivity = HorizontalSchematicNetConnectivity(sheet: json, block: block)
+        let current = connectivity.net(at: ["junc": key])?.lowercased()
+        if params["net"] != nil {
+            let net = try netID(params).lowercased()
+            guard current == nil || current == net else {
+                throw HorizontalDispatchError.invalidParams("Junction \(key) is on \(nets()[current!]?.string("name") ?? current!), not \(params["net"]!); moving it keeps its net.")
+            }
+        }
+        if let other = json.dictionaryMap("junctions").first(where: { $0.key.lowercased() != id && $0.value["position"] as? [Int] == point }) {
+            throw HorizontalDispatchError.invalidParams("Junction \(other.key) is already at that point; a wire to it joins the two, or remove_junction one.")
+        }
+        let from = json.dictionaryMap("junctions")[key]?["position"] as? [Int]
+        try updateSheet(sheet) { sheet in
+            var junctions = sheet.dictionaryMap("junctions")
+            junctions[key]?["position"] = point
+            sheet["junctions"] = junctions
+        }
+        var change: JSONDictionary = ["junction": key, "sheet": sheet, "moved": true, "created": false,
+                                      "x_mm": HorizontalDispatchJSON.mm(Double(point[0])), "y_mm": HorizontalDispatchJSON.mm(Double(point[1]))]
+        if let net = current { change["net"] = net }
+        if let from { change["from_mm"] = [HorizontalDispatchJSON.mm(Double(from[0])), HorizontalDispatchJSON.mm(Double(from[1]))] }
+        return change
+    }
+
     private func placeJunction(_ params: JSONDictionary) throws -> JSONDictionary {
-        let sheet = try sheetID(params), net = try netID(params)
         guard let x = params.double("x_mm"), let y = params.double("y_mm") else {
             throw HorizontalDispatchError.invalidParams("place_junction needs x_mm and y_mm.")
         }
         let point = [Self.nanometres(x), Self.nanometres(y)]
-        var id = try editObjectID(params)
+        // An id naming a junction that is there moves it.
+        if let reference = params.string("id")?.lowercased() {
+            let explicit = params["sheet"] == nil ? nil : try sheetID(params)
+            let holders = try sheetsInOrder().filter { explicit == nil || $0.id == explicit }
+                .filter { $0.json.dictionaryMap("junctions").keys.contains { $0.lowercased() == reference } }
+            if let holder = holders.first { return try moveJunction(reference, on: holder.id, to: point, params) }
+        }
+        let sheet = try sheetID(params), net = try netID(params)
+        let requested = try editObjectID(params)
+        var id = requested
         var created = true
         try updateSheet(sheet) { sheet in
             let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block)
@@ -2428,7 +2841,15 @@ final class HorizontalProjectEditor {
                 sheet["junctions"] = junctions
             }
         }
-        return ["junction": id, "sheet": sheet, "net": net, "created": created]
+        var change: JSONDictionary = ["junction": id, "sheet": sheet, "net": net, "created": created]
+        // The id this op was given now means the junction it found, for the
+        // rest of the batch and in its handles.
+        if !created, params.string("id") != nil, requested != id.lowercased() {
+            reusedIDs[requested] = id
+            change["reused"] = true
+            change["requested_id"] = requested
+        }
+        return change
     }
 
     private func setNetLineEndpoint(_ params: JSONDictionary) throws -> JSONDictionary {
@@ -2524,7 +2945,9 @@ final class HorizontalProjectEditor {
         for (oldGateID, oldGate) in oldEntity.gates.sorted(by: { $0.key < $1.key }) {
             let candidates = targetEntity.gates.filter { $0.value.name.caseInsensitiveCompare(oldGate.name) == .orderedSame }
             let bySuffix = targetEntity.gates.filter { !oldGate.suffix.isEmpty && $0.value.suffix.caseInsensitiveCompare(oldGate.suffix) == .orderedSame }
-            let only = oldEntity.gates.count == 1 && targetEntity.gates.count == 1 ? targetEntity.gates : [:]
+            // A part with one gate takes every old gate's pins by name: a
+            // supply gate folds into the main one.
+            let only = targetEntity.gates.count == 1 ? targetEntity.gates : [:]
             guard let (newGateID, newGate) = (candidates.count == 1 ? candidates.first : bySuffix.count == 1 ? bySuffix.first : only.first),
                   let oldUnit = oldGate.unitID.flatMap({ pool.unit($0) }), let newUnit = newGate.unitID.flatMap({ pool.unit($0) }) else { continue }
             let oldByName = Dictionary(grouping: oldUnit.pins.keys.sorted()) { oldUnit.pins[$0]!.name.lowercased() }
@@ -2568,14 +2991,40 @@ final class HorizontalProjectEditor {
         }
         var symbolUpdates = [String: (sheet: String, item: JSONDictionary)]()
         var wirePins = [String: String]()
-        var drawnTargetGates = Set<String>()
+        // Each drawn gate goes to the target gate its pins land on. Where
+        // several land on one — a supply gate folding into a single-gate part —
+        // the symbol of the one with most pins there draws it, and the others'
+        // come off with their wiring; their pins are then the kept symbol's,
+        // with no wire to them yet.
+        var drawnGates = [(instance: (sheet: String, id: String, json: JSONDictionary), oldGate: String, gate: String, pins: Int)]()
         for instance in try symbolInstances() where instance.json.string("component")?.lowercased() == componentID {
             guard let oldGate = instance.json.string("gate")?.lowercased() else { continue }
             let gateMap = mapping.filter { $0.key.hasPrefix(oldGate + "/") }
             let newGates = Set(gateMap.values.compactMap { $0.split(separator: "/").first.map(String.init) })
-            guard newGates.count == 1, let gate = newGates.first, drawnTargetGates.insert(gate).inserted,
-                  let unit = targetEntity.gates[gate]?.unitID else {
-                throw HorizontalDispatchError.invalidParams("Each drawn gate needs one distinct target gate in pin_map.")
+            guard newGates.count == 1, let gate = newGates.first else {
+                let name = oldEntity.gates[oldGate]?.name ?? oldGate
+                throw HorizontalDispatchError.invalidParams(
+                    "The drawn gate \(name)'s pins land on \(newGates.count) gates of the new part; each drawn gate's pins have to land on one. "
+                        + "Map them with pin_map, or remove_symbol that gate first.")
+            }
+            drawnGates.append((instance, oldGate, gate, gateMap.count))
+        }
+        var droppedInstances = Set<String>()
+        var foldedPins = [String]()
+        var keptGates = [(instance: (sheet: String, id: String, json: JSONDictionary), oldGate: String, gate: String)]()
+        for (_, group) in Dictionary(grouping: drawnGates, by: \.gate) {
+            let keep = group.max { ($0.pins, $1.instance.id) < ($1.pins, $0.instance.id) }!
+            keptGates.append((keep.instance, keep.oldGate, keep.gate))
+            for other in group where other.instance.id != keep.instance.id {
+                droppedInstances.insert(other.instance.id.lowercased())
+                foldedPins += mapping.filter { $0.key.hasPrefix(other.oldGate + "/") }.keys.map { pinName($0, componentID: componentID) }
+            }
+        }
+        let debrisBefore = droppedInstances.isEmpty ? [:] : try debris(onSheetsDrawing: componentID, gate: nil, keep: false)
+        for (instance, oldGate, gate) in keptGates.sorted(by: { $0.instance.id < $1.instance.id }) {
+            let gateMap = mapping.filter { $0.key.hasPrefix(oldGate + "/") }
+            guard let unit = targetEntity.gates[gate]?.unitID else {
+                throw HorizontalDispatchError.invalidParams("Target gate \(gate) names no unit, so nothing draws it.")
             }
             let choices = pool.symbols(forUnit: unit)
             let symbol: String
@@ -2600,6 +3049,12 @@ final class HorizontalProjectEditor {
                 var symbols = sheet.dictionaryMap("symbols"), lines = sheet.dictionaryMap("net_lines")
                 for (id, _) in symbols {
                     if let replacement = symbolUpdates[id.lowercased()] { symbols[id] = replacement.item }
+                    if droppedInstances.contains(id.lowercased()) { symbols.removeValue(forKey: id) }
+                }
+                for (id, line) in lines where ["from", "to"].contains(where: { end in
+                    line.dictionary(end)?.string("pin")?.lowercased().split(separator: "/").first.map { droppedInstances.contains(String($0)) } ?? false
+                }) {
+                    lines.removeValue(forKey: id)
                 }
                 for (id, var line) in lines {
                     var changed = false
@@ -2632,30 +3087,94 @@ final class HorizontalProjectEditor {
                 throw HorizontalDispatchError.invalidParams("pad_map must follow the explicit logical pin mapping.")
             }
         }
+        // The same package: every pad stays the pad it was, copper and all,
+        // whichever pin the new part puts on it. Pins with several pads (VS+,
+        // VS−) can't say which pad is which, and needn't.
+        let oldPackage = oldPart.flatMap { poolPart($0.lowercased())?.packageID?.lowercased() }
+        var samePackage = 0
+        if let oldPackage, oldPackage == target.packageID?.lowercased() {
+            let targetIDs = Set(targetPads.compactMap { $0.string("id")?.lowercased() })
+            for terminal in oldPads {
+                guard let id = terminal.string("id")?.lowercased(), padMapping[id] == nil, targetIDs.contains(id) else { continue }
+                padMapping[id] = id
+                samePackage += 1
+            }
+        }
         for terminal in oldPads {
             guard let id = terminal.string("id")?.lowercased(), padMapping[id] == nil,
                   let path = terminal.string("gate_pin_path")?.lowercased(), let newPath = mapping[path] else { continue }
             let matches = targetPads.filter { $0.string("gate_pin_path")?.lowercased() == newPath }
             if matches.count == 1 { padMapping[id] = matches[0].string("id") }
         }
+        // A pad whose pin says nothing about where it goes — no pin, or one
+        // with no counterpart — goes to the target pad of the same name, when
+        // there is one and nothing else took it: pad 3 of a SOIC-8 is pad 3
+        // of an MSOP-8.
+        let taken = Set(padMapping.values.map { $0.lowercased() })
+        var byName = 0
+        for terminal in oldPads {
+            guard let id = terminal.string("id")?.lowercased(), padMapping[id] == nil,
+                  terminal.string("gate_pin_path").map({ mapping[$0.lowercased()] == nil }) ?? true,
+                  let name = terminal.string("name"), !name.isEmpty else { continue }
+            let matches = targetPads.filter { ($0.string("name") ?? "").caseInsensitiveCompare(name) == .orderedSame }
+            guard matches.count == 1, let target = matches[0].string("id")?.lowercased(), !taken.contains(target) else { continue }
+            padMapping[id] = target
+            byName += 1
+        }
+        let copper = params.string("copper") ?? "refuse"
+        guard ["refuse", "drop"].contains(copper) else {
+            throw HorizontalDispatchError.invalidParams("copper must be refuse or drop.")
+        }
+        var dropped = [String]()
+        var underFootprint = [JSONDictionary]()
         if isTopBlock, files["board"] != nil {
+            let packageIDs = Set(try board().dictionaryMap("packages").filter { $0.value.string("component")?.lowercased() == componentID }.keys.map { $0.lowercased() })
+            // Every routed pad with nowhere to go, named, before anything moves.
+            let padNames = Dictionary(oldPads.compactMap { pad in pad.string("id").map { ($0.lowercased(), pad.string("name") ?? $0) } }, uniquingKeysWith: { first, _ in first })
+            var stranded = [String: [String]]()
+            for (id, track) in try board().dictionaryMap("tracks") {
+                for end in ["from", "to"] {
+                    let pieces = (track.dictionary(end)?.string("pad") ?? "").lowercased().split(separator: "/").map(String.init)
+                    guard pieces.count == 2, packageIDs.contains(pieces[0]), padMapping[pieces[1]] == nil else { continue }
+                    stranded[pieces[1], default: []].append(id)
+                }
+            }
+            if !stranded.isEmpty, copper == "refuse" {
+                let refdes = component.string("refdes") ?? componentID
+                let names = stranded.keys.map { padNames[$0] ?? $0 }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+                let count = Set(stranded.values.flatMap { $0 }).count
+                throw HorizontalDispatchError(
+                    code: .invalidParams,
+                    message: "\(count) track\(count == 1 ? "" : "s") end on pads of \(refdes) the new part has nothing for: \(names.joined(separator: ", ")). "
+                        + "Map them in pad_map, or pass copper \"drop\" to remove those tracks with the remap; nothing was changed.",
+                    details: ["pads": names, "tracks": Set(stranded.values.flatMap { $0 }).sorted()])
+            }
+            dropped = Set(stranded.values.flatMap { $0 }).sorted()
             try updateBoard { board in
-                let packageIDs = Set(board.dictionaryMap("packages").filter { $0.value.string("component")?.lowercased() == componentID }.keys.map { $0.lowercased() })
                 var tracks = board.dictionaryMap("tracks")
+                for id in dropped { tracks.removeValue(forKey: id) }
                 for (id, var track) in tracks {
                     for end in ["from", "to"] {
                         guard var endpoint = track.dictionary(end), let path = endpoint.string("pad") else { continue }
                         let pieces = path.lowercased().split(separator: "/").map(String.init)
-                        guard pieces.count == 2, packageIDs.contains(pieces[0]) else { continue }
-                        guard let pad = padMapping[pieces[1]] else {
-                            throw HorizontalDispatchError.invalidParams("Routed pad \(pieces[1]) needs an unambiguous pad_map entry.")
-                        }
+                        guard pieces.count == 2, packageIDs.contains(pieces[0]), let pad = padMapping[pieces[1]] else { continue }
                         endpoint["pad"] = "\(pieces[0])/\(pad)"
                         track[end] = endpoint
                     }
                     tracks[id] = track
                 }
                 board["tracks"] = tracks
+            }
+            if !dropped.isEmpty { try collectJunctions() }
+            // Vias under the old footprint stay where they were, and the new
+            // one may not want them: thermal vias under an exposed pad that is
+            // gone. They are named, for the caller to decide on.
+            if let loaded = project.board {
+                let area = packageIDs.flatMap { HorizontalDispatchMethods.packageArea($0, board: loaded) }
+                for via in loaded.vias where area.contains(where: { HorizontalBoardOutlines.contains(via.position, in: $0) }) {
+                    underFootprint.append(["via": via.id, "net": via.netID.flatMap { nets()[$0.lowercased()]?.string("name") } ?? via.netID as Any,
+                                           "x_mm": HorizontalDispatchJSON.mm(via.position.x), "y_mm": HorizontalDispatchJSON.mm(via.position.y)])
+                }
             }
         }
         try updateComponent(componentID) { component in
@@ -2668,6 +3187,19 @@ final class HorizontalProjectEditor {
                                       "preserved_connections": connections.count, "symbols": symbolUpdates.count, "net_lines": changedWires,
                                       "explicitly_mapped": explicit.count, "mapped_by_name": automatic]
         if !sharedNames.isEmpty { change["paired_shared_names"] = sharedNames.sorted() }
+        if samePackage > 0 { change["pads_kept"] = samePackage }
+        if byName > 0 { change["pads_mapped_by_name"] = byName }
+        if !droppedInstances.isEmpty {
+            change["symbols_removed"] = droppedInstances.sorted()
+            change["pins_to_wire"] = foldedPins.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            if let wiring = try clearDebris(since: debrisBefore) { change["wiring_removed"] = wiring }
+        }
+        if !dropped.isEmpty { change["tracks_dropped"] = dropped }
+        if !underFootprint.isEmpty {
+            change["vias_under_old_footprint"] = underFootprint
+            change["note"] = "\(underFootprint.count) via\(underFootprint.count == 1 ? " sits" : "s sit") where the old footprint was; remove_via any the new one doesn't want."
+        }
+        touchedPins.formUnion(connections.keys.map { (componentID, $0.lowercased()) }.map { "\($0.0)|\($0.1)" })
         return change
     }
 
@@ -2683,6 +3215,60 @@ final class HorizontalProjectEditor {
     }
 
     // MARK: - Wire cleanup
+
+    /// What each sheet drawing a component's symbols — one gate's, when given
+    /// — holds that connects nothing, before they come off, so the wiring
+    /// that served only them can be told from what was debris already. Empty
+    /// when the caller keeps the wiring.
+    private func debris(onSheetsDrawing componentID: String, gate gateID: String?, keep: Bool) throws -> [String: HorizontalSchematicDebris] {
+        guard !keep, files["schematic"] != nil else { return [:] }
+        var found = [String: HorizontalSchematicDebris]()
+        for sheet in try sheetsInOrder() where sheet.json.dictionaryMap("symbols").values.contains(where: {
+            $0.string("component")?.lowercased() == componentID && (gateID == nil || $0.string("gate")?.lowercased() == gateID)
+        }) {
+            found[sheet.id] = HorizontalSchematicDebris(sheet: sheet.json, block: block, symbolHasPin: pool.symbolHasPin)
+        }
+        return found
+    }
+
+    /// The wiring an edit left serving nothing that served something before:
+    /// islands that now reach no pin, with their labels and power symbols, and
+    /// dead ends that ran to a pin. Removing a part leaves both, and they are
+    /// taken with it, junctions and all; what was debris before stays, for
+    /// prune_sheet to decide on. Nil when there was none.
+    private func clearDebris(since before: [String: HorizontalSchematicDebris]) throws -> JSONDictionary? {
+        var counts = ["net_lines": 0, "net_labels": 0, "power_symbols": 0, "junctions": 0]
+        for (sheetID, earlier) in before {
+            guard let sheet = try sheetsInOrder().first(where: { $0.id == sheetID })?.json else { continue }
+            let now = HorizontalSchematicDebris(sheet: sheet, block: block, symbolHasPin: pool.symbolHasPin)
+            let lines = Set(now.unanchored.flatMap(\.lines) + now.stubs.flatMap(\.lines))
+                .subtracting(earlier.unanchored.flatMap(\.lines) + earlier.stubs.flatMap(\.lines))
+            let labels = Set(now.unanchored.flatMap(\.labels)).subtracting(earlier.unanchored.flatMap(\.labels))
+            let power = Set(now.unanchored.flatMap(\.powerSymbols)).subtracting(earlier.unanchored.flatMap(\.powerSymbols))
+            guard !(lines.isEmpty && labels.isEmpty && power.isEmpty) else { continue }
+            var candidates = Set(now.unanchored.filter { !Set($0.lines).isDisjoint(with: lines) || !Set($0.labels).isDisjoint(with: labels)
+                || !Set($0.powerSymbols).isDisjoint(with: power) }.flatMap(\.junctions).map { $0.lowercased() })
+            candidates.formUnion(now.stubs.filter { !Set($0.lines).isDisjoint(with: lines) }.flatMap(\.junctions).map { $0.lowercased() })
+            let netLines = sheet.dictionaryMap("net_lines")
+            for line in lines { candidates.formUnion(netLines[line].map(Self.lineJunctions) ?? []) }
+            for (key, doomed) in [("net_labels", labels), ("power_symbols", power)] {
+                for mark in doomed { if let junction = sheet.dictionaryMap(key)[mark]?.string("junction") { candidates.insert(junction.lowercased()) } }
+            }
+            try updateSheet(sheetID) { sheet in
+                for (key, doomed) in [("net_lines", lines), ("net_labels", labels), ("power_symbols", power)] where !doomed.isEmpty {
+                    var map = sheet.dictionaryMap(key)
+                    for id in doomed { map.removeValue(forKey: id) }
+                    sheet[key] = map
+                }
+            }
+            counts["net_lines", default: 0] += lines.count
+            counts["net_labels", default: 0] += labels.count
+            counts["power_symbols", default: 0] += power.count
+            counts["junctions", default: 0] += try collectSheetJunctions(sheetID, candidates: candidates).count
+        }
+        let removed = counts.filter { $0.value > 0 }
+        return removed.isEmpty ? nil : removed
+    }
 
     /// One wire, by id, on any sheet or the one named.
     private func netLine(_ params: JSONDictionary, key: String = "line") throws -> (sheet: String, id: String, json: JSONDictionary) {
@@ -3064,13 +3650,88 @@ final class HorizontalProjectEditor {
     static let markOrientations = ["up", "down", "left", "right"]
     static let powerSymbolStyles = ["gnd", "dot", "antenna", "earth"]
 
+    /// Where a wire end sits on a sheet: its junction's position, or the end
+    /// of the pin it names as the symbol draws it there. Nil for anything else.
+    private func wireEndPosition(_ end: JSONDictionary?, sheet: JSONDictionary) -> HorizontalPoint? {
+        guard let end else { return nil }
+        if let junction = end.string("junc")?.lowercased() {
+            guard let position = sheet.dictionaryMap("junctions").first(where: { $0.key.lowercased() == junction })?.value["position"] as? [Any],
+                  position.count == 2 else { return nil }
+            return HorizontalPoint(x: JSONHelper.doubleValue(position[0]), y: JSONHelper.doubleValue(position[1]))
+        }
+        guard let path = end.string("pin")?.lowercased() else { return nil }
+        let pieces = path.split(separator: "/").map(String.init)
+        guard pieces.count == 2, let instance = sheet.dictionaryMap("symbols").first(where: { $0.key.lowercased() == pieces[0] })?.value,
+              let symbol = instance.string("symbol"), let geometry = pool.symbolPin(symbol, pin: pieces[1]) else { return nil }
+        return (HorizontalPlacementTransform(json: instance.dictionary("placement")) ?? .identity).schematicGeometry.applying(to: geometry.position)
+    }
+
+    /// A mark for `net` at `point` with no junction there yet: on a wire of the
+    /// net, the wire is split there, as the app's label tool splits it, and the
+    /// junction between the halves is returned; a wire of another net, or a
+    /// pin's end, is refused, since the mark would join it or sit on it
+    /// joined to nothing. Nil when the point is clear.
+    private func splitWire(at point: [Int], sheetID: String, net: String) throws -> String? {
+        guard let sheet = try sheetsInOrder().first(where: { $0.id == sheetID })?.json else { return nil }
+        let at = HorizontalPoint(x: Double(point[0]), y: Double(point[1]))
+        func same(_ a: HorizontalPoint, _ b: HorizontalPoint) -> Bool { abs(a.x - b.x) < 0.5 && abs(a.y - b.y) < 0.5 }
+        let where_ = "(\(HorizontalDispatchJSON.mm(at.x)), \(HorizontalDispatchJSON.mm(at.y)))"
+        for (id, instance) in sheet.dictionaryMap("symbols") {
+            guard let symbol = instance.string("symbol") else { continue }
+            let transform = (HorizontalPlacementTransform(json: instance.dictionary("placement")) ?? .identity).schematicGeometry
+            for pin in pool.symbolPins(symbol).values where same(transform.applying(to: pin.position), at) {
+                let component = instance.string("component").flatMap { components()[$0.lowercased()]?.string("refdes") } ?? id
+                throw HorizontalDispatchError.invalidParams(
+                    "\(where_) is the end of a pin of \(component); a mark there joins nothing. terminate_pin draws a stub from the pin to a label or power symbol.")
+            }
+        }
+        let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block)
+        for (lineID, line) in sheet.dictionaryMap("net_lines") {
+            guard let from = wireEndPosition(line.dictionary("from"), sheet: sheet), let to = wireEndPosition(line.dictionary("to"), sheet: sheet),
+                  !same(from, at), !same(to, at) else { continue }
+            let vector = to - from, offset = at - from
+            guard abs(vector.x * offset.y - vector.y * offset.x) < 1,
+                  at.x >= min(from.x, to.x), at.x <= max(from.x, to.x), at.y >= min(from.y, to.y), at.y <= max(from.y, to.y) else { continue }
+            let wireNet = line.dictionary("from").flatMap { connectivity.net(at: $0) }?.lowercased() ?? line.string("net")?.lowercased()
+            guard wireNet == nil || wireNet == net.lowercased() else {
+                let name = wireNet.flatMap { nets()[$0]?.string("name") }.flatMap { $0.isEmpty ? nil : $0 } ?? wireNet!
+                throw HorizontalDispatchError.invalidParams("\(where_) is on wire \(lineID) of \(name); a mark for another net there would join them.")
+            }
+            let junction = UUID().uuidString.lowercased()
+            let middle: JSONDictionary = ["junc": junction, "pin": NSNull(), "port": NSNull(), "bus_ripper": NSNull()]
+            try updateSheet(sheetID) { sheet in
+                var junctions = sheet.dictionaryMap("junctions")
+                junctions[junction] = ["position": point, "net": net]
+                sheet["junctions"] = junctions
+                var lines = sheet.dictionaryMap("net_lines")
+                lines.removeValue(forKey: lineID)
+                var first = line, second = line
+                first["to"] = middle
+                second["from"] = middle
+                lines[lineID] = first
+                lines[UUID().uuidString.lowercased()] = second
+                sheet["net_lines"] = lines
+            }
+            splitWires.append(lineID)
+            return junction
+        }
+        return nil
+    }
+
+    /// Wires a mark split in this batch, for the change that placed it.
+    private var splitWires = [String]()
+
     /// A junction on a schematic sheet, at a point, carrying a net. Net labels
-    /// and power symbols both sit on one; a point that already has one joins it.
+    /// and power symbols both sit on one; a point that already has one joins it,
+    /// and one on a wire of the net splits the wire there.
     private func ensureSheetJunction(_ sheetID: String, x: Double, y: Double, net: String?) throws -> String {
         let point = [Self.nanometres(x), Self.nanometres(y)]
         let sheets = try sheetsInOrder()
         let sheetJSON = sheets.first { $0.id == sheetID }?.json ?? [:]
         let existing = sheetJSON.dictionaryMap("junctions").first { $0.value["position"] as? [Int] == point }
+        if existing == nil, let net, let junction = try splitWire(at: point, sheetID: sheetID, net: net) {
+            return junction
+        }
         if let existing, let net {
             // A junction already at the point is reused — a net-less one takes
             // this net — but one on another live net would short the two.
@@ -3178,6 +3839,7 @@ final class HorizontalProjectEditor {
             sheet["power_symbols"] = symbols
         }
         var change: JSONDictionary = ["power_symbol": id, "net": net, "sheet": sheetID, "junction": junction]
+        if !splitWires.isEmpty { change["split_net_line"] = splitWires.removeLast() }
         if madePower { change["note"] = "The net is now a power net, which is what a power symbol on it means." }
         if let style { change["style"] = style }
         return change
@@ -3200,8 +3862,10 @@ final class HorizontalProjectEditor {
                           "orientation": orientation, "offsheet_refs": params.bool("offsheet_refs") ?? true]
             sheet["net_labels"] = labels
         }
-        return ["net_label": id, "net": net, "sheet": sheetID, "junction": junction,
-                "orientation": orientation, "size_mm": sizeMM]
+        var change: JSONDictionary = ["net_label": id, "net": net, "sheet": sheetID, "junction": junction,
+                                      "orientation": orientation, "size_mm": sizeMM]
+        if !splitWires.isEmpty { change["split_net_line"] = splitWires.removeLast() }
+        return change
     }
 
     /// Removes one net label or power symbol, and the junction it leaves idle.
@@ -3337,7 +4001,7 @@ final class HorizontalProjectEditor {
         }
         let port = try blockPortID(portReference, of: usedBlock)
         let net: String
-        if let existing = try? netID(params) {
+        if let existing = try existingNetID(params) {
             net = existing
         } else if params.bool("create_net") ?? false, let name = params.string("net") {
             net = try ensureNet(["name": name]).0
@@ -4002,15 +4666,50 @@ final class HorizontalProjectEditor {
         return reference.lowercased()
     }
 
+    /// `fields` merged into `rule`: an object into an object key by key, so a
+    /// change to a rule's match or parameter set keeps the keys it doesn't
+    /// name, and anything else in place of what was there. Returns the paths
+    /// written, "match/net" for a key inside an object.
+    private static func mergeRuleFields(_ fields: JSONDictionary, into rule: inout JSONDictionary, path: String = "") -> [String] {
+        var written = [String]()
+        for (key, value) in fields {
+            let at = path.isEmpty ? key : "\(path)/\(key)"
+            if let object = value as? JSONDictionary, var existing = rule[key] as? JSONDictionary {
+                written += mergeRuleFields(object, into: &existing, path: at)
+                rule[key] = existing
+            } else {
+                rule[key] = value
+                written.append(at)
+            }
+        }
+        return written.sorted()
+    }
+
     private func addRule(_ params: JSONDictionary) throws -> JSONDictionary {
         let kind = try ruleKind(params)
         let id = try ruleAddress(params, kind: kind, mustExist: false)
+        let fields = params["fields"] as? JSONDictionary ?? [:]
         var created: JSONDictionary = [:]
+        var written = [String]()
         try updateRules { rules in
-            let existingCount = kind.isMulti ? (rules.dictionary(kind.rawValue)?.count ?? 0) : 0
+            // After every rule of its kind, which is where the app's editor
+            // puts a new one: by order, not count, since a batch may have
+            // moved one of them already.
+            let family = kind.isMulti ? (rules.dictionary(kind.rawValue) ?? [:]) : [:]
+            let order = family.values.compactMap { ($0 as? JSONDictionary)?.int("order") }.max().map { $0 + 1 } ?? 0
             // The defaults the app's own rules editor would give it, so a rule
             // added here is the rule a person would have got.
-            created = kind.defaultRule(context: ruleContext(), order: existingCount)
+            created = kind.defaultRule(context: ruleContext(), order: order)
+            // A via rule gives the vias it matches their padstack, and the
+            // editor leaves the choice to the user; here it is the padstack
+            // the board's via rules already use, else its vias'.
+            if kind == .via, (created.string("padstack") ?? "").isEmpty {
+                let existing = family.values.compactMap { $0 as? JSONDictionary }
+                    .sorted { ($0.int("order") ?? 0) < ($1.int("order") ?? 0) }
+                    .compactMap { $0.string("padstack") }.first { !$0.isEmpty && $0 != Self.nullUUID }
+                if let padstack = existing ?? project.board?.viaTemplate?.padstackID { created["padstack"] = padstack }
+            }
+            written = Self.mergeRuleFields(fields, into: &created)
             if kind.isMulti {
                 var family = rules.dictionary(kind.rawValue) ?? [:]
                 guard let id else { return }
@@ -4026,7 +4725,10 @@ final class HorizontalProjectEditor {
                 rules[kind.rawValue] = created
             }
         }
-        return ["kind": kind.rawValue, "rule_id": id as Any? as Any, "rule": created, "created": true]
+        var change: JSONDictionary = ["kind": kind.rawValue, "rule_id": id as Any? as Any, "rule": created, "created": true]
+        if !written.isEmpty { change["set"] = written }
+        if kind == .via { change.merge(try rederiveRuleVias()) { _, new in new } }
+        return change
     }
 
     private func setRule(_ params: JSONDictionary) throws -> JSONDictionary {
@@ -4036,15 +4738,17 @@ final class HorizontalProjectEditor {
             throw HorizontalDispatchError.invalidParams("set_rule needs \"fields\": what to change.")
         }
         var merged: JSONDictionary = [:]
+        var written = [String]()
         try updateRules { rules in
             if kind.isMulti {
                 var family = rules.dictionary(kind.rawValue) ?? [:]
                 guard let id, var rule = family[id] as? JSONDictionary else {
                     throw HorizontalDispatchError.notFound("No \(kind.rawValue) rule to change.")
                 }
-                // Merged, not replaced: a caller changing one clearance should
-                // not have to restate the rest of the rule to keep it.
-                for (key, value) in fields { rule[key] = value }
+                // Merged, not replaced, all the way down: a caller changing one
+                // clearance, or a match's net, should not have to restate the
+                // rest of the rule to keep it.
+                written = Self.mergeRuleFields(fields, into: &rule)
                 merged = rule
                 family[id] = rule
                 rules[kind.rawValue] = family
@@ -4052,13 +4756,14 @@ final class HorizontalProjectEditor {
                 guard var rule = rules.dictionary(kind.rawValue) else {
                     throw HorizontalDispatchError.notFound("The board has no \(kind.rawValue) rule; add_rule makes one.")
                 }
-                for (key, value) in fields { rule[key] = value }
+                written = Self.mergeRuleFields(fields, into: &rule)
                 merged = rule
                 rules[kind.rawValue] = rule
             }
         }
-        return ["kind": kind.rawValue, "rule_id": id as Any? as Any, "rule": merged,
-                "changed": fields.keys.sorted()]
+        var change: JSONDictionary = ["kind": kind.rawValue, "rule_id": id as Any? as Any, "rule": merged, "changed": written]
+        if kind == .via { change.merge(try rederiveRuleVias()) { _, new in new } }
+        return change
     }
 
     private func removeRule(_ params: JSONDictionary) throws -> JSONDictionary {
@@ -4076,7 +4781,9 @@ final class HorizontalProjectEditor {
                 rules.removeValue(forKey: kind.rawValue)
             }
         }
-        return ["kind": kind.rawValue, "rule_id": id as Any? as Any, "removed": true]
+        var change: JSONDictionary = ["kind": kind.rawValue, "rule_id": id as Any? as Any, "removed": true]
+        if kind == .via { change.merge(try rederiveRuleVias()) { _, new in new } }
+        return change
     }
 
     // MARK: - Project metadata and export settings
@@ -4770,6 +5477,111 @@ final class HorizontalProjectEditor {
         return ["track": id, "width_mm": widthMM]
     }
 
+    /// The block's nets as the rules' matches read them: name and class.
+    private func ruleNetDetails() -> [String: HorizontalNetDetails] {
+        let classes = block.dictionaryMap("net_classes")
+        var details = [String: HorizontalNetDetails]()
+        for (id, net) in nets() {
+            let classID = net.string("net_class")?.lowercased()
+            details[id.lowercased()] = HorizontalNetDetails(
+                id: id.lowercased(), name: net.string("name") ?? "", netClassID: classID,
+                netClassName: classID.flatMap { key in classes.first { $0.key.lowercased() == key }?.value.string("name") })
+        }
+        return details
+    }
+
+    /// The via rule that shapes a via on `net`: the first enabled one by order
+    /// whose match takes the net, as Horizon's BoardRules looks it up for a via
+    /// whose source is the rules. Its id comes with it.
+    private func viaRule(net: String?) throws -> (id: String, rule: JSONDictionary)? {
+        let family = (try board()["rules"] as? JSONDictionary ?? [:]).dictionaryMap("via")
+        let details = ruleNetDetails()
+        return family.filter { $0.value.bool("enabled") ?? true }
+            .sorted { ($0.value.int("order") ?? 0, $0.key) < ($1.value.int("order") ?? 0, $1.key) }
+            .first { HorizontalRuleMatch(json: $0.value.dictionary("match")).matches(netID: net?.lowercased(), netDetails: details) }
+            .map { ($0.key, $0.value) }
+    }
+
+    /// What a new via takes its shape from, as Horizon's via sources have it:
+    /// - a board via definition, named by `definition`;
+    /// - its own size (`diameter_mm`, `hole_mm`) or `padstack`, which is local;
+    /// - otherwise the via rules: the padstack and parameters of the rule that
+    ///   matches its net, written in, since that is what Horizon gives it.
+    /// A board with no via rule gets the padstack and size its other vias have.
+    private func viaShape(net: String, _ params: JSONDictionary) throws -> JSONDictionary {
+        let rules = try board()["rules"] as? JSONDictionary ?? [:]
+        if let reference = params.string("definition") {
+            let definitions = rules.dictionary("via_definitions")?.dictionaryMap("via_definitions") ?? [:]
+            let matches = definitions.filter {
+                $0.key.caseInsensitiveCompare(reference) == .orderedSame
+                    || ($0.value.string("name") ?? "").caseInsensitiveCompare(reference) == .orderedSame
+            }
+            guard matches.count == 1, let (id, definition) = matches.first else {
+                let names = definitions.values.compactMap { $0.string("name") }.sorted()
+                throw HorizontalDispatchError.notFound(
+                    "No via definition \(reference) on the board. Definitions: \(names.isEmpty ? "none" : names.joined(separator: ", ")).")
+            }
+            guard params["diameter_mm"] == nil, params["hole_mm"] == nil, params["padstack"] == nil else {
+                throw HorizontalDispatchError.invalidParams("A via definition sets the padstack and size; pass definition alone.")
+            }
+            return ["source": "definition", "definition": id, "padstack": definition.string("padstack") ?? "",
+                    "parameter_set": definition.dictionary("parameters") ?? [:]]
+        }
+        let ruled = try viaRule(net: net)
+        let template = project.board?.viaTemplate
+        if params["diameter_mm"] != nil || params["hole_mm"] != nil || params["padstack"] != nil {
+            var parameters = ruled?.rule.dictionary("parameter_set") ?? [
+                "via_diameter": Int(template?.diameter ?? 500_000), "hole_diameter": Int(template?.holeDiameter ?? 200_000)
+            ]
+            if let diameter = params.double("diameter_mm") { parameters["via_diameter"] = Self.nanometres(diameter) }
+            if let hole = params.double("hole_mm") { parameters["hole_diameter"] = Self.nanometres(hole) }
+            guard let padstack = params.string("padstack")?.lowercased() ?? ruled?.rule.string("padstack") ?? template?.padstackID else {
+                throw HorizontalDispatchError.invalidParams("The board has no via rule or via to take a padstack from, so pass \"padstack\".")
+            }
+            return ["source": "local", "padstack": padstack, "parameter_set": parameters]
+        }
+        if let ruled, let padstack = ruled.rule.string("padstack"), !padstack.isEmpty, padstack != Self.nullUUID {
+            return ["source": "rules", "padstack": padstack, "parameter_set": ruled.rule.dictionary("parameter_set") ?? [:], "rule": ruled.id]
+        }
+        guard let template else {
+            throw HorizontalDispatchError.invalidParams(
+                "The board has no via rule and no via to copy a padstack from, so pass \"padstack\" — a via padstack uuid from search_pool."
+            )
+        }
+        return ["source": "local", "padstack": template.padstackID,
+                "parameter_set": ["via_diameter": Int(template.diameter), "hole_diameter": Int(template.holeDiameter)]]
+    }
+
+    /// Vias that take their shape from the via rules, given the padstack and
+    /// parameters of the rule that now matches their net, after the rules
+    /// change: what Horizon gives them when it opens the board, so the file
+    /// and everything read from it agree. Counted in the reply.
+    private func rederiveRuleVias() throws -> JSONDictionary {
+        guard isTopBlock, files["board"] != nil else { return [:] }
+        let loaded = Dictionary((project.board?.vias ?? []).map { ($0.id.lowercased(), $0.netID?.lowercased()) }, uniquingKeysWith: { first, _ in first })
+        let junctions = try board().dictionaryMap("junctions")
+        var vias = try board().dictionaryMap("vias")
+        var changed = [String]()
+        for (id, var via) in vias {
+            let source = via.string("source") ?? ((via.bool("from_rules") ?? true) ? "rules" : "local")
+            guard source == "rules" else { continue }
+            let net = via.string("net_set")?.lowercased()
+                ?? via.string("junction").flatMap { key in junctions.first { $0.key.lowercased() == key.lowercased() }?.value.string("net")?.lowercased() }
+                ?? loaded[id.lowercased()] ?? nil
+            guard let rule = try viaRule(net: net)?.rule, let padstack = rule.string("padstack"), !padstack.isEmpty, padstack != Self.nullUUID else { continue }
+            let parameters = rule.dictionary("parameter_set") ?? [:]
+            guard via.string("padstack")?.lowercased() != padstack.lowercased()
+                    || !NSDictionary(dictionary: via.dictionary("parameter_set") ?? [:]).isEqual(to: parameters) else { continue }
+            via["padstack"] = padstack
+            via["parameter_set"] = parameters
+            vias[id] = via
+            changed.append(id)
+        }
+        guard !changed.isEmpty else { return [:] }
+        try updateBoard { $0["vias"] = vias }
+        return ["vias_rederived": changed.count]
+    }
+
     private func placeVia(_ params: JSONDictionary) throws -> JSONDictionary {
         guard let x = params.double("x_mm"), let y = params.double("y_mm") else {
             throw HorizontalDispatchError.invalidParams("place_via needs \"x_mm\" and \"y_mm\".")
@@ -4778,12 +5590,10 @@ final class HorizontalProjectEditor {
             throw HorizontalDispatchError.invalidParams("place_via needs \"net\": a via carries one.")
         }
         let net = try netID(reference: reference)
-        let padstack = params.string("padstack")?.lowercased() ?? project.board?.viaTemplate?.padstackID
-        guard let padstack else {
-            throw HorizontalDispatchError.invalidParams(
-                "The board has no via to copy a padstack from, so pass \"padstack\" — a via padstack uuid from search_pool."
-            )
+        for key in ["diameter_mm", "hole_mm"] {
+            if let value = params.double(key), value <= 0 { throw HorizontalDispatchError.invalidParams("\(key) must be above zero.") }
         }
+        let shape = try viaShape(net: net, params)
         let point = [Self.nanometres(x), Self.nanometres(y)]
         let junctions = try board()["junctions"] as? JSONDictionary ?? [:]
         let junction: String
@@ -4794,15 +5604,26 @@ final class HorizontalProjectEditor {
         }
         try writeJunction(junction, point: point, net: net)
         let id = UUID().uuidString.lowercased()
+        let source = shape.string("source") ?? "rules"
+        let parameters = shape.dictionary("parameter_set") ?? [:]
         try updateBoard { board in
             var vias = board["vias"] as? JSONDictionary ?? [:]
-            // net_set pins the net onto the via, so it seeds propagation like a
-            // pad instead of waiting for copper to reach it.
-            vias[id] = ["junction": junction, "padstack": padstack, "from_rules": true,
-                        "net_set": net, "parameter_set": [String: Any]()]
+            // The fields Via::serialize writes. net_set pins the net onto the
+            // via, so it seeds propagation like a pad instead of waiting for
+            // copper to reach it.
+            var via: JSONDictionary = ["junction": junction, "padstack": shape.string("padstack") ?? "", "source": source,
+                                       "from_rules": source == "rules", "locked": false, "net_set": net, "parameter_set": parameters]
+            if let definition = shape.string("definition") { via["definition"] = definition }
+            vias[id] = via
             board["vias"] = vias
         }
-        return ["via": id, "junction": junction, "net": net, "padstack": padstack]
+        var change: JSONDictionary = ["via": id, "junction": junction, "net": net, "padstack": shape.string("padstack") ?? "",
+                                      "source": source]
+        if let diameter = parameters["via_diameter"] { change["diameter_mm"] = HorizontalDispatchJSON.mm(JSONHelper.doubleValue(diameter)) }
+        if let hole = parameters["hole_diameter"] { change["hole_mm"] = HorizontalDispatchJSON.mm(JSONHelper.doubleValue(hole)) }
+        if let rule = shape.string("rule") { change["via_rule"] = rule }
+        if let definition = shape.string("definition") { change["definition"] = definition }
+        return change
     }
 
     private func removeVia(_ params: JSONDictionary) throws -> JSONDictionary {

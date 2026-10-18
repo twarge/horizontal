@@ -288,16 +288,20 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "list_tracks",
-            summary: "Copper tracks on the board, with the net, layer, width and what each end lands on. Boards carry thousands, so filter by net or layer; the result says whether it was truncated.",
+            summary: "Copper tracks on the board, with the net, layer, width and what each end lands on. Boards carry thousands, so filter by net, layer or component; the result says whether it was truncated.",
             params: ["handle": "Project handle.", "net": "Only tracks on this net, by name or id (optional).",
-                     "layer": "Only tracks on this layer number (optional).", "limit": "Maximum tracks to return; default 200, maximum 5000."],
+                     "layer": "Only tracks on this layer number (optional).", "limit": "Maximum tracks to return; default 200, maximum 5000.",
+                     "component": "Only tracks with an end on this component's pads, by refdes or id (optional).",
+                     "pads": "With component, only these of its pads, by name or uuid (optional).",
+                     "connected": "With component, every track joined to its pads through junctions and vias, out to the next pad, rather than only those ending on them (default false)."],
             handler: listTracks
         ),
         .init(
             name: "list_vias",
-            summary: "Vias on the board, with the net, position, the layers each spans and the padstack or via definition it takes its shape from.",
+            summary: "Vias on the board, with the net, position, the layers each spans and the padstack or via definition it takes its shape from. One taking its shape from the via rules with no parameters to show for it is marked unresolved.",
             params: ["handle": "Project handle.", "net": "Only vias on this net, by name or id (optional).",
-                     "limit": "Maximum vias to return; default 200, maximum 5000."],
+                     "limit": "Maximum vias to return; default 200, maximum 5000.",
+                     "component": "Only vias under this component's package — inside its courtyard, else its pads' bounds — by refdes or id (optional)."],
             handler: listVias
         ),
         .init(
@@ -324,7 +328,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "check",
-            summary: "Run the checks Horizontal has: load diagnostics, rules validation, annotation, single-pin nets, unplaced parts, unrouted connections, and the warnings the schematic canvas draws on every sheet of every block (Label missing, Pin connected to net, Power sym missing and the rest), each with its sheet, position in mm, what the canvas says and the net or part it is about. More than three findings with one title come back as one message naming them all.",
+            summary: "Run the checks Horizontal has: load diagnostics, rules validation, annotation, single-pin nets, unplaced parts, unrouted connections, copper joining two nets, and the warnings the schematic canvas draws on every sheet of every block (Label missing, Pin connected to net, Power sym missing and the rest), each with its sheet, position in mm, what the canvas says and the net or part it is about. More than three findings with one title come back as one message naming them all.",
             params: ["handle": "Project handle.",
                      "full": "List every finding as its own message instead of grouping repeats (default false)."],
             handler: { session, params in
@@ -689,7 +693,10 @@ enum HorizontalDispatchMethods {
                 details: ["document_snapshot": entry.snapshot?.id ?? "", "file_snapshot": onDisk.id]
             )
         }
-        var result: JSONDictionary = ["saved": edited, "had_unsaved_changes": edited, "source": "live",
+        // The document autosaves, so by the time this runs its files often
+        // hold everything already. The file matching the document is what was
+        // asked for, so that is "saved"; whether this call wrote is "wrote".
+        var result: JSONDictionary = ["saved": true, "wrote": edited, "had_unsaved_changes": edited, "source": "live",
                                       "path": entry.url.path, "verified": true,
                                       "snapshot_id": onDisk.id, "revision": entry.revision]
         // Always there, empty when the folder was looked at and held none, so
@@ -798,7 +805,7 @@ enum HorizontalDispatchMethods {
             if candidates.count > 1 { throw HorizontalDispatchError.ambiguous("Component name is ambiguous; use id.", candidates: candidates.map(\.id)) }
             component = entry.index.component(refdes: refdes)
         } else if let id = params.string("id") {
-            component = entry.index.component(id: id)
+            component = try entry.index.component(idOrPrefix: id)
         } else {
             throw HorizontalDispatchError.invalidParams("Pass \"refdes\" or \"id\".")
         }
@@ -806,6 +813,7 @@ enum HorizontalDispatchMethods {
             throw HorizontalDispatchError.notFound("No such component.")
         }
         var json = componentJSON(component, full: true, index: entry.index)
+        let ends = pinEnds(of: component, project: entry.project)
         json["pins"] = component.pins.map { pin -> JSONDictionary in
             var pinJSON: JSONDictionary = [
                 "gate": pin.gateName,
@@ -846,6 +854,7 @@ enum HorizontalDispatchMethods {
                         "pin_display_mode": placement.pinDisplayMode, "name": name]
             }
             if !drawn.isEmpty { pinJSON["drawn_as"] = drawn }
+            if let at = ends[pin.gatePinPath.lowercased()] { pinJSON["at"] = at }
             if let netID = pin.netID {
                 pinJSON["net_id"] = netID
                 pinJSON["net"] = entry.index.net(id: netID)?.name ?? ""
@@ -857,6 +866,35 @@ enum HorizontalDispatchMethods {
         return json
     }
 
+    /// Where each of a component's pins ends on the sheets that draw it — the
+    /// point a wire to it starts from — and which way it points out of its
+    /// symbol, by gate/pin path. The loaded sheet has turned and mirrored the
+    /// pool symbol's pin already, so this is the pin as drawn.
+    static func pinEnds(of component: HorizontalDesignComponent, project: HorizontalProject) -> [String: [JSONDictionary]] {
+        guard !component.symbolPlacements.isEmpty else { return [:] }
+        var ends = [String: [JSONDictionary]]()
+        let schematics = HorizontalDesignIndex.schematics(of: project)
+        for placement in component.symbolPlacements {
+            let sheet = schematics.filter { placement.blockID == nil || $0.block.uuid.caseInsensitiveCompare(placement.blockID!) == .orderedSame }
+                .flatMap(\.schematic.sheets).first { $0.id.caseInsensitiveCompare(placement.sheetID) == .orderedSame }
+            guard let sheet else { continue }
+            let prefix = placement.symbolID.lowercased() + "/pin/"
+            for segment in sheet.symbolPins where segment.id.lowercased().hasPrefix(prefix) {
+                let pinID = String(segment.id.lowercased().dropFirst(prefix.count))
+                var end: JSONDictionary = ["sheet": placement.sheetIndex, "x_mm": HorizontalDispatchJSON.mm(segment.from.x),
+                                           "y_mm": HorizontalDispatchJSON.mm(segment.from.y)]
+                let outward = segment.from - segment.to
+                if abs(outward.x) > abs(outward.y) { end["points"] = outward.x < 0 ? "left" : "right" }
+                else if outward.y != 0 { end["points"] = outward.y < 0 ? "down" : "up" }
+                if component.symbolPlacements.filter({ $0.gateID == placement.gateID }).count > 1 {
+                    end["symbol_instance"] = placement.symbolID
+                }
+                ends["\(placement.gateID.lowercased())/\(pinID)", default: []].append(end)
+            }
+        }
+        return ends
+    }
+
     @Sendable private static func getNet(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         let net: HorizontalDesignNet?
@@ -865,7 +903,7 @@ enum HorizontalDispatchMethods {
             if candidates.count > 1 { throw HorizontalDispatchError.ambiguous("Net name is ambiguous; use id.", candidates: candidates.map(\.id)) }
             net = entry.index.net(named: name)
         } else if let id = params.string("id") {
-            net = entry.index.net(id: id)
+            net = try entry.index.net(idOrPrefix: id)
         } else {
             throw HorizontalDispatchError.invalidParams("Pass \"name\" or \"id\".")
         }
@@ -1191,7 +1229,7 @@ enum HorizontalDispatchMethods {
             }
             _ = try editor.write()
             let normalized = zip(operations, editor.changes).map { operation, change -> JSONDictionary in
-                var json = operation.params
+                var json = editor.withReusedIDs(operation.params)
                 if operation.kind == .ensureComponent { json["id"] = change["component"] }
                 if operation.kind == .ensureNet { json["id"] = change["net"] }
                 if operation.kind == .drawNetLine { json["id"] = change["net_line"] }
@@ -1201,7 +1239,15 @@ enum HorizontalDispatchMethods {
             var result: JSONDictionary = ["applied": editor.changes.count, "changes": editor.changes, "normalized_ops": normalized,
                                           "block": editor.blockID, "is_top_block": editor.isTopBlock,
                                           "undo_name": undoName(operations, changes: editor.changes)]
-            if !handles.isEmpty { result["handles"] = handles }
+            // A name given to a junction placed where one already stood stands
+            // for that junction.
+            var named = handles
+            var reused = [String]()
+            for (name, id) in handles {
+                if let existing = editor.reusedIDs[id.lowercased()] { named[name] = existing; reused.append(name) }
+            }
+            if !named.isEmpty { result["handles"] = named }
+            if !reused.isEmpty { result["reused_handles"] = reused.sorted() }
             let warnings = editor.warnings()
             if !warnings.isEmpty { result["warnings"] = warnings }
             return result
@@ -1901,8 +1947,13 @@ enum HorizontalDispatchMethods {
         json["net_count"] = index.nets.count
         json["pool_part_count"] = project.poolParts.count
         json["live"] = entry.live != nil || (!entry.frozen && entry.readMetadata?.string("source") == "live")
-        // What the file does not have yet. An edit through this channel is one
-        // undo step in the app until `save` writes it.
+        if entry.holdsProjectFileOnly {
+            json["holds_project_file_only"] = true
+            json["note"] = "The window holds only the .hprj, not the files it names, so reads come from disk and edits are refused until it gathers them again."
+        }
+        // Whether the document has changes its files don't have yet: an edit
+        // through this channel is one undo step in the app, which autosaves it
+        // within seconds, so this is whether an autosave is still pending.
         if let live = entry.live, Thread.isMainThread {
             // What undo would take back, so a caller can tell whether its own
             // edit is still the top of the stack before reaching for it.
@@ -2089,7 +2140,9 @@ enum HorizontalDispatchMethods {
         guard named.count <= 1 else {
             throw HorizontalDispatchError.ambiguous("More than one net is named \(reference); use its id.", candidates: named.map(\.id))
         }
-        guard let net = named.first else { throw HorizontalDispatchError.notFound("No net \(reference).") }
+        guard let net = try named.first ?? entry.index.net(idOrPrefix: reference) else {
+            throw HorizontalDispatchError.notFound("No net \(reference).")
+        }
         return net.id
     }
 
@@ -2605,7 +2658,7 @@ enum HorizontalDispatchMethods {
     /// The component a text listing is narrowed to, by refdes or id.
     private static func componentFilter(_ entry: HorizontalDispatchProjectEntry, _ params: JSONDictionary) throws -> String? {
         guard let reference = params.string("component"), !reference.isEmpty else { return nil }
-        guard let component = entry.index.component(refdes: reference) ?? entry.index.component(id: reference) else {
+        guard let component = try entry.index.component(refdes: reference) ?? entry.index.component(idOrPrefix: reference) else {
             throw HorizontalDispatchError.notFound("No component \(reference).")
         }
         return component.refdes
@@ -2779,6 +2832,57 @@ enum HorizontalDispatchMethods {
         }.sorted { ($0.string("id") ?? "") < ($1.string("id") ?? "") }
     }
 
+    /// The board package a read is narrowed to, by its component's refdes or
+    /// id, and that package's pads by uuid with their names.
+    private static func packageFilter(_ entry: HorizontalDispatchProjectEntry, _ params: JSONDictionary)
+        throws -> (component: HorizontalDesignComponent, package: String, pads: [String: String])? {
+        guard let reference = params.string("component"), !reference.isEmpty else {
+            guard params["pads"] == nil, params["connected"] == nil else {
+                throw HorizontalDispatchError.invalidParams("pads and connected narrow a component's tracks; pass component too.")
+            }
+            return nil
+        }
+        let component = try HorizontalDispatchValidation.component(reference, index: entry.index)
+        guard let package = component.boardPlacement?.instanceID.lowercased(), !package.isEmpty else {
+            throw HorizontalDispatchError.notFound("\(component.refdes) is not placed on the board.")
+        }
+        var pads = [String: String]()
+        for terminal in component.physicalTerminals {
+            if let id = terminal.string("id")?.lowercased() { pads[id] = terminal.string("name") ?? id }
+        }
+        return (component, package, pads)
+    }
+
+    /// The tracks ending on a package's pads, or with `connected` every track
+    /// copper joins to them: out through junctions and the vias on them, and
+    /// stopping at any other pad, which is where one net's copper meets the
+    /// next part.
+    private static func trackIDs(onPads pads: Set<String>, tracks: [String: JSONDictionary], connected: Bool) -> Set<String> {
+        func end(_ track: JSONDictionary, _ key: String) -> (pad: String?, junction: String?) {
+            let endpoint = track.dictionary(key)
+            return (endpoint?.string("pad")?.lowercased(), endpoint?.string("junc")?.lowercased())
+        }
+        var found = Set<String>()
+        var byJunction = [String: [String]]()
+        for (id, track) in tracks {
+            for key in ["from", "to"] {
+                let (pad, junction) = end(track, key)
+                if let pad, pads.contains(pad) { found.insert(id) }
+                if let junction { byJunction[junction, default: []].append(id) }
+            }
+        }
+        guard connected else { return found }
+        var pending = Array(found)
+        while let id = pending.popLast() {
+            guard let track = tracks[id] else { continue }
+            for key in ["from", "to"] {
+                guard let junction = end(track, key).junction else { continue }
+                for next in byJunction[junction] ?? [] where found.insert(next).inserted { pending.append(next) }
+            }
+        }
+        return found
+    }
+
     @Sendable private static func listTracks(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         let wanted = try netFilter(entry, params)
@@ -2786,7 +2890,26 @@ enum HorizontalDispatchMethods {
         // The file says what an end lands on; the parsed model says where that
         // ended up, so the two are joined by id.
         let resolved = Dictionary(uniqueKeysWithValues: (entry.project.board?.tracks ?? []).map { ($0.id.lowercased(), $0) })
-        let matched = try boardJSON(entry).dictionaryMap("tracks").compactMap { id, item -> JSONDictionary? in
+        let tracks = try boardJSON(entry).dictionaryMap("tracks")
+        var onPads: Set<String>?
+        if let filter = try packageFilter(entry, params) {
+            var pads = Set(filter.pads.keys)
+            if let names = params["pads"] as? [String] {
+                pads = try Set(names.map { name in
+                    let matches = filter.pads.filter { $0.key == name.lowercased() || $0.value.caseInsensitiveCompare(name) == .orderedSame }
+                    guard matches.count == 1, let pad = matches.first?.key else {
+                        throw matches.isEmpty
+                            ? HorizontalDispatchError.notFound("No pad \(name) on \(filter.component.refdes). Pads: \(filter.pads.values.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.joined(separator: ", ")).")
+                            : HorizontalDispatchError.ambiguous("More than one pad of \(filter.component.refdes) is called \(name); use its uuid.", candidates: Array(matches.keys))
+                    }
+                    return pad
+                })
+            }
+            let keyed = Dictionary(tracks.map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { first, _ in first })
+            onPads = trackIDs(onPads: Set(pads.map { "\(filter.package)/\($0)" }), tracks: keyed, connected: params.bool("connected") ?? false)
+        }
+        let matched = tracks.compactMap { id, item -> JSONDictionary? in
+            guard onPads?.contains(id.lowercased()) ?? true else { return nil }
             let netID = resolved[id.lowercased()]?.netID?.lowercased()
             guard wanted == nil || wanted == netID else { return nil }
             let trackLayer = item.int("layer")
@@ -2811,12 +2934,33 @@ enum HorizontalDispatchMethods {
         return ["total": matched.count, "truncated": matched.count > limit, "tracks": Array(matched.prefix(limit))] as JSONDictionary
     }
 
+    /// Where a package sits on the board: its courtyard outlines, or the box
+    /// its pads fill when it has no courtyard.
+    static func packageArea(_ package: String, board: HorizontalBoard) -> [[HorizontalPoint]] {
+        let courtyard = board.packagePolygons.filter { polygon in
+            polygon.id.lowercased().hasPrefix(package + "/")
+                && polygon.layer.map { [HorizontalBoardLayers.topCourtyard, HorizontalBoardLayers.bottomCourtyard].contains($0) } == true
+        }.map { $0.renderVertices(arcPrecision: 24) }.filter { $0.count >= 3 }
+        if !courtyard.isEmpty { return courtyard }
+        let pads = board.packagePads.filter { $0.id.lowercased().hasPrefix(package + "/") }.flatMap { $0.renderVertices(arcPrecision: 24) }
+        guard !pads.isEmpty else { return [] }
+        let box = HorizontalRect(points: pads)
+        return [[HorizontalPoint(x: box.minX, y: box.minY), HorizontalPoint(x: box.maxX, y: box.minY),
+                 HorizontalPoint(x: box.maxX, y: box.maxY), HorizontalPoint(x: box.minX, y: box.maxY)]]
+    }
+
     @Sendable private static func listVias(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         let wanted = try netFilter(entry, params)
         let resolved = Dictionary(uniqueKeysWithValues: (entry.project.board?.vias ?? []).map { ($0.id.lowercased(), $0) })
+        let area = try packageFilter(entry, params).map { filter in
+            entry.project.board.map { packageArea(filter.package, board: $0) } ?? []
+        }
         let matched = try boardJSON(entry).dictionaryMap("vias").compactMap { id, item -> JSONDictionary? in
             let via = resolved[id.lowercased()]
+            if let area {
+                guard let via, area.contains(where: { HorizontalBoardOutlines.contains(via.position, in: $0) }) else { return nil }
+            }
             let netID = via?.netID?.lowercased()
             guard wanted == nil || wanted == netID else { return nil }
             var json: JSONDictionary = [
@@ -2830,6 +2974,14 @@ enum HorizontalDispatchMethods {
                 "from_rules": item.bool("from_rules") ?? false,
                 "net_pinned": item.string("net_set") != nil
             ]
+            // Horizon gives a via its rule's padstack and parameters when it
+            // opens the board; until then a file's via that takes its shape
+            // from the rules and holds no parameters is drawn at a guess.
+            let fromRules = item.string("source") == "rules" || (item.string("source") == nil && item.bool("from_rules") == true)
+            if fromRules, (item.dictionary("parameter_set") ?? [:]).isEmpty {
+                json["unresolved"] = true
+                json["note"] = "It takes its shape from the via rules but holds no parameters, so its size here is a default; place_via fills them from the rule that matches its net."
+            }
             if let via {
                 json["x_mm"] = HorizontalDispatchJSON.mm(via.position.x)
                 json["y_mm"] = HorizontalDispatchJSON.mm(via.position.y)

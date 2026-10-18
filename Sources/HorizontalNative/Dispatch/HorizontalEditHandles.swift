@@ -28,10 +28,16 @@ enum HorizontalEditHandles {
         "place_text": .text, "place_board_text": .boardText
     ]
 
-    /// Ops whose id names an existing thing rather than a new one. A text op
-    /// both makes and edits under its id, so a later place_text with the same
-    /// name edits the text an earlier one made.
-    static let idReferences: [String: Kind] = ["remove_text": .text, "remove_board_text": .boardText]
+    /// Ops whose id names an existing thing rather than a new one: the
+    /// removals, and the ops that take id for the line or junction they act
+    /// on. A text op both makes and edits under its id, so a later place_text
+    /// with the same name edits the text an earlier one made.
+    static let idReferences: [String: Kind] = [
+        "remove_text": .text, "remove_board_text": .boardText,
+        "remove_net_line": .netLine, "set_net_line_endpoint": .netLine, "remove_junction": .junction,
+        "remove_bus": .bus, "remove_net_tie": .netTie,
+        "remove_block_instance": .blockInstance, "remove_block_symbol": .blockInstance
+    ]
 
     /// Fields that name an existing thing of a kind, on any op.
     static let references: [String: Kind] = [

@@ -548,6 +548,11 @@ final class HorizontalDispatchPoolTests: XCTestCase {
 
         let plan = try XCTUnwrap(try result("clean_up_project_pool", ["dry_run": true, "remove": ["part|part-1", "symbol|sym-1"]]) as? JSONDictionary)
         XCTAssertEqual(plan["remove"] as? [String], ["part|part-1", "symbol|sym-1"])
+        // 139: a compact reply naming what it removes lists only those.
+        let compact = try XCTUnwrap(try result("clean_up_project_pool", ["dry_run": true, "remove": ["part|part-1", "symbol|sym-1"],
+                                                                         "detail": "compact"]) as? JSONDictionary)
+        XCTAssertEqual((compact["items"] as? [JSONDictionary])?.compactMap { $0.string("id") }, ["part|part-1", "symbol|sym-1"])
+        XCTAssertEqual(compact.int("unused_count"), 6)
         let chosenBytes = (plan["items"] as? [JSONDictionary])?.filter { ["part|part-1", "symbol|sym-1"].contains($0.string("id") ?? "") }
             .reduce(0) { $0 + ($1["bytes"] as? Int ?? 0) }
         XCTAssertEqual(plan["remove_bytes"] as? Int, chosenBytes)

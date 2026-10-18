@@ -59,9 +59,11 @@ workflow, supported models, and recovery guarantees.
 
 # MCP edit contracts
 
-Live commits update the open document and remain unsaved until `save`. Its
-`verified: true` response checks that disk matches the document snapshot; it
-does not establish that a canvas frame has been presented.
+Live commits update the open document, which autosaves them in place like any
+Mac document; `save` writes at once, for the moment the files go to git, an
+export or a build. Its `saved: true` with `verified: true` checks that disk
+matches the document snapshot, and `wrote` says whether that call wrote
+anything; it does not establish that a canvas frame has been presented.
 Use `source="live"` when an edit must reach the open window; automatic source
 selection can fall back to disk if the live document cannot be discovered.
 The sandboxed app needs access to the containing project folder to publish its
@@ -70,18 +72,20 @@ live connection record (see [live discovery](../docs/automation.md#finding-the-c
 Every MCP edit tool takes `dry_run`, the single-purpose ones (`set_component_value`,
 `rename_net`, `connect_pin`, `place_component`, `copy_group_layout`) as well as
 `apply_ops`, and commits the `plan_digest` its own dry run gives.
-Dry runs return `status: "preview"`, `written: []`, and `would_write` paths.
-`applied` is the legacy count of staged changes in a preview. Feed
-`normalized_ops` back unchanged with `before_revision` as `expected_revision`
-and the returned `plan_digest`; boolean fields remain JSON booleans. A commit
-returns `status: "committed"` and `durability: "disk"` or
-`"unsaved_document"`, or `"unchanged"` when the batch left every file as it
-was. Use a fresh `operation_id` for the commit.
+Dry runs return `status: "preview"`, `written: []`, and `would_write` paths,
+and need neither `expected_revision` nor `operation_id`: without a revision
+the plan is made against the project as it is. `applied` is the legacy count
+of staged changes in a preview. Commit the same ops with `before_revision` as
+`expected_revision` and the returned `plan_digest`; the commit installs what
+the dry run staged. A commit returns `status: "committed"` and
+`durability: "disk"` or `"document"` (the open document holds the edit and
+autosaves it; an older app says `"unsaved_document"`), or `"unchanged"` when
+the batch left every file as it was. Use a fresh `operation_id` for the commit.
 
 MCP edit replies are compact unless the tool is called with `verbose: true`:
 each change keeps its ids, scalars and counts, and the echoed operations, file
-previews and project summary are left out. A dry run keeps `normalized_ops`,
-since those are what get replayed. `timing` gives the milliseconds spent
+previews, project summary and a dry run's `normalized_ops` are left out; the
+names a batch gave things come back in `handles`. `timing` gives the milliseconds spent
 editing, loading the staged project, comparing diagnostics, and committing.
 
 Mutations get `HORIZONTAL_MUTATION_TIMEOUT` seconds (default 180) rather than

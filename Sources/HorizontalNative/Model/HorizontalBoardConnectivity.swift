@@ -21,7 +21,165 @@ enum HorizontalBoardConnectivity {
     /// A copy of `board` with track / via / via-hole / junction nets re-derived
     /// from pad connectivity. Copper not reachable from a single pad net gets a
     /// nil net (unconnected, or a flagged short when two nets collide).
+    /// The copper graph both passes walk: which pad nets seed which layer
+    /// nodes, how copper joins the nodes, and which tracks, vias and via
+    /// holes stand on each.
+    private struct Graph {
+        var seeds = [String: Set<String>]()
+        var neighbors = [String: Set<String>]()
+        var trackIdx = [String: [Int]]()
+        var viaIdx = [String: [Int]]()
+        var viaHoleIdx = [String: [Int]]()
+        var allKeys = Set<String>()
+        /// The pad ("package/pad") that seeds each node, for naming them.
+        var padAtKey = [String: String]()
+        var copperLayers = [Int]()
+    }
+
     static func recompute(_ board: HorizontalBoard) -> HorizontalBoard {
+        let built = graph(board)
+        let seeds = built.seeds, neighbors = built.neighbors, allKeys = built.allKeys
+        let trackIdx = built.trackIdx, viaIdx = built.viaIdx, viaHoleIdx = built.viaHoleIdx
+        let copperLayers = built.copperLayers
+
+        // --- Flood components; each gets its single pad net (else nil) --------
+        var tracks = board.tracks
+        var vias = board.vias
+        var viaHoles = board.viaHoles
+        var netForKey = [String: String]() // layer node -> resolved net
+        var visited = Set<String>()
+
+        for start in allKeys where !visited.contains(start) {
+            let component = flood(from: start, graph: built, visited: &visited)
+
+            // Exactly one pad net in the component → that net; zero or a
+            // collision (a short between nets) → nil (unconnected/flagged).
+            let distinct = Set(component.nets.map(normalizedID))
+            let net = distinct.count == 1 ? component.nets.first : nil
+            if let net {
+                for k in component.keys { netForKey[k] = net }
+            }
+            for i in component.tracks { tracks[i].netID = net }
+            // A net collision (nil component net) never un-pins a net_set via:
+            // the surrounding copper goes nil/flagged, the pin stays.
+            for i in component.vias { vias[i].netID = net ?? vias[i].netSetID }
+            for i in component.viaHoles { viaHoles[i].netID = net }
+        }
+
+        // --- Vacuum: drop junctions no longer incident to any copper ----------
+        // A junction exists to join objects, so it is kept only while a track,
+        // board line, arc, via or net-tie still meets it. Deleting a track must
+        // therefore remove the junctions it leaves orphaned, or the file
+        // accumulates junctions that join nothing.
+        var occupied = Set<String>()
+        for t in tracks { occupied.insert(pointKey(t.from)); occupied.insert(pointKey(t.to)) }
+        for v in vias { occupied.insert(pointKey(v.position)) }
+        for l in board.lines { occupied.insert(pointKey(l.from)); occupied.insert(pointKey(l.to)) }
+        // An arc references THREE junctions — its endpoints and its centre — so
+        // the centre counts as occupied even though no copper passes through it.
+        // Every junction an object references is kept, or a drawn or converted
+        // arc loses its centre on the next recompute and cannot be written back.
+        for a in board.arcs {
+            occupied.insert(pointKey(a.from))
+            occupied.insert(pointKey(a.to))
+            occupied.insert(pointKey(a.center))
+        }
+        for nt in board.netTies { occupied.insert(pointKey(nt.from)); occupied.insert(pointKey(nt.to)) }
+
+        var junctions = board.junctions
+        var junctionNetIDs = board.junctionNetIDs
+        for (id, point) in board.junctions {
+            let key = pointKey(point)
+            guard occupied.contains(key) else {
+                junctions.removeValue(forKey: id)
+                junctionNetIDs.removeValue(forKey: id)
+                continue
+            }
+            // Net = its position's component net (cleared when unconnected).
+            // A junction carries no layer, so it takes the net of the copper at
+            // its coordinate — but only when every layer there agrees, since a
+            // junction sitting where two nets cross on different layers belongs
+            // to neither.
+            let netsHere = Set(copperLayers.compactMap {
+                netForKey[HorizontalCopperConnectivity.node(point, layer: $0)]
+            })
+            if netsHere.count == 1, let net = netsHere.first {
+                junctionNetIDs[id] = net
+            } else {
+                junctionNetIDs.removeValue(forKey: id)
+            }
+        }
+
+        var result = board
+        result.tracks = tracks
+        result.vias = vias
+        result.viaHoles = viaHoles
+        result.junctions = junctions
+        result.junctionNetIDs = junctionNetIDs
+        return result
+    }
+
+    /// Copper that joins pads of more than one net: what recompute leaves
+    /// net-less and flags. A pin moved to another net with its tracks left on
+    /// it makes one, and the netlist never knows.
+    struct Short {
+        var nets: Set<String>
+        /// The pads it joins ("package/pad"), each with the net it brings.
+        var pads: [String: String]
+        var trackIDs: [String]
+        var viaIDs: [String]
+        /// Where one of its tracks starts, for finding it.
+        var position: HorizontalPoint?
+    }
+
+    static func shorts(_ board: HorizontalBoard) -> [Short] {
+        let built = graph(board)
+        var visited = Set<String>()
+        var found = [Short]()
+        for start in built.allKeys.sorted() where !visited.contains(start) {
+            let component = flood(from: start, graph: built, visited: &visited)
+            let nets = Set(component.nets.map(normalizedID))
+            guard nets.count > 1 else { continue }
+            var pads = [String: String]()
+            for key in component.keys {
+                guard let pad = built.padAtKey[key], let net = built.seeds[key]?.first else { continue }
+                pads[pad] = normalizedID(net)
+            }
+            let tracks = component.tracks.sorted()
+            found.append(Short(nets: nets, pads: pads, trackIDs: tracks.map { board.tracks[$0].id },
+                               viaIDs: component.vias.sorted().map { board.vias[$0].id },
+                               position: tracks.first.map { board.tracks[$0].from }))
+        }
+        return found
+    }
+
+    private struct Component {
+        var keys = [String]()
+        var nets = Set<String>()
+        var tracks = Set<Int>()
+        var vias = Set<Int>()
+        var viaHoles = Set<Int>()
+    }
+
+    private static func flood(from start: String, graph: Graph, visited: inout Set<String>) -> Component {
+        var component = Component()
+        var stack = [start]
+        visited.insert(start)
+        while let k = stack.popLast() {
+            component.keys.append(k)
+            component.nets.formUnion(graph.seeds[k] ?? [])
+            for i in graph.trackIdx[k] ?? [] { component.tracks.insert(i) }
+            for i in graph.viaIdx[k] ?? [] { component.vias.insert(i) }
+            for i in graph.viaHoleIdx[k] ?? [] { component.viaHoles.insert(i) }
+            for n in graph.neighbors[k] ?? [] where !visited.contains(n) {
+                visited.insert(n)
+                stack.append(n)
+            }
+        }
+        return component
+    }
+
+    private static func graph(_ board: HorizontalBoard) -> Graph {
         // --- Pad / hole net seeds (the only immutable sources) ---------------
         // Keyed by LAYER NODE, not by bare coordinate: a pad seeds only the
         // layers it has copper on. See HorizontalCopperConnectivity for why
@@ -50,12 +208,14 @@ enum HorizontalBoardConnectivity {
         // junction is there). So a pad whose centre carries a junction seeds
         // nothing: copper meeting it is detached, as it is on disk.
         let junctionKeys = Set(board.junctions.values.map(pointKey))
+        var padAtKey = [String: String]()
         for pad in board.packagePads {
             guard let layer = pad.layer, HorizontalBoardLayers.isCopper(layer) else { continue }
             let center = HorizontalRect(points: pad.renderVertices(arcPrecision: 24)).center
             guard !junctionKeys.contains(pointKey(center)) else { continue }
             seed(center, layer: layer, pad.netID)
             guard let path = padPath(forPolygonID: pad.id) else { continue }
+            padAtKey[HorizontalCopperConnectivity.node(center, layer: layer)] = path
             if let net = pad.netID { padNetByPath[path] = net }
             padLayersByPath[path, default: []].insert(layer)
             // One physical pad is one electrical object across every layer its
@@ -128,101 +288,16 @@ enum HorizontalBoardConnectivity {
                 allKeys.insert(k)
             }
         }
-        let neighbors = graph.neighbors
-
-        // --- Flood components; each gets its single pad net (else nil) --------
-        var tracks = board.tracks
-        var vias = board.vias
-        var viaHoles = board.viaHoles
-        var netForKey = [String: String]() // layer node -> resolved net
-        var visited = Set<String>()
-
-        for start in allKeys where !visited.contains(start) {
-            var stack = [start]
-            visited.insert(start)
-            var keys = [String]()
-            var tIdx = Set<Int>()
-            var vIdx = Set<Int>()
-            var hIdx = Set<Int>()
-            var nets = Set<String>()
-
-            while let k = stack.popLast() {
-                keys.append(k)
-                nets.formUnion(seeds[k] ?? [])
-                for i in trackIdx[k] ?? [] { tIdx.insert(i) }
-                for i in viaIdx[k] ?? [] { vIdx.insert(i) }
-                for i in viaHoleIdx[k] ?? [] { hIdx.insert(i) }
-                for n in neighbors[k] ?? [] where !visited.contains(n) {
-                    visited.insert(n)
-                    stack.append(n)
-                }
-            }
-
-            // Exactly one pad net in the component → that net; zero or a
-            // collision (a short between nets) → nil (unconnected/flagged).
-            let distinct = Set(nets.map(normalizedID))
-            let net = distinct.count == 1 ? nets.first : nil
-            if let net {
-                for k in keys { netForKey[k] = net }
-            }
-            for i in tIdx { tracks[i].netID = net }
-            // A net collision (nil component net) never un-pins a net_set via:
-            // the surrounding copper goes nil/flagged, the pin stays.
-            for i in vIdx { vias[i].netID = net ?? vias[i].netSetID }
-            for i in hIdx { viaHoles[i].netID = net }
-        }
-
-        // --- Vacuum: drop junctions no longer incident to any copper ----------
-        // A junction exists to join objects, so it is kept only while a track,
-        // board line, arc, via or net-tie still meets it. Deleting a track must
-        // therefore remove the junctions it leaves orphaned, or the file
-        // accumulates junctions that join nothing.
-        var occupied = Set<String>()
-        for t in tracks { occupied.insert(pointKey(t.from)); occupied.insert(pointKey(t.to)) }
-        for v in vias { occupied.insert(pointKey(v.position)) }
-        for l in board.lines { occupied.insert(pointKey(l.from)); occupied.insert(pointKey(l.to)) }
-        // An arc references THREE junctions — its endpoints and its centre — so
-        // the centre counts as occupied even though no copper passes through it.
-        // Every junction an object references is kept, or a drawn or converted
-        // arc loses its centre on the next recompute and cannot be written back.
-        for a in board.arcs {
-            occupied.insert(pointKey(a.from))
-            occupied.insert(pointKey(a.to))
-            occupied.insert(pointKey(a.center))
-        }
-        for nt in board.netTies { occupied.insert(pointKey(nt.from)); occupied.insert(pointKey(nt.to)) }
-
-        var junctions = board.junctions
-        var junctionNetIDs = board.junctionNetIDs
-        for (id, point) in board.junctions {
-            let key = pointKey(point)
-            guard occupied.contains(key) else {
-                junctions.removeValue(forKey: id)
-                junctionNetIDs.removeValue(forKey: id)
-                continue
-            }
-            // Net = its position's component net (cleared when unconnected).
-            // A junction carries no layer, so it takes the net of the copper at
-            // its coordinate — but only when every layer there agrees, since a
-            // junction sitting where two nets cross on different layers belongs
-            // to neither.
-            let netsHere = Set(copperLayers.compactMap {
-                netForKey[HorizontalCopperConnectivity.node(point, layer: $0)]
-            })
-            if netsHere.count == 1, let net = netsHere.first {
-                junctionNetIDs[id] = net
-            } else {
-                junctionNetIDs.removeValue(forKey: id)
-            }
-        }
-
-        var result = board
-        result.tracks = tracks
-        result.vias = vias
-        result.viaHoles = viaHoles
-        result.junctions = junctions
-        result.junctionNetIDs = junctionNetIDs
-        return result
+        var built = Graph()
+        built.seeds = seeds
+        built.neighbors = graph.neighbors
+        built.trackIdx = trackIdx
+        built.viaIdx = viaIdx
+        built.viaHoleIdx = viaHoleIdx
+        built.allKeys = allKeys
+        built.padAtKey = padAtKey
+        built.copperLayers = copperLayers
+        return built
     }
 
     // MARK: - Helpers (kept local to match the loader's keying exactly)

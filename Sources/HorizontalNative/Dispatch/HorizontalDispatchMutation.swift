@@ -80,15 +80,16 @@ enum HorizontalDispatchMutation {
 
     /// What a caller asked to see of a result. "compact" keeps the ids and
     /// counts an agent acts on and drops what it already sent or can ask for:
-    /// the echoed ops, file previews, the project summary. A dry run keeps its
-    /// normalized ops, because they are what gets replayed with plan_digest.
-    /// "full", the default, previews each file as the JSON paths it changes;
-    /// "files" adds each file's whole text before and after.
+    /// the echoed ops, file previews, the project summary. A dry run's
+    /// normalized ops go too: the commit that sends the same ops with the
+    /// plan_digest replays the plan this dry run kept, and the names a batch
+    /// gave things come back in handles. "full", the default, previews each
+    /// file as the JSON paths it changes; "files" adds each file's whole text
+    /// before and after.
     static func shaped(_ result: JSONDictionary, _ params: JSONDictionary) -> JSONDictionary {
         guard params.string("detail") == "compact" else { return result }
         var compact = result
-        for key in ["preview", "project", "payload_hash"] { compact.removeValue(forKey: key) }
-        if result.bool("dry_run") != true { compact.removeValue(forKey: "normalized_ops") }
+        for key in ["preview", "project", "payload_hash", "normalized_ops"] { compact.removeValue(forKey: key) }
         if let changes = result["changes"] as? [JSONDictionary] {
             compact["changes"] = changes.map(compactChange)
         }
@@ -151,18 +152,34 @@ enum HorizontalDispatchMutation {
                 details: ["holders": holders.map(\.summary)]
             )
         }
-        try entry.requireRevision(params)
+        // A dry run changes nothing, so it needs no revision to guard: without
+        // one it plans against the project as it is, and its reply's
+        // before_revision is what the commit sends.
+        try entry.requireRevision(params, currentWhenMissing: dryRun)
         guard let snapshot = entry.snapshot else { throw HorizontalDispatchError.failed("No project snapshot.") }
         if let live = entry.live {
             guard Thread.isMainThread else { throw HorizontalDispatchError.failed("Live mutations require the app channel.") }
             let readOnly = MainActor.assumeIsolated { live.isReadOnly() }
             guard !readOnly else { throw HorizontalDispatchError(code: .readOnly, message: "The document is read-only.") }
+            // Without the tree its manifest names there is nothing to write an
+            // edit into; every file would be "not a valid project-relative path".
+            guard !entry.holdsProjectFileOnly else {
+                throw HorizontalDispatchError(
+                    code: .recoveryRequired,
+                    message: "Horizontal holds only \(entry.url.lastPathComponent) for this document, not the blocks, schematic, board and pool it names "
+                        + "(its window was reverted, or read the file again in place), so it can't take edits. Its window gathers them again on its own; "
+                        + "if this persists, close the project in Horizontal and open it again. Reads come from its files on disk meanwhile.",
+                    details: ["archive": "project_file_only", "project_file": entry.url.path])
+            }
         }
         // A commit that replays the dry run just made — same revision, same
         // request, the plan it returned — installs what the dry run staged and
-        // validated instead of editing and loading the project again.
+        // validated instead of editing and loading the project again. The
+        // revision the plan was made at stands in for expected_revision, which
+        // a dry run may leave out and a commit has already been checked against.
         let planKeys = { (ops: Any?) throws -> String in
-            var payload = params.filter { !["handle", "include_metadata", "operation_id", "plan_digest", "deadline_unix_ms", "detail", "dry_run"].contains($0.key) }
+            var payload = params.filter { !["handle", "include_metadata", "operation_id", "plan_digest", "deadline_unix_ms", "detail", "dry_run",
+                                            "expected_revision"].contains($0.key) }
             if let ops { payload["ops"] = ops }
             payload["revision"] = entry.revision
             return HorizontalProjectTransaction.digest(try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]))
@@ -296,9 +313,10 @@ enum HorizontalDispatchMutation {
         result["operation_id"] = operationID!
         result["payload_hash"] = payloadHash
         result["status"] = "committed"
-        // Nothing written is nothing to save: "unsaved_document" would send a
-        // caller to save a document that has no changes.
-        result["durability"] = changed.isEmpty ? "unchanged" : entry.live == nil ? "disk" : "unsaved_document"
+        // "document": the open document holds the edit and autosaves it, as a
+        // Mac document does; save writes it at once. Nothing written is
+        // "unchanged", so a caller isn't sent to save what has no changes.
+        result["durability"] = changed.isEmpty ? "unchanged" : entry.live == nil ? "disk" : "document"
         result["written"] = changed
         result["after_revision"] = unchanged ? entry.revision : "\(entry.instanceID):\(entry.generation + 1):\(after.id)"
         if let transaction {

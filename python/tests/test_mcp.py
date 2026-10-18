@@ -45,8 +45,15 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("id", net.input_schema["properties"])
         self.assertFalse(net.input_schema["additionalProperties"])
         ops = tools["apply_ops"].input_schema
-        self.assertIn("expected_revision", ops["required"])
-        self.assertIn("operation_id", ops["required"])
+        # Both are there for a commit, and a dry run may leave them out (116).
+        self.assertIn("expected_revision", ops["properties"])
+        self.assertIn("operation_id", ops["properties"])
+        self.assertNotIn("expected_revision", ops.get("required", []))
+        unguarded = await server.mcp.call_tool("apply_ops", {"project_ref": self.ref, "ops": [{"op": "ensure_net", "name": "N"}]})
+        self.assertTrue(unguarded.is_error)
+        self.assertIn("required to commit", str(unguarded.structured_content))
+        dry = await self.call("apply_ops", project_ref=self.ref, dry_run=True, ops=[{"op": "ensure_net", "name": "N"}])
+        self.assertEqual(dry["data"]["before_revision"], self.opened["data"]["revision"])
         self.assertIn("discriminator", ops["properties"]["ops"]["items"])
         self.assertIn("Component", tools["get_component"].output_schema["$defs"])
 
@@ -76,7 +83,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             current = await self.call("board_info", project_ref=self.ref)
             preview = await self.call("apply_ops", project_ref=self.ref,
                                       expected_revision=current["meta"]["revision"], operation_id=str(uuid.uuid4()), dry_run=True,
-                                      ops=[{"op": "place_text", "text": "mirror", "x_mm": 1, "y_mm": 2, "mirror": mirror}])
+                                      ops=[{"op": "place_text", "text": "mirror", "x_mm": 1, "y_mm": 2, "mirror": mirror}], verbose=True)
             data = preview["data"]
             self.assertIs(data["normalized_ops"][0]["mirror"], mirror)
             self.assertEqual(data["status"], "preview")
@@ -109,9 +116,13 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         preview = (await self.call("apply_ops", project_ref=self.ref, expected_revision=self.opened["data"]["revision"],
                                    operation_id="preview-wire", dry_run=True, ops=ops))["data"]
         self.assertEqual((await self.call("list_junctions", project_ref=self.ref))["data"], [])
+        # The commit sends the ops it dry-ran, with the plan; the compact
+        # preview leaves the echoed ops out (103).
+        self.assertNotIn("normalized_ops", preview)
         committed = await self.call("apply_ops", project_ref=self.ref, expected_revision=preview["before_revision"],
-                                    operation_id="commit-wire", ops=preview["normalized_ops"], plan_digest=preview["plan_digest"])
-        line_id = preview["normalized_ops"][-1]["id"]
+                                    operation_id="commit-wire", ops=ops, plan_digest=preview["plan_digest"])
+        self.assertTrue(committed["data"]["timing"].get("reused_dry_run"))
+        line_id = committed["data"]["changes"][-1]["net_line"]
         self.assertEqual((await self.call("list_net_lines", project_ref=self.ref))["data"][0]["id"], line_id)
         await self.call("apply_ops", project_ref=self.ref, expected_revision=committed["data"]["after_revision"],
                         operation_id="retarget-wire", ops=[{"op": "set_net_line_endpoint", "line": line_id, "end": "to",
@@ -215,8 +226,8 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
 
         # Bringing in a part is a mutation like any other: guarded, and named.
         for name in ("import_pool_part", "pool_write", "update_project_parts", "clean_up_project_pool"):
-            self.assertIn("expected_revision", tools[name].input_schema["required"])
-            self.assertIn("operation_id", tools[name].input_schema["required"])
+            self.assertIn("expected_revision", tools[name].input_schema["properties"])
+            self.assertIn("operation_id", tools[name].input_schema["properties"])
         # A pool with nothing unused offers nothing, and the dry run says so.
         cleanup = await server.mcp.call_tool("clean_up_project_pool", {
             "project_ref": self.ref, "dry_run": True,
@@ -410,6 +421,32 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             result = await server.mcp.call_tool("apply_ops", {
                 "project_ref": self.ref, "expected_revision": revision, "operation_id": str(uuid.uuid4()), "ops": [op]})
             self.assertTrue(result.is_error, op)
+
+    async def test_a_project_folder_names_its_hprj_and_unnamed_wires_name_their_net(self):
+        # 133: a folder holding a Horizon project is that project.
+        folder = Path(self.temp.name) / "Folder Project"
+        folder.mkdir()
+        (folder / "Folder.hprj").write_text("{}")
+        (folder / "notes.txt").write_text("")
+        from horizontal.client import project_file
+        self.assertEqual(project_file(folder), (folder / "Folder.hprj").resolve())
+        self.assertEqual(project_file(self.path), self.path.resolve(), "a .horizontal package is itself")
+        state = (await self.call("live_state", path=str(folder)))["data"]
+        self.assertEqual(state["status"], "unavailable")
+
+        # 114: a compact wire row on an unnamed net carries the net's uuid.
+        revision = self.opened["data"]["revision"]
+        net = "33b623e6-0000-4000-8000-0000000000aa"
+        made = (await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id=str(uuid.uuid4()), ops=[
+            {"op": "ensure_net", "id": net, "name": "TMP"},
+            {"op": "place_junction", "id": "a", "net": net, "x_mm": 0, "y_mm": 0},
+            {"op": "place_junction", "id": "b", "net": net, "x_mm": 5, "y_mm": 0},
+            {"op": "draw_net_line", "from": {"kind": "junction", "junction": "a"}, "to": {"kind": "junction", "junction": "b"}},
+            {"op": "rename_net", "net": "33b623e6", "name": ""}]))["data"]
+        rows = (await self.call("list_net_lines", project_ref=self.ref))["data"]
+        self.assertEqual(rows[0]["net_name"], "")
+        self.assertEqual(rows[0]["net"], net)
+        self.assertEqual(made["durability"], "disk")
 
     async def test_edit_replies_are_compact_unless_verbose(self):
         revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
@@ -727,7 +764,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         for name in ("list_planes", "list_polygons", "board_rules", "get_pool_item"):
             self.assertTrue(tools[name].annotations.read_only_hint, name)
         self.assertFalse(tools["pour_planes"].annotations.read_only_hint)
-        self.assertIn("expected_revision", tools["pour_planes"].input_schema["required"])
+        self.assertIn("expected_revision", tools["pour_planes"].input_schema["properties"])
 
         # A fresh board has no shape and no rules, and says so rather than
         # implying it is ready.
@@ -762,7 +799,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         tools = {t.name: t for t in await server.mcp.list_tools()}
         self.assertTrue(tools["list_block_instances"].annotations.read_only_hint)
         self.assertFalse(tools["autoroute"].annotations.read_only_hint)
-        self.assertIn("expected_revision", tools["autoroute"].input_schema["required"])
+        self.assertIn("expected_revision", tools["autoroute"].input_schema["properties"])
         mapping = tools["apply_ops"].input_schema["properties"]["ops"]["items"]["discriminator"]["mapping"]
         for op in ("add_block_instance", "connect_block_port", "place_block_symbol", "set_stackup"):
             self.assertIn(op, mapping)
