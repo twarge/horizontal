@@ -579,8 +579,38 @@ struct HorizontalSchematicPaste {
     }
 }
 
+extension HorizontalSchematicPaste {
+    /// `placedArchive` with what the drop connected: as Horizon's paste tool
+    /// merges and connects where it puts things down, a pasted wire ending on
+    /// a pin joins it, and nets the paste brought in merge into the ones they
+    /// met. `wiring.sheet` is the placed preview after the canvas's wiring
+    /// pass; `wiring.netMerges` the nets it merged away, which the block, the
+    /// other sheets and the board still name.
+    func placedArchive(
+        _ transform: HorizontalPlacementTransform,
+        in currentArchive: HorizontalProjectArchive,
+        wiring: HorizontalSchematicPasteWiring?,
+        schematicURL: URL,
+        project: HorizontalProject
+    ) throws -> HorizontalProjectArchive {
+        var result = try placedArchive(transform, in: currentArchive)
+        guard let wiring else {
+            return result
+        }
+        try HorizontalProjectJSONApplicator.apply(schematicSheet: wiring.sheet, schematicURL: schematicURL, in: project, to: &result)
+        try HorizontalProjectJSONApplicator.apply(netMerges: wiring.netMerges, schematicURL: schematicURL, in: project, to: &result)
+        return result
+    }
+}
+
+/// What a paste connected where it was put down.
+struct HorizontalSchematicPasteWiring {
+    var sheet: HorizontalSchematicSheet
+    var netMerges: [String: String]
+}
+
 /// The workspace owns the eventual archive/Undo; the canvas owns placement.
 struct HorizontalSchematicPastePlacement {
     var paste: HorizontalSchematicPaste
-    var commit: (HorizontalPlacementTransform) -> Void
+    var commit: (HorizontalPlacementTransform, HorizontalSchematicPasteWiring?) -> Void
 }

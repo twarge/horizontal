@@ -44,6 +44,52 @@ final class SchematicClipboardTests: XCTestCase {
         XCTAssertEqual(second.sheet.symbols.count, 6)
     }
 
+    /// A pasted wire put down with its end on a free pin joins the pin, as
+    /// Horizon's paste merges and connects where it lands. Before, the pin
+    /// stayed off the net with a wire end lying on it. The clipboard is used
+    /// as Duplicate uses it, without a trip through JSON: the free ends it
+    /// makes for the wire used to read back as the origin, so a duplicated
+    /// wire collapsed onto one point.
+    func testAPastedWireEndingOnAPinConnectsIt() throws {
+        let source = try fixture()
+        let sheet = source.sheet
+        let wire = try XCTUnwrap(sheet.netLines.first { line in
+            sheet.netDetails[line.netID ?? ""]?.name == ""
+        })
+        let r2 = try XCTUnwrap(sheet.symbols.first { $0.label == "R2" })
+        let freePin = try XCTUnwrap(sheet.symbolPins.first { pin in
+            guard let ref = HorizontalSchematicSheet.SchematicPinRef(stemID: pin.id),
+                  ref.symbolID == r2.id.lowercased() else { return false }
+            return pin.netID == nil && sheet.connection(of: ref) == nil
+        })
+        let clipboard = try copy([.init(id: wire.id, type: .lineNet)], from: source)
+        let paste = try HorizontalSchematicClipboardEditor.prepare(clipboard, at: freePin.from - wire.from,
+            sheetID: sheet.id, schematicURL: source.project.schematic!.url,
+            archive: source.archive, project: source.project)
+
+        // What the canvas does on the click that puts the paste down.
+        var draft = paste.preview(.identity)
+        let touched = draft.touchedPointKeys(since: sheet)
+        draft.connectCoincident(at: touched)
+        XCTAssertTrue(draft.netConflicts(touching: touched).isEmpty)
+        draft.spreadNets(touching: touched)
+        let archive = try paste.placedArchive(.identity, in: source.archive,
+            wiring: HorizontalSchematicPasteWiring(sheet: draft, netMerges: [:]),
+            schematicURL: source.project.schematic!.url, project: source.project)
+
+        let pinRef = try XCTUnwrap(HorizontalSchematicSheet.SchematicPinRef(stemID: freePin.id))
+        let reopened = try XCTUnwrap(HorizontalProject.loadSnapshot(of: archive).schematic?.sheets[0])
+        let pastedWire = try XCTUnwrap(reopened.netLines.first { line in
+            line.id.lowercased() != wire.id.lowercased() && (line.from == freePin.from || line.to == freePin.from)
+        })
+        let netID = try XCTUnwrap(pastedWire.netID)
+        XCTAssertEqual(reopened.symbolPins.first { $0.id == freePin.id }?.netID, netID, "the pin is on the pasted wire's net")
+        XCTAssertEqual(reopened.connection(of: pinRef)?.netID, netID)
+        let r2Component = try XCTUnwrap(try block(archive).dictionaryMap("components").first { $0.value.string("refdes") == "R2" })
+        XCTAssertTrue(r2Component.value.dictionaryMap("connections").values.contains { $0.string("net")?.lowercased() == netID.lowercased() },
+                      "the block connects the pin")
+    }
+
     func testPartialSelectionDropsHiddenConnectionsAndDetachesUnselectedPins() throws {
         let source = try fixture()
         let symbol = try XCTUnwrap(source.sheet.symbols.first { $0.label == "R1" })
@@ -366,9 +412,10 @@ extension SchematicClipboardTests {
                 let paste = try HorizontalSchematicClipboardEditor.prepare(clipboard, at: point,
                     sheetID: fixture.sheet.id, schematicURL: fixture.project.schematic!.url,
                     archive: fixture.archive, project: fixture.project)
-                return HorizontalSchematicPastePlacement(paste: paste) { transform in
+                return HorizontalSchematicPastePlacement(paste: paste) { transform, wiring in
                     do {
-                        let archive = try paste.placedArchive(transform, in: self.fixture.archive)
+                        let archive = try paste.placedArchive(transform, in: self.fixture.archive, wiring: wiring,
+                            schematicURL: self.fixture.project.schematic!.url, project: self.fixture.project)
                         var reloaded = try HorizontalProject.loadSnapshot(of: archive)
                         reloaded.rebaseURLs(onto: self.fixture.project)
                         self.target.registerUndo(from: self.fixture, actionName: name, undoManager: self.undo)

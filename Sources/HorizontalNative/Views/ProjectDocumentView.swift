@@ -3172,9 +3172,12 @@ struct ProjectWorkspaceView: View {
                 clipboard, at: point, sheetID: selectedSchematic.sheet.id, schematicURL: selectedSchematic.url,
                 archive: document.archive, project: project
             )
-            return HorizontalSchematicPastePlacement(paste: paste) { transform in
-                do { try applyLiveArchive(paste.placedArchive(transform, in: document.archive), actionName: actionName) }
-                catch { projectEditError = HorizontalCanvasProjectEdit.message(for: error) }
+            return HorizontalSchematicPastePlacement(paste: paste) { transform, wiring in
+                do {
+                    try applyLiveArchive(paste.placedArchive(transform, in: document.archive, wiring: wiring,
+                                                             schematicURL: selectedSchematic.url, project: project),
+                                         actionName: actionName)
+                } catch { projectEditError = HorizontalCanvasProjectEdit.message(for: error) }
             }
         } catch {
             projectEditError = HorizontalCanvasProjectEdit.message(for: error)

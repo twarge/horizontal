@@ -128,6 +128,11 @@ extension JSONHelper {
         if let value = value as? Int {
             return Double(value)
         }
+        // What `HorizontalSchematicClipboardEditor.pointJSON` writes into a
+        // clipboard that never went through JSON, as Duplicate's does.
+        if let value = value as? Int64 {
+            return Double(value)
+        }
         return 0
     }
 }
