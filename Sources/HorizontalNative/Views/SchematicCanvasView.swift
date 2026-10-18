@@ -2668,13 +2668,20 @@ struct SchematicCanvasView: View {
             editedSheet = originalSheet
             invalidateSelectableCache()
         }
-        let snapTargets = schematicSnapTargets(excluding: selectedObjects)
+        let selectionPointKeys = schematicSnapTargetKeys(for: selectedObjects)
+        let snapTargets = schematicSnapTargets(excludingKeys: selectionPointKeys)
         let connectionPlan = selectedSchematicSymbolMoveConnectionPlan(in: originalSheet)
         let connectionMovePlan = selectedSchematicConnectionMovePlan(in: originalSheet)
-        let snappedStart = snapSchematicPointToGrid(start)
+        let grabbedPoint = tracksCursor
+            ? HorizontalCanvasModeSupport.cursorAnchor(
+                cursor: start,
+                cursorIsOnSelection: selectionPointKeys.contains(pointKey(start)),
+                snapToGrid: snapSchematicPointToGrid
+            )
+            : start
         let initialPoints = HorizontalCanvasModeSupport.moveInitialPoints(
-            startPoint: start,
-            snappedCursorPoint: snappedStart,
+            startPoint: grabbedPoint,
+            snappedCursorPoint: snapSchematicPointToGrid(grabbedPoint),
             tracksCursor: tracksCursor
         )
         moveState = MoveState(
@@ -3879,18 +3886,33 @@ struct SchematicCanvasView: View {
     }
 
     /// The point R, E and T turn and flip about, when not the selection's
-    /// centre: the cursor, and only in a move that follows it, where the
+    /// pivot: the cursor, and only in a move that follows it, where the
     /// pointer holds what moves. A selection at rest (124) and a move made with
     /// the arrow keys (123) turn about what they hold, since the pointer may be
-    /// resting anywhere on the canvas.
+    /// resting anywhere on the canvas. It is where the move has taken the
+    /// grabbed point: a grid point or another object's point, never one the
+    /// move carries off the grid.
     private var transformPivotCursor: HorizontalPoint? {
-        moveState?.tracksCursor == true ? lastCursorWorldPoint : nil
+        moveState?.tracksCursor == true ? moveState?.lastPoint : nil
     }
 
+    /// T, Horizon's "rotate around cursor": a selection at rest turns about
+    /// the point under the cursor, as `HorizontalCanvasModeSupport.cursorAnchor`
+    /// picks it; one being moved, as R does, about what the cursor holds.
     private func twirlSelection() {
-        let cursor = transformPivotCursor
-        transformSelection(actionName: "Twirl") { center, draft in
+        let cursor = transformPivotCursor ?? (moveState == nil ? schematicCursorPivot() : nil)
+        transformSelection(actionName: "Rotate") { center, draft in
             rotateSelectedObjects(around: cursor ?? center, by: Self.quarterTurnAngle, sheet: &draft)
+        }
+    }
+
+    private func schematicCursorPivot() -> HorizontalPoint? {
+        lastCursorWorldPoint.map { cursor in
+            HorizontalCanvasModeSupport.cursorAnchor(
+                cursor: cursor,
+                cursorIsOnSelection: schematicSnapTargetKeys(for: selectedObjects).contains(pointKey(cursor)),
+                snapToGrid: snapSchematicPointToGrid
+            )
         }
     }
 
@@ -3905,7 +3927,7 @@ struct SchematicCanvasView: View {
 
         if var state = moveState {
             let currentPreview = schematicMovePreviewSheet(for: state)
-            guard let center = schematicSelectionCenter(in: currentPreview) else {
+            guard let center = schematicSelectionPivot(in: currentPreview) else {
                 return
             }
 
@@ -3940,7 +3962,7 @@ struct SchematicCanvasView: View {
             return
         }
 
-        guard let center = schematicSelectionCenter() else {
+        guard let center = schematicSelectionPivot(in: sheet) else {
             return
         }
 
@@ -3971,6 +3993,29 @@ struct SchematicCanvasView: View {
         HorizontalCanvasModeSupport.selectionCenter(for: selectedObjects) { ref in
             selectionAnchorPoints(for: ref, in: sheet)
         }
+    }
+
+    /// The point R and E turn and flip the selection about
+    /// (`HorizontalCanvasModeSupport.selectionPivot`): on a sheet a group's
+    /// always goes onto the grid, as Horizon puts it (`ToolMove`).
+    private func schematicSelectionPivot(in sheet: HorizontalSchematicSheet) -> HorizontalPoint? {
+        HorizontalCanvasModeSupport.selectionPivot(
+            for: selectedObjects,
+            origins: { pivotOrigins(for: $0, in: sheet) },
+            snapToGrid: { center, _ in snapSchematicPointToGrid(center) }
+        )
+    }
+
+    /// What places an object, for the pivot: its origin, a wire's ends, a
+    /// block symbol's ports (its drawing, when it has none).
+    private func pivotOrigins(for ref: HorizontalSelectableRef, in sheet: HorizontalSchematicSheet) -> [HorizontalPoint] {
+        if ref.type == .schematicBlockSymbol {
+            let ports = schematicBlockSymbolPortEnds(blockSymbolID: ref.id, sheet: sheet)
+            if !ports.isEmpty {
+                return ports
+            }
+        }
+        return selectionAnchorPoints(for: ref, in: sheet)
     }
 
     private func selectionAnchorPoints(for ref: HorizontalSelectableRef) -> [HorizontalPoint] {
@@ -5898,6 +5943,13 @@ struct SchematicCanvasView: View {
         return sheet.powerSymbolLines
             .filter { geometryID($0.id, belongsTo: symbolID, separators: separators) }
             .filter { normalizedID($0.id).contains("/stem") }
+            .map(\.from)
+    }
+
+    /// Where wires join a block symbol: the outer end of each port's stem.
+    private func schematicBlockSymbolPortEnds(blockSymbolID: String, sheet: HorizontalSchematicSheet) -> [HorizontalPoint] {
+        sheet.blockSymbolPorts
+            .filter { Self.isConnectionStem($0.id, kind: "block-port") && geometryID($0.id, belongsTo: blockSymbolID, separators: ["block-port"]) }
             .map(\.from)
     }
 
@@ -10629,13 +10681,17 @@ struct SchematicCanvasView: View {
     }
 
     private func schematicSnapTargets(excluding refs: [HorizontalSelectableRef]) -> [HorizontalPoint] {
+        schematicSnapTargets(excludingKeys: refs.isEmpty ? [] : schematicSnapTargetKeys(for: refs))
+    }
+
+    private func schematicSnapTargets(excludingKeys keys: Set<String>) -> [HorizontalPoint] {
         let targets = selectableCache.snapTargets(key: selectableCacheKey) {
             var seen = Set<String>()
             return (schematicSelectableScene().snapTargets(pointKey: pointKey) + schematicConnectionSnapTargets())
                 .filter { seen.insert(pointKey($0)).inserted }
         }
 
-        let excludedTargetKeys = schematicSnapTargetKeysExcludedByActiveInteraction(additionalRefs: refs)
+        let excludedTargetKeys = schematicSnapTargetKeysExcludedByActiveInteraction().union(keys)
         guard !excludedTargetKeys.isEmpty else {
             return targets
         }
@@ -10643,7 +10699,7 @@ struct SchematicCanvasView: View {
         return targets.filter { !excludedTargetKeys.contains(pointKey($0)) }
     }
 
-    private func schematicSnapTargetKeysExcludedByActiveInteraction(additionalRefs: [HorizontalSelectableRef] = []) -> Set<String> {
+    private func schematicSnapTargetKeysExcludedByActiveInteraction() -> Set<String> {
         var keys = Set<String>()
 
         if let placedSymbolID = placePartState?.symbolID {
@@ -10652,9 +10708,6 @@ struct SchematicCanvasView: View {
 
         if moveState != nil {
             keys.formUnion(schematicSnapTargetKeys(for: selectedObjects))
-        }
-        if !additionalRefs.isEmpty {
-            keys.formUnion(schematicSnapTargetKeys(for: additionalRefs))
         }
 
         return keys
@@ -10670,7 +10723,7 @@ struct SchematicCanvasView: View {
         var points = [HorizontalPoint]()
         points.append(contentsOf: schematicSelectables()
             .filter { refSet.contains($0.ref) }
-            .flatMap(\.snapPoints))
+            .flatMap(\.anchorSnapPoints))
 
         for ref in refSet {
             switch ref.type {
@@ -10680,7 +10733,9 @@ struct SchematicCanvasView: View {
                 points.append(contentsOf: selectionAnchorPoints(for: ref))
             case .busRipper:
                 points.append(contentsOf: busRipperConnectionPoints(ripperID: ref.id, sheet: sheet))
-            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .schematicBlockSymbol, .symbolPin, .track, .via:
+            case .schematicBlockSymbol:
+                points.append(contentsOf: schematicBlockSymbolPortEnds(blockSymbolID: ref.id, sheet: sheet))
+            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
                 break
             }
         }
@@ -10723,31 +10778,49 @@ struct SchematicCanvasView: View {
 
         points.append(contentsOf: schematicSymbolSelectables()
             .filter { normalizedID($0.ref.id) == normalizedSymbolID }
-            .flatMap(\.snapPoints))
+            .flatMap(\.anchorSnapPoints))
 
         func belongsToSymbol(_ geometryID: String) -> Bool {
             self.symbolID(forGeometryID: geometryID).map(normalizedID) == normalizedSymbolID
         }
 
-        for pin in sheet.symbolPins where belongsToSymbol(pin.id) {
-            points.append(contentsOf: [pin.from, pin.to])
-        }
-        for circle in sheet.symbolPinCircles where belongsToSymbol(circle.id) {
-            points.append(circle.center)
+        for pin in sheet.symbolPins where Self.isConnectionStem(pin.id, kind: "pin") && belongsToSymbol(pin.id) {
+            points.append(pin.from)
         }
 
         return Set(points.map(pointKey))
     }
 
+    /// Where things join on the sheet: wire ends, the end of each pin and
+    /// block-symbol port a wire connects to, and bus rippers. Only a pin's or a
+    /// port's stem counts, and only its outer end: the inner end, the
+    /// direction and connector marks and the decorations sit inside a symbol,
+    /// and as snap targets they pulled what was moved near a part off the grid.
     private func schematicConnectionSnapTargets() -> [HorizontalPoint] {
-        sheet.netLines.flatMap { [$0.from, $0.to] }
-            + sheet.drawingArcs.flatMap { [$0.from, $0.to, $0.center] }
-            + sheet.symbolPins.flatMap { [$0.from, $0.to] }
-            + sheet.symbolPinCircles.map(\.center)
-            + sheet.blockSymbolPorts.flatMap { [$0.from, $0.to] }
-            + sheet.busRipperLines.flatMap { [$0.from, $0.to] }
-            + sheet.powerSymbolLines.flatMap { [$0.from, $0.to] }
-            + sheet.powerSymbolCircles.map(\.center)
+        var targets = [HorizontalPoint]()
+        for line in sheet.netLines {
+            targets.append(contentsOf: [line.from, line.to])
+        }
+        for arc in sheet.drawingArcs {
+            targets.append(contentsOf: [arc.from, arc.to, arc.center])
+        }
+        for pin in sheet.symbolPins where Self.isConnectionStem(pin.id, kind: "pin") {
+            targets.append(pin.from)
+        }
+        for port in sheet.blockSymbolPorts where Self.isConnectionStem(port.id, kind: "block-port") {
+            targets.append(port.from)
+        }
+        for line in sheet.busRipperLines {
+            targets.append(contentsOf: [line.from, line.to])
+        }
+        return targets
+    }
+
+    /// Whether a baked segment is a pin's (`<symbol>/pin/<pin>`) or a block
+    /// port's (`<block>/block-port/<port>`) stem, which starts where a wire joins.
+    private static func isConnectionStem(_ id: String, kind: String) -> Bool {
+        let parts = id.lowercased().split(separator: "/")
+        return parts.count == 3 && parts[1] == kind
     }
 
     private func segmentSelectables(_ segments: [HorizontalSegment], type: HorizontalObjectType) -> [HorizontalSelectable] {

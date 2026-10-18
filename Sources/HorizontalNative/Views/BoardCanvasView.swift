@@ -3865,7 +3865,19 @@ struct BoardCanvasView: View {
         measure("select move set") {
             selectedObjects = moveSelection
         }
-        let snapTargets = measure("snap targets") { boardSnapTargets() }
+        let selectionPointKeys = measure("selection points") { boardSnapTargetKeys(for: moveSelection) }
+        // The cursor snaps to everything but what moves, as Horizon's move
+        // tool filters the selection out of its targets.
+        let snapTargets = measure("snap targets") {
+            boardSnapTargets().filter { !selectionPointKeys.contains(pointKey($0)) }
+        }
+        let grabbedPoint = tracksCursor
+            ? HorizontalCanvasModeSupport.cursorAnchor(
+                cursor: start,
+                cursorIsOnSelection: selectionPointKeys.contains(pointKey(start)),
+                snapToGrid: snapBoardPointToGrid
+            )
+            : start
         let residentMovePlan = measure("resident plan") {
             boardResidentMovePlan(for: moveSelection, in: originalBoard)
         }
@@ -3874,8 +3886,8 @@ struct BoardCanvasView: View {
         }
         measure("state assign") {
             moveState = MoveState(
-                startPoint: start,
-                lastPoint: start,
+                startPoint: grabbedPoint,
+                lastPoint: grabbedPoint,
                 originalBoard: originalBoard,
                 tracksCursor: tracksCursor,
                 snapTargets: snapTargets,
@@ -5935,18 +5947,32 @@ struct BoardCanvasView: View {
     }
 
     /// The point R, E and T turn and flip about, when not the selection's
-    /// centre: the cursor, and only in a move that follows it, where the
+    /// pivot: the cursor, and only in a move that follows it, where the
     /// pointer holds what moves. A selection at rest (124) and a move made with
     /// the arrow keys (123) turn about what they hold, since the pointer may be
-    /// resting anywhere on the canvas.
+    /// resting anywhere on the canvas. It is where the
+    /// move has taken the grabbed point.
     private var transformPivotCursor: HorizontalPoint? {
-        moveState?.tracksCursor == true ? lastCursorWorldPoint : nil
+        moveState?.tracksCursor == true ? moveState?.lastPoint : nil
     }
 
+    /// T, Horizon's "rotate around cursor": a selection at rest turns about
+    /// the point under the cursor, as `HorizontalCanvasModeSupport.cursorAnchor`
+    /// picks it; one being moved, as R does, about what the cursor holds.
     private func twirlSelection() {
-        let cursor = transformPivotCursor
-        transformSelection(actionName: "Twirl", turn: BoardSelectionTurn(angle: Self.quarterTurnAngle, aboutCursor: true)) { center, draft in
+        let cursor = transformPivotCursor ?? (moveState == nil ? boardCursorPivot() : nil)
+        transformSelection(actionName: "Rotate", turn: BoardSelectionTurn(angle: Self.quarterTurnAngle, aboutCursor: true)) { center, draft in
             rotateSelectedObjects(around: cursor ?? center, by: Self.quarterTurnAngle, board: &draft)
+        }
+    }
+
+    private func boardCursorPivot() -> HorizontalPoint? {
+        lastCursorWorldPoint.map { cursor in
+            HorizontalCanvasModeSupport.cursorAnchor(
+                cursor: cursor,
+                cursorIsOnSelection: boardSnapTargetKeys(for: selectedObjects).contains(pointKey(cursor)),
+                snapToGrid: snapBoardPointToGrid
+            )
         }
     }
 
@@ -5959,7 +5985,7 @@ struct BoardCanvasView: View {
     ) {
         guard !isReadOnly,
               !selectedObjects.isEmpty,
-              let center = boardSelectionCenter() else {
+              let center = boardSelectionPivot(in: board) else {
             return
         }
 
@@ -5969,13 +5995,9 @@ struct BoardCanvasView: View {
             // copy, as the schematic's does (105). The board itself is left
             // alone until the commit, so Esc still puts everything back.
             var draft = boardMovePreviewBoard(for: state)
-            // The centre of the selection where it is now: `board` is still the
+            // The pivot of the selection where it is now: `board` is still the
             // pre-move board while the move is patched in Metal.
-            let preview = draft
-            let movedCenter = HorizontalCanvasModeSupport.selectionCenter(
-                for: selectedObjects,
-                anchorPoints: { selectionAnchorPoints(for: $0, in: preview) }
-            ) ?? center
+            let movedCenter = boardSelectionPivot(in: draft) ?? center
             transform(movedCenter, &draft)
             if let turn, canTurnBoardMoveInPlace(by: turn.angle) {
                 // A quarter turn of what the scene can turn whole is made the
@@ -6023,8 +6045,21 @@ struct BoardCanvasView: View {
         publishSelectionContext()
     }
 
-    private func boardSelectionCenter() -> HorizontalPoint? {
-        HorizontalCanvasModeSupport.selectionCenter(for: selectedObjects, anchorPoints: selectionAnchorPoints)
+    /// The point R and E turn and flip the selection about
+    /// (`HorizontalCanvasModeSupport.selectionPivot`). A group's goes onto the
+    /// board grid only when everything that places it is on that grid
+    /// already: a board holds parts placed off the grid on purpose, and those
+    /// turn about their exact middle, as Horizon turns a board's selection.
+    private func boardSelectionPivot(in board: HorizontalBoard) -> HorizontalPoint? {
+        HorizontalCanvasModeSupport.selectionPivot(
+            for: selectedObjects,
+            origins: { selectionAnchorPoints(for: $0, in: board) },
+            snapToGrid: { center, origins in
+                origins.allSatisfy { HorizontalCanvasModeSupport.isOnGrid($0, snapToGrid: snapBoardPointToGrid) }
+                    ? snapBoardPointToGrid(center)
+                    : center
+            }
+        )
     }
 
     /// Whether the move in progress can take a turn by `angle` in place (122):
@@ -12522,6 +12557,30 @@ struct BoardCanvasView: View {
         }
     }
 
+    /// The selection's own snap points, by key: what moves with it. A
+    /// polygon's part brings the polygon's corners; the rest are looked up by
+    /// ref, so a large selection costs no search per object.
+    private func boardSnapTargetKeys(for refs: [HorizontalSelectableRef]) -> Set<String> {
+        let selectablesByRef = boardSelectablesByRef()
+        var keys = Set<String>()
+        for ref in uniqueRefs(refs) {
+            for selectable in selectablesByRef[ref] ?? [] {
+                keys.formUnion(selectable.anchorSnapPoints.map(pointKey))
+            }
+            switch ref.type {
+            case .polygonEdge, .polygonVertex, .polygonArcCenter:
+                keys.formUnion(selectionAnchorPoints(for: ref).map(pointKey))
+            default:
+                break
+            }
+        }
+        return keys
+    }
+
+    private func snapBoardPointToGrid(_ point: HorizontalPoint) -> HorizontalPoint {
+        HorizontalCanvasInputCore.snapToGrid(point, grid: board.grid, divisor: 1)
+    }
+
     private func segmentSelectables(_ segments: [HorizontalSegment], type: HorizontalObjectType) -> [HorizontalSelectable] {
         HorizontalCanvasModeSupport.segmentSelectables(segments, type: type, convertsArcSegments: true)
     }
@@ -14391,6 +14450,7 @@ struct BoardCanvasView: View {
 
     private func boardPackageSelectables(in board: HorizontalBoard) -> [HorizontalSelectable] {
         let pointsByPackage = boardPackageGeometryPoints(in: board)
+        let padCentersByPackage = boardPackagePadCenters(in: board)
         return board.packages.map { package in
             let packagePoints = pointsByPackage[normalizedID(package.id)] ?? []
             // The package's selectable ref must NOT encode the side (top/bottom):
@@ -14403,13 +14463,33 @@ struct BoardCanvasView: View {
             // Keep it side-independent so flipping (and any other property edit)
             // preserves the selection. The box color comes from the theme, not the
             // layer, so nothing visual depends on it.
-            return HorizontalSelectable.bounds(
+            var selectable = HorizontalSelectable.bounds(
                 ref: HorizontalSelectableRef(id: package.id, type: .boardPackage),
                 points: packagePoints,
                 fallbackCenter: package.position,
                 fallbackSize: 2_000_000
             )
+            // The cursor snaps to the origin and the pads, as Horizon's
+            // package and pad targets; not to the corners of its drawing.
+            selectable.snapAnchors = [package.position] + (padCentersByPackage[normalizedID(package.id)] ?? [])
+            return selectable
         }
+    }
+
+    /// Each package's pads' centres, from their copper.
+    private func boardPackagePadCenters(in board: HorizontalBoard) -> [String: [HorizontalPoint]] {
+        var centersByPackage = [String: [HorizontalPoint]]()
+        var seen = Set<String>()
+        for pad in board.packagePads where pad.layer.map(HorizontalBoardLayers.isCopper) ?? false {
+            guard let packageID = packageID(forGeometryID: pad.id), !pad.vertices.isEmpty else {
+                continue
+            }
+            let center = HorizontalRect(points: pad.vertices).center
+            if seen.insert("\(packageID)@\(pointKey(center))").inserted {
+                centersByPackage[packageID, default: []].append(center)
+            }
+        }
+        return centersByPackage
     }
 
     private func boardPackageGeometryPoints() -> [String: [HorizontalPoint]] {
