@@ -237,15 +237,14 @@ struct CursorReadoutLayer: View {
             ]
         }
 
+        let stroke = cursorStroke
         let innerColor = snapped.isTarget
-            ? HorizontalMetalRGBA(red: 1, green: 0, blue: 0, alpha: 1)
-            : HorizontalMetalRGBA(red: 0, green: 1, blue: 0, alpha: 1)
-        let outerColor = HorizontalMetalRGBA(backgroundColor.opacity(0.95))
+            ? HorizontalMetalRGBA(red: 1, green: 0, blue: 0, alpha: Float(stroke.lineOpacity))
+            : HorizontalMetalRGBA(red: 0, green: 1, blue: 0, alpha: Float(stroke.lineOpacity))
+        let outerColor = stroke.edgeOpacity.map { HorizontalMetalRGBA(backgroundColor.opacity($0)) }
         return segments.flatMap { segment in
-            [
-                HorizontalMetalScreenLinePrimitive(from: segment.0, to: segment.1, color: outerColor, width: 4),
-                HorizontalMetalScreenLinePrimitive(from: segment.0, to: segment.1, color: innerColor, width: 1)
-            ]
+            (outerColor.map { [HorizontalMetalScreenLinePrimitive(from: segment.0, to: segment.1, color: $0, width: 4)] } ?? [])
+                + [HorizontalMetalScreenLinePrimitive(from: segment.0, to: segment.1, color: innerColor, width: 1)]
         }
         #else
         return []
@@ -285,16 +284,30 @@ struct CursorReadoutLayer: View {
             path.addLine(to: segment.1)
         }
 
+        let stroke = cursorStroke
+        if let edge = stroke.edgeOpacity {
+            context.stroke(
+                path,
+                with: .color(backgroundColor.opacity(edge)),
+                style: StrokeStyle(lineWidth: 4, lineCap: .square)
+            )
+        }
         context.stroke(
             path,
-            with: .color(backgroundColor.opacity(0.95)),
-            style: StrokeStyle(lineWidth: 4, lineCap: .square)
-        )
-        context.stroke(
-            path,
-            with: .color(snapped.isTarget ? Color(red: 1, green: 0, blue: 0) : Color(red: 0, green: 1, blue: 0)),
+            with: .color((snapped.isTarget ? Color(red: 1, green: 0, blue: 0) : Color(red: 0, green: 1, blue: 0)).opacity(stroke.lineOpacity)),
             style: StrokeStyle(lineWidth: 1, lineCap: .square)
         )
+    }
+
+    /// How the crosshair's arms are drawn. A small cursor's are edged in the
+    /// background colour so they stand out over busy copper; a full-screen
+    /// cursor's cross everything on the canvas, so they go unedged and
+    /// see-through, leaving what lies under them readable.
+    private var cursorStroke: (edgeOpacity: Double?, lineOpacity: Double) {
+        switch cursorSize {
+        case .small: (0.95, 1)
+        case .fullScreen: (nil, 0.5)
+        }
     }
 
     // MARK: - Coordinate readout
