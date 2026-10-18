@@ -2330,6 +2330,7 @@ struct SchematicCanvasView: View {
         since original: HorizontalSchematicSheet,
         newNetIDs: Set<String> = [],
         externalMerges: [String: String] = [:],
+        projectNetIDs: Set<String>? = nil,
         completion: @escaping (SchematicWiringResult?) -> Void
     ) {
         guard !editorProfile.isPoolMode else {
@@ -2347,7 +2348,8 @@ struct SchematicCanvasView: View {
             var result = SchematicWiringResult(sheet: draft, externalMerges: externalMerges)
             for merge in merges {
                 result.sheet.mergeNet(merge.from, into: merge.into)
-                if !newNetIDs.contains(merge.from), original.netDetails[merge.from] != nil {
+                if !newNetIDs.contains(merge.from),
+                   projectNetIDs.map({ $0.contains(merge.from) }) ?? (original.netDetails[merge.from] != nil) {
                     result.externalMerges[merge.from] = merge.into
                 }
             }
@@ -2852,12 +2854,24 @@ struct SchematicCanvasView: View {
         if let placement = state.pastePlacement {
             let transform = HorizontalPlacementTransform(shift: state.lastPoint - state.startPoint, angle: 0, mirrored: false)
                 .accumulated(with: state.pasteTransform)
-            moveState = nil
-            editedSheet = state.editedSheetBeforeMove
-            invalidateSelectableCache()
-            placement.commit(transform)
-            publishSelectionContext()
-            publishCanvasCommandActions()
+            // Horizon's paste merges and connects where it lands, as a move
+            // does: a pasted wire ending on a pin joins it. Every net in the
+            // placed preview is in the project already, the pasted ones too,
+            // so a merge goes to the host to rewrite. A merge refused or
+            // cancelled leaves the paste following the cursor.
+            let placed = placement.paste.preview(transform)
+            connectSchematicWiring(placed, since: state.editedSheetBeforeMove ?? state.undoSheet,
+                                   projectNetIDs: Set(placed.netDetails.keys)) { result in
+                guard let result, moveState != nil else {
+                    return
+                }
+                moveState = nil
+                editedSheet = state.editedSheetBeforeMove
+                invalidateSelectableCache()
+                placement.commit(transform, HorizontalSchematicPasteWiring(sheet: result.sheet, netMerges: result.externalMerges))
+                publishSelectionContext()
+                publishCanvasCommandActions()
+            }
             return
         }
         // The place-text-then-edit flow rides the move machinery: on commit we
