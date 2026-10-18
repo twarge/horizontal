@@ -1022,8 +1022,14 @@ struct ProjectWorkspaceView: View {
                 onReorderSheets: { schematicURL, orderedIDs in
                     reorderSheets(orderedIDs, schematicURL: schematicURL)
                 },
-                onSetSheetFrame: { schematicURL, sheetID, frameID in
-                    setSheetFrame(frameID, sheetID: sheetID, schematicURL: schematicURL)
+                onSetSheetFrame: { schematicURL, sheetID, frame in
+                    setSheetFrame(frame, sheetID: sheetID, schematicURL: schematicURL)
+                },
+                onAddSheet: { schematicURL in
+                    addSheet(schematicURL: schematicURL)
+                },
+                onRemoveSheet: { schematicURL, sheetID in
+                    removeSheet(sheetID, schematicURL: schematicURL)
                 }
             )
             // Without an explicit column width the sidebar is compressible to
@@ -3374,14 +3380,19 @@ struct ProjectWorkspaceView: View {
 
     /// The navigator's Frame menu. Through the archive and a reload, like a
     /// rename: the loader draws the frame and bakes the title block into it.
-    private func setSheetFrame(_ frameID: String?, sheetID: String, schematicURL: URL) {
+    /// A frame from a base pool is cached into the project pool in the same
+    /// edit, so undo takes both back.
+    private func setSheetFrame(_ frame: HorizontalSheetFrameOption?, sheetID: String, schematicURL: URL) {
         guard !isReadOnly else {
             return
         }
         do {
             var archive = document.archive
+            if let source = frame?.source {
+                try HorizontalProjectJSONApplicator.cacheFrame(source, in: project, to: &archive)
+            }
             try HorizontalProjectJSONApplicator.apply(
-                sheetFrame: frameID,
+                sheetFrame: frame?.id,
                 forSheetID: sheetID,
                 schematicURL: schematicURL,
                 in: project,
@@ -3390,6 +3401,39 @@ struct ProjectWorkspaceView: View {
             try applyLiveArchive(archive, actionName: "Set Sheet Frame")
         } catch {
             recordArchiveApplyFailure(error)
+        }
+    }
+
+    /// The navigator's New Sheet. Returns the new sheet's ID for the
+    /// navigator to show it.
+    private func addSheet(schematicURL: URL) -> String? {
+        guard !isReadOnly else {
+            return nil
+        }
+        do {
+            var archive = document.archive
+            let sheetID = try HorizontalProjectJSONApplicator.addSheet(schematicURL: schematicURL, in: project, to: &archive)
+            try applyLiveArchive(archive, actionName: "New Sheet")
+            return sheetID
+        } catch {
+            recordArchiveApplyFailure(error)
+            return nil
+        }
+    }
+
+    /// The navigator's Delete Sheet, for an empty sheet.
+    private func removeSheet(_ sheetID: String, schematicURL: URL) -> Bool {
+        guard !isReadOnly else {
+            return false
+        }
+        do {
+            var archive = document.archive
+            try HorizontalProjectJSONApplicator.removeSheet(sheetID, schematicURL: schematicURL, in: project, to: &archive)
+            try applyLiveArchive(archive, actionName: "Delete Sheet")
+            return true
+        } catch {
+            recordArchiveApplyFailure(error)
+            return false
         }
     }
 

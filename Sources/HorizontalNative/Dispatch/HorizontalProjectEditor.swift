@@ -5054,9 +5054,7 @@ final class HorizontalProjectEditor {
 
     /// The object maps a sheet carries. Mirrors the new-document template, so a
     /// sheet added here loads exactly like one the app made.
-    private static let emptySheetKeys = ["junctions", "net_lines", "net_labels", "net_ties", "bus_labels",
-                                         "bus_rippers", "power_symbols", "block_symbols", "symbols", "lines",
-                                         "arcs", "texts", "pictures", "title_block_values"]
+    private static let emptySheetKeys = HorizontalSchematic.sheetCollectionKeys
 
     private func addSheet(_ params: JSONDictionary) throws -> JSONDictionary {
         guard let name = params.string("name"), !name.trimmingCharacters(in: .whitespaces).isEmpty else {

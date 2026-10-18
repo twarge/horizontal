@@ -7,9 +7,12 @@ enum HorizontalProjectJSONApplyError: LocalizedError {
     case missingArchivePath(URL)
     case missingJSON(String)
     case invalidJSON(String)
+    case refused(String)
 
     var errorDescription: String? {
         switch self {
+        case .refused(let reason):
+            reason
         case .missingArchivePath(let url):
             "Could not map \(url.lastPathComponent) into the project archive."
         case .missingJSON(let path):
@@ -439,6 +442,120 @@ enum HorizontalProjectJSONApplicator {
         }
         json["sheets"] = sheets
         try saveJSON(json, relativePath: path, to: &archive)
+    }
+
+    /// Horizon's Add Sheet (`Schematic::add_sheet`): a page after the last,
+    /// named for its number and drawn with the last page's frame, so a new
+    /// page looks like the others. Returns its id.
+    @discardableResult
+    static func addSheet(
+        schematicURL: URL,
+        in project: HorizontalProject,
+        to archive: inout HorizontalProjectArchive
+    ) throws -> String {
+        let path = try archivePath(for: schematicURL, project: project, archive: archive)
+        var json = try loadJSON(relativePath: path, fallbackURL: schematicURL, from: archive)
+        var sheets = json["sheets"] as? JSONDictionary ?? [:]
+        let pages = sheets.values.compactMap { $0 as? JSONDictionary }
+        let last = pages.max { ($0.int("index") ?? 0) < ($1.int("index") ?? 0) }
+        let index = (last?.int("index") ?? 0) + 1
+        // Horizon doesn't mind two pages with one name, but a list that
+        // shows two "Sheet 3"s reads as a mistake.
+        let names = Set(pages.compactMap { $0.string("name") })
+        var number = index
+        while names.contains("Sheet \(number)") { number += 1 }
+        var sheet: JSONDictionary = ["name": "Sheet \(number)", "index": index]
+        for key in HorizontalSchematic.sheetCollectionKeys { sheet[key] = JSONDictionary() }
+        if let frame = last?.string("frame") { sheet["frame"] = frame }
+        let id = UUID().uuidString.lowercased()
+        sheets[id] = sheet
+        json["sheets"] = sheets
+        try saveJSON(json, relativePath: path, to: &archive)
+        return id
+    }
+
+    /// Why a sheet can't be deleted, or nil when it can. Horizon deletes only
+    /// a page with no symbols on it, a part's or a block's, which would
+    /// lose their drawing, and never the last page.
+    static func sheetDeletionRefusal(_ sheetJSON: JSONDictionary, pageCount: Int) -> String? {
+        if pageCount <= 1 { return "A schematic keeps at least one sheet." }
+        let symbols = sheetJSON.dictionaryMap("symbols").count + sheetJSON.dictionaryMap("block_symbols").count
+        if symbols > 0 { return "Only an empty sheet can be deleted; this one has \(symbols) symbol\(symbols == 1 ? "" : "s") on it." }
+        return nil
+    }
+
+    /// Horizon's Delete Sheet: an empty page goes, with any wiring, labels
+    /// or text left on it, and the pages after it close up.
+    static func removeSheet(
+        _ sheetID: String,
+        schematicURL: URL,
+        in project: HorizontalProject,
+        to archive: inout HorizontalProjectArchive
+    ) throws {
+        let path = try archivePath(for: schematicURL, project: project, archive: archive)
+        var json = try loadJSON(relativePath: path, fallbackURL: schematicURL, from: archive)
+        guard var sheets = json["sheets"] as? JSONDictionary,
+              let sheetKey = matchingKey(sheetID, in: sheets),
+              let sheetJSON = sheets[sheetKey] as? JSONDictionary else {
+            throw HorizontalProjectJSONApplyError.invalidJSON(path)
+        }
+        if let refusal = sheetDeletionRefusal(sheetJSON, pageCount: sheets.count) {
+            throw HorizontalProjectJSONApplyError.refused(refusal)
+        }
+        sheets.removeValue(forKey: sheetKey)
+        let page = sheetJSON.int("index") ?? 0
+        for (key, value) in sheets {
+            guard var other = value as? JSONDictionary, let index = other.int("index"), index > page else { continue }
+            other["index"] = index - 1
+            sheets[key] = other
+        }
+        json["sheets"] = sheets
+        try saveJSON(json, relativePath: path, to: &archive)
+    }
+
+    /// A frame from a pool the project draws from cached into the project
+    /// pool, in the archive, as placing a part caches it: Horizon's frame
+    /// chooser browses the whole pool, but a sheet draws its frame from
+    /// `frames/cache/`. Written with the edit that uses it, it is undone with
+    /// that edit. A project made before projects carried a pool gets one.
+    static func cacheFrame(
+        _ item: HorizontalPoolLibraryItem,
+        in project: HorizontalProject,
+        to archive: inout HorizontalProjectArchive
+    ) throws {
+        let poolDirectory = project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName
+        let poolURL = project.baseURL.appendingPathComponent(poolDirectory, isDirectory: true)
+        // The importer names every file by appending to poolURL, so its path
+        // starts with poolURL's. Standardizing would not do: it drops a
+        // /private only from a path that exists, and a file being cached
+        // doesn't yet.
+        let poolPrefix = poolURL.path.hasSuffix("/") ? poolURL.path : poolURL.path + "/"
+        func poolPath(_ url: URL, in archive: HorizontalProjectArchive) -> String? {
+            if let path = archive.manifest?.relativePath(for: url) {
+                return path
+            }
+            guard url.path.hasPrefix(poolPrefix) else { return nil }
+            return "\(poolDirectory)/\(url.path.dropFirst(poolPrefix.count))"
+        }
+        let current = archive
+        let destination = HorizontalPoolCacheDestination(
+            read: { url in poolPath(url, in: current).flatMap { current.regularFileData(relativePath: $0) } },
+            list: HorizontalPoolCacheDestination.disk.list
+        )
+        let manifest = "\(poolDirectory)/pool.json"
+        if archive.regularFileData(relativePath: manifest) == nil,
+           !FileManager.default.fileExists(atPath: poolURL.appendingPathComponent("pool.json").path) {
+            try archive.replaceRegularFileData(
+                relativePath: manifest,
+                with: HorizontalProjectArchive.projectPoolData(HorizontalProjectDocument.projectPoolTemplate())
+            )
+        }
+        for file in try HorizontalPoolCacheImporter.planFrame(item, into: poolURL, destination: destination) {
+            guard let path = poolPath(file.url, in: archive) else {
+                throw HorizontalProjectJSONApplyError.missingArchivePath(file.url)
+            }
+            try archive.replaceRegularFileData(relativePath: path, with: file.data)
+        }
     }
 
     static func apply(

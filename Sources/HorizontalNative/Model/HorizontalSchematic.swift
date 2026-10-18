@@ -28,6 +28,9 @@ struct HorizontalSheetFrameOption: Identifiable, Hashable {
     /// The frame's uuid, lowercased.
     var id: String
     var name: String
+    /// Where a frame the project pool lacks comes from: a sheet taking it
+    /// caches it into the project pool first. nil for the project's own.
+    var source: HorizontalPoolLibraryItem? = nil
 }
 
 struct HorizontalSchematicPartPlacementDraft {
@@ -528,6 +531,33 @@ struct HorizontalSchematic {
             .appendingPathComponent("frames")
             .appendingPathComponent("cache")
             .appendingPathComponent("\(normalizedID(frameID)).json")
+    }
+
+    /// The collections every Horizon sheet carries, each empty on a new
+    /// page: a save-side patcher given a page without one has nowhere to
+    /// write its first edit of that kind.
+    static let sheetCollectionKeys = ["junctions", "net_lines", "net_labels", "net_ties", "bus_labels",
+                                      "bus_rippers", "power_symbols", "block_symbols", "symbols", "lines",
+                                      "arcs", "texts", "pictures", "title_block_values"]
+
+    /// The frames the pools a project draws from hold, for Horizon's frame
+    /// chooser, which browses the whole pool rather than its cache: the
+    /// pools the project pool includes, then the registered and discovered
+    /// base pools. A sheet taking one caches it into the project pool. A
+    /// frame several pools hold is listed from the first. This scans pools,
+    /// so call it off the main thread.
+    static func basePoolFrames(poolURL: URL) -> [HorizontalSheetFrameOption] {
+        let projectPool = HorizontalPoolLibrary.canonicalURL(poolURL).path
+        var seen = Set<String>()
+        var frames = [HorizontalSheetFrameOption]()
+        for url in HorizontalPoolLibrary.editorPoolURLs(forPoolRoot: poolURL) where url.path != projectPool {
+            let poolName = HorizontalPoolRegistryStore.poolInfo(at: url).name
+            for item in HorizontalPoolLibrary.items(inPool: url, poolName: poolName)
+            where item.category == .frame && seen.insert(item.uuid).inserted {
+                frames.append(HorizontalSheetFrameOption(id: item.uuid, name: item.name, source: item))
+            }
+        }
+        return frames
     }
 
     /// The frames a sheet of this project can draw: those in the project
