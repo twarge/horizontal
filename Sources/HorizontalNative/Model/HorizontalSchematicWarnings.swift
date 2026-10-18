@@ -212,6 +212,74 @@ enum HorizontalSchematicWarnings {
         }
         var segments: [Segment] = []
         var visited = Set<HorizontalSchematicEndpoint>()
+
+        // What names a net on each node, for wiring that joins nets the block
+        // keeps apart: a pin's or port's connection, a junction's net, a label
+        // or power symbol. The loader can give such wiring no net, and the
+        // canvas draws it in the error colour; this says why.
+        struct NetSeed {
+            var netID: String
+            var position: HorizontalPoint
+            var subject: String
+            var component: String? = nil
+            var pin: String? = nil
+        }
+        func lowered(_ node: HorizontalSchematicEndpoint) -> HorizontalSchematicEndpoint {
+            switch node {
+            case .junction(let id): .junction(id.lowercased())
+            case .pin(let id): .pin(id.lowercased())
+            case .port(let id): .port(id.lowercased())
+            case .busRipper(let id): .busRipper(id.lowercased())
+            }
+        }
+        var seedsByNode = [HorizontalSchematicEndpoint: [NetSeed]]()
+        var pinSeedsByKey = [String: [NetSeed]]()
+        for pin in sheet.symbolPins {
+            guard let endpoint = pinEndpoint(pin), let netID = pin.netID else { continue }
+            let seed = NetSeed(netID: netID.lowercased(), position: pin.from, subject: "Pin", component: component(of: pin), pin: name(of: pin))
+            seedsByNode[endpoint, default: []].append(seed)
+            pinSeedsByKey[key(pin.from), default: []].append(seed)
+        }
+        for port in sheet.blockSymbolPorts {
+            let parts = port.id.lowercased().split(separator: "/")
+            guard parts.count >= 3, parts[1] == "block-port", let netID = port.netID else { continue }
+            seedsByNode[.port("\(parts[0])/\(parts[2])"), default: []]
+                .append(NetSeed(netID: netID.lowercased(), position: port.from, subject: "Port"))
+        }
+        for (id, netID) in sheet.junctionNetIDs {
+            guard let point = sheet.junctions[id] else { continue }
+            seedsByNode[.junction(id.lowercased()), default: []]
+                .append(NetSeed(netID: netID.lowercased(), position: point, subject: "Junction"))
+        }
+        for label in sheet.netLabels {
+            guard let netID = label.netID else { continue }
+            seedsByNode[lowered(endpoint(label.junctionID.map { .junction($0) }, at: label.position)), default: []]
+                .append(NetSeed(netID: netID.lowercased(), position: label.position, subject: "Label"))
+        }
+        for symbol in sheet.powerSymbols {
+            guard let netID = symbol.netID, let point = sheet.junctions[symbol.junctionID] else { continue }
+            seedsByNode[.junction(symbol.junctionID.lowercased()), default: []]
+                .append(NetSeed(netID: netID.lowercased(), position: point, subject: "Power symbol"))
+        }
+        /// Each thing on `nodes` naming a net other than the one most of them
+        /// name — every one of them, when no net has the most — with what
+        /// the wiring joins it to.
+        func warnJoinedNets(_ nodes: Set<HorizontalSchematicEndpoint>) {
+            var seeds = nodes.flatMap { seedsByNode[lowered($0)] ?? [] }
+            for case .junction(let id) in nodes where id.hasPrefix("coordinate:") {
+                seeds.append(contentsOf: pinSeedsByKey[String(id.dropFirst("coordinate:".count))] ?? [])
+            }
+            let support = Dictionary(grouping: seeds, by: \.netID).mapValues(\.count)
+            guard support.count > 1 else { return }
+            let most = support.values.max() ?? 0
+            let leaders = support.filter { $0.value == most }.map(\.key)
+            let winner = leaders.count == 1 ? leaders[0] : nil
+            for seed in seeds where seed.netID != winner {
+                let others = support.keys.filter { $0 != seed.netID }.map(sheet.displayName(ofNet:)).sorted()
+                warn(seed.position, "\(seed.subject) on \(sheet.displayName(ofNet: seed.netID)) wired to \(others.joined(separator: ", "))",
+                     title: "Wired to another net", net: seed.netID, component: seed.component, pin: seed.pin)
+            }
+        }
         let labelNodes = Set(sheet.netLabels.map { endpoint($0.junctionID.map { .junction($0) }, at: $0.position) })
         let powerNodes = Set(sheet.powerSymbols.map { HorizontalSchematicEndpoint.junction($0.junctionID) })
         // Each node's description once, rather than twice per comparison.
@@ -225,6 +293,7 @@ enum HorizontalSchematicWarnings {
                 pending.append(contentsOf: neighbors[node] ?? [])
             }
             visited.formUnion(nodes)
+            warnJoinedNets(nodes)
             guard let netID = nodes.compactMap({ netIDs[$0] }).sorted().first else { continue }
             let labelled = !nodes.isDisjoint(with: labelNodes)
             let power = !nodes.isDisjoint(with: powerNodes)

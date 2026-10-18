@@ -109,6 +109,43 @@ final class SchematicWarningsTests: XCTestCase {
         XCTAssertFalse(messages(reloaded).contains("Power sym missing"))
     }
 
+    /// Wiring that joins a pin to a net the block puts it apart from — C84 on
+    /// ADC2 IN+ wired to the IN− rail, say — gets no net from the loader and
+    /// is drawn in the error colour. The pin that disagrees with the rest of
+    /// the wiring says so; when no net has the most, every one does.
+    func testAPinWiredToAnotherNetSaysSo() {
+        var sheet = sheet()
+        sheet.netDetails = ["minus": net("minus", name: "IN-"), "plus": net("plus", name: "IN+")]
+        sheet.junctions = ["rail": .init(x: 100, y: 0), "label": .init(x: 200, y: 0)]
+        sheet.junctionNetIDs = ["rail": "minus", "label": "minus"]
+        sheet.netLabels = [.init(id: "l", text: "IN-", position: .init(x: 200, y: 0), size: 100, orientation: "right",
+                                 netID: "minus", junctionID: "label")]
+        sheet.symbolPins = [
+            .init(id: "r/pin/b", from: .zero, to: .init(x: -100, y: 0), width: 0, layer: nil, netID: "minus"),
+            .init(id: "c/pin/a", from: .init(x: 100, y: -100), to: .init(x: 100, y: -200), width: 0, layer: nil, netID: "plus"),
+        ]
+        sheet.netLines = [
+            .init(id: "w1", from: .zero, to: .init(x: 100, y: 0), width: 0, layer: nil,
+                  schematicFrom: .pin("r/b"), schematicTo: .junction("rail")),
+            .init(id: "w2", from: .init(x: 100, y: 0), to: .init(x: 200, y: 0), width: 0, layer: nil,
+                  schematicFrom: .junction("rail"), schematicTo: .junction("label")),
+            .init(id: "w3", from: .init(x: 100, y: -100), to: .init(x: 100, y: 0), width: 0, layer: nil,
+                  schematicFrom: .pin("c/a"), schematicTo: .junction("rail")),
+        ]
+        let joined = HorizontalSchematicWarnings.findings(sheet).filter { $0.title == "Wired to another net" }
+        XCTAssertEqual(joined.map(\.message), ["Pin on IN+ wired to IN-"])
+        XCTAssertEqual(joined.first?.position, .init(x: 100, y: -100))
+        XCTAssertEqual(joined.first?.netID, "plus")
+
+        sheet.netLabels = []
+        sheet.junctionNetIDs = [:]
+        let even = HorizontalSchematicWarnings.findings(sheet).filter { $0.title == "Wired to another net" }
+        XCTAssertEqual(Set(even.map(\.message)), ["Pin on IN+ wired to IN-", "Pin on IN- wired to IN+"])
+
+        sheet.symbolPins[1].netID = "minus"
+        XCTAssertTrue(HorizontalSchematicWarnings.findings(sheet).allSatisfy { $0.title != "Wired to another net" })
+    }
+
     func testUnnamedDisconnectedNetAndDuplicateNamesWarn() {
         var sheet = sheet()
         sheet.netDetails = ["n": net("n", name: "")]
