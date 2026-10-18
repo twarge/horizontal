@@ -31,6 +31,9 @@ struct HorizontalSchematicWarningFinding: Hashable {
     var componentID: String? = nil
     /// The pin's primary name, for a warning about a pin.
     var pinName: String? = nil
+    /// The wires of the stretch of wiring a warning about one is about — the
+    /// segment a "Label missing" wants a label on — by id.
+    var netLineIDs: [String] = []
 }
 
 /// Horizon's sheet warnings, derived from electrical endpoints rather than artwork overlap.
@@ -59,9 +62,10 @@ enum HorizontalSchematicWarnings {
         var found: [HorizontalSchematicWarningFinding] = []
         var seen = Set<String>()
         func warn(_ point: HorizontalPoint, _ message: String, title: String? = nil, net: String? = nil, component: String? = nil,
-                  pin: String? = nil) {
+                  pin: String? = nil, lines: [String] = []) {
             guard seen.insert(key(point) + "|" + message).inserted else { return }
-            found.append(.init(position: point, message: message, title: title ?? message, netID: net, componentID: component, pinName: pin))
+            found.append(.init(position: point, message: message, title: title ?? message, netID: net, componentID: component, pinName: pin,
+                               netLineIDs: lines))
         }
         let symbolsByID = Dictionary(sheet.symbols.map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
         func symbol(of pin: HorizontalSegment) -> HorizontalPlacement? {
@@ -195,11 +199,13 @@ enum HorizontalSchematicWarnings {
             positions[node] = point
             netIDs[node] = sheet.junctionNetIDs[id]
         }
+        var linesByNode: [HorizontalSchematicEndpoint: [String]] = [:]
         for line in sheet.netLines {
             let from = endpoint(line.schematicFrom, at: line.from)
             let to = endpoint(line.schematicTo, at: line.to)
             neighbors[from, default: []].insert(to)
             neighbors[to, default: []].insert(from)
+            linesByNode[from, default: []].append(line.id)
             positions[from] = line.from
             positions[to] = line.to
             if let netID = line.netID { netIDs[from] = netID; netIDs[to] = netID }
@@ -209,6 +215,7 @@ enum HorizontalSchematicWarnings {
             var netID: String
             var hasLabel: Bool
             var hasPower: Bool
+            var lines: [String]
         }
         var segments: [Segment] = []
         var visited = Set<HorizontalSchematicEndpoint>()
@@ -299,7 +306,8 @@ enum HorizontalSchematicWarnings {
             let power = !nodes.isDisjoint(with: powerNodes)
             let ripper = nodes.contains { if case .busRipper = $0 { return true }; return false }
             segments.append(.init(position: positions[root] ?? .zero, netID: netID,
-                                  hasLabel: labelled || power || ripper, hasPower: power))
+                                  hasLabel: labelled || power || ripper, hasPower: power,
+                                  lines: Set(nodes.flatMap { linesByNode[$0] ?? [] }).sorted()))
         }
         let duplicateNames = Set(Dictionary(grouping: sheet.netDetails.values.filter { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }, by: {
             $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -309,14 +317,15 @@ enum HorizontalSchematicWarnings {
             .filter { $0.showsPort }.compactMap(\.netID))
         for segment in segments {
             guard let net = sheet.netDetails[segment.netID] else { continue }
-            if !net.name.isEmpty && !segment.hasLabel { warn(segment.position, "Label missing", net: net.id) }
-            if net.isPower && !segment.hasPower { warn(segment.position, "Power sym missing", net: net.id) }
+            let lines = segment.lines
+            if !net.name.isEmpty && !segment.hasLabel { warn(segment.position, "Label missing", net: net.id, lines: lines) }
+            if net.isPower && !segment.hasPower { warn(segment.position, "Power sym missing", net: net.id, lines: lines) }
             if net.name.isEmpty && (segmentsByNet[net.id]?.count ?? 0) > 1 && !segment.hasLabel {
-                warn(segment.position, "Ambiguous nets", net: net.id)
+                warn(segment.position, "Ambiguous nets", net: net.id, lines: lines)
             }
-            if duplicateNames.contains(net.id) { warn(segment.position, "Duplicate net name", net: net.id) }
+            if duplicateNames.contains(net.id) { warn(segment.position, "Duplicate net name", net: net.id, lines: lines) }
             if net.isPort && !portLabelNetIDs.contains(net.id) {
-                warn(segment.position, "Need 'show port' net label", net: net.id)
+                warn(segment.position, "Need 'show port' net label", net: net.id, lines: lines)
             }
         }
         let duplicateRefdes = Set(Dictionary(grouping: sheet.componentInfo.values.filter {

@@ -1774,6 +1774,8 @@ enum HorizontalProjectJSONApplicator {
                 continue
             }
             item["size"] = jsonNumber(label.size)
+            // A flip or turn changes only this, and Horizon reads it back.
+            item["orientation"] = label.orientation
             if let id = label.junctionID, junctions[id].map(jsonPointKey) == jsonPointKey(label.position) {
                 item["junction"] = id
             } else if let id = junctionID(at: label.position, in: junctions) {
@@ -1801,6 +1803,7 @@ enum HorizontalProjectJSONApplicator {
                 continue
             }
             item["size"] = jsonNumber(label.size)
+            item["orientation"] = label.orientation
             map[itemKey] = item
         }
         json["bus_labels"] = map

@@ -161,7 +161,7 @@ final class HorizontalDispatchSession: @unchecked Sendable {
                                                    endpoint: HorizontalLiveServer.endpoint())
             #endif
             entry.liveRevision = document.revision()
-            entry.snapshot = HorizontalDispatchSnapshot(archive: document.archive(), baseURL: entry.project.baseURL)
+            Self.takeLiveArchive(document.archive(), into: entry)
             session.nextHandle += 1
             session.entries[entry.handle] = entry
             HorizontalLiveServer.documentsDidChange(count: session.liveDocumentCount)
@@ -219,13 +219,14 @@ final class HorizontalDispatchSession: @unchecked Sendable {
                     continue
                 }
                 let revision = live.revision()
-                let snapshot = HorizontalDispatchSnapshot(archive: live.archive(), baseURL: entry.project.baseURL)
-                guard revision != entry.liveRevision || snapshot.id != entry.snapshot?.id else {
+                let archive = live.archive()
+                let snapshot = HorizontalDispatchSnapshot(archive: archive, baseURL: entry.project.baseURL)
+                guard revision != entry.liveRevision || snapshot.id != entry.liveArchiveID else {
                     continue
                 }
                 entry.project = Self.withEditorConnectivity(live.currentProject())
                 entry.liveRevision = revision
-                entry.snapshot = snapshot
+                Self.takeLiveArchive(archive, into: entry, snapshot: snapshot)
                 entry.generation += 1
                 entry.loadedAt = Date()
                 entry.invalidateIndex()
@@ -235,6 +236,25 @@ final class HorizontalDispatchSession: @unchecked Sendable {
 }
 
 extension HorizontalDispatchSession {
+    /// Whether a live document's archive is its `.hprj` alone rather than the
+    /// tree the manifest names.
+    static func holdsProjectFileOnly(_ archive: HorizontalProjectArchive, url: URL) -> Bool {
+        guard url.pathExtension.caseInsensitiveCompare("hprj") == .orderedSame, case .regularFile = archive.root else { return false }
+        return true
+    }
+
+    /// The snapshot a live document's requests read. A document holding its
+    /// `.hprj` alone has nothing to render or edit from, and holds no edits of
+    /// its own either, since every edit needs the tree; so it reads from the
+    /// files on disk, which are the project it shows.
+    static func takeLiveArchive(_ archive: HorizontalProjectArchive, into entry: HorizontalDispatchProjectEntry,
+                                snapshot: HorizontalDispatchSnapshot? = nil) {
+        let live = snapshot ?? HorizontalDispatchSnapshot(archive: archive, baseURL: entry.project.baseURL)
+        entry.liveArchiveID = live.id
+        entry.holdsProjectFileOnly = holdsProjectFileOnly(archive, url: entry.url)
+        entry.snapshot = entry.holdsProjectFileOnly ? (try? HorizontalDispatchSnapshot.capture(url: entry.url)) ?? live : live
+    }
+
     static func readSnapshot(url: URL) throws -> HorizontalDispatchSnapshot {
         var transaction = try HorizontalProjectTransaction.existing(projectURL: url)
         defer { withExtendedLifetime(transaction) {} }
@@ -302,6 +322,14 @@ final class HorizontalDispatchProjectEntry {
     var holder: HorizontalProjectHolder?
     var liveRevision = "0"
     var snapshot: HorizontalDispatchSnapshot?
+    /// The id of the archive a live document last handed over, which the
+    /// snapshot is not when that archive held the `.hprj` alone.
+    var liveArchiveID: String?
+    /// A live `.hprj` document holding its project file alone, not the tree
+    /// the manifest names: until its window has gathered the tree, after a
+    /// Revert that read the one file again, or for as long as it is read-only.
+    /// Reads come from its files on disk; edits are refused.
+    var holdsProjectFileOnly = false
     let instanceID: String
     var generation = 0
     var receipts: [String: JSONDictionary] = [:]
@@ -346,9 +374,11 @@ final class HorizontalDispatchProjectEntry {
          "frozen": frozen, "origin": origin as Any]
     }
 
-    func requireRevision(_ params: JSONDictionary) throws {
+    /// `currentWhenMissing` lets a request that writes nothing, a dry run,
+    /// leave expected_revision out and be read against the revision as it is.
+    func requireRevision(_ params: JSONDictionary, currentWhenMissing: Bool = false) throws {
         guard !frozen else { throw HorizontalDispatchError(code: .readOnly, message: "Pinned snapshots cannot be edited.") }
-        guard let expected = params["expected_revision"] as? String else {
+        guard let expected = params["expected_revision"] as? String ?? (currentWhenMissing ? revision : nil) else {
             throw HorizontalDispatchError.invalidParams("expected_revision is required; use the revision returned by your preceding read.")
         }
         guard expected == revision else {

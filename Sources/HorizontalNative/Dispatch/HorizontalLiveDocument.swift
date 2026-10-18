@@ -48,9 +48,10 @@ final class HorizontalLiveDocument {
     /// Returns what it did, or nil when there was nothing to do.
     var undo: () -> String?
     var redo: () -> String?
-    /// Writes the document to its file, the way the Save command does. An edit
-    /// made through this channel is one undoable step in an open document and
-    /// nothing more until this runs.
+    /// Writes the document to its file now, the way the Save command does. An
+    /// edit made through this channel is one undoable step in an open
+    /// document, which autosaves it; this is for when the files must hold it
+    /// at once.
     var save: () throws -> Void
     /// The world rectangle a pane's canvas shows, if the pane is up.
     var visibleBounds: (HorizontalPane) -> HorizontalRect?

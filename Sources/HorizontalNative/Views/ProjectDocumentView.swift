@@ -75,12 +75,15 @@ struct ProjectDocumentView: View {
             .task(id: Self.documentIdentity(configuration.fileURL)) {
                 await loadProject()
             }
-            // Unlocking mid-session (the toolbar lock or the Settings toggle):
-            // a project opened read-only skipped completing its writable
-            // archive, so reload to build it. The workspace keeps its own state
-            // (same view identity) — only `document.archive` refreshes.
-            .onChange(of: appearanceSettings.isReadOnlyOperationEnabled) { wasReadOnly, isReadOnly in
-                if wasReadOnly, !isReadOnly {
+            // The document holding its `.hprj` alone while it could hold the
+            // tree: unlocking mid-session (the toolbar lock or the Settings
+            // toggle), when a project opened read-only skipped completing its
+            // writable archive, and a Revert or a re-read of the file in place,
+            // which hands the document the one file again at the same URL, so
+            // the task above never runs. Either way, gather the tree again; every
+            // edit until then fails on files the archive doesn't have.
+            .onChange(of: needsProjectTree) { _, needs in
+                if needs {
                     Task { await loadProject() }
                 }
             }
@@ -143,6 +146,16 @@ struct ProjectDocumentView: View {
         url?.resolvingSymlinksInPath().standardizedFileURL
     }
 
+    /// Whether the document holds only its `.hprj` where it should hold the
+    /// project's files: a writable `.hprj` document between being read and
+    /// its load gathering the rest, or after AppKit read it again.
+    private var needsProjectTree: Bool {
+        guard let url = configuration.fileURL, url.pathExtension.caseInsensitiveCompare("hprj") == .orderedSame,
+              !appearanceSettings.isReadOnlyOperationEnabled,
+              case .regularFile = document.archive.root else { return false }
+        return true
+    }
+
     private func loadProject() async {
         guard let url = configuration.fileURL else {
             await loadUntitledProject()
@@ -198,8 +211,11 @@ struct ProjectDocumentView: View {
             let project = try await projectTask.value
             let archive = try await archiveTask?.value
             guard !Task.isCancelled else { return }
-            if let archive {
-                guard document.completeLoading(with: archive, from: loadingDocument) else { return }
+            if let archive, !document.completeLoading(with: archive, from: loadingDocument) {
+                // The document changed under the load. Read again into the
+                // one file it holds now, or keep the tree a newer load (the
+                // file watcher's) put there.
+                if case .regularFile = document.archive.root { return await loadProject() }
             }
             state = .loaded(project)
         } catch {

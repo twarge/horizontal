@@ -416,20 +416,21 @@ class Project:
                     operation_id: str | None = None) -> dict[str, Any]:
         """Fill every plane from the board as it now stands."""
         result = self._call("pour_planes", dry_run=dry_run,
-                            expected_revision=expected_revision or self.summary["revision"],
-                            operation_id=operation_id or str(uuid.uuid4()))
+                            **self._guarded(dry_run, expected_revision, operation_id))
         if not dry_run and "project" in result:
             self.summary = result["project"]
         return result
 
-    def tracks(self, net: str | None = None, layer: int | None = None, limit: int = 200) -> dict[str, Any]:
-        """Copper tracks, filtered by net or layer; the result says if it was truncated."""
-        params = {k: v for k, v in {"net": net, "layer": layer}.items() if v is not None}
+    def tracks(self, net: str | None = None, layer: int | None = None, limit: int = 200, *,
+               component: str | None = None, pads: list[str] | None = None, connected: bool | None = None) -> dict[str, Any]:
+        """Copper tracks, filtered by net, layer or a component's pads; the result says if it was truncated."""
+        params = {k: v for k, v in {"net": net, "layer": layer, "component": component, "pads": pads,
+                                    "connected": connected}.items() if v is not None}
         return self._call("list_tracks", limit=limit, **params)
 
-    def vias(self, net: str | None = None, limit: int = 200) -> dict[str, Any]:
-        """Vias, with the layers each spans and where its shape comes from."""
-        params = {k: v for k, v in {"net": net}.items() if v is not None}
+    def vias(self, net: str | None = None, limit: int = 200, *, component: str | None = None) -> dict[str, Any]:
+        """Vias, with the layers each spans and where its shape comes from; component keeps those under a part."""
+        params = {k: v for k, v in {"net": net, "component": component}.items() if v is not None}
         return self._call("list_vias", limit=limit, **params)
 
     def block_instances(self) -> list[dict[str, Any]]:
@@ -442,8 +443,7 @@ class Project:
         """Best-effort automatic routing of one net's airwires."""
         params = {k: v for k, v in {"width_mm": width_mm}.items() if v is not None}
         result = self._call("autoroute", net=net, layer=layer, max_routes=max_routes, dry_run=dry_run,
-                            expected_revision=expected_revision or self.summary["revision"],
-                            operation_id=operation_id or str(uuid.uuid4()), **params)
+                            **self._guarded(dry_run, expected_revision, operation_id), **params)
         if not dry_run and "project" in result:
             self.summary = result["project"]
         return result
@@ -489,8 +489,7 @@ class Project:
                                    "plan_digest": plan_digest}.items() if v is not None}
         result = self._call("update_project_parts", parts=parts, dry_run=dry_run,
                             allow_project_changes=allow_project_changes,
-                            expected_revision=expected_revision or self.summary["revision"],
-                            operation_id=operation_id or str(uuid.uuid4()), **options)
+                            **self._guarded(dry_run, expected_revision, operation_id), **options)
         if not dry_run and "project" in result:
             self.summary = result["project"]
         return result
@@ -502,8 +501,7 @@ class Project:
         options = {k: v for k, v in {"remove": remove, "review_digest": review_digest,
                                    "plan_digest": plan_digest}.items() if v is not None}
         result = self._call("clean_up_project_pool", dry_run=dry_run,
-                            expected_revision=expected_revision or self.summary["revision"],
-                            operation_id=operation_id or str(uuid.uuid4()), **options)
+                            **self._guarded(dry_run, expected_revision, operation_id), **options)
         if not dry_run and "project" in result:
             self.summary = result["project"]
         return result
@@ -512,8 +510,7 @@ class Project:
                          operation_id: str | None = None) -> dict[str, Any]:
         """Copy a part and its dependencies from a base pool into the project pool cache."""
         result = self._call("import_pool_part", part=part, dry_run=dry_run,
-                            expected_revision=expected_revision or self.summary["revision"],
-                            operation_id=operation_id or str(uuid.uuid4()))
+                            **self._guarded(dry_run, expected_revision, operation_id))
         if not dry_run and "project" in result:
             self.summary = result["project"]
         return result
@@ -530,6 +527,15 @@ class Project:
 
     # Edits: operations as data, applied to the project files and reloaded.
 
+    def _guarded(self, dry_run: bool, expected_revision: str | None, operation_id: str | None) -> dict[str, Any]:
+        """The revision and operation id a mutation sends. A commit is checked against the revision it was
+        planned at, this context's own when none is given; a dry run given none is planned against the project
+        as it is, so a summary read before someone else's edit doesn't get it refused."""
+        params: dict[str, Any] = {"operation_id": operation_id or str(uuid.uuid4())}
+        if expected_revision or not dry_run:
+            params["expected_revision"] = expected_revision or self.summary["revision"]
+        return params
+
     def list_ops(self) -> list[dict[str, Any]]:
         """The edit vocabulary `apply` accepts."""
         return self.session.call("list_ops")
@@ -541,9 +547,7 @@ class Project:
         """Apply edit operations; each is {"op": name, ...params}. Writes only changed files.
         detail="compact" returns ids and counts without echoing the ops or the project summary. A dry run's
         preview gives each file's changed JSON paths; detail="files" adds its whole text before and after."""
-        params: dict[str, Any] = {"ops": list(ops), "dry_run": dry_run,
-                                  "expected_revision": expected_revision or self.summary["revision"],
-                                  "operation_id": operation_id or str(uuid.uuid4())}
+        params: dict[str, Any] = {"ops": list(ops), "dry_run": dry_run, **self._guarded(dry_run, expected_revision, operation_id)}
         if plan_digest is not None: params["plan_digest"] = plan_digest
         if pool_items is not None: params["pool_items"] = pool_items
         if block is not None: params["block"] = block
@@ -750,11 +754,24 @@ def _no_live_reason(resolved: str) -> str:
     return "The live channel this project's editor published did not answer."
 
 
+def project_file(path: str | Path) -> Path:
+    """The project a path names: a .hprj or .horizontal as given, or for a folder holding a Horizon project, the
+    .hprj inside it — the one named after the folder, else the first by name, as the engine's disk open picks.
+    A live document is known by its .hprj, so this is what it is looked up by."""
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_dir() or resolved.suffix.lower() == ".horizontal":
+        return resolved
+    found = sorted((child for child in resolved.iterdir() if child.suffix.lower() == ".hprj" and child.is_file()),
+                   key=lambda child: child.name.lower())
+    named = [child for child in found if child.stem.lower() == resolved.stem.lower()]
+    return (named or found or [resolved])[0]
+
+
 def open(path: str | Path, isolated: bool = False, prefer_live: bool = True, source: str | None = None) -> Project:
     """Open a project. When Horizontal has it open, the app's live document is used
     (reads see unsaved edits; writes land on its undo stack); otherwise the engine
-    in this process opens the files."""
-    resolved = str(Path(path).expanduser().resolve())
+    in this process opens the files. A folder opens the .hprj it holds."""
+    resolved = str(project_file(path))
     source = source or ("auto" if prefer_live else "disk")
     if source not in {"auto", "live", "disk"}: raise ValueError("source must be auto, live, or disk")
     if source != "disk":

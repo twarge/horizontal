@@ -1,7 +1,7 @@
 """Versioned public schemas. UUIDs are identities; labels are presentation."""
 from __future__ import annotations
 
-from typing import Annotated, Any, Generic, Literal, TypeVar
+from typing import Annotated, Any, ClassVar, Generic, Literal, TypeVar
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_serializer, model_serializer, model_validator
 
 
@@ -154,7 +154,9 @@ class EditResult(Record):
     dry_run: bool = False
     after_revision: str | None = None
     operation_id: str | None = None
-    durability: Literal["disk", "unsaved_document", "unchanged"] | None = None
+    # "document": the open document holds the edit and autosaves it. An app
+    # built before that name says "unsaved_document" for the same thing.
+    durability: Literal["disk", "document", "unsaved_document", "unchanged"] | None = None
     written: list[str] = Field(default_factory=list)
     would_write: list[str] = Field(default_factory=list)
     status: Literal["preview", "committed"] | None = None
@@ -276,6 +278,22 @@ class AnalysisJob(Record):
     result: AnalysisReport | None = None
 
 
+class Targeted(Input):
+    """An op that names what it acts on by a field of its own (line, track, junction, …) or by id, which every op
+    takes for it."""
+    target: ClassVar[str]
+    id: StrictStr | None = None
+
+    @model_validator(mode="after")
+    def one_target(self):
+        given = getattr(self, self.target)
+        if given is None and self.id is None:
+            raise ValueError(f"Name what it acts on: {self.target}, or id.")
+        if given is not None and self.id is not None and given.lower() != self.id.lower():
+            raise ValueError(f"Give {self.target} or id, not both.")
+        return self
+
+
 class EnsureComponent(Input):
     op: Literal["ensure_component"]
     id: str | None = None
@@ -294,6 +312,7 @@ class ComponentOp(Input):
 class RemoveComponent(ComponentOp):
     op: Literal["remove_component"]
     texts_within_mm: float | None = Field(default=None, gt=0)
+    keep_wiring: bool | None = None
 
 
 class RemovePlacement(ComponentOp):
@@ -442,6 +461,7 @@ class RemoveSymbol(ComponentOp):
     gate: str | None = None
     sheet: StrictStr | StrictInt | None = None
     texts_within_mm: float | None = Field(default=None, gt=0)
+    keep_wiring: bool | None = None
 
 
 class PlaceText(Input):
@@ -520,31 +540,55 @@ class DrawNetLine(Input):
 
 
 class PlaceJunction(Input):
+    """A junction on a net at a point. An id naming a junction already on a sheet moves it, with what stands on
+    it; net is then optional."""
     op: Literal["place_junction"]
     id: str | None = None
-    net: StrictStr
+    net: StrictStr | None = None
     sheet: StrictStr | StrictInt | None = None
     x_mm: float
     y_mm: float
 
+    @model_validator(mode="after")
+    def net_or_id(self):
+        if self.net is None and self.id is None:
+            raise ValueError("A new junction needs a net; an id names one to move.")
+        return self
 
-class SetNetLineEndpoint(Input):
+
+class MoveSymbols(Input):
+    """Symbols moved by an offset or onto another sheet, with the junctions, wires, labels and power symbols
+    that belong only to them. A wire to wiring that stays stretches, or is cut when the sheet changes."""
+    op: Literal["move_symbols"]
+    symbols: list[StrictStr] = Field(min_length=1)
+    sheet: StrictStr | StrictInt | None = None
+    dx_mm: float | None = None
+    dy_mm: float | None = None
+    to_sheet: StrictStr | StrictInt | None = None
+    junctions: list[StrictStr] | None = None
+    texts: list[StrictStr] | None = None
+
+
+class SetNetLineEndpoint(Targeted):
+    target: ClassVar[str] = "line"
     op: Literal["set_net_line_endpoint"]
-    line: StrictStr
+    line: StrictStr | None = None
     end: Literal["from", "to"]
     endpoint: SchematicEnd
     sheet: StrictStr | StrictInt | None = None
 
 
-class RemoveNetLine(Input):
+class RemoveNetLine(Targeted):
+    target: ClassVar[str] = "line"
     op: Literal["remove_net_line"]
-    line: StrictStr
+    line: StrictStr | None = None
     sheet: StrictStr | StrictInt | None = None
 
 
-class RemoveJunction(Input):
+class RemoveJunction(Targeted):
+    target: ClassVar[str] = "junction"
     op: Literal["remove_junction"]
-    junction: StrictStr
+    junction: StrictStr | None = None
     sheet: StrictStr | StrictInt | None = None
     cascade: bool | None = None
 
@@ -607,12 +651,14 @@ class SetPinAlternate(ComponentOp):
 
 
 class RemapPart(ComponentOp):
-    """pin_map is optional: pins it leaves out are matched by gate and pin name."""
+    """pin_map is optional: pins it leaves out are matched by gate and pin name. copper says what becomes of
+    tracks on pads the new part has nothing for: refuse (the default, naming them) or drop."""
     op: Literal["remap_part"]
     part: StrictStr
     pin_map: dict[StrictStr, StrictStr] | None = None
     symbols: dict[StrictStr, StrictStr] | None = None
     pad_map: dict[StrictStr, StrictStr] | None = None
+    copper: Literal["refuse", "drop"] | None = None
 
 
 class TrackEnd(Input):
@@ -674,9 +720,10 @@ class AddBlockInstance(Input):
     id: str | None = None
 
 
-class RemoveBlockInstance(Input):
+class RemoveBlockInstance(Targeted):
+    target: ClassVar[str] = "instance"
     op: Literal["remove_block_instance"]
-    instance: StrictStr
+    instance: StrictStr | None = None
 
 
 class ConnectBlockPort(Input):
@@ -697,9 +744,10 @@ class PlaceBlockSymbol(Input):
     mirror: bool | None = None
 
 
-class RemoveBlockSymbol(Input):
+class RemoveBlockSymbol(Targeted):
+    target: ClassVar[str] = "instance"
     op: Literal["remove_block_symbol"]
-    instance: StrictStr
+    instance: StrictStr | None = None
     sheet: StrictStr | StrictInt | None = None
 
 
@@ -753,9 +801,10 @@ class PlaceDimension(Input):
     size_mm: float | None = None
 
 
-class RemoveDimension(Input):
+class RemoveDimension(Targeted):
+    target: ClassVar[str] = "dimension"
     op: Literal["remove_dimension"]
-    dimension: StrictStr
+    dimension: StrictStr | None = None
 
 
 class AddBus(Input):
@@ -764,9 +813,10 @@ class AddBus(Input):
     id: str | None = None
 
 
-class RemoveBus(Input):
+class RemoveBus(Targeted):
+    target: ClassVar[str] = "bus"
     op: Literal["remove_bus"]
-    bus: StrictStr
+    bus: StrictStr | None = None
 
 
 class AddBusMember(Input):
@@ -804,9 +854,10 @@ class AddNetTie(Input):
     id: str | None = None
 
 
-class RemoveNetTie(Input):
+class RemoveNetTie(Targeted):
+    target: ClassVar[str] = "net_tie"
     op: Literal["remove_net_tie"]
-    net_tie: StrictStr
+    net_tie: StrictStr | None = None
 
 
 class PlaceNetTie(Input):
@@ -826,9 +877,10 @@ class PlaceHole(Input):
     angle_deg: float | None = None
 
 
-class RemoveHole(Input):
+class RemoveHole(Targeted):
+    target: ClassVar[str] = "hole"
     op: Literal["remove_hole"]
-    hole: StrictStr
+    hole: StrictStr | None = None
 
 
 class PlaceKeepout(Input):
@@ -839,9 +891,10 @@ class PlaceKeepout(Input):
     exposed_copper_only: bool | None = None
 
 
-class RemoveKeepout(Input):
+class RemoveKeepout(Targeted):
+    target: ClassVar[str] = "keepout"
     op: Literal["remove_keepout"]
-    keepout: StrictStr
+    keepout: StrictStr | None = None
 
 
 class SetSheetIndex(Input):
@@ -852,9 +905,11 @@ class SetSheetIndex(Input):
 
 
 class AddRule(Input):
+    """A rule of a kind with the rules editor's defaults and fields merged in, ordered after its kind's rules."""
     op: Literal["add_rule"]
     kind: StrictStr
     id: str | None = None
+    fields: dict[str, Any] | None = None
 
 
 class SetRule(Input):
@@ -927,9 +982,10 @@ class PlacePolygon(Input):
     vertices: list[ArcVertex] = Field(min_length=3)
 
 
-class RemovePolygon(Input):
+class RemovePolygon(Targeted):
+    target: ClassVar[str] = "polygon"
     op: Literal["remove_polygon"]
-    polygon: StrictStr
+    polygon: StrictStr | None = None
 
 
 class PlacePlane(Input):
@@ -940,9 +996,10 @@ class PlacePlane(Input):
     priority: StrictInt | None = None
 
 
-class RemovePlane(Input):
+class RemovePlane(Targeted):
+    target: ClassVar[str] = "plane"
     op: Literal["remove_plane"]
-    plane: StrictStr
+    plane: StrictStr | None = None
 
 
 class PlaceTrack(Input):
@@ -956,8 +1013,9 @@ class PlaceTrack(Input):
     arc_center: Vertex | None = None
 
 
-class TrackOp(Input):
-    track: StrictStr
+class TrackOp(Targeted):
+    target: ClassVar[str] = "track"
+    track: StrictStr | None = None
 
 
 class RemoveTrack(TrackOp):
@@ -970,16 +1028,28 @@ class SetTrackWidth(TrackOp):
 
 
 class PlaceVia(Input):
+    """A via on a net. Its shape comes from the via rule matching the net unless definition, or a size or
+    padstack of its own, is given."""
     op: Literal["place_via"]
     x_mm: float
     y_mm: float
     net: StrictStr
     padstack: str | None = None
+    definition: str | None = None
+    diameter_mm: float | None = Field(default=None, gt=0)
+    hole_mm: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def one_source(self):
+        if self.definition is not None and (self.padstack or self.diameter_mm or self.hole_mm):
+            raise ValueError("A via definition sets the padstack and size; pass definition alone.")
+        return self
 
 
-class RemoveVia(Input):
+class RemoveVia(Targeted):
+    target: ClassVar[str] = "via"
     op: Literal["remove_via"]
-    via: StrictStr
+    via: StrictStr | None = None
 
 
 class CopyLayout(Input):
@@ -994,7 +1064,7 @@ class CopyLayout(Input):
 
 EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | SetValue | SetRefdes | SetPart | SetPopulation |
                           SetGroup | EnsureNet | RenameNet | SetNetClass | RetireNet | Connect | Disconnect |
-                          Place | PlaceSymbol | RemoveSymbol | DrawNetLine | PlaceJunction | SetNetLineEndpoint | RemapPart | PlaceText | RemoveText |
+                          Place | PlaceSymbol | MoveSymbols | RemoveSymbol | DrawNetLine | PlaceJunction | SetNetLineEndpoint | RemapPart | PlaceText | RemoveText |
                           RemoveNetLine | RemoveJunction | PruneSheet | TerminatePin | SetSymbolDisplay | SetCustomValue | SetNoConnect | SetPinAlternate |
                           PlaceTrack | RemoveTrack | SetTrackWidth | PlaceVia | RemoveVia |
                           PlacePowerSymbol | PlaceNetLabel | RemoveSheetMark |

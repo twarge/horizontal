@@ -4,8 +4,10 @@ import Foundation
 
 /// Saving an open document on demand.
 ///
-/// An edit through the live channel becomes one undoable step in the app and
-/// nothing more; the file only changes when the document is written. SwiftUI's
+/// An edit through the live channel becomes one undoable step in the app, and
+/// the document autosaves it in place within seconds, as a Mac document does.
+/// Saving on demand writes it now, for the moment the files go to git, an
+/// export or a build. SwiftUI's
 /// `DocumentGroup` has no API for that, but it is `NSDocumentController`
 /// underneath, so the document can be found by its URL and written through its
 /// own pipeline — which keeps the read-only guard, the write notification the

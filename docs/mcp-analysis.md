@@ -72,16 +72,21 @@ what clears it — see [the automation guide](automation.md).
 ## Review and commit an edit
 
 1. Read through the intended `project_ref`; keep the returned revision.
-2. Call `apply_ops` with `expected_revision`, a unique `operation_id`, the
-   operations, and `dry_run=true`. The result includes normalized operations,
-   changed-file previews, before/after snapshot IDs and `plan_digest`.
-3. Commit the returned `normalized_ops` with the same `expected_revision`
-   and `plan_digest`, `dry_run=false`, and a commit operation ID. Include the
-   same pool items if the plan creates or changes pool data.
+2. Call `apply_ops` with the operations and `dry_run=true`. `expected_revision`
+   and `operation_id` are optional here; without a revision the plan is made
+   against the project as it is, and `before_revision` says which that was. The
+   result includes before/after snapshot IDs, `handles` for the names the batch
+   gave things, and `plan_digest`; `verbose` adds the normalized operations and
+   changed-file previews.
+3. Commit the same operations with `before_revision` as `expected_revision`,
+   the `plan_digest`, `dry_run=false`, and a commit operation ID. Include the
+   same pool items if the plan creates or changes pool data. The commit
+   installs what the dry run staged.
 4. Retain the receipt. After a lost response, call `transaction_status` with
    that operation ID. `unknown` does not establish that an edit was absent.
 
-Convenience MCP edit tools require the same revision and operation ID.
+Convenience MCP edit tools take the same revision and operation ID, which a
+commit requires.
 Direct native `apply` and `pool_write` enforce revision checks too. Python
 convenience methods default to the last observed revision, and generate an
 operation ID when one is omitted. For an explicit Python review/commit:
@@ -95,8 +100,8 @@ receipt = project.apply(
 )
 ```
 
-Live edits install one archive as one undo step and report
-`durability="unsaved_document"`. Disk edits stage and load the complete
+Live edits install one archive as one undo step, which the document
+autosaves, and report `durability="document"`. Disk edits stage and load the complete
 candidate before replacing any files, then report `durability="disk"`.
 Pool items and dependent design operations share one batch, including in
 the atopile bridge. A repeated operation ID returns its saved receipt only

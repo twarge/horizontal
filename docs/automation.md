@@ -158,24 +158,25 @@ as sent would be refused again.
 | Op | Effect |
 |---|---|
 | `ensure_component` | Create a block component from a pool part or entity, returning its id; idempotent by id or refdes |
-| `remove_component` | Remove the component, its symbols and the net lines on them, its board package, and turn tracks that ended on its pads into junction-ended tracks. `texts_within_mm` also removes free notes within that distance whose nearest symbol was this part's (`list_texts` reports each note's `near_symbol`) |
+| `remove_component` | Remove the component, its symbols and the net lines on them, its board package, and turn tracks that ended on its pads into junction-ended tracks. The wiring left serving nothing goes too — islands that reach no pin once it is gone, with their labels and power symbols, and dead ends that ran to it — unless `keep_wiring`. `texts_within_mm` also removes free notes within that distance whose nearest symbol was this part's (`list_texts` reports each note's `near_symbol`) |
 | `set_value`, `set_refdes`, `set_part`, `set_no_populate` | Component fields; a part swap that changes the entity clears the connections. A part's own value is the one shown, so `warnings` says when it hides one `set_value` set |
 | `set_group_tag` | Horizon's group and tag, the fields it uses to copy placement between identical sub-circuits; ids derive from the names |
 | `ensure_net`, `rename_net`, `set_net_class`, `retire_net` | Nets. Retiring one drops its connections, block ports and bus members, and the labels, power symbols, wires and junctions drawn for it; board copper on it is counted, and removed with `remove_routing` |
-| `connect`, `disconnect` | Pin connections; `create_net` makes the net when it is missing |
-| `place_symbol`, `remove_symbol` | Schematic placement: draw a gate on a sheet with the symbol for its unit, move it, or take it off with the net lines that ended on it. `id` gives a new instance its UUID or a name later ops in the batch use for it; `pin_display_mode` and `display_all_pads` set how its pins are labelled |
+| `connect`, `disconnect` | Pin connections; `create_net` makes the net when it is missing. `warnings` says when the pin's pad has tracks on it carrying another net, which now short the two |
+| `place_symbol`, `remove_symbol` | Schematic placement: draw a gate on a sheet with the symbol for its unit, move it, or take it off with the net lines that ended on it and the wiring left serving nothing (`keep_wiring` keeps it). `id` gives a new instance its UUID or a name later ops in the batch use for it; `pin_display_mode` and `display_all_pads` set how its pins are labelled |
+| `move_symbols` | Move symbols by `dx_mm`/`dy_mm`, or onto `to_sheet`, with what belongs only to them: islands of wiring that reach only their pins go whole, and in wiring that also reaches pins that stay, the dead-end runs toward their pins go back to where they branch. Labels and power symbols ride on their junctions. A wire to wiring that stays stretches; onto another sheet it is cut, and the reply names each cut end with its net and new position |
 | `set_symbol_display` | Change a drawn symbol's `pin_display_mode` or `display_all_pads` — hiding the pad-number list on a multi-pad pin, say |
 | `set_custom_value` | What a drawn symbol's `$VALUE` text draws instead of the value, as Horizon's Edit Custom Value sets it: `${value}`, `${mpn}`, `${mfr}`, `${desc}`, `${pkg}` and `${p:<column>}` filled in from the component and its part. `""` or null clears it; `get_component` gives each symbol's `custom_value` and `drawn_value` |
 | `draw_net_line` | A wire between typed pin or junction endpoints on one sheet and logical net; retains the legacy pin-to-pin form. A pin end is `{kind: pin, symbol, pin}` or `{kind: pin, component, gate?, pin}`, the pin by name or uuid. A junction with no net takes the wire's |
-| `place_junction`, `set_net_line_endpoint` | Create a schematic junction — reusing one at the point, and giving it the net if it had none — or retarget one end of an existing wire, preserving its identity and net |
+| `place_junction`, `set_net_line_endpoint` | Create a schematic junction — reusing one at the point, and giving it the net if it had none, when the batch's name for it then means the one reused — or retarget one end of an existing wire, preserving its identity and net. `place_junction` with the id of a junction that is there moves it, with the wires, labels and power symbols on it |
 | `remove_net_line`, `remove_junction` | Take a wire off its sheet, or a junction with the wires, labels and power symbols on it (net-less junctions included); junctions left holding nothing go too |
 | `prune_sheet` | Clear what a sheet draws for nothing: wires with a dangling end, wiring that reaches no pin and carries no net, labels on no net, symbols of removed components and unused junctions — on one sheet or all. `unanchored` also removes wiring that names a net but reaches no pin (a GND symbol on a stub), `stubs` trims dead-end wire runs back to where they branch |
 | `terminate_pin` | A stub wire straight out from a pin, ending in a net label or power symbol that faces away from it. Connects the pin first when it is on no net |
 | `set_no_connect` | Mark pins deliberately unconnected — a connection naming no net, as the app's no-connect tool writes — or clear the mark; `all` takes every pin of a gate or component on no net, or clears every mark, as Horizon's Set all unconnected pins NC and Clear all NC pins do |
 | `set_pin_alternate` | Choose what a pin is drawn as — an alternate its unit offers (SPI1_SCK on an MCU port pin), several, a custom name and direction, or back to the primary name — writing the component's `alt_pins` as the app's pin-function menu does; one pin, or `assignments` for many |
-| `remap_part` | Substitute an imported part, preserving connections, symbols, wires and copper atomically. Pins `pin_map` leaves out are matched by gate and pin name; a connected pin with no counterpart is named and nothing changes |
+| `remap_part` | Substitute an imported part, preserving connections, symbols, wires and copper atomically. Pins `pin_map` leaves out are matched by gate and pin name, and a single-gate part takes every old gate's pins, the extra gates' symbols coming off with their wiring; a connected pin with no counterpart is named and nothing changes. The same package keeps every pad; otherwise a routed pad whose pin settles nothing goes to the pad of its name. Tracks on pads the new part lacks are refused by name, or removed with `copper: "drop"`; vias under the old footprint are listed |
 | `place_power_symbol`, `remove_power_symbol` | The ground or supply marker that says a point is on that net. Placing one marks the net as a power net, because that is what it means; the shape (`gnd`, `dot`, `antenna`, `earth`) belongs to the net, so every symbol on it matches |
-| `place_net_label`, `remove_net_label` | Names a net on the page — and, placed on more than one sheet, is how a net spans pages |
+| `place_net_label`, `remove_net_label` | Names a net on the page — and, placed on more than one sheet, is how a net spans pages. Placed on a wire of its net it splits the wire and joins it there, as a power symbol does; on a wire of another net, or on a pin's end, it is refused |
 | `add_sheet`, `rename_sheet`, `remove_sheet` | Pages. A new page takes the frame (title block) the last page uses, or `frame`; an `index` already taken inserts it there. A sheet with anything drawn on it is refused unless `force` clears it, and a schematic keeps at least one |
 | `set_sheet_frame` | A sheet's frame, or `"none"`. The frame must be in the project pool (`frames/cache/`), which is where a sheet's frame is drawn from; one only a base pool has is refused with where it is — `get_pool_item` and `pool_write` (or `pool_items`) bring it in. `list_sheets` gives each sheet's frame |
 | `place_text`, `remove_text` | Free text on a sheet: write one, or change the text, position, rotation, size, origin or font of one `list_texts` named. An `id` that names no text makes the text under it, so a batch can name one. A text Horizon extracted from a symbol with Smash belongs to that symbol and is refused |
@@ -194,22 +195,26 @@ as sent would be refused again.
 | `add_block_instance`, `remove_block_instance`, `connect_block_port` | Using one block inside another, and wiring its ports to nets here |
 | `place_block_symbol`, `remove_block_symbol` | Drawing a block instance on a sheet, with the symbol that block defines for itself |
 | `set_stackup` | How many inner copper layers the board has, and the copper and dielectric thicknesses |
-| `add_rule`, `set_rule`, `remove_rule` | Board design rules. A rule of a kind gets the defaults the app's own rules editor would give it; `set_rule` merges fields rather than replacing, and every write is refused unless the app's validator still calls the rules valid |
+| `add_rule`, `set_rule`, `remove_rule` | Board design rules. A rule of a kind gets the defaults the app's own rules editor would give it, with `fields` merged in, and is ordered after its kind's rules; `set_rule` merges fields rather than replacing, an object key by key, and every write is refused unless the app's validator still calls the rules valid — a via rule needs a padstack. A change to the via rules gives the vias they shape the padstack and parameters of the rule that now matches |
 | `add_net_class`, `rename_net_class` | Net classes. Their electrical parameters live in the board rules, not here |
-| `place_via`, `remove_via` | A via on a net at a point, sharing the junction with any copper already there. Its padstack defaults to what the board's other vias use |
+| `place_via`, `remove_via` | A via on a net at a point, sharing the junction with any copper already there. It takes the padstack and size of the first via rule matching its net, as Horizon gives them; `definition` takes a board via definition instead, and `diameter_mm`, `hole_mm` or `padstack` give it a shape of its own |
 | `copy_group_layout` | Lay one group out like another: every member with a matching tag gets the same relative placement and rotation around an anchor, and the tracks, junctions and vias inside the source group are cloned onto the target's pads |
 | `set_project_meta` | The title-block values — `project_title`, `project_name`, `rev`, `author` and the rest — that `$project_title` and the like stand for on the sheets and the board. They live in the top block; where the schematic keeps its own copy of a key (for the whole schematic or one sheet), that copy changes too, since it wins on the sheets it covers. `null` or `""` removes a key |
 | `set_export_settings` | Merge fields into one kind of export settings Horizon EDA keeps (`export_settings` shows them). Only fields the settings already hold, each with a value of the type it has, because Horizon reads them back strictly; a project with none of that kind yet is refused |
 
-### A live edit is not saved until it is saved
+### A live edit is autosaved; `save` writes it now
 
 An edit against a document the app has open becomes one undoable step in that
-document and nothing more: the result says `durability: "unsaved_document"`
-and means it. `save` writes it, `project_info` reports `unsaved_changes`, and
-a task that edits a live document is not finished without one. A batch that
-changed nothing says `durability: "unchanged"` and needs no save. A disk edit
-needs none of this — it committed with its transaction — and `save` says so
-rather than failing.
+document, and the document autosaves in place as any Mac document does: its
+files follow within seconds, and undo still takes the edit back. The result
+says `durability: "document"`, meaning the document holds the edit and writes
+it itself; `project_info`'s `unsaved_changes` is whether an autosave is still
+pending. `save` writes now and checks the file. Call it before the files go
+somewhere else — a commit, an export, a build — so they are complete at that
+moment rather than mid-autosave. It says `saved: true` once the file holds the
+document, and `wrote` whether it had anything left to write. A batch that
+changed nothing says `durability: "unchanged"`. A disk edit committed its files
+with its transaction, and `save` says so rather than failing.
 
 Saving goes through the document system rather than around it: SwiftUI's
 `DocumentGroup` offers no API for it, so the document is found by URL through

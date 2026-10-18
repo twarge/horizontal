@@ -251,6 +251,7 @@ final class HorizontalLiveServerTests: XCTestCase {
 
         let saved = try save()
         XCTAssertEqual(saved["saved"] as? Bool, true)
+        XCTAssertEqual(saved["wrote"] as? Bool, true)
         XCTAssertEqual(saved["had_unsaved_changes"] as? Bool, true)
         XCTAssertEqual(saved["source"] as? String, "live")
         XCTAssertEqual(saved["verified"] as? Bool, true, "the file is checked, not the document's own flag")
@@ -260,9 +261,13 @@ final class HorizontalLiveServerTests: XCTestCase {
         XCTAssertEqual(saves, 1)
         XCTAssertEqual(try summary()["unsaved_changes"] as? Bool, false)
 
-        // Saving a document with nothing outstanding is not an error, and
-        // says nothing was written.
-        XCTAssertEqual(try save()["saved"] as? Bool, false)
+        // Saving a document with nothing outstanding — autosave got there
+        // first — is not an error: the file holds the document, which is
+        // saved, and wrote says this call had nothing to write.
+        let again = try save()
+        XCTAssertEqual(again["saved"] as? Bool, true)
+        XCTAssertEqual(again["wrote"] as? Bool, false)
+        XCTAssertEqual(again["verified"] as? Bool, true)
         XCTAssertEqual(saves, 2)
 
 

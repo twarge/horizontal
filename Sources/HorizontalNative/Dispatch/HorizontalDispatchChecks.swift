@@ -28,6 +28,8 @@ enum HorizontalDispatchChecks {
             var message: String
             /// The pin's name, for a warning about a pin.
             var pin: String?
+            /// The wires of the segment a warning about one is about.
+            var netLines: [String] = []
         }
 
         var json: JSONDictionary {
@@ -42,6 +44,12 @@ enum HorizontalDispatchChecks {
                 json["y_mm"] = HorizontalDispatchJSON.mm(location.position.y)
                 json["message"] = location.message
                 if let pin = location.pin { json["pin"] = pin }
+                // Which wires the segment is, so a label can go on one of them;
+                // a long run is named by its first few.
+                if !location.netLines.isEmpty {
+                    json["net_lines"] = Array(location.netLines.prefix(8))
+                    if location.netLines.count > 8 { json["net_line_count"] = location.netLines.count }
+                }
                 if let block = location.block { json["block"] = block }
                 if let blockID = location.blockID { json["block_id"] = blockID }
             }
@@ -131,6 +139,7 @@ enum HorizontalDispatchChecks {
                     messages.append(Message(level: "warning", category: "routing", title: "Unrouted connections", detail: "\(count) \(airwires.count == 1 ? "remains" : "remain")\(pins).", net: name))
                 }
             }
+            messages.append(contentsOf: copperMessages(board: board, index: index))
             messages.append(contentsOf: rulesMessages(project: project, board: board))
         } else {
             messages.append(Message(level: "info", category: "board", title: "The project has no board", detail: ""))
@@ -164,7 +173,7 @@ enum HorizontalDispatchChecks {
             "ok": (counts["error"] ?? 0) == 0,
             "counts": ["error": counts["error"] ?? 0, "warning": counts["warning"] ?? 0, "info": counts["info"] ?? 0],
             "messages": full ? messages.map(\.json) : grouped(messages),
-            "note": "Horizontal has no geometric design rule check yet; these are load diagnostics, rules validation, and connectivity facts, plus the components and board packages nothing has placed, and the warnings the schematic canvas draws on each sheet. Poured planes count as copper for the rats' nest."
+            "note": "Horizontal has no geometric design rule check yet; these are load diagnostics, rules validation, and connectivity facts, plus the components and board packages nothing has placed, the warnings the schematic canvas draws on each sheet, and copper that joins two nets — tracks and vias reaching pads of both, or a poured plane over a pad of another. Poured planes count as copper for the rats' nest."
         ]
     }
 
@@ -200,10 +209,65 @@ enum HorizontalDispatchChecks {
                         refdes: refdes, net: net,
                         location: .init(sheet: sheet.index, sheetName: sheet.name, sheetID: sheet.id,
                                         block: block, blockID: entry.block.isTop ? nil : entry.block.uuid,
-                                        position: finding.position, message: finding.message, pin: finding.pinName)
+                                        position: finding.position, message: finding.message, pin: finding.pinName,
+                                        netLines: finding.netLineIDs)
                     ))
                 }
             }
+        }
+        return messages
+    }
+
+    /// Shorts copper makes on its own, which need no geometry to find: tracks
+    /// and vias that join pads of two nets — what a pin moved to another net
+    /// leaves when its tracks stay — and a poured plane that runs over a pad
+    /// on another net, which a pour made before the pad changed nets does.
+    static func copperMessages(board: HorizontalBoard, index: HorizontalDesignIndex) -> [Message] {
+        var padNames = [String: String]()   // package/pad → refdes.pad
+        for component in index.sortedComponents {
+            guard let package = component.boardPlacement?.instanceID.lowercased(), !package.isEmpty else { continue }
+            for terminal in component.physicalTerminals {
+                guard let id = terminal.string("id")?.lowercased() else { continue }
+                padNames["\(package)/\(id)"] = "\(component.refdes).\(terminal.string("name") ?? id)"
+            }
+        }
+        func net(_ id: String?) -> String {
+            guard let id else { return "no net" }
+            let name = index.net(id: id)?.name ?? ""
+            return name.isEmpty ? id : name
+        }
+        func natural(_ names: [String]) -> [String] { names.sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
+        var messages = [Message]()
+        for short in HorizontalBoardConnectivity.shorts(board) {
+            let byNet = Dictionary(grouping: short.pads, by: \.value).mapValues { natural($0.map { padNames[$0.key] ?? $0.key }) }
+            let sides = byNet.keys.sorted { net($0) < net($1) }.map { "\(net($0)) (\(byNet[$0]!.prefix(4).joined(separator: ", "))\(byNet[$0]!.count > 4 ? ", …" : ""))" }
+            let copper = "\(short.trackIDs.count) track\(short.trackIDs.count == 1 ? "" : "s")"
+                + (short.viaIDs.isEmpty ? "" : " and \(short.viaIDs.count) via\(short.viaIDs.count == 1 ? "" : "s")")
+            var detail = "\(copper) join \(sides.joined(separator: " to "))"
+            if let at = short.position { detail += String(format: ", from (%.2f, %.2f) mm", at.x / 1_000_000, at.y / 1_000_000) }
+            detail += ". Tracks: \(short.trackIDs.prefix(6).joined(separator: ", "))\(short.trackIDs.count > 6 ? ", …" : "")."
+            messages.append(Message(level: "error", category: "copper", title: "Copper joins two nets", detail: detail,
+                                    net: short.nets.map(net).sorted().joined(separator: " / ")))
+        }
+        let padsByLayer = Dictionary(grouping: board.packagePads.filter { $0.netID != nil && $0.layer != nil }, by: { $0.layer! })
+        for plane in board.planes {
+            guard let layer = plane.layer, let planeNet = plane.netID?.lowercased(), !plane.fragments.isEmpty else { continue }
+            var covered = Set<String>()
+            for pad in padsByLayer[layer] ?? [] where pad.netID?.lowercased() != planeNet {
+                let center = HorizontalRect(points: pad.renderVertices(arcPrecision: 24)).center
+                let inside = plane.fragments.contains { fragment in
+                    fragment.containmentPaths.filter { $0.contains(center) }.count % 2 == 1
+                }
+                guard inside else { continue }
+                let parts = pad.id.lowercased().split(separator: "/").map(String.init)
+                let path = parts.count >= 3 ? "\(parts[0])/\(parts[2])" : pad.id
+                covered.insert("\(padNames[path] ?? path) (\(net(pad.netID?.lowercased())))")
+            }
+            guard !covered.isEmpty else { continue }
+            let pads = natural(Array(covered))
+            messages.append(Message(level: "error", category: "copper", title: "Plane runs over a pad on another net",
+                                    detail: "The \(net(planeNet)) plane on \(HorizontalBoardLayers.name(for: layer)) covers \(pads.prefix(6).joined(separator: ", "))\(pads.count > 6 ? ", … \(pads.count) pads" : ""). It was poured before those pads took their nets, most likely; pour_planes pours it again.",
+                                    net: net(planeNet)))
         }
         return messages
     }

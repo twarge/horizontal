@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field, StrictInt, ValidationError
 
 from ._native import (HorizontalError, find_live, find_live_for, find_cli, find_dylib, LiveTransport,
                       project_holders, transport_error)
-from .client import Project, Session, open as open_any, _request_deadline, mutation_timeout
+from .client import Project, Session, open as open_any, project_file, _request_deadline, mutation_timeout
 from .schemas import (Result, ProjectInfo, Component, ComponentFields, Net, Sheet, EditResult, Region, RenderedImage, EditOperation,
                       schema_vocabulary, vocabulary_digest, compare_vocabulary,
                       PinnedSnapshot, AnalysisValidation, AnalysisJob)
@@ -140,8 +140,14 @@ def _tool(fn: Callable[..., Any]) -> Callable[..., Any]:
     if "path" in signature.parameters and fn.__name__ not in {"open_project", "live_state"}:
         parameters.append(inspect.Parameter("project_ref", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=str | None))
     if fn.__name__ in _mutations:
-        parameters += [inspect.Parameter("expected_revision", inspect.Parameter.KEYWORD_ONLY, annotation=str),
-                       inspect.Parameter("operation_id", inspect.Parameter.KEYWORD_ONLY, annotation=str),
+        # Required to commit; a dry run changes nothing, so it may leave both
+        # out and is planned against the project as it is.
+        parameters += [inspect.Parameter("expected_revision", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=Annotated[str | None, Field(
+                           description="The revision the edit was planned against: a read's meta.revision, or a dry run's "
+                                       "before_revision. Required to commit; a dry run without it plans against the project as it is.")]),
+                       inspect.Parameter("operation_id", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=Annotated[str | None, Field(
+                           description="An id of your own for this mutation, fresh for each commit, which transaction_status "
+                                       "looks up. Required to commit; a dry run may leave it out.")]),
                        inspect.Parameter("plan_digest", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=str | None),
                        inspect.Parameter("verbose", inspect.Parameter.KEYWORD_ONLY, default=False, annotation=Annotated[bool, Field(
                            description="Return the full reply: every change in full, the echoed ops, for a dry run what each "
@@ -175,7 +181,7 @@ def _tool(fn: Callable[..., Any]) -> Callable[..., Any]:
 def _resolve(path: str | None) -> Project:
     selected = _active_project.get()
     if selected is not None:
-        if path and Path(path).expanduser().resolve() != Path(selected.path).resolve():
+        if path and project_file(path) != Path(selected.path).resolve():
             raise ValueError("path and project_ref refer to different projects.")
         return selected
     if not path:
@@ -186,7 +192,7 @@ def _resolve(path: str | None) -> Project:
             _active_project.set(project)
             return project
         raise ValueError("Pass a project path, or set HORIZONTAL_PROJECT.")
-    key = str(Path(path).expanduser().resolve())
+    key = str(project_file(path))
     candidates = [p for p in _projects.values() if Path(p.path).resolve() == Path(key) and not p.summary.get("frozen")]
     if len(candidates) > 1: raise ValueError("Both live and disk contexts are open; pass project_ref.")
     project = candidates[0] if candidates else _open_context(key, "auto")
@@ -310,7 +316,7 @@ def _open_context(path: str, source: str) -> Project:
         # A disk context already open on this path is reloaded, not doubled.
         for other in _projects.values():
             if (not other.is_live and not other.summary.get("frozen") and not other.session.transport.closed
-                    and Path(other.path).resolve() == Path(path).expanduser().resolve()):
+                    and Path(other.path).resolve() == project_file(path)):
                 kept = {k: other.summary.get(k) for k in ("project_ref", "requested_source", "transport")}
                 other.reload()
                 other.summary.update(kept)
@@ -354,7 +360,7 @@ def _open_context(path: str, source: str) -> Project:
     return project
 
 
-def _guard(project: Project) -> dict[str, Any]:
+def _guard(project: Project, dry_run: bool = False) -> dict[str, Any]:
     """The preconditions every mutation shares."""
     if not project.is_live:
         # A disk edit under an open editor would be lost either way. The holder
@@ -369,18 +375,22 @@ def _guard(project: Project) -> dict[str, Any]:
                 if reachable else
                 "Turn on the live channel in its settings, then open the project with source=\"live\"; or close the document."))
     options = _edit_options.get()
-    if not options.get("expected_revision") or not options.get("operation_id"):
-        raise ValueError("expected_revision and operation_id are required for every edit.")
+    if not dry_run and (not options.get("expected_revision") or not options.get("operation_id")):
+        raise ValueError("expected_revision and operation_id are required to commit an edit; a dry run may leave them out.")
     return options
 
 
 def _edit(project: Project, ops: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
-    return project.apply(ops, **_guard(project), **{k: v for k, v in kwargs.items() if v is not None or k == "dry_run"})
+    return project.apply(ops, **_guard(project, bool(kwargs.get("dry_run"))),
+                         **{k: v for k, v in kwargs.items() if v is not None or k == "dry_run"})
 
 
 def _edit_call(project: Project, method: str, **params: Any) -> dict[str, Any]:
     """A mutation that is not an ops batch; the same preconditions apply."""
-    return project._call(method, **_guard(project), **params)
+    options = _guard(project, bool(params.get("dry_run")))
+    if params.get("dry_run") and not options.get("operation_id"):
+        options = {**options, "operation_id": str(uuid.uuid4())}
+    return project._call(method, **options, **params)
 
 
 @_tool
@@ -585,7 +595,9 @@ def export_analysis(job_id: str, target_directory: str, include_schematic_images
 
 @_tool
 def open_project(path: str, source: Literal["auto", "live", "disk"] = "auto") -> dict[str, Any]:
-    """Open a Horizon project (.hprj file or .horizontal package) and return its summary: blocks, sheets, counts, diagnostics.
+    """Open a Horizon project (.hprj file, the folder holding one, or a .horizontal package) and return its summary:
+    blocks, sheets, counts, diagnostics. holds_project_file_only marks a live document whose window holds its .hprj
+    alone for now, which reads from disk and refuses edits until the window gathers the files again.
     Opening a document that already has a context returns that context, with the same project_ref. warnings says
     when this server or the engine is out of date."""
     project = _open_context(path, source)
@@ -604,9 +616,11 @@ def new_project(path: str, name: str | None = None) -> dict[str, Any]:
 
 @_tool
 def save(path: str | None = None) -> dict[str, Any]:
-    """Write a document open in Horizontal to its file, the way the Save command does. An edit through the live
-    channel is one undoable step in the app and nothing more until this runs, so a task that edits a live document
-    is not finished without it.
+    """Write a document open in Horizontal to its file now, the way the Save command does, and check the file
+    holds it. The app autosaves its documents in place like any Mac app, so a live edit reaches disk on its own
+    within seconds; call this before handing the files to something else — a git commit, an export, a build — so
+    they are written and verified at that moment. saved true means the file holds the document, verified;
+    wrote says whether this call wrote anything, false when autosave had got there first.
 
     Check source in the reply. "live" means a document was saved, and verified: the file is compared against the
     document afterwards rather than the document's own edited flag being trusted, so this can no longer claim
@@ -697,7 +711,9 @@ def get_component(refdes: str | None = None, path: str | None = None, id: str | 
     gives selected and display_name, the name a symbol showing selected names draws; alternates lists the choices.
     drawn_as lists the symbols that draw something else because of their pin_display_mode (each symbol gives its
     own), and selected.redundant marks an entry that chooses nothing and so draws the primary name. Each of symbols
-    gives custom_value (null for none; set_custom_value sets it) and drawn_value, what its $VALUE text draws."""
+    gives custom_value (null for none; set_custom_value sets it) and drawn_value, what its $VALUE text draws. A pin
+    drawn on a sheet gives at: where it ends there (the point a wire starts from, in mm) and which way it points
+    out of its symbol, as drawn — turned and mirrored."""
     component = _resolve(path).component(refdes=refdes, id=id)
     every = component.get("pins") or []
     if not alternates:
@@ -885,7 +901,8 @@ def list_net_lines(path: str | None = None, net: str | None = None, sheet: int |
                    verbose: Annotated[bool, Field(description="Full rows: each end's kind, ids, component and gate, and the sheet and net uuids.")] = False) -> list[dict[str, Any]]:
     """The wires drawn on the schematic sheets, with their ids, nets and what each end connects to. An endpoint
     reads "U8.PA13" for a pin (refdes and pin name), "junction:<id>" for a junction, or the bus ripper or block
-    port it lands on; from_mm and to_mm are [x, y]. verbose gives the full rows. Horizon derives connectivity
+    port it lands on; from_mm and to_mm are [x, y]. A wire on an unnamed net gives the net's uuid as net, since
+    its net_name is "". verbose gives the full rows. Horizon derives connectivity
     from the block, not from these — they are what draw_net_line records. find_dangling and find_overlaps answer
     the usual questions about them without reading every wire."""
     rows = _resolve(path).net_lines(net=net, sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id)
@@ -893,7 +910,10 @@ def list_net_lines(path: str | None = None, net: str | None = None, sheet: int |
         return rows
     def xy(point: dict[str, Any] | None) -> list[float] | None:
         return [point["x_mm"], point["y_mm"]] if point else None
+    # An unnamed net is only its uuid, so a row on one carries it: net_name ""
+    # alone could not tell two unnamed nets apart, or be named in an op.
     return [{"id": r["id"], "sheet_index": r.get("sheet_index"), "net_name": r.get("net_name"),
+             **({"net": r.get("net")} if not r.get("net_name") and r.get("net") else {}),
              "from": _endpoint(r.get("from") or {}), "to": _endpoint(r.get("to") or {}),
              "from_mm": xy(r.get("from_mm")), "to_mm": xy(r.get("to_mm"))} for r in rows]
 
@@ -1076,20 +1096,26 @@ def pour_planes(path: str | None = None, dry_run: bool = False) -> dict[str, Any
 
 
 @_tool
-def list_tracks(path: str | None = None, net: str | None = None, layer: int | None = None, limit: int = 200) -> dict[str, Any]:
+def list_tracks(path: str | None = None, net: str | None = None, layer: int | None = None, limit: int = 200,
+                component: Annotated[str | None, Field(description="Only tracks with an end on this part's pads, by refdes or id.")] = None,
+                pads: Annotated[list[str] | None, Field(description="With component, only these of its pads, by name or uuid, e.g. [\"C2\"].")] = None,
+                connected: Annotated[bool | None, Field(description="With component, every track joined to its pads through junctions and vias, out to the next pad — the copper a pin change leaves on the old net.")] = None) -> dict[str, Any]:
     """Copper tracks on the board: net, layer, width, and what each end lands on — a pad (naming the component)
-    or a junction. Boards carry thousands, so filter by net or layer; truncated says whether the limit cut the
-    answer short, and total says how many matched."""
-    params = {k: v for k, v in {"net": net, "layer": layer}.items() if v is not None}
+    or a junction. Boards carry thousands, so filter by net, layer or component; truncated says whether the limit
+    cut the answer short, and total says how many matched."""
+    params = {k: v for k, v in {"net": net, "layer": layer, "component": component, "pads": pads,
+                                "connected": connected}.items() if v is not None}
     return _resolve(path).tracks(limit=limit, **params)
 
 
 @_tool
-def list_vias(path: str | None = None, net: str | None = None, limit: int = 200) -> dict[str, Any]:
+def list_vias(path: str | None = None, net: str | None = None, limit: int = 200,
+              component: Annotated[str | None, Field(description="Only vias under this part's package: inside its courtyard, else inside its pads' bounds.")] = None) -> dict[str, Any]:
     """Vias on the board: net, position, the layers each spans, and whether its shape comes from a padstack, a
     board via definition or the via rules. net_pinned marks a via whose net was set outright rather than
-    inherited through the copper that reaches it."""
-    params = {k: v for k, v in {"net": net}.items() if v is not None}
+    inherited through the copper that reaches it. unresolved marks one that takes its shape from the via rules
+    but holds no parameters, so its size is a default until Horizon re-derives it."""
+    params = {k: v for k, v in {"net": net, "component": component}.items() if v is not None}
     return _resolve(path).vias(limit=limit, **params)
 
 
@@ -1133,11 +1159,13 @@ def board_info(path: str | None = None) -> dict[str, Any]:
 @_tool
 def check(path: str | None = None, full: bool = False) -> dict[str, Any]:
     """Run the checks Horizontal has: load diagnostics, rules validation, annotation, single-pin nets, components with
-    no symbol on any sheet, unplaced packages, unrouted connections, and the warnings the schematic canvas draws on
+    no symbol on any sheet, unplaced packages, unrouted connections, copper that joins two nets (tracks and vias
+    reaching pads of both, a poured plane over a pad of another), and the warnings the schematic canvas draws on
     every sheet of every block — Label missing, Pin connected to net, Power sym missing and the rest — each with its
-    sheet and sheet_name, x_mm and y_mm, the canvas's message, and the net, refdes and pin it is about. More than
-    three findings with one title come back as one message with count and the refdes or nets it names (details
-    gives each its own detail where they differ); counts counts every finding. full lists them one by one."""
+    sheet and sheet_name, x_mm and y_mm, the canvas's message, and the net, refdes and pin it is about; one about a
+    stretch of wiring names its wires in net_lines. More than three findings with one title come back as one message
+    with count and the refdes or nets it names (details gives each its own detail where they differ); counts counts
+    every finding. full lists them one by one."""
     return _resolve(path).check(full=full)
 
 
@@ -1194,6 +1222,9 @@ def live_state(path: str | None = None) -> dict[str, Any]:
     document closes. held_by in open_project answers whether a project is open regardless of any of this.
     """
     attempts: list[dict[str, Any]] = []
+    # A project's folder is looked up by the .hprj it holds, whose holder
+    # records are the ones the app writes.
+    if path: path = str(project_file(path))
     info = find_live_for(path, attempts) if path else find_live(attempts)
     holders = project_holders(path) if path else []
     if info is None:
@@ -1285,9 +1316,13 @@ def list_ops(path: str | None = None) -> list[dict[str, Any]]:
 def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool = False,
               pool_items: list[dict[str, Any]] | None = None, block: str | None = None) -> dict[str, Any]:
     """Apply edit operations. Each op is {"op": name, ...params}; see list_ops. Components and nets may be named by
-    refdes or net name. When the project is open in Horizontal the edit lands there as one undoable step; a project
-    open in an editor cannot be edited on disk at all, and the attempt fails with DOCUMENT_OPEN naming the holder.
-    dry_run validates without changing anything and reports any holder in blocked_by.
+    refdes or net name, or by id — eight or more of an id's leading digits will do, "33b623e6…" as a reply shortens
+    it, when no other id begins the same; an unnamed net has only that. Every op that acts on one thing names it by
+    its own field (line, track, junction, …) or by id. When the project is open in Horizontal the edit lands there as
+    one undoable step, which the document autosaves; a project open in an editor cannot be edited on disk at all, and
+    the attempt fails with DOCUMENT_OPEN naming the holder. dry_run validates without changing anything and reports
+    any holder in blocked_by; it needs neither expected_revision nor operation_id, and its before_revision is the one
+    to commit with. A commit sends the same ops with the dry run's plan_digest.
 
     What these ops cover: the block (components, nets, connections), schematic symbols, the wires between their
     pins, free text on the sheets, board package placement, and copper — tracks and vias. Routing here is manual:
@@ -1298,19 +1333,30 @@ def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool =
     wherever that block is used, so it has no board of its own and board operations on one are refused.
 
     Pins are named by name or uuid, whole names first, so PA13(JTMS/SWDIO) works; a wire end can name a
-    component and pin instead of a symbol instance. Cleanup: remove_net_line, remove_junction, prune_sheet,
-    remove_sheet with force, and retire_net, which takes the net's labels, wires, junctions and planes with it. Drawing:
-    terminate_pin runs a stub from a pin to a label or power symbol. set_no_connect marks unused pins;
+    component and pin instead of a symbol instance, and get_component gives each drawn pin's end on the sheet.
+    Cleanup: remove_net_line, remove_junction, prune_sheet, remove_sheet with force, and retire_net, which takes the
+    net's labels, wires, junctions and planes with it; remove_symbol and remove_component take the wiring left
+    serving nothing unless keep_wiring. Drawing: terminate_pin runs a stub from a pin to a label or power symbol, and
+    a label or power symbol placed on a wire splits it there. Moving: move_symbols moves parts by an offset or onto
+    another sheet with the junctions, wires, labels and power symbols that belong only to them, stretching or cutting
+    the rest; place_junction with the id of a junction that is there moves it. set_no_connect marks unused pins;
     set_pin_alternate picks a pin's function (SPI1_SCK on PA5) from what get_component(alternates=true) lists;
-    remap_part matches pins by name when pin_map is left out. Refer to sheets by name or uuid in a batch that
-    adds or reorders sheets — page numbers move.
+    remap_part matches pins by name when pin_map is left out, folds gates onto a single-gate part, keeps every pad
+    of the same package, maps other pads by name, and with copper "drop" removes tracks on pads the new part lacks.
+    Refer to sheets by name or uuid in a batch that adds or reorders sheets — page numbers move.
+
+    Board rules: add_rule takes fields and orders the rule after its kind's; set_rule merges objects key by key.
+    place_via takes the shape of the via rule matching its net, a via definition, or a size of its own; a change to
+    the via rules reshapes the vias they shape. warnings says when a pin moves to another net with copper on its pad,
+    and check reports copper joining two nets.
 
     An op that makes something — place_junction, place_symbol, draw_net_line, place_text, place_board_text,
     ensure_component, ensure_net and the add_ ops — may give a short name as its id instead of a UUID
     ("id": "j1"), and later ops in the batch use that name where they refer to that kind of thing
     ({"kind": "junction", "junction": "j1"}; remove_text's id). The reply's handles maps each name to the UUID it
-    became. A failing op is named in the error: "ops[3] place_junction: …", and so is a name it involved, with
-    the earlier op that removed the thing if one did — removing a wire takes the junctions it leaves bare.
+    became; a junction placed where one stands is that one, which handles gives and reused_handles names. A
+    failing op is named in the error: "ops[3] place_junction: …", and so is a name it involved, with the earlier op
+    that removed the thing if one did — removing a wire takes the junctions it leaves bare.
 
     Texts: place_text and place_board_text also change a text that is already there. Name it by the id list_texts
     or list_board_texts gives, and pass only what changes: x_mm, y_mm or both move it, and it keeps its uuid, its
@@ -1328,9 +1374,9 @@ def apply_ops(ops: list[EditOperation], path: str | None = None, dry_run: bool =
     adds no undo step when committed; set_pin_alternate names such pins in unchanged_pins. warnings says when a
     symbol showing pins custom_only hides a chosen alternate, and when a part's own value hides one set_value set.
 
-    The reply is compact unless verbose: per op, its ids, scalars and counts, plus timing. A slow live commit
-    is waited for (HORIZONTAL_MUTATION_TIMEOUT seconds, 180 by default), and a lost reply is resolved through
-    transaction_status before this returns."""
+    The reply is compact unless verbose: per op, its ids, scalars and counts, plus timing; the echoed
+    normalized_ops come only with verbose. A slow live commit is waited for (HORIZONTAL_MUTATION_TIMEOUT seconds,
+    180 by default), and a lost reply is resolved through transaction_status before this returns."""
     # by_alias: a track end is spelled "from", which is a Swift and Python keyword.
     encoded = [op.model_dump(exclude_unset=True, by_alias=True) if isinstance(op, BaseModel) else op for op in ops]
     return _edit(_resolve(path), encoded, dry_run=dry_run, pool_items=pool_items, block=block)

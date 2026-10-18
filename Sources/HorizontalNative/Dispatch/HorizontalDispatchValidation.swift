@@ -17,9 +17,9 @@ enum HorizontalDispatchValidation {
         let numbers: Set<String> = ["dpi", "margin_mm", "deadline_unix_ms", "factor"]
         let booleans: Set<String> = ["include_metadata", "include_unconnected", "include_no_populate", "dry_run",
                                      "mirrored", "redo", "allow_project_changes", "smashed", "airwires", "full",
-                                     "include_contents"]
+                                     "include_contents", "connected"]
         let objects: Set<String> = ["region", "options"]
-        let arrays: Set<String> = ["ops", "items", "pool_items", "components", "nets", "layers", "layer_ids", "sections", "panes", "parts", "remove"]
+        let arrays: Set<String> = ["ops", "items", "pool_items", "components", "nets", "layers", "layer_ids", "sections", "panes", "parts", "remove", "pads"]
         for (key, value) in params {
             if integers.contains(key) { try number(value, key: key, integer: true) }
             else if numbers.contains(key) { try number(value, key: key) }
@@ -86,11 +86,39 @@ enum HorizontalDispatchValidation {
         guard selected.count == 1, let text = params[selected[0]] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw HorizontalDispatchError.invalidParams("Pass exactly one non-empty selector: \(keys.joined(separator: ", ")).")
         }
-        if selected[0] == "id", UUID(uuidString: text) == nil { throw HorizontalDispatchError.invalidParams("id must be a UUID.") }
+        if selected[0] == "id", UUID(uuidString: text) == nil, uuidPrefix(text) == nil {
+            throw HorizontalDispatchError.invalidParams("id must be a UUID, or eight or more of its leading digits.")
+        }
+    }
+
+    /// A short UUID, as git takes a commit: eight or more of its leading hex
+    /// digits, with the UUID's dashes or without them, and any "…" a reply's
+    /// abbreviation ended with dropped. Nil for anything else, so a name is
+    /// never read as one.
+    static func uuidPrefix(_ reference: String) -> String? {
+        var text = reference.trimmingCharacters(in: .whitespaces).lowercased()
+        for ellipsis in ["…", "..."] where text.hasSuffix(ellipsis) { text.removeLast(ellipsis.count) }
+        let digits = text.filter { $0 != "-" }
+        guard digits.count >= 8, digits.count <= 32, digits.allSatisfy(\.isHexDigit) else { return nil }
+        return digits
+    }
+
+    /// The one id among `ids` a short UUID names: nil when it is no short
+    /// UUID or names none, and an error listing them when it names several.
+    static func id(matchingPrefix reference: String, in ids: some Sequence<String>, kind: String) throws -> String? {
+        guard let digits = uuidPrefix(reference) else { return nil }
+        let matches = ids.filter { $0.lowercased().replacingOccurrences(of: "-", with: "").hasPrefix(digits) }
+        guard matches.count <= 1 else {
+            throw HorizontalDispatchError.ambiguous("\(matches.count) \(kind)s have ids beginning \(reference); give more of the id.",
+                                                    candidates: matches)
+        }
+        return matches.first
     }
 
     static func component(_ selector: String, index: HorizontalDesignIndex) throws -> HorizontalDesignComponent {
-        let matches = index.sortedComponents.filter { $0.id.caseInsensitiveCompare(selector) == .orderedSame || $0.refdes.caseInsensitiveCompare(selector) == .orderedSame }
+        var matches = index.sortedComponents.filter { $0.id.caseInsensitiveCompare(selector) == .orderedSame || $0.refdes.caseInsensitiveCompare(selector) == .orderedSame }
+        if matches.isEmpty, let id = try id(matchingPrefix: selector, in: index.components.keys, kind: "component"),
+           let component = index.component(id: id) { matches = [component] }
         guard let first = matches.first else { throw HorizontalDispatchError.notFound("No component \(selector).") }
         guard matches.count == 1 else { throw HorizontalDispatchError.ambiguous("Component selector is ambiguous; use a UUID.", candidates: matches.map(\.id)) }
         return first
@@ -98,7 +126,9 @@ enum HorizontalDispatchValidation {
 
     static func net(_ selector: String, index: HorizontalDesignIndex) throws -> HorizontalDesignNet {
         guard !selector.isEmpty else { throw HorizontalDispatchError.invalidParams("Use the UUID to select an unnamed net.") }
-        let matches = index.sortedNets.filter { $0.id.caseInsensitiveCompare(selector) == .orderedSame || $0.name.caseInsensitiveCompare(selector) == .orderedSame }
+        var matches = index.sortedNets.filter { $0.id.caseInsensitiveCompare(selector) == .orderedSame || $0.name.caseInsensitiveCompare(selector) == .orderedSame }
+        if matches.isEmpty, let id = try id(matchingPrefix: selector, in: index.nets.keys, kind: "net"),
+           let net = index.net(id: id) { matches = [net] }
         guard let first = matches.first else { throw HorizontalDispatchError.notFound("No net \(selector).") }
         guard matches.count == 1 else { throw HorizontalDispatchError.ambiguous("Net selector is ambiguous; use a UUID.", candidates: matches.map(\.id)) }
         return first

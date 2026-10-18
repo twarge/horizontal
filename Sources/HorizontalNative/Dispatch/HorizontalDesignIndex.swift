@@ -401,7 +401,16 @@ struct HorizontalDesignIndex {
                 details: info.details,
                 pins: sortedPins,
                 symbolPlacements: placements,
-                boardPlacement: boardPlacements[componentID],
+                // The board's own answer, else the part's: a part written into
+                // the pool since the board was read names a package the
+                // board's placement doesn't know yet.
+                boardPlacement: boardPlacements[componentID].map { placement in
+                    var placement = placement
+                    if placement.packageID == nil {
+                        placement.packageID = part?.packageID ?? partID.flatMap { pool.poolPart($0)?.packageID }
+                    }
+                    return placement
+                },
                 group: blockEntry?.string("group")?.lowercased(),
                 tag: blockEntry?.string("tag")?.lowercased(),
                 rawValue: blockEntry?.string("value") ?? info.value,
@@ -499,6 +508,19 @@ struct HorizontalDesignIndex {
 
     func net(id: String) -> HorizontalDesignNet? {
         nets[id.lowercased()]
+    }
+
+    /// A component by its id, or by eight or more of the id's leading digits
+    /// when only one id begins that way: an unnamed net or a part copied from
+    /// a reply's "33b623e6…" is named the way it was shown.
+    func component(idOrPrefix reference: String) throws -> HorizontalDesignComponent? {
+        if let component = component(id: reference) { return component }
+        return try HorizontalDispatchValidation.id(matchingPrefix: reference, in: components.keys, kind: "component").flatMap { components[$0] }
+    }
+
+    func net(idOrPrefix reference: String) throws -> HorizontalDesignNet? {
+        if let net = net(id: reference) { return net }
+        return try HorizontalDispatchValidation.id(matchingPrefix: reference, in: nets.keys, kind: "net").flatMap { nets[$0] }
     }
 
     /// The schematics the PDF exporter walks, in its page order.
