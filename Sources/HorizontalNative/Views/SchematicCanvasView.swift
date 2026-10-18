@@ -1728,7 +1728,9 @@ struct SchematicCanvasView: View {
         guard !isReadOnly, !editorProfile.isPoolMode, onApplyProjectEdit != nil else {
             return readOnlyProperty("name", "Net name", nonEmpty(detail.name) ?? "unnamed net")
         }
-        return editableTextProperty(Self.netNamePropertyID, "Net name", detail.name)
+        var property = editableTextProperty(Self.netNamePropertyID, "Net name", detail.name)
+        property.editor = .committedText
+        return property
     }
 
     private static let netNamePropertyID = "netName"
