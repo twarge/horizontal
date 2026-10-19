@@ -456,9 +456,14 @@ struct SchematicCanvasView: View {
         !highlightedNetIDs.isEmpty || !highlightedComponentIDs.isEmpty
     }
 
+    /// Whether a move is drawn by patching the moved objects' Metal buffers,
+    /// rather than redrawing the moved sheet (`showUnpatchedMovePreview`).
+    /// A pool symbol or frame is small enough to redraw each step, and redrawn
+    /// it previews exactly what the commit writes, whatever it holds.
     private var canPatchSchematicMoveInMetal: Bool {
         guard moveState != nil,
               !selectedObjects.isEmpty,
+              !editorProfile.isPoolMode,
               drawsSchematicUnderlayLinesInMetal else {
             return false
         }
@@ -2860,7 +2865,21 @@ struct SchematicCanvasView: View {
                 state.lastPoint = point
                 moveState = state
             }
+            if !profilesMetalPatchMove {
+                showUnpatchedMovePreview(state)
+            }
         }
+    }
+
+    /// A move the Metal patch can't draw — one holding something the patch
+    /// has no buffers for, such as the symbol editor's pins — shows the moved
+    /// sheet itself, rebuilt each step, as the board canvas shows its moved
+    /// board: the preview becomes the sheet drawn. Commit and cancel set the
+    /// sheet from the move state, and a turn mid-move already draws its
+    /// preview this way, so nothing else has to know.
+    private func showUnpatchedMovePreview(_ state: MoveState) {
+        editedSheet = schematicMovePreviewSheet(for: state)
+        invalidateSelectableCache()
     }
 
     private func commitMove() {
