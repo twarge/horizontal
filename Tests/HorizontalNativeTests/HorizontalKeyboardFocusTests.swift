@@ -250,7 +250,16 @@ final class HorizontalKeyboardFocusTests: XCTestCase {
             XCTAssertFalse(navigator.canBecomeKeyView, "without Keyboard Navigation the outline takes the keyboard only from a click")
             XCTAssertTrue(window.makeFirstResponder(nil))
             window.selectNextKeyView(nil)
-            XCTAssertTrue(window.firstResponder is TrackpadCanvasMonitor.MonitorView, "the first key view is a canvas")
+            // What the loop holds, so a failure on a machine this passes
+            // elsewhere on says what came first instead.
+            var chain = [String]()
+            var view = window.firstResponder as? NSView
+            for _ in 0..<6 {
+                chain.append(view.map { NSStringFromClass(type(of: $0)) } ?? "nil")
+                view = view?.nextValidKeyView
+            }
+            XCTAssertTrue(window.firstResponder is TrackpadCanvasMonitor.MonitorView,
+                          "the first key view is a canvas, not \(String(describing: window.firstResponder)); loop \(chain), sheet \(String(describing: window.attachedSheet))")
         }
     }
 

@@ -2,25 +2,29 @@ import SwiftUI
 
 struct HorizontalSettingsView: View {
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
+    @State private var confirmingEditingUnlock = false
 
     var body: some View {
         Form {
             Section("Operation") {
-                if HorizontalOperationDefaults.isReadOnlyOperationForced {
-                    // Release builds are read-only and the toggle is not
-                    // offered. Say so rather than showing a disabled switch or
-                    // an empty section, so the state doesn't look like a bug.
-                    Label("Read-only", systemImage: "lock")
-                    Text("This build cannot modify project files. Selection, search, view options, and app preferences all work as normal.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Toggle("Read-only", isOn: appearanceSettings.readOnlyOperationBinding())
-                    Text("Prevents project files from being modified. Selection, search, view options, and app preferences still work.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                // Turning it off asks first: editing is in beta.
+                Toggle("Read-only", isOn: Binding {
+                    appearanceSettings.isReadOnlyOperationEnabled
+                } set: { isReadOnly in
+                    if isReadOnly {
+                        appearanceSettings.readOnlyOperationBinding().wrappedValue = true
+                    } else {
+                        confirmingEditingUnlock = true
+                    }
+                })
+                Text("Prevents project files from being modified. Selection, search, view options, and app preferences still work.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !appearanceSettings.isReadOnlyOperationEnabled {
+                    HorizontalEditingBetaWarning()
                 }
             }
+            .editingUnlockConfirmation(isPresented: $confirmingEditingUnlock, appearanceSettings: appearanceSettings)
 
             #if os(macOS)
             // The listener is macOS-only, so the switch is too.
