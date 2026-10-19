@@ -644,6 +644,12 @@ struct ProjectWorkspaceView: View {
     /// second time). Nil is the normal, un-soloed state.
     @State private var soloedBoardLayer: Int?
     @State private var pendingPartPlacement: HorizontalPartPlacementRequest?
+    /// The project's parts against their pools, for the Parts pane, the
+    /// updates sheet and the info bar that says when they fall behind.
+    @StateObject private var partLibrary = HorizontalPartLibraryMonitor()
+    @State private var showsPartUpdates = false
+    /// A copy of a part into an attached pool, waiting on its confirmation.
+    @State private var pendingPoolCopy: HorizontalPoolPartCopy?
     /// What Move to Other Sheet took across, for the canvas to pick up there.
     @State private var pendingSchematicMove: HorizontalSchematicMoveRequest?
     @State private var canvasCommandActionsByPane = [HorizontalPane: HorizontalCanvasCommandActions]()
@@ -877,8 +883,82 @@ struct ProjectWorkspaceView: View {
             }
     }
 
-    private var workspaceWithWindowObservers: some View {
+    /// The parts review: kept current as the design and its pools change,
+    /// and the updates sheet the Parts pane and the info bar open.
+    private var workspaceWithPartLibrary: some View {
         workspaceWithBoardSceneActions
+            .task(id: "\(boardEditRevision):\(schematicEditRevision):\(project.poolDirectory ?? ""):\(isReadOnly)") {
+                partLibrary.update(partLibraryInputs)
+            }
+            .sheet(isPresented: $showsPartUpdates) {
+                if let review = partLibrary.review {
+                    HorizontalPartUpdatesSheet(review: review, isReadOnly: isReadOnly, isRefreshing: partLibrary.isChecking,
+                                               onRefresh: partLibrary.recheck, onChooseSource: partLibrary.chooseSource,
+                                               onUpdate: updateProjectParts)
+                }
+            }
+            .alert("Library Review", isPresented: Binding(get: { partLibrary.error != nil }, set: { if !$0 { partLibrary.error = nil } })) {
+                Button("OK") { partLibrary.error = nil }
+            } message: { Text(partLibrary.error ?? "") }
+            .alert(pendingPoolCopy.map { "Copy \($0.partName) to \($0.targetName)?" } ?? "",
+                   isPresented: Binding(get: { pendingPoolCopy != nil }, set: { if !$0 { pendingPoolCopy = nil } }),
+                   presenting: pendingPoolCopy) { copy in
+                Button("Copy") { commitPoolCopy(copy) }
+                Button("Cancel", role: .cancel) {}
+            } message: { copy in
+                Text(copy.summary)
+            }
+    }
+
+    /// The attached pools a part can go to, for one no attached pool has.
+    private func poolCopyTargets(forPart partID: String) -> [HorizontalPoolCopyTarget] {
+        guard !isReadOnly, let directory = project.poolDirectory,
+              partLibrary.review?.parts.first(where: { $0.id.caseInsensitiveCompare(partID) == .orderedSame })?.isInNoAttachedPool == true else {
+            return []
+        }
+        return HorizontalPoolPartCopier.targets(forProjectPool: project.baseURL.appendingPathComponent(directory))
+    }
+
+    /// Plans a copy of a part into a pool, for the confirmation to show.
+    private func preparePoolCopy(partID: String, to target: URL) {
+        guard !isReadOnly, let directory = project.poolDirectory else { return }
+        do {
+            pendingPoolCopy = try HorizontalPoolPartCopier.plan(
+                partID: partID, projectFiles: HorizontalPoolCacheUpdater.files(in: document.archive, poolDirectory: directory),
+                projectPoolURL: project.baseURL.appendingPathComponent(directory), into: target)
+        } catch {
+            partLibrary.error = HorizontalCanvasProjectEdit.message(for: error)
+        }
+    }
+
+    /// Writes the part into the pool, then has the project take it from
+    /// there, as one undoable edit of the project.
+    private func commitPoolCopy(_ copy: HorizontalPoolPartCopy) {
+        guard !isReadOnly, let directory = project.poolDirectory else { return }
+        do {
+            try HorizontalPoolPartCopier.writePoolFiles(copy)
+            var archive = document.archive
+            try HorizontalPoolPartCopier.track(copy, in: &archive, poolDirectory: directory,
+                                               projectPoolURL: project.baseURL.appendingPathComponent(directory))
+            try applyLiveArchive(archive, actionName: "Copy to \(copy.targetName)")
+            partLibrary.recheck()
+        } catch {
+            partLibrary.error = HorizontalCanvasProjectEdit.message(for: error)
+        }
+    }
+
+    private var partLibraryInputs: HorizontalPartLibraryInputs {
+        HorizontalPartLibraryInputs(
+            poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
+            files: project.poolDirectory.map { HorizontalPoolCacheUpdater.files(in: document.archive, poolDirectory: $0) } ?? [:],
+            references: HorizontalPoolCacheUpdater.references(in: document.archive, project: project),
+            partIDs: project.poolParts.map(\.id),
+            isReadOnly: isReadOnly
+        )
+    }
+
+    private var workspaceWithWindowObservers: some View {
+        workspaceWithPartLibrary
             .background(WorkspaceKeyCommandMonitor(
                 onFind: activateFind,
                 onDistractionFree: toggleDistractionFreeMode,
@@ -1105,13 +1185,20 @@ struct ProjectWorkspaceView: View {
                 HorizontalVoiceTranscriptOverlay(control: voiceControl)
             }
             .overlay(alignment: .top) {
-                if gitignoreNeedsFixing {
-                    gitignoreInfoBar
-                        .padding(.top, canvasInsets.top + 8)
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                VStack(spacing: 8) {
+                    if gitignoreNeedsFixing {
+                        gitignoreInfoBar
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                    if partLibrary.showsNotice {
+                        HorizontalPartLibraryNotice(library: partLibrary) { showsPartUpdates = true }
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                 }
+                .padding(.top, canvasInsets.top + 8)
             }
             .animation(.snappy(duration: 0.18), value: gitignoreNeedsFixing)
+            .animation(.snappy(duration: 0.18), value: partLibrary.showsNotice)
         }
         // Must leave room for the navigator sidebar inside the window minimum
         // (980). This was also 980, so the detail alone claimed the whole
@@ -1584,7 +1671,6 @@ struct ProjectWorkspaceView: View {
         self.liveHandle = nil
     }
 
-
     /// An edited archive from the live channel becomes the document: the
     /// model reloads from it, URLs are pointed back at the real project (the
     /// snapshot loads from a temporary copy), and the previous archive and
@@ -1899,10 +1985,11 @@ struct ProjectWorkspaceView: View {
                     safeAreaInsets: fitSafeAreaInsets,
                     isReadOnly: isReadOnly,
                     onPlacePart: beginPartPlacement,
-                    libraryFiles: project.poolDirectory.map { HorizontalPoolCacheUpdater.files(in: document.archive, poolDirectory: $0) } ?? [:],
-                    libraryReferences: HorizontalPoolCacheUpdater.references(in: document.archive, project: project),
-                    libraryRevision: boardEditRevision + schematicEditRevision,
-                    onUpdateParts: updateProjectParts,
+                    library: partLibrary,
+                    usedPartIDs: Set(HorizontalPoolCacheUpdater.references(in: document.archive, project: project).keys),
+                    copyTargets: project.poolDirectory.map { HorizontalPoolPartCopier.targets(forProjectPool: project.baseURL.appendingPathComponent($0)) } ?? [],
+                    onCopyToPool: isReadOnly ? nil : { partID, target in preparePoolCopy(partID: partID, to: target) },
+                    onReviewUpdates: { showsPartUpdates = true },
                     onCleanUp: poolCleanupAction
                 )
             }
@@ -3032,7 +3119,14 @@ struct ProjectWorkspaceView: View {
     /// disk — so without this refresh that save would put the stale copy over
     /// the edit. Then the board is re-read from the refreshed archive (kept in
     /// memory, no write) so a changed package or padstack shows at once.
+    /// A pool item saved from an item editor. One of this project's own
+    /// takes effect at once, as Horizon's editors reload the pool when it
+    /// changes: the archive takes the file and the whole project reloads, its
+    /// schematic and parts as well as its board. One in a pool the project
+    /// draws from leaves the project's copy as it was; the parts review runs
+    /// again, and the info bar says what fell behind.
     private func handlePoolItemSaved(_ payload: HorizontalPoolLibrary.ItemDidSavePayload) {
+        partLibrary.recheck()
         guard !isReadOnly,
               case .directory = document.archive.root,
               let relativePath = archiveRelativePath(for: payload.url) else {
@@ -3040,19 +3134,12 @@ struct ProjectWorkspaceView: View {
         }
         do {
             try document.archive.replaceRegularFileData(relativePath: relativePath, with: payload.data)
-            guard let currentBoard = project.board else {
-                return
+            var reloaded = try HorizontalProject.loadSnapshot(of: document.archive)
+            if project.poolModelFiles != nil {
+                try reloaded.retainPoolModels(in: document.archive, reusing: project.poolModelFiles)
             }
-            let reloaded = try loadProjectSnapshot(from: document.archive)
-            guard var board = reloaded.board else {
-                return
-            }
-            board.url = currentBoard.url
-            rebasePackageModelURLs(in: &board)
-            project.board = board
-            boardSyncRevision += 1
-            boardEditRevision += 1
-            selectionDetailsByPane[.board] = .empty
+            rebaseProjectURLs(&reloaded, onto: project)
+            installLiveSnapshot(HorizontalLiveSnapshot(archive: document.archive, project: reloaded), installsArchive: false)
         } catch {
             recordArchiveApplyFailure(error)
         }
@@ -3071,17 +3158,6 @@ struct ProjectWorkspaceView: View {
             return nil
         }
         return String(target.dropFirst(prefix.count))
-    }
-
-    private func loadProjectSnapshot(from archive: HorizontalProjectArchive) throws -> HorizontalProject {
-        let temporaryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("HorizontalBoardSync-\(UUID().uuidString)")
-            .appendingPathExtension("horizontal")
-        try archive.write(to: temporaryURL)
-        defer {
-            try? FileManager.default.removeItem(at: temporaryURL)
-        }
-        return try HorizontalProject.load(from: temporaryURL)
     }
 
     private func registerBoardPlaneUpdateUndo(_ previousBoard: HorizontalBoard) {
@@ -3950,7 +4026,16 @@ struct ProjectWorkspaceView: View {
             replacement: libraryPartReplacement,
             replace: isReadOnly ? nil : { item, packageName, replacement in
                 replacePartsFromLibrary(item, packageName: packageName, replacement)
-            }
+            },
+            copyTargets: { item in
+                // A part of this project's pool, which no attached pool has.
+                guard let directory = project.poolDirectory,
+                      HorizontalPoolLibrary.canonicalURL(item.poolURL) == HorizontalPoolLibrary.canonicalURL(project.baseURL.appendingPathComponent(directory)) else {
+                    return []
+                }
+                return poolCopyTargets(forPart: item.uuid)
+            },
+            copyToPool: isReadOnly ? nil : { item, target in preparePoolCopy(partID: item.uuid, to: target) }
         )
     }
 

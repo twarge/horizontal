@@ -854,8 +854,10 @@ def list_part_updates(path: str | None = None, pool_path: str | None = None,
     """Review project parts and their dependencies against source libraries. Returns changes, affected
     references, local-edit conflicts, unavailable sources, and review_digest. Does not change files.
 
-    A change names its file (path), the fields that differ and their sizes (before_bytes, null for a new item,
-    and after_bytes); include_contents adds the texts. missing_pools names a pool that a pool the project draws
+    Each part names its source_pool, the pool it is kept up to date from; in_attached_pool is false for a part
+    made in the project (projectOnly) and one no attached pool holds. A change names its file (path), the fields
+    that differ and their sizes (before_bytes, null for a new item, and after_bytes); include_contents adds the
+    texts. missing_pools names a pool that a pool the project draws
     from includes and that this process couldn't find: parts from it read sourceUnavailable. A worker (a disk
     context) can't see the pools registered in the app; it finds an included pool checked out near the project,
     and otherwise pool_path, or HORIZONTAL_POOLS (colon-separated directories) in this server's environment,

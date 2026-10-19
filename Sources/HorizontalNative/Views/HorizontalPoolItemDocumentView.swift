@@ -23,6 +23,7 @@ struct HorizontalPoolItemDocumentView: View {
     var body: some View {
         HorizontalPoolItemEditorContent(session: session, isReadOnly: isReadOnly, commit: commit)
             .navigationTitle(session.title)
+            .navigationSubtitle(session.subtitle)
             .task {
                 let binding = $document
                 session.persist = { data in
@@ -164,6 +165,7 @@ struct HorizontalPoolItemEditorCover: View {
                         session.commit(model, actionName: actionName, undoManager: undoManager, isReadOnly: isReadOnly)
                     }
                     .navigationTitle(session.title)
+                    .navigationSubtitle(session.subtitle)
                 } else if let loadError {
                     ContentUnavailableView("Could Not Open Item", systemImage: "exclamationmark.triangle", description: Text(loadError))
                 } else {

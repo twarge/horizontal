@@ -109,6 +109,10 @@ struct HorizontalIPadProjectView: View {
     @State private var settingsSheetPresented = false
     /// The project pool cleanup on show, reviewed when it opened.
     @State private var poolCleanupReview: HorizontalPoolCacheCleanupReview?
+    /// The project's parts against their pools, as on macOS.
+    @StateObject private var partLibrary = HorizontalPartLibraryMonitor()
+    @State private var showsPartUpdates = false
+    @State private var pendingPoolCopy: HorizontalPoolPartCopy?
     // Per-file view-state persistence (the same store the macOS workspace
     // uses): which panes are open, the split-separator positions, and the
     // right slide-over. Restored in loadProject; the flag keeps the save
@@ -235,6 +239,15 @@ struct HorizontalIPadProjectView: View {
         .overlay(alignment: .bottom) {
             HorizontalVoiceTranscriptOverlay(control: voiceControl)
         }
+        .overlay(alignment: .top) {
+            if partLibrary.showsNotice {
+                HorizontalPartLibraryNotice(library: partLibrary) { showsPartUpdates = true }
+                    .padding(.top, 8)
+                    .padding(.horizontal, 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy(duration: 0.18), value: partLibrary.showsNotice)
         .toolbar {
             // The pane picker never appears without a schematic or board, so
             // this one condition covers every control.
@@ -301,6 +314,27 @@ struct HorizontalIPadProjectView: View {
             if let poolCleanupReview {
                 HorizontalPoolCleanupSheet(review: poolCleanupReview, isReadOnly: isReadOnly, onRemove: cleanUpProjectPool)
             }
+        }
+        .sheet(isPresented: $showsPartUpdates) {
+            if let review = partLibrary.review {
+                HorizontalPartUpdatesSheet(review: review, isReadOnly: isReadOnly, isRefreshing: partLibrary.isChecking,
+                                           onRefresh: partLibrary.recheck, onChooseSource: partLibrary.chooseSource,
+                                           onUpdate: updateProjectParts)
+            }
+        }
+        .alert("Library Review", isPresented: Binding(get: { partLibrary.error != nil }, set: { if !$0 { partLibrary.error = nil } })) {
+            Button("OK") { partLibrary.error = nil }
+        } message: { Text(partLibrary.error ?? "") }
+        .alert(pendingPoolCopy.map { "Copy \($0.partName) to \($0.targetName)?" } ?? "",
+               isPresented: Binding(get: { pendingPoolCopy != nil }, set: { if !$0 { pendingPoolCopy = nil } }),
+               presenting: pendingPoolCopy) { copy in
+            Button("Copy") { commitPoolCopy(copy) }
+            Button("Cancel", role: .cancel) {}
+        } message: { copy in
+            Text(copy.summary)
+        }
+        .task(id: "\(boardEditRevision):\(schematicEditRevision):\(project?.poolDirectory ?? ""):\(project != nil):\(isReadOnly)") {
+            if let project { partLibrary.update(partLibraryInputs(for: project)) }
         }
         // On a phone the navigator, the inspector and the export panel slide
         // up over the canvas instead of beside it; at the medium detent the
@@ -395,7 +429,10 @@ struct HorizontalIPadProjectView: View {
         }
     }
 
+    /// A pool item saved from an item editor: the parts review runs again,
+    /// and one of this project's own reloads the project.
     private func handlePoolItemSaved(_ payload: HorizontalPoolLibrary.ItemDidSavePayload) {
+        partLibrary.recheck()
         guard let project, case .directory = document.archive.root else {
             return
         }
@@ -972,7 +1009,16 @@ struct HorizontalIPadProjectView: View {
                     replacement: libraryPartReplacement,
                     replace: isReadOnly ? nil : { item, packageName, replacement in
                         replacePartsFromLibrary(item, packageName: packageName, replacement)
-                    }
+                    },
+                    copyTargets: { item in
+                        guard let directory = project.poolDirectory,
+                              HorizontalPoolLibrary.canonicalURL(item.poolURL)
+                                == HorizontalPoolLibrary.canonicalURL(project.baseURL.appendingPathComponent(directory)) else {
+                            return []
+                        }
+                        return poolCopyTargets(forPart: item.uuid, in: project)
+                    },
+                    copyToPool: isReadOnly ? nil : { item, target in preparePoolCopy(partID: item.uuid, to: target) }
                 )
             )
         case .schematic:
@@ -1106,11 +1152,59 @@ struct HorizontalIPadProjectView: View {
                 }
                 focusedPane = .schematic
             },
-            libraryFiles: project.poolDirectory.map { HorizontalPoolCacheUpdater.files(in: document.archive, poolDirectory: $0) } ?? [:],
-            libraryReferences: HorizontalPoolCacheUpdater.references(in: document.archive, project: project),
-            libraryRevision: boardEditRevision + schematicEditRevision,
-            onUpdateParts: updateProjectParts,
+            library: partLibrary,
+            usedPartIDs: Set(HorizontalPoolCacheUpdater.references(in: document.archive, project: project).keys),
+            copyTargets: project.poolDirectory.map { HorizontalPoolPartCopier.targets(forProjectPool: project.baseURL.appendingPathComponent($0)) } ?? [],
+            onCopyToPool: isReadOnly ? nil : { partID, target in preparePoolCopy(partID: partID, to: target) },
+            onReviewUpdates: { showsPartUpdates = true },
             onCleanUp: poolCleanupAction(for: project)
+        )
+    }
+
+    /// The attached pools a part can go to, for one no attached pool has.
+    private func poolCopyTargets(forPart partID: String, in project: HorizontalProject) -> [HorizontalPoolCopyTarget] {
+        guard !isReadOnly, let directory = project.poolDirectory,
+              partLibrary.review?.parts.first(where: { $0.id.caseInsensitiveCompare(partID) == .orderedSame })?.isInNoAttachedPool == true else {
+            return []
+        }
+        return HorizontalPoolPartCopier.targets(forProjectPool: project.baseURL.appendingPathComponent(directory))
+    }
+
+    /// Plans a copy of a part into a pool, for the confirmation to show.
+    private func preparePoolCopy(partID: String, to target: URL) {
+        guard !isReadOnly, let project, let directory = project.poolDirectory else { return }
+        do {
+            pendingPoolCopy = try HorizontalPoolPartCopier.plan(
+                partID: partID, projectFiles: HorizontalPoolCacheUpdater.files(in: document.archive, poolDirectory: directory),
+                projectPoolURL: project.baseURL.appendingPathComponent(directory), into: target)
+        } catch {
+            partLibrary.error = HorizontalCanvasProjectEdit.message(for: error)
+        }
+    }
+
+    /// Writes the part into the pool, then has the project take it from
+    /// there, as one undoable edit of the project.
+    private func commitPoolCopy(_ copy: HorizontalPoolPartCopy) {
+        guard !isReadOnly, let project, let directory = project.poolDirectory else { return }
+        do {
+            try HorizontalPoolPartCopier.writePoolFiles(copy)
+            var archive = document.archive
+            try HorizontalPoolPartCopier.track(copy, in: &archive, poolDirectory: directory,
+                                               projectPoolURL: project.baseURL.appendingPathComponent(directory))
+            try applyArchiveEdit(archive, to: project, actionName: "Copy to \(copy.targetName)")
+            partLibrary.recheck()
+        } catch {
+            partLibrary.error = HorizontalCanvasProjectEdit.message(for: error)
+        }
+    }
+
+    private func partLibraryInputs(for project: HorizontalProject) -> HorizontalPartLibraryInputs {
+        HorizontalPartLibraryInputs(
+            poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
+            files: project.poolDirectory.map { HorizontalPoolCacheUpdater.files(in: document.archive, poolDirectory: $0) } ?? [:],
+            references: HorizontalPoolCacheUpdater.references(in: document.archive, project: project),
+            partIDs: project.poolParts.map(\.id),
+            isReadOnly: isReadOnly || project.schematic == nil
         )
     }
 

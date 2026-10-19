@@ -69,6 +69,11 @@ struct HorizontalPoolPartActions {
     /// is the part's package's name, for what Replace says when it can't
     /// change a package.
     var replace: ((HorizontalPoolLibraryItem, String, HorizontalPartReplacement) -> Void)?
+    /// The attached pools a part of the project's pool can be copied into:
+    /// none for a part an attached pool already has.
+    var copyTargets: ((HorizontalPoolLibraryItem) -> [HorizontalPoolCopyTarget])? = nil
+    /// Copies a part into a pool (a plan the host confirms first).
+    var copyToPool: ((HorizontalPoolLibraryItem, URL) -> Void)? = nil
 }
 
 /// The library browser: Horizon's pool manager for this app. Browses every
@@ -1057,6 +1062,13 @@ struct HorizontalPoolBrowserView: View {
             case .part:
                 Button("New Part Based on This…") {
                     createPart(basedOn: item)
+                }
+                if let copyToPool = partActions?.copyToPool, let targets = partActions?.copyTargets?(item), !targets.isEmpty {
+                    Menu("Copy to Pool") {
+                        ForEach(targets) { target in
+                            Button(target.name) { copyToPool(item, target.url) }
+                        }
+                    }
                 }
             case .package:
                 Button("New Padstack for Package…") {

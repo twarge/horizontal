@@ -210,7 +210,7 @@ final class HorizontalPoolBrowserPaneTests: XCTestCase {
             id: "pp-1", mpn: "PARTS-PANE-PART", manufacturer: "Yageo", partDescription: "", packageName: "R0603", tags: [],
             value: "", displayValue: "PARTS-PANE-PART", entityID: "e-res", refdesPrefix: "R",
             gates: [HorizontalPoolPartGate(id: "g", suffix: "", unitID: "u", symbolID: "s")])
-        let parts = HorizontalPartBrowserView(parts: [part], onPlacePart: { partsPlaced.append($0.id) })
+        let parts = HorizontalPartBrowserView(parts: [part], onPlacePart: { partsPlaced.append($0.id) }, library: HorizontalPartLibraryMonitor())
         let pools = HorizontalPoolBrowserView(root: .pool(poolURL), partActions: actions(calls, replacement: nil))
         let view = HStack(spacing: 0) {
             parts.frame(width: 1100)

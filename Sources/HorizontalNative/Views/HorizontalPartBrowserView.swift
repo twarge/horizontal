@@ -26,16 +26,40 @@ private enum HorizontalPartSearchScope: String, CaseIterable, Identifiable {
     }
 }
 
+/// Which parts the Parts pane lists, by where they stand against their pools.
+private enum HorizontalPartLibraryFilter: String, CaseIterable, Identifiable {
+    case all
+    case outOfDate
+    case notInAttachedPool
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: "All Parts"
+        case .outOfDate: "Out of Date"
+        case .notInAttachedPool: "Not in an Attached Pool"
+        }
+    }
+}
+
 struct HorizontalPartBrowserView: View {
     var parts: [HorizontalPoolPart]
     var poolURL: URL?
     var safeAreaInsets: EdgeInsets = EdgeInsets()
     var isReadOnly = false
     var onPlacePart: (HorizontalPoolPart) -> Void = { _ in }
-    var libraryFiles: [String: Data] = [:]
-    var libraryReferences: [String: [String]] = [:]
-    var libraryRevision = 0
-    var onUpdateParts: (HorizontalPoolCacheReview, Set<String>, Bool) throws -> Void = { _, _, _ in }
+    /// The document's review of its parts against their pools.
+    @ObservedObject var library: HorizontalPartLibraryMonitor
+    /// The parts components use, which are listed even when they are only a
+    /// base other parts derive from.
+    var usedPartIDs: Set<String> = []
+    /// Attached pools a part no attached pool has can be copied into.
+    var copyTargets: [HorizontalPoolCopyTarget] = []
+    /// Copies a part into a pool (a plan the host confirms first).
+    var onCopyToPool: ((HorizontalPoolPart.ID, URL) -> Void)? = nil
+    /// Opens the document's Update Project Parts sheet.
+    var onReviewUpdates: () -> Void = {}
     /// Opens the project pool cleanup, where the document offers one.
     var onCleanUp: (() -> Void)? = nil
 
@@ -46,12 +70,7 @@ struct HorizontalPartBrowserView: View {
     @Environment(\.horizonPoolRevealAction) private var poolRevealAction
     @State private var pendingRevealTask: Task<Void, Never>?
     @State private var selectionChangedAt = Date.distantPast
-    @State private var libraryReview: HorizontalPoolCacheReview?
-    @State private var isCheckingLibrary = false
-    @State private var showsLibraryReview = false
-    @State private var libraryError: String?
-    @State private var refreshRevision = 0
-    @State private var sourceOverrides: [String: URL] = [:]
+    @State private var libraryFilter = HorizontalPartLibraryFilter.all
     @SceneStorage("Horizontal.partBrowser.columnCustomization")
     private var columnCustomization = TableColumnCustomization<HorizontalPoolPart>()
     /// Where in this pane the keyboard is, if anywhere: Return places only
@@ -65,7 +84,20 @@ struct HorizontalPartBrowserView: View {
         case table
     }
 
+    /// The project's parts, less those in its pool only as the base another
+    /// derives from: caching a derived part brings its base along, but the
+    /// design didn't choose it, unless a component uses it.
+    private var listedParts: [HorizontalPoolPart] {
+        Self.listedParts(parts, used: usedPartIDs)
+    }
+
+    static func listedParts(_ parts: [HorizontalPoolPart], used: Set<String>) -> [HorizontalPoolPart] {
+        let bases = Set(parts.compactMap(\.baseID))
+        return parts.filter { !bases.contains($0.id.lowercased()) || used.contains($0.id.lowercased()) }
+    }
+
     private var filteredParts: [HorizontalPoolPart] {
+        let parts = listedParts
         let terms = searchText
             .split(whereSeparator: \.isWhitespace)
             .map { String($0).lowercased() }
@@ -76,7 +108,19 @@ struct HorizontalPartBrowserView: View {
                     searchableText(for: part).contains(term)
                 }
             }
-        return filtered.sorted(using: sortOrder)
+        return filtered.filter(matchesLibraryFilter).sorted(using: sortOrder)
+    }
+
+    private func libraryRow(for part: HorizontalPoolPart) -> HorizontalPartLibraryReview? {
+        library.review?.parts.first { $0.id.caseInsensitiveCompare(part.id) == .orderedSame }
+    }
+
+    private func matchesLibraryFilter(_ part: HorizontalPoolPart) -> Bool {
+        switch libraryFilter {
+        case .all: true
+        case .outOfDate: libraryRow(for: part).map { !$0.changes.isEmpty } ?? false
+        case .notInAttachedPool: libraryRow(for: part)?.isInNoAttachedPool ?? false
+        }
     }
 
     private var selectedPart: HorizontalPoolPart? {
@@ -110,27 +154,6 @@ struct HorizontalPartBrowserView: View {
             pendingRevealTask?.cancel()
             pendingRevealTask = nil
         }
-        .task(id: "\(libraryRevision):\(refreshRevision):\(poolURL?.path ?? "")") {
-            await checkLibrary()
-        }
-        .sheet(isPresented: $showsLibraryReview) {
-            if let libraryReview {
-                HorizontalPartUpdatesSheet(review: libraryReview, isReadOnly: isReadOnly,
-                                           isRefreshing: isCheckingLibrary,
-                                           onRefresh: { refreshRevision += 1 },
-                                           onChooseSource: { part, url in
-                                               guard HorizontalPoolRegistry.shared.addPool(at: url) else {
-                                                   throw HorizontalDispatchError.failed("Choose a library folder containing pool.json.")
-                                               }
-                                               sourceOverrides[part] = url.standardizedFileURL
-                                               refreshRevision += 1
-                                           },
-                                           onUpdate: onUpdateParts)
-            }
-        }
-        .alert("Library Review", isPresented: Binding(get: { libraryError != nil }, set: { if !$0 { libraryError = nil } })) {
-            Button("OK") { libraryError = nil }
-        } message: { Text(libraryError ?? "") }
         #if os(macOS)
         .background(Color(nsColor: .controlBackgroundColor))
         #else
@@ -168,17 +191,24 @@ struct HorizontalPartBrowserView: View {
                 .frame(minWidth: 100)
                 .leavesFieldOnEscape()
                 .focused($focus, equals: .search)
+
+            Picker("Show", selection: $libraryFilter) {
+                ForEach(HorizontalPartLibraryFilter.allCases) { filter in
+                    Text(filter.title).tag(filter)
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+            .help("List the parts out of date with their pools, or the ones no attached pool has")
         }
     }
 
     private var partCommands: some View {
         HStack(spacing: 8) {
-            Button {
-                showsLibraryReview = true
-            } label: {
-                Label("Updates (\(libraryReview?.parts.filter { !$0.changes.isEmpty }.count ?? 0))", systemImage: "arrow.triangle.2.circlepath")
+            Button(action: onReviewUpdates) {
+                Label("Updates (\(library.review?.parts.filter { !$0.changes.isEmpty }.count ?? 0))", systemImage: "arrow.triangle.2.circlepath")
             }
-            .disabled(libraryReview == nil)
+            .disabled(library.review == nil)
             .help("Review project parts against their source libraries")
 
             if let onCleanUp {
@@ -189,10 +219,10 @@ struct HorizontalPartBrowserView: View {
                 .help("Remove project pool items nothing in the design uses")
             }
 
-            Button { refreshRevision += 1 } label: {
+            Button { library.recheck() } label: {
                 Image(systemName: "arrow.clockwise")
             }
-            .disabled(isCheckingLibrary)
+            .disabled(library.isChecking)
             .help("Check source libraries again")
 
             Button {
@@ -207,7 +237,7 @@ struct HorizontalPartBrowserView: View {
 
     /// The sum of the columns' minimum widths (plus row insets): the least
     /// width at which every column is still legible.
-    private static let minimumTableWidth: CGFloat = 1030
+    private static let minimumTableWidth: CGFloat = 1140
 
     private var partTable: some View {
         // Table has no horizontal scrolling of its own — when the pane is
@@ -241,16 +271,31 @@ struct HorizontalPartBrowserView: View {
             .disabledCustomizationBehavior(.visibility)
 
             TableColumn("Library Status") { part in
-                if let status = libraryReview?.parts.first(where: { $0.id == part.id })?.status {
-                    Label(status.title, systemImage: status.symbol)
-                        .foregroundStyle(status == .current || status == .projectOnly ? Color.secondary : Color.orange)
+                if let row = libraryRow(for: part) {
+                    Label(row.statusTitle, systemImage: row.status.symbol)
+                        .foregroundStyle(row.status == .current || row.status == .projectOnly ? Color.secondary : Color.orange)
                         .lineLimit(1)
+                        .help(row.message.isEmpty ? row.sourcePool.map { "From \($0)" } ?? row.statusTitle : row.message)
                 } else {
-                    Text(isCheckingLibrary ? "Checking" : "Unavailable").foregroundStyle(.secondary)
+                    Text(library.isChecking ? "Checking" : "Unavailable").foregroundStyle(.secondary)
                 }
             }
             .width(min: 175, ideal: 185)
             .customizationID("libraryStatus")
+
+            // The pool a part is kept up to date from; none where no attached
+            // pool has it.
+            TableColumn("Source Pool") { part in
+                if let row = libraryRow(for: part) {
+                    Text(row.sourcePool ?? (row.status == .projectOnly ? "This project" : "None attached"))
+                        .foregroundStyle(row.sourcePool != nil ? Color.primary : row.status == .projectOnly ? Color.secondary : Color.orange)
+                        .lineLimit(1)
+                } else {
+                    Text("")
+                }
+            }
+            .width(min: 110, ideal: 140)
+            .customizationID("sourcePool")
 
             TableColumn("Value", value: \.value) { part in
                 tableText(part.value, part: part)
@@ -292,7 +337,27 @@ struct HorizontalPartBrowserView: View {
         .alternatingRowBackgrounds(.enabled)
         #endif
         .textSelection(.enabled)
+        .contextMenu(forSelectionType: HorizontalPoolPart.ID.self) { ids in
+            if let id = ids.first, let part = parts.first(where: { $0.id == id }) {
+                partContextMenu(part)
+            }
+        }
         .focused($focus, equals: .table)
+    }
+
+    /// Place, and for a part no attached pool has, a copy into one of them.
+    @ViewBuilder
+    private func partContextMenu(_ part: HorizontalPoolPart) -> some View {
+        if !isReadOnly, part.gates.first?.symbolID != nil {
+            Button("Place in Schematic") { place(part) }
+        }
+        if let onCopyToPool, !isReadOnly, !copyTargets.isEmpty, libraryRow(for: part)?.isInNoAttachedPool == true {
+            Menu("Copy to Pool") {
+                ForEach(copyTargets) { target in
+                    Button(target.name) { onCopyToPool(part.id, target.url) }
+                }
+            }
+        }
     }
 
     private var unavailableView: some View {
@@ -378,32 +443,6 @@ struct HorizontalPartBrowserView: View {
             return
         }
         place(selectedPart)
-    }
-
-    private func checkLibrary() async {
-        guard let poolURL, !libraryFiles.isEmpty || isReadOnly else { return }
-        isCheckingLibrary = true
-        defer { isCheckingLibrary = false }
-        let files = libraryFiles
-        let references = libraryReferences
-        let partIDs = parts.map(\.id)
-        let pools = HorizontalPoolLibrary.editorPoolURLs(forPoolRoot: poolURL)
-        let overrides = sourceOverrides
-        let readOnly = isReadOnly
-        do {
-            let result = try await Task.detached(priority: .utility) {
-                HorizontalPoolLibrary.invalidateCache()
-                let contents = try files.isEmpty && readOnly ? HorizontalPoolCacheUpdater.filesOnDisk(in: poolURL) : files
-                return try HorizontalPoolCacheUpdater.review(poolURL: poolURL, files: contents, sourcePools: pools,
-                                                              partIDs: partIDs, references: references, sourceOverrides: overrides)
-            }.value
-            guard !Task.isCancelled else { return }
-            libraryReview = result
-        } catch {
-            guard !Task.isCancelled else { return }
-            libraryReview = nil
-            libraryError = HorizontalCanvasProjectEdit.message(for: error)
-        }
     }
 
     private func place(_ part: HorizontalPoolPart) {
