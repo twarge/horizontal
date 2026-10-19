@@ -53,6 +53,23 @@ struct HorizontalPartLibraryReview: Identifiable, Sendable {
     var dependencies: Set<String> = []
     var origins: [String: HorizontalPoolCacheProvenance.Origin] = [:]
     var message: String = ""
+    /// The pool the part comes from, by name, once one of the attached pools
+    /// is found holding it; nil for a project-only part and one no attached
+    /// pool has.
+    var sourcePool: String? = nil
+
+    /// No pool the project is attached to holds the part: one made in the
+    /// project, or one whose pool isn't registered or found here.
+    var isInNoAttachedPool: Bool {
+        status == .projectOnly || (status == .sourceUnavailable && sourcePool == nil)
+    }
+
+    /// The status as the Parts pane and the updates sheet show it. A source
+    /// that can't be used tells apart "no attached pool has it" from a pool
+    /// that has it but can't update it.
+    var statusTitle: String {
+        status == .sourceUnavailable && sourcePool == nil ? "Not in an attached pool" : status.title
+    }
     var canUpdate: Bool {
         !changes.isEmpty && status != .sourceUnavailable && changes.allSatisfy { $0.blockingReason == nil }
     }
@@ -61,6 +78,18 @@ struct HorizontalPartLibraryReview: Identifiable, Sendable {
 
 struct HorizontalPoolCacheReview: Sendable {
     var parts: [HorizontalPartLibraryReview]
+
+    /// Parts the design uses whose pools hold a newer copy, Horizon's "out of
+    /// date" in its pool cache status.
+    var outdatedInUse: [HorizontalPartLibraryReview] {
+        parts.filter { !$0.references.isEmpty && !$0.changes.isEmpty && ($0.status == .updateAvailable || $0.status == .locallyModified) }
+    }
+
+    /// Parts the design uses that no attached pool holds, so nothing can
+    /// update them and the project's copy is the only one there is.
+    var notInAttachedPoolInUse: [HorizontalPartLibraryReview] {
+        parts.filter { !$0.references.isEmpty && $0.status == .sourceUnavailable && $0.sourcePool == nil }
+    }
     var projectFiles: [String: Data]
     var sourceDigests: [URL: String]
     /// Pools the reviewed pools include that the review couldn't find. Parts
@@ -277,6 +306,17 @@ enum HorizontalPoolCacheUpdater {
                 reviews.append(row)
                 continue
             }
+            // The pool holding the part itself: its recorded origin, else the
+            // one pool that has it. Known before its dependencies are, so a
+            // pool short of one isn't mistaken for no pool at all.
+            let holders = grouped[HorizontalPoolItemCategory.part.rawValue + "|" + id] ?? []
+            let partOrigin = metadata.files[partPath]?.poolUUID
+            // Several holding it with nothing to say which: all of them,
+            // since it is in an attached pool, just not one that is known.
+            row.sourcePool = partOrigin.flatMap { origin in
+                holders.first { HorizontalPoolRegistryStore.poolInfo(at: $0.poolURL).uuid == origin }?.poolName
+            } ?? (holders.isEmpty ? nil : holders.reduce(into: [String]()) { if !$0.contains($1.poolName) { $0.append($1.poolName) } }
+                .joined(separator: ", "))
             do {
                 // Provenance wins over browsing order. A legacy copy's part needs a unique source.
                 var preferred = [String: String]()
@@ -323,6 +363,7 @@ enum HorizontalPoolCacheUpdater {
                     let holders = grouped[HorizontalPoolItemCategory.part.rawValue + "|" + id] ?? []
                     throw HorizontalDispatchError.failed(unresolvedSourceMessage(holders: holders, missingPools: missingPools))
                 }
+                row.sourcePool = sourcePart.poolName
                 // A dependency in several pools with no recorded origin (one an
                 // earlier import had already cached, say) comes from the pool a
                 // fresh import of this part would take it from.
@@ -419,7 +460,7 @@ enum HorizontalPoolCacheUpdater {
             + "Choose its source library to continue."
     }
 
-    private static func normalizedSource(_ data: Data, path: String, poolUUID: String) throws -> Data {
+    static func normalizedSource(_ data: Data, path: String, poolUUID: String) throws -> Data {
         guard path.hasSuffix("/package.json") else { return data }
         var json = try JSONHelper.loadDictionary(from: data)
         if let filename = json.string("model_filename") {

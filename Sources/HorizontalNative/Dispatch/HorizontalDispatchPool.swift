@@ -42,6 +42,7 @@ enum HorizontalDispatchPool {
             ["uuid": part.id, "name": part.name, "status": part.status.rawValue,
              "references": part.references, "can_update": part.canUpdate,
              "needs_confirmation": part.needsConfirmation, "message": part.message,
+             "source_pool": part.sourcePool as Any, "in_attached_pool": !part.isInNoAttachedPool,
              "changes": part.changes.map { change -> JSONDictionary in
                  var json: JSONDictionary = [
                      "path": change.path, "name": change.title, "fields": change.fields,

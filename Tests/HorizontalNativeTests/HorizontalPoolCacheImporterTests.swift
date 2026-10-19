@@ -260,6 +260,144 @@ final class HorizontalPoolCacheImporterTests: XCTestCase {
         XCTAssertNotNil(HorizontalPoolPart.loadCached(id: "part-1", from: projectPoolURL))
     }
 
+    func testAReviewNamesEachPartsPoolAndWhatTheDesignHasFallenBehindOn() throws {
+        try importFixture()
+        let used = ["part-1": ["R1", "R2"]]
+        var row = try XCTUnwrap(try cachedReview(references: used).parts.first)
+        XCTAssertEqual(row.sourcePool, "Stock")
+        XCTAssertEqual(row.statusTitle, "Current")
+        XCTAssertFalse(row.isInNoAttachedPool)
+
+        // The pool's symbol changes: the part is out of date where it's used.
+        try changeSource("symbols/passive/resistor.json") { $0["name"] = "Resistor, redrawn" }
+        var review = try cachedReview(references: used)
+        XCTAssertEqual(review.outdatedInUse.map(\.id), ["part-1"])
+        XCTAssertEqual(HorizontalPartLibraryMonitor.noticeText(for: review), "1 part is out of date with its pool (R1, R2)")
+        XCTAssertTrue(try cachedReview().outdatedInUse.isEmpty, "a part nothing uses isn't the design's concern")
+
+        // No attached pool has it: not "unavailable", but in none of them.
+        review = try cachedReview(pools: [], references: used)
+        row = try XCTUnwrap(review.parts.first)
+        XCTAssertNil(row.sourcePool)
+        XCTAssertEqual(row.statusTitle, "Not in an attached pool")
+        XCTAssertTrue(row.isInNoAttachedPool)
+        XCTAssertEqual(review.notInAttachedPoolInUse.map(\.id), ["part-1"])
+        XCTAssertEqual(HorizontalPartLibraryMonitor.noticeText(for: review), "1 part isn't in any attached pool (R1, R2)")
+        XCTAssertNotEqual(HorizontalPartLibraryMonitor.noticeSignature(for: review),
+                          HorizontalPartLibraryMonitor.noticeSignature(for: try cachedReview(references: used)),
+                          "a dismissed notice comes back when what it is about changes")
+
+        // A pool that has the part but can't update it is a different trouble.
+        try FileManager.default.removeItem(at: poolURL.appendingPathComponent("units/passive/resistor.json"))
+        HorizontalPoolLibrary.invalidateCache()
+        row = try XCTUnwrap(try cachedReview(references: used).parts.first)
+        XCTAssertEqual(row.status, .sourceUnavailable)
+        XCTAssertEqual(row.sourcePool, "Stock")
+        XCTAssertEqual(row.statusTitle, "Source unavailable")
+    }
+
+    func testAnItemEditorSaysWhichPoolTheItemIsIn() throws {
+        XCTAssertEqual(HorizontalPoolItemEditorSession.location(of: poolURL.appendingPathComponent("symbols/passive/resistor.json"), inPool: poolURL),
+                       "Stock")
+        // A project's own pool goes by its project, and its cache says where
+        // a copy came from.
+        let projectPool = temporaryRoot.appendingPathComponent("Billo/pool", isDirectory: true)
+        try write(["type": "pool", "uuid": HorizontalProjectArchive.projectPoolUUID, "name": "Project pool"], to: "Billo/pool/pool.json")
+        try Data("{}".utf8).write(to: temporaryRoot.appendingPathComponent("Billo/Billo.hprj"))
+        setenv("HORIZONTAL_POOLS", poolURL.path, 1)
+        defer { unsetenv("HORIZONTAL_POOLS") }
+        _ = try HorizontalPoolCacheImporter.cachePart(libraryItem(.part, uuid: "part-1"), into: projectPool)
+        XCTAssertEqual(HorizontalPoolItemEditorSession.location(of: projectPool.appendingPathComponent("symbols/cache/sym-1.json"), inPool: projectPool),
+                       "the project pool of Billo, cached from Stock")
+        XCTAssertEqual(HorizontalPoolItemEditorSession.location(of: projectPool.appendingPathComponent("symbols/mine.json"), inPool: projectPool),
+                       "the project pool of Billo")
+    }
+
+    /// A part written into the project's pool on Stock's entity and package,
+    /// that no pool has.
+    private func writeProjectMadePart() throws {
+        try write(["type": "part", "uuid": "part-new", "entity": "ent-1", "package": "pkg-1", "base": NSNull(),
+                   "MPN": [false, "NEW-1"], "value": [false, ""], "manufacturer": [false, "Us"],
+                   "description": [false, "Made here"], "datasheet": [false, ""], "tags": [], "inherit_tags": false,
+                   "inherit_model": true, "parametric": [:],
+                   "pad_map": ["pad-1": ["gate": "gate-1", "pin": "pin-1"], "pad-2": ["gate": "gate-1", "pin": "pin-2"]]],
+                  to: "project/pool/parts/cache/part-new.json")
+    }
+
+    func testAPartNoAttachedPoolHasCopiesIntoOneAndIsKeptUpToDateFromThere() throws {
+        try importFixture()
+        try writeProjectMadePart()
+        let mine = temporaryRoot.appendingPathComponent("mine", isDirectory: true)
+        try write(["type": "pool", "uuid": "mine-pool", "name": "Mine"], to: "mine/pool.json")
+        XCTAssertTrue(HorizontalPoolRegistryStore.addPool(at: poolURL))
+        XCTAssertTrue(HorizontalPoolRegistryStore.addPool(at: mine))
+        let used = ["part-new": ["R9"], "part-1": ["R1"]]
+        XCTAssertTrue(try cachedReview(pools: [mine, poolURL], references: used).parts.first { $0.id == "part-new" }?.isInNoAttachedPool == true)
+
+        let copy = try HorizontalPoolPartCopier.plan(partID: "part-new", projectFiles: try cachedFiles(), projectPoolURL: projectPoolURL, into: mine)
+        XCTAssertEqual(copy.partName, "NEW-1")
+        // Mine includes nothing, so it gets what the part needs too, filed
+        // as a pool files things; Stock's cached copies stay Stock's.
+        XCTAssertEqual(Set(copy.poolFiles.map(\.path)), [
+            "parts/NEW-1.json", "entities/Resistor.json", "units/Resistor.json", "symbols/Resistor.json",
+            "packages/R0603/package.json", "packages/R0603/padstacks/local.json", "padstacks/Pool padstack.json", "3d_models/r0603.step"
+        ])
+        XCTAssertEqual(copy.recached, ["parts/cache/part-new.json"])
+        try HorizontalPoolPartCopier.writePoolFiles(copy)
+        let package = try JSONHelper.loadDictionary(from: mine.appendingPathComponent("packages/R0603/package.json"))
+        XCTAssertEqual(package.dictionaryMap("models").values.first?.string("filename"), "3d_models/r0603.step",
+                       "a pool's model paths are its own, not the cache's")
+        XCTAssertThrowsError(try HorizontalPoolPartCopier.writePoolFiles(copy), "nothing is written over")
+
+        // The project now takes the part from Mine.
+        var archive = try HorizontalProjectArchive.snapshot(from: temporaryRoot.appendingPathComponent("project"))
+        try HorizontalPoolPartCopier.track(copy, in: &archive, poolDirectory: "pool", projectPoolURL: projectPoolURL)
+        let review = try HorizontalPoolCacheUpdater.review(poolURL: projectPoolURL, files: HorizontalPoolCacheUpdater.files(in: archive, poolDirectory: "pool"),
+                                                           sourcePools: [mine, poolURL], references: used)
+        let made = try XCTUnwrap(review.parts.first { $0.id == "part-new" })
+        XCTAssertEqual(made.status, .current, made.message)
+        XCTAssertEqual(made.sourcePool, "Mine")
+        XCTAssertEqual(review.parts.first { $0.id == "part-1" }?.sourcePool, "Stock")
+        XCTAssertThrowsError(try HorizontalPoolPartCopier.plan(partID: "part-new", projectFiles: HorizontalPoolCacheUpdater.files(in: archive, poolDirectory: "pool"),
+                                                               projectPoolURL: projectPoolURL, into: mine)) {
+            XCTAssertTrue(HorizontalCanvasProjectEdit.message(for: $0).contains("already"), HorizontalCanvasProjectEdit.message(for: $0))
+        }
+    }
+
+    func testAPoolThatIncludesThePartsSourcesGetsThePartAlone() throws {
+        try importFixture()
+        try writeProjectMadePart()
+        let mine = temporaryRoot.appendingPathComponent("mine", isDirectory: true)
+        try write(["type": "pool", "uuid": "mine-pool", "name": "Mine", "pools_included": ["stock-pool"]], to: "mine/pool.json")
+        XCTAssertTrue(HorizontalPoolRegistryStore.addPool(at: poolURL))
+        XCTAssertTrue(HorizontalPoolRegistryStore.addPool(at: mine))
+        let copy = try HorizontalPoolPartCopier.plan(partID: "part-new", projectFiles: try cachedFiles(), projectPoolURL: projectPoolURL, into: mine)
+        XCTAssertEqual(copy.poolFiles.map(\.path), ["parts/NEW-1.json"])
+
+        // A project-local item the pool has under its uuid, differently, stops it.
+        var entity = try JSONHelper.loadDictionary(from: projectPoolURL.appendingPathComponent("entities/cache/ent-1.json"))
+        entity["uuid"] = "ent-x"
+        try write(entity, to: "project/pool/entities/local.json")
+        entity["name"] = "Someone else's"
+        try write(entity, to: "mine/entities/theirs.json")
+        var part = try JSONHelper.loadDictionary(from: projectPoolURL.appendingPathComponent("parts/cache/part-new.json"))
+        part["entity"] = "ent-x"
+        try write(part, to: "project/pool/parts/cache/part-new.json")
+        XCTAssertThrowsError(try HorizontalPoolPartCopier.plan(partID: "part-new", projectFiles: try cachedFiles(), projectPoolURL: projectPoolURL, into: mine)) {
+            XCTAssertTrue(HorizontalCanvasProjectEdit.message(for: $0).contains("same uuid"), HorizontalCanvasProjectEdit.message(for: $0))
+        }
+    }
+
+    func testThePartsPaneListsABaseOnlyWhereTheDesignUsesIt() throws {
+        try importFixture()
+        let parts = HorizontalPoolPart.loadAll(from: projectPoolURL)
+        XCTAssertEqual(Set(parts.map(\.id)), ["part-1", "part-base"], "caching the 10k brings its base along")
+        XCTAssertEqual(parts.first { $0.id == "part-1" }?.baseID, "part-base")
+        XCTAssertEqual(HorizontalPartBrowserView.listedParts(parts, used: ["part-1"]).map(\.id), ["part-1"])
+        XCTAssertEqual(Set(HorizontalPartBrowserView.listedParts(parts, used: ["part-1", "part-base"]).map(\.id)), ["part-1", "part-base"],
+                       "a component on the base itself keeps it listed")
+    }
+
     func testMissingDependencyBlocksWholeUpdate() throws {
         try importFixture()
         try FileManager.default.removeItem(at: poolURL.appendingPathComponent("units/passive/resistor.json"))

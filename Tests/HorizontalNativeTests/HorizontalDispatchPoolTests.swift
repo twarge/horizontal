@@ -163,6 +163,8 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         let original = try HorizontalProjectArchive.snapshot(from: packageURL)
         let current = try XCTUnwrap(try result("list_part_updates") as? JSONDictionary)
         XCTAssertEqual((current["parts"] as? [JSONDictionary])?.first?.string("status"), "current")
+        XCTAssertNotNil((current["parts"] as? [JSONDictionary])?.first?.string("source_pool"))
+        XCTAssertEqual((current["parts"] as? [JSONDictionary])?.first?.bool("in_attached_pool"), true)
         var source = try JSONHelper.loadDictionary(from: root.appendingPathComponent("stock/symbols/resistor.json"))
         source["name"] = "Updated resistor symbol"
         try write(source, to: "stock/symbols/resistor.json")
@@ -224,6 +226,8 @@ final class HorizontalDispatchPoolTests: XCTestCase {
         let unseen = try XCTUnwrap((try result("list_part_updates") as? JSONDictionary)?["parts"] as? [JSONDictionary]).first
         XCTAssertEqual(unseen?.string("status"), "sourceUnavailable")
         XCTAssertEqual(unseen?.string("message"), "Source library \(stockUUID) is not registered or available.")
+        XCTAssertEqual(unseen?.bool("in_attached_pool"), false)
+        XCTAssertTrue(unseen?["source_pool"] is NSNull)
 
         // Included by the project pool, it is found beside the project. A
         // project pool's own uuid and the null uuid are never looked for.

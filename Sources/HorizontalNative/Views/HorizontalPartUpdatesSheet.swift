@@ -136,7 +136,7 @@ struct HorizontalPartUpdatesSheet: View {
                     .disabled(!part.canUpdate || isReadOnly || isRefreshing)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(part.name).lineLimit(1)
-                        Label(part.status.title, systemImage: part.status.symbol)
+                        Label(part.sourcePool.map { "\(part.statusTitle) · \($0)" } ?? part.statusTitle, systemImage: part.status.symbol)
                             .font(.caption).foregroundStyle(.secondary)
                         if !part.references.isEmpty {
                             Text(part.references.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
@@ -160,7 +160,7 @@ struct HorizontalPartUpdatesSheet: View {
                     .disabled(isRefreshing)
                 }
                 if selected.changes.isEmpty {
-                    Text(selected.status.title).foregroundStyle(.secondary)
+                    Text(selected.statusTitle).foregroundStyle(.secondary)
                     Spacer()
                 } else {
                     Picker("Changed item", selection: Binding(get: { change?.path ?? "" }, set: { selectedChange = $0 })) {

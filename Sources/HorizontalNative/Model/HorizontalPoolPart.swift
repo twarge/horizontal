@@ -41,6 +41,8 @@ struct HorizontalPoolPart: Identifiable, Hashable {
     var excludeFromPnP = false
     /// The file the part was read from, when it came from a pool's cache.
     var fileURL: URL? = nil
+    /// The part this one derives from (`base`), lowercased.
+    var baseID: String? = nil
 
     var tagList: String {
         tags.joined(separator: ", ")
@@ -164,7 +166,8 @@ private final class PoolPartLoader {
             prefixOverride: part.prefix.flatMap(nonEmpty),
             isBasePart: part.isBasePart,
             excludeFromBOM: part.excludeFromBOM,
-            excludeFromPnP: part.excludeFromPnP
+            excludeFromPnP: part.excludeFromPnP,
+            baseID: json.string("base")?.lowercased()
         )
     }
 

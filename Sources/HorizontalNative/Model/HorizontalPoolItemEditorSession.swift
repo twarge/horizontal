@@ -29,6 +29,10 @@ final class HorizontalPoolItemEditorSession: ObservableObject {
     /// the item's own directory when it lives outside any pool.
     let poolURL: URL
     let poolName: String
+    /// Where the item lives, as the title bar says it: a pool by name, or a
+    /// project's own pool, with the pool a cached copy came from — an edit
+    /// there changes that project alone, and its pool keeps its own copy.
+    let location: String
 
     @Published private(set) var model: HorizontalPoolItemModel
     @Published private(set) var index = HorizontalPoolLibraryIndex.empty
@@ -48,6 +52,7 @@ final class HorizontalPoolItemEditorSession: ObservableObject {
         let root = poolURL?.standardizedFileURL ?? itemURL.deletingLastPathComponent().standardizedFileURL
         self.poolURL = root
         poolName = HorizontalPoolRegistryStore.poolInfo(at: root).name
+        location = Self.location(of: itemURL.standardizedFileURL, inPool: root)
         let json = try JSONHelper.loadDictionary(from: data)
         model = try HorizontalPoolItemModel.load(category: category, json: json)
     }
@@ -59,7 +64,35 @@ final class HorizontalPoolItemEditorSession: ObservableObject {
     }
 
     var subtitle: String {
-        "\(category.singularTitle) — \(poolName)"
+        "\(category.singularTitle) in \(location)"
+    }
+
+    /// A project's pool is named for its project, and a copy in its cache
+    /// says which pool it was cached from, by the provenance the cache keeps.
+    nonisolated static func location(of itemURL: URL, inPool poolURL: URL) -> String {
+        let info = HorizontalPoolRegistryStore.poolInfo(at: poolURL)
+        guard info.uuid == HorizontalProjectArchive.projectPoolUUID else {
+            return info.name
+        }
+        let folder = poolURL.deletingLastPathComponent()
+        let projectFile = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil))?
+            .filter { $0.pathExtension == "hprj" }
+            .min { $0.lastPathComponent < $1.lastPathComponent }
+        let project = projectFile?.deletingPathExtension().lastPathComponent
+            ?? folder.deletingPathExtension().lastPathComponent
+        var location = "the project pool of \(project)"
+        if let path = try? HorizontalPoolCacheProvenance.relativePath(itemURL, in: poolURL),
+           path.split(separator: "/").dropFirst().first == "cache" {
+            let provenanceURL = poolURL.appendingPathComponent(HorizontalPoolCacheProvenance.path)
+            let origin = (try? HorizontalPoolCacheProvenance.load(try? Data(contentsOf: provenanceURL)))?.files[path]
+            let source = origin.flatMap { origin in
+                HorizontalPoolLibrary.editorPoolURLs(forPoolRoot: poolURL).dropFirst()
+                    .map(HorizontalPoolRegistryStore.poolInfo(at:))
+                    .first { $0.uuid.caseInsensitiveCompare(origin.poolUUID) == .orderedSame }?.name
+            }
+            location += source.map { ", cached from \($0)" } ?? ", cached"
+        }
+        return location
     }
 
     /// The library entry for this item, so the preview and the index can
