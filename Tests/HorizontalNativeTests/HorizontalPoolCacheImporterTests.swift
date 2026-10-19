@@ -343,6 +343,14 @@ final class HorizontalPoolCacheImporterTests: XCTestCase {
             "packages/R0603/package.json", "packages/R0603/padstacks/local.json", "padstacks/Pool padstack.json", "3d_models/r0603.step"
         ])
         XCTAssertEqual(copy.recached, ["parts/cache/part-new.json"])
+        // The confirmation lists them by kind, part first.
+        XCTAssertEqual(copy.copied.map { "\($0.kind): \($0.name)" + ($0.note.isEmpty ? "" : " (\($0.note))") }, [
+            "Part: NEW-1", "Entity: Resistor", "Unit: Resistor", "Symbol: Resistor",
+            "Package: R0603 (with 1 padstack and 1 3D model)", "Padstack: Pool padstack"
+        ])
+        XCTAssertEqual(copy.existing, [])
+        XCTAssertTrue(copy.summary.hasPrefix("Copies into Mine:\n• Part: NEW-1\n• Entity: Resistor\n"), copy.summary)
+        XCTAssertFalse(copy.summary.contains("Already in"))
         try HorizontalPoolPartCopier.writePoolFiles(copy)
         let package = try JSONHelper.loadDictionary(from: mine.appendingPathComponent("packages/R0603/package.json"))
         XCTAssertEqual(package.dictionaryMap("models").values.first?.string("filename"), "3d_models/r0603.step",
@@ -373,6 +381,12 @@ final class HorizontalPoolCacheImporterTests: XCTestCase {
         XCTAssertTrue(HorizontalPoolRegistryStore.addPool(at: mine))
         let copy = try HorizontalPoolPartCopier.plan(partID: "part-new", projectFiles: try cachedFiles(), projectPoolURL: projectPoolURL, into: mine)
         XCTAssertEqual(copy.poolFiles.map(\.path), ["parts/NEW-1.json"])
+        // What it needs is where Mine finds it, in Stock, which it includes.
+        XCTAssertEqual(copy.existing.map { "\($0.kind): \($0.name) (\($0.note))" }, [
+            "Entity: Resistor (in Stock)", "Unit: Resistor (in Stock)", "Symbol: Resistor (in Stock)",
+            "Package: R0603 (in Stock)", "Padstack: Pool padstack (in Stock)"
+        ])
+        XCTAssertTrue(copy.summary.contains("Already in Mine, not copied:\n• Entity: Resistor (in Stock)"), copy.summary)
 
         // A project-local item the pool has under its uuid, differently, stops it.
         var entity = try JSONHelper.loadDictionary(from: projectPoolURL.appendingPathComponent("entities/cache/ent-1.json"))

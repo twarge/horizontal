@@ -8,6 +8,16 @@ struct HorizontalPoolCopyTarget: Identifiable, Hashable {
     var id: String { url.path }
 }
 
+/// One item of a copy, as its confirmation lists it.
+struct HorizontalPoolCopyItem: Hashable {
+    /// "Part", "Entity", … as the pool browser names its kinds.
+    var kind: String
+    var name: String
+    /// What else goes with it (a package's padstacks and 3D models), or
+    /// where the pool finds one it has already.
+    var note: String = ""
+}
+
 /// A part of the project's pool that no attached pool has, and what copying
 /// it into one takes: the files to write there, and the project's copies the
 /// pool then supplies.
@@ -23,20 +33,26 @@ struct HorizontalPoolPartCopy: Identifiable {
     /// Project pool paths the pool supplies from now on: taken out of the
     /// project, then cached from the pool again, origin and all.
     var recached: Set<String>
-    /// Items the pool holds under the same uuid with other contents. The
-    /// project keeps its own copy, which the parts review then shows as
-    /// differing from the pool's.
-    var kept: [String]
+    /// What goes into the pool, item by item, part first.
+    var copied: [HorizontalPoolCopyItem]
+    /// What the part needs that the pool, or a pool it includes, has
+    /// already. One with other contents under the same uuid says so: the
+    /// project keeps its own, and the parts review shows the difference.
+    var existing: [HorizontalPoolCopyItem]
 
-    /// What the copy writes where, and what it leaves, for its confirmation.
+    /// The confirmation's text: what is copied, what is there already, and
+    /// what the project does after.
     var summary: String {
-        var text = "Writes \(poolFiles.count) file\(poolFiles.count == 1 ? "" : "s") into \(targetName) (\(target.path)): "
-            + poolFiles.map(\.path).joined(separator: ", ") + "."
-        text += " The project then keeps the part up to date from \(targetName). Undo takes back the project's change, not the files."
-        if !kept.isEmpty {
-            text += " The pool has its own version of " + kept.joined(separator: ", ") + "; the project keeps its copy."
+        func list(_ items: [HorizontalPoolCopyItem]) -> String {
+            items.map { "• \($0.kind): \($0.name)" + ($0.note.isEmpty ? "" : " (\($0.note))") }.joined(separator: "\n")
         }
-        return text
+        var sections = ["Copies into \(targetName):\n" + list(copied)]
+        if !existing.isEmpty {
+            sections.append("Already in \(targetName), not copied:\n" + list(existing))
+        }
+        sections.append("The project then keeps the part up to date from \(targetName). Undo takes back the project's change, "
+            + "not the \(poolFiles.count) file\(poolFiles.count == 1 ? "" : "s") written to \((target.path as NSString).abbreviatingWithTildeInPath).")
+        return sections.joined(separator: "\n\n")
     }
 }
 
@@ -105,13 +121,22 @@ enum HorizontalPoolPartCopier {
             taken.insert(candidate)
             return candidate
         }
-        var recached = Set<String>(), kept = [String]()
+        var recached = Set<String>(), copied = [HorizontalPoolCopyItem](), existing = [HorizontalPoolCopyItem]()
         for path in dependencies.sorted() {
             guard let json = jsons[path], let type = json.string("type"), let uuid = json.string("uuid")?.lowercased(),
                   !isPackageLocalPadstack(path) else { continue }
             let packageLocals = type == "package" ? dependencies.filter { isPackageLocalPadstack($0) && $0.hasPrefix(packageDirectory(path)) } : []
+            let kind = HorizontalPoolItemCategory(rawValue: type)?.singularTitle ?? type.capitalized
+            let displayName = type == "part"
+                ? HorizontalPartRecord.resolve(json) { id in jsons.values.first { $0.string("type") == "part" && $0.string("uuid")?.lowercased() == id.lowercased() } }.mpn
+                : json.string("name") ?? uuid
             if let item = held[type + "|" + uuid] {
-                guard !isTracked(path) else { continue }
+                // Found where the pool finds it: itself, or a pool it includes.
+                let whereFound = item.poolName == targetInfo.name ? "" : "in \(item.poolName)"
+                guard !isTracked(path) else {
+                    existing.append(.init(kind: kind, name: displayName, note: whereFound))
+                    continue
+                }
                 let poolData = try Data(contentsOf: item.url)
                 let poolForm = isCached(path)
                     ? try HorizontalPoolCacheUpdater.normalizedSource(poolData, path: path, poolUUID: HorizontalPoolRegistryStore.poolInfo(at: item.poolURL).uuid)
@@ -119,8 +144,10 @@ enum HorizontalPoolPartCopier {
                 if try HorizontalPoolCacheProvenance.digest(poolForm, path: path) == HorizontalPoolCacheProvenance.digest(projectFiles[path]!, path: path) {
                     recached.insert(path)
                     recached.formUnion(packageLocals)
+                    existing.append(.init(kind: kind, name: displayName, note: whereFound))
                 } else if isCached(path) {
-                    kept.append("\(type) \(json.string("name") ?? uuid)")
+                    existing.append(.init(kind: kind, name: displayName,
+                                          note: [whereFound, "a different version; the project keeps its own"].filter { !$0.isEmpty }.joined(separator: ", ")))
                 } else {
                     throw HorizontalDispatchError.invalidParams(
                         "\(item.poolName) has the \(type) \(json.string("name") ?? uuid) under the same uuid, with other contents than this project's (\(path)). Make them agree, or give one a new uuid, first.")
@@ -134,6 +161,7 @@ enum HorizontalPoolPartCopier {
             if type == "package" {
                 let folder = reserve(isCached(path) ? "\(directory)/\(name)" : String(packageDirectory(path).dropLast()), uuid: uuid)
                 var package = json
+                let filesBeforeModels = poolFiles.count
                 // The cache's model paths name the pool they were cached
                 // from; a pool's own are its paths.
                 func poolModelPath(_ filename: String) throws -> String {
@@ -158,21 +186,32 @@ enum HorizontalPoolPartCopier {
                     models[id] = model
                 }
                 if !models.isEmpty { package["models"] = models }
+                let models3D = poolFiles.count - filesBeforeModels
                 poolFiles.append(("\(folder)/package.json", try HorizontalHorizonJSONWriter.data(package)))
                 for local in packageLocals.sorted() {
                     poolFiles.append(("\(folder)/padstacks/\(URL(fileURLWithPath: local).lastPathComponent)", projectFiles[local]!))
                 }
+                let extras = [packageLocals.isEmpty ? nil : "with \(packageLocals.count) padstack\(packageLocals.count == 1 ? "" : "s")",
+                              models3D > 0 ? "\(models3D) 3D model\(models3D == 1 ? "" : "s")" : nil].compactMap { $0 }
+                copied.append(.init(kind: kind, name: displayName, note: extras.joined(separator: " and ")))
             } else {
                 let file = reserve(isCached(path) ? "\(directory)/\(name).json" : path, uuid: uuid)
                 poolFiles.append((file, projectFiles[path]!))
+                copied.append(.init(kind: kind, name: displayName))
             }
             if !isTracked(path) {
                 recached.insert(path)
                 recached.formUnion(packageLocals)
             }
         }
+        // Listed part first, then what it is made of.
+        let order = ["Part", "Entity", "Unit", "Symbol", "Package", "Padstack"]
+        func sorted(_ items: [HorizontalPoolCopyItem]) -> [HorizontalPoolCopyItem] {
+            items.sorted { (order.firstIndex(of: $0.kind) ?? order.count, $0.name) < (order.firstIndex(of: $1.kind) ?? order.count, $1.name) }
+        }
         return HorizontalPoolPartCopy(partID: partID, partName: partName.isEmpty ? partID : partName, target: target,
-                                      targetName: targetInfo.name, poolFiles: poolFiles, recached: recached, kept: kept.sorted())
+                                      targetName: targetInfo.name, poolFiles: poolFiles, recached: recached,
+                                      copied: sorted(copied), existing: sorted(existing))
     }
 
     /// Writes the copy's files into the pool. Nothing is overwritten: a path
