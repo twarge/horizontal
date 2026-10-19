@@ -281,6 +281,9 @@ struct HorizontalCanvasCommandHandlerSet {
     var editCustomValue: (() -> Void)? = nil
     var setAllUnconnectedPinsNC: (() -> Void)? = nil
     var clearAllNCPins: (() -> Void)? = nil
+    var moveToOtherSheet: ((String) -> Void)? = nil
+    /// Where Move to Other Sheet can take the selection; empty when it can't.
+    var moveToOtherSheetTargets: [HorizontalCanvasSheetTarget] = []
     var toggleRectanglePlacementMode: (() -> Void)? = nil
     var moveSelectionBy: (HorizontalPoint) -> Void
     var placePad: (() -> Void)? = nil
@@ -463,6 +466,9 @@ struct HorizontalCanvasCommandHandlerSet {
         case .clearAllNCPins:
             guard !isReadOnly else { return }
             clearAllNCPins?()
+        case .moveToOtherSheet(let sheetID):
+            guard !isReadOnly else { return }
+            moveToOtherSheet?(sheetID)
         case .toggleRectanglePlacementMode:
             guard !isReadOnly else { return }
             toggleRectanglePlacementMode?()
@@ -531,6 +537,7 @@ struct HorizontalCanvasCommandHandlerSet {
             canMoveNetSegmentToExistingNet: writable && moveNetSegmentToExistingNet != nil,
             canMoveNetSegmentToNewNet: writable && moveNetSegmentToNewNet != nil,
             canEditSymbolPinNames: writable && editSymbolPinNames != nil,
+            moveToOtherSheetTargets: writable && moveToOtherSheet != nil ? moveToOtherSheetTargets : [],
             canHighlightNet: true,
             canSelectAll: true,
             canSelectNet: selectNet != nil,

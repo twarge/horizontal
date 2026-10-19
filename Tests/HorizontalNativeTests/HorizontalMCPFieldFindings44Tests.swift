@@ -742,4 +742,89 @@ final class HorizontalMCPFieldFindings44Tests: XCTestCase {
         XCTAssertGreaterThan(try dark([15, 15, 25, 25]), 0, "the body's outline is drawn")
         XCTAssertEqual(try dark([18.5, 18.5, 21.5, 21.5]), 0, "and nothing inside it, where its pads are")
     }
+    // MARK: - Move to other sheet
+
+    func testMoveToOtherSheetTakesEverythingConnectedWhole() throws {
+        let resistor = part(["A", "B"])
+        let made = try apply([
+            ["op": "ensure_component", "refdes": "R1", "part": resistor.part],
+            ["op": "ensure_component", "refdes": "R2", "part": resistor.part],
+            ["op": "ensure_component", "refdes": "R3", "part": resistor.part],
+            ["op": "place_symbol", "component": "R1", "x_mm": 100, "y_mm": 100],
+            ["op": "place_symbol", "component": "R2", "x_mm": 60, "y_mm": 100],
+            ["op": "place_symbol", "component": "R3", "x_mm": 20, "y_mm": 20],
+            ["op": "connect", "component": "R1", "pin": "A", "net": "GND", "create_net": true],
+            ["op": "connect", "component": "R1", "pin": "B", "net": "SIG", "create_net": true],
+            ["op": "connect", "component": "R2", "pin": "B", "net": "SIG"],
+            ["op": "place_junction", "id": "g", "net": "GND", "x_mm": 90, "y_mm": 100],
+            ["op": "draw_net_line", "from": ["kind": "pin", "component": "R1", "pin": "A"], "to": ["kind": "junction", "junction": "g"]],
+            ["op": "place_power_symbol", "net": "GND", "x_mm": 90, "y_mm": 100],
+            ["op": "place_junction", "id": "r", "net": "SIG", "x_mm": 80, "y_mm": 97.46],
+            ["op": "draw_net_line", "from": ["kind": "pin", "component": "R1", "pin": "B"], "to": ["kind": "junction", "junction": "r"]],
+            ["op": "draw_net_line", "from": ["kind": "junction", "junction": "r"], "to": ["kind": "pin", "component": "R2", "pin": "B"]],
+            ["op": "place_net_label", "net": "SIG", "x_mm": 80, "y_mm": 97.46],
+            ["op": "place_text", "id": "note", "text": "Divider", "x_mm": 70, "y_mm": 110],
+            ["op": "add_sheet", "name": "Two"]
+        ], ["pool_items": resistor.items])
+        let handles = try XCTUnwrap(made.dictionary("handles"))
+        func sheetWarnings() throws -> Int {
+            try XCTUnwrap(try result("check", ["full": true]) as? JSONDictionary).dictionaryArray("messages")
+                .filter { $0.string("category") == "schematic" }.count
+        }
+        let warningsBefore = try sheetWarnings()
+        XCTAssertTrue(try error([["op": "move_to_other_sheet", "items": ["R1"], "to_sheet": 1]]).contains("already"))
+        XCTAssertTrue(try error([["op": "move_to_other_sheet", "items": ["NOPE"], "to_sheet": "Two"]]).contains("NOPE"))
+
+        // Naming R1 alone takes R2 too, across the wire to the rail, with the
+        // ground symbol, the label and the junctions; R3 and the note stay.
+        let moved = try XCTUnwrap(changes(try apply([["op": "move_to_other_sheet", "items": ["R1"], "to_sheet": "Two", "dx_mm": 5]])).first)
+        let byKind = try XCTUnwrap(moved.dictionary("moved"))
+        XCTAssertEqual((byKind["symbols"] as? [String])?.count, 2)
+        XCTAssertEqual(Set(byKind["junctions"] as? [String] ?? []), [try XCTUnwrap(handles.string("g")), try XCTUnwrap(handles.string("r"))])
+        XCTAssertEqual((byKind["net_lines"] as? [String])?.count, 3)
+        XCTAssertEqual((byKind["net_labels"] as? [String])?.count, 1)
+        XCTAssertEqual((byKind["power_symbols"] as? [String])?.count, 1)
+        XCTAssertNil(byKind["texts"])
+        XCTAssertEqual(moved.int("pulled_in"), (moved.int("count") ?? 0) - 1)
+        XCTAssertEqual((try result("list_symbols", ["sheet": 1]) as? [JSONDictionary])?.count, 1, "R3 stays")
+        XCTAssertEqual((try result("list_net_lines", ["sheet": 1]) as? [JSONDictionary])?.count, 0, "nothing is cut")
+        XCTAssertEqual((try result("list_net_lines", ["sheet": 2]) as? [JSONDictionary])?.count, 3)
+        let rail = try XCTUnwrap((try result("list_junctions", ["sheet": 2]) as? [JSONDictionary])?.first { $0.string("id") == handles.string("r") })
+        XCTAssertEqual(rail.double("x_mm") ?? .nan, 85, accuracy: 1e-9, "moved by dx_mm")
+        let sig = try XCTUnwrap(try result("get_net", ["name": "SIG"]) as? JSONDictionary)
+        XCTAssertEqual((sig["pins"] as? [Any])?.count, 2, "the nets are the block's, untouched")
+        XCTAssertEqual(try sheetWarnings(), warningsBefore, "a whole move leaves no pin or label without its wiring")
+
+        // A text named alone goes alone, and a wire brings what it joins.
+        let note = try XCTUnwrap(handles.string("note"))
+        let text = try XCTUnwrap(changes(try apply([["op": "move_to_other_sheet", "items": [note], "to_sheet": "Two"]])).first)
+        XCTAssertEqual(text.dictionary("moved")?["texts"] as? [String], [note])
+        XCTAssertEqual(text.int("pulled_in"), 0)
+        let wire = try XCTUnwrap((try result("list_net_lines", ["sheet": 2]) as? [JSONDictionary])?.first?.string("id"))
+        let back = try XCTUnwrap(changes(try apply([["op": "move_to_other_sheet", "items": [wire], "to_sheet": 1]])).first)
+        XCTAssertEqual((back.dictionary("moved")?["symbols"] as? [String])?.count, 2)
+
+        // A graphic line goes with the junctions it is drawn between, and a
+        // junction it shares with a wire brings that wiring too.
+        var schematic = try read("top_schematic.json")
+        var sheets = schematic.dictionaryMap("sheets")
+        let first = try XCTUnwrap(sheets.first { $0.value.int("index") == 1 }?.key)
+        let (a, b, line) = (UUID().uuidString.lowercased(), UUID().uuidString.lowercased(), UUID().uuidString.lowercased())
+        var junctions = sheets[first]?.dictionaryMap("junctions") ?? [:]
+        junctions[a] = ["position": [0, 0]]
+        junctions[b] = ["position": [10_000_000, 0]]
+        sheets[first]?["junctions"] = junctions
+        sheets[first]?["lines"] = [line: ["from": a, "to": b, "layer": 0, "width": 0]]
+        schematic["sheets"] = sheets
+        try HorizontalHorizonJSONWriter.data(schematic).write(to: root.appendingPathComponent("top_schematic.json"))
+        _ = try result("reload_project")
+        let drawn = try XCTUnwrap(changes(try apply([["op": "move_to_other_sheet", "items": [line], "to_sheet": "Two"]])).first)
+        XCTAssertEqual(drawn.dictionary("moved")?["lines"] as? [String], [line])
+        XCTAssertEqual(Set(drawn.dictionary("moved")?["junctions"] as? [String] ?? []), [a, b])
+        XCTAssertNil(drawn.dictionary("moved")?["symbols"])
+        let project = try HorizontalProject.load(from: root)
+        let two = try XCTUnwrap(project.schematic?.sheets.first { $0.index == 2 })
+        XCTAssertEqual(HorizontalSchematicMoveToSheet.items(for: two.drawingLines.map { HorizontalSelectableRef(id: $0.id, type: .drawingLine) }),
+                       [line], "the canvas's ref for it maps back to the line")
+    }
 }

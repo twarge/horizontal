@@ -95,6 +95,8 @@ struct HorizontalIPadProjectView: View {
     // Part placement: the part browser sets a request, which the schematic canvas
     // picks up (via its onAppear/onChange) to start the place-on-canvas interaction.
     @State private var placePartRequest: HorizontalPartPlacementRequest?
+    /// What Move to Other Sheet took across, for the canvas to select there.
+    @State private var pendingSchematicMove: HorizontalSchematicMoveRequest?
     @State private var libraryPlacementError: String?
     /// Why a schematic edit could not be made (a refused net merge, say).
     @State private var schematicEditMessage: String?
@@ -1150,6 +1152,10 @@ struct HorizontalIPadProjectView: View {
                     drawingToolCommand: schematicDrawingToolCommand,
                     drawNetLineCommand: schematicDrawNetLineCommand,
                     placePartRequest: placePartRequest,
+                    onMoveToOtherSheet: isReadOnly ? nil : { items, targetID in
+                        moveSchematicItems(items, from: sheet.id, toSheet: targetID)
+                    },
+                    moveRequest: pendingSchematicMove,
                     poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }
                 )
                 .overlay(alignment: .bottom) {
@@ -1549,6 +1555,27 @@ struct HorizontalIPadProjectView: View {
         boardEditRevision += 1
         boardSyncRevision += 1
         schematicEditRevision += 1
+    }
+
+    /// Horizon's Move to other sheet, as on macOS: one undoable edit, then
+    /// the other sheet shows with what arrived selected.
+    private func moveSchematicItems(_ items: [String], from sourceID: String, toSheet sheetID: String) {
+        guard !isReadOnly, let current = project, !items.isEmpty else {
+            return
+        }
+        do {
+            let edited = try HorizontalCanvasProjectEdit.archive(
+                applying: [["op": "move_to_other_sheet", "items": items, "sheet": sourceID, "to_sheet": sheetID]],
+                to: document.archive,
+                in: current
+            )
+            try applyArchiveEdit(edited.archive, to: current, actionName: "Move to Other Sheet")
+            let moved = edited.changes.first?.dictionary("moved") ?? [:]
+            showSchematicSheet(sheetID)
+            pendingSchematicMove = HorizontalSchematicMoveRequest(sheetID: sheetID, refs: HorizontalSchematicMoveToSheet.refs(moved: moved))
+        } catch {
+            loadError = "Couldn't move to the other sheet: \(HorizontalCanvasProjectEdit.message(for: error))"
+        }
     }
 
     private func applyProjectEdit(_ operations: [JSONDictionary], actionName: String) {

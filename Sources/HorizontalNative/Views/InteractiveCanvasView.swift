@@ -116,6 +116,9 @@ enum HorizontalCanvasCommand {
     /// Schematic: clear every no-connect mark on those gates' pins
     /// (Horizon's "Clear all NC pins").
     case clearAllNCPins
+    /// Schematic: take the selection, and everything drawn connected to it,
+    /// to the sheet with this id (Horizon's "Move to other sheet").
+    case moveToOtherSheet(String)
     case toggleRectanglePlacementMode
     case moveSelectionBy(HorizontalPoint)
     /// Package editor: pick a padstack and place pads with it.
