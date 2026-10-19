@@ -187,7 +187,14 @@ struct HorizontalPoolItemChecksView: View {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(issues) { issue in
                     Label {
-                        Text(issue.message)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(issue.message)
+                            if let location = issue.location {
+                                Text(String(format: "at %.3f, %.3f mm", location.x / 1_000_000, location.y / 1_000_000))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     } icon: {
                         Image(systemName: issue.level == .failure ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
                             .foregroundStyle(issue.level == .failure ? .red : .orange)

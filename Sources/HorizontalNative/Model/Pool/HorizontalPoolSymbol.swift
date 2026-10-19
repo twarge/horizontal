@@ -249,6 +249,18 @@ struct HorizontalPoolSymbol: HorizontalPoolItemDocumentModel {
     }
 
     func validationIssues() -> [HorizontalPoolCheckIssue] {
+        validationIssues(unit: nil)
+    }
+
+    /// Upstream's item checks, then its symbol rules check
+    /// (`SymbolRules::check_symbol`): one `$REFDES` and one `$VALUE`, 1.5 mm
+    /// with no line width, at one x and mirrored y with the refdes above; in
+    /// a box symbol, 1.25 mm clear of the box; pins on the 1.25 mm grid,
+    /// apart, on the rectangle the pins span and pointing out of it; every
+    /// unit pin placed; no junction joined to nothing. And one of this app's
+    /// own: a pin pointing up or down keeps its name horizontal. Without the
+    /// unit, pins go by uuid and the unplaced-pin check is skipped.
+    func validationIssues(unit: HorizontalPoolUnit?) -> [HorizontalPoolCheckIssue] {
         var issues = [HorizontalPoolCheckIssue]()
         if name.isEmpty {
             issues.append(.failure("Name must not be empty"))
@@ -256,6 +268,109 @@ struct HorizontalPoolSymbol: HorizontalPoolItemDocumentModel {
         if name.horizonNeedsTrim {
             issues.append(.failure("Name has trailing/leading whitespace"))
         }
+        func nm(_ value: Double) -> Int64 { Int64(value.rounded()) }
+        func pinName(_ id: String) -> String {
+            unit?.pins.first { $0.key.caseInsensitiveCompare(id) == .orderedSame }?.value.primaryName ?? id
+        }
+
+        // Reference designator and value texts.
+        let refdes = drawing.texts.values.filter { $0.text == "$REFDES" }
+        let value = drawing.texts.values.filter { $0.text == "$VALUE" }
+        if refdes.count != 1 {
+            issues.append(.failure("Symbol has \(refdes.count) reference designators, need 1"))
+        }
+        if value.count != 1 {
+            issues.append(.failure("Symbol has \(value.count) values, need 1"))
+        }
+        for (texts, label) in [(refdes, "Refdes"), (value, "Value")] {
+            if let text = texts.first, text.width != 0 || nm(text.size) != 1_500_000 {
+                issues.append(.failure("\(label) text must have 0 line width and 1.5mm size"))
+            }
+        }
+        let refdesText = refdes.count == 1 ? refdes.first : nil, valueText = value.count == 1 ? value.first : nil
+        if let refdesText, let valueText {
+            let r = refdesText.placement.shift, v = valueText.placement.shift
+            if nm(r.x) != nm(v.x) {
+                issues.append(.warning("Refdes and value text should be at same X position"))
+            }
+            if nm(r.y) != -nm(v.y) {
+                issues.append(.warning("Refdes and value text should be at mirrored Y position"))
+            }
+            if nm(v.y) > nm(r.y) {
+                issues.append(.warning("Refdes should be above value"))
+            }
+        }
+        // A box symbol: junctions at all four corners of what they span.
+        let junctionPoints = Set(drawing.junctions.values.map { [nm($0.x), nm($0.y)] })
+        let box = junctionPoints.reduce(into: [Int64(0), Int64(0)]) { $0 = [max($0[0], abs($1[0])), max($0[1], abs($1[1]))] }
+        let isBox = [[1, 1], [1, -1], [-1, 1], [-1, -1]].allSatisfy { junctionPoints.contains([box[0] * $0[0], box[1] * $0[1]]) }
+        if isBox {
+            let spacing: Int64 = 1_250_000
+            if let refdesText, nm(refdesText.placement.shift.y) != box[1] + spacing {
+                issues.append(.warning("Refdes should be 1.25mm above symbol box", at: refdesText.placement.shift))
+            }
+            if let valueText, nm(valueText.placement.shift.y) != -box[1] - spacing {
+                issues.append(.warning("Value should be 1.25mm below symbol box", at: valueText.placement.shift))
+            }
+        }
+
+        // Pins.
+        let grid: Int64 = 1_250_000
+        let ordered = pins.values.sorted { (pinName($0.id), $0.id) < (pinName($1.id), $1.id) }
+        var bounds = [Int64(0), Int64(0)]
+        var byPosition = [[Int64]: [String]]()
+        for pin in ordered {
+            let p = [nm(pin.position.x), nm(pin.position.y)]
+            let residual = [p[0] % grid, p[1] % grid]
+            if residual != [0, 0] {
+                issues.append(.failure("Pin \(pinName(pin.id)) is off-grid, residual: \(Self.millimetres(residual[0])), \(Self.millimetres(residual[1]))",
+                                       at: pin.position))
+            }
+            bounds = [max(bounds[0], abs(p[0])), max(bounds[1], abs(p[1]))]
+            byPosition[p, default: []].append(pinName(pin.id))
+        }
+        for (position, names) in byPosition.sorted(by: { $0.value.first ?? "" < $1.value.first ?? "" }) where names.count > 1 {
+            issues.append(.failure("Overlapping pins: \(names.joined(separator: ", "))",
+                                   at: HorizontalPoint(x: Double(position[0]), y: Double(position[1]))))
+        }
+        for pin in ordered {
+            let p = [nm(pin.position.x), nm(pin.position.y)]
+            var outward = Set<HorizontalPinOrientation>()
+            if p[0] == bounds[0] { outward.insert(.right) }
+            if p[0] == -bounds[0] { outward.insert(.left) }
+            if p[1] == bounds[1] { outward.insert(.up) }
+            if p[1] == -bounds[1] { outward.insert(.down) }
+            if outward.isEmpty {
+                issues.append(.warning("Pin \(pinName(pin.id)) is not on bounding box", at: pin.position))
+            } else if !outward.contains(pin.orientation) {
+                issues.append(.warning("Pin \(pinName(pin.id)) has improper orientation", at: pin.position))
+            }
+            if [.up, .down].contains(pin.orientation), pin.nameVisible, pin.nameOrientation != .horizontal {
+                issues.append(.warning("Pin \(pinName(pin.id)) points \(pin.orientation.rawValue); its name should be horizontal",
+                                       at: pin.position))
+            }
+        }
+        if let unit {
+            let placed = Set(pins.keys.map { $0.lowercased() })
+            for pin in unit.pins.values.sorted(by: { $0.primaryName < $1.primaryName }) where !placed.contains(pin.id.lowercased()) {
+                issues.append(.failure("Pin \(pin.primaryName) is not placed"))
+            }
+        }
+
+        // Junctions joined to nothing.
+        var attached = Set<String>()
+        for line in drawing.lines.values { attached.formUnion([line.from, line.to].map { $0.lowercased() }) }
+        for arc in drawing.arcs.values { attached.formUnion([arc.from, arc.to, arc.center].map { $0.lowercased() }) }
+        for (id, position) in drawing.junctions.sorted(by: { $0.key < $1.key }) where !attached.contains(id.lowercased()) {
+            issues.append(.warning("Junction has no connections", at: position))
+        }
         return issues
+    }
+
+    /// A length in nanometres as upstream's checks print it, in millimetres.
+    private static func millimetres(_ value: Int64) -> String {
+        let text = String(format: "%.3f", Double(value) / 1_000_000)
+            .replacingOccurrences(of: #"\.?0+$"#, with: "", options: .regularExpression)
+        return "\(text == "-0" ? "0" : text) mm"
     }
 }
