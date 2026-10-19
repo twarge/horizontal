@@ -1368,7 +1368,9 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
     serving nothing unless keep_wiring. Drawing: terminate_pin runs a stub from a pin to a label or power symbol, and
     a label or power symbol placed on a wire splits it there. Moving: move_symbols moves parts by an offset or onto
     another sheet with the junctions, wires, labels and power symbols that belong only to them, stretching or cutting
-    the rest; place_junction with the id of a junction that is there moves it. set_no_connect marks unused pins;
+    the rest; move_to_other_sheet, Horizon's Move to other sheet, takes items to another sheet with everything drawn
+    connected to them, whole and uncut; place_junction with the id of a junction that is there moves it.
+    set_no_connect marks unused pins;
     set_pin_alternate picks a pin's function (SPI1_SCK on PA5) from what get_component(alternates=true) lists;
     remap_part matches pins by name when pin_map is left out, folds gates onto a single-gate part, keeps every pad
     of the same package, maps other pads by name, and with copper "drop" removes tracks on pads the new part lacks.

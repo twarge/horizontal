@@ -69,6 +69,9 @@ struct HorizontalCanvasCommandActions {
     var canMoveNetSegmentToExistingNet: Bool
     var canMoveNetSegmentToNewNet: Bool
     var canEditSymbolPinNames: Bool
+    /// The sheets Move to Other Sheet can take the selection to; none when
+    /// it can't.
+    var moveToOtherSheetTargets: [HorizontalCanvasSheetTarget] = []
     var canHighlightNet: Bool
     var canSelectAll: Bool
     var canSelectNet: Bool = false
@@ -397,6 +400,15 @@ struct HorizontalViewCommands: Commands {
                     canvasCommandActions?.dispatch(.editSymbolPinNames)
                 }
                 .disabled(canvasCommandActions?.canEditSymbolPinNames != true)
+
+                Menu("Move to Other Sheet") {
+                    ForEach(canvasCommandActions?.moveToOtherSheetTargets ?? []) { target in
+                        Button(target.title) {
+                            canvasCommandActions?.dispatch(.moveToOtherSheet(target.id))
+                        }
+                    }
+                }
+                .disabled(canvasCommandActions?.moveToOtherSheetTargets.isEmpty != false)
 
                 // An interaction cannot start while locked, so there is never
                 // one to commit or cancel.

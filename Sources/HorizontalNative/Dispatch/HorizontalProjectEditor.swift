@@ -30,6 +30,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case disconnect = "disconnect"
     case placeSymbol = "place_symbol"
     case moveSymbols = "move_symbols"
+    case moveToOtherSheet = "move_to_other_sheet"
     case removeSymbol = "remove_symbol"
     case drawNetLine = "draw_net_line"
     case placeJunction = "place_junction"
@@ -120,6 +121,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .connect: "Connect a component pin to a net."
         case .disconnect: "Remove a pin's connection."
         case .placeSymbol: "Draw a component's gate on a schematic sheet, or move it if it is already drawn. A component connected without this is in the netlist but on no sheet."
+        case .moveToOtherSheet: "Horizon's Move to other sheet: the items and everything drawn connected to them go to another sheet whole, at the same place unless dx_mm/dy_mm, and nothing is cut. A wire brings the junctions, symbols and ports at its ends, a symbol its texts and wires, a junction its wires, labels, power symbols and the graphic lines and arcs on it, until nothing more is reached. move_symbols with to_sheet moves symbols alone, cutting the wiring they share."
         case .moveSymbols: "Move symbols by an offset, or onto another sheet, with the wiring that belongs only to them: the junctions of the stubs and islands that serve no other part, and the wires, net labels and power symbols on those junctions. A wire to wiring that stays stretches to it; moving to another sheet cuts it instead, and the reply names each cut end with its net, for a label there. place_symbol moves one symbol alone."
         case .setSymbolDisplay: "Change how a drawn symbol shows its pins: which pin names (pin_display_mode) and whether a multi-pad pin lists every pad number (display_all_pads). The apply_ops reply gives warnings when custom_only hides alternates the symbol's pins have chosen."
         case .setCustomValue: "Give a drawn symbol a custom value: text that its $VALUE text draws instead of the value, with ${value}, ${mpn}, ${mfr}, ${desc}, ${pkg} and ${p:<parametric column>} filled in from the component and its part, as Horizon's Edit Custom Value does — \"${value}\\n${mpn}\" shows the value over the MPN. \"\" or null clears it. get_component gives each symbol's custom_value and drawn_value."
@@ -275,6 +277,11 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "id": "Symbol instance UUID for a gate drawn for the first time, or a name such as \"u1a\" that later ops in the batch use for it in a wire end's symbol (optional).",
                     "pin_display_mode": "selected_only, custom_only, both or all (optional; default selected_only for a new symbol).",
                     "display_all_pads": "List every pad number on a pin that has several (optional; Horizon's default is true)."]
+        case .moveToOtherSheet:
+            return ["items": "What to move: ids of anything on the sheet (symbol instances, junctions, wires, net and bus labels, power symbols, bus rippers, net ties, block symbols, texts, graphic lines and arcs, pictures), or components by refdes or id, each standing for every gate of it drawn there. What they connect to comes too.",
+                    "sheet": "The sheet they are on, by index, name or uuid (optional when they are all on one).",
+                    "to_sheet": "The sheet to move them onto, by index, name or uuid.",
+                    "dx_mm": "How far right to put them there (optional; default 0, where they were).", "dy_mm": "How far up (optional; default 0)."]
         case .moveSymbols:
             return ["symbols": "What to move: symbol instance ids from list_symbols, or components by refdes or id, each standing for every gate of it drawn on the sheet.",
                     "sheet": "The sheet they are on, by index, name or uuid (optional when they are all on one).",
@@ -534,6 +541,10 @@ struct HorizontalEditOperation {
             } else if key == "pins" {
                 guard let pins = value as? [Any], !pins.isEmpty, pins.allSatisfy({ $0 is String }) else {
                     throw HorizontalDispatchError.invalidParams("pins must be a non-empty array of pin names or ids.")
+                }
+            } else if key == "items", kind == .moveToOtherSheet {
+                guard let list = value as? [Any], !list.isEmpty, list.allSatisfy({ $0 is String }) else {
+                    throw HorizontalDispatchError.invalidParams("items must be a non-empty array of ids.")
                 }
             } else if ["symbols", "junctions", "texts"].contains(key), kind == .moveSymbols {
                 guard let list = value as? [Any], list.allSatisfy({ $0 is String }), key != "symbols" || !list.isEmpty else {
@@ -891,6 +902,8 @@ final class HorizontalProjectEditor {
             change.merge(try placeSymbol(id, params)) { _, new in new }
         case .moveSymbols:
             change.merge(try moveSymbols(params)) { _, new in new }
+        case .moveToOtherSheet:
+            change.merge(try moveToOtherSheet(params)) { _, new in new }
         case .removeSymbol:
             let id = try componentID(params)
             change["component"] = id
@@ -2506,6 +2519,153 @@ final class HorizontalProjectEditor {
         if !cut.isEmpty {
             change["cut"] = cut.sorted { ($0.string("net_line") ?? "") < ($1.string("net_line") ?? "") }
             change["note"] = "\(cut.count) wire\(cut.count == 1 ? "" : "s") reached wiring that stays on the other sheet and \(cut.count == 1 ? "was" : "were") cut; each cut end is given with its net and where it is now. terminate_pin, or place_net_label there with a wire to it, joins it to its net on this sheet."
+        }
+        return change
+    }
+
+    /// What a sheet holds that Move to other sheet can carry, by collection.
+    static let otherSheetCollections = ["symbols", "block_symbols", "junctions", "net_lines", "net_labels", "power_symbols",
+                                        "bus_labels", "bus_rippers", "net_ties", "texts", "lines", "arcs", "pictures"]
+
+    /// Horizon's Move to other sheet (`ImpSchematic::handle_move_to_other_sheet`):
+    /// the selection grows until it holds everything drawn connected to it,
+    /// then all of it changes sheet whole, ids and all, so no wire is cut.
+    private func moveToOtherSheet(_ params: JSONDictionary) throws -> JSONDictionary {
+        let references = params["items"] as? [String] ?? []
+        guard params["to_sheet"] != nil else {
+            throw HorizontalDispatchError.invalidParams("move_to_other_sheet needs to_sheet: the sheet to move onto.")
+        }
+        let explicitSheet = params["sheet"] == nil ? nil : try sheetID(params)
+        let pages = try sheetsInOrder()
+        // Each id, by what it is and where.
+        var found = [(sheet: String, key: String, id: String)]()
+        for reference in references {
+            let wanted = reference.lowercased()
+            let hits = pages.filter { explicitSheet == nil || $0.id == explicitSheet }.flatMap { page in
+                Self.otherSheetCollections.compactMap { key in
+                    page.json.dictionaryMap(key).keys.contains { $0.lowercased() == wanted } ? (page.id, key, wanted) : nil
+                }
+            }
+            if !hits.isEmpty { found += hits; continue }
+            let component = try componentID(reference: reference)
+            let drawn = try symbolInstances().filter {
+                $0.json.string("component")?.lowercased() == component && (explicitSheet == nil || $0.sheet == explicitSheet)
+            }
+            guard !drawn.isEmpty else {
+                throw HorizontalDispatchError.notFound("Nothing called \(reference) is drawn\(explicitSheet == nil ? "" : " on that sheet").")
+            }
+            found += drawn.map { ($0.sheet, "symbols", $0.id.lowercased()) }
+        }
+        let sheets = Set(found.map(\.sheet))
+        guard sheets.count == 1, let source = sheets.first else {
+            throw HorizontalDispatchError.invalidParams("The items are on \(sheets.count) sheets; pass sheet, or move each sheet's on its own.")
+        }
+        let target = try sheetID(["sheet": params["to_sheet"]!])
+        guard target != source else {
+            throw HorizontalDispatchError.invalidParams("The items are on that sheet already; move_to_other_sheet takes them to another.")
+        }
+        guard let sheet = pages.first(where: { $0.id == source })?.json, let destination = pages.first(where: { $0.id == target })?.json else {
+            throw HorizontalDispatchError.notFound("No sheet \(target).")
+        }
+
+        // Grow the selection as Horizon does, both ways, until it stops.
+        var selected = Dictionary(grouping: found, by: \.key).mapValues { Set($0.map(\.id)) }
+        func has(_ key: String, _ id: String?) -> Bool { id.map { selected[key]?.contains($0.lowercased()) == true } ?? false }
+        func owner(_ path: String?) -> String? { path?.lowercased().split(separator: "/").first.map(String.init) }
+        let maps = Dictionary(uniqueKeysWithValues: Self.otherSheetCollections.map { ($0, sheet.dictionaryMap($0)) })
+        func lowered(_ key: String) -> [(String, JSONDictionary)] { maps[key, default: [:]].map { ($0.key.lowercased(), $0.value) } }
+        var grown = true
+        while grown {
+            var adding = [String: Set<String>]()
+            func add(_ key: String, _ id: String?) { if let id { adding[key, default: []].insert(id.lowercased()) } }
+            // A mark on a junction and the junction go together.
+            for key in ["net_labels", "bus_labels", "power_symbols", "bus_rippers"] {
+                for (id, item) in lowered(key) {
+                    if has(key, id) { add("junctions", item.string("junction")) }
+                    if has("junctions", item.string("junction")) { add(key, id) }
+                }
+            }
+            for (id, tie) in lowered("net_ties") {
+                if has("net_ties", id) { add("junctions", tie.string("from")); add("junctions", tie.string("to")) }
+                if has("junctions", tie.string("from")) || has("junctions", tie.string("to")) { add("net_ties", id) }
+            }
+            for (id, line) in lowered("net_lines") {
+                for end in [line.dictionary("from"), line.dictionary("to")].compactMap({ $0 }) {
+                    let ends: [(String, String?)] = [("junctions", end.string("junc")), ("bus_rippers", end.string("bus_ripper")),
+                                                     ("symbols", owner(end.string("pin"))), ("block_symbols", owner(end.string("port")))]
+                    for (key, endID) in ends where endID != nil {
+                        if has("net_lines", id) { add(key, endID) }
+                        if has(key, endID) { add("net_lines", id) }
+                    }
+                }
+            }
+            for key in ["lines", "arcs"] {
+                for (id, item) in lowered(key) {
+                    let points = ["from", "to", "center"].compactMap { item.string($0) }
+                    if has(key, id) { points.forEach { add("junctions", $0) } }
+                    if points.contains(where: { has("junctions", $0) }) { add(key, id) }
+                }
+            }
+            for (id, symbol) in lowered("symbols") where has("symbols", id) {
+                (symbol["texts"] as? [String] ?? []).forEach { add("texts", $0) }
+            }
+            grown = false
+            for (key, ids) in adding {
+                let known = Set(maps[key, default: [:]].keys.map { $0.lowercased() })
+                let before = selected[key, default: []].count
+                selected[key, default: []].formUnion(ids.intersection(known))
+                if selected[key, default: []].count != before { grown = true }
+            }
+        }
+
+        for (key, ids) in selected {
+            let clash = Set(destination.dictionaryMap(key).keys.map { $0.lowercased() }).intersection(ids)
+            guard clash.isEmpty else { throw HorizontalDispatchError.invalidParams("The other sheet already has \(key) \(clash.sorted().joined(separator: ", ")).") }
+        }
+        let dx = Self.nanometres(params.double("dx_mm") ?? 0), dy = Self.nanometres(params.double("dy_mm") ?? 0)
+        func shifted(_ point: Any?) -> [Int]? {
+            guard let point = point as? [Any], point.count == 2 else { return nil }
+            return [Int(JSONHelper.doubleValue(point[0])) + dx, Int(JSONHelper.doubleValue(point[1])) + dy]
+        }
+        var taken = [String: [String: JSONDictionary]]()
+        try updateSheet(source) { sheet in
+            for (key, ids) in selected {
+                var map = sheet.dictionaryMap(key), out = [String: JSONDictionary]()
+                for id in map.keys where ids.contains(id.lowercased()) {
+                    var item = map.removeValue(forKey: id)!
+                    if dx != 0 || dy != 0 {
+                        if key == "junctions" {
+                            item["position"] = shifted(item["position"])
+                        } else if var placement = item.dictionary("placement") {
+                            placement["shift"] = shifted(placement["shift"]) ?? [dx, dy]
+                            item["placement"] = placement
+                        }
+                    }
+                    out[id] = item
+                }
+                sheet[key] = map
+                taken[key] = out
+            }
+        }
+        try updateSheet(target) { sheet in
+            for (key, items) in taken {
+                var map = sheet.dictionaryMap(key)
+                for (id, item) in items { map[id] = item }
+                sheet[key] = map
+            }
+        }
+        let named = Set(found.map { "\($0.key)/\($0.id)" })
+        var moved = JSONDictionary()
+        var pulledIn = 0
+        for (key, items) in taken where !items.isEmpty {
+            moved[key] = items.keys.sorted()
+            pulledIn += items.keys.filter { !named.contains("\(key)/\($0.lowercased())") }.count
+        }
+        var change: JSONDictionary = ["sheet": source, "to_sheet": target, "moved": moved,
+                                      "count": taken.values.reduce(0) { $0 + $1.count }, "pulled_in": pulledIn]
+        if dx != 0 || dy != 0 {
+            change["dx_mm"] = HorizontalDispatchJSON.mm(Double(dx))
+            change["dy_mm"] = HorizontalDispatchJSON.mm(Double(dy))
         }
         return change
     }

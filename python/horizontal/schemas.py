@@ -569,6 +569,18 @@ class MoveSymbols(Input):
     texts: list[StrictStr] | None = None
 
 
+class MoveToOtherSheet(Input):
+    """Horizon's Move to other sheet: the items and everything drawn connected to them go to another sheet
+    whole, nothing cut. A wire brings what is at its ends, a symbol its texts and wires, a junction its wires,
+    labels and power symbols, until nothing more is reached."""
+    op: Literal["move_to_other_sheet"]
+    items: list[StrictStr] = Field(min_length=1)
+    to_sheet: StrictStr | StrictInt
+    sheet: StrictStr | StrictInt | None = None
+    dx_mm: float | None = None
+    dy_mm: float | None = None
+
+
 class SetNetLineEndpoint(Targeted):
     target: ClassVar[str] = "line"
     op: Literal["set_net_line_endpoint"]
@@ -1082,7 +1094,7 @@ class CopyLayout(Input):
 
 EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | SetValue | SetRefdes | SetPart | SetPopulation |
                           SetGroup | EnsureNet | RenameNet | SetNetClass | RetireNet | Connect | Disconnect |
-                          Place | PlaceSymbol | MoveSymbols | RemoveSymbol | DrawNetLine | PlaceJunction | SetNetLineEndpoint | RemapPart | PlaceText | RemoveText |
+                          Place | PlaceSymbol | MoveSymbols | MoveToOtherSheet | RemoveSymbol | DrawNetLine | PlaceJunction | SetNetLineEndpoint | RemapPart | PlaceText | RemoveText |
                           RemoveNetLine | RemoveJunction | PruneSheet | TerminatePin | SetSymbolDisplay | SetCustomValue | SetNoConnect | SetPinAlternate |
                           PlaceTrack | RemoveTrack | SetTrackWidth | PlaceVia | RemoveVia |
                           PlacePowerSymbol | PlaceNetLabel | RemoveSheetMark |

@@ -263,6 +263,13 @@ struct SchematicCanvasView: View {
     var drawingToolCommand: HorizontalDrawingToolCommand?
     var drawNetLineCommand: HorizontalDrawNetLineCommand?
     var placePartRequest: HorizontalPartPlacementRequest?
+    /// Move to Other Sheet: (the selected items' ids, the sheet to take them
+    /// to). The host runs `move_to_other_sheet`, shows that sheet and hands
+    /// back `moveRequest`. Nil hides the command.
+    var onMoveToOtherSheet: (([String], String) -> Void)? = nil
+    /// What arrived on this sheet from Move to Other Sheet: selected, and on
+    /// macOS picked up to follow the cursor.
+    var moveRequest: HorizontalSchematicMoveRequest? = nil
     var poolURL: URL?
     /// "Show in (Project) Pool Manager" for a placed symbol: the pool symbol
     /// uuid and where to look. Nil hides the commands.
@@ -291,6 +298,7 @@ struct SchematicCanvasView: View {
     @State private var placedPinHistory: [String] = []
     @State private var resizeSymbolState: ResizeSymbolState?
     @State private var handledPlacePartRequestID: UUID?
+    @State private var handledMoveRequestID: UUID?
     @State private var drawNetLineState: DrawNetLineState?
     @State private var drawGraphicsState: DrawGraphicsState?
     @State private var lastCursorWorldPoint: HorizontalPoint?
@@ -355,6 +363,8 @@ struct SchematicCanvasView: View {
         drawingToolCommand: HorizontalDrawingToolCommand? = nil,
         drawNetLineCommand: HorizontalDrawNetLineCommand? = nil,
         placePartRequest: HorizontalPartPlacementRequest? = nil,
+        onMoveToOtherSheet: (([String], String) -> Void)? = nil,
+        moveRequest: HorizontalSchematicMoveRequest? = nil,
         poolURL: URL? = nil,
         onRevealPoolSymbol: ((String, HorizontalPoolRevealTarget) -> Void)? = nil,
         mode: HorizontalSchematicEditorMode = .sheet,
@@ -398,6 +408,8 @@ struct SchematicCanvasView: View {
         self.drawingToolCommand = drawingToolCommand
         self.drawNetLineCommand = drawNetLineCommand
         self.placePartRequest = placePartRequest
+        self.onMoveToOtherSheet = onMoveToOtherSheet
+        self.moveRequest = moveRequest
         self.poolURL = poolURL
         self.onRevealPoolSymbol = onRevealPoolSymbol
         self.mode = mode
@@ -819,7 +831,7 @@ struct SchematicCanvasView: View {
                     // At the point right-clicked, not wherever the menu left the pointer.
                     beginBendNetLine(on: ref, at: contextMenuWorldPoint)
                     return
-                case .copySelection, .duplicateSelection:
+                case .copySelection, .duplicateSelection, .moveToOtherSheet:
                     if !selectedObjects.contains(ref) { setSelectedObject(ref) }
                 default:
                     setSelectedObject(ref)
@@ -882,6 +894,8 @@ struct SchematicCanvasView: View {
             drawGraphicsState = nil
             lastCursorWorldPoint = nil
             clearNetSegmentSelection()
+            // What Move to Other Sheet brought here arrives with the sheet.
+            takeUpMoveRequest()
             // No invalidation: the page's scene is cached by sheet, so a
             // page shown before comes back without a rebuild.
             configureUndoTarget()
@@ -927,6 +941,9 @@ struct SchematicCanvasView: View {
         }
         .onChange(of: placePartRequest?.id) { _, _ in
             beginPlacePartIfNeeded()
+        }
+        .onChange(of: moveRequest?.id) { _, _ in
+            takeUpMoveRequest()
         }
         .onChange(of: isReadOnly) { _, readOnly in
             if readOnly {
@@ -7850,6 +7867,10 @@ struct SchematicCanvasView: View {
             handlers.setAllUnconnectedPinsNC = { setAllNoConnect(true) }
             handlers.clearAllNCPins = { setAllNoConnect(false) }
         }
+        if !editorProfile.isPoolMode, onMoveToOtherSheet != nil {
+            handlers.moveToOtherSheet = { moveSelectionToOtherSheet($0) }
+            handlers.moveToOtherSheetTargets = HorizontalSchematicMoveToSheet.items(for: selectedObjects).isEmpty ? [] : otherSheetTargets
+        }
         handlers.pasteSelection = !editorProfile.isPoolMode && onPreparePaste != nil ? { pasteSchematicSelection() } : nil
         handlers.duplicateSelection = canCopySchematicSelection && onPreparePaste != nil ? { duplicateSchematicSelection() } : nil
         if editorProfile.isPoolMode {
@@ -8020,6 +8041,7 @@ struct SchematicCanvasView: View {
             entries.append(.command(title: "Copy", .copySelection))
             if !isReadOnly, onPreparePaste != nil { entries.append(.command(title: "Duplicate", .duplicateSelection)) }
         }
+        if let moveToOtherSheet = moveToOtherSheetEntry(for: ref) { entries.append(moveToOtherSheet) }
         if onRevealPoolSymbol != nil, symbolPoolID(for: ref) != nil {
             entries.append(.separator)
             entries.append(.command(title: "Show in Pool Manager", .showInPoolManager))
@@ -8029,12 +8051,62 @@ struct SchematicCanvasView: View {
         #else
         // The iPad's menu keeps candidates plain except where a symbol or a
         // wire has something of its own to offer.
-        if canBendNetLine(ref) {
-            return [.select(title: "Select"), .command(title: "Add Vertex", .bendNetLine)]
-        }
-        guard canEditCustomValue(of: ref) else { return [] }
-        return [.select(title: "Select"), .command(title: "Edit Custom Value…", .editCustomValue)]
+        var entries: [HorizontalTargetItemMenuEntry] = [.select(title: "Select")]
+        if canBendNetLine(ref) { entries.append(.command(title: "Add Vertex", .bendNetLine)) }
+        if canEditCustomValue(of: ref) { entries.append(.command(title: "Edit Custom Value…", .editCustomValue)) }
+        if let moveToOtherSheet = moveToOtherSheetEntry(for: ref) { entries.append(moveToOtherSheet) }
+        return entries.count > 1 ? entries : []
         #endif
+    }
+
+    /// The sheets Move to Other Sheet lists: every other page of this
+    /// schematic, as Horizon's chooser leaves out the one showing.
+    private var otherSheetTargets: [HorizontalCanvasSheetTarget] {
+        HorizontalSchematicMoveToSheet.targets(in: sourceAllSheets, excluding: sheet.id)
+    }
+
+    /// "Move to Other Sheet ▸ <page>" for a sheet object, when there is
+    /// another page to take it to.
+    private func moveToOtherSheetEntry(for ref: HorizontalSelectableRef) -> HorizontalTargetItemMenuEntry? {
+        guard !isReadOnly, !editorProfile.isPoolMode, onMoveToOtherSheet != nil,
+              !HorizontalSchematicMoveToSheet.items(for: [ref]).isEmpty else {
+            return nil
+        }
+        let targets = otherSheetTargets
+        guard !targets.isEmpty else { return nil }
+        return .submenu(title: "Move to Other Sheet", targets.map { .command(title: $0.title, .moveToOtherSheet($0.id)) })
+    }
+
+    /// Horizon's Move to other sheet: the selection, and everything drawn
+    /// connected to it, goes to the other page whole through
+    /// `move_to_other_sheet`. The reload replaces this sheet, so the draft
+    /// and the selection go first, as for any project-wide edit.
+    private func moveSelectionToOtherSheet(_ sheetID: String) {
+        guard !isReadOnly, let onMoveToOtherSheet else { return }
+        let items = HorizontalSchematicMoveToSheet.items(for: selectedObjects)
+        guard !items.isEmpty else { return }
+        selectedObjects = []
+        hoveredObject = nil
+        adoptExternallyUpdatedSheet()
+        onMoveToOtherSheet(items, sheetID)
+    }
+
+    /// Selects what Move to Other Sheet brought to this sheet and, on macOS,
+    /// starts moving it, as Horizon begins its Move tool there. A turn later:
+    /// the sheet change that brings the request clears the selection, and
+    /// SwiftUI may run that handler after this one.
+    private func takeUpMoveRequest() {
+        guard let request = moveRequest, handledMoveRequestID != request.id else { return }
+        DispatchQueue.main.async {
+            guard handledMoveRequestID != request.id, request.sheetID.caseInsensitiveCompare(sheet.id) == .orderedSame else { return }
+            handledMoveRequestID = request.id
+            guard !isReadOnly, moveState == nil else { return }
+            let present = Set(schematicSelectableScene().refs())
+            selectedObjects = request.refs.filter(present.contains)
+            #if os(macOS)
+            if !selectedObjects.isEmpty { beginMove(tracksCursor: true, actionName: "Move to Other Sheet") }
+            #endif
+        }
     }
 
     private func canBendNetLine(_ ref: HorizontalSelectableRef) -> Bool {

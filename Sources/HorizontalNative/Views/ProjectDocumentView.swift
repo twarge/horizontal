@@ -644,6 +644,8 @@ struct ProjectWorkspaceView: View {
     /// second time). Nil is the normal, un-soloed state.
     @State private var soloedBoardLayer: Int?
     @State private var pendingPartPlacement: HorizontalPartPlacementRequest?
+    /// What Move to Other Sheet took across, for the canvas to pick up there.
+    @State private var pendingSchematicMove: HorizontalSchematicMoveRequest?
     @State private var canvasCommandActionsByPane = [HorizontalPane: HorizontalCanvasCommandActions]()
     @State private var activeCanvasCommandPane: HorizontalPane?
     /// The project pool cleanup on show, reviewed when it opened.
@@ -2000,6 +2002,10 @@ struct ProjectWorkspaceView: View {
                                 drawingToolCommand: schematicDrawingToolCommand,
                                 drawNetLineCommand: schematicDrawNetLineCommand,
                                 placePartRequest: pendingPartPlacement,
+                                onMoveToOtherSheet: isReadOnly ? nil : { items, sheetID in
+                                    moveSchematicItems(items, toSheet: sheetID, from: selectedSchematic)
+                                },
+                                moveRequest: pendingSchematicMove,
                                 poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
                                 onRevealPoolSymbol: { symbolID, target in
                                     revealPoolItem(.symbol, uuid: symbolID, in: target)
@@ -3159,6 +3165,33 @@ struct ProjectWorkspaceView: View {
                 in: project
             )
             try applyLiveArchive(edited.archive, actionName: actionName)
+        } catch {
+            projectEditError = HorizontalCanvasProjectEdit.message(for: error)
+        }
+    }
+
+    /// Horizon's Move to other sheet: `move_to_other_sheet` takes the items,
+    /// and everything drawn connected to them, to the other sheet as one
+    /// undoable edit; then that sheet shows, and the canvas there picks up
+    /// what arrived to move it, as Horizon begins its Move tool.
+    private func moveSchematicItems(_ items: [String], toSheet sheetID: String, from selectedSchematic: SelectedSchematic) {
+        guard !isReadOnly, !items.isEmpty else {
+            return
+        }
+        let url = selectedSchematic.url.standardizedFileURL
+        let block = project.schematics.first { $0.schematic.url.standardizedFileURL == url }?.block
+        do {
+            let edited = try HorizontalCanvasProjectEdit.archive(
+                applying: [["op": "move_to_other_sheet", "items": items, "sheet": selectedSchematic.sheet.id, "to_sheet": sheetID]],
+                to: document.archive,
+                in: project,
+                block: block?.isTop == false ? block?.uuid : nil
+            )
+            try applyLiveArchive(edited.archive, actionName: "Move to Other Sheet")
+            let moved = edited.changes.first?.dictionary("moved") ?? [:]
+            visiblePanes.insert(.schematic)
+            navigatorSelection = block.map { .sheet(blockID: $0.uuid, sheetID: sheetID) } ?? .standaloneSheet(sheetID)
+            pendingSchematicMove = HorizontalSchematicMoveRequest(sheetID: sheetID, refs: HorizontalSchematicMoveToSheet.refs(moved: moved))
         } catch {
             projectEditError = HorizontalCanvasProjectEdit.message(for: error)
         }
