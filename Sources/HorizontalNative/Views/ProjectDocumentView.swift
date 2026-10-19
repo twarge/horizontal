@@ -650,6 +650,7 @@ struct ProjectWorkspaceView: View {
     @State private var showsPartUpdates = false
     /// A copy of a part into an attached pool, waiting on its confirmation.
     @State private var pendingPoolCopy: HorizontalPoolPartCopy?
+    @State private var confirmingEditingUnlock = false
     /// What Move to Other Sheet took across, for the canvas to pick up there.
     @State private var pendingSchematicMove: HorizontalSchematicMoveRequest?
     @State private var canvasCommandActionsByPane = [HorizontalPane: HorizontalCanvasCommandActions]()
@@ -900,6 +901,7 @@ struct ProjectWorkspaceView: View {
             .alert("Library Review", isPresented: Binding(get: { partLibrary.error != nil }, set: { if !$0 { partLibrary.error = nil } })) {
                 Button("OK") { partLibrary.error = nil }
             } message: { Text(partLibrary.error ?? "") }
+            .editingUnlockConfirmation(isPresented: $confirmingEditingUnlock, appearanceSettings: appearanceSettings)
             .alert(pendingPoolCopy.map { "Copy \($0.partName) to \($0.targetName)?" } ?? "",
                    isPresented: Binding(get: { pendingPoolCopy != nil }, set: { if !$0 { pendingPoolCopy = nil } }),
                    presenting: pendingPoolCopy) { copy in
@@ -1294,26 +1296,24 @@ struct ProjectWorkspaceView: View {
     }
 
     /// The read-only lock: shows the document's effective read-only state and
-    /// toggles the preference (the same one Settings offers). Release builds
-    /// force read-only with no preference to flip, so there the lock is a
-    /// disabled indicator rather than a control. Unlocking re-runs the outer
-    /// view's project load (via its isReadOnlyOperationEnabled onChange) so a
-    /// document opened read-only gains the writable archive it skipped.
+    /// toggles the preference (the same one Settings offers). Unlocking asks
+    /// first, since editing is in beta, then re-runs the outer view's project
+    /// load (via its isReadOnlyOperationEnabled onChange) so a document opened
+    /// read-only gains the writable archive it skipped.
     private var readOnlyLockButton: some View {
         Button {
-            appearanceSettings.readOnlyOperationBinding().wrappedValue = !isReadOnly
+            if isReadOnly {
+                confirmingEditingUnlock = true
+            } else {
+                appearanceSettings.readOnlyOperationBinding().wrappedValue = true
+            }
         } label: {
             Label(
                 isReadOnly ? "Read-Only" : "Editable",
                 systemImage: isReadOnly ? "lock.fill" : "lock.open"
             )
         }
-        .disabled(HorizontalOperationDefaults.isReadOnlyOperationForced)
-        .help(
-            HorizontalOperationDefaults.isReadOnlyOperationForced
-                ? "This build of Horizontal cannot modify project files."
-                : (isReadOnly ? "Read-only — click to allow editing" : "Editable — click to make read-only")
-        )
+        .help(isReadOnly ? "Read-only — click to allow editing (beta)" : "Editable (beta) — click to make read-only")
         .accessibilityLabel(isReadOnly ? "Read-only. Click to allow editing." : "Editable. Click to make read-only.")
     }
 

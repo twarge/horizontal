@@ -182,11 +182,7 @@ enum HorizontalProjectDocumentError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .readOnlyOperation:
-            // Release builds have no toggle to point at, so don't send the user
-            // looking for one that isn't there.
-            HorizontalOperationDefaults.isReadOnlyOperationForced
-                ? "This build of Horizontal cannot modify project files."
-                : "Read-only operation is enabled. Disable it in Settings before saving project files."
+            "Read-only operation is enabled. Turn it off in Settings or with the lock before saving project files."
         }
     }
 }

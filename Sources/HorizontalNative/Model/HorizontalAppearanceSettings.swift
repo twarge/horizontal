@@ -106,32 +106,20 @@ enum HorizontalSelectionHandleShape: String, CaseIterable, Identifiable, Hashabl
 enum HorizontalOperationDefaults {
     static let readOnlyOperationKey = "operation.readOnly"
 
-    /// Release builds — including anything archived for distribution — are
-    /// read-only unconditionally: the preference is neither offered nor
-    /// consulted. Debug builds keep the toggle so the editing paths can still
-    /// be developed and tested.
-    ///
-    /// Keyed off DEBUG rather than a bespoke flag because that is exactly the
-    /// distinction wanted: `make build` for development keeps editing, while
-    /// `make release`, `make archive` and the App Store workflow all compile
-    /// Release and are therefore locked.
-    static var isReadOnlyOperationForced: Bool {
-        #if DEBUG
-        false
-        #else
-        true
-        #endif
-    }
-
+    /// Every build starts read-only, a fresh install included, and anyone can
+    /// turn it off: editing is in beta, so turning it off is confirmed with
+    /// the warning below, and Settings says so in red while it is off.
     static func readOnlyOperation(defaults: UserDefaults = .standard) -> Bool {
-        if isReadOnlyOperationForced {
-            return true
-        }
         guard defaults.object(forKey: readOnlyOperationKey) != nil else {
             return true
         }
         return defaults.bool(forKey: readOnlyOperationKey)
     }
+
+    static let editingUnlockTitle = "Allow Editing?"
+    /// What turning read-only off is warned with, wherever it is turned off.
+    static let editingBetaWarning = "Editing is in beta and is a risk to your data. Horizontal writes your project files "
+        + "directly, and a fault can damage or lose part of a design. Keep a backup, or commit the project to git, before you edit."
 }
 
 enum HorizontalColorRole: String, CaseIterable, Identifiable {
@@ -485,7 +473,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
     /// stored in defaults, so a value written by an earlier Debug run (or by
     /// `defaults write`) can't unlock a shipped build.
     var isReadOnlyOperationEnabled: Bool {
-        HorizontalOperationDefaults.isReadOnlyOperationForced || readOnlyOperation
+        readOnlyOperation
     }
 
     /// Whether the app serves its open documents to the MCP server and the
