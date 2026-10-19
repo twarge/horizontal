@@ -81,8 +81,14 @@ final class HorizontalPoolItemEditorSession: ObservableObject {
         )
     }
 
+    /// The model's checks. A symbol's are checked against its unit, as
+    /// upstream checks one, for pin names and unplaced pins.
     var validationIssues: [HorizontalPoolCheckIssue] {
-        model.validationIssues()
+        if case .symbol(let symbol) = model {
+            let unit = index.json(.unit, uuid: symbol.unitID).flatMap { try? HorizontalPoolUnit(json: $0) }
+            return symbol.validationIssues(unit: unit)
+        }
+        return model.validationIssues()
     }
 
     /// Scans the item's pool, the pools it includes and the discovered base

@@ -54,15 +54,18 @@ struct HorizontalPoolCheckIssue: Hashable, Identifiable {
 
     var level: Level
     var message: String
+    /// Where in the item the finding is, when it is somewhere (upstream's
+    /// `has_location`), in nanometres.
+    var location: HorizontalPoint? = nil
 
     var id: String { "\(level)|\(message)" }
 
-    static func failure(_ message: String) -> HorizontalPoolCheckIssue {
-        HorizontalPoolCheckIssue(level: .failure, message: message)
+    static func failure(_ message: String, at location: HorizontalPoint? = nil) -> HorizontalPoolCheckIssue {
+        HorizontalPoolCheckIssue(level: .failure, message: message, location: location)
     }
 
-    static func warning(_ message: String) -> HorizontalPoolCheckIssue {
-        HorizontalPoolCheckIssue(level: .warning, message: message)
+    static func warning(_ message: String, at location: HorizontalPoint? = nil) -> HorizontalPoolCheckIssue {
+        HorizontalPoolCheckIssue(level: .warning, message: message, location: location)
     }
 }
 
