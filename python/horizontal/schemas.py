@@ -456,6 +456,24 @@ class SetCustomValue(Input):
         return self
 
 
+class Smash(Input):
+    """Horizon's Smash and Unsmash: a drawn symbol's texts (with board, its package's silkscreen texts) become
+    texts of the sheet (board) it owns, where it drew them, to move on their own; unsmash deletes them."""
+    op: Literal["smash", "unsmash"]
+    component: StrictStr | None = None
+    gate: str | None = None
+    symbol_instance: str | None = None
+    board: bool | None = None
+
+    @model_validator(mode="after")
+    def target(self):
+        if (self.component is None) == (self.symbol_instance is None) or (self.symbol_instance is not None and self.gate is not None):
+            raise ValueError("Name a component (and optionally a gate) or one symbol_instance.")
+        if self.board and (self.gate is not None or self.symbol_instance is not None):
+            raise ValueError("With board, name the component alone: its package has no gates.")
+        return self
+
+
 class RemoveSymbol(ComponentOp):
     op: Literal["remove_symbol"]
     gate: str | None = None
@@ -1095,7 +1113,7 @@ class CopyLayout(Input):
 EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | SetValue | SetRefdes | SetPart | SetPopulation |
                           SetGroup | EnsureNet | RenameNet | SetNetClass | RetireNet | Connect | Disconnect |
                           Place | PlaceSymbol | MoveSymbols | MoveToOtherSheet | RemoveSymbol | DrawNetLine | PlaceJunction | SetNetLineEndpoint | RemapPart | PlaceText | RemoveText |
-                          RemoveNetLine | RemoveJunction | PruneSheet | TerminatePin | SetSymbolDisplay | SetCustomValue | SetNoConnect | SetPinAlternate |
+                          RemoveNetLine | RemoveJunction | PruneSheet | TerminatePin | SetSymbolDisplay | SetCustomValue | Smash | SetNoConnect | SetPinAlternate |
                           PlaceTrack | RemoveTrack | SetTrackWidth | PlaceVia | RemoveVia |
                           PlacePowerSymbol | PlaceNetLabel | RemoveSheetMark |
                           AddSheet | RenameSheet | SetSheetFrame | RemoveSheet |

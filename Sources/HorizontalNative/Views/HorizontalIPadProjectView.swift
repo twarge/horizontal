@@ -1726,12 +1726,7 @@ struct HorizontalIPadProjectView: View {
     private func applyEditedSchematicSheet(_ sheet: HorizontalSchematicSheet) {
         guard var updated = project, var schematic = updated.schematic else { return }
         let previousSignature = schematic.sheets.first { $0.id == sheet.id }?.netlistSignature
-        for index in schematic.sheets.indices {
-            schematic.sheets[index].grid = sheet.grid
-        }
-        if let index = schematic.sheets.firstIndex(where: { $0.id == sheet.id }) {
-            schematic.sheets[index] = sheet
-        }
+        schematic.replaceSheet(sheet)
         updated.schematic = schematic
         let standardizedURL = schematic.url.standardizedFileURL
         for index in updated.schematics.indices

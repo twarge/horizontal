@@ -3565,13 +3565,7 @@ struct ProjectWorkspaceView: View {
     }
 
     private func replace(_ sheet: HorizontalSchematicSheet, in schematic: inout HorizontalSchematic) {
-        for index in schematic.sheets.indices {
-            schematic.sheets[index].grid = sheet.grid
-        }
-        guard let index = schematic.sheets.firstIndex(where: { $0.id == sheet.id }) else {
-            return
-        }
-        schematic.sheets[index] = sheet
+        schematic.replaceSheet(sheet)
     }
 
     private func boardGridBinding() -> Binding<HorizontalGridSettings> {

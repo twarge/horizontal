@@ -3618,6 +3618,7 @@ struct SchematicCanvasView: View {
                 changed = removeElement(from: &sheet.busLabels, matching: ref) || changed
             case .text:
                 changed = removeElement(from: &sheet.texts, matching: ref) || changed
+                sheet.forgetSmashedText(ref.id)
             case .schematicNetTie:
                 changed = removeElement(from: &sheet.netTies, matching: ref) || changed
             case .powerSymbol:
@@ -3769,7 +3770,12 @@ struct SchematicCanvasView: View {
 
     private func deleteSchematicSymbol(_ symbolID: String, from sheet: inout HorizontalSchematicSheet) -> Bool {
         let normalizedSymbolID = normalizedID(symbolID)
+        // The texts a smash gave it go with it.
+        let smashedTextIDs = sheet.smashedTextIDs(ownedBy: [normalizedSymbolID])
         var changed = removeAll(from: &sheet.symbols) { normalizedID($0.id) == normalizedSymbolID }
+        if !smashedTextIDs.isEmpty {
+            changed = removeAll(from: &sheet.texts) { smashedTextIDs.contains(normalizedID($0.id)) } || changed
+        }
 
         func belongsToSymbol(_ geometryID: String) -> Bool {
             self.symbolID(forGeometryID: geometryID).map(normalizedID) == normalizedSymbolID
@@ -4285,6 +4291,32 @@ struct SchematicCanvasView: View {
                 break
             }
         }
+        for carried in carriedSmashedTexts(in: sheet) {
+            moveText(&sheet.texts, ref: carried.text, by: delta)
+        }
+    }
+
+    /// The texts the smashed symbols in the selection own, and aren't
+    /// selected themselves, each with its symbol: they go wherever their
+    /// symbol goes, as Horizon's move takes a symbol's texts along.
+    private func carriedSmashedTexts(
+        in sheet: HorizontalSchematicSheet
+    ) -> [(symbol: HorizontalSelectableRef, text: HorizontalSelectableRef)] {
+        guard sheet.symbols.contains(where: \.smashed) else {
+            return []
+        }
+        let selectedTextIDs = Set(selectedObjects.filter { $0.type == .text }.map { normalizedID($0.id) })
+        let textIDs = Dictionary(sheet.texts.map { (normalizedID($0.id), $0.id) }, uniquingKeysWith: { first, _ in first })
+        var seen = Set<String>()
+        var carried = [(symbol: HorizontalSelectableRef, text: HorizontalSelectableRef)]()
+        for ref in uniqueSelectedObjectRefs() where ref.type == .schematicSymbol {
+            for id in sheet.smashedTextIDs(ownedBy: [normalizedID(ref.id)]).sorted()
+                where !selectedTextIDs.contains(id) && seen.insert(id).inserted {
+                guard let textID = textIDs[id] else { continue }
+                carried.append((ref, HorizontalSelectableRef(id: textID, type: .text)))
+            }
+        }
+        return carried
     }
 
     private func moveSelectedObjectsGeometrically(
@@ -4347,6 +4379,9 @@ struct SchematicCanvasView: View {
             case .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
                 break
             }
+        }
+        for carried in carriedSmashedTexts(in: sheet) where !handledRefs.contains(carried.symbol) {
+            moveText(&sheet.texts, ref: carried.text, by: delta)
         }
     }
 
@@ -4575,6 +4610,9 @@ struct SchematicCanvasView: View {
         var transformedJunctionKeys: Set<String> = [Self.defersJunctionMergesKey]
         defer { mergeJunctionsLeftTogether(by: transformedJunctionKeys, sheet: &sheet) }
         let selectedPowerSymbolAnchorKeys = selectedPowerSymbolAnchorKeys(in: sheet)
+        for carried in carriedSmashedTexts(in: sheet) {
+            mirrorText(&sheet.texts, ref: carried.text, around: center)
+        }
 
         for ref in uniqueSelectedObjectRefs() {
             if editorProfile.isPoolMode, mirrorPoolEditorObject(ref: ref, around: center, sheet: &sheet) {
@@ -4631,6 +4669,11 @@ struct SchematicCanvasView: View {
         var transformedJunctionKeys: Set<String> = [Self.defersJunctionMergesKey]
         defer { mergeJunctionsLeftTogether(by: transformedJunctionKeys, sheet: &sheet) }
         let selectedPowerSymbolAnchorKeys = selectedPowerSymbolAnchorKeys(in: sheet)
+        // A symbol's texts turn about the point it turns about.
+        for carried in carriedSmashedTexts(in: sheet) {
+            guard let center = refOrigin(carried.symbol) else { continue }
+            rotateText(&sheet.texts, ref: carried.text, around: center, by: angleDelta)
+        }
 
         for ref in uniqueSelectedObjectRefs() {
             guard let center = refOrigin(ref) else {
@@ -6630,6 +6673,10 @@ struct SchematicCanvasView: View {
             for index in sheet.symbolTexts.indices where ids.contains(normalizedID(sheet.symbolTexts[index].id)) {
                 sheet.symbolTexts[index].text = newValue
             }
+            // A smashed symbol's are the sheet's, and still store "$VALUE".
+            for index in sheet.texts.indices where ids.contains(normalizedID(sheet.texts[index].id)) {
+                sheet.texts[index].redraw { _ in newValue }
+            }
             return
         }
         // A symbol the loader didn't see: the text that drew the old value.
@@ -6691,6 +6738,7 @@ struct SchematicCanvasView: View {
             where self.symbolID(forGeometryID: sheet.symbolTexts[index].id).map(normalizedID) == normalizedSymbolID {
             sheet.symbolTexts[index].text = sheet.symbolTexts[index].text.replacingOccurrences(of: oldRefdes, with: newRefdes)
         }
+        sheet.redrawSmashedTexts(ofSymbol: symbolID) { $0.replacingOccurrences(of: oldRefdes, with: newRefdes) }
     }
 
     private func reportComponentRefdesDifferences(
@@ -7885,6 +7933,9 @@ struct SchematicCanvasView: View {
         if !editorProfile.isPoolMode, onApplyProjectEdit != nil {
             handlers.setAllUnconnectedPinsNC = { setAllNoConnect(true) }
             handlers.clearAllNCPins = { setAllNoConnect(false) }
+            if selectedObjects.contains(where: { $0.type == .schematicSymbol }) {
+                handlers.toggleSmash = { toggleSmashSelection() }
+            }
         }
         if !editorProfile.isPoolMode, onMoveToOtherSheet != nil {
             handlers.moveToOtherSheet = { moveSelectionToOtherSheet($0) }
@@ -8056,6 +8107,7 @@ struct SchematicCanvasView: View {
                 entries.append(.command(title: "Clear all NC pins", .clearAllNCPins))
             }
         }
+        if let smash = smashEntry(for: ref) { entries.append(smash) }
         if onCopySelection != nil, HorizontalSchematicClipboardEditor.supports(ref) {
             entries.append(.command(title: "Copy", .copySelection))
             if !isReadOnly, onPreparePaste != nil { entries.append(.command(title: "Duplicate", .duplicateSelection)) }
@@ -8073,9 +8125,36 @@ struct SchematicCanvasView: View {
         var entries: [HorizontalTargetItemMenuEntry] = [.select(title: "Select")]
         if canBendNetLine(ref) { entries.append(.command(title: "Add Vertex", .bendNetLine)) }
         if canEditCustomValue(of: ref) { entries.append(.command(title: "Edit Custom Value…", .editCustomValue)) }
+        if let smash = smashEntry(for: ref) { entries.append(smash) }
         if let moveToOtherSheet = moveToOtherSheetEntry(for: ref) { entries.append(moveToOtherSheet) }
         return entries.count > 1 ? entries : []
         #endif
+    }
+
+    /// Smash Text or Unsmash Text for a symbol, as the board offers them for
+    /// a package.
+    private func smashEntry(for ref: HorizontalSelectableRef) -> HorizontalTargetItemMenuEntry? {
+        guard !isReadOnly, !editorProfile.isPoolMode, onApplyProjectEdit != nil, ref.type == .schematicSymbol,
+              let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+            return nil
+        }
+        return .command(title: symbol.smashed ? "Unsmash Text" : "Smash Text", .toggleSmash)
+    }
+
+    /// Horizon's Smash and Unsmash, each selected symbol toggled: a smash
+    /// gives it texts of its own on the sheet, where it drew them, to move
+    /// on their own; an unsmash deletes them, and it draws its own again. A
+    /// symbol smashed with none left (they were lost) unsmashes. It goes
+    /// through `smash` and `unsmash`, so it is one undo step and the sheet
+    /// reloads with the texts the files now hold.
+    private func toggleSmashSelection() {
+        guard !isReadOnly else { return }
+        let symbols = uniqueSelectedObjectRefs()
+            .filter { $0.type == .schematicSymbol }
+            .compactMap { ref in sheet.symbols.first { normalizedID($0.id) == normalizedID(ref.id) } }
+        guard !symbols.isEmpty else { return }
+        let operations: [JSONDictionary] = symbols.map { ["op": $0.smashed ? "unsmash" : "smash", "symbol_instance": $0.id] }
+        applyProjectEdit(operations, actionName: symbols.contains { !$0.smashed } ? "Smash" : "Unsmash")
     }
 
     /// The sheets Move to Other Sheet lists: every other page of this
@@ -9193,6 +9272,7 @@ struct SchematicCanvasView: View {
 
         let previewSheet = schematicMovePreviewSheet(for: moveState)
         var refs = Set(selectedObjects.map(schematicMetalPatchOwnerRef))
+        refs.formUnion(carriedSmashedTexts(in: moveState.originalSheet).map(\.text))
         refs.formUnion(moveState.connectionPlan.affectedRefs)
         refs.formUnion(moveState.connectionMovePlan.affectedRefs)
         let changedNetLineRefs = HorizontalMoveProfiler.measure("patch.changedNetLineRefs") {

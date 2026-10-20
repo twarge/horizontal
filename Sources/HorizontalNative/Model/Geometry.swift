@@ -1412,6 +1412,9 @@ struct HorizontalPlacement: Identifiable, Hashable {
     /// true the pool silk is retained (in `packageTexts`) but hidden so Unsmash
     /// can restore it.
     var smashed: Bool = false
+    /// A smashed schematic symbol's own texts: the ids of the sheet texts
+    /// it owns, which draw its refdes and value and move with it.
+    var smashedTextIDs: [String] = []
     /// `omit_silkscreen`: hides the package's own silkscreen GRAPHICS
     /// (lines/arcs/polygons on silk layers). Set by "Smash silkscreen graphics"
     /// (the graphics move to the board) or toggled directly.

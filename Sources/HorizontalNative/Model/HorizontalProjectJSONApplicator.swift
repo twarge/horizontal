@@ -262,6 +262,8 @@ enum HorizontalProjectJSONApplicator {
             referenceKey: "net_tie"
         )
 
+        let smashedTextsBefore = smashedSymbolTextIDs(in: sheetJSON)
+
         // A schematic's grid is fixed, and neither Horizon nor Horizontal
         // reads one from the file; earlier saves wrote it all the same.
         json.removeValue(forKey: "grid_settings")
@@ -281,17 +283,34 @@ enum HorizontalProjectJSONApplicator {
             project: project,
             archive: &archive
         )
+        // Only the pins of the gates this sheet draws, or drew before the
+        // edit: every sheet carries the whole block's connections, and its
+        // copy of a gate drawn on another sheet is out of date as soon as
+        // that sheet wires it. Writing that copy back put the pins of a net
+        // segment moved on one sheet back on their old net when another
+        // sheet was saved.
+        var drawnGates = sheet.drawnGateKeys
+        for symbol in sheetJSON.dictionaryMap("symbols").values {
+            if let componentID = symbol.string("component"), let gateID = symbol.string("gate") {
+                drawnGates.insert(normalizedID(componentID) + "/" + normalizedID(gateID))
+            }
+        }
         try patchSchematicComponentConnections(
             sheet.componentInfo,
             removedConnections: sheet.removedConnections,
+            gates: drawnGates,
             schematicURL: schematicURL,
             project: project,
             archive: &archive
         )
         patchSchematicDrawingLines(&sheetJSON, lines: sheet.drawingLines, junctions: sheet.junctions)
         patchSchematicDrawingArcs(&sheetJSON, arcs: sheet.drawingArcs, junctions: sheet.junctions)
-        patchTexts(&sheetJSON, key: "texts", texts: sheet.texts)
+        // A smashed symbol's texts are the sheet's, and one the canvas didn't
+        // draw (it reads as nothing) is kept all the same.
+        patchTexts(&sheetJSON, key: "texts", texts: sheet.texts,
+                   keepingAdditional: Set(sheet.symbols.filter(\.smashed).flatMap(\.smashedTextIDs)))
         patchNewTexts(&sheetJSON, key: "texts", texts: sheet.texts)
+        patchSmashedSymbolTexts(&sheetJSON, namedBefore: smashedTextsBefore)
         patchSchematicNetLabels(&sheetJSON, labels: sheet.netLabels, junctions: sheet.junctions)
         patchSchematicBusLabels(&sheetJSON, labels: sheet.busLabels)
         patchSchematicNetTies(&sheetJSON, netTies: sheet.netTies)
@@ -1095,6 +1114,7 @@ enum HorizontalProjectJSONApplicator {
     private static func patchSchematicComponentConnections(
         _ componentInfo: [String: SchematicComponentInfo],
         removedConnections: [String: Set<String>],
+        gates: Set<String>,
         schematicURL: URL,
         project: HorizontalProject,
         archive: inout HorizontalProjectArchive
@@ -1108,6 +1128,11 @@ enum HorizontalProjectJSONApplicator {
         var json = try loadJSON(relativePath: path, fallbackURL: blockURL, from: archive)
         var componentMap = json["components"] as? JSONDictionary ?? [:]
 
+        // "component/gate" for a component's gate/pin path.
+        func isDrawn(_ componentID: String, _ gatePinPath: String) -> Bool {
+            let gateID = gatePinPath.split(separator: "/").first.map(String.init) ?? gatePinPath
+            return gates.contains(normalizedID(componentID) + "/" + normalizedID(gateID))
+        }
         for (componentID, info) in componentInfo {
             guard let componentKey = matchingKey(componentID, in: componentMap),
                   var componentJSON = componentMap[componentKey] as? JSONDictionary else {
@@ -1115,7 +1140,7 @@ enum HorizontalProjectJSONApplicator {
             }
 
             var connections = componentJSON["connections"] as? JSONDictionary ?? [:]
-            for (gatePinPath, state) in info.connections {
+            for (gatePinPath, state) in info.connections where isDrawn(componentID, gatePinPath) {
                 let key = matchingKey(gatePinPath, in: connections) ?? gatePinPath
                 var entry = connections[key] as? JSONDictionary ?? [:]
                 switch state {
@@ -1131,7 +1156,8 @@ enum HorizontalProjectJSONApplicator {
             // `info.connections` only lists what is there, so a pin that left
             // its net is named in `removedConnections`; one connected again
             // since is back in `info.connections` and stays.
-            for gatePinPath in removedConnections[componentID] ?? [] where info.connections[gatePinPath] == nil {
+            for gatePinPath in removedConnections[componentID] ?? []
+                where info.connections[gatePinPath] == nil && isDrawn(componentID, gatePinPath) {
                 if let key = matchingKey(gatePinPath, in: connections) {
                     connections.removeValue(forKey: key)
                 }
@@ -1787,6 +1813,46 @@ enum HorizontalProjectJSONApplicator {
             map[itemKey] = item
         }
         json[key] = map
+    }
+
+    /// The sheet texts the smashed symbols on a sheet name, lowercased.
+    private static func smashedSymbolTextIDs(in sheetJSON: JSONDictionary) -> Set<String> {
+        Set(sheetJSON.dictionaryMap("symbols").values
+            .filter { $0.bool("smashed") == true }
+            .flatMap { ($0["texts"] as? [String] ?? []).map(normalizedID) })
+    }
+
+    /// Each smashed symbol names only the sheet texts the sheet still has,
+    /// in its order, as Horizon prunes the list when it loads; and a text a
+    /// smash made goes with the symbol that named it, when the edit took
+    /// the symbol away or the text from it.
+    private static func patchSmashedSymbolTexts(_ sheetJSON: inout JSONDictionary, namedBefore: Set<String>) {
+        guard var symbols = sheetJSON["symbols"] as? JSONDictionary else {
+            return
+        }
+        var texts = sheetJSON["texts"] as? JSONDictionary ?? [:]
+        let textKeys = Set(texts.keys.map(normalizedID))
+        for (key, value) in symbols {
+            guard var symbol = value as? JSONDictionary, symbol.bool("smashed") == true else {
+                continue
+            }
+            let listed = symbol["texts"] as? [String] ?? []
+            let kept = listed.filter { textKeys.contains(normalizedID($0)) }
+            if kept != listed {
+                symbol["texts"] = kept
+                symbols[key] = symbol
+            }
+        }
+        sheetJSON["symbols"] = symbols
+        let namedAfter = smashedSymbolTextIDs(in: sheetJSON)
+        let orphaned = namedBefore.subtracting(namedAfter)
+        guard !orphaned.isEmpty else {
+            return
+        }
+        texts = texts.filter { key, value in
+            !(orphaned.contains(normalizedID(key)) && (value as? JSONDictionary)?.bool("from_smash") == true)
+        }
+        sheetJSON["texts"] = texts
     }
 
     /// Board-level text entries for the "texts" map: standalone board texts plus

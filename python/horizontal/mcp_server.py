@@ -1048,7 +1048,8 @@ def list_board_texts(path: str | None = None, layer: int | None = None,
                      component: Annotated[str | None, Field(description="Only the texts smashed out of this part's package, by refdes or id; implies smashed.")] = None) -> list[dict[str, Any]]:
     """Free text on the board layers, with the ids remove_board_text takes and place_board_text takes to move or
     change one. Texts smashed out of packages are left out unless smashed, or a text or component search, asks for them: each is marked from_smash and belongs to the package named in its package field, so it moves
-    and dies with the component rather than being edited on its own; refdes names that part. A text that draws
+    and dies with the component, while place_board_text moves it on its own and unsmash takes it away; refdes names
+    that part. A text that draws
     something other than what it stores ("$RD", "$project_title") says what in drawn."""
     return _resolve(path).board_texts(layer=layer, smashed=smashed, text=text, component=component)
 
@@ -1158,8 +1159,8 @@ def list_texts(path: str | None = None, sheet: int | None = None, sheet_id: str 
     """Free text on the schematic sheets, and where each sits, with the ids remove_text takes and place_text takes to
     move or change one.
     Texts smashed out of symbols are left out unless smashed, or a text or component search, asks for them: each is marked from_smash and belongs to the symbol
-    named in its symbol field, so it moves and dies with the component rather than being edited on its own; refdes
-    names that part. A text that draws something other than what it stores says what in drawn."""
+    named in its symbol field, so it moves and dies with the component, while place_text moves it on its own and
+    unsmash takes it away; refdes names that part. A text that draws something other than what it stores says what in drawn."""
     return _resolve(path).texts(sheet=sheet, sheet_id=sheet_id, name=name, block_id=block_id, smashed=smashed, text=text,
                                 component=component)
 
@@ -1393,7 +1394,9 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
 
     Texts: place_text and place_board_text also change a text that is already there. Name it by the id list_texts
     or list_board_texts gives, and pass only what changes: x_mm, y_mm or both move it, and it keeps its uuid, its
-    layer and everything else. A text smashed out of a symbol or package moves with its part instead. A text starts
+    layer and everything else. A text smashed out of a symbol or package is placed the same way, and stays its part's:
+    smash and unsmash are Horizon's Smash and Unsmash, which give a symbol (with board, a package) texts of its own on
+    the sheet (board) to move, and take them away. A text starts
     at x_mm and runs right — origin places it vertically only — and place_text's reply gives the box it covers
     (extent_mm) and what it overlaps. place_net_label and place_bus_label with the id of a label change it in place
     the same way: orientation, size, off-sheet refs, place.
