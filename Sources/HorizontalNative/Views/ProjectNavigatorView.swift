@@ -108,7 +108,7 @@ struct ProjectNavigatorView: View {
 
                         if blockMatches || !isSearching {
                             NavigatorRow(
-                                icon: schematic.block.isTop ? "target" : "square.stack.3d.up",
+                                icon: schematic.block.isTop ? "target" : .block,
                                 title: navigatorTitle(for: schematic.block),
                                 detail: blockDetail(for: schematic)
                             )
@@ -744,8 +744,18 @@ struct NavigatorSelectionSummaryView: View {
     }
 }
 
+/// A navigator row's icon: a symbol by name, or the drawn block icon.
+enum NavigatorIcon: ExpressibleByStringLiteral {
+    case system(String)
+    case block
+
+    init(stringLiteral name: String) {
+        self = .system(name)
+    }
+}
+
 struct NavigatorRow: View {
-    var icon: String
+    var icon: NavigatorIcon
     var title: String
     var detail: String?
     /// A sheet that draws the highlighted net.
@@ -775,8 +785,15 @@ struct NavigatorRow: View {
                 }
             }
         } icon: {
-            Image(systemName: icon)
-                .foregroundStyle(marksHighlightedNet ? AnyShapeStyle(highlightColor) : AnyShapeStyle(.secondary))
+            Group {
+                switch icon {
+                case .system(let name):
+                    Image(systemName: name)
+                case .block:
+                    HorizontalBlockIconView()
+                }
+            }
+            .foregroundStyle(marksHighlightedNet ? AnyShapeStyle(highlightColor) : AnyShapeStyle(.secondary))
         }
         .help(marksHighlightedNet ? "Contains the highlighted net" : "")
         .accessibilityValue(marksHighlightedNet ? "Contains the highlighted net" : "")
