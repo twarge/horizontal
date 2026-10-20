@@ -361,6 +361,11 @@ struct HorizontalSchematic {
         var pinPositions: [String: HorizontalPoint] = [:]
         /// By symbol instance, the texts that draw its `$VALUE`.
         var valueTextIDs: [String: [String]] = [:]
+        /// The sheet texts smashed symbols own (`from_smash`): drawn, moved
+        /// and edited as the sheet's own texts, and carried with their symbol.
+        var smashedTexts: [HorizontalText] = []
+        /// By symbol instance, the ids of the sheet texts a smashed one owns.
+        var smashedTextIDs: [String: [String]] = [:]
 
         static let empty = SchematicSymbolArtwork()
 
@@ -403,12 +408,19 @@ struct HorizontalSchematic {
             noPopulateMarks.append(contentsOf: other.noPopulateMarks)
             pinPositions.merge(other.pinPositions) { current, _ in current }
             valueTextIDs.merge(other.valueTextIDs) { current, _ in current }
+            // Two symbols naming one text (a smashed symbol copied with its
+            // list) draw it once.
+            let known = Set(smashedTexts.map { $0.id.lowercased() })
+            smashedTexts.append(contentsOf: other.smashedTexts.filter { !known.contains($0.id.lowercased()) })
+            smashedTextIDs.merge(other.smashedTextIDs) { current, _ in current }
         }
 
-        /// Tells each placement which of its texts draw `$VALUE`.
+        /// Tells each placement which of its texts draw `$VALUE`, and which
+        /// sheet texts a smashed one owns.
         func attachValueTextIDs(to placements: inout [HorizontalPlacement]) {
             for index in placements.indices {
                 placements[index].valueTextIDs = valueTextIDs[placements[index].id] ?? []
+                placements[index].smashedTextIDs = smashedTextIDs[placements[index].id] ?? []
             }
         }
     }
@@ -918,7 +930,7 @@ struct HorizontalSchematic {
                 )
             }
             let texts = BoardLoadTimer.measure("schematic sheets: texts") {
-                parseTexts(from: sheetTexts, excluding: symbolTextIDs(from: symbolMap))
+                parseTexts(from: sheetTexts, excluding: symbolTextIDs(from: symbolMap)) + artwork.smashedTexts
             }
             let netLabels = BoardLoadTimer.measure("schematic sheets: net labels") {
                 parseNetLabels(
@@ -1127,7 +1139,8 @@ struct HorizontalSchematic {
                 customValue: item.string("custom_value"),
                 gateID: item.string("gate").map(normalizedID),
                 symbolID: item.string("symbol").map(normalizedID),
-                pinDisplayMode: item.string("pin_display_mode") ?? HorizontalSymbolPinDisplayMode.selectedOnly.rawValue
+                pinDisplayMode: item.string("pin_display_mode") ?? HorizontalSymbolPinDisplayMode.selectedOnly.rawValue,
+                smashed: item.bool("smashed") ?? false
             )
         }
     }
@@ -1296,12 +1309,17 @@ struct HorizontalSchematic {
         let valueTextIDs = symbolItem.bool("smashed") == true
             ? symbolTextIDs(from: symbolItem).filter { sheetTextsByID[normalizedID($0)]?.string("text") == "$VALUE" }
             : symbolResource.texts.filter { $0.value.string("text") == "$VALUE" }.keys.sorted().map { "\(symbolInstanceID)/text/\($0)" }
-        let symbolTexts = symbolItem.bool("smashed") == true
+        // A smashed symbol draws none of its own texts: the sheet texts it
+        // owns draw them, as the sheet's.
+        let smashedTexts = symbolItem.bool("smashed") == true
             ? parseSmashedSymbolTexts(
                 from: symbolItem,
                 sheetTextsByID: sheetTextsByID,
                 component: component
             )
+            : []
+        let symbolTexts = symbolItem.bool("smashed") == true
+            ? []
             : parseSymbolTexts(
                 from: symbolResource.texts,
                 textPlacements: symbolResource.textPlacements,
@@ -1339,7 +1357,12 @@ struct HorizontalSchematic {
                 )
                 : [],
             pinPositions: pinArtwork.pinPositions,
-            valueTextIDs: [symbolInstanceID: valueTextIDs]
+            valueTextIDs: [symbolInstanceID: valueTextIDs],
+            smashedTexts: smashedTexts,
+            // Every one the sheet has, drawn or not, so a save keeps it.
+            smashedTextIDs: symbolItem.bool("smashed") == true
+                ? [symbolInstanceID: symbolTextIDs(from: symbolItem).filter { sheetTextsByID[normalizedID($0)] != nil }]
+                : [:]
         )
     }
 
@@ -2285,16 +2308,48 @@ struct HorizontalSchematic {
         component: SchematicComponentInfo?
     ) -> [HorizontalText] {
         symbolTextIDs(from: symbolItem).compactMap { textID in
-            guard let item = sheetTextsByID[normalizedID(textID)] else {
+            // One the sheet no longer has draws nothing; Horizon drops it
+            // from the symbol's list as it loads.
+            guard let item = sheetTextsByID[normalizedID(textID)],
+                  var text = parseAbsoluteText(
+                    id: textID,
+                    item: item,
+                    component: component,
+                    customValue: symbolItem.string("custom_value"),
+                    keepingEmpty: true
+                  ) else {
                 return nil
             }
+            text.fromSmash = true
+            // It stores "$REFDES" and draws the refdes; a save keeps "$REFDES".
+            if let stored = item.string("text"), stored != text.text {
+                text.placeholder = HorizontalTextPlaceholder(stored: stored, drawn: text.text)
+            }
+            return text
+        }
+    }
 
-            return parseAbsoluteText(
-                id: textID,
-                item: item,
-                component: component,
-                customValue: symbolItem.string("custom_value")
-            )
+    /// Horizon's `Schematic::smash_symbol` for a symbol as a sheet stores it:
+    /// each of the pool symbol's texts, in the pool's order, as a sheet text
+    /// where the symbol draws it — at the placement the symbol gives it for
+    /// its orientation, when it has one.
+    static func smashedTexts(poolSymbol: JSONDictionary, placement: JSONDictionary?) -> [JSONDictionary] {
+        guard let symbolTransform = HorizontalPlacementTransform(json: placement) else {
+            return []
+        }
+        let resource = schematicSymbolResource(from: poolSymbol)
+        return resource.texts.sorted { $0.key.lowercased() < $1.key.lowercased() }.compactMap { id, item in
+            guard let defaultTransform = HorizontalPlacementTransform(json: item.dictionary("placement")) else {
+                return nil
+            }
+            let textTransform = symbolTextPlacement(
+                textID: id,
+                textPlacements: resource.textPlacements,
+                symbolTransform: symbolTransform,
+                symbolVersion: resource.version
+            ) ?? defaultTransform
+            let drawn = symbolTransform.accumulatedText(with: textTransform)
+            return HorizontalSmash.text(from: item, placement: HorizontalSmash.storedPlacement(drawing: drawn), layer: item.int("layer") ?? 0)
         }
     }
 
@@ -2464,7 +2519,8 @@ struct HorizontalSchematic {
         id: String,
         item: JSONDictionary,
         component: SchematicComponentInfo?,
-        customValue: String? = nil
+        customValue: String? = nil,
+        keepingEmpty: Bool = false
     ) -> HorizontalText? {
         guard let placement = HorizontalPlacementTransform(json: item.dictionary("placement")),
               let text = item.string("text") else {
@@ -2472,7 +2528,7 @@ struct HorizontalSchematic {
         }
 
         let substitutedText = substituteSymbolText(text, component: component, customValue: customValue)
-        guard !substitutedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard keepingEmpty || !substitutedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
 
@@ -4751,6 +4807,68 @@ extension HorizontalSchematicSheet {
             }
             rebakePinConnector(symbolID: parts[0], pinID: parts[1])
         }
+    }
+
+    /// The gates this sheet draws, as "component/gate", lowercased: the
+    /// pins an edit on this sheet can wire, and so the only connections in
+    /// its copy of the block's components it can vouch for.
+    var drawnGateKeys: Set<String> {
+        Set(symbols.compactMap { symbol in
+            guard let componentID = symbol.componentID, let gateID = symbol.gateID else {
+                return nil
+            }
+            return HorizontalSchematic.normalizedID(componentID) + "/" + HorizontalSchematic.normalizedID(gateID)
+        })
+    }
+
+    /// Takes `edited`'s connections for `gates` into this sheet's copy of
+    /// the block's components. Every sheet carries all of them, and only the
+    /// sheet a gate is drawn on wires its pins, so after an edit there the
+    /// other sheets' copies of those gates are out of date until this runs.
+    /// A gate this sheet draws itself is left alone.
+    mutating func adoptConnections(of gates: Set<String>, from edited: HorizontalSchematicSheet) {
+        var gatesByComponent = [String: Set<String>]()
+        for key in gates.subtracting(drawnGateKeys) {
+            let parts = key.split(separator: "/", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { continue }
+            gatesByComponent[parts[0], default: []].insert(parts[1])
+        }
+        func gate(of path: String) -> String {
+            HorizontalSchematic.normalizedID(path.split(separator: "/").first.map(String.init) ?? path)
+        }
+        for (componentID, gateIDs) in gatesByComponent {
+            guard let info = edited.componentInfo[componentID] else { continue }
+            guard var mine = componentInfo[componentID] else {
+                componentInfo[componentID] = info
+                continue
+            }
+            mine.connections = mine.connections.filter { !gateIDs.contains(gate(of: $0.key)) }
+            for (path, state) in info.connections where gateIDs.contains(gate(of: path)) {
+                mine.connections[path] = state
+            }
+            componentInfo[componentID] = mine
+        }
+    }
+}
+
+extension HorizontalSchematic {
+    /// `sheet` in place of the sheet with its id, with the grid every sheet
+    /// shares, and the other sheets' copies of the gates it draws (or drew)
+    /// brought up to date, so none of them holds a connection the edit
+    /// changed.
+    mutating func replaceSheet(_ sheet: HorizontalSchematicSheet) {
+        let previous = sheets.first { $0.id == sheet.id }
+        let gates = sheet.drawnGateKeys.union(previous?.drawnGateKeys ?? [])
+        for index in sheets.indices {
+            sheets[index].grid = sheet.grid
+            if sheets[index].id != sheet.id {
+                sheets[index].adoptConnections(of: gates, from: sheet)
+            }
+        }
+        guard let index = sheets.firstIndex(where: { $0.id == sheet.id }) else {
+            return
+        }
+        sheets[index] = sheet
     }
 }
 

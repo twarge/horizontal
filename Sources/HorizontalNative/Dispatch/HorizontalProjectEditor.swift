@@ -41,6 +41,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case terminatePin = "terminate_pin"
     case setSymbolDisplay = "set_symbol_display"
     case setCustomValue = "set_custom_value"
+    case smash = "smash"
+    case unsmash = "unsmash"
     case setNoConnect = "set_no_connect"
     case setPinAlternate = "set_pin_alternate"
     case remapPart = "remap_part"
@@ -125,6 +127,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .moveSymbols: "Move symbols by an offset, or onto another sheet, with the wiring that belongs only to them: the junctions of the stubs and islands that serve no other part, and the wires, net labels and power symbols on those junctions. A wire to wiring that stays stretches to it; moving to another sheet cuts it instead, and the reply names each cut end with its net, for a label there. place_symbol moves one symbol alone."
         case .setSymbolDisplay: "Change how a drawn symbol shows its pins: which pin names (pin_display_mode) and whether a multi-pad pin lists every pad number (display_all_pads). The apply_ops reply gives warnings when custom_only hides alternates the symbol's pins have chosen."
         case .setCustomValue: "Give a drawn symbol a custom value: text that its $VALUE text draws instead of the value, with ${value}, ${mpn}, ${mfr}, ${desc}, ${pkg} and ${p:<parametric column>} filled in from the component and its part, as Horizon's Edit Custom Value does — \"${value}\\n${mpn}\" shows the value over the MPN. \"\" or null clears it. get_component gives each symbol's custom_value and drawn_value."
+        case .smash: "Horizon's Smash: a drawn symbol's texts — its refdes and value — become texts of its sheet that it owns, where it drew them, so place_text moves each on its own while they go on drawing what the component says. With board, the same for the silkscreen texts of its package on the board, which place_board_text moves. A symbol smashed already keeps its texts, and one whose texts are all gone is smashed afresh. The reply names the texts made."
+        case .unsmash: "Horizon's Unsmash: delete the texts a smash gave a component's symbols (with board, its package), so they draw their own again. A symbol smashed with its texts gone, which draws no refdes or value, is put right this way too."
         case .removeSymbol: "Take a component's gate off its sheet, with the net lines that ended on it and the wiring left serving nothing — what find_dangling would call new debris — unless keep_wiring. The component and its connections stay."
         case .drawNetLine: "Draw a wire between pins or junctions on one logical net. Does not change block connectivity. A junction with no net yet takes the wire's."
         case .placeJunction: "Create a schematic junction on a net, reusing a compatible or net-less junction at the same point. An id that names a junction already on a sheet moves it, and the wires, labels and power symbols on it go with it."
@@ -136,7 +140,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .setNoConnect: "Mark component pins as deliberately not connected, or clear the mark. A pin on a net is refused unless disconnect is passed. all does it for every free pin of a gate or the whole component, as Horizon's Set all unconnected pins NC and Clear all NC pins do."
         case .setPinAlternate: "Choose the function a pin is drawn as — an alternate name its unit offers, such as SPI1_SCK on an MCU port pin — or a custom name, or go back to the primary name. get_component lists each pin's alternates and what is selected. The apply_ops reply gives warnings when a placed symbol will not draw the choice (one showing pins custom_only)."
         case .remapPart: "Replace a component's part, preserving connections, symbols and wires atomically. Pins are matched by name unless an explicit gate/pin identity map is given."
-        case .placeText: "Write a text on a schematic sheet, or change one that is already there: move it, turn it, rewrite it. id names the text to change, from list_texts; give only what changes. x_mm, y_mm or both move it, and it keeps its uuid, layer and the rest. An id that names no text makes one under it, so a batch can name a text and edit or remove it later. Free text only: a symbol's own texts belong to the symbol. The text starts at x_mm and runs right (origin is vertical alone); the reply gives the box it covers, extent_mm, and the symbols, labels, power symbols and texts it overlaps."
+        case .placeText: "Write a text on a schematic sheet, or change one that is already there: move it, turn it, rewrite it. id names the text to change, from list_texts; give only what changes. x_mm, y_mm or both move it, and it keeps its uuid, layer and the rest. An id that names no text makes one under it, so a batch can name a text and edit or remove it later. A smashed symbol's texts (list_texts with smashed) are changed the same way, and go on drawing its refdes and value. The text starts at x_mm and runs right (origin is vertical alone); the reply gives the box it covers, extent_mm, and the symbols, labels, power symbols and texts it overlaps."
         case .removeText: "Remove a text from a schematic sheet."
         case .placePowerSymbol: "Draw a power symbol on a sheet: the ground or supply marker that says a point is on that net. Marks the net as a power net, since that is what one means."
         case .removePowerSymbol: "Remove a power symbol from its sheet."
@@ -294,6 +298,10 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "symbol_instance": "One symbol instance id instead of component and gate (optional).",
                     "pin_display_mode": "selected_only, custom_only, both or all (optional).",
                     "display_all_pads": "List every pad number on a multi-pad pin (optional)."]
+        case .smash, .unsmash:
+            return ["component": component, "gate": "Gate name, suffix or id; omitted, every drawn gate of the component.",
+                    "symbol_instance": "One symbol instance id instead of component and gate (optional).",
+                    "board": "The component's package on the board instead of its symbols (default false)."]
         case .setCustomValue:
             return ["component": component, "gate": "Gate name, suffix or id; omitted, every drawn gate of the component.",
                     "symbol_instance": "One symbol instance id instead of component and gate (optional).",
@@ -584,7 +592,7 @@ struct HorizontalEditOperation {
                 try HorizontalDispatchValidation.number(value, key: key)
             } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs", "exposed_copper_only",
                        "force", "cascade", "swap", "remove_routing", "display_all_pads", "no_connect", "disconnect",
-                       "unanchored", "stubs", "use_primary_name", "all", "keep_wiring"].contains(key) {
+                       "unanchored", "stubs", "use_primary_name", "all", "keep_wiring", "board"].contains(key) {
                 try HorizontalDispatchValidation.boolean(value, key: key)
             } else if value is NSNull, ["part", "group", "tag"].contains(key) {
                 continue
@@ -931,6 +939,8 @@ final class HorizontalProjectEditor {
             change.merge(try setSymbolDisplay(params)) { _, new in new }
         case .setCustomValue:
             change.merge(try setCustomValue(params)) { _, new in new }
+        case .smash, .unsmash:
+            change.merge(try smash(params, smashing: operation.kind == .smash)) { _, new in new }
         case .setNoConnect:
             change.merge(try setNoConnect(params)) { _, new in new }
         case .setPinAlternate:
@@ -2292,6 +2302,136 @@ final class HorizontalProjectEditor {
             }
         }
         return ["symbol_instances": targets.map(\.id).sorted(), "custom_value": value.map { $0 as Any } ?? NSNull()]
+    }
+
+    /// Horizon's Smash and Unsmash, on the symbols named or with `board` on
+    /// the component's package. Smashing makes sheet (board) texts the symbol
+    /// (package) owns, from the pool's, where it drew them; unsmashing
+    /// deletes them. Either leaves a symbol naming only texts its sheet has,
+    /// as Horizon prunes the list when it loads.
+    private func smash(_ params: JSONDictionary, smashing: Bool) throws -> JSONDictionary {
+        let op = smashing ? "smash" : "unsmash"
+        if params.bool("board") == true {
+            guard params["symbol_instance"] == nil, params["gate"] == nil else {
+                throw HorizontalDispatchError.invalidParams("\(op) with board takes a component: its package has no gates or symbol instances.")
+            }
+            return try smashPackage(componentID(params), smashing: smashing)
+        }
+        guard params["symbol_instance"] == nil || (params["component"] == nil && params["gate"] == nil) else {
+            throw HorizontalDispatchError.invalidParams("Name a symbol_instance, or a component and optionally a gate, not both.")
+        }
+        var changed = [String](), unchanged = [String](), made = [String](), removed = [String]()
+        for target in try symbolTargets(params) {
+            try updateSheet(target.sheet) { sheet in
+                var symbols = sheet.dictionaryMap("symbols")
+                guard var item = symbols[target.id] else { return }
+                var texts = sheet["texts"] as? JSONDictionary ?? [:]
+                let listed = item["texts"] as? [String] ?? []
+                let keys = Dictionary(texts.keys.map { ($0.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+                let present = listed.compactMap { keys[$0.lowercased()] }
+                let isSmashed = item.bool("smashed") == true
+                if smashing, isSmashed, !present.isEmpty {
+                    guard present != listed else {
+                        unchanged.append(target.id)
+                        return
+                    }
+                    item["texts"] = present
+                } else if smashing {
+                    guard let symbolID = item.string("symbol"), let poolSymbol = pool.symbol(symbolID) else {
+                        throw HorizontalDispatchError.notFound(
+                            "The project pool has no symbol \(item.string("symbol") ?? "") for \(target.id) to take its texts from.")
+                    }
+                    var ids = [String]()
+                    for text in HorizontalSchematic.smashedTexts(poolSymbol: poolSymbol, placement: item.dictionary("placement")) {
+                        let id = UUID().uuidString.lowercased()
+                        texts[id] = text
+                        ids.append(id)
+                    }
+                    item["smashed"] = true
+                    item["texts"] = ids
+                    made += ids
+                } else {
+                    guard isSmashed || !listed.isEmpty else {
+                        unchanged.append(target.id)
+                        return
+                    }
+                    for key in present where (texts[key] as? JSONDictionary)?.bool("from_smash") == true {
+                        texts.removeValue(forKey: key)
+                        removed.append(key)
+                    }
+                    item["smashed"] = false
+                    item["texts"] = [String]()
+                }
+                changed.append(target.id)
+                symbols[target.id] = item
+                sheet["symbols"] = symbols
+                sheet["texts"] = texts
+            }
+        }
+        var result: JSONDictionary = ["symbol_instances": changed.sorted()]
+        if !unchanged.isEmpty { result["unchanged"] = unchanged.sorted() }
+        if smashing { result["texts"] = made } else { result["texts_removed"] = removed.sorted() }
+        return result
+    }
+
+    /// Smash and Unsmash on a component's package: its silkscreen texts, as
+    /// Horizon's `Board::smash_package` takes them.
+    private func smashPackage(_ componentID: String, smashing: Bool) throws -> JSONDictionary {
+        var result: JSONDictionary = [:]
+        try updateBoard { board in
+            var packages = board["packages"] as? JSONDictionary ?? [:]
+            guard let key = packages.keys.sorted().first(where: {
+                (packages[$0] as? JSONDictionary)?.string("component")?.lowercased() == componentID
+            }), var package = packages[key] as? JSONDictionary else {
+                throw HorizontalDispatchError.notFound("\(componentID) has no package on the board; place_component places it.")
+            }
+            var texts = board["texts"] as? JSONDictionary ?? [:]
+            let listed = package["texts"] as? [String] ?? []
+            let keys = Dictionary(texts.keys.map { ($0.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+            let present = listed.compactMap { keys[$0.lowercased()] }
+            let isSmashed = package.bool("smashed") == true
+            result["package"] = key
+            if smashing, isSmashed, !present.isEmpty {
+                guard present != listed else {
+                    result["unchanged"] = true
+                    return
+                }
+                package["texts"] = present
+                result["texts"] = [String]()
+            } else if smashing {
+                let partID = components()[componentID]?.string("part")
+                guard let poolPackage = package.string("alternate_package").flatMap({ pool.package($0) })
+                    ?? partID.flatMap({ pool.package(forPart: $0) }) else {
+                    throw HorizontalDispatchError.notFound("The project pool has no package for \(componentID) to take its texts from.")
+                }
+                var ids = [String]()
+                for text in HorizontalSmash.boardTexts(package: poolPackage, boardPackage: package, nInnerLayers: board.int("n_inner_layers") ?? 0) {
+                    let id = UUID().uuidString.lowercased()
+                    texts[id] = text
+                    ids.append(id)
+                }
+                package["smashed"] = true
+                package["texts"] = ids
+                result["texts"] = ids
+            } else {
+                guard isSmashed || !listed.isEmpty else {
+                    result["unchanged"] = true
+                    return
+                }
+                var removed = [String]()
+                for key in present where (texts[key] as? JSONDictionary)?.bool("from_smash") == true {
+                    texts.removeValue(forKey: key)
+                    removed.append(key)
+                }
+                package["smashed"] = false
+                package["texts"] = [String]()
+                result["texts_removed"] = removed.sorted()
+            }
+            packages[key] = package
+            board["packages"] = packages
+            board["texts"] = texts
+        }
+        return result
     }
 
     /// Moves symbols with what belongs only to them. A junction belongs to
@@ -3683,13 +3823,8 @@ final class HorizontalProjectEditor {
                 )
             }
         }
-        // A text a symbol carries is the symbol's, extracted by Horizon's
-        // Smash; it moves and dies with the symbol rather than on its own.
-        if let existing, existing.json.bool("from_smash") == true {
-            throw HorizontalDispatchError.invalidParams(
-                "\(existing.id) is a symbol's own text, not free text on the sheet. Change the component instead."
-            )
-        }
+        // A text a smash gave a symbol is the sheet's, to place as any other;
+        // it stays the symbol's, and goes on drawing its refdes or value.
         let targetSheet: String
         if params["sheet"] == nil, let existing {
             targetSheet = existing.sheet
@@ -3871,7 +4006,7 @@ final class HorizontalProjectEditor {
         }
         guard found.json.bool("from_smash") != true else {
             throw HorizontalDispatchError.invalidParams(
-                "\(found.id) is a symbol's own text; removing the symbol is what removes it."
+                "\(found.id) is a symbol's own text, from a smash; unsmash removes it, and removing the symbol does too."
             )
         }
         // A text a symbol references would leave a dangling id behind.
@@ -4566,13 +4701,8 @@ final class HorizontalProjectEditor {
                 )
             }
         }
-        // A text a package carries was extracted from it by Smash; it moves and
-        // dies with the package rather than on its own.
-        if let existing, existing.json.bool("from_smash") == true {
-            throw HorizontalDispatchError.invalidParams(
-                "\(existing.id) is a package's own text, not free text on the board. Change the component instead."
-            )
-        }
+        // A text a smash gave a package is the board's, to place as any
+        // other; it stays the package's.
         var item = existing?.json ?? ["from_smash": false, "origin": "center", "font": "simplex",
                                       "width": 0, "size": 1_500_000]
         if let text = params.string("text") {

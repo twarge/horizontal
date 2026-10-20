@@ -334,6 +334,11 @@ enum HorizontalSchematicWarnings {
         for symbol in sheet.symbols {
             if let componentID = symbol.componentID, let refdes = sheet.componentInfo[componentID]?.refdes,
                duplicateRefdes.contains(refdes) { warn(symbol.position, "Duplicate refdes \(refdes)", title: "Duplicate refdes", component: componentID) }
+            // Not one of Horizon's: smashed with no texts left, it draws
+            // neither its refdes nor its value. Unsmash puts them back.
+            if symbol.smashed, symbol.smashedTextIDs.isEmpty {
+                warn(symbol.position, "Smashed symbol has no texts", component: symbol.componentID)
+            }
         }
         return found
     }

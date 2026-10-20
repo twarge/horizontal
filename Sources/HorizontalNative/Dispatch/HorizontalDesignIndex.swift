@@ -599,6 +599,7 @@ final class HorizontalDispatchPoolIndex {
     private var symbolsByUnit: [String: [String]] = [:]
     private var symbolPins: [String: Set<String>] = [:]
     private var symbolPinGeometry: [String: [String: SymbolPinGeometry]] = [:]
+    private var symbolJSONs: [String: JSONDictionary] = [:]
     private var parts: [String: JSONDictionary] = [:]
     private var packages: [String: JSONDictionary] = [:]
     private var padstacks: [String: JSONDictionary] = [:]
@@ -664,6 +665,7 @@ final class HorizontalDispatchPoolIndex {
                 continue
             }
             symbolsByUnit[unitID, default: []].append(uuid)
+            symbolJSONs[uuid] = json
             symbolPins[uuid] = Set(json.dictionaryMap("pins").keys.map { $0.lowercased() })
             for (pinID, pin) in json.dictionaryMap("pins") {
                 guard let position = pin["position"] as? [Any], position.count == 2,
@@ -676,6 +678,20 @@ final class HorizontalDispatchPoolIndex {
         for unitID in symbolsByUnit.keys {
             symbolsByUnit[unitID]?.sort()
         }
+    }
+
+    /// A pool symbol's own JSON: what Smash takes its texts from.
+    func symbol(_ id: String) -> JSONDictionary? {
+        symbolJSONs[id.lowercased()]
+    }
+
+    /// The package a part draws on the board, through its base.
+    func package(forPart partID: String) -> JSONDictionary? {
+        resolvedPart(partID)?.string("package").flatMap { packages[$0.lowercased()] }
+    }
+
+    func package(_ id: String) -> JSONDictionary? {
+        packages[id.lowercased()]
     }
 
     func symbolPins(_ symbol: String) -> [String: SymbolPinGeometry] {

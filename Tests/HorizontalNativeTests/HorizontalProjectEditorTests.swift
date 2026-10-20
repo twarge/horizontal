@@ -511,8 +511,10 @@ final class HorizontalProjectEditorTests: XCTestCase {
     }
 
     /// A text Horizon extracted from a symbol belongs to that symbol. It is
-    /// listed, so a caller can see it, but it is not free to edit or delete.
-    func testSymbolTextsAreListedButNotFreeToEdit() throws {
+    /// listed, so a caller can see it, and placed like any other text, which
+    /// is what smashing is for; it stays the symbol's, and is not deleted on
+    /// its own.
+    func testSymbolTextsAreListedAndPlacedButNotRemovedOnTheirOwn() throws {
         _ = try apply([
             ["op": "ensure_component", "refdes": "R1", "part": partID],
             ["op": "place_symbol", "component": "R1", "x_mm": 10, "y_mm": 10]
@@ -532,8 +534,11 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual(listed["from_smash"] as? Bool, true)
         XCTAssertEqual(listed["symbol"] as? String, symbolID)
 
-        let edit = try call("apply", ["ops": [["op": "place_text", "id": placedID, "text": "R99"]]])
-        XCTAssertEqual((edit["error"] as? [String: Any])?["code"] as? Int, -32602)
+        _ = try apply([["op": "place_text", "id": placedID, "x_mm": 15]])
+        let moved = try XCTUnwrap(try texts(["smashed": true]).first { $0["id"] as? String == placedID })
+        XCTAssertEqual(moved["x_mm"] as? Double, 15)
+        XCTAssertEqual(moved["from_smash"] as? Bool, true, "still the symbol's")
+        XCTAssertEqual(moved["symbol"] as? String, symbolID)
         let remove = try call("apply", ["ops": [["op": "remove_text", "id": placedID]]])
         XCTAssertEqual((remove["error"] as? [String: Any])?["code"] as? Int, -32602)
     }
