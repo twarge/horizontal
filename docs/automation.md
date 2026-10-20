@@ -197,7 +197,9 @@ as sent would be refused again.
 | `set_sheet_index` | Move a sheet to a page number, shifting the pages between; `swap` exchanges it with the page there instead. Page numbers change as a batch adds or moves sheets, so refer to sheets by name or uuid in such a batch |
 | `place_polygon`, `remove_polygon` | A closed polygon on a board layer. Layer 100 is the outline — the shape the board is cut to, and a board without one has no shape however complete it otherwise looks |
 | `place_plane`, `remove_plane` | A copper pour: a polygon on a copper layer, filled with one net. Defining it does not fill it; `pour_planes` does, and drops fill that reaches nothing on its net |
-| `add_block_instance`, `remove_block_instance`, `connect_block_port` | Using one block inside another, and wiring its ports to nets here |
+| `add_block`, `rename_block`, `remove_block` | Blocks themselves, as Horizon's Add Block makes them: files in `blocks/<uuid>/`, one empty sheet, the template symbol. A block still used, or the top one, isn't removed |
+| `set_net_port`, `place_block_port`, `remove_block_port` | A sub-block's ports: a net made one (with its direction) or no longer one, and drawn on the block's symbol, keyed by UUID5 of its net as Horizon keys it |
+| `add_block_instance`, `remove_block_instance`, `set_block_instance`, `connect_block_port`, `disconnect_block_port` | Using one block inside another, naming the instance, and wiring its ports to nets here — or marking one not connected with `nc` |
 | `place_block_symbol`, `remove_block_symbol` | Drawing a block instance on a sheet, with the symbol that block defines for itself |
 | `set_stackup` | How many inner copper layers the board has, and the copper and dielectric thicknesses |
 | `add_rule`, `set_rule`, `remove_rule` | Board design rules. A rule of a kind gets the defaults the app's own rules editor would give it, with `fields` merged in, and is ordered after its kind's rules; `set_rule` merges fields rather than replacing, an object key by key, and every write is refused unless the app's validator still calls the rules valid — a via rule needs a padstack. A change to the via rules gives the vias they shape the padstack and parameters of the rule that now matches |
@@ -284,14 +286,16 @@ case the change says `width_from: "track_width rule"`. A board with no such
 rule insists on an explicit width rather than inventing a plausible one.
 
 On the schematic the ops cover components, wires, free text, net labels, power
-symbols, buses with their labels and rippers, net ties and the sheets
-themselves, and `set_project_meta` sets the title-block values; block symbols,
-a sheet's own title-block values and its drawn lines, arcs and pictures are
-still the app's alone.
+symbols, buses with their labels and rippers, net ties, blocks with their
+ports and instances, and the sheets themselves, and `set_project_meta` sets the
+title-block values; a block symbol's drawing, a sheet's own title-block values
+and its drawn lines, arcs and pictures are still the app's alone.
 
-The bus, ripper and net-tie ops run the other way round too: the app's own
-Design ▸ Place Bus Label, Place Bus Ripper and Tie Nets are these operations,
-applied to the open document. Those objects belong to the block as much as to a
+The bus, ripper, net-tie and block ops run the other way round too: the app's
+own Design ▸ Place Bus Label, Place Bus Ripper and Tie Nets, and the
+navigator's New Block, Rename Block and Delete Block, Place Block and the
+block symbol editor's Port Nets are these operations, applied to the open
+document. Those objects belong to the block as much as to a
 sheet, and the writer behind the canvas can update an entry but never create
 one, so the tools use this vocabulary rather than a second one that would have
 to agree with it.
@@ -319,8 +323,9 @@ has open cannot be edited on disk: see below.
 ### One block at a time
 
 `apply` edits one block: the top one unless `block` names another, and the
-result says which. Blocks are named by their file, the way `list_sheets`
-reports them. A sub-block has no board — its components are instantiated
+result says which. Blocks are named by the name in their block file, the way
+`list_sheets` reports them, and their file's name still names one — though in
+Horizon's own layout every block's file is `block.json`. A sub-block has no board — its components are instantiated
 wherever that block is used, so there is no single package to place for them —
 so its board file is not even loaded and every board operation on one fails
 saying why.
@@ -330,10 +335,21 @@ block, reads are not.** `list_nets` and `list_components` report the whole
 project, so an edit made in a sub-block is visible in a read that names no
 block at all. `written` in the result says which file actually changed.
 
-`add_block_instance` uses one block inside another, `connect_block_port` wires
-its ports to nets here, and `place_block_symbol` draws it — using the symbol
-that block defines for itself, so a block with no `symbol_filename` cannot be
-drawn and says so rather than inventing a shape.
+`add_block` makes a block to use: run the next batch with `block` naming it
+to give it parts, `set_net_port` and `place_block_port` to give it ports. Then
+`add_block_instance` uses it inside another block — refused when it already
+uses that block, however deep, since a block can't contain itself — and writes
+the top block's `block_instance_mappings` entry for every new instance path,
+which Horizon's board reads. `connect_block_port` wires its ports to nets here,
+and `place_block_symbol` draws it — using the symbol that block defines for
+itself, so a block with no `symbol_filename` cannot be drawn and says so rather
+than inventing a shape. `set_net_port` with `is_port: false` and
+`remove_block_port` do what Horizon does to a port that goes: the instances'
+connections to it and the wires that ended on it go too.
+
+Nothing is flattened yet: a sub-block's components are read once, with the
+refdes the block gives them (`C?`), not once per instance, and the board,
+BOM and netlist see only the top block's.
 
 ### Routing is manual, and autoroute is honest about it
 
