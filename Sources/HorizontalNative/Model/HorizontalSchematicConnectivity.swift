@@ -225,6 +225,11 @@ extension HorizontalSchematicSheet {
         for index in blockSymbolPorts.indices { blockSymbolPorts[index].netID = moved(blockSymbolPorts[index].netID) }
         for index in blockSymbolLines.indices { blockSymbolLines[index].netID = moved(blockSymbolLines[index].netID) }
         for index in blockSymbolTexts.indices { blockSymbolTexts[index].netID = moved(blockSymbolTexts[index].netID) }
+        for index in blockSymbols.indices {
+            for (port, state) in blockSymbols[index].connections where state.netID?.lowercased() == from {
+                blockSymbols[index].connections[port] = .connected(into)
+            }
+        }
         for index in busRipperLines.indices { busRipperLines[index].netID = moved(busRipperLines[index].netID) }
         for index in busRipperTexts.indices { busRipperTexts[index].netID = moved(busRipperTexts[index].netID) }
         for index in busLabels.indices { busLabels[index].netID = moved(busLabels[index].netID) }
@@ -361,6 +366,8 @@ extension HorizontalSchematicSheet {
         var junctionIDs: [String] = []
         var labelIndices: [Int] = []
         var pins: [SchematicPinRef] = []
+        /// Block symbol ports, as `<block symbol>/<port>`.
+        var ports: [String] = []
     }
 
     /// The sheet's wiring split into connected pieces, as Horizon's net
@@ -450,6 +457,7 @@ extension HorizontalSchematicSheet {
                 if pinNets[path] == nil { pinNets[path] = pinConnections.connection(of: pin)?.netID ?? "" }
                 addNet(pinNets[path], to: islandID)
             case .port(let path):
+                islands[islandID].ports.append(path)
                 addNet(portNetID(path), to: islandID)
             case .busRipper(let id):
                 addNet(busRipperLines.first { schematicMetalGroupID($0.id) == id }?.netID, to: islandID)
@@ -498,6 +506,56 @@ extension HorizontalSchematicSheet {
         for pointKey in pointKeys.sorted() {
             mergeCoincidentJunctions(at: pointKey)
             handJunctionToPin(at: pointKey)
+            handJunctionToPort(at: pointKey)
+        }
+    }
+
+    /// `handJunctionToPin` for a block symbol's port: a junction on a port
+    /// not marked NC hands its wires to the port, as Horizon's merge after a
+    /// move replaces a junction with the port it lands on.
+    private mutating func handJunctionToPort(at pointKey: String) {
+        guard let junction = junctions.first(where: { Self.key($0.value) == pointKey }) else {
+            return
+        }
+        var portPath: String?
+        for segment in blockSymbolPorts where Self.key(segment.from) == pointKey {
+            let parts = segment.id.lowercased().split(separator: "/").map(String.init)
+            if parts.count == 3, parts[1] == "block-port" {
+                portPath = "\(parts[0])/\(parts[2])"
+                break
+            }
+        }
+        guard let portPath else { return }
+        if case .notConnected? = blockPortConnection(path: portPath) { return }
+        let junctionID = junction.key.lowercased()
+        func isOnJunction(_ endpoint: HorizontalSchematicEndpoint?, _ point: HorizontalPoint) -> Bool {
+            if case .junction(let id) = endpoint { return id.lowercased() == junctionID }
+            return endpoint == nil && Self.key(point) == pointKey
+        }
+        for index in netLines.indices {
+            if isOnJunction(netLines[index].schematicFrom, netLines[index].from) {
+                netLines[index].schematicFrom = .port(portPath)
+            }
+            if isOnJunction(netLines[index].schematicTo, netLines[index].to) {
+                netLines[index].schematicTo = .port(portPath)
+            }
+        }
+        netLines.removeAll { $0.schematicFrom == .port(portPath) && $0.schematicTo == .port(portPath) }
+        if junctionIsHeld(junction.key) {
+            netLines.append(HorizontalSegment(
+                id: UUID().uuidString.lowercased(),
+                from: junction.value,
+                to: junction.value,
+                width: 0,
+                layer: nil,
+                netID: junctionNetIDs[junction.key],
+                schematicFrom: .junction(junction.key),
+                schematicTo: .port(portPath)
+            ))
+        } else if !junctionHoldsAnything(junction.key, at: junction.value) {
+            junctions.removeValue(forKey: junction.key)
+            junctionNetIDs.removeValue(forKey: junction.key)
+            warningContext.junctionBusIDs.removeValue(forKey: junction.key)
         }
     }
 
@@ -609,10 +667,13 @@ extension HorizontalSchematicSheet {
             let touched = pointKeys.map { !island.pointKeys.isDisjoint(with: $0) } ?? false
             guard pointKeys == nil || touched, island.nets.count <= 1 else { continue }
             let unwiredPins = touched ? island.pins.filter { connection(of: $0) == nil && connectionPath(of: $0) != nil } : []
+            // A port on no net is wired as a pin is (`ToolDrawLineNet`
+            // gives the instance a connection); one marked NC never is.
+            let unwiredPorts = touched ? island.ports.filter { blockPortConnection(path: $0) == nil } : []
             let netID: String
             if let existing = island.nets.first {
                 netID = existing
-            } else if !unwiredPins.isEmpty {
+            } else if !unwiredPins.isEmpty || !unwiredPorts.isEmpty {
                 netID = insertUnnamedNet()
             } else {
                 continue
@@ -630,7 +691,18 @@ extension HorizontalSchematicSheet {
             for pin in unwiredPins {
                 connectPin(pin, toNet: netID)
             }
+            for port in unwiredPorts {
+                connectPort(port, toNet: netID)
+            }
         }
+    }
+
+    /// Puts a block symbol's port, `<block symbol>/<port>`, on `netID`: the
+    /// instance's connection, and the port's artwork drawn on it.
+    mutating func connectPort(_ path: String, toNet netID: String) {
+        let parts = path.lowercased().split(separator: "/").map(String.init)
+        guard parts.count == 2 else { return }
+        setBlockPortConnection(.connected(netID.lowercased()), blockSymbol: parts[0], port: parts[1])
     }
 
     // MARK: - Healing wires

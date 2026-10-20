@@ -14,8 +14,21 @@ struct HorizontalProjectBlock: Identifiable, Hashable {
     var schematicFilename: String?
     var symbolFilename: String?
     var isTop: Bool
+    /// The block file's `name`, which Horizon shows for the block and puts
+    /// in its symbol's `$NAME`. Nil when the file names it nothing.
+    var name: String? = nil
 
     var displayName: String {
+        if let name, !name.trimmingCharacters(in: .whitespaces).isEmpty {
+            return name
+        }
+        return fileStem
+    }
+
+    /// What the block was called before its name was read: its file's name.
+    /// Horizon's own layout puts every block in `blocks/<uuid>/block.json`,
+    /// so this alone names them all "block"; it stays a way to refer to one.
+    var fileStem: String {
         if let blockFilename, !blockFilename.isEmpty {
             return URL(fileURLWithPath: blockFilename).deletingPathExtension().lastPathComponent
         }
@@ -23,6 +36,20 @@ struct HorizontalProjectBlock: Identifiable, Hashable {
             return URL(fileURLWithPath: schematicFilename).deletingPathExtension().lastPathComponent
         }
         return String(uuid.prefix(8))
+    }
+
+    /// The blocks `reference` names: by uuid, else by name, else by file —
+    /// the first of those that names any, so a name never loses to another
+    /// block's file.
+    static func matching(_ reference: String, in blocks: [HorizontalProjectBlock]) -> [HorizontalProjectBlock] {
+        let keys: [(HorizontalProjectBlock) -> String] = [\.uuid, \.displayName, \.fileStem]
+        for key in keys {
+            let matches = blocks.filter { key($0).caseInsensitiveCompare(reference) == .orderedSame }
+            if !matches.isEmpty {
+                return matches
+            }
+        }
+        return []
     }
 }
 
@@ -430,7 +457,8 @@ struct HorizontalProject: Identifiable {
                         blockFilename: block.string("block_filename"),
                         schematicFilename: block.string("schematic_filename"),
                         symbolFilename: block.string("symbol_filename"),
-                        isTop: uuid == topBlockID
+                        isTop: uuid == topBlockID,
+                        name: blockName(blockFilename: block.string("block_filename"), baseURL: baseURL)
                     )
                 }
                 .sorted { lhs, rhs in
@@ -469,7 +497,8 @@ struct HorizontalProject: Identifiable {
                 blockFilename: block.string("block_filename"),
                 schematicFilename: block.string("schematic_filename"),
                 symbolFilename: nil,
-                isTop: block.bool("is_top") ?? false
+                isTop: block.bool("is_top") ?? false,
+                name: blockName(blockFilename: block.string("block_filename"), baseURL: baseURL)
             )
         }
         .sorted { lhs, rhs in
@@ -498,6 +527,14 @@ struct HorizontalProject: Identifiable {
         }
 
         return (nil, nil, [], projectMeta)
+    }
+
+    private static func blockName(blockFilename: String?, baseURL: URL) -> String? {
+        guard let blockFilename, !blockFilename.isEmpty,
+              let json = try? JSONHelper.loadDictionary(from: baseURL.appendingPathComponent(blockFilename)) else {
+            return nil
+        }
+        return json.string("name")
     }
 
     private static func loadProjectMeta(blockFilename: String?, baseURL: URL) -> [String: String] {

@@ -1475,8 +1475,8 @@ final class HorizontalProjectEditorTests: XCTestCase {
     /// here, and — only when the used block draws itself — its symbol.
     func testBlocksAreComposed() throws {
         let sub = try addSecondBlock(named: "Regulator", portNet: "VOUT")
-        // Blocks are named by their file, the way list_sheets reports them.
-        let subName = "sub_block"
+        // Blocks are named by their block file's name, as Horizon names them.
+        let subName = "Regulator"
         let blocks = try XCTUnwrap(try XCTUnwrap(try result("project_info") as? [String: Any])["blocks"] as? [[String: Any]])
         XCTAssertEqual(blocks.count, 2)
 
@@ -1531,9 +1531,9 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual(found["message"] as? String, "Pin connected to net: VOUT")
         XCTAssertEqual(found["net"] as? String, "VOUT")
         XCTAssertEqual(found["pin"] as? String, "1")
-        XCTAssertEqual(found["block"] as? String, "sub_block")
+        XCTAssertEqual(found["block"] as? String, "Regulator")
         XCTAssertEqual(found["sheet"] as? Int, 1)
-        XCTAssertTrue((found["detail"] as? String)?.hasPrefix("Block sub_block, sheet 1 (Sheet 1) at (") ?? false, "\(found)")
+        XCTAssertTrue((found["detail"] as? String)?.hasPrefix("Block Regulator, sheet 1 (Sheet 1) at (") ?? false, "\(found)")
         XCTAssertFalse(messages.contains { $0["message"] != nil && $0["block_id"] == nil && $0["refdes"] as? String == "R7" },
                        "R7 is on the sub-block's sheet only")
     }
@@ -1541,7 +1541,7 @@ final class HorizontalProjectEditorTests: XCTestCase {
     /// A block cannot use itself, and editing a sub-block edits that block.
     func testBlockScopingReachesTheSecondBlock() throws {
         let sub = try addSecondBlock(named: "Regulator", portNet: "VOUT")
-        // Blocks are named by their file, the way list_sheets reports them.
+        // A block's file still names it, beside its own name.
         let subName = "sub_block"
         XCTAssertNotNil(try call("apply", ["ops": [["op": "add_block_instance", "block": sub.block]], "block": sub.block])["error"],
                         "a block cannot use itself")

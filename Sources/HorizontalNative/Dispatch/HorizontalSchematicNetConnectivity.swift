@@ -56,7 +56,10 @@ struct HorizontalSchematicNetConnectivity {
         let instances = block.dictionaryMap("block_instances")
         for (id, symbol) in sheet.dictionaryMap("block_symbols") {
             guard let instance = symbol.string("block_instance") else { continue }
-            for (port, connection) in instances[instance]?.dictionaryMap("connections") ?? [:] {
+            // A wire names a port by the port's own uuid, which Horizon derives
+            // from the port net the instance's connections are keyed by.
+            for (portNet, connection) in instances[instance]?.dictionaryMap("connections") ?? [:] {
+                guard let port = HorizontalBlockSymbolPortID.uuid(forNet: portNet) else { continue }
                 seed(["port": "\(id)/\(port)"], connection.string("net"))
             }
         }

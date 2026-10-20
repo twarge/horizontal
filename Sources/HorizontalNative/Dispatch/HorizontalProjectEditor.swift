@@ -57,6 +57,14 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case connectBlockPort = "connect_block_port"
     case placeBlockSymbol = "place_block_symbol"
     case removeBlockSymbol = "remove_block_symbol"
+    case disconnectBlockPort = "disconnect_block_port"
+    case setBlockInstance = "set_block_instance"
+    case addBlock = "add_block"
+    case renameBlock = "rename_block"
+    case removeBlock = "remove_block"
+    case setNetPort = "set_net_port"
+    case placeBlockPort = "place_block_port"
+    case removeBlockPort = "remove_block_port"
     case setStackup = "set_stackup"
     case addRule = "add_rule"
     case setRule = "set_rule"
@@ -151,6 +159,14 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .connectBlockPort: "Connect a block instance's port to a net in the block that uses it. Ports are how a sub-block reaches the design around it."
         case .placeBlockSymbol: "Draw a block instance on a sheet, using the symbol that block defines for itself."
         case .removeBlockSymbol: "Take a block instance's symbol off its sheet. The instance stays."
+        case .disconnectBlockPort: "Take a block instance's port off its net, or clear its no-connect mark."
+        case .setBlockInstance: "Set a block instance's reference designator, which its symbol's $REFDES draws."
+        case .addBlock: "Horizon's Add Block: a new block to use inside others — no parts yet, one empty sheet framed like the top block's first, and a template symbol (a box with $REFDES and $NAME). It shares the top block's net classes and power nets. Edit it with block set to its name or uuid."
+        case .renameBlock: "Rename a block. Its symbols' $NAME draws the name."
+        case .removeBlock: "Remove a block and its files. Refused for the top block and for a block any other block still uses."
+        case .setNetPort: "Make a net of a sub-block one of its ports, which the blocks using it wire to their own nets, or stop it being one — which takes its port off the symbol, the instances' connections to it, and the wires that ended on it. Edit the sub-block with block. Power nets can't be ports."
+        case .placeBlockPort: "Draw one of the edited block's ports on its symbol, as Horizon's Place Port does, or move or change it there. Its uuid is derived from its net."
+        case .removeBlockPort: "Take a port off the edited block's symbol. The net stays a port; the instances' connections to it and the wires that ended on it go."
         case .addRule: "Add a board design rule of a kind, with the defaults the app's own rules editor would give it and the fields given merged in, ordered after the rules of its kind already there. A via rule gets the padstack the board's via rules already use unless fields names one."
         case .setRule: "Change fields of a board design rule, merging objects key by key. The board is refused if the change makes the rules invalid. A change to the via rules gives the vias that take their shape from them the padstack and parameters of the rule that now matches."
         case .removeRule: "Remove a board design rule."
@@ -193,7 +209,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         .removeTrack: "track", .setTrackWidth: "track", .removeVia: "via",
         .removePolygon: "polygon", .removePlane: "plane", .removeHole: "hole", .removeKeepout: "keepout",
         .removeDimension: "dimension", .removeBus: "bus", .removeNetTie: "net_tie",
-        .removeBlockInstance: "instance", .removeBlockSymbol: "instance"
+        .removeBlockInstance: "instance", .removeBlockSymbol: "instance", .setBlockInstance: "instance",
+        .renameBlock: "block", .removeBlock: "block"
     ]
 
     var params: [String: String] {
@@ -399,7 +416,27 @@ enum HorizontalEditOperationKind: String, CaseIterable {
             return ["instance": "Block instance id or refdes."]
         case .connectBlockPort:
             return ["instance": "Block instance id or refdes.", "port": "Port uuid on the used block, or the net name it carries there.",
-                    "net": "Net name or id in this block.", "create_net": "Create the net when it does not exist (default false)."]
+                    "net": "Net name or id in this block.", "create_net": "Create the net when it does not exist (default false).",
+                    "nc": "Mark the port not connected instead, as Horizon's Set NC does (optional; net is then not needed)."]
+        case .disconnectBlockPort:
+            return ["instance": "Block instance id or refdes.", "port": "Port uuid on the used block, or the net name it carries there."]
+        case .setBlockInstance:
+            return ["instance": "Block instance id or refdes.", "refdes": "New reference designator."]
+        case .addBlock:
+            return ["name": "The block's name.", "id": "Block uuid to use (optional)."]
+        case .renameBlock:
+            return ["block": "The block, by uuid or name.", "name": "New name."]
+        case .removeBlock:
+            return ["block": "The block, by uuid or name."]
+        case .setNetPort:
+            return ["net": "Net name or id in the edited block.", "is_port": "Whether it is a port (default true).",
+                    "port_direction": "input, output, bidirectional, open_collector, power_input, power_output, passive or not_connected (optional)."]
+        case .placeBlockPort:
+            return ["net": "The port's net in the edited block.", "x_mm": "X position of the port's outer end, where wires join it.",
+                    "y_mm": "Y position.", "orientation": "left, right, up or down: the way it points out of the symbol (optional; default the last port's, else right).",
+                    "length_mm": "Length (optional; default 2.5).", "name_orientation": "in_line, perpendicular or horizontal (optional; default in_line)."]
+        case .removeBlockPort:
+            return ["net": "The port's net in the edited block."]
         case .placeBlockSymbol:
             return ["instance": "Block instance id or refdes.", "sheet": "Sheet index, name or uuid (optional; default the first sheet).",
                     "x_mm": "X position.", "y_mm": "Y position.",
@@ -592,7 +629,7 @@ struct HorizontalEditOperation {
                 try HorizontalDispatchValidation.number(value, key: key)
             } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs", "exposed_copper_only",
                        "force", "cascade", "swap", "remove_routing", "display_all_pads", "no_connect", "disconnect",
-                       "unanchored", "stubs", "use_primary_name", "all", "keep_wiring", "board"].contains(key) {
+                       "unanchored", "stubs", "use_primary_name", "all", "keep_wiring", "board", "is_port", "nc", "show_port"].contains(key) {
                 try HorizontalDispatchValidation.boolean(value, key: key)
             } else if value is NSNull, ["part", "group", "tag"].contains(key) {
                 continue
@@ -613,6 +650,7 @@ struct HorizontalEditOperation {
 protocol HorizontalProjectFileStore {
     func read(_ url: URL) throws -> Data?
     func write(_ data: Data, to url: URL) throws
+    func remove(_ url: URL) throws
 }
 
 struct HorizontalDiskFileStore: HorizontalProjectFileStore {
@@ -624,7 +662,14 @@ struct HorizontalDiskFileStore: HorizontalProjectFileStore {
     }
 
     func write(_ data: Data, to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: url, options: [.atomic])
+    }
+
+    func remove(_ url: URL) throws {
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
     }
 }
 
@@ -697,6 +742,8 @@ final class HorizontalProjectEditor {
     private var files: [String: JSONDictionary] = [:]
     private var fileURLs: [String: URL] = [:]
     private var dirty = Set<String>()
+    /// Files an op took out of the project, by path from its base.
+    private var removedFiles: [String] = []
     private(set) var changes: [JSONDictionary] = []
 
     /// Which block this editor edits, and whether it is the top one. A board
@@ -715,10 +762,7 @@ final class HorizontalProjectEditor {
         let top = project.blocks.first(where: \.isTop)
         var selected = top
         if let reference, !reference.isEmpty {
-            let matches = project.blocks.filter {
-                $0.uuid.caseInsensitiveCompare(reference) == .orderedSame
-                    || $0.displayName.caseInsensitiveCompare(reference) == .orderedSame
-            }
+            let matches = HorizontalProjectBlock.matching(reference, in: project.blocks)
             guard matches.count == 1, let match = matches.first else {
                 if matches.isEmpty {
                     throw HorizontalDispatchError.notFound(
@@ -969,6 +1013,22 @@ final class HorizontalProjectEditor {
             change.merge(try placeBlockSymbol(params)) { _, new in new }
         case .removeBlockSymbol:
             change.merge(try removeBlockSymbol(params)) { _, new in new }
+        case .disconnectBlockPort:
+            change.merge(try disconnectBlockPort(params)) { _, new in new }
+        case .setBlockInstance:
+            change.merge(try setBlockInstance(params)) { _, new in new }
+        case .addBlock:
+            change.merge(try addBlock(params)) { _, new in new }
+        case .renameBlock:
+            change.merge(try renameBlock(params)) { _, new in new }
+        case .removeBlock:
+            change.merge(try removeBlock(params)) { _, new in new }
+        case .setNetPort:
+            change.merge(try setNetPort(params)) { _, new in new }
+        case .placeBlockPort:
+            change.merge(try placeBlockPort(params)) { _, new in new }
+        case .removeBlockPort:
+            change.merge(try removeBlockPort(params)) { _, new in new }
         case .addRule:
             change.merge(try addRule(params)) { _, new in new }
         case .setRule:
@@ -1073,6 +1133,11 @@ final class HorizontalProjectEditor {
             }
             let data = try HorizontalHorizonJSONWriter.data(json)
             try store.write(data, to: url)
+            written.append(url.path)
+        }
+        for path in removedFiles {
+            let url = project.baseURL.appendingPathComponent(path)
+            try store.remove(url)
             written.append(url.path)
         }
         return written
@@ -4334,7 +4399,7 @@ final class HorizontalProjectEditor {
     /// The blocks this project defines, other than the one being edited. A
     /// block cannot use itself.
     private func usableBlocks() -> [HorizontalProjectBlock] {
-        project.blocks.filter { $0.uuid.lowercased() != blockID.lowercased() }
+        knownBlocks.filter { $0.uuid.lowercased() != blockID.lowercased() }
     }
 
     private func blockInstances() -> JSONDictionary {
@@ -4364,14 +4429,11 @@ final class HorizontalProjectEditor {
         guard let reference = params.string("block"), !reference.isEmpty else {
             throw HorizontalDispatchError.invalidParams("add_block_instance needs \"block\": the block to use.")
         }
-        let candidates = usableBlocks().filter {
-            $0.uuid.caseInsensitiveCompare(reference) == .orderedSame
-                || $0.displayName.caseInsensitiveCompare(reference) == .orderedSame
-        }
+        let candidates = HorizontalProjectBlock.matching(reference, in: usableBlocks())
         guard candidates.count == 1, let used = candidates.first else {
             if candidates.isEmpty {
                 // Naming the block being edited is the mistake worth catching.
-                if project.blocks.contains(where: { $0.uuid.caseInsensitiveCompare(reference) == .orderedSame }) {
+                if knownBlocks.contains(where: { $0.uuid.caseInsensitiveCompare(reference) == .orderedSame }) {
                     throw HorizontalDispatchError.invalidParams("A block cannot use itself.")
                 }
                 throw HorizontalDispatchError.notFound(
@@ -4381,17 +4443,28 @@ final class HorizontalProjectEditor {
             throw HorizontalDispatchError.ambiguous("More than one block is called \(reference); use its uuid.",
                                                     candidates: candidates.map(\.uuid))
         }
+        // Horizon's `can_add_block_instance`, over every block rather than
+        // only the paths instantiated so far: a block that uses this one,
+        // however deep, cannot be used inside it.
+        if try blocksUsed(by: used.uuid).contains(blockID.lowercased()) {
+            throw HorizontalDispatchError.invalidParams(
+                "\(used.displayName) already uses \(knownBlocks.first { $0.uuid.lowercased() == blockID.lowercased() }?.displayName ?? "this block"), so it can't be used inside it."
+            )
+        }
         let id = params.string("id")?.lowercased() ?? UUID().uuidString.lowercased()
         var instances = blockInstances()
         guard instances[id] == nil else {
             throw HorizontalDispatchError.invalidParams("A block instance \(id) already exists.")
         }
-        instances[id] = ["block": used.uuid, "refdes": params.string("refdes") ?? "U?",
-                         "connections": [String: Any]()]
+        // Horizon names a new instance I? and leaves the rest to the user.
+        let refdes = params.string("refdes") ?? "I?"
+        instances[id] = ["block": used.uuid, "refdes": refdes, "connections": [String: Any]()]
         block["block_instances"] = instances
-        return ["block_instance": id, "block": used.uuid, "block_name": used.displayName,
-                "refdes": params.string("refdes") ?? "U?",
-                "note": "Its ports reach this block through connect_block_port, and place_block_symbol draws it."]
+        let mappings = try createInstanceMappings()
+        var change: JSONDictionary = ["block_instance": id, "block": used.uuid, "block_name": used.displayName, "refdes": refdes,
+                                      "note": "Its ports reach this block through connect_block_port, and place_block_symbol draws it."]
+        if !mappings.isEmpty { change["instance_mappings"] = mappings }
+        return change
     }
 
     private func removeBlockInstance(_ params: JSONDictionary) throws -> JSONDictionary {
@@ -4400,16 +4473,16 @@ final class HorizontalProjectEditor {
         instances.removeValue(forKey: id)
         block["block_instances"] = instances
         let symbols = try removeBlockSymbols(instanceID: id, sheetFilter: nil)
-        return ["block_instance": id, "symbols": symbols]
+        var change: JSONDictionary = ["block_instance": id, "symbols": symbols]
+        let mappings = try removeInstanceMappings { $0.contains(id) }
+        if mappings > 0 { change["instance_mappings_removed"] = mappings }
+        return change
     }
 
     /// A block's ports are the nets it declares as ports; a using block wires
     /// its own nets onto them.
     private func blockPortID(_ reference: String, of usedBlockID: String) throws -> String {
-        guard let used = project.blocks.first(where: { $0.uuid.lowercased() == usedBlockID.lowercased() }),
-              let filename = used.blockFilename,
-              let data = try store.read(project.baseURL.appendingPathComponent(filename)),
-              let json = try? JSONHelper.loadDictionary(from: data) else {
+        guard let json = try? blockFile(usedBlockID) else {
             throw HorizontalDispatchError.notFound("Could not read the used block to find its ports.")
         }
         let ports = json.dictionaryMap("nets").filter { $0.value.bool("is_port") == true }
@@ -4439,6 +4512,20 @@ final class HorizontalProjectEditor {
             throw HorizontalDispatchError.invalidParams("connect_block_port needs \"port\".")
         }
         let port = try blockPortID(portReference, of: usedBlock)
+        var connections = instance["connections"] as? JSONDictionary ?? [:]
+        // Horizon's NC port: a connection to no net, which nothing can wire.
+        if params.bool("nc") == true {
+            if let net = (connections[port] as? JSONDictionary)?.string("net") {
+                throw HorizontalDispatchError.invalidParams(
+                    "That port is connected to net \(nets()[net]?.string("name") ?? net); disconnect_block_port it first."
+                )
+            }
+            connections[port] = ["net": NSNull()]
+            instance["connections"] = connections
+            instances[id] = instance
+            block["block_instances"] = instances
+            return ["block_instance": id, "port": port, "nc": true]
+        }
         let net: String
         if let existing = try existingNetID(params) {
             net = existing
@@ -4447,12 +4534,29 @@ final class HorizontalProjectEditor {
         } else {
             throw HorizontalDispatchError.notFound("No net matches \(params["net"] ?? "nothing"); pass create_net to make it.")
         }
-        var connections = instance["connections"] as? JSONDictionary ?? [:]
         connections[port] = ["net": net]
         instance["connections"] = connections
         instances[id] = instance
         block["block_instances"] = instances
         return ["block_instance": id, "port": port, "net": net]
+    }
+
+    private func disconnectBlockPort(_ params: JSONDictionary) throws -> JSONDictionary {
+        let id = try blockInstanceID(params)
+        var instances = blockInstances()
+        guard var instance = instances[id] as? JSONDictionary, let usedBlock = instance.string("block") else {
+            throw HorizontalDispatchError.notFound("Block instance \(id) names no block.")
+        }
+        guard let portReference = params.string("port") else {
+            throw HorizontalDispatchError.invalidParams("disconnect_block_port needs \"port\".")
+        }
+        let port = try blockPortID(portReference, of: usedBlock)
+        var connections = instance["connections"] as? JSONDictionary ?? [:]
+        let removed = connections.removeValue(forKey: port) != nil
+        instance["connections"] = connections
+        instances[id] = instance
+        block["block_instances"] = instances
+        return ["block_instance": id, "port": port, "disconnected": removed]
     }
 
     private func placeBlockSymbol(_ params: JSONDictionary) throws -> JSONDictionary {
@@ -4462,7 +4566,7 @@ final class HorizontalProjectEditor {
         }
         // A block draws itself with the symbol it defines; without one there is
         // nothing to put on the sheet.
-        guard let used = project.blocks.first(where: { $0.uuid.lowercased() == usedBlock.lowercased() }),
+        guard let used = knownBlocks.first(where: { $0.uuid.lowercased() == usedBlock.lowercased() }),
               let symbolFilename = used.symbolFilename, !symbolFilename.isEmpty else {
             throw HorizontalDispatchError.invalidParams(
                 "The block \(usedBlock) defines no symbol of its own, so it cannot be drawn on a sheet. Give it one in Horizontal first."
@@ -4529,6 +4633,493 @@ final class HorizontalProjectEditor {
             throw HorizontalDispatchError.notFound("No symbol for block instance \(id) is on a sheet.")
         }
         return ["block_instance": id, "symbols": removed]
+    }
+
+    // MARK: - Blocks
+
+    /// The project's blocks as this batch has left them: a block added by
+    /// an earlier op can be used by a later one.
+    private lazy var knownBlocks: [HorizontalProjectBlock] = project.blocks
+
+    private func knownBlock(_ blockID: String) -> HorizontalProjectBlock? {
+        knownBlocks.first { $0.uuid.lowercased() == blockID.lowercased() }
+    }
+
+    /// The block `params[key]` names, among the blocks this batch knows.
+    private func blockReference(_ params: JSONDictionary, key: String = "block") throws -> HorizontalProjectBlock {
+        guard let reference = params.string(key), !reference.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("\(key) is required: a block's uuid or name.")
+        }
+        let matches = HorizontalProjectBlock.matching(reference, in: knownBlocks)
+        guard matches.count == 1, let match = matches.first else {
+            if matches.isEmpty {
+                throw HorizontalDispatchError.notFound("No block \(reference). Blocks: \(knownBlocks.map(\.displayName).joined(separator: ", ")).")
+            }
+            throw HorizontalDispatchError.ambiguous("More than one block is called \(reference); use its uuid.",
+                                                    candidates: matches.map(\.uuid))
+        }
+        return match
+    }
+
+    /// A project file the editor reads beside the block it edits — another
+    /// block's file, a symbol, `blocks.json` — under the key that names it.
+    /// The edited block's own files keep their keys ("block", "schematic"),
+    /// so no file is ever held twice.
+    private func projectFile(_ relativePath: String) throws -> JSONDictionary? {
+        let key = "file:" + relativePath
+        if files[key] == nil {
+            try load(key, url: project.baseURL.appendingPathComponent(relativePath))
+        }
+        return files[key]
+    }
+
+    private func setProjectFile(_ relativePath: String, _ json: JSONDictionary) {
+        let key = "file:" + relativePath
+        files[key] = json
+        fileURLs[key] = project.baseURL.appendingPathComponent(relativePath)
+        dirty.insert(key)
+        removedFiles.removeAll { $0 == relativePath }
+    }
+
+    private func removeProjectFile(_ relativePath: String) {
+        let key = "file:" + relativePath
+        files.removeValue(forKey: key)
+        fileURLs.removeValue(forKey: key)
+        dirty.remove(key)
+        if !removedFiles.contains(relativePath) { removedFiles.append(relativePath) }
+    }
+
+    /// A block's own file: the one edited, or another read beside it.
+    private func blockFile(_ id: String) throws -> JSONDictionary {
+        if id.lowercased() == blockID.lowercased() {
+            return block
+        }
+        guard let filename = knownBlock(id)?.blockFilename, !filename.isEmpty, let json = try projectFile(filename) else {
+            throw HorizontalDispatchError.notFound("Could not read block \(id)'s file.")
+        }
+        return json
+    }
+
+    private func updateBlockFile(_ id: String, _ body: (inout JSONDictionary) throws -> Void) throws {
+        if id.lowercased() == blockID.lowercased() {
+            var json = block
+            try body(&json)
+            block = json
+            return
+        }
+        guard let filename = knownBlock(id)?.blockFilename, !filename.isEmpty else {
+            throw HorizontalDispatchError.notFound("Block \(id) has no file.")
+        }
+        var json = try blockFile(id)
+        try body(&json)
+        setProjectFile(filename, json)
+    }
+
+    private func updateSchematicFile(of id: String, _ body: (inout JSONDictionary) throws -> Void) throws {
+        if id.lowercased() == blockID.lowercased() {
+            guard var json = files["schematic"] else { return }
+            try body(&json)
+            files["schematic"] = json
+            dirty.insert("schematic")
+            return
+        }
+        guard let filename = knownBlock(id)?.schematicFilename, !filename.isEmpty, var json = try projectFile(filename) else {
+            return
+        }
+        try body(&json)
+        setProjectFile(filename, json)
+    }
+
+    /// The blocks `id` uses, however deep: through its instances, their
+    /// blocks' instances, and so on.
+    private func blocksUsed(by id: String) throws -> Set<String> {
+        var used = Set<String>()
+        var pending = [id.lowercased()]
+        while let next = pending.popLast() {
+            let instances = (try? blockFile(next))?.dictionaryMap("block_instances") ?? [:]
+            for instance in instances.values {
+                guard let child = instance.string("block")?.lowercased(), used.insert(child).inserted else { continue }
+                pending.append(child)
+            }
+        }
+        return used
+    }
+
+    /// Every instance path from the top block down, Horizon's
+    /// `get_instantiated_blocks`: each path, `/`-joined instance uuids, with
+    /// the block it reaches.
+    private func instancePaths() throws -> [(path: String, block: String)] {
+        guard let top = knownBlocks.first(where: \.isTop) else { return [] }
+        var result = [(path: String, block: String)]()
+        func visit(_ id: String, prefix: [String], depth: Int) throws {
+            // Horizon's `max_instance_path_len`.
+            guard depth < 10 else { return }
+            for (instanceID, instance) in try blockFile(id).dictionaryMap("block_instances").sorted(by: { $0.key < $1.key }) {
+                guard let child = instance.string("block")?.lowercased() else { continue }
+                let path = prefix + [instanceID.lowercased()]
+                result.append((path.joined(separator: "/"), child))
+                try visit(child, prefix: path, depth: depth + 1)
+            }
+        }
+        try visit(top.uuid, prefix: [], depth: 0)
+        return result
+    }
+
+    /// Horizon's `create_instance_mappings`: the top block gets an entry
+    /// for every instance path it lacks, which is where each instance's own
+    /// refdes and no-populate go. Horizon's board reads one for every path,
+    /// so an instance made without it would not open there. Returns the
+    /// paths added.
+    private func createInstanceMappings() throws -> [String] {
+        guard let top = knownBlocks.first(where: \.isTop) else { return [] }
+        var mappings = try blockFile(top.uuid)["block_instance_mappings"] as? JSONDictionary ?? [:]
+        var added = [String]()
+        for (path, child) in try instancePaths() where mappings[path] == nil {
+            mappings[path] = ["block": child, "components": [String: Any]()]
+            added.append(path)
+        }
+        guard !added.isEmpty else { return [] }
+        try updateBlockFile(top.uuid) { $0["block_instance_mappings"] = mappings }
+        return added
+    }
+
+    /// Takes the top block's mappings for the instance paths `isDoomed`
+    /// picks, by their instance uuids. Returns how many went.
+    private func removeInstanceMappings(where isDoomed: ([String]) -> Bool) throws -> Int {
+        guard let top = knownBlocks.first(where: \.isTop) else { return 0 }
+        guard let mappings = try blockFile(top.uuid)["block_instance_mappings"] as? JSONDictionary else { return 0 }
+        let kept = mappings.filter { !isDoomed($0.key.lowercased().split(separator: "/").map(String.init)) }
+        guard kept.count != mappings.count else { return 0 }
+        try updateBlockFile(top.uuid) { $0["block_instance_mappings"] = kept }
+        return mappings.count - kept.count
+    }
+
+    private static func emptySheet(named name: String, index: Int) -> JSONDictionary {
+        var sheet: JSONDictionary = ["name": name, "index": index]
+        for key in ["junctions", "net_lines", "net_labels", "net_ties", "bus_labels", "bus_rippers", "power_symbols",
+                    "block_symbols", "symbols", "lines", "arcs", "texts", "pictures", "title_block_values"] {
+            sheet[key] = JSONDictionary()
+        }
+        return sheet
+    }
+
+    /// Horizon's `BlockSymbol::create_template`: a 15 × 10 mm box with the
+    /// instance's refdes above it and the block's name below.
+    private static func blockSymbolTemplate(uuid: String, block: String) -> JSONDictionary {
+        let halfWidth = 7_500_000, halfHeight = 5_000_000
+        let corners = [(-halfWidth, halfHeight), (halfWidth, halfHeight), (halfWidth, -halfHeight), (-halfWidth, -halfHeight)]
+        let junctionIDs = corners.map { _ in UUID().uuidString.lowercased() }
+        var junctions = JSONDictionary(), lines = JSONDictionary(), texts = JSONDictionary()
+        for (index, corner) in corners.enumerated() {
+            junctions[junctionIDs[index]] = ["position": [corner.0, corner.1]]
+            lines[UUID().uuidString.lowercased()] = ["from": junctionIDs[index], "to": junctionIDs[(index + 1) % 4], "layer": 0, "width": 0]
+        }
+        for (text, y) in [("$REFDES", halfHeight + 1_250_000), ("$NAME", -halfHeight - 1_250_000)] {
+            texts[UUID().uuidString.lowercased()] = [
+                "text": text, "placement": ["angle": 0, "mirror": false, "shift": [-halfWidth, y]],
+                "size": 1_500_000, "layer": 0, "origin": "center", "font": "simplex", "width": 0, "from_smash": false
+            ]
+        }
+        return ["type": "block_symbol", "uuid": uuid, "block": block, "junctions": junctions, "lines": lines,
+                "arcs": JSONDictionary(), "texts": texts, "pictures": JSONDictionary(), "ports": JSONDictionary()]
+    }
+
+    /// Horizon's Add Block: a block with no parts, one empty sheet framed
+    /// as the top's first sheet is, and the template symbol, filed as
+    /// Horizon files them (`blocks/<uuid>/`). It shares the top block's net
+    /// classes and power nets, as Horizon keeps them in step.
+    private func addBlock(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard let name = params.string("name")?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("add_block needs a \"name\".")
+        }
+        guard let top = knownBlocks.first(where: \.isTop) else {
+            throw HorizontalDispatchError.failed("The project has no top block to add a block beside.")
+        }
+        let id = params.string("id")?.lowercased() ?? UUID().uuidString.lowercased()
+        guard UUID(uuidString: id) != nil else {
+            throw HorizontalDispatchError.invalidParams("id must be a uuid.")
+        }
+        guard knownBlock(id) == nil else {
+            throw HorizontalDispatchError.invalidParams("A block \(id) already exists.")
+        }
+        let blockPath = "blocks/\(id)/block.json"
+        let schematicPath = "blocks/\(id)/schematic.json"
+        let symbolPath = "blocks/\(id)/symbol.json"
+        guard var blocks = try projectFile(project.blocksFilename) else {
+            throw HorizontalDispatchError.failed("The project has no \(project.blocksFilename) to add the block to.")
+        }
+
+        let topBlock = try blockFile(top.uuid)
+        let powerNets = topBlock.dictionaryMap("nets").filter { $0.value.bool("is_power") == true }
+        var blockJSON: JSONDictionary = [
+            "name": name, "uuid": id,
+            "net_class_default": topBlock["net_class_default"] ?? Self.nullUUID,
+            "net_classes": topBlock["net_classes"] ?? JSONDictionary(),
+            "nets": powerNets as JSONDictionary,
+            "project_meta": topBlock["project_meta"] ?? JSONDictionary()
+        ]
+        for key in ["components", "block_instances", "block_instance_mappings", "buses", "group_names", "tag_names"] {
+            blockJSON[key] = JSONDictionary()
+        }
+
+        var sheet = Self.emptySheet(named: "First sheet", index: 1)
+        var schematicJSON: JSONDictionary = ["type": "schematic_block", "uuid": UUID().uuidString.lowercased(), "block": id, "name": ""]
+        if let topSchematic = top.schematicFilename.flatMap({ try? projectFile($0) }) ?? (top.uuid.lowercased() == blockID.lowercased() ? files["schematic"] : nil) {
+            let firstSheet = topSchematic.dictionaryMap("sheets").values.min { ($0.int("index") ?? 0) < ($1.int("index") ?? 0) }
+            if let frame = firstSheet?["frame"] { sheet["frame"] = frame }
+            for key in ["annotation", "rules", "pdf_export_settings", "title_block_values", "group_tag_visible", "version"] {
+                if let value = topSchematic[key] { schematicJSON[key] = value }
+            }
+        }
+        schematicJSON["sheets"] = [UUID().uuidString.lowercased(): sheet]
+
+        setProjectFile(blockPath, blockJSON)
+        setProjectFile(schematicPath, schematicJSON)
+        setProjectFile(symbolPath, Self.blockSymbolTemplate(uuid: UUID().uuidString.lowercased(), block: id))
+        var entries = blocks["blocks"] as? JSONDictionary ?? [:]
+        entries[id] = ["block_filename": blockPath, "schematic_filename": schematicPath, "symbol_filename": symbolPath]
+        blocks["blocks"] = entries
+        setProjectFile(project.blocksFilename, blocks)
+        knownBlocks.append(HorizontalProjectBlock(uuid: id, blockFilename: blockPath, schematicFilename: schematicPath,
+                                                  symbolFilename: symbolPath, isTop: false, name: name))
+        return ["block": id, "name": name, "block_filename": blockPath, "schematic_filename": schematicPath, "symbol_filename": symbolPath,
+                "note": "Its ports are nets set_net_port marks, which place_block_port draws on its symbol; add_block_instance uses it in another block."]
+    }
+
+    private func renameBlock(_ params: JSONDictionary) throws -> JSONDictionary {
+        let target = try blockReference(params)
+        guard let name = params.string("name")?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("rename_block needs a \"name\".")
+        }
+        try updateBlockFile(target.uuid) { $0["name"] = name }
+        if let index = knownBlocks.firstIndex(where: { $0.uuid == target.uuid }) {
+            knownBlocks[index].name = name
+        }
+        return ["block": target.uuid, "name": name]
+    }
+
+    /// Horizon removes a block only when nothing uses it, and never the top.
+    /// Its files go with it.
+    private func removeBlock(_ params: JSONDictionary) throws -> JSONDictionary {
+        let target = try blockReference(params)
+        guard !target.isTop else {
+            throw HorizontalDispatchError.invalidParams("The top block can't be removed.")
+        }
+        guard target.uuid.lowercased() != blockID.lowercased() else {
+            throw HorizontalDispatchError.invalidParams("A block can't remove itself; edit another block to remove it.")
+        }
+        let users = try knownBlocks.filter { other in
+            try blockFile(other.uuid).dictionaryMap("block_instances").values.contains {
+                $0.string("block")?.lowercased() == target.uuid.lowercased()
+            }
+        }
+        guard users.isEmpty else {
+            throw HorizontalDispatchError.invalidParams(
+                "\(target.displayName) is used in \(users.map(\.displayName).joined(separator: ", ")); remove those instances first."
+            )
+        }
+        guard var blocks = try projectFile(project.blocksFilename) else {
+            throw HorizontalDispatchError.failed("The project has no \(project.blocksFilename).")
+        }
+        var entries = blocks["blocks"] as? JSONDictionary ?? [:]
+        if let key = entries.keys.first(where: { $0.lowercased() == target.uuid.lowercased() }) {
+            entries.removeValue(forKey: key)
+        }
+        blocks["blocks"] = entries
+        setProjectFile(project.blocksFilename, blocks)
+        let removed = [target.blockFilename, target.schematicFilename, target.symbolFilename].compactMap { $0 }.filter { !$0.isEmpty }
+        for path in removed { removeProjectFile(path) }
+        // Horizon never prunes a mapping; one left for this block by an
+        // instance since removed would name a block that is gone.
+        if let top = knownBlocks.first(where: \.isTop),
+           let mappings = try blockFile(top.uuid)["block_instance_mappings"] as? JSONDictionary {
+            let kept = mappings.filter { ($0.value as? JSONDictionary)?.string("block")?.lowercased() != target.uuid.lowercased() }
+            if kept.count != mappings.count {
+                try updateBlockFile(top.uuid) { $0["block_instance_mappings"] = kept }
+            }
+        }
+        knownBlocks.removeAll { $0.uuid == target.uuid }
+        return ["block": target.uuid, "name": target.displayName, "files_removed": removed]
+    }
+
+    /// The edited block's symbol file, for the port ops: only a sub-block
+    /// draws itself.
+    private func editedSymbolPath() throws -> String {
+        guard !isTopBlock, let path = knownBlock(blockID)?.symbolFilename, !path.isEmpty else {
+            throw HorizontalDispatchError.invalidParams(
+                isTopBlock ? "The top block has no symbol: ports belong to a block used inside another, so name one with block."
+                    : "This block has no symbol file."
+            )
+        }
+        return path
+    }
+
+    private static let portDirections: Set<String> = [
+        "input", "output", "bidirectional", "open_collector", "power_input", "power_output", "passive", "not_connected"
+    ]
+
+    /// Horizon's "Is port" and Manage Port Nets: a net of a sub-block becomes
+    /// one of its ports, which every block using it can wire, or stops being
+    /// one, which takes its port off the symbol and its wiring off the
+    /// sheets that drew it.
+    private func setNetPort(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard !isTopBlock else {
+            throw HorizontalDispatchError.invalidParams("The top block has no ports; name a block used inside another with block.")
+        }
+        let id = try netID(params)
+        guard nets()[id]?.bool("is_power") != true else {
+            throw HorizontalDispatchError.invalidParams("A power net can't be a port: power nets reach every block already.")
+        }
+        let isPort = params.bool("is_port") ?? true
+        let direction = params.string("port_direction")
+        if let direction, !Self.portDirections.contains(direction) {
+            throw HorizontalDispatchError.invalidParams("port_direction must be one of \(Self.portDirections.sorted().joined(separator: ", ")).")
+        }
+        try updateNet(id) { net in
+            net["is_port"] = isPort
+            if let direction { net["port_direction"] = direction }
+        }
+        var change: JSONDictionary = ["net": id, "is_port": isPort]
+        if let direction { change["port_direction"] = direction }
+        if !isPort {
+            change.merge(try dropPort(net: id)) { _, new in new }
+        }
+        return change
+    }
+
+    /// What Horizon's expand does to a port whose net is no longer one: it
+    /// is erased from the symbol, the instances' connections to it go, and
+    /// so do the wires that ended on it.
+    private func dropPort(net: String) throws -> JSONDictionary {
+        var change = JSONDictionary()
+        let portID = HorizontalBlockSymbolPortID.uuid(forNet: net)
+        if let path = try? editedSymbolPath(), var symbol = try projectFile(path),
+           var ports = symbol["ports"] as? JSONDictionary,
+           let key = ports.keys.first(where: { $0.lowercased() == portID }) {
+            ports.removeValue(forKey: key)
+            symbol["ports"] = ports
+            setProjectFile(path, symbol)
+            change["port_removed"] = true
+        }
+        var connections = 0, wires = 0
+        for user in knownBlocks where user.uuid.lowercased() != blockID.lowercased() {
+            let instances = try blockFile(user.uuid).dictionaryMap("block_instances")
+                .filter { $0.value.string("block")?.lowercased() == blockID.lowercased() }
+            guard !instances.isEmpty else { continue }
+            let instanceIDs = Set(instances.keys.map { $0.lowercased() })
+            try updateBlockFile(user.uuid) { json in
+                var all = json["block_instances"] as? JSONDictionary ?? [:]
+                for id in instances.keys {
+                    guard var instance = all[id] as? JSONDictionary, var map = instance["connections"] as? JSONDictionary,
+                          let key = map.keys.first(where: { $0.lowercased() == net.lowercased() }) else { continue }
+                    map.removeValue(forKey: key)
+                    instance["connections"] = map
+                    all[id] = instance
+                    connections += 1
+                }
+                json["block_instances"] = all
+            }
+            guard let portID else { continue }
+            try updateSchematicFile(of: user.uuid) { schematic in
+                var sheets = schematic["sheets"] as? JSONDictionary ?? [:]
+                for (sheetID, value) in sheets {
+                    guard var sheet = value as? JSONDictionary else { continue }
+                    let symbols = Set(sheet.dictionaryMap("block_symbols")
+                        .filter { instanceIDs.contains($0.value.string("block_instance")?.lowercased() ?? "") }
+                        .keys.map { $0.lowercased() })
+                    guard !symbols.isEmpty else { continue }
+                    let doomed = Set(symbols.map { "\($0)/\(portID)" })
+                    var lines = sheet["net_lines"] as? JSONDictionary ?? [:]
+                    let before = lines.count
+                    lines = lines.filter { _, value in
+                        guard let line = value as? JSONDictionary else { return true }
+                        return ![line.dictionary("from"), line.dictionary("to")].contains {
+                            $0?.string("port").map { doomed.contains($0.lowercased()) } ?? false
+                        }
+                    }
+                    guard lines.count != before else { continue }
+                    wires += before - lines.count
+                    sheet["net_lines"] = lines
+                    sheets[sheetID] = sheet
+                }
+                schematic["sheets"] = sheets
+            }
+        }
+        if connections > 0 { change["connections_removed"] = connections }
+        if wires > 0 { change["wires_removed"] = wires }
+        return change
+    }
+
+    /// Horizon's Place Port (MAP_PORT): one of the edited block's ports on
+    /// its symbol, or moved there when the symbol has it. The port's uuid
+    /// comes from its net, as Horizon derives it.
+    private func placeBlockPort(_ params: JSONDictionary) throws -> JSONDictionary {
+        let path = try editedSymbolPath()
+        let net = try netID(params)
+        guard nets()[net]?.bool("is_port") == true else {
+            throw HorizontalDispatchError.invalidParams("\(nets()[net]?.string("name") ?? net) is not a port; set_net_port makes it one.")
+        }
+        guard let portID = HorizontalBlockSymbolPortID.uuid(forNet: net) else {
+            throw HorizontalDispatchError.invalidParams("Net \(net) has no uuid to derive its port's from.")
+        }
+        guard var symbol = try projectFile(path) else {
+            throw HorizontalDispatchError.notFound("Could not read the block's symbol \(path).")
+        }
+        var ports = symbol["ports"] as? JSONDictionary ?? [:]
+        let key = ports.keys.first { $0.lowercased() == portID } ?? portID
+        let existing = ports[key] as? JSONDictionary
+        // Horizon's next port points the way the last one placed did.
+        let previousOrientation = ports.values.compactMap { ($0 as? JSONDictionary)?.string("orientation") }.last
+        var port = existing ?? ["length": 2_500_000, "name_orientation": "in_line", "orientation": previousOrientation ?? "right"]
+        port["net"] = net
+        if let x = params.double("x_mm"), let y = params.double("y_mm") {
+            port["position"] = [Self.nanometres(x), Self.nanometres(y)]
+        } else if existing == nil {
+            throw HorizontalDispatchError.invalidParams("place_block_port needs \"x_mm\" and \"y_mm\" the first time.")
+        }
+        if let orientation = params.string("orientation") {
+            guard ["up", "down", "left", "right"].contains(orientation) else {
+                throw HorizontalDispatchError.invalidParams("orientation must be up, down, left or right.")
+            }
+            port["orientation"] = orientation
+        }
+        if let length = params.double("length_mm") { port["length"] = Self.nanometres(length) }
+        if let nameOrientation = params.string("name_orientation") {
+            guard ["in_line", "perpendicular", "horizontal"].contains(nameOrientation) else {
+                throw HorizontalDispatchError.invalidParams("name_orientation must be in_line, perpendicular or horizontal.")
+            }
+            port["name_orientation"] = nameOrientation
+        }
+        ports[key] = port
+        symbol["ports"] = ports
+        setProjectFile(path, symbol)
+        return ["port": key, "net": net, "created": existing == nil]
+    }
+
+    private func removeBlockPort(_ params: JSONDictionary) throws -> JSONDictionary {
+        let path = try editedSymbolPath()
+        let net = try netID(params)
+        guard let portID = HorizontalBlockSymbolPortID.uuid(forNet: net),
+              let symbol = try projectFile(path),
+              (symbol["ports"] as? JSONDictionary)?.keys.contains(where: { $0.lowercased() == portID }) == true else {
+            throw HorizontalDispatchError.notFound("The symbol draws no port for \(nets()[net]?.string("name") ?? net).")
+        }
+        return ["net": net].merging(try dropPort(net: net)) { _, new in new }
+    }
+
+    private func setBlockInstance(_ params: JSONDictionary) throws -> JSONDictionary {
+        let id = try blockInstanceID(params)
+        var instances = blockInstances()
+        guard var instance = instances[id] as? JSONDictionary else {
+            throw HorizontalDispatchError.notFound("No block instance \(id).")
+        }
+        guard let refdes = params.string("refdes")?.trimmingCharacters(in: .whitespaces), !refdes.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("set_block_instance needs \"refdes\".")
+        }
+        instance["refdes"] = refdes
+        instances[id] = instance
+        block["block_instances"] = instances
+        return ["block_instance": id, "refdes": refdes]
     }
 
     // MARK: - Holes and keepouts

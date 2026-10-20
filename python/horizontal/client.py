@@ -433,9 +433,10 @@ class Project:
         params = {k: v for k, v in {"net": net, "component": component}.items() if v is not None}
         return self._call("list_vias", limit=limit, **params)
 
-    def block_instances(self) -> list[dict[str, Any]]:
-        """The blocks this block uses, with their ports and where they are drawn."""
-        return self._call("list_block_instances")
+    def block_instances(self, block: str | None = None) -> list[dict[str, Any]]:
+        """The blocks a block uses (the top one unless block names another), with their ports and where they
+        are drawn."""
+        return self._call("list_block_instances", **({"block": block} if block else {}))
 
     def autoroute(self, net: str, layer: int = 0, width_mm: float | None = None, max_routes: int = 20,
                   dry_run: bool = False, *, expected_revision: str | None = None,

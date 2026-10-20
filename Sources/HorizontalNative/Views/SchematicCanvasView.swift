@@ -3636,6 +3636,7 @@ struct SchematicCanvasView: View {
 
         if changed {
             sheet.disconnectPinsLeftWithoutWires(netLinesBefore: netLinesBefore)
+            sheet.disconnectPortsLeftWithoutWires(netLinesBefore: netLinesBefore)
             changed = vacuumUnusedSchematicJunctions(in: &sheet) || changed
         }
 
@@ -3801,6 +3802,8 @@ struct SchematicCanvasView: View {
         changed = removeAll(from: &sheet.blockSymbolTexts) {
             geometryID($0.id, belongsTo: blockSymbolID, separators: separators)
         } || changed
+        sheet.blockSymbols.removeAll { $0.id == normalizedID(blockSymbolID) }
+        sheet.warningContext.missingPorts.removeValue(forKey: normalizedID(blockSymbolID))
         return changed
     }
 
@@ -4648,7 +4651,13 @@ struct SchematicCanvasView: View {
                 mirrorNetTie(ref: ref, around: center, sheet: &sheet, transformedJunctionKeys: &transformedJunctionKeys)
             case .powerSymbol:
                 mirrorPowerSymbol(ref: ref, around: center, sheet: &sheet, transformedJunctionKeys: &transformedJunctionKeys)
-            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busRipper, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .schematicBlockSymbol, .symbolPin, .track, .via:
+            case .schematicBlockSymbol:
+                transformSchematicBlockSymbol(ref: ref, sheet: &sheet, transformedJunctionKeys: &transformedJunctionKeys,
+                                              attachedPowerSymbolTransform: .mirroredAround(center)) { placement in
+                    HorizontalPlacementTransform(shift: mirrored(placement.shift, around: center),
+                                                 angle: placement.angle, mirrored: !placement.mirrored)
+                }
+            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busRipper, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
                 break
             }
         }
@@ -4712,7 +4721,14 @@ struct SchematicCanvasView: View {
                 rotateNetTie(ref: ref, around: center, by: angleDelta, sheet: &sheet, transformedJunctionKeys: &transformedJunctionKeys)
             case .powerSymbol:
                 rotatePowerSymbol(ref: ref, around: center, by: angleDelta, sheet: &sheet, transformedJunctionKeys: &transformedJunctionKeys)
-            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busRipper, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .schematicBlockSymbol, .symbolPin, .track, .via:
+            case .schematicBlockSymbol:
+                transformSchematicBlockSymbol(ref: ref, sheet: &sheet, transformedJunctionKeys: &transformedJunctionKeys,
+                                              attachedPowerSymbolTransform: .rotatedAround(center, by: angleDelta)) { placement in
+                    HorizontalPlacementTransform(shift: rotated(placement.shift, around: center, by: angleDelta),
+                                                 angle: placement.angle + (placement.mirrored ? -angleDelta : angleDelta),
+                                                 mirrored: placement.mirrored)
+                }
+            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busRipper, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
                 break
             }
         }
@@ -4813,6 +4829,30 @@ struct SchematicCanvasView: View {
                 sheet: &sheet,
                 movedKeys: &transformedJunctionKeys,
                 attachedPowerSymbolTransform: .rotatedAround(center, by: angleDelta)
+            )
+        }
+    }
+
+    /// Horizon's turn or flip of a block symbol: its placement changes and
+    /// it is drawn there again, and what is wired to its ports follows them.
+    private func transformSchematicBlockSymbol(
+        ref: HorizontalSelectableRef,
+        sheet: inout HorizontalSchematicSheet,
+        transformedJunctionKeys: inout Set<String>,
+        attachedPowerSymbolTransform: AttachedPowerSymbolTransform,
+        placement transform: (HorizontalPlacementTransform) -> HorizontalPlacementTransform
+    ) {
+        guard let current = sheet.blockSymbol(ref.id)?.placement else {
+            return
+        }
+        for moved in sheet.placeBlockSymbol(ref.id, at: transform(current)) {
+            moveSchematicConnectionPoint(
+                at: moved.from,
+                to: moved.to,
+                netID: moved.netID,
+                sheet: &sheet,
+                movedKeys: &transformedJunctionKeys,
+                attachedPowerSymbolTransform: attachedPowerSymbolTransform
             )
         }
     }
@@ -6352,23 +6392,7 @@ struct SchematicCanvasView: View {
         by delta: HorizontalPoint,
         sheet: inout HorizontalSchematicSheet
     ) {
-        guard delta != .zero else {
-            return
-        }
-
-        let separators: Set<String> = ["line", "port", "text"]
-        for index in sheet.blockSymbolLines.indices
-            where geometryID(sheet.blockSymbolLines[index].id, belongsTo: blockSymbolID, separators: separators) {
-            sheet.blockSymbolLines[index] = shifted(sheet.blockSymbolLines[index], by: delta)
-        }
-        for index in sheet.blockSymbolPorts.indices
-            where geometryID(sheet.blockSymbolPorts[index].id, belongsTo: blockSymbolID, separators: separators) {
-            sheet.blockSymbolPorts[index] = shifted(sheet.blockSymbolPorts[index], by: delta)
-        }
-        for index in sheet.blockSymbolTexts.indices
-            where geometryID(sheet.blockSymbolTexts[index].id, belongsTo: blockSymbolID, separators: separators) {
-            sheet.blockSymbolTexts[index] = shifted(sheet.blockSymbolTexts[index], by: delta)
-        }
+        sheet.shiftBlockSymbol(blockSymbolID, by: delta)
     }
 
     private func netsMatch(_ lhs: String?, _ rhs: String?) -> Bool {

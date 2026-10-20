@@ -770,8 +770,74 @@ class ConnectBlockPort(Input):
     op: Literal["connect_block_port"]
     instance: StrictStr
     port: StrictStr
-    net: StrictStr
+    net: StrictStr | None = None
     create_net: bool = False
+    nc: bool | None = None
+
+    @model_validator(mode="after")
+    def net_or_nc(self):
+        if self.net is None and not self.nc:
+            raise ValueError("Give the net to connect the port to, or nc: true to mark it not connected.")
+        return self
+
+
+class DisconnectBlockPort(Input):
+    op: Literal["disconnect_block_port"]
+    instance: StrictStr
+    port: StrictStr
+
+
+class SetBlockInstance(Targeted):
+    target: ClassVar[str] = "instance"
+    op: Literal["set_block_instance"]
+    instance: StrictStr | None = None
+    refdes: StrictStr
+
+
+class AddBlock(Input):
+    """Horizon's Add Block: an empty block with one sheet and a template symbol."""
+    op: Literal["add_block"]
+    name: StrictStr
+    id: str | None = None
+
+
+class RenameBlock(Targeted):
+    target: ClassVar[str] = "block"
+    op: Literal["rename_block"]
+    block: StrictStr | None = None
+    name: StrictStr
+
+
+class RemoveBlock(Targeted):
+    target: ClassVar[str] = "block"
+    op: Literal["remove_block"]
+    block: StrictStr | None = None
+
+
+PortDirection = Literal["input", "output", "bidirectional", "open_collector", "power_input", "power_output",
+                        "passive", "not_connected"]
+
+
+class SetNetPort(Input):
+    op: Literal["set_net_port"]
+    net: StrictStr
+    is_port: bool | None = None
+    port_direction: PortDirection | None = None
+
+
+class PlaceBlockPort(Input):
+    op: Literal["place_block_port"]
+    net: StrictStr
+    x_mm: float | None = None
+    y_mm: float | None = None
+    orientation: Orientation | None = None
+    length_mm: float | None = None
+    name_orientation: Literal["in_line", "perpendicular", "horizontal"] | None = None
+
+
+class RemoveBlockPort(Input):
+    op: Literal["remove_block_port"]
+    net: StrictStr
 
 
 class PlaceBlockSymbol(Input):
@@ -1120,7 +1186,8 @@ EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | 
                           PlacePolygon | RemovePolygon | PlacePlane | RemovePlane |
                           AddNetClass | RenameNetClass |
                           AddBlockInstance | RemoveBlockInstance | ConnectBlockPort |
-                          PlaceBlockSymbol | RemoveBlockSymbol | SetStackup |
+                          PlaceBlockSymbol | RemoveBlockSymbol | DisconnectBlockPort | SetBlockInstance |
+                          AddBlock | RenameBlock | RemoveBlock | SetNetPort | PlaceBlockPort | RemoveBlockPort | SetStackup |
                           AddRule | SetRule | RemoveRule |
                           PlaceHole | RemoveHole | PlaceKeepout | RemoveKeepout | SetSheetIndex |
                           PlaceBoardText | RemoveBoardText | PlaceDimension | RemoveDimension |

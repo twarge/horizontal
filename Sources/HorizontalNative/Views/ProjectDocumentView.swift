@@ -2056,7 +2056,7 @@ struct ProjectWorkspaceView: View {
                                 },
                                 onClipboardError: { projectEditError = HorizontalCanvasProjectEdit.message(for: $0) },
                                 onApplyProjectEdit: { operations, actionName in
-                                    applyProjectEdit(operations, actionName: actionName)
+                                    applyProjectEdit(operations, actionName: actionName, schematicURL: selectedSchematic.url)
                                 },
                                 onNetClassChange: { netID, netClassID in
                                     applyEditedNetClass(netID: netID, netClassID: netClassID, selectedSchematic: selectedSchematic)
@@ -3230,7 +3230,18 @@ struct ProjectWorkspaceView: View {
     /// edit from the automation channel does: the document adopts it, the
     /// project reloads, and the step goes on the undo stack under the tool's
     /// own name.
-    private func applyProjectEdit(_ operations: [JSONDictionary], actionName: String) {
+    /// The block whose schematic is at `url`, when it isn't the top one:
+    /// what an edit made on that schematic's sheets names as its `block`.
+    private func subBlockID(forSchematicURL url: URL) -> String? {
+        let url = url.standardizedFileURL
+        let block = project.schematics.first { $0.schematic.url.standardizedFileURL == url }?.block
+        return block?.isTop == false ? block?.uuid : nil
+    }
+
+    /// `schematicURL` is the schematic the edit was made on: its block is
+    /// the one edited, so a net renamed on a sub-block's sheet is renamed in
+    /// that block rather than looked for in the top one.
+    private func applyProjectEdit(_ operations: [JSONDictionary], actionName: String, schematicURL: URL? = nil) {
         guard !isReadOnly, !operations.isEmpty else {
             return
         }
@@ -3238,7 +3249,8 @@ struct ProjectWorkspaceView: View {
             let edited = try HorizontalCanvasProjectEdit.archive(
                 applying: operations,
                 to: document.archive,
-                in: project
+                in: project,
+                block: schematicURL.flatMap(subBlockID(forSchematicURL:))
             )
             try applyLiveArchive(edited.archive, actionName: actionName)
         } catch {
@@ -3261,7 +3273,7 @@ struct ProjectWorkspaceView: View {
                 applying: [["op": "move_to_other_sheet", "items": items, "sheet": selectedSchematic.sheet.id, "to_sheet": sheetID]],
                 to: document.archive,
                 in: project,
-                block: block?.isTop == false ? block?.uuid : nil
+                block: subBlockID(forSchematicURL: selectedSchematic.url)
             )
             try applyLiveArchive(edited.archive, actionName: "Move to Other Sheet")
             let moved = edited.changes.first?.dictionary("moved") ?? [:]

@@ -194,7 +194,7 @@ enum HorizontalDispatchMethods {
         .init(
             name: "list_block_instances",
             summary: "The blocks this block uses: each instance, the block it stands for, its reference designator, which ports are wired, and where its symbol is drawn.",
-            params: ["handle": "Project handle."],
+            params: ["handle": "Project handle.", "block": "The block whose instances to list, by uuid or name (optional; default the top block)."],
             handler: listBlockInstances
         ),
         .init(
@@ -1019,9 +1019,11 @@ enum HorizontalDispatchMethods {
                 "without_part": withoutPart.sorted { $0.localizedStandardCompare($1) == .orderedAscending }]
     }
 
-    /// The top block as it stands in the selected source.
-    private static func blockJSON(_ entry: HorizontalDispatchProjectEntry) -> JSONDictionary? {
-        let filename = entry.project.blocks.first(where: \.isTop)?.blockFilename ?? entry.project.blockFilename
+    /// A block — the top one unless `block` is another — as it stands in
+    /// the selected source.
+    private static func blockJSON(_ entry: HorizontalDispatchProjectEntry, block: HorizontalProjectBlock? = nil) -> JSONDictionary? {
+        let top = entry.project.blocks.first(where: \.isTop)
+        let filename = (block ?? top)?.blockFilename ?? (block == nil || block?.isTop == true ? entry.project.blockFilename : nil)
         guard let filename, !filename.isEmpty else { return nil }
         let url = entry.project.baseURL.appendingPathComponent(filename)
         return entry.snapshot?.json(at: url) ?? (try? JSONHelper.loadDictionary(from: url))
@@ -1954,6 +1956,7 @@ enum HorizontalDispatchMethods {
             var json: JSONDictionary = ["uuid": block.uuid, "name": block.displayName, "is_top": block.isTop]
             json["block_filename"] = block.blockFilename ?? NSNull()
             json["schematic_filename"] = block.schematicFilename ?? NSNull()
+            json["symbol_filename"] = block.symbolFilename ?? NSNull()
             return json
         }
         let sheets: [JSONDictionary] = index.sheets.map(sheetJSON)
@@ -2119,10 +2122,12 @@ enum HorizontalDispatchMethods {
         return json
     }
 
-    /// The top block's schematic as it stands in the selected source, so a
-    /// read of the sheets sees an unsaved document rather than the last save.
-    private static func schematicJSON(_ entry: HorizontalDispatchProjectEntry) throws -> JSONDictionary {
-        let filename = entry.project.blocks.first(where: \.isTop)?.schematicFilename ?? entry.project.schematicFilename
+    /// A block's schematic — the top one's unless `block` is another — as it
+    /// stands in the selected source, so a read of the sheets sees an
+    /// unsaved document rather than the last save.
+    private static func schematicJSON(_ entry: HorizontalDispatchProjectEntry, block: HorizontalProjectBlock? = nil) throws -> JSONDictionary {
+        let top = entry.project.blocks.first(where: \.isTop)
+        let filename = (block ?? top)?.schematicFilename ?? (block == nil || block?.isTop == true ? entry.project.schematicFilename : nil)
         guard let filename, !filename.isEmpty else {
             throw HorizontalDispatchError.notFound("The project has no schematic.")
         }
@@ -2145,12 +2150,30 @@ enum HorizontalDispatchMethods {
         return json
     }
 
-    /// The sheets of the top block's schematic that a selector picks, as raw
-    /// JSON paired with the sheet the index knows.
+    /// The block a read is about: the one `block_id` or `block` names, else
+    /// the one whose sheet a selector picks, else the top block.
+    private static func selectedBlock(_ entry: HorizontalDispatchProjectEntry, _ params: JSONDictionary) throws -> HorizontalProjectBlock? {
+        let blocks = entry.project.blocks
+        if let id = params.string("block_id") ?? params.string("block") {
+            let matches = HorizontalProjectBlock.matching(id, in: blocks)
+            guard matches.count == 1 else {
+                if matches.isEmpty { throw HorizontalDispatchError.notFound("No block \(id).") }
+                throw HorizontalDispatchError.ambiguous("More than one block is called \(id); use its uuid.", candidates: matches.map(\.uuid))
+            }
+            return matches[0]
+        }
+        if let sheet = try HorizontalDispatchValidation.sheet(params, index: entry.index), let blockID = sheet.blockID {
+            return blocks.first { $0.uuid.caseInsensitiveCompare(blockID) == .orderedSame }
+        }
+        return blocks.first(where: \.isTop)
+    }
+
+    /// The sheets of a block's schematic — the one `selectedBlock` picks —
+    /// that a selector picks, as raw JSON paired with the sheet the index knows.
     private static func selectedSheets(_ entry: HorizontalDispatchProjectEntry, _ params: JSONDictionary) throws
         -> [(id: String, index: Int, json: JSONDictionary)] {
         let selected = try HorizontalDispatchValidation.sheet(params, index: entry.index)
-        let sheets = (try schematicJSON(entry)["sheets"] as? JSONDictionary ?? [:])
+        let sheets = (try schematicJSON(entry, block: try selectedBlock(entry, params))["sheets"] as? JSONDictionary ?? [:])
             .compactMap { id, value in (value as? JSONDictionary).map { (id: id, index: $0.int("index") ?? 0, json: $0) } }
             .sorted { ($0.index, $0.id) < ($1.index, $1.id) }
         guard let selected else { return sheets }
@@ -2215,13 +2238,14 @@ enum HorizontalDispatchMethods {
 
     @Sendable private static func listBlockInstances(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
-        guard let block = blockJSON(entry) else {
+        let selectedBlock = try selectedBlock(entry, params)
+        guard let block = blockJSON(entry, block: selectedBlock) else {
             throw HorizontalDispatchError.notFound("The project has no block.")
         }
         let names = Dictionary(uniqueKeysWithValues: entry.project.blocks.map { ($0.uuid.lowercased(), $0.displayName) })
         // Where each instance is drawn, so a caller can find the symbol to move.
         var sheetsByInstance = [String: [JSONDictionary]]()
-        for sheet in (try? selectedSheets(entry, [:])) ?? [] {
+        for sheet in (try? selectedSheets(entry, selectedBlock.map { ["block_id": $0.uuid] } ?? [:])) ?? [] {
             for (symbolID, symbol) in sheet.json.dictionaryMap("block_symbols") {
                 guard let instance = symbol.string("block_instance")?.lowercased() else { continue }
                 sheetsByInstance[instance, default: []].append(["block_symbol": symbolID, "sheet": sheet.id, "sheet_index": sheet.index])
@@ -2303,8 +2327,9 @@ enum HorizontalDispatchMethods {
     @Sendable private static func listJunctions(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         let wanted = try netFilter(entry, params)
+        let block = blockJSON(entry, block: try selectedBlock(entry, params)) ?? [:]
         return try selectedSheets(entry, params).flatMap { sheet -> [JSONDictionary] in
-            let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: blockJSON(entry) ?? [:])
+            let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: block)
             return sheet.json.dictionaryMap("junctions").compactMap { id, item -> JSONDictionary? in
                 let net = connectivity.net(at: ["junc": id])
                 guard wanted == nil || wanted == net else { return nil }
@@ -2320,9 +2345,10 @@ enum HorizontalDispatchMethods {
     @Sendable private static func listNetLines(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         let wanted = try netFilter(entry, params)
+        let block = blockJSON(entry, block: try selectedBlock(entry, params)) ?? [:]
         return try selectedSheets(entry, params).flatMap { sheet -> [JSONDictionary] in
             let symbols = sheet.json.dictionaryMap("symbols").reduce(into: [String: JSONDictionary]()) { $0[$1.key.lowercased()] = $1.value }
-            let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: blockJSON(entry) ?? [:])
+            let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: block)
             // The loaded sheet has resolved each end to a point.
             let drawn = (entry.project.schematic?.sheets.first { $0.id.caseInsensitiveCompare(sheet.id) == .orderedSame }?.netLines ?? [])
                 .reduce(into: [String: HorizontalSegment]()) { $0[$1.id.lowercased()] = $1 }
@@ -2349,7 +2375,7 @@ enum HorizontalDispatchMethods {
 
     @Sendable private static func findDangling(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
-        let block = blockJSON(entry) ?? [:]
+        let block = blockJSON(entry, block: try selectedBlock(entry, params)) ?? [:]
         let nets = block.dictionaryMap("nets")
         let pool = entry.poolIndex
         var totals = ["unanchored_islands": 0, "stubs": 0, "stub_net_lines": 0, "stub_junctions": 0, "broken_lines": 0]
@@ -2384,7 +2410,7 @@ enum HorizontalDispatchMethods {
 
     @Sendable private static func findOverlaps(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
-        let block = blockJSON(entry) ?? [:]
+        let block = blockJSON(entry, block: try selectedBlock(entry, params)) ?? [:]
         let pool = entry.poolIndex
         var totals = [String: Int]()
         let sheets = try selectedSheets(entry, params).compactMap { sheet -> JSONDictionary? in
@@ -2746,11 +2772,12 @@ enum HorizontalDispatchMethods {
 
     @Sendable private static func listBuses(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
-        guard let block = blockJSON(entry) else {
+        let selectedBlock = try selectedBlock(entry, params)
+        guard let block = blockJSON(entry, block: selectedBlock) else {
             throw HorizontalDispatchError.notFound("The project has no block.")
         }
         var marksByBus = [String: [JSONDictionary]]()
-        for sheet in (try? selectedSheets(entry, [:])) ?? [] {
+        for sheet in (try? selectedSheets(entry, selectedBlock.map { ["block_id": $0.uuid] } ?? [:])) ?? [] {
             for (key, kind) in [("bus_labels", "label"), ("bus_rippers", "ripper")] {
                 for (id, item) in sheet.json.dictionaryMap(key) {
                     guard let bus = item.string("bus")?.lowercased() else { continue }
@@ -2775,11 +2802,12 @@ enum HorizontalDispatchMethods {
 
     @Sendable private static func listNetTies(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
-        guard let block = blockJSON(entry) else {
+        let selectedBlock = try selectedBlock(entry, params)
+        guard let block = blockJSON(entry, block: selectedBlock) else {
             throw HorizontalDispatchError.notFound("The project has no block.")
         }
         var drawnByTie = [String: [JSONDictionary]]()
-        for sheet in (try? selectedSheets(entry, [:])) ?? [] {
+        for sheet in (try? selectedSheets(entry, selectedBlock.map { ["block_id": $0.uuid] } ?? [:])) ?? [] {
             for (id, item) in sheet.json.dictionaryMap("net_ties") {
                 guard let tie = item.string("net_tie")?.lowercased() else { continue }
                 drawnByTie[tie, default: []].append(["id": id, "sheet": sheet.id, "sheet_index": sheet.index])

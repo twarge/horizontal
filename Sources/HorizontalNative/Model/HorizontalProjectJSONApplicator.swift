@@ -316,7 +316,13 @@ enum HorizontalProjectJSONApplicator {
         patchSchematicNetTies(&sheetJSON, netTies: sheet.netTies)
         patchSchematicPowerSymbols(&sheetJSON, powerSymbols: sheet.powerSymbols, fallbackPowerSymbolIDs: schematicPowerSymbolIDs(in: sheet))
         patchSchematicBusRippers(&sheetJSON, busRipperIDs: schematicBusRipperIDs(in: sheet))
-        patchSchematicBlockSymbols(&sheetJSON, blockSymbolIDs: schematicBlockSymbolIDs(in: sheet))
+        patchSchematicBlockSymbols(&sheetJSON, blockSymbolIDs: schematicBlockSymbolIDs(in: sheet), blockSymbols: sheet.blockSymbols)
+        try patchBlockInstanceConnections(
+            sheet.blockSymbols,
+            schematicURL: schematicURL,
+            project: project,
+            archive: &archive
+        )
 
         sheets[sheetKey] = sheetJSON
         json["sheets"] = sheets
@@ -2034,12 +2040,60 @@ enum HorizontalProjectJSONApplicator {
         json["bus_rippers"] = map
     }
 
-    private static func patchSchematicBlockSymbols(_ json: inout JSONDictionary, blockSymbolIDs: [String]) {
+    /// A block symbol the sheet still draws keeps its entry, placed where
+    /// the sheet now has it; one it doesn't is gone. New ones are made by
+    /// `place_block_symbol`, never here.
+    private static func patchSchematicBlockSymbols(
+        _ json: inout JSONDictionary,
+        blockSymbolIDs: [String],
+        blockSymbols: [HorizontalSchematicBlockSymbol]
+    ) {
         guard var map = json["block_symbols"] as? JSONDictionary else {
             return
         }
         removeEntriesNotIn(&map, keeping: blockSymbolIDs)
+        for blockSymbol in blockSymbols {
+            guard let key = matchingKey(blockSymbol.id, in: map), var item = map[key] as? JSONDictionary else {
+                continue
+            }
+            var placement = item["placement"] as? JSONDictionary ?? [:]
+            placement["shift"] = jsonPoint(blockSymbol.placement.shift)
+            placement["angle"] = blockSymbol.placement.angle
+            placement["mirror"] = blockSymbol.placement.mirrored
+            item["placement"] = placement
+            map[key] = item
+        }
         json["block_symbols"] = map
+    }
+
+    /// What the sheet's block symbols wire their ports to is their
+    /// instances': a port wired here, or left with no wire, is written to
+    /// the instance's `connections` in the sheet's block. Instances drawn
+    /// only on other sheets are theirs to write.
+    private static func patchBlockInstanceConnections(
+        _ blockSymbols: [HorizontalSchematicBlockSymbol],
+        schematicURL: URL,
+        project: HorizontalProject,
+        archive: inout HorizontalProjectArchive
+    ) throws {
+        guard !blockSymbols.isEmpty, let blockURL = blockURL(for: schematicURL, in: project) else {
+            return
+        }
+        let path = try archivePath(for: blockURL, project: project, archive: archive)
+        var json = try loadJSON(relativePath: path, fallbackURL: blockURL, from: archive)
+        guard var instances = json["block_instances"] as? JSONDictionary else {
+            return
+        }
+        for blockSymbol in blockSymbols {
+            guard let key = matchingKey(blockSymbol.instanceID, in: instances),
+                  var instance = instances[key] as? JSONDictionary else {
+                continue
+            }
+            instance["connections"] = blockSymbol.connectionsJSON
+            instances[key] = instance
+        }
+        json["block_instances"] = instances
+        try saveJSON(json, relativePath: path, to: &archive)
     }
 
     private static func patchBoardPanels(_ json: inout JSONDictionary, panels: [HorizontalBoardPanel]) {

@@ -213,7 +213,13 @@ enum HorizontalSchematicWireTool {
         }
 
         private static let noConnectMessage = "Can't connect to a pin marked no connect"
-        private static let unconnectedPortMessage = "Can't wire a block port that is on no net"
+        private static let noConnectPortMessage = "Can't connect to a port marked no connect"
+
+        /// Whether the port at `path` is marked NC, which Horizon won't wire.
+        private func isNoConnectPort(_ path: String) -> Bool {
+            if case .notConnected? = sheet.blockPortConnection(path: path) { return true }
+            return false
+        }
 
         mutating func click(at point: HorizontalPoint) -> Outcome {
             pending = nil
@@ -232,8 +238,8 @@ enum HorizontalSchematicWireTool {
                 if case .notConnected? = connection { return .refused(Self.noConnectMessage) }
                 guard pin.path != startPin else { return .done }
                 targetNetID = connection?.netID
-            case .port(_, let netID):
-                guard netID != nil else { return .refused(Self.unconnectedPortMessage) }
+            case .port(let path, let netID):
+                if isNoConnectPort(path) { return .refused(Self.noConnectPortMessage) }
                 targetNetID = netID
             case .junction(_, let netID):
                 targetNetID = netID
@@ -281,7 +287,8 @@ enum HorizontalSchematicWireTool {
                 startPin = pin.path
                 netID = connection?.netID
             case .port(let path, let netID):
-                guard let netID else { return .refused(Self.unconnectedPortMessage) }
+                // A port on no net gets one when the wire is laid, as a pin does.
+                if isNoConnectPort(path) { return .refused(Self.noConnectPortMessage) }
                 anchorEndpoint = .port(path)
                 self.netID = netID
             case .junction(let junctionID, let netID):
