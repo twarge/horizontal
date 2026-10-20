@@ -266,3 +266,52 @@ extension HorizontalSchematicBlockResource {
         )
     }
 }
+
+extension HorizontalSchematicSheet {
+    /// The sheet with components drawn under other refdes: Horizon's view of
+    /// a block's sheet through one instance of it, where each component shows
+    /// the refdes that instance's mapping gives it. `refdes` is by component
+    /// uuid; a component it leaves out keeps its own.
+    func showingRefdes(_ refdes: [String: String]) -> HorizontalSchematicSheet {
+        guard !refdes.isEmpty else {
+            return self
+        }
+        var sheet = self
+        for index in sheet.symbols.indices {
+            guard let componentID = sheet.symbols[index].componentID?.lowercased(),
+                  let shown = refdes[componentID],
+                  var details = sheet.symbols[index].componentDetails,
+                  details.refdes != shown else {
+                continue
+            }
+            let previous = details.refdes
+            details.refdes = shown
+            sheet.symbols[index].componentDetails = details
+            sheet.symbols[index].label = details.displayLabel
+            guard !previous.isEmpty else { continue }
+            let symbolID = sheet.symbols[index].id.lowercased()
+            for text in sheet.symbolTexts.indices
+                where schematicMetalSymbolID(forGeometryID: sheet.symbolTexts[text].id)?.lowercased() == symbolID {
+                sheet.symbolTexts[text].text = sheet.symbolTexts[text].text.replacingOccurrences(of: previous, with: shown)
+            }
+            // A smashed refdes is the sheet's text, drawing what it stores.
+            let smashed = Set(sheet.symbols[index].smashedTextIDs.map { $0.lowercased() })
+            for text in sheet.texts.indices where smashed.contains(sheet.texts[text].id.lowercased()) {
+                guard var placeholder = sheet.texts[text].placeholder, placeholder.stored.contains("$R") else { continue }
+                placeholder.drawn = placeholder.drawn.replacingOccurrences(of: previous, with: shown)
+                sheet.texts[text].placeholder = placeholder
+                sheet.texts[text].text = sheet.texts[text].text.replacingOccurrences(of: previous, with: shown)
+            }
+        }
+        return sheet
+    }
+
+    /// Each drawn component's refdes, as this sheet draws it.
+    var drawnRefdes: [String: String] {
+        symbols.reduce(into: [String: String]()) { result, symbol in
+            if let componentID = symbol.componentID?.lowercased(), let refdes = symbol.componentDetails?.refdes {
+                result[componentID] = refdes
+            }
+        }
+    }
+}

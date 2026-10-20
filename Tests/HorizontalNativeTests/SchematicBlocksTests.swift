@@ -355,4 +355,97 @@ final class SchematicBlocksTests: XCTestCase {
         XCTAssertNil(project.flattenedBlock)
         XCTAssertEqual(HorizontalBlockFlattener.flattenedID(["0c0c0c0c-1111-4222-8333-444455556666"]), "0c0c0c0c-1111-4222-8333-444455556666")
     }
+
+    func testAnInstanceGetsItsOwnRefdes() throws {
+        let placed = try placeChannel()
+        try apply([["op": "set_block_instance", "instance": placed.instance, "refdes": "I1"]])
+        var channel = try file("blocks/\(channelID)/block.json")
+        let resistor = "22222222-2222-4333-8444-555566667777"
+        channel["components"] = [resistor: ["refdes": "R?", "value": "1k", "connections": JSONDictionary()]]
+        try put("blocks/\(channelID)/block.json", channel)
+        try reload()
+
+        let changes = try apply([["op": "set_refdes", "component": resistor, "refdes": "R7", "instance": "I1"]], block: "Channel")
+        XCTAssertEqual(changes.first?["instance"] as? String, placed.instance)
+        let mapping = try XCTUnwrap(try file("top_block.json").dictionaryMap("block_instance_mappings")[placed.instance])
+        XCTAssertEqual(mapping.dictionaryMap("components")[resistor]?.string("refdes"), "R7")
+        XCTAssertEqual(try file("blocks/\(channelID)/block.json").dictionaryMap("components")[resistor]?.string("refdes"), "R?",
+                       "the block's own refdes stays")
+        XCTAssertEqual(project.flattenedBlock?.instanceRefdes[placed.instance]?[resistor], "R7")
+        let flatID = HorizontalBlockFlattener.flattenedID([placed.instance, resistor])
+        XCTAssertEqual(project.flattenedBlock?.json.dictionaryMap("components")[flatID]?.string("refdes"), "R7")
+
+        try apply([["op": "set_no_populate", "component": resistor, "no_populate": true, "instance": placed.instance]], block: "Channel")
+        XCTAssertEqual(try file("top_block.json").dictionaryMap("block_instance_mappings")[placed.instance]?
+            .dictionaryMap("components")[resistor]?.bool("nopopulate"), true)
+
+        XCTAssertThrowsError(try apply([["op": "set_refdes", "component": resistor, "refdes": "R8", "instance": "I9"]], block: "Channel"))
+    }
+
+    func testASheetDrawsAnInstancesRefdes() throws {
+        var schematic = try file("top_schematic.json")
+        let sheetID = try XCTUnwrap(schematic.dictionaryMap("sheets").keys.first)
+        var sheet = try XCTUnwrap(schematic.dictionaryMap("sheets")[sheetID])
+        sheet["symbols"] = ["s1": ["symbol": "part-symbol", "component": "r1", "gate": "gate",
+                                   "placement": ["shift": [0, 0], "angle": 0, "mirror": false]]]
+        schematic["sheets"] = [sheetID: sheet]
+        try put("top_schematic.json", schematic)
+        var top = try file("top_block.json")
+        top["components"] = ["r1": ["refdes": "R?", "value": "", "connections": JSONDictionary()]]
+        try put("top_block.json", top)
+        try put("pool/symbols/cache/part-symbol.json", ["uuid": "part-symbol", "unit": "unit", "pins": JSONDictionary(),
+            "texts": ["t": ["text": "$REFDES", "placement": ["shift": [0, 2_500_000], "angle": 0, "mirror": false], "size": 1_500_000]]])
+        try put("pool/units/cache/unit.json", ["uuid": "unit", "pins": JSONDictionary()])
+        try reload()
+
+        let drawn = try topSheet
+        XCTAssertEqual(drawn.drawnRefdes["r1"], "R?")
+        XCTAssertTrue(drawn.symbolTexts.contains { $0.text == "R?" })
+        let instance = drawn.showingRefdes(["r1": "R12"])
+        XCTAssertEqual(instance.drawnRefdes["r1"], "R12")
+        XCTAssertTrue(instance.symbolTexts.contains { $0.text == "R12" })
+        XCTAssertFalse(instance.symbolTexts.contains { $0.text == "R?" })
+        // And back, as an edit through the instance is written.
+        XCTAssertTrue(instance.showingRefdes(drawn.drawnRefdes).symbolTexts.contains { $0.text == "R?" })
+    }
+
+    func testAnnotateNumbersEachInstanceAsHorizonDoes() throws {
+        let placed = try placeChannel()
+        let second = try XCTUnwrap(try apply([["op": "add_block_instance", "block": "Channel"]]).first?["block_instance"] as? String)
+        try apply([
+            ["op": "place_block_symbol", "instance": second, "x_mm": 100, "y_mm": 50],
+            ["op": "set_block_instance", "instance": placed.instance, "refdes": "I1"],
+            ["op": "set_block_instance", "instance": second, "refdes": "I2"],
+        ])
+        // A resistor inside Channel, drawn on its sheet.
+        let resistor = "22222222-2222-4333-8444-555566667777"
+        var channel = try file("blocks/\(channelID)/block.json")
+        channel["components"] = [resistor: ["refdes": "R?", "value": "1k", "connections": JSONDictionary()]]
+        try put("blocks/\(channelID)/block.json", channel)
+        var schematic = try file("blocks/\(channelID)/schematic.json")
+        let sheetID = try XCTUnwrap(schematic.dictionaryMap("sheets").keys.first)
+        var sheet = try XCTUnwrap(schematic.dictionaryMap("sheets")[sheetID])
+        sheet["symbols"] = ["s1": ["symbol": "part-symbol", "component": resistor, "gate": "gate",
+                                   "placement": ["shift": [0, 0], "angle": 0, "mirror": false]]]
+        schematic["sheets"] = [sheetID: sheet]
+        try put("blocks/\(channelID)/schematic.json", schematic)
+        try reload()
+
+        func instanceRefdes(_ instance: String) throws -> String? {
+            try file("top_block.json").dictionaryMap("block_instance_mappings")[instance]?.dictionaryMap("components")[resistor]?.string("refdes")
+        }
+        let sequential = try apply([["op": "annotate", "mode": "sequential", "order": "down_right"]])
+        XCTAssertEqual(sequential.first?["annotated"] as? Int, 2)
+        XCTAssertEqual(try instanceRefdes(placed.instance), "R1", "I1's sheet comes first, as Horizon numbers pages")
+        XCTAssertEqual(try instanceRefdes(second), "R2")
+        XCTAssertEqual(try file("blocks/\(channelID)/block.json").dictionaryMap("components")[resistor]?.string("refdes"), "R?",
+                       "the block's own refdes is no instance's")
+        XCTAssertEqual(try file("top_schematic.json").dictionary("annotation")?.string("mode"), "sequential", "the options are kept")
+
+        // Per page: the top sheet is page 1, I1's 2 and I2's 3.
+        try apply([["op": "annotate", "mode": "sheet_100", "keep": false]])
+        XCTAssertEqual(try instanceRefdes(placed.instance), "R201")
+        XCTAssertEqual(try instanceRefdes(second), "R301")
+        XCTAssertEqual(try apply([["op": "annotate"]]).first?["annotated"] as? Int, 0, "again changes nothing")
+    }
 }

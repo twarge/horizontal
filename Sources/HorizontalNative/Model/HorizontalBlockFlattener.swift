@@ -24,6 +24,9 @@ struct HorizontalFlattenedBlock: @unchecked Sendable {
     var netPaths: [String: [[String]]]
     /// Nets that are a port marked not connected in some instance.
     var noConnectNets: Set<String>
+    /// Each instance path's own refdes for its block's components, by path
+    /// (`/`-joined instance uuids) and component: the top block's mappings.
+    var instanceRefdes: [String: [String: String]] = [:]
 
     /// Whether anything was expanded: false for a project without instances.
     var isHierarchical: Bool {
@@ -99,8 +102,13 @@ enum HorizontalBlockFlattener {
             }
             context.flat["nets"] = nets
         }
+        let instanceRefdes = top.dictionaryMap("block_instance_mappings").reduce(into: [String: [String: String]]()) { result, item in
+            result[item.key.lowercased()] = item.value.dictionaryMap("components").reduce(into: [String: String]()) {
+                if let refdes = $1.value.string("refdes") { $0[$1.key.lowercased()] = refdes }
+            }
+        }
         return HorizontalFlattenedBlock(json: context.flat, componentPaths: context.componentPaths,
-                                        netPaths: netPaths, noConnectNets: noConnect)
+                                        netPaths: netPaths, noConnectNets: noConnect, instanceRefdes: instanceRefdes)
     }
 
     /// The project's top block flattened, from the block files under

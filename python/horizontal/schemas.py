@@ -327,6 +327,7 @@ class SetValue(ComponentOp):
 class SetRefdes(ComponentOp):
     op: Literal["set_refdes"]
     refdes: StrictStr
+    instance: StrictStr | None = None
 
 
 class SetPart(ComponentOp):
@@ -337,6 +338,7 @@ class SetPart(ComponentOp):
 class SetPopulation(ComponentOp):
     op: Literal["set_no_populate"]
     no_populate: StrictBool
+    instance: StrictStr | None = None
 
 
 class SetGroup(ComponentOp):
@@ -840,6 +842,16 @@ class RemoveBlockPort(Input):
     net: StrictStr
 
 
+class Annotate(Input):
+    """Horizon's Annotate, over the whole design; the options default to the schematic's own."""
+    op: Literal["annotate"]
+    mode: Literal["sequential", "sheet_100", "sheet_1000"] | None = None
+    order: Literal["right_down", "down_right"] | None = None
+    fill_gaps: bool | None = None
+    keep: bool | None = None
+    ignore_unknown: bool | None = None
+
+
 class PlaceBlockSymbol(Input):
     op: Literal["place_block_symbol"]
     instance: StrictStr
@@ -1187,7 +1199,7 @@ EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | 
                           AddNetClass | RenameNetClass |
                           AddBlockInstance | RemoveBlockInstance | ConnectBlockPort |
                           PlaceBlockSymbol | RemoveBlockSymbol | DisconnectBlockPort | SetBlockInstance |
-                          AddBlock | RenameBlock | RemoveBlock | SetNetPort | PlaceBlockPort | RemoveBlockPort | SetStackup |
+                          AddBlock | RenameBlock | RemoveBlock | SetNetPort | PlaceBlockPort | RemoveBlockPort | Annotate | SetStackup |
                           AddRule | SetRule | RemoveRule |
                           PlaceHole | RemoveHole | PlaceKeepout | RemoveKeepout | SetSheetIndex |
                           PlaceBoardText | RemoveBoardText | PlaceDimension | RemoveDimension |
