@@ -18,6 +18,7 @@ enum HorizontalEditHandles {
         case component, net, bus, busMember = "bus_member", netTie = "net_tie", netClass = "net_class"
         case symbol, netLine = "net_line", junction, blockInstance = "block_instance"
         case text, boardText = "board_text", netLabel = "net_label", busLabel = "bus_label"
+        case block
     }
 
     /// The ops whose id names the thing they make.
@@ -26,7 +27,7 @@ enum HorizontalEditHandles {
         "add_net_tie": .netTie, "add_net_class": .netClass, "place_symbol": .symbol, "draw_net_line": .netLine,
         "place_junction": .junction, "add_block_instance": .blockInstance,
         "place_text": .text, "place_board_text": .boardText,
-        "place_net_label": .netLabel, "place_bus_label": .busLabel
+        "place_net_label": .netLabel, "place_bus_label": .busLabel, "add_block": .block
     ]
 
     /// Ops whose id names an existing thing rather than a new one: the
@@ -37,7 +38,8 @@ enum HorizontalEditHandles {
         "remove_text": .text, "remove_board_text": .boardText, "remove_net_label": .netLabel,
         "remove_net_line": .netLine, "set_net_line_endpoint": .netLine, "remove_junction": .junction,
         "remove_bus": .bus, "remove_net_tie": .netTie,
-        "remove_block_instance": .blockInstance, "remove_block_symbol": .blockInstance
+        "remove_block_instance": .blockInstance, "remove_block_symbol": .blockInstance,
+        "set_block_instance": .blockInstance, "rename_block": .block, "remove_block": .block
     ]
 
     /// Fields that name an existing thing of a kind, on any op.
@@ -45,7 +47,8 @@ enum HorizontalEditHandles {
         "component": .component, "to_component": .component,
         "net": .net, "primary": .net, "secondary": .net,
         "bus": .bus, "member": .busMember, "net_tie": .netTie, "net_class": .netClass,
-        "symbol_instance": .symbol, "line": .netLine, "junction": .junction, "instance": .blockInstance
+        "symbol_instance": .symbol, "line": .netLine, "junction": .junction, "instance": .blockInstance,
+        "block": .block
     ]
 
     /// Fields inside a schematic wire end. Only the wire ops have those: a

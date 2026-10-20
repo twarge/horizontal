@@ -985,10 +985,11 @@ def _compact_marks(rows: list[dict[str, Any]], verbose: bool) -> list[dict[str, 
 
 
 @_tool
-def list_block_instances(path: str | None = None) -> list[dict[str, Any]]:
-    """The blocks this block uses: each instance, the block it stands for, its reference designator, which of its
-    ports are wired to which net here, and where its symbol is drawn. This is how a hierarchical design is read."""
-    return _resolve(path).block_instances()
+def list_block_instances(path: str | None = None, block: str | None = None) -> list[dict[str, Any]]:
+    """The blocks a block uses — the top one, or the one block names: each instance, the block it stands for, its
+    reference designator, which of its ports are wired to which net here, and where its symbol is drawn. This is
+    how a hierarchical design is read."""
+    return _resolve(path).block_instances(block)
 
 
 @_tool

@@ -91,6 +91,8 @@ struct HorizontalSchematicSheet: Identifiable {
     var blockSymbolLines: [HorizontalSegment]
     var blockSymbolPorts: [HorizontalSegment]
     var blockSymbolTexts: [HorizontalText]
+    /// What the block symbol artwork above was baked from, one per symbol.
+    var blockSymbols: [HorizontalSchematicBlockSymbol] = []
     var netTies: [HorizontalSchematicNetTie]
     /// The block's buses, which the labels and rippers above draw. A sheet
     /// carries them so a tool can offer the buses that exist rather than
@@ -433,6 +435,7 @@ struct HorizontalSchematic {
     }
 
     private struct SchematicBlockSymbolArtwork {
+        var symbols: [HorizontalSchematicBlockSymbol] = []
         var lines: [HorizontalSegment] = []
         var ports: [HorizontalSegment] = []
         var texts: [HorizontalText] = []
@@ -1050,6 +1053,7 @@ struct HorizontalSchematic {
                 blockSymbolLines: blockSymbolArtwork.lines,
                 blockSymbolPorts: blockSymbolArtwork.ports,
                 blockSymbolTexts: blockSymbolArtwork.texts,
+                blockSymbols: blockSymbolArtwork.symbols,
                 netTies: netTies,
                 busDetails: blockInfo.busDetails,
                 netTieDetails: blockInfo.netTieDetails,
@@ -2828,7 +2832,7 @@ struct HorizontalSchematic {
         var result = SchematicBlockSymbolArtwork()
         var symbolCache = [String: JSONDictionary]()
 
-        for (blockSymbolID, item) in map {
+        for (blockSymbolID, item) in map.sorted(by: { $0.key < $1.key }) {
             guard let blockInstanceID = item.string("block_instance").map(normalizedID),
                   let instance = blockInfo.blockInstances[blockInstanceID],
                   let resource = blockSymbols[instance.blockID],
@@ -2847,42 +2851,71 @@ struct HorizontalSchematic {
                 continue
             }
 
-            let localJunctions = parseJunctions(from: symbolJSON)
-            let transformedJunctions = localJunctions.mapValues(symbolTransform.schematicGeometry.applying)
-            result.lines.append(contentsOf: parseSymbolLines(
-                from: symbolJSON.dictionaryMap("lines"),
-                symbolInstanceID: blockSymbolID,
-                junctions: transformedJunctions
-            ))
-            result.lines.append(contentsOf: parseSymbolArcs(
-                from: symbolJSON.dictionaryMap("arcs"),
-                symbolInstanceID: blockSymbolID,
-                junctions: localJunctions,
-                symbolTransform: symbolTransform
-            ))
-            result.texts.append(contentsOf: parseBlockSymbolTexts(
-                from: symbolJSON.dictionaryMap("texts"),
-                blockSymbolID: blockSymbolID,
-                symbolTransform: symbolTransform,
-                instance: instance,
-                resource: resource
-            ))
-
-            let ports = parseBlockSymbolPorts(
-                from: symbolJSON.dictionaryMap("ports"),
-                blockSymbolID: blockSymbolID,
-                symbolTransform: symbolTransform,
-                instance: instance,
-                resource: resource
+            let blockSymbol = HorizontalSchematicBlockSymbol(
+                id: normalizedID(blockSymbolID),
+                instanceID: blockInstanceID,
+                blockID: instance.blockID,
+                refdes: instance.refdes,
+                placement: symbolTransform,
+                connections: instance.connections,
+                resource: resource,
+                symbolJSON: symbolJSON
             )
-            result.ports.append(contentsOf: ports.lines)
-            result.texts.append(contentsOf: ports.texts)
-            result.portPositions.merge(ports.positions) { current, _ in current }
-            let displayedNets = Set(symbolJSON.dictionaryMap("ports").values.compactMap { $0.string("net").map(normalizedID) })
-            let missing = resource.nets.filter { $0.value.isPort && !displayedNets.contains($0.key) }.values.map(\.name).sorted()
-            if !missing.isEmpty { result.missingPorts[blockSymbolID] = missing }
+            let artwork = blockSymbolArtwork(for: blockSymbol)
+            result.symbols.append(blockSymbol)
+            result.lines.append(contentsOf: artwork.lines)
+            result.ports.append(contentsOf: artwork.ports)
+            result.texts.append(contentsOf: artwork.texts)
+            result.portPositions.merge(artwork.portPositions) { current, _ in current }
+            if !artwork.missingPorts.isEmpty { result.missingPorts[blockSymbol.id] = artwork.missingPorts }
         }
 
+        return result
+    }
+
+    /// One block symbol's artwork, as the sheet loader bakes it: the used
+    /// block's symbol moved to where the entry places it, its texts filled
+    /// in for the instance, and its ports drawn on the nets the instance
+    /// wires them to. `missingPorts` names the used block's ports the symbol
+    /// doesn't draw.
+    static func blockSymbolArtwork(for blockSymbol: HorizontalSchematicBlockSymbol) -> HorizontalBlockSymbolArtwork {
+        let symbolJSON = blockSymbol.symbolJSON
+        let blockSymbolID = blockSymbol.id
+        let symbolTransform = blockSymbol.placement
+        let resource = blockSymbol.resource
+        var result = HorizontalBlockSymbolArtwork()
+
+        let localJunctions = parseJunctions(from: symbolJSON)
+        let transformedJunctions = localJunctions.mapValues(symbolTransform.schematicGeometry.applying)
+        result.lines.append(contentsOf: parseSymbolLines(
+            from: symbolJSON.dictionaryMap("lines"),
+            symbolInstanceID: blockSymbolID,
+            junctions: transformedJunctions
+        ))
+        result.lines.append(contentsOf: parseSymbolArcs(
+            from: symbolJSON.dictionaryMap("arcs"),
+            symbolInstanceID: blockSymbolID,
+            junctions: localJunctions,
+            symbolTransform: symbolTransform
+        ))
+        result.texts.append(contentsOf: parseBlockSymbolTexts(
+            from: symbolJSON.dictionaryMap("texts"),
+            blockSymbolID: blockSymbolID,
+            symbolTransform: symbolTransform,
+            blockSymbol: blockSymbol
+        ))
+
+        let ports = parseBlockSymbolPorts(
+            from: symbolJSON.dictionaryMap("ports"),
+            blockSymbolID: blockSymbolID,
+            symbolTransform: symbolTransform,
+            blockSymbol: blockSymbol
+        )
+        result.ports = ports.lines
+        result.texts.append(contentsOf: ports.texts)
+        result.portPositions = ports.positions
+        let displayedNets = Set(symbolJSON.dictionaryMap("ports").values.compactMap { $0.string("net").map(normalizedID) })
+        result.missingPorts = resource.nets.filter { $0.value.isPort && !displayedNets.contains($0.key) }.values.map(\.name).sorted()
         return result
     }
 
@@ -2890,8 +2923,7 @@ struct HorizontalSchematic {
         from map: [String: JSONDictionary],
         blockSymbolID: String,
         symbolTransform: HorizontalPlacementTransform,
-        instance: SchematicBlockInstanceInfo,
-        resource: HorizontalSchematicBlockResource
+        blockSymbol: HorizontalSchematicBlockSymbol
     ) -> [HorizontalText] {
         map.compactMap { id, item in
             guard let text = item.string("text"),
@@ -2899,7 +2931,7 @@ struct HorizontalSchematic {
                 return nil
             }
 
-            let substituted = substituteBlockSymbolText(text, instance: instance, resource: resource)
+            let substituted = substituteBlockSymbolText(text, refdes: blockSymbol.refdes, name: blockSymbol.resource.name)
             guard !substituted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return nil
             }
@@ -2925,8 +2957,7 @@ struct HorizontalSchematic {
         from map: [String: JSONDictionary],
         blockSymbolID: String,
         symbolTransform: HorizontalPlacementTransform,
-        instance: SchematicBlockInstanceInfo,
-        resource: HorizontalSchematicBlockResource
+        blockSymbol: HorizontalSchematicBlockSymbol
     ) -> (lines: [HorizontalSegment], texts: [HorizontalText], positions: [String: HorizontalPoint]) {
         var lines = [HorizontalSegment]()
         var texts = [HorizontalText]()
@@ -2942,9 +2973,9 @@ struct HorizontalSchematic {
             let orientation = pinOrientationForPlacement(item.string("orientation"), transform: symbolTransform)
             let length = item.double("length") ?? 0
             let netID = item.string("net").map(normalizedID)
-            let portNetID = netID.flatMap { instance.connections[$0]?.netID }
-            let netResource = netID.flatMap { resource.nets[$0] }
-            let connectorStyle = blockPortConnectorStyle(for: netID, instance: instance)
+            let portNetID = netID.flatMap { blockSymbol.connections[$0]?.netID }
+            let netResource = netID.flatMap { blockSymbol.resource.nets[$0] }
+            let connectorStyle = blockPortConnectorStyle(for: netID, connections: blockSymbol.connections)
             positions[normalizedUUIDPath("\(blockSymbolID)/\(portID)")] = position
 
             var end = position
@@ -3043,8 +3074,8 @@ struct HorizontalSchematic {
         return (lines, texts, positions)
     }
 
-    private static func blockPortConnectorStyle(for netID: String?, instance: SchematicBlockInstanceInfo) -> String {
-        guard let netID, let connection = instance.connections[netID] else {
+    private static func blockPortConnectorStyle(for netID: String?, connections: [String: SchematicConnectionState]) -> String {
+        guard let netID, let connection = connections[netID] else {
             return "box"
         }
 
@@ -4112,17 +4143,13 @@ struct HorizontalSchematic {
         values[key.uppercased()] = value
     }
 
-    private static func substituteBlockSymbolText(
-        _ text: String,
-        instance: SchematicBlockInstanceInfo,
-        resource: HorizontalSchematicBlockResource
-    ) -> String {
+    private static func substituteBlockSymbolText(_ text: String, refdes: String, name: String) -> String {
         text
-            .replacingOccurrences(of: "$REFDES", with: instance.refdes)
-            .replacingOccurrences(of: "$RD", with: instance.refdes)
-            .replacingOccurrences(of: "$NAME", with: resource.name)
-            .replacingOccurrences(of: "${refdes}", with: instance.refdes)
-            .replacingOccurrences(of: "${name}", with: resource.name)
+            .replacingOccurrences(of: "$REFDES", with: refdes)
+            .replacingOccurrences(of: "$RD", with: refdes)
+            .replacingOccurrences(of: "$NAME", with: name)
+            .replacingOccurrences(of: "${refdes}", with: refdes)
+            .replacingOccurrences(of: "${name}", with: name)
     }
 
     private static func displayNetTieName(_ name: String?) -> String {
