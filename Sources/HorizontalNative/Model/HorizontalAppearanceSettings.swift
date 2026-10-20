@@ -293,6 +293,7 @@ struct HorizontalCanvasPalette {
             .pin: rgb(0, 0, 0),
             .pinAnnotation: rgb(0, 0, 0),
             .diffPair: rgb(0.4583333433, 0.7333333492, 0.1833333373),
+            .netTie: rgb(58.0 / 255.0, 73.0 / 255.0, 147.0 / 255.0),
         ]) { _, new in new },
         layerColors: darkDefault.layerColors
     )
@@ -302,6 +303,7 @@ struct HorizontalCanvasPalette {
             .junction: rgb(0, 1, 0),
             .frame: rgb(1, 1, 0),
             .pin: rgb(1, 1, 0),
+            .netTie: rgb(140.0 / 255.0, 157.0 / 255.0, 234.0 / 255.0),
         ]) { _, new in new },
         layerColors: darkDefault.layerColors
     )
