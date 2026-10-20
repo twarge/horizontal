@@ -138,10 +138,12 @@ board operations are refused because its board file is not loaded at all. That
 closes the "reads half-work while writes silently hit the top block" trap.
 
 Block *composition* — `block_symbols` and `block_instances`, placing a
-sub-block into a parent sheet — is not done, and is the part that genuinely
-needs the decision below. It is also untested against a real multi-block
-project: the test fixture has one block, so the scoping is proven by its
-refusals and by naming the top block explicitly, not by editing a second one.
+sub-block into a parent sheet — is done since: blocks are made, renamed and
+removed (`add_block`, `rename_block`, `remove_block`), their ports made and
+drawn (`set_net_port`, `place_block_port`), and instances placed, named and
+wired, with Horizon's instance mappings, tested on a Horizon-shaped fixture
+(`SchematicBlocksTests`) and driven live on a copy of Dark Blue Tiger. What
+remains is flattening: the board, BOM and netlist per instance.
 
 ## The three decisions, now taken
 
