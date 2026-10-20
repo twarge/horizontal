@@ -269,9 +269,6 @@ struct HorizontalPoolSymbol: HorizontalPoolItemDocumentModel {
             issues.append(.failure("Name has trailing/leading whitespace"))
         }
         func nm(_ value: Double) -> Int64 { Int64(value.rounded()) }
-        func pinName(_ id: String) -> String {
-            unit?.pins.first { $0.key.caseInsensitiveCompare(id) == .orderedSame }?.value.primaryName ?? id
-        }
 
         // Reference designator and value texts.
         let refdes = drawing.texts.values.filter { $0.text == "$REFDES" }
@@ -314,7 +311,20 @@ struct HorizontalPoolSymbol: HorizontalPoolItemDocumentModel {
             }
         }
 
-        // Pins.
+        issues += pinIssues(unit: unit)
+        return issues
+    }
+
+    /// The symbol rules' pin and junction checks: pins on the 1.25 mm grid,
+    /// apart, on the rectangle the pins span and pointing out of it, every
+    /// unit pin placed, no junction joined to nothing. `noun` names a pin in
+    /// the messages — a block symbol's are ports.
+    func pinIssues(unit: HorizontalPoolUnit?, noun: String = "Pin") -> [HorizontalPoolCheckIssue] {
+        var issues = [HorizontalPoolCheckIssue]()
+        func nm(_ value: Double) -> Int64 { Int64(value.rounded()) }
+        func pinName(_ id: String) -> String {
+            unit?.pins.first { $0.key.caseInsensitiveCompare(id) == .orderedSame }?.value.primaryName ?? id
+        }
         let grid: Int64 = 1_250_000
         let ordered = pins.values.sorted { (pinName($0.id), $0.id) < (pinName($1.id), $1.id) }
         var bounds = [Int64(0), Int64(0)]
@@ -323,14 +333,14 @@ struct HorizontalPoolSymbol: HorizontalPoolItemDocumentModel {
             let p = [nm(pin.position.x), nm(pin.position.y)]
             let residual = [p[0] % grid, p[1] % grid]
             if residual != [0, 0] {
-                issues.append(.failure("Pin \(pinName(pin.id)) is off-grid, residual: \(Self.millimetres(residual[0])), \(Self.millimetres(residual[1]))",
+                issues.append(.failure("\(noun) \(pinName(pin.id)) is off-grid, residual: \(Self.millimetres(residual[0])), \(Self.millimetres(residual[1]))",
                                        at: pin.position))
             }
             bounds = [max(bounds[0], abs(p[0])), max(bounds[1], abs(p[1]))]
             byPosition[p, default: []].append(pinName(pin.id))
         }
         for (position, names) in byPosition.sorted(by: { $0.value.first ?? "" < $1.value.first ?? "" }) where names.count > 1 {
-            issues.append(.failure("Overlapping pins: \(names.joined(separator: ", "))",
+            issues.append(.failure("Overlapping \(noun.lowercased())s: \(names.joined(separator: ", "))",
                                    at: HorizontalPoint(x: Double(position[0]), y: Double(position[1]))))
         }
         for pin in ordered {
@@ -341,19 +351,19 @@ struct HorizontalPoolSymbol: HorizontalPoolItemDocumentModel {
             if p[1] == bounds[1] { outward.insert(.up) }
             if p[1] == -bounds[1] { outward.insert(.down) }
             if outward.isEmpty {
-                issues.append(.warning("Pin \(pinName(pin.id)) is not on bounding box", at: pin.position))
+                issues.append(.warning("\(noun) \(pinName(pin.id)) is not on bounding box", at: pin.position))
             } else if !outward.contains(pin.orientation) {
-                issues.append(.warning("Pin \(pinName(pin.id)) has improper orientation", at: pin.position))
+                issues.append(.warning("\(noun) \(pinName(pin.id)) has improper orientation", at: pin.position))
             }
             if [.up, .down].contains(pin.orientation), pin.nameVisible, pin.nameOrientation != .horizontal {
-                issues.append(.warning("Pin \(pinName(pin.id)) points \(pin.orientation.rawValue); its name should be horizontal",
+                issues.append(.warning("\(noun) \(pinName(pin.id)) points \(pin.orientation.rawValue); its name should be horizontal",
                                        at: pin.position))
             }
         }
         if let unit {
             let placed = Set(pins.keys.map { $0.lowercased() })
             for pin in unit.pins.values.sorted(by: { $0.primaryName < $1.primaryName }) where !placed.contains(pin.id.lowercased()) {
-                issues.append(.failure("Pin \(pin.primaryName) is not placed"))
+                issues.append(.failure("\(noun) \(pin.primaryName) is not placed"))
             }
         }
 
