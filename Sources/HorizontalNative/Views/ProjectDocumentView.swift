@@ -987,6 +987,9 @@ struct ProjectWorkspaceView: View {
     /// What the panes and the window show.
     private var workspaceWithSelectionObservers: some View {
         workspaceWithWindowObservers
+            .onChange(of: boardSyncRevision, initial: true) { _, _ in
+                refreshRulesResults()
+            }
             .onChange(of: navigatorSelection) { previous, selection in
                 syncPanesForSelection(selection)
                 refreshLibraryPartReplacement()
@@ -1317,10 +1320,16 @@ struct ProjectWorkspaceView: View {
                 Button {
                     toggleRightSidebar(.rulesResults)
                 } label: {
-                    Label(rulesResultsSidebarToggleTitle, systemImage: "checklist.checked")
+                    Label {
+                        Text(rulesResultsSidebarToggleTitle)
+                    } icon: {
+                        Image(systemName: "checklist.checked")
+                            .toolbarBadge(rulesResultsState?.badgeCount ?? 0, color: rulesResultsState?.badgeColor ?? .orange)
+                    }
                 }
-                .help(rulesResultsSidebarToggleTitle)
+                .help(rulesResultsHelp)
                 .accessibilityLabel(rulesResultsSidebarToggleTitle)
+                .accessibilityValue(rulesResultsHelp)
             }
             .labelStyle(.iconOnly)
             .imageScale(.large)
@@ -1352,15 +1361,22 @@ struct ProjectWorkspaceView: View {
     @ViewBuilder
     private var paneSelector: some View {
         ForEach(HorizontalPane.allCases) { pane in
+            let badge = toolbarBadgeCount(for: pane)
             Toggle(isOn: paneVisibilityBinding(for: pane)) {
-                Label(pane.title, systemImage: pane.symbolName)
+                Label {
+                    Text(pane.title)
+                } icon: {
+                    Image(systemName: pane.symbolName)
+                        .toolbarBadge(badge)
+                }
             }
             .toggleStyle(.button)
             .labelStyle(.iconOnly)
             .imageScale(.large)
             .controlSize(.large)
             .disabled(visiblePanes.count == 1 && visiblePanes.contains(pane))
-            .help(pane.title)
+            .help(badge > 0 ? "\(pane.title) — \(partLibrary.noticeText)" : pane.title)
+            .accessibilityValue(badge > 0 ? partLibrary.noticeText : "")
         }
     }
 
@@ -1382,6 +1398,23 @@ struct ProjectWorkspaceView: View {
 
     private var exportSidebarToggleTitle: String {
         rightSidebarPane == .export ? "Hide Export Sidebar" : "Show Export Sidebar"
+    }
+
+    /// What the pane's toolbar button badges: the parts the info bar is
+    /// about, on the Parts pane.
+    private func toolbarBadgeCount(for pane: HorizontalPane) -> Int {
+        pane == .parts ? partLibrary.attentionCount : 0
+    }
+
+    private var rulesResultsHelp: String {
+        guard let result = rulesResultsState, !result.messages.isEmpty else {
+            return rulesResultsSidebarToggleTitle
+        }
+        let errors = result.messages.filter { $0.level == .error }.count
+        let warnings = result.messages.count - errors
+        let found = [errors > 0 ? "\(errors) error\(errors == 1 ? "" : "s")" : nil,
+                     warnings > 0 ? "\(warnings) warning\(warnings == 1 ? "" : "s")" : nil].compactMap { $0 }
+        return "\(rulesResultsSidebarToggleTitle) — the last rules check found \(found.joined(separator: " and "))"
     }
 
     private var rulesResultsSidebarToggleTitle: String {
@@ -2966,6 +2999,23 @@ struct ProjectWorkspaceView: View {
         } catch {
             recordArchiveApplyFailure(error)
         }
+        refreshRulesResults()
+    }
+
+    /// The rules checks over every kind, as the board's rules now stand, so
+    /// the results sidebar and its toolbar badge say what is wrong without a
+    /// run in the rules window first.
+    private func refreshRulesResults() {
+        guard project.board != nil, let rules = try? HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive) else {
+            rulesResultsState = nil
+            return
+        }
+        let context = HorizontalBoardRuleContext(board: project.board, netClasses: selectedSchematic?.sheet.netClasses ?? [])
+        rulesResultsState = HorizontalBoardRulesResultState(
+            ruleTitle: "All Rules",
+            messages: HorizontalBoardRulesValidator.validateAll(rules: rules, context: context),
+            checkedAt: Date()
+        )
     }
 
     /// A title-block value edited in the information panel goes through the

@@ -880,13 +880,20 @@ struct HorizontalIPadProjectView: View {
     private func panePicker(for project: HorizontalProject) -> some View {
         let panes = availablePanes(for: project)
         ForEach(panes) { pane in
+            let badge = pane == .parts ? partLibrary.attentionCount : 0
             Toggle(isOn: isCompact
                 ? exclusivePaneBinding(for: pane, among: panes)
                 : paneVisibilityBinding(for: pane, among: panes)) {
-                Label(pane.title, systemImage: pane.symbolName)
+                Label {
+                    Text(pane.title)
+                } icon: {
+                    Image(systemName: pane.symbolName)
+                        .toolbarBadge(badge)
+                }
             }
             .toggleStyle(.button)
             .accessibilityLabel("Show \(pane.title)")
+            .accessibilityValue(badge > 0 ? partLibrary.noticeText : "")
         }
     }
 

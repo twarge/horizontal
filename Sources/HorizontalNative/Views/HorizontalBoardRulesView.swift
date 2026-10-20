@@ -3121,6 +3121,20 @@ struct HorizontalBoardRuleCheckMessage: Identifiable {
 }
 
 enum HorizontalBoardRulesValidator {
+    /// Every rule kind's checks at once, each finding once: what the rules
+    /// results sidebar shows and the toolbar badges as the board stands.
+    static func validateAll(rules: JSONDictionary, context: HorizontalBoardRuleContext) -> [HorizontalBoardRuleCheckMessage] {
+        var seen = Set<String>()
+        var messages = [HorizontalBoardRuleCheckMessage]()
+        for kind in HorizontalBoardRuleKind.visibleCases {
+            for message in validate(rules: rules, selectedKind: kind, context: context)
+                where seen.insert("\(message.level)|\(message.title)|\(message.detail)").inserted {
+                messages.append(message)
+            }
+        }
+        return messages
+    }
+
     static func validate(
         rules: JSONDictionary,
         selectedKind: HorizontalBoardRuleKind,
