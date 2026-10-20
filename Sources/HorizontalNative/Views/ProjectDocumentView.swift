@@ -644,6 +644,16 @@ struct ProjectWorkspaceView: View {
     /// second time). Nil is the normal, un-soloed state.
     @State private var soloedBoardLayer: Int?
     @State private var pendingPartPlacement: HorizontalPartPlacementRequest?
+    @State private var pendingBlockPlacement: HorizontalBlockPlacementRequest?
+    /// Horizon's instance path, as far as pushing into blocks goes: each
+    /// block opened from a block symbol, with the sheet it was opened from,
+    /// so Leave Block goes back there.
+    @State private var blockTrail: [BlockTrailStep] = []
+    /// The tool rail's New Block prompt.
+    @State private var isNamingNewBlock = false
+    @State private var newBlockName = ""
+    /// The block symbol editor wrote the symbol since the sheets were baked.
+    @State private var blockSymbolNeedsReload = false
     /// The project's parts against their pools, for the Parts pane, the
     /// updates sheet and the info bar that says when they fall behind.
     @StateObject private var partLibrary = HorizontalPartLibraryMonitor()
@@ -977,9 +987,13 @@ struct ProjectWorkspaceView: View {
     /// What the panes and the window show.
     private var workspaceWithSelectionObservers: some View {
         workspaceWithWindowObservers
-            .onChange(of: navigatorSelection) { _, selection in
+            .onChange(of: navigatorSelection) { previous, selection in
                 syncPanesForSelection(selection)
                 refreshLibraryPartReplacement()
+                // The sheets drawing the block take up its edited symbol.
+                if case .blockSymbol = previous, blockSymbolNeedsReload {
+                    reloadProjectFromArchive()
+                }
             }
             .onChange(of: visiblePanes) { _, panes in
                 clearSelectionDetailsForHiddenPanes(panes)
@@ -1063,6 +1077,18 @@ struct ProjectWorkspaceView: View {
             } message: {
                 Text(schematicEditMessage ?? "")
             }
+            .alert("New Block", isPresented: $isNamingNewBlock) {
+                TextField("Name", text: $newBlockName)
+                Button("Add") {
+                    let name = newBlockName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !name.isEmpty, let blockID = addBlock(named: name) {
+                        navigatorSelection = .blockSymbol(blockID)
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("A block is a schematic of its own that other sheets use through its symbol, as many times as they like.")
+            }
             .alert("Could Not Draw That", isPresented: projectEditErrorPresented) {
                 Button("OK", role: .cancel) {}
             } message: {
@@ -1100,6 +1126,7 @@ struct ProjectWorkspaceView: View {
                 highlightedNetIDs: highlightedNetIDs,
                 highlightColor: appearanceSettings.palette(for: .schematic, colorScheme: colorScheme).junction,
                 allowsSheetEditing: !isReadOnly,
+                allowsBlockEditing: true,
                 onRenameSheet: { schematicURL, sheetID, name in
                     renameSheet(sheetID: sheetID, to: name, schematicURL: schematicURL)
                 },
@@ -1114,7 +1141,12 @@ struct ProjectWorkspaceView: View {
                 },
                 onRemoveSheet: { schematicURL, sheetID in
                     removeSheet(sheetID, schematicURL: schematicURL)
-                }
+                },
+                onAddBlock: { addBlock(named: $0) },
+                onRenameBlock: { renameBlock($0, to: $1) },
+                onRemoveBlock: { removeBlock($0) },
+                onPlaceBlock: selectedSchematic == nil || isReadOnly || isEditingBlockSymbol ? nil : { placeBlock($0) },
+                placeableBlockIDs: placeableBlockIDs
             )
             // Without an explicit column width the sidebar is compressible to
             // nothing: the detail column below demanded the window's entire
@@ -2003,6 +2035,31 @@ struct ProjectWorkspaceView: View {
                 )
             }
         case .schematic:
+            if case .blockSymbol(let blockID) = navigatorSelection, let blockSymbol = blockSymbolForEditing(blockID) {
+                ViewerPane(title: "Block Symbol", subtitle: blockSymbol.name) {
+                    HorizontalBlockSymbolEditorPane(
+                        blockSymbol: blockSymbol,
+                        revision: schematicSyncRevision,
+                        poolURL: project.baseURL.appendingPathComponent(project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName),
+                        portNets: portNetSummaries(blockID: blockID, blockSymbol: blockSymbol),
+                        isReadOnly: isReadOnly,
+                        undoManager: activeUndoManager,
+                        safeAreaInsets: fitSafeAreaInsets,
+                        showsTools: !isDistractionFree && !isWindowToolbarHidden,
+                        isKeyboardFocused: activeCanvasCommandPane == .schematic && !isKeyboardInControl,
+                        displayOptions: $schematicDisplayOptions,
+                        selectionToolSettings: $selectionToolSettings,
+                        selectionPropertyChangeCommand: selectionPropertyChangeCommands[.schematic],
+                        drawingToolCommand: schematicDrawingToolCommand,
+                        onDrawingTool: { schematicDrawingToolCommand = HorizontalDrawingToolCommand(primitive: $0) },
+                        onChange: { applyEditedBlockSymbol($0, blockID: blockID) },
+                        onPortNetCommand: { applyPortNetCommand($0, blockID: blockID) },
+                        onSelectionDetailsChange: { setSelectionDetails($0, for: .schematic) },
+                        onCanvasCommandActionsChange: { setCanvasCommandActions($0, for: .schematic) },
+                        onToolbarHover: { setPointerInsideToolbar($0, for: .schematic) }
+                    )
+                }
+            } else {
             ViewerPane(title: "Schematic", subtitle: selectedSchematic?.subtitle ?? "Unavailable") {
                 PaneOverlayContainer(
                     pane: .schematic,
@@ -2089,6 +2146,12 @@ struct ProjectWorkspaceView: View {
                                 drawingToolCommand: schematicDrawingToolCommand,
                                 drawNetLineCommand: schematicDrawNetLineCommand,
                                 placePartRequest: pendingPartPlacement,
+                                placeBlockRequest: pendingBlockPlacement,
+                                onOpenBlock: { openBlock($0, from: selectedSchematic) },
+                                onEditBlockSymbol: { blockID in
+                                    navigatorSelection = .blockSymbol(blockID)
+                                },
+                                allowsPortNets: block(of: selectedSchematic)?.isTop == false,
                                 onMoveToOtherSheet: isReadOnly ? nil : { items, sheetID in
                                     moveSchematicItems(items, toSheet: sheetID, from: selectedSchematic)
                                 },
@@ -2099,6 +2162,10 @@ struct ProjectWorkspaceView: View {
                                 },
                                 syncRevision: schematicSyncRevision
                             )
+                        }
+                        .overlay(alignment: .top) {
+                            leaveBlockChip(for: selectedSchematic)
+                                .padding(.top, fitSafeAreaInsets.top + 10)
                         }
                     } else {
                         MissingPaneView(message: "No schematic file was loaded.")
@@ -2160,6 +2227,15 @@ struct ProjectWorkspaceView: View {
                             canvasCommandActionsByPane[.schematic]?.dispatch(.tieNets)
                         }
                         .disabled(canvasCommandActionsByPane[.schematic]?.canTieNets != true)
+                        PlaceBlockToolButton(
+                            choices: placeBlockChoices,
+                            onPlace: { placeBlock($0) },
+                            onNewBlock: {
+                                newBlockName = "Channel"
+                                isNamingNewBlock = true
+                            }
+                        )
+                        .disabled(selectedSchematic == nil)
                         AddTextToolButton {
                             canvasCommandActionsByPane[.schematic]?.dispatch(.addText)
                         }
@@ -2172,6 +2248,7 @@ struct ProjectWorkspaceView: View {
                         }
                     }
                 }
+            }
             }
         case .board:
             ViewerPane(title: "Board", subtitle: project.board?.name ?? "Unavailable") {
@@ -3258,6 +3335,261 @@ struct ProjectWorkspaceView: View {
         }
     }
 
+    // MARK: - Blocks
+
+    struct BlockTrailStep: Equatable {
+        /// The sheet the block was opened from.
+        var parent: ProjectNavigatorSelection
+        var parentSheetName: String
+        /// The block opened, and the instance it was opened through.
+        var blockID: String
+        var refdes: String
+    }
+
+    /// Runs block ops through the edit vocabulary as one undoable step,
+    /// `block` the block they edit (the top one when nil). Returns what
+    /// they changed, or nil when refused, which is said.
+    @discardableResult
+    private func applyBlockEdit(_ operations: [JSONDictionary], block: String? = nil, actionName: String) -> [JSONDictionary]? {
+        guard !isReadOnly else {
+            return nil
+        }
+        do {
+            let edited = try HorizontalCanvasProjectEdit.archive(applying: operations, to: document.archive, in: project, block: block)
+            try applyLiveArchive(edited.archive, actionName: actionName)
+            return edited.changes
+        } catch {
+            projectEditError = HorizontalCanvasProjectEdit.message(for: error)
+            return nil
+        }
+    }
+
+    /// Horizon's Add Block. Returns the new block's id.
+    private func addBlock(named name: String) -> String? {
+        applyBlockEdit([["op": "add_block", "name": name]], actionName: "New Block")?.first?["block"] as? String
+    }
+
+    private func renameBlock(_ blockID: String, to name: String) {
+        applyBlockEdit([["op": "rename_block", "block": blockID, "name": name]], actionName: "Rename Block")
+    }
+
+    private func removeBlock(_ blockID: String) -> Bool {
+        let removed = applyBlockEdit([["op": "remove_block", "block": blockID]], actionName: "Delete Block") != nil
+        if removed {
+            blockTrail.removeAll { $0.blockID.caseInsensitiveCompare(blockID) == .orderedSame }
+        }
+        return removed
+    }
+
+    /// The block the schematic showing belongs to.
+    private func block(of selectedSchematic: SelectedSchematic) -> HorizontalProjectBlock? {
+        let url = selectedSchematic.url.standardizedFileURL
+        return project.schematics.first { $0.schematic.url.standardizedFileURL == url }?.block
+    }
+
+    /// Which blocks each block draws instances of, by lowercased uuid.
+    private var drawnBlockUses: [String: Set<String>] {
+        project.schematics.reduce(into: [String: Set<String>]()) { result, schematic in
+            result[schematic.block.uuid.lowercased(), default: []].formUnion(
+                schematic.schematic.sheets.flatMap { $0.blockSymbols.map(\.blockID) }
+            )
+        }
+    }
+
+    /// The blocks the sheet showing can place: not the top one, not its own
+    /// block, and not one that uses its block, however deep (Horizon's
+    /// `can_add_block_instance`).
+    private var placeableBlockIDs: Set<String> {
+        guard let selectedSchematic, let current = block(of: selectedSchematic)?.uuid.lowercased() else {
+            return []
+        }
+        let uses = drawnBlockUses
+        func reaches(_ start: String) -> Set<String> {
+            var seen = Set<String>(), pending = [start]
+            while let next = pending.popLast() {
+                for child in uses[next] ?? [] where seen.insert(child).inserted { pending.append(child) }
+            }
+            return seen
+        }
+        return Set(project.blocks.filter { !$0.isTop }.map { $0.uuid.lowercased() }.filter { $0 != current && !reaches($0).contains(current) })
+    }
+
+    private var placeBlockChoices: [PlaceBlockToolButton.Choice] {
+        let placeable = placeableBlockIDs
+        return project.blocks.filter { !$0.isTop }
+            .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+            .map { PlaceBlockToolButton.Choice(id: $0.uuid, name: $0.displayName, isEnabled: placeable.contains($0.uuid.lowercased())) }
+    }
+
+    /// The JSON a project file holds in the document as it stands.
+    private func documentJSON(_ relativePath: String?) -> JSONDictionary? {
+        guard let relativePath, !relativePath.isEmpty,
+              let path = archiveRelativePath(for: project.baseURL.appendingPathComponent(relativePath)),
+              let data = document.archive.regularFileData(relativePath: path) else {
+            return nil
+        }
+        return try? JSONHelper.loadDictionary(from: data)
+    }
+
+    /// Horizon's Place Block on the sheet showing: the block's symbol
+    /// follows the cursor there until a click places an instance of it.
+    private func placeBlock(_ blockID: String) {
+        guard !isReadOnly, selectedSchematic != nil,
+              let block = project.blocks.first(where: { $0.uuid.caseInsensitiveCompare(blockID) == .orderedSame }) else {
+            return
+        }
+        guard placeableBlockIDs.contains(block.uuid.lowercased()) else {
+            projectEditError = "\(block.displayName) can't be placed here: a block can't use itself, or a block that uses it."
+            return
+        }
+        guard let symbolFilename = block.symbolFilename, let symbolJSON = documentJSON(symbolFilename) else {
+            projectEditError = "\(block.displayName) has no symbol to draw it with."
+            return
+        }
+        let resource = HorizontalSchematicBlockResource(
+            symbolURL: project.baseURL.appendingPathComponent(symbolFilename),
+            blockJSON: documentJSON(block.blockFilename),
+            fallbackName: block.displayName
+        )
+        visiblePanes.insert(.schematic)
+        activeCanvasCommandPane = .schematic
+        pendingBlockPlacement = HorizontalBlockPlacementRequest(blockSymbol: HorizontalSchematicBlockSymbol(
+            id: "", instanceID: "", blockID: block.uuid.lowercased(), refdes: "I?", placement: .identity,
+            connections: [:], resource: resource, symbolJSON: symbolJSON
+        ))
+    }
+
+    private var isEditingBlockSymbol: Bool {
+        if case .blockSymbol = navigatorSelection { return true }
+        return false
+    }
+
+    /// The block symbol editor's symbol, read from the document as it stands.
+    private func blockSymbolForEditing(_ blockID: String) -> HorizontalBlockSymbol? {
+        guard let block = project.blocks.first(where: { $0.uuid.caseInsensitiveCompare(blockID) == .orderedSame }),
+              let symbolJSON = documentJSON(block.symbolFilename) else {
+            return nil
+        }
+        return try? HorizontalBlockSymbol(symbolJSON: symbolJSON, blockJSON: documentJSON(block.blockFilename), name: block.displayName)
+    }
+
+    private func portNetSummaries(blockID: String, blockSymbol: HorizontalBlockSymbol) -> [HorizontalPortNetSummary] {
+        let sheets = project.schematics.first { $0.block.uuid.caseInsensitiveCompare(blockID) == .orderedSame }?.schematic.sheets ?? []
+        return blockSymbol.portNets.map { portID, net in
+            HorizontalPortNetSummary(
+                id: net.netID,
+                name: net.name,
+                direction: HorizontalPinDirection(rawValue: net.direction) ?? .bidirectional,
+                isPlaced: blockSymbol.symbol.pins[portID] != nil,
+                isInUse: sheets.contains { $0.containsAnyNet([net.netID]) }
+            )
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// A gesture in the block symbol editor: the symbol file as it now is.
+    private func applyEditedBlockSymbol(_ blockSymbol: HorizontalBlockSymbol, blockID: String) {
+        guard !isReadOnly,
+              let block = project.blocks.first(where: { $0.uuid.caseInsensitiveCompare(blockID) == .orderedSame }),
+              let symbolFilename = block.symbolFilename else {
+            return
+        }
+        do {
+            try HorizontalProjectJSONApplicator.apply(
+                blockSymbol: blockSymbol.json(),
+                symbolURL: project.baseURL.appendingPathComponent(symbolFilename),
+                in: project,
+                to: &document.archive
+            )
+            blockSymbolNeedsReload = true
+        } catch {
+            recordArchiveApplyFailure(error)
+        }
+    }
+
+    /// Horizon's Manage Port Nets, as edits of the block.
+    private func applyPortNetCommand(_ command: HorizontalPortNetCommand, blockID: String) {
+        switch command {
+        case .add(let name):
+            applyBlockEdit([["op": "ensure_net", "name": name], ["op": "set_net_port", "net": name]],
+                           block: blockID, actionName: "Add Port Net")
+        case .rename(let netID, let name):
+            applyBlockEdit([["op": "rename_net", "net": netID, "name": name]], block: blockID, actionName: "Rename Port Net")
+        case .setDirection(let netID, let direction):
+            applyBlockEdit([["op": "set_net_port", "net": netID, "port_direction": direction.rawValue]],
+                           block: blockID, actionName: "Set Port Direction")
+        case .delete(let netID):
+            applyBlockEdit([["op": "set_net_port", "net": netID, "is_port": false], ["op": "retire_net", "net": netID]],
+                           block: blockID, actionName: "Delete Port Net")
+        }
+        blockSymbolNeedsReload = false
+    }
+
+    /// The project again from the document, so every sheet draws what the
+    /// files now say.
+    private func reloadProjectFromArchive() {
+        blockSymbolNeedsReload = false
+        do {
+            var reloaded = try HorizontalProject.loadSnapshot(of: document.archive)
+            rebaseProjectURLs(&reloaded, onto: project)
+            installLiveSnapshot(HorizontalLiveSnapshot(archive: document.archive, project: reloaded), installsArchive: false)
+        } catch {
+            recordArchiveApplyFailure(error)
+        }
+    }
+
+    /// Horizon's Push into block: the block a block symbol uses, at its
+    /// first sheet, remembering where it was opened from.
+    private func openBlock(_ blockSymbol: HorizontalSchematicBlockSymbol, from selectedSchematic: SelectedSchematic) {
+        guard let schematic = project.schematics.first(where: { $0.block.uuid.caseInsensitiveCompare(blockSymbol.blockID) == .orderedSame }),
+              let firstSheet = schematic.schematic.sheets.first else {
+            return
+        }
+        let parent: ProjectNavigatorSelection = block(of: selectedSchematic).map {
+            .sheet(blockID: $0.uuid, sheetID: selectedSchematic.sheet.id)
+        } ?? .standaloneSheet(selectedSchematic.sheet.id)
+        // Opening a block from a sheet that isn't the end of the trail
+        // starts a new one there.
+        if let last = blockTrail.last, block(of: selectedSchematic)?.uuid.caseInsensitiveCompare(last.blockID) != .orderedSame {
+            blockTrail.removeAll()
+        }
+        blockTrail.append(BlockTrailStep(parent: parent, parentSheetName: selectedSchematic.sheet.name,
+                                         blockID: schematic.block.uuid, refdes: blockSymbol.refdes))
+        visiblePanes.insert(.schematic)
+        navigatorSelection = .sheet(blockID: schematic.block.uuid, sheetID: firstSheet.id)
+    }
+
+    /// Horizon's Pop to parent block.
+    private func leaveBlock() {
+        guard let step = blockTrail.popLast() else {
+            return
+        }
+        navigatorSelection = step.parent
+    }
+
+    /// The way back out of a block opened from a block symbol, while one of
+    /// its sheets shows.
+    @ViewBuilder
+    private func leaveBlockChip(for selectedSchematic: SelectedSchematic) -> some View {
+        if let step = blockTrail.last,
+           block(of: selectedSchematic)?.uuid.caseInsensitiveCompare(step.blockID) == .orderedSame {
+            Button(action: leaveBlock) {
+                Label {
+                    Text("\(step.parentSheetName) \u{203A} \(step.refdes)")
+                } icon: {
+                    Image(systemName: "chevron.backward")
+                }
+                .font(.callout)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.regularMaterial, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .help("Leave Block: back to \(step.parentSheetName), where \(step.refdes) is drawn")
+            .accessibilityLabel("Leave Block")
+        }
+    }
+
     /// Horizon's Move to other sheet: `move_to_other_sheet` takes the items,
     /// and everything drawn connected to them, to the other sheet as one
     /// undoable edit; then that sheet shows, and the canvas there picks up
@@ -4199,7 +4531,7 @@ struct ProjectWorkspaceView: View {
         switch selection {
         case .pool:
             visiblePanes.insert(.parts)
-        case .block, .sheet, .standaloneSheet:
+        case .block, .blockSymbol, .sheet, .standaloneSheet:
             visiblePanes.insert(.schematic)
         case .board:
             visiblePanes.insert(.board)

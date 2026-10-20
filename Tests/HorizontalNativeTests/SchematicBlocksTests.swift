@@ -252,4 +252,44 @@ final class SchematicBlocksTests: XCTestCase {
             return XCTFail("an NC port takes no wire")
         }
     }
+
+    // MARK: - Block symbol editor
+
+    private func editorSymbol() throws -> HorizontalBlockSymbol {
+        let symbolJSON = try file("blocks/\(channelID)/symbol.json")
+        return try HorizontalBlockSymbol(symbolJSON: symbolJSON, blockJSON: try file("blocks/\(channelID)/block.json"), name: "Channel")
+    }
+
+    func testTheBlockSymbolEditorOffersThePortsStillToDraw() throws {
+        try apply([["op": "add_block", "name": "Channel", "id": channelID]])
+        try apply([
+            ["op": "ensure_net", "name": "In"], ["op": "set_net_port", "net": "In"],
+            ["op": "ensure_net", "name": "Out"], ["op": "set_net_port", "net": "Out", "port_direction": "output"],
+        ], block: "Channel")
+        let blockSymbol = try editorSymbol()
+        XCTAssertEqual(blockSymbol.unplacedPortNames, ["In", "Out"])
+        let sheet = blockSymbol.makeSheet(poolURL: project.baseURL.appendingPathComponent("pool"))
+        XCTAssertEqual(Set(sheet.placeableObjects.map(\.label)), ["In", "Out"], "the unplaced column lists the port nets")
+        XCTAssertEqual(sheet.drawingLines.count, 4, "the template box")
+
+        // Horizon's Place Port: the editor's pin for Out becomes Out's port.
+        let out = try XCTUnwrap(blockSymbol.portNets.first { $0.value.name == "Out" })
+        var edited = sheet
+        edited.editablePins.append(HorizontalSymbolPin(id: out.key, position: point(10, 0), orientation: .right, padVisible: false))
+        let json = blockSymbol.applying(sheet: edited).json()
+        let port = try XCTUnwrap(json.dictionaryMap("ports")[out.key])
+        XCTAssertEqual(port.string("net"), out.value.netID)
+        XCTAssertEqual(port.string("orientation"), "right")
+        XCTAssertEqual(port.point("position"), point(10, 0))
+        XCTAssertEqual(json.string("type"), "block_symbol")
+        XCTAssertEqual(json.dictionaryMap("lines").count, 4)
+        XCTAssertNil(json["polygons"], "a block symbol has none")
+
+        // Written and read back, it is what was written, so the editor
+        // doesn't take its own save for a change from outside.
+        try HorizontalProjectJSONApplicator.apply(blockSymbol: json, symbolURL: project.baseURL.appendingPathComponent("blocks/\(channelID)/symbol.json"),
+                                                  in: project, to: &archive)
+        XCTAssertEqual(try editorSymbol().sourceJSON, HorizontalPreservedJSON(json))
+        XCTAssertEqual(try editorSymbol().unplacedPortNames, ["In"])
+    }
 }

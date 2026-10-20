@@ -97,6 +97,9 @@ struct SchematicCanvasView: View {
         var originalSheet: HorizontalSchematicSheet
         var symbolID: String
         var actionName: String
+        /// Horizon's Place Block: `symbolID` is a block symbol drawn only on
+        /// the draft, made for real by the ops the commit runs.
+        var isBlock = false
     }
 
     /// Symbol editor: a unit pin following the cursor until a click places it.
@@ -263,6 +266,17 @@ struct SchematicCanvasView: View {
     var drawingToolCommand: HorizontalDrawingToolCommand?
     var drawNetLineCommand: HorizontalDrawNetLineCommand?
     var placePartRequest: HorizontalPartPlacementRequest?
+    /// Horizon's Place Block: an instance of the block drawn at the cursor
+    /// until a click places it.
+    var placeBlockRequest: HorizontalBlockPlacementRequest? = nil
+    /// Horizon's Push into block, for a block symbol: double-click, or Open
+    /// Block. Nil hides the command.
+    var onOpenBlock: ((HorizontalSchematicBlockSymbol) -> Void)? = nil
+    /// Edit Block Symbol, with the block's id. Nil hides the command.
+    var onEditBlockSymbol: ((String) -> Void)? = nil
+    /// The sheet is a sub-block's, whose nets can be its ports (Horizon's
+    /// "Is port", shown only off the top block).
+    var allowsPortNets = false
     /// Move to Other Sheet: (the selected items' ids, the sheet to take them
     /// to). The host runs `move_to_other_sheet`, shows that sheet and hands
     /// back `moveRequest`. Nil hides the command.
@@ -298,6 +312,7 @@ struct SchematicCanvasView: View {
     @State private var placedPinHistory: [String] = []
     @State private var resizeSymbolState: ResizeSymbolState?
     @State private var handledPlacePartRequestID: UUID?
+    @State private var handledPlaceBlockRequestID: UUID?
     @State private var handledMoveRequestID: UUID?
     @State private var drawNetLineState: DrawNetLineState?
     @State private var drawGraphicsState: DrawGraphicsState?
@@ -363,6 +378,10 @@ struct SchematicCanvasView: View {
         drawingToolCommand: HorizontalDrawingToolCommand? = nil,
         drawNetLineCommand: HorizontalDrawNetLineCommand? = nil,
         placePartRequest: HorizontalPartPlacementRequest? = nil,
+        placeBlockRequest: HorizontalBlockPlacementRequest? = nil,
+        onOpenBlock: ((HorizontalSchematicBlockSymbol) -> Void)? = nil,
+        onEditBlockSymbol: ((String) -> Void)? = nil,
+        allowsPortNets: Bool = false,
         onMoveToOtherSheet: (([String], String) -> Void)? = nil,
         moveRequest: HorizontalSchematicMoveRequest? = nil,
         poolURL: URL? = nil,
@@ -408,6 +427,10 @@ struct SchematicCanvasView: View {
         self.drawingToolCommand = drawingToolCommand
         self.drawNetLineCommand = drawNetLineCommand
         self.placePartRequest = placePartRequest
+        self.placeBlockRequest = placeBlockRequest
+        self.onOpenBlock = onOpenBlock
+        self.onEditBlockSymbol = onEditBlockSymbol
+        self.allowsPortNets = allowsPortNets
         self.onMoveToOtherSheet = onMoveToOtherSheet
         self.moveRequest = moveRequest
         self.poolURL = poolURL
@@ -794,6 +817,12 @@ struct SchematicCanvasView: View {
                 }
 
                 let hitRef = hitSelectable(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+                // Double-click a block symbol → Horizon's Push into block.
+                if clickCount >= 2, let hitRef, hitRef.type == .schematicBlockSymbol,
+                   let onOpenBlock, let blockSymbol = sheet.blockSymbol(hitRef.id) {
+                    onOpenBlock(blockSymbol)
+                    return
+                }
                 #if os(macOS)
                 // Double-click a text → reopen the inline editor instead of just
                 // selecting it.
@@ -946,6 +975,9 @@ struct SchematicCanvasView: View {
         }
         .onChange(of: placePartRequest?.id) { _, _ in
             beginPlacePartIfNeeded()
+        }
+        .onChange(of: placeBlockRequest?.id) { _, _ in
+            beginPlaceBlockIfNeeded()
         }
         .onChange(of: moveRequest?.id) { _, _ in
             takeUpMoveRequest()
@@ -1756,6 +1788,31 @@ struct SchematicCanvasView: View {
     }
 
     private static let netNamePropertyID = "netName"
+    private static let isPortPropertyID = "isPort"
+    private static let portDirectionPropertyID = "portDirection"
+
+    /// Horizon's "Is port" for a net of a sub-block, and the port's
+    /// direction; a power net can't be one.
+    private func netPortProperties(for netID: String?) -> [HorizontalSelectionProperty] {
+        guard allowsPortNets, !editorProfile.isPoolMode, let netID, let detail = sheet.netDetails[normalizedID(netID)] else {
+            return []
+        }
+        guard !isReadOnly, onApplyProjectEdit != nil, !detail.isPower else {
+            return [readOnlyProperty(Self.isPortPropertyID, "Port", detail.isPort ? "Yes" : "No")].compactMap { $0 }
+        }
+        var properties = [editableBoolProperty(Self.isPortPropertyID, "Port", detail.isPort)]
+        if detail.isPort {
+            properties.append(HorizontalSelectionProperty(
+                id: Self.portDirectionPropertyID,
+                label: "Port direction",
+                editor: .choice(HorizontalPinDirection.editorOrder.map {
+                    HorizontalSelectionPropertyOption(id: $0.rawValue, title: $0.displayName)
+                }),
+                value: .choice(detail.portDirection ?? HorizontalPinDirection.bidirectional.rawValue)
+            ))
+        }
+        return properties
+    }
 
     /// Renames a net in the block, as Horizon's net name property does: every
     /// label, power symbol and wire on it, on every sheet, shows the new name
@@ -1824,6 +1881,7 @@ struct SchematicCanvasView: View {
             ].compactMap { $0 } + editableSymbolPinNameProperties(for: symbol)
         case .lineNet:
             return segmentProperties(for: ref, segments: sheet.netLines, title: "Net", editsNetName: true)
+                + netPortProperties(for: sheet.netLines.first { normalizedID($0.id) == normalizedID(ref.id) }?.netID)
         case .drawingLine:
             return segmentProperties(for: ref, segments: sheet.drawingLines, title: "Drawing line")
         case .drawingArc:
@@ -1831,18 +1889,22 @@ struct SchematicCanvasView: View {
         case .symbolPin:
             return segmentProperties(for: ref, segments: sheet.symbolPins, title: "Symbol pin", editable: false)
         case .blockSymbolPort:
-            return segmentProperties(for: ref, segments: sheet.blockSymbolPorts, title: "Port", editable: false)
+            return segmentProperties(for: ref, segments: sheet.blockSymbolPorts, title: "Net", editable: false)
+                + blockPortProperties(for: ref)
         case .netLabel:
             guard let label = sheet.netLabels.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return []
             }
             // The net's own name: the label draws it with the port direction
             // and the other sheets it is on, which are the label's, not the net's.
+            let showsPort = allowsPortNets && label.netID.flatMap { sheet.netDetails[normalizedID($0)]?.isPort } == true
             return [
                 netNameProperty(for: label.netID) ?? readOnlyProperty("name", "Net name", label.text),
                 editableLengthProperty("size", "Size", label.size),
                 editableNetClassProperty(for: label.netID),
-            ].compactMap { $0 }
+                // Horizon's "Show port": the label reads the port's direction.
+                showsPort ? editableBoolProperty("showPort", "Show port", label.showsPort) : nil,
+            ].compactMap { $0 } + netPortProperties(for: label.netID)
         case .busLabel:
             guard let label = sheet.busLabels.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return []
@@ -1864,7 +1926,7 @@ struct SchematicCanvasView: View {
             return [
                 readOnlyProperty("net", "Net", netDisplayName(netID(forJunctionID: junction.key))),
                 editableNetClassProperty(for: netID(forJunctionID: junction.key)),
-            ].compactMap { $0 }
+            ].compactMap { $0 } + netPortProperties(for: netID(forJunctionID: junction.key))
         case .schematicNetTie:
             guard let tie = sheet.netTies.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return []
@@ -1881,10 +1943,70 @@ struct SchematicCanvasView: View {
                 editableNetClassProperty(for: netID),
             ].compactMap { $0 }
         case .schematicBlockSymbol:
-            return []
+            return blockSymbolProperties(for: ref)
         case .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .track, .via:
             return []
         }
+    }
+
+    /// A block symbol port's artwork id, `<block symbol>/<kind>/<port>/…`,
+    /// as the symbol and the port it draws.
+    private func blockPort(for ref: HorizontalSelectableRef) -> (symbol: HorizontalSchematicBlockSymbol, portID: String)? {
+        let parts = normalizedID(ref.id).split(separator: "/").map(String.init)
+        guard parts.count >= 3, let symbol = sheet.blockSymbol(parts[0]), symbol.portNets[parts[2]] != nil else {
+            return nil
+        }
+        return (symbol, parts[2])
+    }
+
+    private static let portNoConnectPropertyID = "portNoConnect"
+
+    /// The port's name in the block it belongs to, and Horizon's Set NC for
+    /// a port on no net.
+    private func blockPortProperties(for ref: HorizontalSelectableRef) -> [HorizontalSelectionProperty] {
+        guard let (symbol, portID) = blockPort(for: ref), let portNet = symbol.portNets[portID] else {
+            return []
+        }
+        var properties = [readOnlyProperty("port", "Port", symbol.resource.nets[portNet]?.name)].compactMap { $0 }
+        let connection = symbol.connections[portNet]
+        if !isReadOnly, onApplyProjectEdit != nil, connection?.netID == nil {
+            properties.append(editableBoolProperty(Self.portNoConnectPropertyID, "Not connected", connection == .notConnected))
+        }
+        return properties
+    }
+
+    static let openBlockActionID = "openBlock"
+    static let editBlockSymbolActionID = "editBlockSymbol"
+
+    /// Horizon's block instance properties — its refdes, editable, and the
+    /// block it uses — with the way into that block and its symbol.
+    private func blockSymbolProperties(for ref: HorizontalSelectableRef) -> [HorizontalSelectionProperty] {
+        guard let blockSymbol = sheet.blockSymbol(ref.id) else {
+            return []
+        }
+        let editable = !isReadOnly && onApplyProjectEdit != nil
+        let refdes = editable
+            ? HorizontalSelectionProperty(id: "refdes", label: "Refdes", editor: .committedText, value: .text(blockSymbol.refdes))
+            : readOnlyProperty("refdes", "Refdes", blockSymbol.refdes)
+        var block = readOnlyProperty("block", "Block", blockSymbol.resource.name)
+        if onOpenBlock != nil {
+            block?.actionID = Self.openBlockActionID
+            block?.actionTitle = "Open"
+        }
+        let ports = blockSymbol.portNets.count
+        var symbol = readOnlyProperty("ports", "Ports", ports == 1 ? "1 port" : "\(ports) ports")
+        if onEditBlockSymbol != nil {
+            symbol?.actionID = Self.editBlockSymbolActionID
+            symbol?.actionTitle = "Edit Symbol"
+        }
+        return [
+            refdes,
+            block,
+            symbol,
+            readOnlyProperty("position", "Position", "\(lengthString(blockSymbol.placement.shift.x)), \(lengthString(blockSymbol.placement.shift.y))"),
+            readOnlyProperty("angle", "Angle", "\(Int((Double(blockSymbol.placement.angle) * 360 / Double(HorizontalCanvasModeSupport.fullTurnAngle)).rounded()))°"
+                + (blockSymbol.placement.mirrored ? ", mirrored" : "")),
+        ].compactMap { $0 }
     }
 
     private func segmentProperties(
@@ -2268,9 +2390,111 @@ struct SchematicCanvasView: View {
         invalidateSelectableCache()
     }
 
+    /// Horizon's Place Block (`ToolAddBlockInstance`): the block's symbol,
+    /// as a new instance of it, follows the cursor; R turns it, E flips it,
+    /// and a click places it. Horizon doesn't wire it where it lands.
+    private func beginPlaceBlockIfNeeded() {
+        guard !isReadOnly,
+              !editorProfile.isPoolMode,
+              let request = placeBlockRequest,
+              handledPlaceBlockRequestID != request.id,
+              onApplyProjectEdit != nil else {
+            return
+        }
+        guard moveState == nil,
+              placePartState == nil,
+              placePowerSymbolState == nil,
+              drawNetLineState == nil,
+              drawGraphicsState == nil else {
+            return
+        }
+        handledPlaceBlockRequestID = request.id
+        let originalSheet = sheet
+        var draft = originalSheet
+        var blockSymbol = request.blockSymbol
+        blockSymbol.id = UUID().uuidString.lowercased()
+        blockSymbol.instanceID = UUID().uuidString.lowercased()
+        blockSymbol.placement = HorizontalPlacementTransform(
+            shift: snapSchematicPointToGrid(lastCursorWorldPoint ?? originalSheet.bounds.center),
+            angle: 0,
+            mirrored: false
+        )
+        draft.blockSymbols.append(blockSymbol)
+        draft.rebakeBlockSymbol(blockSymbol.id)
+        editedSheet = draft
+        placePartState = PlacePartState(
+            requestID: request.id,
+            originalSheet: originalSheet,
+            symbolID: blockSymbol.id,
+            actionName: "Place Block",
+            isBlock: true
+        )
+        selectedObjects = [HorizontalSelectableRef(id: blockSymbol.id, type: .schematicBlockSymbol)]
+        selectedUnplacedObjectID = nil
+        hoveredObject = nil
+        invalidateSelectableCache()
+    }
+
+    /// R and E while a block is being placed turn and flip it where it is.
+    private func transformPlacingBlock(_ transform: (HorizontalPlacementTransform) -> HorizontalPlacementTransform) -> Bool {
+        guard let state = placePartState, state.isBlock else {
+            return false
+        }
+        var draft = editedSheet ?? sourceSheet
+        guard let placement = draft.blockSymbol(state.symbolID)?.placement else {
+            return true
+        }
+        draft.placeBlockSymbol(state.symbolID, at: transform(placement))
+        editedSheet = draft
+        invalidateSelectableCache()
+        return true
+    }
+
+    /// The click: the instance and its symbol are made in the sheet's block
+    /// as one undoable edit, which reloads the sheet with them on it.
+    private func commitPlaceBlock(_ state: PlacePartState) {
+        let draft = editedSheet ?? sourceSheet
+        guard let blockSymbol = draft.blockSymbol(state.symbolID) else {
+            cancelPlacePart()
+            return
+        }
+        let placement = blockSymbol.placement
+        placePartState = nil
+        editedSheet = state.originalSheet
+        invalidateSelectableCache()
+        applyProjectEdit([
+            ["op": "add_block_instance", "block": blockSymbol.blockID, "id": blockSymbol.instanceID],
+            ["op": "place_block_symbol", "instance": blockSymbol.instanceID, "sheet": sheet.id,
+             "x_mm": placement.shift.x / 1_000_000, "y_mm": placement.shift.y / 1_000_000,
+             "angle_deg": Double(placement.angle) * 360 / Double(HorizontalCanvasModeSupport.fullTurnAngle), "mirror": placement.mirrored],
+        ], actionName: "Place Block")
+    }
+
+    /// The block symbol a selection or a click is about, when it is one.
+    private func selectedBlockSymbol() -> HorizontalSchematicBlockSymbol? {
+        guard selectedObjects.count == 1, let ref = selectedObjects.first, ref.type == .schematicBlockSymbol else {
+            return nil
+        }
+        return sheet.blockSymbol(ref.id)
+    }
+
     private func updatePlacePart(to point: HorizontalPoint) {
         guard !isReadOnly,
               let state = placePartState else {
+            return
+        }
+        if state.isBlock {
+            var draft = editedSheet ?? sourceSheet
+            guard let placement = draft.blockSymbol(state.symbolID)?.placement else {
+                return
+            }
+            let target = snapSchematicPointToGrid(point)
+            guard target != placement.shift else {
+                return
+            }
+            draft.shiftBlockSymbol(state.symbolID, by: target - placement.shift)
+            editedSheet = draft
+            invalidateSelectableCache()
             return
         }
         var draft = editedSheet ?? sourceSheet
@@ -2300,6 +2524,10 @@ struct SchematicCanvasView: View {
     private func commitPlacePart() {
         guard !isReadOnly,
               let state = placePartState else {
+            return
+        }
+        if state.isBlock {
+            commitPlaceBlock(state)
             return
         }
 
@@ -3921,6 +4149,9 @@ struct SchematicCanvasView: View {
             mirrorPlacingPin()
             return
         }
+        if transformPlacingBlock({ HorizontalPlacementTransform(shift: $0.shift, angle: $0.angle, mirrored: !$0.mirrored) }) {
+            return
+        }
         if placePowerSymbolState != nil {
             mirrorPlacingPowerSymbol()
             return
@@ -3934,6 +4165,13 @@ struct SchematicCanvasView: View {
     private func rotateSelection() {
         if placePinState != nil {
             rotatePlacingPin()
+            return
+        }
+        if transformPlacingBlock({ placement in
+            HorizontalPlacementTransform(shift: placement.shift,
+                                         angle: placement.angle + (placement.mirrored ? -Self.quarterTurnAngle : Self.quarterTurnAngle),
+                                         mirrored: placement.mirrored)
+        }) {
             return
         }
         if placePowerSymbolState != nil {
@@ -6418,6 +6656,46 @@ struct SchematicCanvasView: View {
             renameNet(of: change.ref, to: name)
             return
         }
+        if change.propertyID == Self.isPortPropertyID || change.propertyID == Self.portDirectionPropertyID {
+            guard let netID = netID(for: change.ref) else { return }
+            switch change.value {
+            case .bool(let isPort):
+                applyProjectEdit([["op": "set_net_port", "net": netID, "is_port": isPort]],
+                                 actionName: isPort ? "Make Port" : "Stop Being a Port")
+            case .choice(let direction):
+                applyProjectEdit([["op": "set_net_port", "net": netID, "port_direction": direction]], actionName: "Set Port Direction")
+            default:
+                break
+            }
+            return
+        }
+        if change.propertyID == Self.portNoConnectPropertyID, case .bool(let mark) = change.value,
+           let (symbol, portID) = blockPort(for: change.ref), let portNet = symbol.portNets[portID] {
+            applyProjectEdit([mark
+                ? ["op": "connect_block_port", "instance": symbol.instanceID, "port": portNet, "nc": true]
+                : ["op": "disconnect_block_port", "instance": symbol.instanceID, "port": portNet]],
+                             actionName: mark ? "Set Port Not Connected" : "Clear Port Not Connected")
+            return
+        }
+        if change.type == .schematicBlockSymbol, let blockSymbol = sheet.blockSymbol(change.ref.id) {
+            switch change.propertyID {
+            case Self.openBlockActionID:
+                onOpenBlock?(blockSymbol)
+            case Self.editBlockSymbolActionID:
+                onEditBlockSymbol?(blockSymbol.blockID)
+            case "refdes":
+                if case .text(let raw) = change.value {
+                    let refdes = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !refdes.isEmpty, refdes != blockSymbol.refdes {
+                        applyProjectEdit([["op": "set_block_instance", "instance": blockSymbol.instanceID, "refdes": refdes]],
+                                         actionName: "Set Reference Designator")
+                    }
+                }
+            default:
+                break
+            }
+            return
+        }
         let previousSheet = editedSheet ?? sourceSheet
         var draft = previousSheet
         let refs = change.applyToAll
@@ -6519,7 +6797,13 @@ struct SchematicCanvasView: View {
         case .drawingArc:
             updateArc(&sheet.drawingArcs, ref: ref, propertyID: propertyID, value: value)
         case .netLabel:
-            updateNetLabel(&sheet.netLabels, ref: ref, propertyID: propertyID, value: value)
+            if propertyID == "showPort", case .bool(let showsPort) = value,
+               let index = sheet.netLabels.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
+                sheet.netLabels[index].showsPort = showsPort
+                sheet.netLabels[index].text = sheet.netLabelText(forNet: sheet.netLabels[index].netID, showsPort: showsPort)
+            } else {
+                updateNetLabel(&sheet.netLabels, ref: ref, propertyID: propertyID, value: value)
+            }
         case .busLabel:
             updateBusLabel(&sheet.busLabels, ref: ref, propertyID: propertyID, value: value)
         case .text:
@@ -8003,6 +8287,12 @@ struct SchematicCanvasView: View {
                 handlers.toggleSmash = { toggleSmashSelection() }
             }
         }
+        if let onOpenBlock, let blockSymbol = selectedBlockSymbol() {
+            handlers.openBlock = { onOpenBlock(blockSymbol) }
+        }
+        if let onEditBlockSymbol, let blockSymbol = selectedBlockSymbol() {
+            handlers.editBlockSymbol = { onEditBlockSymbol(blockSymbol.blockID) }
+        }
         if !editorProfile.isPoolMode, onMoveToOtherSheet != nil {
             handlers.moveToOtherSheet = { moveSelectionToOtherSheet($0) }
             handlers.moveToOtherSheetTargets = HorizontalSchematicMoveToSheet.items(for: selectedObjects).isEmpty ? [] : otherSheetTargets
@@ -8174,6 +8464,7 @@ struct SchematicCanvasView: View {
             }
         }
         if let smash = smashEntry(for: ref) { entries.append(smash) }
+        entries.append(contentsOf: blockSymbolEntries(for: ref))
         if onCopySelection != nil, HorizontalSchematicClipboardEditor.supports(ref) {
             entries.append(.command(title: "Copy", .copySelection))
             if !isReadOnly, onPreparePaste != nil { entries.append(.command(title: "Duplicate", .duplicateSelection)) }
@@ -8192,9 +8483,21 @@ struct SchematicCanvasView: View {
         if canBendNetLine(ref) { entries.append(.command(title: "Add Vertex", .bendNetLine)) }
         if canEditCustomValue(of: ref) { entries.append(.command(title: "Edit Custom Value…", .editCustomValue)) }
         if let smash = smashEntry(for: ref) { entries.append(smash) }
+        entries.append(contentsOf: blockSymbolEntries(for: ref))
         if let moveToOtherSheet = moveToOtherSheetEntry(for: ref) { entries.append(moveToOtherSheet) }
         return entries.count > 1 ? entries : []
         #endif
+    }
+
+    /// Horizon's Push into block and Edit block symbol, for a block symbol.
+    private func blockSymbolEntries(for ref: HorizontalSelectableRef) -> [HorizontalTargetItemMenuEntry] {
+        guard ref.type == .schematicBlockSymbol, sheet.blockSymbol(ref.id) != nil else {
+            return []
+        }
+        var entries = [HorizontalTargetItemMenuEntry]()
+        if onOpenBlock != nil { entries.append(.command(title: "Open Block", .openBlock)) }
+        if onEditBlockSymbol != nil { entries.append(.command(title: "Edit Block Symbol", .editBlockSymbol)) }
+        return entries
     }
 
     /// Smash Text or Unsmash Text for a symbol, as the board offers them for
@@ -8965,7 +9268,7 @@ struct SchematicCanvasView: View {
             }
 
             currentGroup = 0; currentOpacity = 1
-            if editorProfile.mode == .symbol, !isTextPlacementView, !sheet.editablePins.isEmpty {
+            if editorProfile.supportsPins, !isTextPlacementView, !sheet.editablePins.isEmpty {
                 // Horizon's symbol bounding box: the pins' extent, mirrored
                 // about the origin, so the symbol's footprint on a sheet shows.
                 var extent = HorizontalPoint.zero
@@ -12684,9 +12987,10 @@ extension SchematicCanvasView {
                 return nil
             }
             let info = unitPinInfo(for: pin.id)
+            let kind = editorProfile.pinsArePorts ? "Port" : "Pin"
             return HorizontalSelectionHUDItem(
-                title: nonEmpty(info?.name) ?? "Pin",
-                subtitle: "Pin \(shortID(pin.id))",
+                title: nonEmpty(info?.name) ?? kind,
+                subtitle: "\(kind) \(shortID(pin.id))",
                 details: [
                     detailRow("Direction", info?.direction.replacingOccurrences(of: "_", with: " ").capitalized),
                     detailRow("Position", coordinateString(pin.position)),
@@ -12719,7 +13023,7 @@ extension SchematicCanvasView {
                 return []
             }
             let info = unitPinInfo(for: pin.id)
-            return [
+            let common = [
                 readOnlyProperty("name", "Name", info?.name),
                 readOnlyProperty("direction", "Direction", info?.direction.replacingOccurrences(of: "_", with: " ").capitalized),
                 editableLengthProperty("positionX", "Position X", pin.position.x),
@@ -12731,6 +13035,22 @@ extension SchematicCanvasView {
                     editor: .choice(pinOrientationChoiceOptions()),
                     value: .choice(pin.orientation.rawValue)
                 ),
+            ]
+            // A block's port is Horizon's `BlockSymbolPort`: a name drawn
+            // always, no pad and no decorations.
+            if editorProfile.pinsArePorts {
+                return (common + [
+                    HorizontalSelectionProperty(
+                        id: "nameOrientation",
+                        label: "Name orientation",
+                        editor: .choice(HorizontalPinNameOrientation.allCases.map {
+                            HorizontalSelectionPropertyOption(id: $0.rawValue, title: $0.displayName)
+                        }),
+                        value: .choice(pin.nameOrientation.rawValue)
+                    ),
+                ]).compactMap { $0 }
+            }
+            return (common + [
                 editableBoolProperty("nameVisible", "Name visible", pin.nameVisible),
                 editableBoolProperty("padVisible", "Pad visible", pin.padVisible),
                 HorizontalSelectionProperty(
@@ -12752,7 +13072,7 @@ extension SchematicCanvasView {
                     }),
                     value: .choice(pin.decoration.driver.rawValue)
                 ),
-            ].compactMap { $0 }
+            ]).compactMap { $0 }
         case .polygonEdge, .polygonVertex, .polygonArcCenter:
             return []
         default:
@@ -13783,11 +14103,16 @@ extension SchematicCanvasView {
         }
         let originalSheet = placePinState?.originalSheet ?? sheet
         var draft = sheet
-        let pin = HorizontalSymbolPin(
+        var pin = HorizontalSymbolPin(
             id: pinID,
             position: lastCursorWorldPoint ?? draft.bounds.center,
             orientation: placePinOrientation
         )
+        // A block's port has a name and no pad.
+        if editorProfile.pinsArePorts {
+            pin.padVisible = false
+            pin.nameVisible = true
+        }
         draft.editablePins.append(pin)
         draft.rebakeEditablePin(id: pinID, context: context)
         editedSheet = draft
@@ -13901,9 +14226,10 @@ extension SchematicCanvasView {
             size: 1_500_000,
             layer: nil
         )
+        // A block symbol names its block where a part's names its value.
         let value = HorizontalText(
             id: UUID().uuidString.lowercased(),
-            text: "$VALUE",
+            text: editorProfile.pinsArePorts ? "$NAME" : "$VALUE",
             position: HorizontalPoint(x: cursor.x, y: -abs(cursor.y)),
             size: 1_500_000,
             layer: nil
@@ -14026,7 +14352,7 @@ extension SchematicCanvasView {
 
     private func beginResizeSymbol() {
         guard !isReadOnly,
-              editorProfile.mode == .symbol,
+              editorProfile.supportsPins,
               !isTextPlacementView,
               moveState == nil,
               placePartState == nil,

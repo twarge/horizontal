@@ -2382,3 +2382,36 @@ private struct ThreeDViewControlsPanel: View {
     }
 
 }
+
+/// Horizon's Place Block, with the blocks to place. A block the sheet can't
+/// use — its own, or one that uses it — is listed, dimmed.
+struct PlaceBlockToolButton: View {
+    struct Choice: Identifiable {
+        var id: String
+        var name: String
+        var isEnabled: Bool
+    }
+
+    var choices: [Choice]
+    var onPlace: (String) -> Void
+    var onNewBlock: () -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "Place block") {
+            Menu {
+                ForEach(choices) { choice in
+                    Button(choice.name) { onPlace(choice.id) }
+                        .disabled(!choice.isEnabled)
+                }
+                if !choices.isEmpty {
+                    Divider()
+                }
+                Button("New Block…", action: onNewBlock)
+            } label: {
+                Image(systemName: "square.stack.3d.up")
+            }
+            .menuIndicator(.hidden)
+            .help("Place an instance of a block on this sheet")
+        }
+    }
+}

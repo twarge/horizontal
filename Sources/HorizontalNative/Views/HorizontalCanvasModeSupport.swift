@@ -266,6 +266,8 @@ struct HorizontalCanvasCommandHandlerSet {
     var filterAirwires: (() -> Void)? = nil
     var openDatasheet: (() -> Void)? = nil
     var toggleSmash: (() -> Void)? = nil
+    var openBlock: (() -> Void)? = nil
+    var editBlockSymbol: (() -> Void)? = nil
     var smashSilkscreenGraphics: (() -> Void)? = nil
     var toggleOmitSilkscreen: (() -> Void)? = nil
     var toggleOmitOutline: (() -> Void)? = nil
@@ -422,6 +424,10 @@ struct HorizontalCanvasCommandHandlerSet {
         case .toggleSmash:
             guard !isReadOnly else { return }
             toggleSmash?()
+        case .openBlock:
+            openBlock?()
+        case .editBlockSymbol:
+            editBlockSymbol?()
         case .smashSilkscreenGraphics:
             guard !isReadOnly else { return }
             smashSilkscreenGraphics?()
