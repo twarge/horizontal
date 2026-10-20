@@ -65,6 +65,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case setNetPort = "set_net_port"
     case placeBlockPort = "place_block_port"
     case removeBlockPort = "remove_block_port"
+    case annotate = "annotate"
     case setStackup = "set_stackup"
     case addRule = "add_rule"
     case setRule = "set_rule"
@@ -167,6 +168,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .setNetPort: "Make a net of a sub-block one of its ports, which the blocks using it wire to their own nets, or stop it being one — which takes its port off the symbol, the instances' connections to it, and the wires that ended on it. Edit the sub-block with block. Power nets can't be ports."
         case .placeBlockPort: "Draw one of the edited block's ports on its symbol, as Horizon's Place Port does, or move or change it there. Its uuid is derived from its net."
         case .removeBlockPort: "Take a port off the edited block's symbol. The net stays a port; the instances' connections to it and the wires that ended on it go."
+        case .annotate: "Horizon's Annotate: number every component's refdes from its prefix, sheet by sheet in the order given, across the whole design — each instance of a block numbered on its own, under its instance mapping. The options default to the schematic's own and are kept there."
         case .addRule: "Add a board design rule of a kind, with the defaults the app's own rules editor would give it and the fields given merged in, ordered after the rules of its kind already there. A via rule gets the padstack the board's via rules already use unless fields names one."
         case .setRule: "Change fields of a board design rule, merging objects key by key. The board is refused if the change makes the rules invalid. A change to the via rules gives the vias that take their shape from them the padstack and parameters of the rule that now matches."
         case .removeRule: "Remove a board design rule."
@@ -235,11 +237,13 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .setValue:
             return ["component": component, "value": "New value."]
         case .setRefdes:
-            return ["component": component, "refdes": "New reference designator."]
+            return ["component": component, "refdes": "New reference designator.",
+                    "instance": "For a component of a sub-block, the instance whose refdes this is: instance refdes or uuids from the top block, joined with /, e.g. I1 or I1/I2 (optional; without it the block's own refdes, which every instance without one of its own shows)."]
         case .setPart:
             return ["component": component, "part": "Pool part id, or null."]
         case .setNoPopulate:
-            return ["component": component, "no_populate": "true or false."]
+            return ["component": component, "no_populate": "true or false.",
+                    "instance": "For a component of a sub-block, the instance it is (not) populated in, as set_refdes takes it (optional)."]
         case .setGroupTag:
             return ["component": component, "group": "Group name, or null.", "tag": "Tag name, or null."]
         case .ensureNet:
@@ -437,6 +441,12 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "length_mm": "Length (optional; default 2.5).", "name_orientation": "in_line, perpendicular or horizontal (optional; default in_line)."]
         case .removeBlockPort:
             return ["net": "The port's net in the edited block."]
+        case .annotate:
+            return ["mode": "sequential, sheet_100 or sheet_1000: numbers running on, or starting at 100 or 1000 times the sheet's page (optional).",
+                    "order": "right_down or down_right: the order a sheet's symbols are taken in (optional).",
+                    "fill_gaps": "Reuse numbers left free (optional).",
+                    "keep": "Keep refdes already given, numbering only those with ? (optional).",
+                    "ignore_unknown": "Keep a refdes whose number can't be read, rather than numbering it again (optional)."]
         case .placeBlockSymbol:
             return ["instance": "Block instance id or refdes.", "sheet": "Sheet index, name or uuid (optional; default the first sheet).",
                     "x_mm": "X position.", "y_mm": "Y position.",
@@ -575,7 +585,7 @@ struct HorizontalEditOperation {
         let unknown = Set(json.keys).subtracting(Set(kind.params.keys).union(["op"]))
         guard unknown.isEmpty else { throw HorizontalDispatchError.invalidParams("Unknown \(name) fields: \(unknown.sorted().joined(separator: ", ")).") }
         for (key, value) in json where key != "op" {
-            if key == "mode" {
+            if key == "mode", kind != .annotate {
                 guard let mode = value as? String, ["distance", "horizontal", "vertical"].contains(mode) else {
                     throw HorizontalDispatchError.invalidParams("mode must be distance, horizontal or vertical.")
                 }
@@ -629,7 +639,7 @@ struct HorizontalEditOperation {
                 try HorizontalDispatchValidation.number(value, key: key)
             } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs", "exposed_copper_only",
                        "force", "cascade", "swap", "remove_routing", "display_all_pads", "no_connect", "disconnect",
-                       "unanchored", "stubs", "use_primary_name", "all", "keep_wiring", "board", "is_port", "nc", "show_port"].contains(key) {
+                       "unanchored", "stubs", "use_primary_name", "all", "keep_wiring", "board", "is_port", "nc", "show_port", "fill_gaps", "keep", "ignore_unknown"].contains(key) {
                 try HorizontalDispatchValidation.boolean(value, key: key)
             } else if value is NSNull, ["part", "group", "tag"].contains(key) {
                 continue
@@ -846,7 +856,11 @@ final class HorizontalProjectEditor {
             guard let refdes = params.string("refdes"), !refdes.isEmpty else {
                 throw HorizontalDispatchError.invalidParams("set_refdes needs \"refdes\".")
             }
-            try updateComponent(id) { $0["refdes"] = refdes }
+            if params.string("instance") != nil {
+                change["instance"] = try updateInstanceMapping(component: id, params) { $0["refdes"] = refdes }
+            } else {
+                try updateComponent(id) { $0["refdes"] = refdes }
+            }
             change["component"] = id
             change["refdes"] = refdes
         case .setPart:
@@ -858,7 +872,11 @@ final class HorizontalProjectEditor {
             guard let flag = params.bool("no_populate") else {
                 throw HorizontalDispatchError.invalidParams("set_no_populate needs \"no_populate\".")
             }
-            try updateComponent(id) { $0["nopopulate"] = flag }
+            if params.string("instance") != nil {
+                change["instance"] = try updateInstanceMapping(component: id, params) { $0["nopopulate"] = flag }
+            } else {
+                try updateComponent(id) { $0["nopopulate"] = flag }
+            }
             change["component"] = id
             change["no_populate"] = flag
         case .setGroupTag:
@@ -1029,6 +1047,8 @@ final class HorizontalProjectEditor {
             change.merge(try placeBlockPort(params)) { _, new in new }
         case .removeBlockPort:
             change.merge(try removeBlockPort(params)) { _, new in new }
+        case .annotate:
+            change.merge(try annotate(params)) { _, new in new }
         case .addRule:
             change.merge(try addRule(params)) { _, new in new }
         case .setRule:
@@ -4816,6 +4836,263 @@ final class HorizontalProjectEditor {
         guard kept.count != mappings.count else { return 0 }
         try updateBlockFile(top.uuid) { $0["block_instance_mappings"] = kept }
         return mappings.count - kept.count
+    }
+
+    /// An instance path from the top block, `I1/I2` by refdes or by uuid,
+    /// as the instance uuids it names. It has to end at an instance of the
+    /// block being edited, whose components it gives refdes to.
+    private func instancePath(_ reference: String) throws -> [String] {
+        guard let top = knownBlocks.first(where: \.isTop) else {
+            throw HorizontalDispatchError.failed("The project has no top block.")
+        }
+        var path = [String]()
+        var current = top.uuid
+        for step in reference.split(separator: "/").map({ String($0).trimmingCharacters(in: .whitespaces) }) where !step.isEmpty {
+            let instances = try blockFile(current).dictionaryMap("block_instances")
+            var matches = instances.filter { $0.key.caseInsensitiveCompare(step) == .orderedSame }
+            if matches.isEmpty { matches = instances.filter { $0.value.string("refdes") == step } }
+            guard matches.count == 1, let match = matches.first, let child = match.value.string("block") else {
+                throw matches.isEmpty
+                    ? HorizontalDispatchError.notFound("No instance \(step) in \(knownBlock(current)?.displayName ?? current).")
+                    : HorizontalDispatchError.ambiguous("More than one instance is called \(step); use its uuid.", candidates: matches.keys.sorted())
+            }
+            path.append(match.key.lowercased())
+            current = child
+        }
+        guard !path.isEmpty, current.lowercased() == blockID.lowercased() else {
+            throw HorizontalDispatchError.invalidParams(
+                "\(reference) is not an instance of \(knownBlock(blockID)?.displayName ?? "this block"); name the block its component is in with block."
+            )
+        }
+        return path
+    }
+
+    /// One instance's own refdes and no-populate for a component, Horizon's
+    /// `block_instance_mappings` entry, which the top block keeps for every
+    /// instance path. Returns the path, `/`-joined.
+    private func updateInstanceMapping(component: String, _ params: JSONDictionary,
+                                       _ body: (inout JSONDictionary) -> Void) throws -> String {
+        guard !isTopBlock else {
+            throw HorizontalDispatchError.invalidParams("instance names a use of a sub-block's component; the top block's components are used once.")
+        }
+        let path = try instancePath(params.string("instance") ?? "")
+        let key = path.joined(separator: "/")
+        guard let top = knownBlocks.first(where: \.isTop) else { return key }
+        let ownRefdes = components()[component]?.string("refdes") ?? ""
+        let ownNoPopulate = components()[component]?.bool("nopopulate") ?? false
+        try updateBlockFile(top.uuid) { json in
+            var mappings = json["block_instance_mappings"] as? JSONDictionary ?? [:]
+            let mappingKey = mappings.keys.first { $0.lowercased() == key } ?? key
+            var mapping = mappings[mappingKey] as? JSONDictionary ?? ["block": blockID]
+            var entries = mapping["components"] as? JSONDictionary ?? [:]
+            let entryKey = entries.keys.first { $0.lowercased() == component.lowercased() } ?? component
+            var entry = entries[entryKey] as? JSONDictionary ?? ["refdes": ownRefdes, "nopopulate": ownNoPopulate]
+            body(&entry)
+            entries[entryKey] = entry
+            mapping["components"] = entries
+            mappings[mappingKey] = mapping
+            json["block_instance_mappings"] = mappings
+        }
+        return key
+    }
+
+    // MARK: - Annotation
+
+    /// Horizon's `Schematic::annotate`, over the whole hierarchy: the top
+    /// block's sheets in page order, each followed by the sheets of the
+    /// blocks drawn on it, by instance refdes — the order Horizon numbers
+    /// pages in. Each instance's components are numbered under its mapping,
+    /// and the counters run across the whole design.
+    private func annotate(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard isTopBlock, let top = knownBlocks.first(where: \.isTop) else {
+            throw HorizontalDispatchError.invalidParams("annotate numbers the whole design; run it on the top block.")
+        }
+        var options = files["schematic"]?["annotation"] as? JSONDictionary ?? [:]
+        let defaults: JSONDictionary = ["mode": "sheet_100", "order": "right_down", "fill_gaps": true, "keep": true, "ignore_unknown": false]
+        var optionsChanged = false
+        for key in ["mode", "order", "fill_gaps", "keep", "ignore_unknown"] where params[key] != nil {
+            options[key] = params[key]
+            optionsChanged = true
+        }
+        let mode = options.string("mode") ?? defaults.string("mode")!
+        let order = options.string("order") ?? defaults.string("order")!
+        guard ["sequential", "sheet_100", "sheet_1000"].contains(mode) else {
+            throw HorizontalDispatchError.invalidParams("mode must be sequential, sheet_100 or sheet_1000.")
+        }
+        guard ["right_down", "down_right"].contains(order) else {
+            throw HorizontalDispatchError.invalidParams("order must be right_down or down_right.")
+        }
+        let fillGaps = options.bool("fill_gaps") ?? true
+        let keep = options.bool("keep") ?? true
+        let ignoreUnknown = options.bool("ignore_unknown") ?? false
+        if optionsChanged, var schematic = files["schematic"] {
+            schematic["annotation"] = defaults.merging(options) { _, given in given }
+            files["schematic"] = schematic
+            dirty.insert("schematic")
+        }
+
+        // What annotation reads and writes, held here and written once.
+        var blockFiles = [String: JSONDictionary]()
+        func blockJSON(_ id: String) throws -> JSONDictionary {
+            if let cached = blockFiles[id] { return cached }
+            let json = try blockFile(id)
+            blockFiles[id] = json
+            return json
+        }
+        var mappings = try blockFile(top.uuid)["block_instance_mappings"] as? JSONDictionary ?? [:]
+        var refdesChanges = [String: [String: String]]()   // block → component → refdes (top level of each block)
+        var finalRefdes = [String: String]()
+        var original = [String: String]()   // block|path|component → refdes before
+
+        func ownComponent(_ component: String, in block: String) throws -> JSONDictionary? {
+            try blockJSON(block).dictionaryMap("components").first { $0.key.lowercased() == component }?.value
+        }
+        func refdes(_ component: String, in block: String, path: [String]) throws -> String {
+            if path.isEmpty {
+                if let changed = refdesChanges[block]?[component] { return changed }
+                return try ownComponent(component, in: block)?.string("refdes") ?? ""
+            }
+            let key = path.joined(separator: "/")
+            if let mapped = (mappings[key] as? JSONDictionary)?.dictionaryMap("components")
+                .first(where: { $0.key.lowercased() == component })?.value.string("refdes") {
+                return mapped
+            }
+            return try ownComponent(component, in: block)?.string("refdes") ?? ""
+        }
+        func setRefdes(_ component: String, in block: String, path: [String], to value: String) throws {
+            let previous = try refdes(component, in: block, path: path)
+            guard previous != value else { return }
+            let key = "\(block)|\(path.joined(separator: "/"))|\(component)"
+            if original[key] == nil { original[key] = previous }
+            finalRefdes[key] = value
+            if path.isEmpty {
+                refdesChanges[block, default: [:]][component] = value
+                return
+            }
+            let mappingKey = path.joined(separator: "/")
+            var mapping = mappings[mappingKey] as? JSONDictionary ?? ["block": block]
+            var entries = mapping["components"] as? JSONDictionary ?? [:]
+            let ownNoPopulate = try ownComponent(component, in: block)?.bool("nopopulate") ?? false
+            var entry = entries[component] as? JSONDictionary ?? ["nopopulate": ownNoPopulate]
+            entry["refdes"] = value
+            entries[component] = entry
+            mapping["components"] = entries
+            mappings[mappingKey] = mapping
+        }
+        func prefix(of component: JSONDictionary) -> String {
+            if let entity = component.string("entity"), let prefix = pool.entity(entity)?.prefix, !prefix.isEmpty {
+                return prefix
+            }
+            return String((component.string("refdes") ?? "").prefix { $0.isLetter })
+        }
+
+        var counters = [String: [Int]]()
+        var sheetNumber = 0
+        func visit(_ block: String, path: [String]) throws {
+            guard path.count < HorizontalBlockFlattener.maximumDepth else { return }
+            let json = try blockJSON(block)
+            let components = json.dictionaryMap("components").reduce(into: [String: JSONDictionary]()) { $0[$1.key.lowercased()] = $1.value }
+            if !keep {
+                for id in components.keys.sorted() { try setRefdes(id, in: block, path: path, to: "?") }
+            }
+            for component in components.values { counters[prefix(of: component), default: []] = counters[prefix(of: component)] ?? [] }
+
+            let schematic: JSONDictionary?
+            if block.lowercased() == blockID.lowercased() {
+                schematic = files["schematic"]
+            } else {
+                schematic = try knownBlock(block)?.schematicFilename.flatMap { try projectFile($0) }
+            }
+            let sheets = (schematic?.dictionaryMap("sheets") ?? [:]).sorted { ($0.value.int("index") ?? 0, $0.key) < ($1.value.int("index") ?? 0, $1.key) }
+            for (_, sheet) in sheets {
+                sheetNumber += 1
+                var offset = 0, increment = 0
+                if mode != "sequential" {
+                    for key in counters.keys { counters[key] = [] }
+                    increment = mode == "sheet_100" ? 100 : 1000
+                    offset = increment * sheetNumber
+                }
+                var symbols = sheet.dictionaryMap("symbols").values.compactMap { symbol -> (component: String, x: Double, y: Double)? in
+                    guard let component = symbol.string("component")?.lowercased(), components[component] != nil else { return nil }
+                    let shift = HorizontalPlacementTransform(json: symbol.dictionary("placement"))?.shift ?? .zero
+                    return (component, shift.x, shift.y)
+                }
+                // Horizon sorts by one axis, then stably by the other.
+                if order == "right_down" {
+                    symbols.sort { $0.x < $1.x }
+                    symbols = symbols.enumerated().sorted { ($0.element.y, -$0.offset) > ($1.element.y, -$1.offset) }.map(\.element)
+                } else {
+                    symbols.sort { $0.y > $1.y }
+                    symbols = symbols.enumerated().sorted { ($0.element.x, $0.offset) < ($1.element.x, $1.offset) }.map(\.element)
+                }
+                for symbol in symbols {
+                    guard let component = components[symbol.component] else { continue }
+                    let thePrefix = prefix(of: component)
+                    let current = try refdes(symbol.component, in: block, path: path)
+                    guard !current.contains("?") else { continue }
+                    if let number = Int(current.dropFirst(thePrefix.count)), current.hasPrefix(thePrefix), number > 0 {
+                        counters[thePrefix, default: []].append(number)
+                        counters[thePrefix]?.sort()
+                    } else if !ignoreUnknown {
+                        try setRefdes(symbol.component, in: block, path: path, to: "?")
+                    }
+                }
+                for symbol in symbols {
+                    guard let component = components[symbol.component] else { continue }
+                    let thePrefix = prefix(of: component)
+                    var used = counters[thePrefix] ?? []
+                    if try refdes(symbol.component, in: block, path: path).contains("?") {
+                        var number = 1 + offset
+                        if !used.isEmpty {
+                            number = used.last! + 1
+                            if fillGaps, used.count >= 2 {
+                                for (value, next) in zip(used, used.dropFirst()) where value > offset && next != value + 1 {
+                                    number = value + 1
+                                    break
+                                }
+                            }
+                        }
+                        if increment > 0, number / increment != sheetNumber {
+                            number = offset + 1
+                        }
+                        used.append(number)
+                        try setRefdes(symbol.component, in: block, path: path, to: thePrefix + String(number))
+                    }
+                    counters[thePrefix] = used.sorted()
+                }
+
+                let instances = json.dictionaryMap("block_instances")
+                let blockSymbols = sheet.dictionaryMap("block_symbols").values.compactMap { item -> (id: String, refdes: String, block: String)? in
+                    guard let instanceID = item.string("block_instance")?.lowercased(),
+                          let instance = instances.first(where: { $0.key.lowercased() == instanceID })?.value,
+                          let child = instance.string("block") else { return nil }
+                    return (instanceID, instance.string("refdes") ?? "", child.lowercased())
+                }
+                .sorted { $0.refdes.localizedStandardCompare($1.refdes) == .orderedAscending }
+                for blockSymbol in blockSymbols {
+                    try visit(blockSymbol.block, path: path + [blockSymbol.id])
+                }
+            }
+        }
+        try visit(top.uuid.lowercased(), path: [])
+
+        for (block, refdesByComponent) in refdesChanges {
+            try updateBlockFile(block) { json in
+                var components = json["components"] as? JSONDictionary ?? [:]
+                for (component, refdes) in refdesByComponent {
+                    let key = components.keys.first { $0.lowercased() == component } ?? component
+                    guard var item = components[key] as? JSONDictionary else { continue }
+                    item["refdes"] = refdes
+                    components[key] = item
+                }
+                json["components"] = components
+            }
+        }
+        if mappings as NSDictionary != ((try blockFile(top.uuid))["block_instance_mappings"] as? JSONDictionary ?? [:]) as NSDictionary {
+            try updateBlockFile(top.uuid) { $0["block_instance_mappings"] = mappings }
+        }
+        let changed = finalRefdes.filter { original[$0.key] != $0.value }.count
+        return ["annotated": changed, "mode": mode, "order": order, "sheets": sheetNumber]
     }
 
     private static func emptySheet(named name: String, index: Int) -> JSONDictionary {

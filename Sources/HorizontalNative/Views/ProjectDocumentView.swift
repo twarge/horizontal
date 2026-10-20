@@ -654,6 +654,7 @@ struct ProjectWorkspaceView: View {
     @State private var newBlockName = ""
     /// The block symbol editor wrote the symbol since the sheets were baked.
     @State private var blockSymbolNeedsReload = false
+    @State private var annotatePopoverPresented = false
     /// The project's parts against their pools, for the Parts pane, the
     /// updates sheet and the info bar that says when they fall behind.
     @StateObject private var partLibrary = HorizontalPartLibraryMonitor()
@@ -2260,6 +2261,16 @@ struct ProjectWorkspaceView: View {
                             canvasCommandActionsByPane[.schematic]?.dispatch(.tieNets)
                         }
                         .disabled(canvasCommandActionsByPane[.schematic]?.canTieNets != true)
+                        AnnotateToolButton {
+                            annotatePopoverPresented.toggle()
+                        }
+                        .popover(isPresented: $annotatePopoverPresented, arrowEdge: .trailing) {
+                            HorizontalAnnotatePopover(options: annotationOptions, isReadOnly: isReadOnly) { options in
+                                annotatePopoverPresented = false
+                                annotate(options)
+                            }
+                        }
+                        .disabled(selectedSchematic == nil)
                         PlaceBlockToolButton(
                             choices: placeBlockChoices,
                             onPlace: { placeBlock($0) },
@@ -3393,7 +3404,58 @@ struct ProjectWorkspaceView: View {
         var parentSheetName: String
         /// The block opened, and the instance it was opened through.
         var blockID: String
+        var instanceID: String
         var refdes: String
+    }
+
+    /// Horizon's instance path for the sheet showing: the instances it was
+    /// reached through from the top block, when it was reached that way. Its
+    /// components then show, and take, that instance's own refdes.
+    private var currentInstancePath: [String]? {
+        guard let last = blockTrail.last, let first = blockTrail.first else { return nil }
+        switch navigatorSelection {
+        case .sheet(let blockID, _) where blockID.caseInsensitiveCompare(last.blockID) == .orderedSame:
+            break
+        default:
+            return nil
+        }
+        guard case .sheet(let firstParent, _) = first.parent,
+              project.blocks.first(where: { $0.uuid.caseInsensitiveCompare(firstParent) == .orderedSame })?.isTop == true else {
+            return nil
+        }
+        for (step, next) in zip(blockTrail, blockTrail.dropFirst()) {
+            guard case .sheet(let parent, _) = next.parent, parent.caseInsensitiveCompare(step.blockID) == .orderedSame else {
+                return nil
+            }
+        }
+        return blockTrail.map { $0.instanceID.lowercased() }
+    }
+
+    /// The refdes an instance path's mapping gives its block's components.
+    private func instanceRefdes(_ path: [String]) -> [String: String] {
+        project.flattenedBlock?.instanceRefdes[path.joined(separator: "/")] ?? [:]
+    }
+
+    /// The schematic at `url` is showing through an instance: its path, and
+    /// the refdes the canvas draws for it.
+    private func instanceView(forSchematicURL url: URL) -> (path: [String], refdes: [String: String])? {
+        guard let path = currentInstancePath, let last = blockTrail.last,
+              let schematic = project.schematics.first(where: { $0.block.uuid.caseInsensitiveCompare(last.blockID) == .orderedSame }),
+              schematic.schematic.url.standardizedFileURL == url.standardizedFileURL else {
+            return nil
+        }
+        return (path, instanceRefdes(path))
+    }
+
+    /// A sheet edited through an instance, with its components' own refdes
+    /// back, as the block keeps them: an instance's are its mapping's.
+    private func definitionSheet(_ sheet: HorizontalSchematicSheet, schematicURL: URL) -> HorizontalSchematicSheet {
+        guard instanceView(forSchematicURL: schematicURL) != nil,
+              let original = project.schematics.first(where: { $0.schematic.url.standardizedFileURL == schematicURL.standardizedFileURL })?
+                .schematic.sheets.first(where: { $0.id == sheet.id }) else {
+            return sheet
+        }
+        return sheet.showingRefdes(original.drawnRefdes)
     }
 
     /// Runs block ops through the edit vocabulary as one undoable step,
@@ -3412,6 +3474,21 @@ struct ProjectWorkspaceView: View {
             projectEditError = HorizontalCanvasProjectEdit.message(for: error)
             return nil
         }
+    }
+
+    /// The top schematic's annotation options, as Horizon keeps them.
+    private var annotationOptions: HorizontalAnnotationOptions {
+        let top = project.blocks.first(where: \.isTop)
+        return HorizontalAnnotationOptions(json: documentJSON(top?.schematicFilename ?? project.schematicFilename)?.dictionary("annotation"))
+    }
+
+    /// Horizon's Annotate, over the whole design, on one undo step.
+    private func annotate(_ options: HorizontalAnnotationOptions) {
+        guard let changes = applyBlockEdit([options.operation], actionName: "Annotate"),
+              let count = changes.first?["annotated"] as? Int else {
+            return
+        }
+        schematicEditMessage = count == 0 ? "Every part was annotated already." : "Annotated \(count) part\(count == 1 ? "" : "s")."
     }
 
     /// Horizon's Add Block. Returns the new block's id.
@@ -3604,7 +3681,7 @@ struct ProjectWorkspaceView: View {
             blockTrail.removeAll()
         }
         blockTrail.append(BlockTrailStep(parent: parent, parentSheetName: selectedSchematic.sheet.name,
-                                         blockID: schematic.block.uuid, refdes: blockSymbol.refdes))
+                                         blockID: schematic.block.uuid, instanceID: blockSymbol.instanceID, refdes: blockSymbol.refdes))
         visiblePanes.insert(.schematic)
         navigatorSelection = .sheet(blockID: schematic.block.uuid, sheetID: firstSheet.id)
     }
@@ -3625,7 +3702,7 @@ struct ProjectWorkspaceView: View {
            block(of: selectedSchematic)?.uuid.caseInsensitiveCompare(step.blockID) == .orderedSame {
             Button(action: leaveBlock) {
                 Label {
-                    Text("\(step.parentSheetName) \u{203A} \(step.refdes)")
+                    Text(([blockTrail.first?.parentSheetName ?? step.parentSheetName] + blockTrail.map(\.refdes)).joined(separator: " \u{203A} "))
                 } icon: {
                     Image(systemName: "chevron.backward")
                 }
@@ -3712,6 +3789,7 @@ struct ProjectWorkspaceView: View {
 
     private func deleteSchematicSelection(_ sheet: HorizontalSchematicSheet, schematicURL: URL) {
         guard !isReadOnly else { return }
+        let sheet = definitionSheet(sheet, schematicURL: schematicURL)
         do {
             let archive = try HorizontalCanvasProjectEdit.archive(
                 deletingSelectionFrom: sheet,
@@ -3736,6 +3814,7 @@ struct ProjectWorkspaceView: View {
         schematicURL: URL
     ) {
         guard !isReadOnly else { return }
+        let sheet = definitionSheet(sheet, schematicURL: schematicURL)
         do {
             var archive = document.archive
             try HorizontalProjectJSONApplicator.apply(schematicSheet: sheet, schematicURL: schematicURL, in: project, to: &archive)
@@ -3750,6 +3829,7 @@ struct ProjectWorkspaceView: View {
         guard !isReadOnly else {
             return
         }
+        let sheet = definitionSheet(sheet, schematicURL: schematicURL)
         let standardizedURL = schematicURL.standardizedFileURL
         let previousSignature = project.schematic?.sheets.first { $0.id == sheet.id }?.netlistSignature
         for index in project.schematics.indices
@@ -4171,6 +4251,14 @@ struct ProjectWorkspaceView: View {
             return
         }
         let normalizedComponentID = normalizedID(componentID)
+        // Through an instance, a refdes is that instance's: Horizon writes it
+        // to the instance mapping and leaves the block's own alone.
+        if let instance = instanceView(forSchematicURL: selectedSchematic.url) {
+            applyProjectEdit([["op": "set_refdes", "component": normalizedComponentID, "refdes": refdes,
+                               "instance": instance.path.joined(separator: "/")]],
+                             actionName: "Set Reference Designator", schematicURL: selectedSchematic.url)
+            return
+        }
 
         func update(_ sheet: inout HorizontalSchematicSheet) {
             for index in sheet.symbols.indices
@@ -4632,6 +4720,17 @@ struct ProjectWorkspaceView: View {
             case .sheet(let blockID, let sheetID):
                 if let schematic = project.schematics.first(where: { $0.block.uuid == blockID }),
                    let sheet = schematic.schematic.sheets.first(where: { $0.id == sheetID }) {
+                    // Through an instance, its components show its refdes.
+                    if let instance = instanceView(forSchematicURL: schematic.schematic.url) {
+                        let names = blockTrail.map(\.refdes).joined(separator: "/")
+                        return SelectedSchematic(
+                            subtitle: "\(schematic.block.displayName) \(names) / \(sheet.name)",
+                            url: schematic.schematic.url,
+                            blockURL: schematic.block.blockFilename.map { project.baseURL.appendingPathComponent($0) },
+                            sheets: schematic.schematic.sheets.map { $0.showingRefdes(instance.refdes) },
+                            sheet: sheet.showingRefdes(instance.refdes)
+                        )
+                    }
                     return SelectedSchematic(
                         subtitle: "\(schematic.block.displayName) / \(sheet.name)",
                         url: schematic.schematic.url,

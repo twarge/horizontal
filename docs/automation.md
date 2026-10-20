@@ -201,6 +201,7 @@ as sent would be refused again.
 | `set_net_port`, `place_block_port`, `remove_block_port` | A sub-block's ports: a net made one (with its direction) or no longer one, and drawn on the block's symbol, keyed by UUID5 of its net as Horizon keys it |
 | `add_block_instance`, `remove_block_instance`, `set_block_instance`, `connect_block_port`, `disconnect_block_port` | Using one block inside another, naming the instance, and wiring its ports to nets here — or marking one not connected with `nc` |
 | `place_block_symbol`, `remove_block_symbol` | Drawing a block instance on a sheet, with the symbol that block defines for itself |
+| `annotate` | Horizon's Annotate over the whole design: refdes numbered from their prefixes, sheet by sheet (`mode`: sequential, sheet_100, sheet_1000; `order`: right_down, down_right; `fill_gaps`, `keep`, `ignore_unknown`), each block instance's components under its own instance mapping. The options default to the schematic's and are kept there |
 | `set_stackup` | How many inner copper layers the board has, and the copper and dielectric thicknesses |
 | `add_rule`, `set_rule`, `remove_rule` | Board design rules. A rule of a kind gets the defaults the app's own rules editor would give it, with `fields` merged in, and is ordered after its kind's rules; `set_rule` merges fields rather than replacing, an object key by key, and every write is refused unless the app's validator still calls the rules valid — a via rule needs a padstack. A change to the via rules gives the vias they shape the padstack and parameters of the rule that now matches |
 | `add_net_class`, `rename_net_class` | Net classes. Their electrical parameters live in the board rules, not here |
@@ -347,9 +348,16 @@ than inventing a shape. `set_net_port` with `is_port: false` and
 `remove_block_port` do what Horizon does to a port that goes: the instances'
 connections to it and the wires that ended on it go too.
 
-Nothing is flattened yet: a sub-block's components are read once, with the
-refdes the block gives them (`C?`), not once per instance, and the board,
-BOM and netlist see only the top block's.
+A sub-block's component is one component of its block, with that block's own
+refdes (usually `C?`); each instance of the block uses it under a refdes of its
+own, which the top block's `block_instance_mappings` keep and `set_refdes` and
+`set_no_populate` set with `instance` (`I1`, or `I1/I2` for an instance inside
+one) on the sub-block, as `annotate` sets them all. The board, the BOM and
+`check` are the flattened design's, as Horizon's: an instance's component is on
+the board under the uuid Horizon derives from its instance path, and its nets
+there are named for the path (`I1/Out`). `list_components` and `get_component`
+give a sub-block component's `instances`, each with its refdes and package;
+`place_component` takes one by that uuid or refdes.
 
 ### Routing is manual, and autoroute is honest about it
 
