@@ -532,7 +532,15 @@ class SchematicJunctionEnd(Input):
     junction: StrictStr
 
 
-SchematicEnd = Annotated[SchematicPinEnd | SchematicJunctionEnd, Field(discriminator="kind")]
+class SchematicPortEnd(Input):
+    """A block instance's port, where its block symbol draws it: the instance
+    by id or refdes, the port by its port net's name or uuid."""
+    kind: Literal["port"]
+    instance: StrictStr
+    port: StrictStr
+
+
+SchematicEnd = Annotated[SchematicPinEnd | SchematicPortEnd | SchematicJunctionEnd, Field(discriminator="kind")]
 
 
 class DrawNetLine(Input):
