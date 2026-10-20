@@ -3432,6 +3432,20 @@ struct ProjectWorkspaceView: View {
         return blockTrail.map { $0.instanceID.lowercased() }
     }
 
+    /// Sheets reached by `path` with their frames numbered across the
+    /// design, as Horizon numbers a hierarchy's pages; a design without
+    /// instances keeps its own numbers.
+    private func pageNumbered(_ sheets: [HorizontalSchematicSheet], path: [String]) -> [HorizontalSchematicSheet] {
+        guard project.flattenedBlock?.isHierarchical == true else {
+            return sheets
+        }
+        let pages = project.schematicPages
+        return sheets.map { sheet in
+            guard let page = pages.first(where: { $0.path == path && $0.sheet.id == sheet.id }) else { return sheet }
+            return sheet.numbered(page.number, of: pages.count)
+        }
+    }
+
     /// The refdes an instance path's mapping gives its block's components.
     private func instanceRefdes(_ path: [String]) -> [String: String] {
         project.flattenedBlock?.instanceRefdes[path.joined(separator: "/")] ?? [:]
@@ -4731,20 +4745,22 @@ struct ProjectWorkspaceView: View {
                     // Through an instance, its components show its refdes.
                     if let instance = instanceView(forSchematicURL: schematic.schematic.url) {
                         let names = blockTrail.map(\.refdes).joined(separator: "/")
+                        let sheets = pageNumbered(schematic.schematic.sheets.map { $0.showingRefdes(instance.refdes) }, path: instance.path)
                         return SelectedSchematic(
                             subtitle: "\(schematic.block.displayName) \(names) / \(sheet.name)",
                             url: schematic.schematic.url,
                             blockURL: schematic.block.blockFilename.map { project.baseURL.appendingPathComponent($0) },
-                            sheets: schematic.schematic.sheets.map { $0.showingRefdes(instance.refdes) },
-                            sheet: sheet.showingRefdes(instance.refdes)
+                            sheets: sheets,
+                            sheet: sheets.first { $0.id == sheet.id } ?? sheet.showingRefdes(instance.refdes)
                         )
                     }
+                    let sheets = schematic.block.isTop ? pageNumbered(schematic.schematic.sheets, path: []) : schematic.schematic.sheets
                     return SelectedSchematic(
                         subtitle: "\(schematic.block.displayName) / \(sheet.name)",
                         url: schematic.schematic.url,
                         blockURL: schematic.block.blockFilename.map { project.baseURL.appendingPathComponent($0) },
-                        sheets: schematic.schematic.sheets,
-                        sheet: sheet
+                        sheets: sheets,
+                        sheet: sheets.first { $0.id == sheet.id } ?? sheet
                     )
                 }
             case .block(let blockID):

@@ -108,21 +108,36 @@ enum HorizontalExportBackend {
         let schematics = project.schematics.isEmpty
             ? project.schematic.map { [HorizontalProjectSchematic(block: HorizontalProjectBlock(uuid: $0.uuid, blockFilename: nil, schematicFilename: $0.url.lastPathComponent, symbolFilename: nil, isTop: true), schematicFilename: $0.url.lastPathComponent, schematic: $0)] } ?? []
             : project.schematics
-        let sheets = schematics.flatMap { $0.schematic.sheets }
-        guard !sheets.isEmpty else {
+        // Horizon prints the design page by page: each sheet of a block once
+        // for every instance that reaches it, under that instance's refdes.
+        var pages = project.schematicPages
+        if pages.isEmpty {
+            pages = schematics.flatMap { entry in entry.schematic.sheets.map { (entry.block, $0) } }.enumerated().map {
+                HorizontalSchematicPage(block: $0.element.0, sheet: $0.element.1, path: [], number: $0.offset + 1)
+            }
+        }
+        guard !pages.isEmpty else {
             throw HorizontalExportError("No schematic sheets loaded.")
         }
 
-        let sheetsWithBounds = sheets.map { sheet in
-            (sheet: sheet, bounds: schematicPageBounds(for: sheet))
+        let drawn = pages.map { page in
+            let sheet = project.drawnSheet(for: page, of: pages.count)
+            return (page: page, sheet: sheet, bounds: schematicPageBounds(for: sheet))
         }
-        let initialPageSize = sheetsWithBounds.first.map { pdfPageSize(for: $0.bounds) } ?? CGSize(width: 842, height: 595)
+        let initialPageSize = drawn.first.map { pdfPageSize(for: $0.bounds) } ?? CGSize(width: 842, height: 595)
+        // The first page each instance path reaches, which its block symbol
+        // links to.
+        var firstPages = [String: Int]()
+        for page in pages where firstPages[page.path.joined(separator: "/")] == nil {
+            firstPages[page.path.joined(separator: "/")] = page.number
+        }
 
         try writePDF(to: url, title: "\(project.displayTitle) Schematic", initialPageSize: initialPageSize) { context, _ in
-            for entry in sheetsWithBounds {
+            for entry in drawn {
                 let pageSize = pdfPageSize(for: entry.bounds)
                 let transform = PDFWorldTransform(bounds: entry.bounds, pageSize: pageSize, margin: 0)
                 context.beginPDFPage(pdfPageInfo(pageSize: pageSize))
+                context.addDestination("page-\(entry.page.number)" as CFString, at: CGPoint(x: 0, y: pageSize.height))
                 drawSchematicSheet(
                     entry.sheet,
                     context: context,
@@ -130,9 +145,44 @@ enum HorizontalExportBackend {
                     palette: palette,
                     minimumLineWidthMM: settings.minimumLineWidthMM
                 )
+                for symbol in entry.sheet.blockSymbols {
+                    let path = (entry.page.path + [symbol.instanceID.lowercased()]).joined(separator: "/")
+                    let corners = entry.sheet.blockSymbolLines.filter { $0.id.hasPrefix(symbol.id + "/") }.flatMap { [$0.from, $0.to] }
+                    guard let target = firstPages[path], !corners.isEmpty else { continue }
+                    let box = HorizontalRect(points: corners)
+                    let a = transform.point(HorizontalPoint(x: box.minX, y: box.minY))
+                    let b = transform.point(HorizontalPoint(x: box.maxX, y: box.maxY))
+                    context.setDestination("page-\(target)" as CFString, for: CGRect(x: min(a.x, b.x), y: min(a.y, b.y),
+                                                                       width: abs(b.x - a.x), height: abs(b.y - a.y)))
+                }
                 context.endPDFPage()
             }
+            CGPDFContextSetOutline(context, schematicOutline(pages) as CFDictionary)
         }
+    }
+
+    /// Horizon's schematic PDF outline: each sheet by name, with the blocks
+    /// drawn on it under it by instance refdes, in italics in Horizon, and
+    /// their sheets under them.
+    private static func schematicOutline(_ pages: [HorizontalSchematicPage]) -> [String: Any] {
+        func nodes(path: [String]) -> [[String: Any]] {
+            pages.filter { $0.path == path }.map { page in
+                let instances = page.sheet.blockSymbols
+                    .sorted { $0.refdes.localizedStandardCompare($1.refdes) == .orderedAscending }
+                    .map { symbol -> [String: Any] in
+                        var node: [String: Any] = [kCGPDFOutlineTitle as String: symbol.refdes,
+                                                   kCGPDFOutlineDestination as String: page.number]
+                        let children = nodes(path: path + [symbol.instanceID.lowercased()])
+                        if !children.isEmpty { node[kCGPDFOutlineChildren as String] = children }
+                        return node
+                    }
+                var node: [String: Any] = [kCGPDFOutlineTitle as String: page.sheet.name,
+                                           kCGPDFOutlineDestination as String: page.number]
+                if !instances.isEmpty { node[kCGPDFOutlineChildren as String] = instances }
+                return node
+            }
+        }
+        return [kCGPDFOutlineChildren as String: nodes(path: [])]
     }
 
     private static func exportBoardDrawingPDF(
