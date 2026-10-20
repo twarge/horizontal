@@ -541,7 +541,12 @@ final class HorizontalAppearanceSettings: ObservableObject {
         Binding {
             self.appTheme
         } set: { theme in
-            self.setAppTheme(theme)
+            // The segmented picker can deliver a new theme from within a view
+            // update, and the theme recolours every window, Settings'
+            // included; publishing it there is undefined, so it goes out on
+            // the next turn of the main queue.
+            guard theme != self.appTheme else { return }
+            DispatchQueue.main.async { self.setAppTheme(theme) }
         }
     }
 
