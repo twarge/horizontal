@@ -257,6 +257,50 @@ final class SchematicBlocksTests: XCTestCase {
         XCTAssertNil(try file("top_block.json").dictionaryMap("block_instances")[placed.instance]?.dictionaryMap("connections")[placed.net])
     }
 
+    func testTheMCPWiresToAPortAndConnectsItAsTheWireToolDoes() throws {
+        let placed = try placeChannel()
+        let junction = "5e5e5e5e-1111-4222-8333-444455556666", other = "6f6f6f6f-1111-4222-8333-444455556666"
+        let changes = try apply([
+            ["op": "ensure_net", "name": "SIG"],
+            ["op": "place_junction", "id": junction, "net": "SIG", "x_mm": 30, "y_mm": 50],
+            ["op": "draw_net_line", "from": ["kind": "port", "instance": "I?", "port": "In"],
+             "to": ["kind": "junction", "junction": junction]],
+        ])
+        let net = try XCTUnwrap(changes.first?["net"] as? String)
+        let wire = try XCTUnwrap(changes.last)
+        XCTAssertEqual(wire["net"] as? String, net)
+        XCTAssertEqual((wire["connected_ports"] as? [JSONDictionary])?.first?["port"] as? String, placed.net)
+        let connection = try file("top_block.json").dictionaryMap("block_instances")[placed.instance]?.dictionaryMap("connections")[placed.net]
+        XCTAssertEqual(connection?.string("net"), net, "the port on no net took the wire's")
+
+        let symbolID = try XCTUnwrap(try topSheet.blockSymbols.first?.id)
+        let sheetJSON = try XCTUnwrap(try file("top_schematic.json").dictionaryMap("sheets").values.first)
+        let line = try XCTUnwrap(sheetJSON.dictionaryMap("net_lines")[XCTUnwrap(wire["net_line"] as? String)])
+        XCTAssertEqual(line.dictionary("from")?.string("port"), "\(symbolID)/\(placed.port)")
+        XCTAssertEqual(HorizontalSchematicNetConnectivity(sheet: sheetJSON, block: try file("top_block.json"))
+            .net(at: ["port": "\(symbolID)/\(placed.port)"]), net)
+
+        // Retargeting the junction end reads the port end back as a port.
+        let moved = "7a7a7a7a-1111-4222-8333-444455556666"
+        let retarget = try apply([
+            ["op": "place_junction", "id": moved, "net": "SIG", "x_mm": 30, "y_mm": 40],
+            ["op": "set_net_line_endpoint", "line": try XCTUnwrap(wire["net_line"] as? String), "end": "to",
+             "endpoint": ["kind": "junction", "junction": moved]],
+        ])
+        XCTAssertEqual(retarget.last?["net"] as? String, net)
+
+        // A port on another net, or marked not connected, takes no wire.
+        try apply([["op": "ensure_net", "name": "OTHER"], ["op": "place_junction", "id": other, "net": "OTHER", "x_mm": 30, "y_mm": 60]])
+        XCTAssertThrowsError(try apply([["op": "draw_net_line", "from": ["kind": "port", "instance": placed.instance, "port": "In"],
+                                         "to": ["kind": "junction", "junction": other]]]))
+        try apply([["op": "disconnect_block_port", "instance": placed.instance, "port": "In"],
+                   ["op": "connect_block_port", "instance": placed.instance, "port": "In", "nc": true]])
+        XCTAssertThrowsError(try apply([["op": "draw_net_line", "from": ["kind": "port", "instance": placed.instance, "port": "In"],
+                                         "to": ["kind": "junction", "junction": other]]])) { error in
+            XCTAssertTrue("\(error)".contains("not connected"), "\(error)")
+        }
+    }
+
     func testANoConnectPortRefusesAWire() throws {
         let placed = try placeChannel()
         try apply([["op": "connect_block_port", "instance": placed.instance, "port": "In", "nc": true]])

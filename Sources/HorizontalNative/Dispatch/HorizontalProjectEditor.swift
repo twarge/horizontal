@@ -139,7 +139,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .smash: "Horizon's Smash: a drawn symbol's texts — its refdes and value — become texts of its sheet that it owns, where it drew them, so place_text moves each on its own while they go on drawing what the component says. With board, the same for the silkscreen texts of its package on the board, which place_board_text moves. A symbol smashed already keeps its texts, and one whose texts are all gone is smashed afresh. The reply names the texts made."
         case .unsmash: "Horizon's Unsmash: delete the texts a smash gave a component's symbols (with board, its package), so they draw their own again. A symbol smashed with its texts gone, which draws no refdes or value, is put right this way too."
         case .removeSymbol: "Take a component's gate off its sheet, with the net lines that ended on it and the wiring left serving nothing — what find_dangling would call new debris — unless keep_wiring. The component and its connections stay."
-        case .drawNetLine: "Draw a wire between pins or junctions on one logical net. Does not change block connectivity. A junction with no net yet takes the wire's."
+        case .drawNetLine: "Draw a wire between pins, block ports or junctions on one logical net. Does not change block connectivity, except that a block port on no net is connected to the wire's, as Horizon's wire tool does. A junction with no net yet takes the wire's."
         case .placeJunction: "Create a schematic junction on a net, reusing a compatible or net-less junction at the same point. An id that names a junction already on a sheet moves it, and the wires, labels and power symbols on it go with it."
         case .setNetLineEndpoint: "Retarget one end of an existing wire, keeping its id and logical net."
         case .removeNetLine: "Remove a wire from its sheet, and any junction at its ends that it leaves holding nothing."
@@ -337,7 +337,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "to_component": "The other end's component.",
                     "to_pin": "The other end's pin.", "to_gate": "The other pin's gate (optional).", "sheet": "Sheet index, name or uuid (optional).",
                     "id": "Wire UUID, or a name later ops in the batch can use as its line (optional; normalized ops carry the UUID).",
-                    "from": "{kind: pin, symbol, pin} — pin a uuid or a name — or {kind: pin, component, gate?, pin} to find the symbol, or {kind: junction, junction}; use from/to OR the legacy component/pin fields. A junction with no net takes the other end's.",
+                    "from": "{kind: pin, symbol, pin} — pin a uuid or a name — or {kind: pin, component, gate?, pin} to find the symbol, {kind: port, instance, port} for a block instance's port where its block symbol draws it (instance an id or refdes, port its port net's name or uuid), or {kind: junction, junction}; use from/to OR the legacy component/pin fields. A junction with no net takes the other end's, and a port on no net is connected to it.",
                     "to": "The other typed endpoint, on the same sheet and net."]
         case .placeJunction:
             return ["id": "Junction UUID, or a name such as \"j1\" that later ops in the batch use as a wire end's junction (optional). The id of a junction already on a sheet moves that junction.",
@@ -3048,6 +3048,8 @@ final class HorizontalProjectEditor {
         var json: JSONDictionary
         var identity: String
         var junction: String? = nil
+        /// An instance's port on no net yet, which the wire connects.
+        var port: (instance: String, net: String)? = nil
     }
 
     private func wireEnd(_ endpoint: JSONDictionary, sheet selected: String? = nil) throws -> WireEnd {
@@ -3105,9 +3107,12 @@ final class HorizontalProjectEditor {
             }
             return WireEnd(sheet: instance.sheet, net: net, json: Self.pinEndpoint("\(instance.id)/\(pinID)"), identity: "pin/\(instance.id)/\(pinID)")
         }
+        if endpoint.string("kind") == "port" {
+            return try portWireEnd(endpoint, sheet: selected)
+        }
         guard endpoint.string("kind") == "junction", Set(endpoint.keys) == ["kind", "junction"],
               let id = endpoint.string("junction")?.lowercased() else {
-            throw HorizontalDispatchError.invalidParams("An endpoint is {kind: pin, symbol, pin}, {kind: pin, component, gate?, pin} or {kind: junction, junction}.")
+            throw HorizontalDispatchError.invalidParams("An endpoint is {kind: pin, symbol, pin}, {kind: pin, component, gate?, pin}, {kind: port, instance, port} or {kind: junction, junction}.")
         }
         let matches = try sheetsInOrder().filter { selected == nil || selected == $0.id }.flatMap { sheet in
             sheet.json.dictionaryMap("junctions").filter { $0.key.lowercased() == id }.map { (sheet: sheet.id, id: $0.key, json: $0.value) }
@@ -3129,6 +3134,62 @@ final class HorizontalProjectEditor {
             }
         }
         return WireEnd(sheet: junction.sheet, net: net?.lowercased(), json: endpointJSON, identity: "junc/\(junction.id)", junction: junction.id)
+    }
+
+    /// A block instance's port, where its block symbol draws it: on the
+    /// port's net, or on none yet — Horizon's wire tool then connects it to
+    /// the net the wire brings. A port marked not connected takes no wire.
+    private func portWireEnd(_ endpoint: JSONDictionary, sheet selected: String?) throws -> WireEnd {
+        guard Set(endpoint.keys).isSubset(of: ["kind", "instance", "port"]),
+              let portReference = endpoint.string("port"), !portReference.isEmpty, endpoint.string("instance") != nil else {
+            throw HorizontalDispatchError.invalidParams("A port endpoint is {kind: port, instance: <id or refdes>, port: <port net name or uuid>}.")
+        }
+        let instanceID = try blockInstanceID(endpoint)
+        guard let instance = blockInstances()[instanceID] as? JSONDictionary, let usedBlock = instance.string("block") else {
+            throw HorizontalDispatchError.notFound("Block instance \(instanceID) names no block.")
+        }
+        let refdes = instance.string("refdes") ?? instanceID
+        let portNet = try blockPortID(portReference, of: usedBlock).lowercased()
+        let drawn = try blockSymbolInstances().filter {
+            $0.json.string("block_instance")?.lowercased() == instanceID.lowercased() && (selected == nil || selected == $0.sheet)
+        }
+        guard let symbol = drawn.first else {
+            throw HorizontalDispatchError.notFound("\(refdes) has no block symbol\(selected == nil ? "" : " on that sheet") to wire to; place_block_symbol it first.")
+        }
+        guard let portID = HorizontalBlockSymbolPortID.uuid(forNet: portNet) else {
+            throw HorizontalDispatchError.invalidParams("Port net \(portNet) is not a uuid.")
+        }
+        let portName = (try? blockFile(usedBlock))?.dictionaryMap("nets").first { $0.key.lowercased() == portNet }?.value.string("name") ?? portNet
+        if let path = knownBlock(usedBlock)?.symbolFilename, !path.isEmpty, let symbolJSON = try projectFile(path),
+           !symbolJSON.dictionaryMap("ports").keys.contains(where: { $0.lowercased() == portID }) {
+            throw HorizontalDispatchError.invalidParams("\(refdes)'s block symbol does not draw port \(portName), so there is nothing to wire to; place_block_port it on the block's symbol.")
+        }
+        let json: JSONDictionary = ["bus_ripper": NSNull(), "junc": NSNull(), "pin": NSNull(), "port": "\(symbol.id)/\(portID)"]
+        let connection = instance.dictionaryMap("connections").first { $0.key.lowercased() == portNet }?.value
+        if let connection {
+            guard let net = connection.string("net")?.lowercased() else {
+                throw HorizontalDispatchError.invalidParams("\(refdes) port \(portName) is marked not connected; disconnect_block_port it first.")
+            }
+            return WireEnd(sheet: symbol.sheet, net: net, json: json, identity: "port/\(symbol.id)/\(portID)")
+        }
+        return WireEnd(sheet: symbol.sheet, net: nil, json: json, identity: "port/\(symbol.id)/\(portID)",
+                       port: (instanceID, portNet))
+    }
+
+    /// A wire end's `<block symbol>/<port uuid>` as a port endpoint, by the
+    /// instance the symbol draws and the port net the uuid is derived from.
+    private func portSelector(_ path: String) throws -> JSONDictionary? {
+        let pieces = path.split(separator: "/").map { $0.lowercased() }
+        guard pieces.count == 2,
+              let symbol = try blockSymbolInstances().first(where: { $0.id.lowercased() == pieces[0] }),
+              let instanceID = symbol.json.string("block_instance"),
+              let usedBlock = (blockInstances().first { $0.key.lowercased() == instanceID.lowercased() }?.value as? JSONDictionary)?.string("block"),
+              let portNet = (try? blockFile(usedBlock))?.dictionaryMap("nets").keys.first(where: {
+                  HorizontalBlockSymbolPortID.uuid(forNet: $0) == pieces[1]
+              }) else {
+            return nil
+        }
+        return ["kind": "port", "instance": instanceID, "port": portNet]
     }
 
     /// Gives a net-less junction a net, so the wire about to reach it carries one.
@@ -3158,10 +3219,15 @@ final class HorizontalProjectEditor {
             throw HorizontalDispatchError.invalidParams("The endpoints are on different nets (\(start.net!), \(end.net!)); a wire joins one net.")
         }
         var adopted = [String]()
+        var connectedPorts = [JSONDictionary]()
         for wireEnd in [start, end] where wireEnd.net == nil {
             if let junction = wireEnd.junction {
                 try adoptJunction(junction, sheet: start.sheet, net: net)
                 adopted.append(junction)
+            }
+            if let port = wireEnd.port {
+                _ = try connectBlockPort(["instance": port.instance, "port": port.net, "net": net])
+                connectedPorts.append(["block_instance": port.instance, "port": port.net])
             }
         }
         var id = try editObjectID(params)
@@ -3182,6 +3248,7 @@ final class HorizontalProjectEditor {
         }
         var change: JSONDictionary = ["net_line": id, "sheet": start.sheet, "net": net, "created": created]
         if !adopted.isEmpty { change["adopted_junctions"] = adopted }
+        if !connectedPorts.isEmpty { change["connected_ports"] = connectedPorts }
         return change
     }
 
@@ -3299,8 +3366,10 @@ final class HorizontalProjectEditor {
         } else if let path = otherJSON.string("pin"), path.split(separator: "/").count == 2 {
             let pieces = path.split(separator: "/").map(String.init)
             otherSelector = ["kind": "pin", "symbol": pieces[0], "pin": pieces[1]]
+        } else if let path = otherJSON.string("port"), let selector = try portSelector(path) {
+            otherSelector = selector
         } else {
-            throw HorizontalDispatchError.unsupported("Retargeting currently requires a pin or junction at the opposite end.")
+            throw HorizontalDispatchError.unsupported("Retargeting currently requires a pin, port or junction at the opposite end.")
         }
         guard (try wireEnd(otherSelector, sheet: line.0).net ?? wireNet) == wireNet else {
             throw HorizontalDispatchError.invalidParams("The opposite endpoint no longer agrees with the wire's logical net.")
@@ -3311,6 +3380,9 @@ final class HorizontalProjectEditor {
         if replacement.net == nil, let junction = replacement.junction {
             try adoptJunction(junction, sheet: line.0, net: wireNet)
         }
+        if replacement.net == nil, let port = replacement.port {
+            _ = try connectBlockPort(["instance": port.instance, "port": port.net, "net": wireNet])
+        }
         try updateSheet(line.0) { sheet in
             var lines = sheet.dictionaryMap("net_lines")
             lines[line.1]?[end] = replacement.json
@@ -3318,6 +3390,9 @@ final class HorizontalProjectEditor {
         }
         var change: JSONDictionary = ["net_line": line.1, "sheet": line.0, "end": end, "net": wireNet]
         if replacement.net == nil, let junction = replacement.junction { change["adopted_junctions"] = [junction] }
+        if replacement.net == nil, let port = replacement.port {
+            change["connected_ports"] = [["block_instance": port.instance, "port": port.net]]
+        }
         return change
     }
 
