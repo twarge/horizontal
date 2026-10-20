@@ -292,4 +292,67 @@ final class SchematicBlocksTests: XCTestCase {
         XCTAssertEqual(try editorSymbol().sourceJSON, HorizontalPreservedJSON(json))
         XCTAssertEqual(try editorSymbol().unplacedPortNames, ["In"])
     }
+
+    // MARK: - Flattening
+
+    private func put(_ path: String, _ json: JSONDictionary) throws {
+        try archive.replaceRegularFileData(relativePath: path, with: JSONSerialization.data(withJSONObject: json))
+    }
+
+    func testFlatteningExpandsEveryInstanceAsHorizonDoes() throws {
+        let placed = try placeChannel()
+        // A second instance, and a resistor inside Channel from In to a net
+        // of its own.
+        let second = try XCTUnwrap(try apply([["op": "add_block_instance", "block": "Channel", "refdes": "I2"]]).first?["block_instance"] as? String)
+        try apply([
+            ["op": "set_block_instance", "instance": placed.instance, "refdes": "I1"],
+            ["op": "connect_block_port", "instance": placed.instance, "port": "In", "net": "SIG", "create_net": true],
+        ])
+        var channel = try file("blocks/\(channelID)/block.json")
+        let inner = "11111111-2222-4333-8444-555566667777"
+        let resistor = "22222222-2222-4333-8444-555566667777"
+        var nets = channel["nets"] as? JSONDictionary ?? [:]
+        nets[inner] = ["name": "", "is_power": false, "is_port": false]
+        channel["nets"] = nets
+        channel["components"] = [resistor: ["refdes": "R?", "value": "1k", "connections": [
+            "g/1": ["net": placed.net], "g/2": ["net": inner],
+        ]]]
+        try put("blocks/\(channelID)/block.json", channel)
+        var top = try file("top_block.json")
+        var mappings = top["block_instance_mappings"] as? JSONDictionary ?? [:]
+        mappings[placed.instance] = ["block": channelID, "components": [resistor: ["refdes": "R1", "nopopulate": false]]]
+        top["block_instance_mappings"] = mappings
+        try put("top_block.json", top)
+        try reload()
+
+        let flat = try XCTUnwrap(project.flattenedBlock)
+        let components = flat.json.dictionaryMap("components")
+        let first = HorizontalBlockFlattener.flattenedID([placed.instance, resistor])
+        let other = HorizontalBlockFlattener.flattenedID([second, resistor])
+        XCTAssertEqual(components[first]?.string("refdes"), "R1", "the instance mapping's refdes")
+        XCTAssertEqual(components[other]?.string("refdes"), "R?", "no mapping entry: the block's own")
+        XCTAssertNil(components[resistor], "the block's own component is used, not placed")
+        XCTAssertEqual(flat.componentPaths[first], [placed.instance, resistor])
+
+        let sig = try XCTUnwrap(project.blocks.first(where: \.isTop).flatMap { _ in
+            try? file("top_block.json").dictionaryMap("nets").first { $0.value.string("name") == "SIG" }?.key
+        })
+        XCTAssertEqual(components[first]?.dictionaryMap("connections")["g/1"]?.string("net"), sig, "a wired port is the net outside")
+        let flatNets = flat.json.dictionaryMap("nets")
+        let secondIn = HorizontalBlockFlattener.flattenedID([second, placed.net])
+        XCTAssertEqual(components[other]?.dictionaryMap("connections")["g/1"]?.string("net"), secondIn)
+        XCTAssertEqual(flatNets[secondIn]?.string("name"), "I2/In", "an unwired port is the instance's own net")
+        let firstInner = HorizontalBlockFlattener.flattenedID([placed.instance, inner])
+        XCTAssertEqual(flatNets[firstInner]?.string("name"), "I1/R?", "an unnamed net takes its parts' refdes, as Horizon's get_net_name")
+        XCTAssertEqual(flat.netPaths[sig]?.contains([placed.instance, placed.net]), true)
+
+        // The MCP check annotates per instance, and its BOM lists each use.
+        XCTAssertTrue(flat.isHierarchical)
+    }
+
+    func testAProjectWithoutInstancesIsNotFlattened() throws {
+        try apply([["op": "add_block", "name": "Channel", "id": channelID]])
+        XCTAssertNil(project.flattenedBlock)
+        XCTAssertEqual(HorizontalBlockFlattener.flattenedID(["0c0c0c0c-1111-4222-8333-444455556666"]), "0c0c0c0c-1111-4222-8333-444455556666")
+    }
 }

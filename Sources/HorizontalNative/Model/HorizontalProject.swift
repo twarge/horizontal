@@ -84,6 +84,9 @@ struct HorizontalProject: Identifiable {
     var schematic: HorizontalSchematic?
     var board: HorizontalBoard?
     var poolModelFiles: HorizontalPoolModelFiles? = nil
+    /// The top block with its instances expanded (`Block::flatten`), which
+    /// the board was made from; nil when no block uses another.
+    var flattenedBlock: HorizontalFlattenedBlock? = nil
 
     var displayTitle: String {
         if let projectTitle = Self.nonEmpty(projectMeta["project_title"]) ?? Self.nonEmpty(projectMeta["project_name"]) {
@@ -168,6 +171,10 @@ struct HorizontalProject: Identifiable {
             )
         }
 
+        let flattenedBlock = BoardLoadTimer.measure("flatten blocks") {
+            HorizontalBlockFlattener.flatten(blocks: blockInfo.blocks, baseURL: baseURL)
+        }
+
         var board: HorizontalBoard?
         if let boardFilename {
             let boardURL = baseURL.appendingPathComponent(boardFilename)
@@ -181,6 +188,7 @@ struct HorizontalProject: Identifiable {
                         planesURL: planesURL,
                         poolURL: poolURL,
                         visitedProjectURLs: childVisitedProjectURLs,
+                        flattenedBlock: flattenedBlock?.json,
                         diagnostics: &diagnostics
                     )
                 }
@@ -238,7 +246,8 @@ struct HorizontalProject: Identifiable {
             diagnostics: diagnostics,
             poolParts: poolParts,
             schematic: schematic,
-            board: board
+            board: board,
+            flattenedBlock: flattenedBlock
         )
     }
 

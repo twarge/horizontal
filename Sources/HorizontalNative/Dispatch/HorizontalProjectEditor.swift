@@ -1082,11 +1082,11 @@ final class HorizontalProjectEditor {
         case .removeVia:
             change.merge(try removeVia(params)) { _, new in new }
         case .placeComponent:
-            let id = try componentID(params)
+            let id = try boardComponentID(params)
             change["component"] = id
             change["package"] = try placeComponent(id, params)
         case .removePlacement:
-            let id = try componentID(params)
+            let id = try boardComponentID(params)
             change["component"] = id
             change["removed_packages"] = removeBoardPackages(componentID: id)
         case .copyGroupLayout:
@@ -1182,6 +1182,30 @@ final class HorizontalProjectEditor {
             return match
         }
         throw HorizontalDispatchError.notFound("No component \(reference).")
+    }
+
+    /// The component a board op names: the block's own, or a use of a
+    /// sub-block's component in one instance, by the flat uuid or refdes the
+    /// flattened block gives it — what the board places a package for.
+    private func boardComponentID(_ params: JSONDictionary) throws -> String {
+        do {
+            return try componentID(params)
+        } catch let error as HorizontalDispatchError where error.code == .notFound {
+            guard isTopBlock, let flattened = project.flattenedBlock, let reference = params.string("component") else { throw error }
+            let instances = flattened.json.dictionaryMap("components").filter { flattened.componentPaths[$0.key.lowercased()]?.count ?? 0 > 1 }
+            if let match = instances.keys.first(where: { $0.caseInsensitiveCompare(reference) == .orderedSame }) {
+                return match.lowercased()
+            }
+            let named = instances.filter { $0.value.string("refdes") == reference }
+            guard named.count <= 1 else {
+                throw HorizontalDispatchError.invalidParams("\(named.count) components are named \(reference); use the id.")
+            }
+            if let match = named.first { return match.key.lowercased() }
+            if let match = try HorizontalDispatchValidation.id(matchingPrefix: reference, in: instances.keys, kind: "component") {
+                return match.lowercased()
+            }
+            throw error
+        }
     }
 
     private func updateComponent(_ id: String, _ body: (inout JSONDictionary) -> Void) throws {
