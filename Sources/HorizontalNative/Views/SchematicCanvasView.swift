@@ -4226,7 +4226,11 @@ struct SchematicCanvasView: View {
         connectionMovePlan cachedConnectionMovePlan: SchematicConnectionMovePlan? = nil,
         fixedConnectionPointKeys: Set<String>? = nil
     ) {
-        var movedJunctionKeys = Set<String>()
+        // Every point moves before any junction merges: one taken to where
+        // another moving junction starts would otherwise take that one in
+        // before it moved away, joining their nets.
+        var movedJunctionKeys: Set<String> = [Self.defersJunctionMergesKey]
+        defer { mergeJunctionsLeftTogether(by: movedJunctionKeys, sheet: &sheet) }
         var movedDrawingVertexKeys = Set<String>()
         var movedSymbolConnectionTargets = Set<SchematicSymbolMoveConnectionTarget>()
         let connectionMovePlan = cachedConnectionMovePlan ?? selectedSchematicConnectionMovePlan(in: sheet)
@@ -4328,7 +4332,8 @@ struct SchematicCanvasView: View {
             return
         }
 
-        var movedJunctionKeys = Set<String>()
+        var movedJunctionKeys: Set<String> = [Self.defersJunctionMergesKey]
+        defer { mergeJunctionsLeftTogether(by: movedJunctionKeys, sheet: &sheet) }
         var movedDrawingVertexKeys = Set<String>()
         let movingSymbolIDs = Set(
             selectedObjects
@@ -4359,7 +4364,7 @@ struct SchematicCanvasView: View {
             case .drawingArc:
                 moveArc(&sheet.drawingArcs, ref: ref, by: delta)
             case .junction:
-                moveSchematicJunctionGeometry(ref: ref, by: delta, sheet: &sheet)
+                moveSchematicJunctionGeometry(ref: ref, by: delta, sheet: &sheet, movedKeys: &movedJunctionKeys)
             case .netLabel:
                 moveNetLabelGeometry(ref: ref, by: delta, sheet: &sheet)
             case .busLabel:
@@ -4396,7 +4401,8 @@ struct SchematicCanvasView: View {
             return
         }
 
-        var movedJunctionKeys = Set<String>()
+        var movedJunctionKeys: Set<String> = [Self.defersJunctionMergesKey]
+        defer { mergeJunctionsLeftTogether(by: movedJunctionKeys, sheet: &sheet) }
         var movedConnectionTargets = Set<SchematicSymbolMoveConnectionTarget>()
         let selectedJunctionIDs = selectedSchematicJunctionIDs()
 
@@ -5275,10 +5281,16 @@ struct SchematicCanvasView: View {
     private func moveSchematicJunctionGeometry(
         ref: HorizontalSelectableRef,
         by delta: HorizontalPoint,
-        sheet: inout HorizontalSchematicSheet
+        sheet: inout HorizontalSchematicSheet,
+        movedKeys: inout Set<String>
     ) {
         guard let key = sheet.junctions.keys.first(where: { normalizedID($0) == normalizedID(ref.id) }),
               let point = sheet.junctions[key] else {
+            return
+        }
+        if movedKeys.contains(Self.defersJunctionMergesKey) {
+            guard movedKeys.insert("junction:\(normalizedID(key))").inserted else { return }
+            sheet.junctions[key] = point + delta
             return
         }
         mergeJunctions(
@@ -5382,6 +5394,7 @@ struct SchematicCanvasView: View {
         var movedJunctionIDs = [String]()
         for junctionID in sheet.junctions.keys {
             guard let point = sheet.junctions[junctionID],
+                  !movedKeys.contains("junction:\(normalizedID(junctionID))"),
                   connectedKeys.contains(pointKey(point)),
                   movedKeys.insert(pointKey(point)).inserted
             else {
@@ -5389,6 +5402,10 @@ struct SchematicCanvasView: View {
             }
             sheet.junctions[junctionID] = point + delta
             movedJunctionIDs.append(junctionID)
+        }
+        if movedKeys.contains(Self.defersJunctionMergesKey) {
+            for junctionID in movedJunctionIDs { movedKeys.insert("junction:\(normalizedID(junctionID))") }
+            return
         }
         for junctionID in movedJunctionIDs {
             guard let point = sheet.junctions[junctionID] else {
@@ -5427,13 +5444,20 @@ struct SchematicCanvasView: View {
                 }
                 sheet.netLines[index].to = sheet.netLines[index].to + delta
             case .junction(let junctionID):
-                guard let point = sheet.junctions[junctionID] else {
+                // One moved already, by its point, isn't moved again from
+                // where that put it.
+                guard let point = sheet.junctions[junctionID],
+                      !movedKeys.contains("junction:\(normalizedID(junctionID))") else {
                     continue
                 }
                 guard movedKeys.insert(pointKey(point)).inserted else {
                     continue
                 }
                 sheet.junctions[junctionID] = point + delta
+                if movedKeys.contains(Self.defersJunctionMergesKey) {
+                    movedKeys.insert("junction:\(normalizedID(junctionID))")
+                    continue
+                }
                 mergeJunctions(
                     at: point + delta,
                     preferredID: junctionID,
@@ -5693,7 +5717,16 @@ struct SchematicCanvasView: View {
     /// Merges each set of junctions a transform moved onto one point, the
     /// moved one kept, once every point has gone where it goes.
     private func mergeJunctionsLeftTogether(by movedKeys: Set<String>, sheet: inout HorizontalSchematicSheet) {
-        let together = Dictionary(grouping: sheet.junctions.keys.sorted()) { pointKey(sheet.junctions[$0] ?? .zero) }
+        // Only the points a moved junction is at: a move preview runs this
+        // every step.
+        let movedPointKeys = Set(sheet.junctions.compactMap { id, point in
+            movedKeys.contains("junction:\(normalizedID(id))") ? pointKey(point) : nil
+        })
+        guard !movedPointKeys.isEmpty else {
+            return
+        }
+        let candidates = sheet.junctions.keys.filter { movedPointKeys.contains(pointKey(sheet.junctions[$0] ?? .zero)) }
+        let together = Dictionary(grouping: candidates.sorted()) { pointKey(sheet.junctions[$0] ?? .zero) }
             .filter { $0.value.count > 1 }
         for key in together.keys.sorted() {
             guard let ids = together[key],
