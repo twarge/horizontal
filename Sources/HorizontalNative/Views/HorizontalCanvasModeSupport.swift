@@ -569,6 +569,8 @@ struct HorizontalCanvasCommandHandlerSet {
             canPlaceBusLabel: writable && placeBusLabel != nil,
             canPlaceBusRipper: writable && placeBusRipper != nil,
             canTieNets: writable && tieNets != nil,
+            canOpenBlock: openBlock != nil,
+            canEditBlockSymbol: editBlockSymbol != nil,
             canUpdateAllPlanes: writable && updateAllPlanes != nil,
             hasPlacementInteraction: hasPlacementInteraction,
             hasRoundOffVertexInteraction: hasRoundOffVertexInteraction,

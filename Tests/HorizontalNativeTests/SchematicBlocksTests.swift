@@ -188,6 +188,19 @@ final class SchematicBlocksTests: XCTestCase {
         XCTAssertTrue(try topSheet.blockSymbolTexts.contains { $0.text == "I7" })
     }
 
+    func testAPortNetsLabelShowsItsPort() throws {
+        _ = try placeChannel()
+        let changes = try apply([["op": "place_net_label", "net": "In", "x_mm": 20, "y_mm": 10, "show_port": true]], block: "Channel")
+        let labelID = try XCTUnwrap(changes.first?["net_label"] as? String)
+        func label() throws -> JSONDictionary? {
+            try file("blocks/\(channelID)/schematic.json").dictionaryMap("sheets").values
+                .compactMap { $0.dictionaryMap("net_labels")[labelID] }.first
+        }
+        XCTAssertEqual(try label()?.bool("show_port"), true)
+        try apply([["op": "place_net_label", "id": labelID, "show_port": false]], block: "Channel")
+        XCTAssertEqual(try label()?.bool("show_port"), false)
+    }
+
     // MARK: - Sheet edits
 
     private func save(_ sheet: HorizontalSchematicSheet) throws {

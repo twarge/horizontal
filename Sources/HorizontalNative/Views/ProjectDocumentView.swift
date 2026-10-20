@@ -885,6 +885,7 @@ struct ProjectWorkspaceView: View {
             .focusedSceneValue(\.horizonToggleRightSidebarAction, { toggleRightSidebar(.selection) })
             .focusedSceneValue(\.horizonUpdateAllPlanesAction, updateAllBoardPlanes)
             .focusedSceneValue(\.horizonPowerNetsAction, showPowerNets)
+            .focusedSceneValue(\.horizonLeaveBlockAction, canLeaveBlock ? { leaveBlock() } : nil)
             .focusedSceneValue(\.horizonClearAllPlanesAction, clearAllBoardPlanes)
             .focusedSceneValue(\.horizonBoardRulesAction, showBoardRulesWindow)
             .focusedSceneValue(\.horizonCleanUpProjectPoolAction, poolCleanupAction)
@@ -3684,6 +3685,13 @@ struct ProjectWorkspaceView: View {
                                          blockID: schematic.block.uuid, instanceID: blockSymbol.instanceID, refdes: blockSymbol.refdes))
         visiblePanes.insert(.schematic)
         navigatorSelection = .sheet(blockID: schematic.block.uuid, sheetID: firstSheet.id)
+    }
+
+    /// A block opened from a block symbol shows, so Leave Block has
+    /// somewhere to go back to.
+    private var canLeaveBlock: Bool {
+        guard let step = blockTrail.last, case .sheet(let blockID, _) = navigatorSelection else { return false }
+        return blockID.caseInsensitiveCompare(step.blockID) == .orderedSame
     }
 
     /// Horizon's Pop to parent block.

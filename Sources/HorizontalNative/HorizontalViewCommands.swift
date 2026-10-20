@@ -40,6 +40,10 @@ private struct HorizontalPowerNetsActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
 
+private struct HorizontalLeaveBlockActionKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
 private struct HorizontalClearAllPlanesActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
@@ -97,6 +101,8 @@ struct HorizontalCanvasCommandActions {
     var canPlaceBusLabel: Bool = false
     var canPlaceBusRipper: Bool = false
     var canTieNets: Bool = false
+    var canOpenBlock: Bool = false
+    var canEditBlockSymbol: Bool = false
     var canUpdateAllPlanes: Bool = false
     var hasPlacementInteraction: Bool = false
     var hasRoundOffVertexInteraction: Bool = false
@@ -211,6 +217,13 @@ extension FocusedValues {
         set { self[HorizontalPowerNetsActionKey.self] = newValue }
     }
 
+    /// Horizon's Pop to parent block, while a block opened from a block
+    /// symbol shows.
+    var horizonLeaveBlockAction: (() -> Void)? {
+        get { self[HorizontalLeaveBlockActionKey.self] }
+        set { self[HorizontalLeaveBlockActionKey.self] = newValue }
+    }
+
     var horizonClearAllPlanesAction: (() -> Void)? {
         get { self[HorizontalClearAllPlanesActionKey.self] }
         set { self[HorizontalClearAllPlanesActionKey.self] = newValue }
@@ -270,6 +283,7 @@ struct HorizontalViewCommands: Commands {
     @FocusedValue(\.horizonUpdateAllPlanesAction) private var updateAllPlanesAction
     @FocusedValue(\.horizonCleanUpProjectPoolAction) private var cleanUpProjectPoolAction
     @FocusedValue(\.horizonPowerNetsAction) private var powerNetsAction
+    @FocusedValue(\.horizonLeaveBlockAction) private var leaveBlockAction
     @FocusedValue(\.horizonClearAllPlanesAction) private var clearAllPlanesAction
     @FocusedValue(\.horizonBoardRulesAction) private var boardRulesAction
     @FocusedValue(\.horizonCanvasCommandActions) private var canvasCommandActions
@@ -463,6 +477,27 @@ struct HorizontalViewCommands: Commands {
                     canvasCommandActions?.dispatch(.tieNets)
                 }
                 .disabled(canvasCommandActions?.canTieNets != true)
+            }
+
+            // Going into and out of blocks changes nothing, so it stays when
+            // the document is locked.
+            Divider()
+            Button("Open Block") {
+                canvasCommandActions?.dispatch(.openBlock)
+            }
+            .keyboardShortcut(.downArrow, modifiers: .command)
+            .disabled(canvasCommandActions?.canOpenBlock != true)
+            Button("Edit Block Symbol") {
+                canvasCommandActions?.dispatch(.editBlockSymbol)
+            }
+            .disabled(canvasCommandActions?.canEditBlockSymbol != true)
+            Button("Leave Block") {
+                leaveBlockAction?()
+            }
+            .keyboardShortcut(.upArrow, modifiers: .command)
+            .disabled(leaveBlockAction == nil)
+
+            if !isLocked {
 
                 Divider()
                 Button("Draw Dimension") {
