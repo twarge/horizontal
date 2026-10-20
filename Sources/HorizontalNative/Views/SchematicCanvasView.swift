@@ -5383,10 +5383,13 @@ struct SchematicCanvasView: View {
 
         for index in sheet.netLines.indices {
             let original = sheet.netLines[index]
-            if isSymbolConnection(at: original.from, netID: original.netID) {
+            let lineID = normalizedID(original.id)
+            if isSymbolConnection(at: original.from, netID: original.netID),
+               movedKeys.insert("net-line:\(lineID):from").inserted {
                 sheet.netLines[index].from = original.from + delta
             }
-            if isSymbolConnection(at: original.to, netID: original.netID) {
+            if isSymbolConnection(at: original.to, netID: original.netID),
+               movedKeys.insert("net-line:\(lineID):to").inserted {
                 sheet.netLines[index].to = original.to + delta
             }
         }
@@ -5431,15 +5434,21 @@ struct SchematicCanvasView: View {
             return
         }
 
+        // A wire end moved here is marked as moving a point marks it, so a
+        // point it lands on that moves later doesn't take it again: moved one
+        // step onto the junction its wire runs to, a pin's end went twice as
+        // far, and the wire to it shrank to nothing.
         for target in targets where movedConnectionTargets.insert(target).inserted {
             switch target {
             case .netLineFrom(let lineID):
-                guard let index = sheet.netLines.firstIndex(where: { normalizedID($0.id) == lineID }) else {
+                guard let index = sheet.netLines.firstIndex(where: { normalizedID($0.id) == lineID }),
+                      movedKeys.insert("net-line:\(lineID):from").inserted else {
                     continue
                 }
                 sheet.netLines[index].from = sheet.netLines[index].from + delta
             case .netLineTo(let lineID):
-                guard let index = sheet.netLines.firstIndex(where: { normalizedID($0.id) == lineID }) else {
+                guard let index = sheet.netLines.firstIndex(where: { normalizedID($0.id) == lineID }),
+                      movedKeys.insert("net-line:\(lineID):to").inserted else {
                     continue
                 }
                 sheet.netLines[index].to = sheet.netLines[index].to + delta
