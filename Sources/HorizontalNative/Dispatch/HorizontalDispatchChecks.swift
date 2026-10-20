@@ -67,13 +67,25 @@ enum HorizontalDispatchChecks {
         }
 
         var refdesCounts = [String: Int]()
-        for component in index.sortedComponents {
-            let refdes = component.refdes.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A design whose top block uses others is annotated per instance, as
+        // Horizon's is: each use of a sub-block's component has the refdes its
+        // instance mapping gives it, and the block's own (C?) is no one's.
+        let annotated: [(refdes: String, component: HorizontalDesignComponent, instance: String)] = index.instances.isEmpty
+            ? index.sortedComponents.map { ($0.refdes, $0, "") }
+            : index.instances.compactMap { instance in
+                index.component(id: instance.componentID).map { (instance.refdes, $0, instance.instancePath) }
+            }
+        for use in annotated {
+            let refdes = use.refdes.trimmingCharacters(in: .whitespacesAndNewlines)
             if refdes.isEmpty || refdes.hasSuffix("?") {
-                messages.append(Message(level: "warning", category: "annotation", title: "Component is not annotated", detail: "Value \(component.value), part \(component.details?.mpn ?? "none").", refdes: refdes))
+                let place = use.instance.isEmpty ? "" : " In \(use.instance)."
+                messages.append(Message(level: "warning", category: "annotation", title: "Component is not annotated", detail: "Value \(use.component.value), part \(use.component.details?.mpn ?? "none").\(place)", refdes: refdes))
             } else {
                 refdesCounts[refdes, default: 0] += 1
             }
+        }
+        for component in index.sortedComponents {
+            let refdes = component.refdes.trimmingCharacters(in: .whitespacesAndNewlines)
             if component.partID == nil, !component.noPopulate {
                 messages.append(Message(level: "info", category: "part", title: "No part assigned", detail: "The component has an entity but no pool part, so it has no package or MPN.", refdes: refdes))
             }
@@ -118,7 +130,7 @@ enum HorizontalDispatchChecks {
             let airwiresByNet = Dictionary(grouping: board.airwires, by: { $0.netID?.lowercased() ?? "" })
             for (netID, airwires) in airwiresByNet where !netID.isEmpty {
                 let net = index.net(id: netID)
-                let resolvedName = net?.name ?? ""
+                let resolvedName = index.netName(id: netID) ?? ""
                 let name = resolvedName.isEmpty ? netID : resolvedName
                 let count = "\(airwires.count) airwire\(airwires.count == 1 ? "" : "s")"
                 // An unnamed net is only its uuid, which says nothing about

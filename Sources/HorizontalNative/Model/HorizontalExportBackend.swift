@@ -555,6 +555,17 @@ enum HorizontalExportBackend {
                 }
             }
         }
+        // Horizon's `Block::get_BOM` walks the instances: a block's part is
+        // on it once for every instance, with that instance's refdes, and
+        // not at all for a block nothing uses.
+        if let flattened = project.flattenedBlock {
+            componentsByID = flattened.instances.reduce(into: [String: SchematicComponentInfo]()) { result, instance in
+                guard var component = componentsByID[instance.componentID] else { return }
+                component.refdes = instance.refdes
+                component.noPopulate = instance.noPopulate
+                result[instance.flatID] = component
+            }
+        }
 
         var rowsByKey = [BOMRowKey: BOMRow]()
         for component in componentsByID.values {

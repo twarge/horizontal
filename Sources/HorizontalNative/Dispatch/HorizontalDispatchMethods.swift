@@ -816,7 +816,11 @@ enum HorizontalDispatchMethods {
                 component.symbolPlacements.contains { $0.sheetID == sheet.id && $0.blockID == sheet.blockID }
             }
         }
-        return components.map { componentJSON($0, full: false) }
+        return components.map { component -> JSONDictionary in
+            var json = componentJSON(component, full: false)
+            if let instances = instancesJSON(component, index: entry.index) { json["instances"] = instances }
+            return json
+        }
     }
 
     @Sendable private static func getComponent(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
@@ -968,7 +972,19 @@ enum HorizontalDispatchMethods {
         var noPopulate = [Key: Bool]()
         var excluded = [String]()
         var withoutPart = [String]()
-        for component in entry.index.sortedComponents {
+        // Horizon's BOM walks the instances: a sub-block's part is on it once
+        // per instance, under that instance's refdes.
+        let uses: [HorizontalDesignComponent] = entry.index.instances.isEmpty
+            ? entry.index.sortedComponents
+            : entry.index.instances.compactMap { instance in
+                entry.index.component(id: instance.componentID).map { component in
+                    var use = component
+                    use.refdes = instance.refdes
+                    use.noPopulate = instance.noPopulate
+                    return use
+                }
+            }
+        for component in uses {
             guard includeNoPopulate || !component.noPopulate else {
                 continue
             }
@@ -2014,6 +2030,24 @@ enum HorizontalDispatchMethods {
                 "block_id": sheet.blockID as Any, "is_top_block": sheet.isTopBlock, "frame": frame]
     }
 
+    /// A sub-block's component is used once per instance of its block, each
+    /// use with a refdes and a board package of its own; nil for one used once.
+    static func instancesJSON(_ component: HorizontalDesignComponent, index: HorizontalDesignIndex) -> [JSONDictionary]? {
+        let instances = index.instances(of: component.id)
+        guard !instances.isEmpty else { return nil }
+        return instances.map { instance -> JSONDictionary in
+            var use: JSONDictionary = ["id": instance.id, "refdes": instance.refdes, "instance": instance.instancePath,
+                                       "no_populate": instance.noPopulate, "placed_on_board": instance.boardPlacement != nil]
+            if let placement = instance.boardPlacement {
+                use["board"] = ["x_mm": HorizontalDispatchJSON.mm(placement.position.x),
+                                "y_mm": HorizontalDispatchJSON.mm(placement.position.y),
+                                "side": placement.bottom ? "bottom" : "top",
+                                "package_instance": placement.instanceID]
+            }
+            return use
+        }
+    }
+
     static func componentJSON(_ component: HorizontalDesignComponent, full: Bool, index: HorizontalDesignIndex? = nil) -> JSONDictionary {
         let details = component.details
         var json: JSONDictionary = [
@@ -2044,6 +2078,9 @@ enum HorizontalDispatchMethods {
                                                                     parametric: component.details?.parametricValues ?? [:])
         json["block_id"] = component.blockID as Any
         json["physical_terminals"] = component.physicalTerminals
+        if let index, let instances = instancesJSON(component, index: index) {
+            json["instances"] = instances
+        }
         if let placement = component.boardPlacement {
             json["board"] = [
                 "x_mm": HorizontalDispatchJSON.mm(placement.position.x),

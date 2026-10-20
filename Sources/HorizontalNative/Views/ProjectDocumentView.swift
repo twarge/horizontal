@@ -3803,6 +3803,8 @@ struct ProjectWorkspaceView: View {
         rebasePackageModelURLs(in: &syncedBoard)
         removePlanesWithDeletedNets(from: &syncedBoard)
         applyFollowUpBoard(syncedBoard)
+        // What the board was flattened from, for the BOM and the rest.
+        project.flattenedBlock = reloaded.flattenedBlock
         boardSyncRevision += 1
         selectionDetailsByPane[.board] = .empty
     }

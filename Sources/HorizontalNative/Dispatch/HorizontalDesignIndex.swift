@@ -142,6 +142,23 @@ struct HorizontalDesignNetPin: Hashable {
     var physicalPads: [HorizontalDesignPad] = []
 }
 
+/// One use of a component: the component itself in the top block, or a
+/// sub-block's component in one instance of that block, as the flattened
+/// block has it — with the refdes and no-populate that instance gives it and
+/// the board package placed for it.
+struct HorizontalDesignInstance {
+    /// The flat uuid Horizon's board names it by.
+    var id: String
+    /// The component of its block it is.
+    var componentID: String
+    var refdes: String
+    var noPopulate: Bool
+    /// The instances it is in, by refdes from the top: "I1/I2". Empty for a
+    /// top block component.
+    var instancePath: String
+    var boardPlacement: HorizontalDesignBoardPlacement?
+}
+
 struct HorizontalDesignNet {
     var id: String
     var name: String
@@ -177,6 +194,13 @@ struct HorizontalDesignIndex {
     private(set) var nets: [String: HorizontalDesignNet] = [:]
     private(set) var netIDsByName: [String: String] = [:]
     private(set) var sheets: [HorizontalDesignSheet] = []
+    /// Every use of a component the flattened block has, for a design whose
+    /// top block uses others; empty otherwise, when each component is used
+    /// once, as itself.
+    private(set) var instances: [HorizontalDesignInstance] = []
+    /// The flattened block's own nets, an instance's `I1/Out`, by id: the
+    /// board's, named here though no block has them.
+    private(set) var flattenedNetNames: [String: String] = [:]
     /// Horizon's group and tag names by id (the block's `group_names` and
     /// `tag_names`).
     private(set) var groupNames: [String: String] = [:]
@@ -279,9 +303,44 @@ struct HorizontalDesignIndex {
                     instanceID: package.id
                 )
             }
+            let flattenedNets = Set(project.flattenedBlock?.netPaths.filter { $0.value.allSatisfy { $0.count > 1 } }.keys.map { $0.lowercased() } ?? [])
             for (netID, details) in board.netDetails where netDetails[netID.lowercased()] == nil {
+                // An instance's own net is the board's alone; the blocks name
+                // its pins by the net of their own it stands for.
+                if flattenedNets.contains(netID.lowercased()) {
+                    flattenedNetNames[netID.lowercased()] = details.name
+                    continue
+                }
                 netDetails[netID.lowercased()] = details
             }
+        }
+        if let flattened = project.flattenedBlock {
+            let topJSON = block ?? [:]
+            func pathName(_ path: [String]) -> String {
+                var names = [String](), current = topJSON
+                for id in path.dropLast() {
+                    guard let instance = current.dictionaryMap("block_instances").first(where: { $0.key.lowercased() == id })?.value else { break }
+                    names.append(instance.string("refdes") ?? "")
+                    let child = instance.string("block")?.lowercased()
+                    let filename = project.blocks.first { $0.uuid.lowercased() == child }?.blockFilename
+                    current = filename.flatMap { name in
+                        let url = project.baseURL.appendingPathComponent(name)
+                        return snapshot.map { $0.json(at: url) } ?? (try? JSONHelper.loadDictionary(from: url))
+                    } ?? [:]
+                }
+                return names.joined(separator: "/")
+            }
+            instances = flattened.instances.map { instance in
+                HorizontalDesignInstance(
+                    id: instance.flatID,
+                    componentID: instance.componentID,
+                    refdes: instance.refdes,
+                    noPopulate: instance.noPopulate,
+                    instancePath: pathName(flattened.componentPaths[instance.flatID] ?? []),
+                    boardPlacement: boardPlacements[instance.flatID]
+                )
+            }
+            .sorted { ($0.refdes, $0.id) < ($1.refdes, $1.id) }
         }
 
         for (componentID, info) in componentInfo {
@@ -508,6 +567,17 @@ struct HorizontalDesignIndex {
 
     func net(id: String) -> HorizontalDesignNet? {
         nets[id.lowercased()]
+    }
+
+    /// A net's name, a flattened instance net's among them.
+    func netName(id: String) -> String? {
+        nets[id.lowercased()]?.name ?? flattenedNetNames[id.lowercased()]
+    }
+
+    /// The uses of a sub-block's component, one per instance.
+    func instances(of componentID: String) -> [HorizontalDesignInstance] {
+        let id = componentID.lowercased()
+        return instances.filter { $0.componentID == id && !$0.instancePath.isEmpty }
     }
 
     /// A component by its id, or by eight or more of the id's leading digits

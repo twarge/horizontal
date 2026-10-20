@@ -553,6 +553,7 @@ struct HorizontalBoard {
         planesURL: URL?,
         poolURL: URL?,
         visitedProjectURLs: Set<URL> = [],
+        flattenedBlock: JSONDictionary? = nil,
         diagnostics: inout [HorizontalDiagnostic]
     ) throws -> HorizontalBoard {
         let json = try BoardLoadTimer.measure("HorizontalBoard.load — parse board.json") {
@@ -565,7 +566,10 @@ struct HorizontalBoard {
         let junctions = parseJunctions(from: json)
         let junctionNetIDs = parseJunctionNetIDs(from: json)
         let packageMap = json.dictionaryMap("packages")
-        let blockMetadata = loadBlockMetadata(from: blockURL, poolURL: poolURL, diagnostics: &diagnostics)
+        // A hierarchical design's board is the flattened block's, as
+        // Horizon's: every instance's components and nets are on it.
+        let blockMetadata = flattenedBlock.map { parseBlockMetadata(from: $0, poolURL: poolURL) }
+            ?? loadBlockMetadata(from: blockURL, poolURL: poolURL, diagnostics: &diagnostics)
         let ownPackages = BoardLoadTimer.measure("HorizontalBoard.load — parse placements") {
             parsePlacements(
                 from: packageMap,
@@ -3197,7 +3201,10 @@ struct HorizontalBoard {
     }
 
     private static func parseBlockMetadata(from blockURL: URL, poolURL: URL?) throws -> BoardBlockMetadata {
-        let json = try JSONHelper.loadDictionary(from: blockURL)
+        parseBlockMetadata(from: try JSONHelper.loadDictionary(from: blockURL), poolURL: poolURL)
+    }
+
+    private static func parseBlockMetadata(from json: JSONDictionary, poolURL: URL?) -> BoardBlockMetadata {
         var packageCache = [String: JSONDictionary]()
         var partDetailsCache = [String: PartDetails]()
         var missingPartDetails = Set<String>()
