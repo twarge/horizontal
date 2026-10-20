@@ -116,6 +116,10 @@ struct HorizontalSchematicSheet: Identifiable {
     /// neither; one naming a frame the pool lacks has only the id.
     var frameID: String? = nil
     var frameName: String? = nil
+    /// The frame texts that show a sheet number, by text id, with every
+    /// title-block value filled in but `$sheet_idx` and `$sheet_total`, so a
+    /// page of a hierarchy can be numbered as Horizon numbers it.
+    var frameNumberTemplates: [String: String] = [:]
     var texts: [HorizontalText]
     /// Pool editors only: the symbol's or frame's own polygons, editable as
     /// whole objects (`sheet/polygon/<uuid>` ids).
@@ -311,6 +315,7 @@ struct HorizontalSchematic {
         var lines: [HorizontalSegment] = []
         var polygons: [HorizontalPolygon] = []
         var texts: [HorizontalText] = []
+        var numberTemplates: [String: String] = [:]
 
         var points: [HorizontalPoint] {
             var result = [HorizontalPoint]()
@@ -1069,6 +1074,7 @@ struct HorizontalSchematic {
                 frameTexts: frameArtwork.texts,
                 frameID: sheetFrameID,
                 frameName: sheetFrameID.flatMap { frameCache[$0]?.string("name") },
+                frameNumberTemplates: frameArtwork.numberTemplates,
                 texts: texts,
                 netLabels: netLabels,
                 powerSymbols: powerSymbols.symbols,
@@ -1545,8 +1551,25 @@ struct HorizontalSchematic {
             texts: parseFrameTexts(
                 from: frameJSON.dictionaryMap("texts"),
                 substitutions: substitutions
-            )
+            ),
+            numberTemplates: frameNumberTemplates(from: frameJSON.dictionaryMap("texts"), substitutions: substitutions)
         )
+    }
+
+    static let sheetNumberKeys = ["sheet_idx", "sheet_total"]
+
+    private static func frameNumberTemplates(from map: [String: JSONDictionary], substitutions: [String: String]) -> [String: String] {
+        var others = substitutions
+        for key in sheetNumberKeys { others.removeValue(forKey: key) }
+        return map.reduce(into: [String: String]()) { result, item in
+            guard let raw = item.value.string("text"), sheetNumberKeys.contains(where: { raw.contains($0) }) else { return }
+            result["frame/text/\(item.key)"] = substituteFrameText(raw, substitutions: others)
+        }
+    }
+
+    /// A frame text template with its sheet number filled in.
+    static func numberedFrameText(_ template: String, index: Int, total: Int) -> String {
+        substituteFrameText(template, substitutions: ["sheet_idx": "\(index)", "sheet_total": "\(total)"])
     }
 
     private static func parseSymbolLines(

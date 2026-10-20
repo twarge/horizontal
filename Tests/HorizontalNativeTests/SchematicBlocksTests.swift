@@ -1,4 +1,5 @@
 import XCTest
+import PDFKit
 import HorizontalProjectIO
 @testable import HorizontalNative
 
@@ -363,6 +364,45 @@ final class SchematicBlocksTests: XCTestCase {
         XCTAssertTrue(messages.contains("Port Out is not placed"), "\(messages)")
         XCTAssertTrue(messages.contains("Port Clk is off-grid, residual: 0 mm, 0.5 mm"), "\(messages)")
         XCTAssertFalse(messages.contains { $0.contains("reference designators") }, "the template has its $REFDES")
+    }
+
+    // MARK: - Pages
+
+    func testPagesFollowEachInstanceAsHorizonPrintsThem() throws {
+        let first = try placeChannel()
+        let added = try apply([["op": "add_block_instance", "block": "Channel", "refdes": "I1"]])
+        let second = try XCTUnwrap(added.first?["block_instance"] as? String)
+        try apply([["op": "place_block_symbol", "instance": second, "x_mm": 100, "y_mm": 50],
+                   ["op": "set_block_instance", "instance": first.instance, "refdes": "I2"]])
+
+        let pages = project.schematicPages
+        XCTAssertEqual(pages.map(\.path), [[], [second], [first.instance]], "the top sheet, then its blocks by instance refdes")
+        XCTAssertEqual(pages.map(\.number), [1, 2, 3])
+        XCTAssertEqual(pages.dropFirst().map(\.block.uuid), [channelID, channelID])
+
+        // The frame is numbered among the pages.
+        var sheet = try topSheet
+        sheet.frameTexts = [HorizontalText(id: "frame/text/n", text: "1/1", position: .zero, size: 1_000_000, layer: nil)]
+        sheet.frameNumberTemplates = ["frame/text/n": "$sheet_idx/$sheet_total"]
+        XCTAssertEqual(sheet.numbered(2, of: 3).frameTexts.first?.text, "2/3")
+
+        // The PDF prints every page, links each block symbol to its
+        // instance's first page and outlines the hierarchy.
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("pages-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        var settings = HorizontalExportSettings(project: project)
+        settings.targetDirectory = directory.path
+        let status = HorizontalExportBackend.export(sections: [.schematicPDF], settings: settings, project: project)
+        XCTAssertNotEqual(status.kind, .error, status.message)
+        let pdf = try XCTUnwrap(PDFDocument(url: directory.appendingPathComponent(settings.schematicPDF.filename)))
+        XCTAssertEqual(pdf.pageCount, 3)
+        let links = try XCTUnwrap(pdf.page(at: 0)).annotations.compactMap { $0.destination?.page.map(pdf.index(for:)) }
+        XCTAssertEqual(Set(links), [1, 2])
+        let root = try XCTUnwrap(pdf.outlineRoot)
+        XCTAssertEqual(root.numberOfChildren, 1)
+        let top = try XCTUnwrap(root.child(at: 0))
+        XCTAssertEqual((0..<top.numberOfChildren).compactMap { top.child(at: $0)?.label }, ["I1", "I2"])
+        XCTAssertEqual(top.child(at: 1)?.child(at: 0)?.destination?.page.map(pdf.index(for:)), 2)
     }
 
     // MARK: - Flattening

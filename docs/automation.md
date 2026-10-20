@@ -359,6 +359,13 @@ there are named for the path (`I1/Out`). `list_components` and `get_component`
 give a sub-block component's `instances`, each with its refdes and package;
 `place_component` takes one by that uuid or refdes.
 
+The schematic PDF `export` writes is Horizon's too: page by page, each sheet of
+the top block followed by the sheets of the blocks drawn on it in their
+instances' refdes order, so a block used three times prints three times, each
+under its instance's refdes. Frames number the pages across the design
+(`$sheet_idx/$sheet_total`), each block symbol links to its instance's first
+page, and the outline nests the instances under the sheets they are drawn on.
+
 ### Routing is manual, and autoroute is honest about it
 
 `autoroute` tries a net's airwires on one layer. It walks around one obstacle
