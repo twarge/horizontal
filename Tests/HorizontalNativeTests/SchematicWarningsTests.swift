@@ -171,6 +171,46 @@ final class SchematicWarningsTests: XCTestCase {
         XCTAssertTrue(messages(sheet).contains("Zero length net tie"))
     }
 
+    /// Horizon writes only a junction's position, so a tie's ends get their
+    /// nets from the wiring when the sheet loads: a tie between the nets it
+    /// joins is not "connected to incorrect net", one with both ends on one
+    /// net is.
+    func testNetTieBetweenItsNetsLoadedFromHorizonFilesDoesNotWarn() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("schematic-warnings-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        func write(_ json: JSONDictionary, _ name: String) throws -> URL {
+            let url = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]).write(to: url)
+            return url
+        }
+        func load(secondaryEnd: String) throws -> HorizontalSchematicSheet {
+            let block = try write([
+                "nets": ["primary": ["name": "P", "is_power": true], "secondary": ["name": "S", "is_power": true]],
+                "net_ties": ["tie": ["net_primary": "primary", "net_secondary": "secondary"]],
+            ], "block.json")
+            let sheet: JSONDictionary = [
+                "name": "Sheet", "index": 1,
+                "junctions": ["p": ["position": [-5_000_000, 0]], "a": ["position": [0, 0]],
+                              "b": ["position": [5_000_000, 0]], "s": ["position": [10_000_000, 0]]],
+                "net_lines": ["pa": ["from": ["junc": "p"], "to": ["junc": "a"]],
+                              "bs": ["from": ["junc": "b"], "to": ["junc": "s"]]],
+                "power_symbols": ["power-p": ["junction": "p", "net": "primary"],
+                                  "power-s": ["junction": "s", "net": secondaryEnd]],
+                "net_ties": ["drawn-tie": ["net_tie": "tie", "from": "a", "to": "b"]],
+            ]
+            let schematic = try write(["sheets": ["sheet": sheet]], "schematic.json")
+            var diagnostics: [HorizontalDiagnostic] = []
+            return try XCTUnwrap(HorizontalSchematic.load(from: schematic, blockURL: block, diagnostics: &diagnostics).sheets.first)
+        }
+
+        let tied = try load(secondaryEnd: "secondary")
+        XCTAssertEqual(tied.junctionNetIDs["a"], "primary")
+        XCTAssertEqual(tied.junctionNetIDs["b"], "secondary")
+        XCTAssertFalse(messages(tied).contains("Net tie connected to incorrect net"))
+        XCTAssertTrue(messages(try load(secondaryEnd: "primary")).contains("Net tie connected to incorrect net"))
+    }
+
     func testPortLabelsOnOtherSheetsSatisfyPortWarning() {
         var sheet = sheet()
         sheet.netDetails = ["n": .init(id: "n", name: "SIGNAL", netClassID: nil, netClassName: nil, isPort: true)]

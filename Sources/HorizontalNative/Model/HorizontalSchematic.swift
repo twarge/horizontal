@@ -852,8 +852,11 @@ struct HorizontalSchematic {
             let junctions = BoardLoadTimer.measure("schematic sheets: junctions") {
                 parseJunctions(from: sheet)
             }
+            let connectivity = BoardLoadTimer.measure("schematic sheets: connectivity") {
+                HorizontalSchematicNetConnectivity(sheet: sheet, block: blockInfo.connectivityJSON, requiresKnownNet: false)
+            }
             let junctionNetIDs = BoardLoadTimer.measure("schematic sheets: junction nets") {
-                parseJunctionNetIDs(from: sheet)
+                parseJunctionNetIDs(from: sheet, connectivity: connectivity)
             }
             let symbolMap = sheet.dictionaryMap("symbols")
             let sheetTexts = sheet.dictionaryMap("texts")
@@ -956,8 +959,7 @@ struct HorizontalSchematic {
                     symbolPinPositions: artwork.pinPositions,
                     busRipperPositions: busArtwork.ripperConnectorPositions,
                     blockPortPositions: blockSymbolArtwork.portPositions,
-                    connectivity: HorizontalSchematicNetConnectivity(sheet: sheet, block: blockInfo.connectivityJSON,
-                                                                    requiresKnownNet: false)
+                    connectivity: connectivity
                 )
             }
             let netTies = BoardLoadTimer.measure("schematic sheets: net ties") {
@@ -1108,9 +1110,14 @@ struct HorizontalSchematic {
         }
     }
 
-    private static func parseJunctionNetIDs(from json: JSONDictionary) -> [String: String] {
+    /// Horizon writes only a junction's position, so its net comes from the
+    /// wiring, as a wire's does; a net an MCP edit cached on it wins.
+    private static func parseJunctionNetIDs(
+        from json: JSONDictionary,
+        connectivity: HorizontalSchematicNetConnectivity
+    ) -> [String: String] {
         json.dictionaryMap("junctions").reduce(into: [String: String]()) { result, item in
-            if let netID = item.value.string("net").map(normalizedID) {
+            if let netID = (item.value.string("net") ?? connectivity.net(at: ["junc": item.key])).map(normalizedID) {
                 result[item.key] = netID
             }
         }
