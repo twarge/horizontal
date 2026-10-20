@@ -742,6 +742,7 @@ class PlaceNetLabel(Input):
     orientation: Orientation | None = None
     size_mm: float | None = None
     offsheet_refs: bool | None = None
+    show_port: bool | None = None
 
     @model_validator(mode="after")
     def new_or_edit(self):

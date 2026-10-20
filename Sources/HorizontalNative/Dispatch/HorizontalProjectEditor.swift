@@ -410,7 +410,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "y_mm": "Y position.",
                     "orientation": "right, left, up or down (optional; default right, or unchanged).",
                     "size_mm": "Cap height (optional; default 1.5, or unchanged).",
-                    "offsheet_refs": "Show the other sheets this net appears on (optional; default true, or unchanged)."]
+                    "offsheet_refs": "Show the other sheets this net appears on (optional; default true, or unchanged).",
+                    "show_port": "On a sub-block's port net, Horizon's Show port: the label reads the port's direction, IN: name (optional)."]
         case .removeNetLabel:
             return ["id": "Net label id, from list_net_labels."]
         case .addBlockInstance:
@@ -4363,6 +4364,7 @@ final class HorizontalProjectEditor {
             item["size"] = Self.nanometres(size)
         }
         if isNet, let refs = params.bool("offsheet_refs") { item["offsheet_refs"] = refs }
+        if isNet, let showsPort = params.bool("show_port") { item["show_port"] = showsPort }
         var moved: String?
         if params["x_mm"] != nil || params["y_mm"] != nil {
             let current = oldJunction.flatMap { key in junctions.first { $0.key.lowercased() == key.lowercased() }?.value["position"] as? [Any] } ?? [0, 0]
@@ -4406,8 +4408,10 @@ final class HorizontalProjectEditor {
         let id = try editObjectID(params)
         try updateSheet(sheetID) { sheet in
             var labels = sheet["net_labels"] as? JSONDictionary ?? [:]
-            labels[id] = ["junction": junction, "last_net": net, "size": Self.nanometres(sizeMM),
-                          "orientation": orientation, "offsheet_refs": params.bool("offsheet_refs") ?? true]
+            var label: JSONDictionary = ["junction": junction, "last_net": net, "size": Self.nanometres(sizeMM),
+                                         "orientation": orientation, "offsheet_refs": params.bool("offsheet_refs") ?? true]
+            if let showsPort = params.bool("show_port") { label["show_port"] = showsPort }
+            labels[id] = label
             sheet["net_labels"] = labels
         }
         var change: JSONDictionary = ["net_label": id, "net": net, "sheet": sheetID, "junction": junction,
