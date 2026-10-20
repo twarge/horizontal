@@ -102,10 +102,11 @@ final class SchematicMoveOntoItselfTests: XCTestCase {
         }
         let selected = await settle { state.actions?.canMoveSelection == true }
         XCTAssertTrue(selected)
-        // A step at a time, as the arrow keys move it, through the step
+        // A grid step at a time, as the arrow keys move it, through the step
         // that puts one junction where the other started.
-        let step = HorizontalPoint(x: delta.x / 12, y: delta.y / 12)
-        for _ in 0..<12 {
+        let count = Int((abs(delta.y) / 1_250_000).rounded())
+        let step = HorizontalPoint(x: 0, y: delta.y < 0 ? -1_250_000 : 1_250_000)
+        for _ in 0..<count {
             state.actions?.dispatch(.moveSelectionBy(step))
             try await Task.sleep(for: .milliseconds(20))
         }
