@@ -108,7 +108,7 @@ struct ProjectNavigatorView: View {
 
                         if blockMatches || !isSearching {
                             NavigatorRow(
-                                icon: schematic.block.isTop ? "target" : .block,
+                                icon: schematic.block.isTop ? "target" : "cube",
                                 title: navigatorTitle(for: schematic.block),
                                 detail: blockDetail(for: schematic)
                             )
@@ -123,7 +123,7 @@ struct ProjectNavigatorView: View {
 
                         if allowsBlockEditing, !schematic.block.isTop, schematic.block.symbolFilename?.isEmpty == false,
                            blockMatches || !isSearching {
-                            NavigatorRow(icon: "square.on.square.dashed", title: "Symbol")
+                            NavigatorRow(icon: .opAmp, title: "Symbol")
                                 .padding(.leading, 18)
                                 .tag(ProjectNavigatorSelection.blockSymbol(schematic.block.uuid))
                                 .disabled(!isAvailable(schematic.block))
@@ -137,7 +137,7 @@ struct ProjectNavigatorView: View {
                         ForEach(sheets) { sheet in
                             if matchesSearch("sheet", sheet.name, navigatorTitle(for: schematic.block)) || blockMatches || !isSearching {
                                 NavigatorRow(
-                                    icon: "rectangle.grid.1x2",
+                                    icon: schematic.block.isTop ? .sheet : .blockSheet,
                                     title: sheet.name,
                                     marksHighlightedNet: sheetIDsWithHighlightedNet.contains(sheet.id),
                                     highlightColor: highlightColor
@@ -188,7 +188,7 @@ struct ProjectNavigatorView: View {
                     }
                     ForEach(schematic.sheets.filter { matchesSearch("sheet", $0.name) }) { sheet in
                         NavigatorRow(
-                            icon: "rectangle.grid.1x2",
+                            icon: .sheet,
                             title: sheet.name,
                             marksHighlightedNet: sheetIDsWithHighlightedNet.contains(sheet.id),
                             highlightColor: highlightColor
@@ -744,13 +744,26 @@ struct NavigatorSelectionSummaryView: View {
     }
 }
 
-/// A navigator row's icon: a symbol by name, or the drawn block icon.
+/// A navigator row's icon: a symbol by name, or the drawn op-amp a block's
+/// symbol row shows.
 enum NavigatorIcon: ExpressibleByStringLiteral {
     case system(String)
-    case block
+    case opAmp
 
     init(stringLiteral name: String) {
         self = .system(name)
+    }
+
+    /// A sheet of the top block, or of a project without blocks.
+    static let sheet: NavigatorIcon = "document"
+
+    /// A sheet of a block below the top: a face come off its cube, where the
+    /// system has that symbol, and a plain sheet where it doesn't.
+    static var blockSheet: NavigatorIcon {
+        if #available(macOS 27, iOS 27, *) {
+            return "cube.plane.bottom.right.detached"
+        }
+        return sheet
     }
 }
 
@@ -789,8 +802,8 @@ struct NavigatorRow: View {
                 switch icon {
                 case .system(let name):
                     Image(systemName: name)
-                case .block:
-                    HorizontalBlockIconView()
+                case .opAmp:
+                    HorizontalOpAmpIconView()
                 }
             }
             .foregroundStyle(marksHighlightedNet ? AnyShapeStyle(highlightColor) : AnyShapeStyle(.secondary))

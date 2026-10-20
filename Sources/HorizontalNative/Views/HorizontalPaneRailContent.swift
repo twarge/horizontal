@@ -2408,7 +2408,7 @@ struct PlaceBlockToolButton: View {
                 }
                 Button("New Block…", action: onNewBlock)
             } label: {
-                HorizontalBlockIconView()
+                Image(systemName: "cube")
             }
             .menuIndicator(.hidden)
             .help("Place an instance of a block on this sheet")
