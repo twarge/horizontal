@@ -338,6 +338,18 @@ enum HorizontalProjectJSONApplicator {
         try saveJSON(json, relativePath: path, to: &archive)
     }
 
+    /// The block symbol editor's symbol, written to the block's symbol file
+    /// as it stands.
+    static func apply(
+        blockSymbol json: JSONDictionary,
+        symbolURL: URL,
+        in project: HorizontalProject,
+        to archive: inout HorizontalProjectArchive
+    ) throws {
+        let path = try archivePath(for: symbolURL, project: project, archive: archive)
+        try saveJSON(json, relativePath: path, to: &archive)
+    }
+
     static func apply(
         netClasses: [HorizontalNetClass],
         blockURL: URL,
@@ -1965,6 +1977,10 @@ enum HorizontalProjectJSONApplicator {
             item["size"] = jsonNumber(label.size)
             // A flip or turn changes only this, and Horizon reads it back.
             item["orientation"] = label.orientation
+            // Horizon's "Show port", written once it has been set.
+            if label.showsPort || item["show_port"] != nil {
+                item["show_port"] = label.showsPort
+            }
             if let id = label.junctionID, junctions[id].map(jsonPointKey) == jsonPointKey(label.position) {
                 item["junction"] = id
             } else if let id = junctionID(at: label.position, in: junctions) {
@@ -2318,13 +2334,15 @@ enum HorizontalProjectJSONApplicator {
     }
 
     private static func relativePath(for url: URL, baseURL: URL) -> String? {
-        let basePath = baseURL.standardizedFileURL.path
-        let path = url.standardizedFileURL.path
-        let prefix = basePath.hasSuffix("/") ? basePath : basePath + "/"
-        guard path.hasPrefix(prefix) else {
-            return nil
+        // As given first: standardizing drops /private from a path on disk
+        // and not from one only the archive holds yet, such as a new block's.
+        for (basePath, path) in [(baseURL.path, url.path), (baseURL.standardizedFileURL.path, url.standardizedFileURL.path)] {
+            let prefix = basePath.hasSuffix("/") ? basePath : basePath + "/"
+            if path.hasPrefix(prefix) {
+                return String(path.dropFirst(prefix.count))
+            }
         }
-        return String(path.dropFirst(prefix.count))
+        return nil
     }
 
     private static func matchingKey(_ id: String, in map: JSONDictionary) -> String? {

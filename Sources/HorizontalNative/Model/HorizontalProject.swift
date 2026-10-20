@@ -404,18 +404,10 @@ struct HorizontalProject: Identifiable {
             let blockJSON = block.blockFilename
                 .map { baseURL.appendingPathComponent($0) }
                 .flatMap { try? JSONHelper.loadDictionary(from: $0) }
-            let nets = blockJSON?.dictionaryMap("nets").reduce(into: [String: HorizontalSchematicBlockNetResource]()) { result, item in
-                result[normalizedID(item.key)] = HorizontalSchematicBlockNetResource(
-                    name: item.value.string("name") ?? String(item.key.prefix(8)),
-                    isPort: item.value.bool("is_port") ?? false,
-                    portDirection: item.value.string("port_direction") ?? "bidirectional"
-                )
-            } ?? [:]
-
             result[normalizedID(block.uuid)] = HorizontalSchematicBlockResource(
                 symbolURL: symbolURL,
-                name: blockJSON?.string("name") ?? block.displayName,
-                nets: nets
+                blockJSON: blockJSON,
+                fallbackName: block.displayName
             )
         }
     }

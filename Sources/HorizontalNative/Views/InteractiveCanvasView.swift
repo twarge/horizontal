@@ -93,6 +93,11 @@ enum HorizontalCanvasCommand {
     case filterAirwires
     case openDatasheet
     case toggleSmash
+    /// Schematic: Horizon's Push into block — the selected block symbol's
+    /// block, shown so it can be left again for this sheet.
+    case openBlock
+    /// Schematic: Horizon's Edit block symbol, for the selected one's block.
+    case editBlockSymbol
     case smashSilkscreenGraphics
     case toggleOmitSilkscreen
     case toggleOmitOutline

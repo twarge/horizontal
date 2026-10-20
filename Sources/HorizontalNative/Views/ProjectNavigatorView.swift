@@ -9,6 +9,8 @@ enum ProjectNavigatorSelection: Hashable {
     case blocksFile
     case pool
     case block(String)
+    /// A block's symbol, in Horizon's block symbol editor.
+    case blockSymbol(String)
     case sheet(blockID: String, sheetID: String)
     case standaloneSheet(String)
     case board
@@ -28,6 +30,9 @@ struct ProjectNavigatorView: View {
     /// The schematic canvas's highlight colour, so the mark matches it.
     var highlightColor = Color.accentColor
     var allowsSheetEditing = false
+    /// Blocks can be added, renamed, removed and placed from here; the iPad,
+    /// which shows the top block alone, leaves them be.
+    var allowsBlockEditing = false
     /// (schematic URL, sheet ID, new name)
     var onRenameSheet: (URL, String, String) -> Void = { _, _, _ in }
     /// (schematic URL, sheet IDs in their new order)
@@ -39,13 +44,39 @@ struct ProjectNavigatorView: View {
     var onAddSheet: (URL) -> String? = { _ in nil }
     /// (schematic URL, sheet ID) → whether the sheet was deleted.
     var onRemoveSheet: (URL, String) -> Bool = { _, _ in false }
+    /// Horizon's Add Block: (name) → the new block's ID, or nil.
+    var onAddBlock: (String) -> String? = { _ in nil }
+    /// (block ID, new name)
+    var onRenameBlock: (String, String) -> Void = { _, _ in }
+    /// (block ID) → whether the block was removed.
+    var onRemoveBlock: (String) -> Bool = { _ in false }
+    /// Places an instance of the block on the sheet showing; nil when no
+    /// sheet shows.
+    var onPlaceBlock: ((String) -> Void)? = nil
+    /// The blocks the sheet showing can use: not its own, nor one that uses it.
+    var placeableBlockIDs: Set<String> = []
 
     @State private var renameTarget: SheetRenameTarget?
     @State private var renameDraft = ""
+    @State private var blockNameTarget: BlockNameTarget?
+    @State private var blockNameDraft = ""
     /// The frames the project's base pools hold, for the Frame menu; read off
     /// the main thread, since it scans the pools.
     @State private var basePoolFrames: [HorizontalSheetFrameOption] = []
     @ObservedObject private var poolRegistry = HorizontalPoolRegistry.shared
+
+    /// What the block name prompt names: a block to add, or one to rename.
+    private enum BlockNameTarget: Identifiable {
+        case new
+        case rename(String)
+
+        var id: String {
+            switch self {
+            case .new: "new"
+            case .rename(let blockID): blockID
+            }
+        }
+    }
 
     private struct SheetRenameTarget: Identifiable {
         var schematicURL: URL
@@ -70,7 +101,7 @@ struct ProjectNavigatorView: View {
         let sheetIDsWithHighlightedNet = sheetIDsWithHighlightedNet
         List(selection: $selection) {
             if !project.schematics.isEmpty {
-                Section("Blocks") {
+                Section {
                     ForEach(project.schematics.filter(schematicMatchesSearch)) { schematic in
                         let blockMatches = blockMatchesSearch(schematic.block, schematicFilename: schematic.schematicFilename)
                         let sheets = sheetsForSearch(in: schematic, blockMatches: blockMatches)
@@ -79,17 +110,28 @@ struct ProjectNavigatorView: View {
                             NavigatorRow(
                                 icon: schematic.block.isTop ? "target" : "square.stack.3d.up",
                                 title: navigatorTitle(for: schematic.block),
-                                detail: schematic.schematicFilename
+                                detail: blockDetail(for: schematic)
                             )
                             .tag(ProjectNavigatorSelection.block(schematic.block.uuid))
                             .disabled(!isAvailable(schematic.block))
                             .contextMenu {
                                 if allowsSheetEditing, isAvailable(schematic.block) {
-                                    newSheetButton(schematicURL: schematic.schematic.url) {
-                                        .sheet(blockID: schematic.block.uuid, sheetID: $0)
-                                    }
+                                    blockContextMenu(for: schematic)
                                 }
                             }
+                        }
+
+                        if allowsBlockEditing, !schematic.block.isTop, schematic.block.symbolFilename?.isEmpty == false,
+                           blockMatches || !isSearching {
+                            NavigatorRow(icon: "square.on.square.dashed", title: "Symbol")
+                                .padding(.leading, 18)
+                                .tag(ProjectNavigatorSelection.blockSymbol(schematic.block.uuid))
+                                .disabled(!isAvailable(schematic.block))
+                                .contextMenu {
+                                    if allowsSheetEditing, isAvailable(schematic.block) {
+                                        blockContextMenu(for: schematic)
+                                    }
+                                }
                         }
 
                         ForEach(sheets) { sheet in
@@ -111,6 +153,21 @@ struct ProjectNavigatorView: View {
                             }
                         }
                         .onMove(perform: sheetMoveHandler(orderedIDs: schematic.schematic.sheets.map(\.id), schematicURL: schematic.schematic.url))
+                    }
+                } header: {
+                    HStack {
+                        Text("Blocks")
+                        Spacer()
+                        if allowsSheetEditing, allowsBlockEditing {
+                            Button {
+                                beginNamingBlock(.new)
+                            } label: {
+                                Image(systemName: "plus")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("New Block")
+                            .accessibilityLabel("New Block")
+                        }
                     }
                 }
             }
@@ -177,6 +234,15 @@ struct ProjectNavigatorView: View {
             Button("Rename") { commitRename() }
             Button("Cancel", role: .cancel) { renameTarget = nil }
         }
+        .alert(blockNameTitle, isPresented: blockNameAlertPresented) {
+            TextField("Name", text: $blockNameDraft)
+            Button(blockNameTarget.map { if case .new = $0 { "Add" } else { "Rename" } } ?? "OK") { commitBlockName() }
+            Button("Cancel", role: .cancel) { blockNameTarget = nil }
+        } message: {
+            if case .new? = blockNameTarget {
+                Text("A block is a schematic of its own that other sheets use through its symbol, as many times as they like.")
+            }
+        }
         .task(id: allowsSheetEditing ? [projectPoolURL.path] + poolRegistry.pools.map(\.url.path) : []) {
             guard allowsSheetEditing else {
                 basePoolFrames = []
@@ -215,6 +281,113 @@ struct ProjectNavigatorView: View {
             Divider()
             newSheetButton(schematicURL: schematicURL, selecting: select)
             deleteSheetButton(for: sheet, in: sheets, schematicURL: schematicURL, selecting: select)
+        }
+    }
+
+    /// The blocks some sheet draws an instance of: those can't be removed.
+    private var usedBlockIDs: Set<String> {
+        Set(project.schematics.flatMap { $0.schematic.sheets.flatMap { $0.blockSymbols.map(\.blockID) } })
+    }
+
+    private func blockDetail(for schematic: HorizontalProjectSchematic) -> String {
+        guard !schematic.block.isTop else {
+            return schematic.schematicFilename
+        }
+        let count = project.schematics.reduce(0) { total, other in
+            total + other.schematic.sheets.reduce(0) { $0 + $1.blockSymbols.filter { $0.blockID == schematic.block.uuid.lowercased() }.count }
+        }
+        return count == 1 ? "1 instance" : "\(count) instances"
+    }
+
+    /// Horizon's sheets-and-blocks menu for a block: place one, edit its
+    /// symbol, name it, give it a sheet, or remove it while nothing uses it.
+    @ViewBuilder
+    private func blockContextMenu(for schematic: HorizontalProjectSchematic) -> some View {
+        let block = schematic.block
+        if allowsBlockEditing, !block.isTop {
+            Button("Place Block") {
+                onPlaceBlock?(block.uuid)
+            }
+            .disabled(onPlaceBlock == nil || !placeableBlockIDs.contains(block.uuid.lowercased()))
+            Button("Edit Symbol") {
+                selection = .blockSymbol(block.uuid)
+            }
+            .disabled(block.symbolFilename?.isEmpty != false)
+            Button("Rename Block…") {
+                beginNamingBlock(.rename(block.uuid))
+            }
+            Divider()
+        }
+        newSheetButton(schematicURL: schematic.schematic.url) {
+            .sheet(blockID: block.uuid, sheetID: $0)
+        }
+        if allowsBlockEditing {
+            Button("New Block…") {
+                beginNamingBlock(.new)
+            }
+        }
+        if allowsBlockEditing, !block.isTop {
+            Divider()
+            Button("Delete Block", role: .destructive) {
+                let wasShowing: Bool
+                switch selection {
+                case .block(let id), .blockSymbol(let id), .sheet(let id, _):
+                    wasShowing = id == block.uuid
+                default:
+                    wasShowing = false
+                }
+                if onRemoveBlock(block.uuid), wasShowing {
+                    selection = project.blocks.first(where: \.isTop).map { .block($0.uuid) }
+                }
+            }
+            .disabled(usedBlockIDs.contains(block.uuid.lowercased()))
+        }
+    }
+
+    private func beginNamingBlock(_ target: BlockNameTarget) {
+        switch target {
+        case .new:
+            blockNameDraft = "Channel"
+        case .rename(let blockID):
+            blockNameDraft = project.blocks.first { $0.uuid == blockID }?.displayName ?? ""
+        }
+        blockNameTarget = target
+    }
+
+    private var blockNameTitle: String {
+        if case .rename? = blockNameTarget { return "Rename Block" }
+        return "New Block"
+    }
+
+    private var blockNameAlertPresented: Binding<Bool> {
+        Binding {
+            blockNameTarget != nil
+        } set: { presented in
+            if !presented {
+                blockNameTarget = nil
+            }
+        }
+    }
+
+    private func commitBlockName() {
+        guard let target = blockNameTarget else {
+            return
+        }
+        blockNameTarget = nil
+        let name = blockNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            return
+        }
+        switch target {
+        case .new:
+            // Horizon selects the block it made; its symbol is what to draw first.
+            if let blockID = onAddBlock(name) {
+                selection = .blockSymbol(blockID)
+            }
+        case .rename(let blockID):
+            if name != project.blocks.first(where: { $0.uuid == blockID })?.displayName {
+                onRenameBlock(blockID, name)
+            }
         }
     }
 
@@ -471,7 +644,7 @@ struct ProjectNavigatorView: View {
                     detail("Schematic", schematic.schematicFilename)
                 ]
             )
-        case .sheet, .standaloneSheet:
+        case .sheet, .standaloneSheet, .blockSymbol:
             return nil
         case .board:
             return nil

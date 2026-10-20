@@ -236,3 +236,33 @@ extension HorizontalSchematicSheet {
         return blockSymbol(parts[0])?.connection(ofPort: parts[1])
     }
 }
+
+/// One-shot request (the id changes each time) for the schematic canvas to
+/// begin Horizon's Place Block with this block symbol. Its id, instance and
+/// placement are the canvas's to choose.
+struct HorizontalBlockPlacementRequest: Identifiable, Equatable {
+    var id = UUID()
+    var blockSymbol: HorizontalSchematicBlockSymbol
+
+    static func == (lhs: HorizontalBlockPlacementRequest, rhs: HorizontalBlockPlacementRequest) -> Bool {
+        lhs.id == rhs.id
+    }
+}
+
+extension HorizontalSchematicBlockResource {
+    /// A block as its block file describes it: its name, and its nets with
+    /// the ports among them.
+    init(symbolURL: URL, blockJSON: JSONDictionary?, fallbackName: String) {
+        self.init(
+            symbolURL: symbolURL,
+            name: blockJSON?.string("name") ?? fallbackName,
+            nets: blockJSON?.dictionaryMap("nets").reduce(into: [String: HorizontalSchematicBlockNetResource]()) { result, item in
+                result[item.key.lowercased()] = HorizontalSchematicBlockNetResource(
+                    name: item.value.string("name") ?? String(item.key.prefix(8)),
+                    isPort: item.value.bool("is_port") ?? false,
+                    portDirection: item.value.string("port_direction") ?? "bidirectional"
+                )
+            } ?? [:]
+        )
+    }
+}

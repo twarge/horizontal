@@ -8,6 +8,9 @@ enum HorizontalSchematicEditorMode: Hashable {
     case sheet
     case symbol
     case frame
+    /// Horizon's block symbol editor: a symbol whose pins are the block's
+    /// ports, which have no pads and no decorations.
+    case blockSymbol
 }
 
 struct HorizontalSchematicEditorProfile: Hashable {
@@ -46,6 +49,20 @@ struct HorizontalSchematicEditorProfile: Hashable {
         gridSpacing: 1_250_000
     )
 
+    static let blockSymbol = HorizontalSchematicEditorProfile(
+        mode: .blockSymbol,
+        hasNetTools: false,
+        supportsPins: true,
+        supportsPolygons: false,
+        showsJunctionsAlways: false,
+        gridSpacing: 1_250_000
+    )
+
+    /// The block symbol editor's pins are a block's ports.
+    var pinsArePorts: Bool {
+        mode == .blockSymbol
+    }
+
     static let frame = HorizontalSchematicEditorProfile(
         mode: .frame,
         hasNetTools: false,
@@ -60,6 +77,7 @@ struct HorizontalSchematicEditorProfile: Hashable {
         case .sheet: .sheet
         case .symbol: .symbol
         case .frame: .frame
+        case .blockSymbol: .blockSymbol
         }
     }
 }
