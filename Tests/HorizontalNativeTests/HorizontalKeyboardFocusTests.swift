@@ -233,6 +233,16 @@ final class HorizontalKeyboardFocusTests: XCTestCase {
         let deadline = Date().addingTimeInterval(10)
         while lists(hosted).isEmpty, Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
         let navigator = try XCTUnwrap(lists(hosted).first, "the navigator's outline")
+        // The canvases come up after the navigator, once their sheet and board
+        // load; a slow machine probes the key-view loop before they are there,
+        // and finds it empty.
+        func canvases(_ view: NSView) -> [TrackpadCanvasMonitor.MonitorView] {
+            ((view as? TrackpadCanvasMonitor.MonitorView).map { [$0] } ?? []) + view.subviews.flatMap(canvases)
+        }
+        while !canvases(hosted).contains(where: { !$0.visibleRect.isEmpty && !$0.isHiddenOrHasHiddenAncestor }), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertFalse(canvases(hosted).isEmpty, "the canvases are up")
 
         // What the window does when it first becomes key: its initial first
         // responder takes the keyboard, and SwiftUI hears the window is key.
