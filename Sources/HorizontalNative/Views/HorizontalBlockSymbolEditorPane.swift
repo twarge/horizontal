@@ -25,6 +25,8 @@ enum HorizontalPortNetCommand: Equatable {
 /// with a way to add one and to delete one nothing uses.
 struct HorizontalPortNetsPopover: View {
     var nets: [HorizontalPortNetSummary]
+    /// The symbol's checks, below the ports.
+    var issues: [HorizontalPoolCheckIssue] = []
     var isReadOnly: Bool
     var onCommand: (HorizontalPortNetCommand) -> Void
 
@@ -61,6 +63,16 @@ struct HorizontalPortNetsPopover: View {
                 Text("Unplaced ports are listed beside the canvas.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            Divider()
+            Text("Checks")
+                .font(.headline)
+            if issues.isEmpty {
+                Label("No issues", systemImage: "checkmark.circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                HorizontalPoolItemChecksView(issues: issues)
             }
         }
         .padding(12)
@@ -237,11 +249,14 @@ struct HorizontalBlockSymbolEditorPane: View {
                         portsPopoverPresented.toggle()
                     } label: {
                         Image(systemName: "point.3.connected.trianglepath.dotted")
+                            .toolbarBadge(issues.count, color: issues.contains { $0.level == .failure } ? .red : .orange)
                     }
-                    .help("The block's port nets: add, rename, set direction")
+                    .help(issues.isEmpty
+                          ? "The block's port nets: add, rename, set direction"
+                          : "The block's port nets, and \(issues.count) \(issues.count == 1 ? "issue" : "issues") with its symbol")
                 }
                 .popover(isPresented: $portsPopoverPresented, arrowEdge: .trailing) {
-                    HorizontalPortNetsPopover(nets: portNets, isReadOnly: isReadOnly, onCommand: onPortNetCommand)
+                    HorizontalPortNetsPopover(nets: portNets, issues: issues, isReadOnly: isReadOnly, onCommand: onPortNetCommand)
                 }
                 PlacePinToolButton {
                     canvasActions?.dispatch(.placePin)
@@ -269,6 +284,11 @@ struct HorizontalBlockSymbolEditorPane: View {
             }
             reproject()
         }
+    }
+
+    /// The symbol's checks, as the canvas last left it.
+    private var issues: [HorizontalPoolCheckIssue] {
+        blockSymbol.validationIssues()
     }
 
     private func reproject() {

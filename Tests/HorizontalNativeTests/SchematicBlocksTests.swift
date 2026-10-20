@@ -306,6 +306,21 @@ final class SchematicBlocksTests: XCTestCase {
         XCTAssertEqual(try editorSymbol().unplacedPortNames, ["In"])
     }
 
+    func testTheBlockSymbolEditorChecksItsPorts() throws {
+        _ = try placeChannel()
+        XCTAssertEqual(try editorSymbol().validationIssues(), [], "the template with In on its left edge")
+
+        try apply([
+            ["op": "ensure_net", "name": "Out"], ["op": "set_net_port", "net": "Out", "port_direction": "output"],
+            ["op": "ensure_net", "name": "Clk"], ["op": "set_net_port", "net": "Clk"],
+            ["op": "place_block_port", "net": "Clk", "x_mm": -10, "y_mm": 0.5, "orientation": "left"],
+        ], block: "Channel")
+        let messages = try editorSymbol().validationIssues().map(\.message)
+        XCTAssertTrue(messages.contains("Port Out is not placed"), "\(messages)")
+        XCTAssertTrue(messages.contains("Port Clk is off-grid, residual: 0 mm, 0.5 mm"), "\(messages)")
+        XCTAssertFalse(messages.contains { $0.contains("reference designators") }, "the template has its $REFDES")
+    }
+
     // MARK: - Flattening
 
     private func put(_ path: String, _ json: JSONDictionary) throws {

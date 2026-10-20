@@ -106,6 +106,20 @@ struct HorizontalBlockSymbol: Equatable {
             .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
+    /// What the editor's checks find. Horizon checks nothing in a block
+    /// symbol; these are its symbol rules as they apply to one: a `$REFDES`
+    /// for the instance's name, ports on the 1.25 mm grid, apart, on the
+    /// rectangle they span and pointing out of it, every port net drawn, and
+    /// no junction joined to nothing.
+    func validationIssues() -> [HorizontalPoolCheckIssue] {
+        var issues = [HorizontalPoolCheckIssue]()
+        let refdes = symbol.drawing.texts.values.filter { $0.text == "$REFDES" }.count
+        if refdes != 1 {
+            issues.append(.warning("Symbol has \(refdes) reference designators, need 1"))
+        }
+        return issues + symbol.pinIssues(unit: unit, noun: "Port")
+    }
+
     /// The symbol file: the drawing and the ports as Horizon writes them,
     /// over what the file held, so its pictures and the rest survive.
     func json() -> JSONDictionary {
