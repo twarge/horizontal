@@ -42,12 +42,15 @@ extension HorizontalProject {
         return pages
     }
 
-    /// A page's sheet as it prints: its components under the refdes its
-    /// instance gives them, and its frame numbered among all the pages.
+    /// A page's sheet as it prints: its components under the refdes and
+    /// do-not-populate its instance gives them, and its frame numbered among
+    /// all the pages.
     func drawnSheet(for page: HorizontalSchematicPage, of total: Int) -> HorizontalSchematicSheet {
         var sheet = page.sheet
         if !page.path.isEmpty {
-            sheet = sheet.showingRefdes(flattenedBlock?.instanceRefdes[page.path.joined(separator: "/")] ?? [:])
+            let path = page.path.joined(separator: "/")
+            sheet = sheet.showingRefdes(flattenedBlock?.instanceRefdes[path] ?? [:])
+                .showingNoPopulate(flattenedBlock?.instanceNoPopulate[path] ?? [:])
         }
         return sheet.numbered(page.number, of: total)
     }

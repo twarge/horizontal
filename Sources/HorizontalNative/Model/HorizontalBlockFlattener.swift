@@ -27,6 +27,10 @@ struct HorizontalFlattenedBlock: @unchecked Sendable {
     /// Each instance path's own refdes for its block's components, by path
     /// (`/`-joined instance uuids) and component: the top block's mappings.
     var instanceRefdes: [String: [String: String]] = [:]
+    /// Each instance path's do-not-populate for the components its mapping
+    /// names, by path and component. A component the mapping leaves out
+    /// keeps its own, as `Block::get_component_info` gives it.
+    var instanceNoPopulate: [String: [String: Bool]] = [:]
 
     /// Whether anything was expanded: false for a project without instances.
     var isHierarchical: Bool {
@@ -107,8 +111,14 @@ enum HorizontalBlockFlattener {
                 if let refdes = $1.value.string("refdes") { $0[$1.key.lowercased()] = refdes }
             }
         }
+        let instanceNoPopulate = top.dictionaryMap("block_instance_mappings").reduce(into: [String: [String: Bool]]()) { result, item in
+            result[item.key.lowercased()] = item.value.dictionaryMap("components").reduce(into: [String: Bool]()) {
+                $0[$1.key.lowercased()] = $1.value.bool("nopopulate") ?? false
+            }
+        }
         return HorizontalFlattenedBlock(json: context.flat, componentPaths: context.componentPaths,
-                                        netPaths: netPaths, noConnectNets: noConnect, instanceRefdes: instanceRefdes)
+                                        netPaths: netPaths, noConnectNets: noConnect, instanceRefdes: instanceRefdes,
+                                        instanceNoPopulate: instanceNoPopulate)
     }
 
     /// The project's top block flattened, from the block files under

@@ -255,6 +255,12 @@ struct SchematicCanvasView: View {
     var onApplyProjectEdit: (([JSONDictionary], String) -> Void)? = nil
     var onNetClassChange: (String, String?) -> Void = { _, _ in }
     var onComponentRefdesChange: (String, String) -> Void = { _, _ in }
+    /// Horizon's Mark do not populate / Mark populate: (the components, do
+    /// not populate). The host writes it where it belongs — through an
+    /// instance, to that instance's mapping — as one undo step. Nil where it
+    /// can't be set, as Horizon allows it only in the hierarchy: a pool
+    /// editor, or a sub-block's sheet opened by itself.
+    var onSetNoPopulate: (([String], Bool) -> Void)? = nil
     var onComponentPinNamesChange: (String, [HorizontalSymbolPinName]) -> Void = { _, _ in }
     var onSelectionDetailsChange: (HorizontalSelectionDetailState) -> Void = { _ in }
     var onNetSegmentSelectionChange: (HorizontalNetSegmentSelectionSidebarState?) -> Void = { _ in }
@@ -367,6 +373,7 @@ struct SchematicCanvasView: View {
         onApplyProjectEdit: (([JSONDictionary], String) -> Void)? = nil,
         onNetClassChange: @escaping (String, String?) -> Void = { _, _ in },
         onComponentRefdesChange: @escaping (String, String) -> Void = { _, _ in },
+        onSetNoPopulate: (([String], Bool) -> Void)? = nil,
         onComponentPinNamesChange: @escaping (String, [HorizontalSymbolPinName]) -> Void = { _, _ in },
         onSelectionDetailsChange: @escaping (HorizontalSelectionDetailState) -> Void = { _ in },
         onNetSegmentSelectionChange: @escaping (HorizontalNetSegmentSelectionSidebarState?) -> Void = { _ in },
@@ -416,6 +423,7 @@ struct SchematicCanvasView: View {
         self.onApplyProjectEdit = onApplyProjectEdit
         self.onNetClassChange = onNetClassChange
         self.onComponentRefdesChange = onComponentRefdesChange
+        self.onSetNoPopulate = onSetNoPopulate
         self.onComponentPinNamesChange = onComponentPinNamesChange
         self.onSelectionDetailsChange = onSelectionDetailsChange
         self.onNetSegmentSelectionChange = onNetSegmentSelectionChange
@@ -864,6 +872,13 @@ struct SchematicCanvasView: View {
                 case .bendNetLine:
                     // At the point right-clicked, not wherever the menu left the pointer.
                     beginBendNetLine(on: ref, at: contextMenuWorldPoint)
+                    return
+                case .toggleNoPopulate:
+                    // The whole selection, when the symbol is in it, takes
+                    // the state its checkmark offered.
+                    let refs = selectedObjects.contains(ref) ? selectedObjects : [ref]
+                    if !selectedObjects.contains(ref) { setSelectedObject(ref) }
+                    if let noPopulate = isNoPopulate(ref) { setNoPopulate(!noPopulate, of: refs) }
                     return
                 case .copySelection, .duplicateSelection, .moveToOtherSheet:
                     if !selectedObjects.contains(ref) { setSelectedObject(ref) }
@@ -1878,6 +1893,7 @@ struct SchematicCanvasView: View {
                 editableLengthProperty("positionX", "Position X", symbol.position.x),
                 editableLengthProperty("positionY", "Position Y", symbol.position.y),
                 editableAngleProperty("angle", "Angle", symbol.angle),
+                noPopulateProperty(for: symbol),
             ].compactMap { $0 } + editableSymbolPinNameProperties(for: symbol)
         case .lineNet:
             return segmentProperties(for: ref, segments: sheet.netLines, title: "Net", editsNetName: true)
@@ -2105,6 +2121,54 @@ struct SchematicCanvasView: View {
             return nil
         }
         return editableTextProperty("refdes", "Refdes", refdes)
+    }
+
+    /// Horizon's "Do not pop.", where it can be set; elsewhere the details
+    /// keep their DNP row.
+    private func noPopulateProperty(for placement: HorizontalPlacement) -> HorizontalSelectionProperty? {
+        guard canSetNoPopulate, let details = placement.componentDetails else {
+            return nil
+        }
+        return editableBoolProperty(Self.noPopulatePropertyID, "Do Not Populate", details.noPopulate)
+    }
+
+    static let noPopulatePropertyID = "noPopulate"
+
+    private var canSetNoPopulate: Bool {
+        !isReadOnly && !editorProfile.isPoolMode && onSetNoPopulate != nil
+    }
+
+    /// The components behind these symbols marked do not populate, or
+    /// populate again; each once, however many of its gates are among them.
+    /// The project edit reloads the sheet with its marks; the selection
+    /// keeps its ids, so it survives.
+    private func setNoPopulate(_ noPopulate: Bool, of refs: [HorizontalSelectableRef]) {
+        guard canSetNoPopulate, let onSetNoPopulate else { return }
+        var seen = Set<String>()
+        let componentIDs = refs
+            .filter { $0.type == .schematicSymbol }
+            .compactMap { ref in sheet.symbols.first { normalizedID($0.id) == normalizedID(ref.id) } }
+            .filter { $0.componentDetails.map { $0.noPopulate != noPopulate } ?? false }
+            .compactMap { $0.componentID.map(normalizedID) }
+            .filter { seen.insert($0).inserted }
+        guard !componentIDs.isEmpty else { return }
+        hoveredObject = nil
+        adoptExternallyUpdatedSheet()
+        onSetNoPopulate(componentIDs, noPopulate)
+    }
+
+    private func isNoPopulate(_ ref: HorizontalSelectableRef) -> Bool? {
+        guard ref.type == .schematicSymbol else { return nil }
+        return sheet.symbols.first { normalizedID($0.id) == normalizedID(ref.id) }?.componentDetails?.noPopulate
+    }
+
+    /// Horizon's two tools as one: the selection becomes do not populate,
+    /// unless every component in it already is.
+    private func toggleNoPopulateSelection() {
+        let symbols = uniqueSelectedObjectRefs().filter { $0.type == .schematicSymbol }
+        let states = symbols.compactMap(isNoPopulate)
+        guard !states.isEmpty else { return }
+        setNoPopulate(!states.allSatisfy { $0 }, of: symbols)
     }
 
     private func editableCustomValueProperty(for placement: HorizontalPlacement) -> HorizontalSelectionProperty? {
@@ -6656,6 +6720,10 @@ struct SchematicCanvasView: View {
             renameNet(of: change.ref, to: name)
             return
         }
+        if change.propertyID == Self.noPopulatePropertyID, case .bool(let noPopulate) = change.value {
+            setNoPopulate(noPopulate, of: change.applyToAll ? selectedObjects : [change.ref])
+            return
+        }
         if change.propertyID == Self.isPortPropertyID || change.propertyID == Self.portDirectionPropertyID {
             guard let netID = netID(for: change.ref) else { return }
             switch change.value {
@@ -8287,6 +8355,9 @@ struct SchematicCanvasView: View {
                 handlers.toggleSmash = { toggleSmashSelection() }
             }
         }
+        if canSetNoPopulate, selectedObjects.contains(where: { isNoPopulate($0) != nil }) {
+            handlers.toggleNoPopulate = { toggleNoPopulateSelection() }
+        }
         if let onOpenBlock, let blockSymbol = selectedBlockSymbol() {
             handlers.openBlock = { onOpenBlock(blockSymbol) }
         }
@@ -8432,14 +8503,7 @@ struct SchematicCanvasView: View {
             scene: schematicSelectableScene(),
             at: point,
             worldUnitsPerPoint: worldUnitsPerPoint,
-            itemForRef: { hudItem(for: $0) },
-            extraItemsForRef: { ref in
-                guard ref.type == .schematicSymbol,
-                      let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
-                    return []
-                }
-                return symbolContextMenuItems(for: symbol, ref: ref)
-            }
+            itemForRef: { hudItem(for: $0) }
         )
     }
 
@@ -8452,6 +8516,7 @@ struct SchematicCanvasView: View {
         if canEditCustomValue(of: ref) {
             entries.append(.command(title: "Edit Custom Value…", .editCustomValue))
         }
+        if let noPopulate = noPopulateEntry(for: ref) { entries.append(noPopulate) }
         if !isReadOnly, !editorProfile.isPoolMode, onApplyProjectEdit != nil, ref.type == .schematicSymbol,
            let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
             // Offered only when they would change something, as upstream's
@@ -8470,6 +8535,11 @@ struct SchematicCanvasView: View {
             if !isReadOnly, onPreparePaste != nil { entries.append(.command(title: "Duplicate", .duplicateSelection)) }
         }
         if let moveToOtherSheet = moveToOtherSheetEntry(for: ref) { entries.append(moveToOtherSheet) }
+        let info = symbolInfoEntries(for: ref)
+        if !info.isEmpty {
+            entries.append(.separator)
+            entries.append(contentsOf: info)
+        }
         if onRevealPoolSymbol != nil, symbolPoolID(for: ref) != nil {
             entries.append(.separator)
             entries.append(.command(title: "Show in Pool Manager", .showInPoolManager))
@@ -8482,9 +8552,15 @@ struct SchematicCanvasView: View {
         var entries: [HorizontalTargetItemMenuEntry] = [.select(title: "Select")]
         if canBendNetLine(ref) { entries.append(.command(title: "Add Vertex", .bendNetLine)) }
         if canEditCustomValue(of: ref) { entries.append(.command(title: "Edit Custom Value…", .editCustomValue)) }
+        if let noPopulate = noPopulateEntry(for: ref) { entries.append(noPopulate) }
         if let smash = smashEntry(for: ref) { entries.append(smash) }
         entries.append(contentsOf: blockSymbolEntries(for: ref))
         if let moveToOtherSheet = moveToOtherSheetEntry(for: ref) { entries.append(moveToOtherSheet) }
+        let info = symbolInfoEntries(for: ref)
+        if !info.isEmpty {
+            entries.append(.separator)
+            entries.append(contentsOf: info)
+        }
         return entries.count > 1 ? entries : []
         #endif
     }
@@ -8498,6 +8574,12 @@ struct SchematicCanvasView: View {
         if onOpenBlock != nil { entries.append(.command(title: "Open Block", .openBlock)) }
         if onEditBlockSymbol != nil { entries.append(.command(title: "Edit Block Symbol", .editBlockSymbol)) }
         return entries
+    }
+
+    /// Do Not Populate, checked while the symbol's component is.
+    private func noPopulateEntry(for ref: HorizontalSelectableRef) -> HorizontalTargetItemMenuEntry? {
+        guard canSetNoPopulate, let noPopulate = isNoPopulate(ref) else { return nil }
+        return .toggle(title: "Do Not Populate", isOn: noPopulate, .toggleNoPopulate)
     }
 
     /// Smash Text or Unsmash Text for a symbol, as the board offers them for
@@ -8636,46 +8718,26 @@ struct SchematicCanvasView: View {
         applyProjectEdit(operations, actionName: mark ? "Set All Unconnected Pins NC" : "Clear All NC Pins")
     }
 
-    private func symbolContextMenuItems(for symbol: HorizontalPlacement, ref: HorizontalSelectableRef) -> [HorizontalSelectionTargetItem] {
-        guard let component = symbol.componentDetails else {
+    /// What a symbol's component is, to copy or open: its value, its MPN
+    /// and its datasheet.
+    private func symbolInfoEntries(for ref: HorizontalSelectableRef) -> [HorizontalTargetItemMenuEntry] {
+        guard ref.type == .schematicSymbol,
+              let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }),
+              let component = symbol.componentDetails else {
             return []
         }
 
-        var items = [HorizontalSelectionTargetItem]()
-        let prefix = HorizontalSelectionTargetItem.identifier(for: ref, suffix: "symbol-action")
-
+        var entries = [HorizontalTargetItemMenuEntry]()
         if let value = nonEmpty(displayedValue(for: symbol)) {
-            items.append(
-                HorizontalSelectionTargetItem(
-                    id: "\(prefix):value",
-                    title: "Value: \(value)",
-                    action: .copyText(value)
-                )
-            )
+            entries.append(.action(title: "Value: \(value)", .copyText(value)))
         }
-
         if let mpn = nonEmpty(component.mpn) {
-            items.append(
-                HorizontalSelectionTargetItem(
-                    id: "\(prefix):mpn",
-                    title: "MPN: \(mpn)",
-                    action: .copyText(mpn)
-                )
-            )
+            entries.append(.action(title: "MPN: \(mpn)", .copyText(mpn)))
         }
-
-        if let datasheet = nonEmpty(component.datasheet),
-           let url = datasheetURL(datasheet) {
-            items.append(
-                HorizontalSelectionTargetItem(
-                    id: "\(prefix):datasheet",
-                    title: "Open Datasheet",
-                    action: .openURL(url)
-                )
-            )
+        if let datasheet = nonEmpty(component.datasheet), let url = datasheetURL(datasheet) {
+            entries.append(.action(title: "Open Datasheet", .openURL(url)))
         }
-
-        return items
+        return entries
     }
 
     private func datasheetURL(_ value: String) -> URL? {

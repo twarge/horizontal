@@ -306,6 +306,63 @@ extension HorizontalSchematicSheet {
         return sheet
     }
 
+    /// The sheet with components marked do not populate as an instance's
+    /// mapping marks them, as `Block::get_component_info` gives it:
+    /// `noPopulate` by component uuid, and a component it leaves out keeps
+    /// its own. A symbol it marks is crossed over the box it draws in.
+    func showingNoPopulate(_ noPopulate: [String: Bool]) -> HorizontalSchematicSheet {
+        guard !noPopulate.isEmpty else {
+            return self
+        }
+        var sheet = self
+        var crossed = Set<String>()
+        var uncrossed = Set<String>()
+        for index in sheet.symbols.indices {
+            guard let componentID = sheet.symbols[index].componentID?.lowercased(),
+                  let shown = noPopulate[componentID],
+                  var details = sheet.symbols[index].componentDetails,
+                  details.noPopulate != shown else {
+                continue
+            }
+            details.noPopulate = shown
+            sheet.symbols[index].componentDetails = details
+            sheet.componentInfo[componentID]?.noPopulate = shown
+            if shown {
+                crossed.insert(sheet.symbols[index].id.lowercased())
+            } else {
+                uncrossed.insert(sheet.symbols[index].id.lowercased())
+            }
+        }
+        sheet.noPopulateMarks.removeAll { uncrossed.contains($0.symbolID.lowercased()) }
+        guard !crossed.isEmpty else {
+            return sheet
+        }
+        // What the symbol's box is made of, as Horizon's `Symbol::get_bbox`:
+        // its lines and arcs, and where its pins end.
+        var points = [String: [HorizontalPoint]]()
+        func owner(_ geometryID: String, kind: String) -> String? {
+            let parts = geometryID.lowercased().split(separator: "/", maxSplits: 2)
+            guard parts.count > 1, parts[1] == kind, crossed.contains(String(parts[0])) else { return nil }
+            return String(parts[0])
+        }
+        for line in sheet.symbolLines {
+            if let symbolID = owner(line.id, kind: "line") ?? owner(line.id, kind: "arc") {
+                points[symbolID, default: []] += [line.from, line.to]
+            }
+        }
+        for pin in sheet.symbolPins {
+            if let symbolID = owner(pin.id, kind: "pin") {
+                points[symbolID, default: []].append(pin.from)
+            }
+        }
+        for symbol in sheet.symbols where crossed.contains(symbol.id.lowercased()) {
+            let bounds = HorizontalRect(points: points[symbol.id.lowercased()] ?? [])
+            guard !bounds.isEmpty else { continue }
+            sheet.noPopulateMarks.append(HorizontalSchematicNoPopulateMark(symbolID: symbol.id, bounds: bounds))
+        }
+        return sheet
+    }
+
     /// Each drawn component's refdes, as this sheet draws it.
     var drawnRefdes: [String: String] {
         symbols.reduce(into: [String: String]()) { result, symbol in

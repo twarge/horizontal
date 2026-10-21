@@ -283,6 +283,7 @@ struct HorizontalCanvasCommandHandlerSet {
     var editCustomValue: (() -> Void)? = nil
     var setAllUnconnectedPinsNC: (() -> Void)? = nil
     var clearAllNCPins: (() -> Void)? = nil
+    var toggleNoPopulate: (() -> Void)? = nil
     var moveToOtherSheet: ((String) -> Void)? = nil
     /// Where Move to Other Sheet can take the selection; empty when it can't.
     var moveToOtherSheetTargets: [HorizontalCanvasSheetTarget] = []
@@ -472,6 +473,9 @@ struct HorizontalCanvasCommandHandlerSet {
         case .clearAllNCPins:
             guard !isReadOnly else { return }
             clearAllNCPins?()
+        case .toggleNoPopulate:
+            guard !isReadOnly else { return }
+            toggleNoPopulate?()
         case .moveToOtherSheet(let sheetID):
             guard !isReadOnly else { return }
             moveToOtherSheet?(sheetID)
@@ -782,17 +786,12 @@ enum HorizontalCanvasModeSupport {
         scene: HorizontalCanvasSelectableScene,
         at point: HorizontalPoint,
         worldUnitsPerPoint: Double,
-        itemForRef: (HorizontalSelectableRef) -> HorizontalSelectionHUDItem?,
-        extraItemsForRef: (HorizontalSelectableRef) -> [HorizontalSelectionTargetItem] = { _ in [] }
+        itemForRef: (HorizontalSelectableRef) -> HorizontalSelectionHUDItem?
     ) -> [HorizontalSelectionTargetItem] {
         scene
             .targetRefs(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
-            .flatMap { ref -> [HorizontalSelectionTargetItem] in
-                guard let item = itemForRef(ref) else {
-                    return []
-                }
-                return [HorizontalSelectionTargetItem(ref: ref, title: item.title, subtitle: item.subtitle)]
-                    + extraItemsForRef(ref)
+            .compactMap { ref in
+                itemForRef(ref).map { HorizontalSelectionTargetItem(ref: ref, title: $0.title, subtitle: $0.subtitle) }
             }
     }
 
