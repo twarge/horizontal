@@ -121,6 +121,9 @@ enum HorizontalCanvasCommand {
     /// Schematic: clear every no-connect mark on those gates' pins
     /// (Horizon's "Clear all NC pins").
     case clearAllNCPins
+    /// Schematic: mark the selected symbols' components do not populate, or
+    /// populate again (Horizon's "Mark do not populate" / "Mark populate").
+    case toggleNoPopulate
     /// Schematic: take the selection, and everything drawn connected to it,
     /// to the sheet with this id (Horizon's "Move to other sheet").
     case moveToOtherSheet(String)
@@ -225,6 +228,12 @@ enum HorizontalTargetItemMenuEntry {
     case select(title: String)
     /// Run a canvas command on the candidate (the canvas selects it first).
     case command(title: String, HorizontalCanvasCommand)
+    /// A command that turns something of the candidate's on or off, checked
+    /// while it is on (Do Not Populate).
+    case toggle(title: String, isOn: Bool, HorizontalCanvasCommand)
+    /// Copy text or open a link the candidate carries (its value, its
+    /// datasheet): nothing is selected and the canvas runs nothing.
+    case action(title: String, HorizontalSelectionTargetItem.Action)
     /// A nested submenu (e.g. "Move ▸ Move / Rotate / Mirror").
     indirect case submenu(title: String, [HorizontalTargetItemMenuEntry])
     /// A planned-but-unimplemented action: shown disabled (greyed) so the full
@@ -1645,6 +1654,23 @@ struct InteractiveCanvasView: View {
             item.target = action
             item.representedObject = action
             return item
+        case .toggle(let title, let isOn, let command):
+            let item = NSMenuItem(title: title, action: #selector(CanvasMenuAction.invoke(_:)), keyEquivalent: "")
+            item.state = isOn ? .on : .off
+            let action = CanvasMenuAction {
+                onTargetMenuCommand(ref, command)
+            }
+            item.target = action
+            item.representedObject = action
+            return item
+        case .action(let title, let targetAction):
+            let item = NSMenuItem(title: title, action: #selector(CanvasMenuAction.invoke(_:)), keyEquivalent: "")
+            let action = CanvasMenuAction {
+                perform(targetAction)
+            }
+            item.target = action
+            item.representedObject = action
+            return item
         case .submenu(let title, let entries):
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             let submenu = NSMenu()
@@ -1659,7 +1685,11 @@ struct InteractiveCanvasView: View {
     #endif
 
     private func performTargetMenuAction(_ item: HorizontalSelectionTargetItem) {
-        switch item.action {
+        perform(item.action)
+    }
+
+    private func perform(_ action: HorizontalSelectionTargetItem.Action) {
+        switch action {
         case .select(let ref):
             onTargetMenuSelection(ref)
         case .copyText(let text):
@@ -3092,6 +3122,13 @@ struct HorizontalMultitouchView: UIViewRepresentable {
                     current.append(UIAction(title: title) { [weak self] _ in self?.onContextMenuTargetAction(target) })
                 case .command(let title, let command):
                     current.append(UIAction(title: title) { [weak self] _ in self?.onContextMenuCommand(ref, command) })
+                case .toggle(let title, let isOn, let command):
+                    current.append(UIAction(title: title, state: isOn ? .on : .off) { [weak self] _ in
+                        self?.onContextMenuCommand(ref, command)
+                    })
+                case .action(let title, let action):
+                    let item = HorizontalSelectionTargetItem(id: title, title: title, action: action)
+                    current.append(UIAction(title: title) { [weak self] _ in self?.onContextMenuTargetAction(item) })
                 case .submenu(let title, let children):
                     current.append(UIMenu(title: title, children: menuElements(for: children, ref: ref, target: target)))
                 }

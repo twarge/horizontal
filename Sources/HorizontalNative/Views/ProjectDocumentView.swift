@@ -2161,6 +2161,9 @@ struct ProjectWorkspaceView: View {
                                         selectedSchematic: selectedSchematic
                                     )
                                 },
+                                onSetNoPopulate: canSetNoPopulate(in: selectedSchematic) ? { componentIDs, noPopulate in
+                                    applyEditedNoPopulate(componentIDs: componentIDs, noPopulate: noPopulate, selectedSchematic: selectedSchematic)
+                                } : nil,
                                 onComponentPinNamesChange: { componentID, pins in
                                     applyEditedComponentPinNames(
                                         componentID: componentID,
@@ -3453,14 +3456,14 @@ struct ProjectWorkspaceView: View {
     }
 
     /// The schematic at `url` is showing through an instance: its path, and
-    /// the refdes the canvas draws for it.
-    private func instanceView(forSchematicURL url: URL) -> (path: [String], refdes: [String: String])? {
+    /// the refdes and do-not-populate the canvas draws for it.
+    private func instanceView(forSchematicURL url: URL) -> (path: [String], refdes: [String: String], noPopulate: [String: Bool])? {
         guard let path = currentInstancePath, let last = blockTrail.last,
               let schematic = project.schematics.first(where: { $0.block.uuid.caseInsensitiveCompare(last.blockID) == .orderedSame }),
               schematic.schematic.url.standardizedFileURL == url.standardizedFileURL else {
             return nil
         }
-        return (path, instanceRefdes(path))
+        return (path, instanceRefdes(path), project.flattenedBlock?.instanceNoPopulate[path.joined(separator: "/")] ?? [:])
     }
 
     /// A sheet edited through an instance, with its components' own refdes
@@ -3525,6 +3528,26 @@ struct ProjectWorkspaceView: View {
     }
 
     /// The block the schematic showing belongs to.
+    /// Horizon sets do not populate only in the hierarchy: on the top
+    /// block's sheets, or a block's reached through an instance of it — not
+    /// on a block opened by itself, which no board is made from.
+    private func canSetNoPopulate(in selectedSchematic: SelectedSchematic) -> Bool {
+        !isReadOnly && (block(of: selectedSchematic)?.isTop != false || instanceView(forSchematicURL: selectedSchematic.url) != nil)
+    }
+
+    /// Horizon's Mark do not populate / Mark populate, one undo step: through
+    /// an instance it is that instance's, written to its mapping, and the
+    /// block's own is left alone, as for a refdes.
+    private func applyEditedNoPopulate(componentIDs: [String], noPopulate: Bool, selectedSchematic: SelectedSchematic) {
+        let instance = instanceView(forSchematicURL: selectedSchematic.url)?.path.joined(separator: "/")
+        let operations: [JSONDictionary] = componentIDs.map { componentID in
+            var operation: JSONDictionary = ["op": "set_no_populate", "component": componentID, "no_populate": noPopulate]
+            if let instance { operation["instance"] = instance }
+            return operation
+        }
+        applyProjectEdit(operations, actionName: noPopulate ? "Mark Do Not Populate" : "Mark Populate", schematicURL: selectedSchematic.url)
+    }
+
     private func block(of selectedSchematic: SelectedSchematic) -> HorizontalProjectBlock? {
         let url = selectedSchematic.url.standardizedFileURL
         return project.schematics.first { $0.schematic.url.standardizedFileURL == url }?.block
@@ -4746,13 +4769,17 @@ struct ProjectWorkspaceView: View {
                     // Through an instance, its components show its refdes.
                     if let instance = instanceView(forSchematicURL: schematic.schematic.url) {
                         let names = blockTrail.map(\.refdes).joined(separator: "/")
-                        let sheets = pageNumbered(schematic.schematic.sheets.map { $0.showingRefdes(instance.refdes) }, path: instance.path)
+                        let sheets = pageNumbered(
+                            schematic.schematic.sheets.map { $0.showingRefdes(instance.refdes).showingNoPopulate(instance.noPopulate) },
+                            path: instance.path
+                        )
                         return SelectedSchematic(
                             subtitle: "\(schematic.block.displayName) \(names) / \(sheet.name)",
                             url: schematic.schematic.url,
                             blockURL: schematic.block.blockFilename.map { project.baseURL.appendingPathComponent($0) },
                             sheets: sheets,
-                            sheet: sheets.first { $0.id == sheet.id } ?? sheet.showingRefdes(instance.refdes)
+                            sheet: sheets.first { $0.id == sheet.id }
+                                ?? sheet.showingRefdes(instance.refdes).showingNoPopulate(instance.noPopulate)
                         )
                     }
                     let sheets = schematic.block.isTop ? pageNumbered(schematic.schematic.sheets, path: []) : schematic.schematic.sheets

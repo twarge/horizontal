@@ -1257,6 +1257,13 @@ struct HorizontalIPadProjectView: View {
                     onApplyProjectEdit: { operations, actionName in
                         applyProjectEdit(operations, actionName: actionName)
                     },
+                    // The top block's sheets only, so the components' own.
+                    onSetNoPopulate: isReadOnly ? nil : { componentIDs, noPopulate in
+                        applyProjectEdit(
+                            componentIDs.map { ["op": "set_no_populate", "component": $0, "no_populate": noPopulate] as JSONDictionary },
+                            actionName: noPopulate ? "Mark Do Not Populate" : "Mark Populate"
+                        )
+                    },
                     onSelectionDetailsChange: { setSelectionDetails($0, for: .schematic) },
                     onCanvasCommandActionsChange: { schematicCanvasActions = $0 },
                     selectionPropertyChangeCommand: selectionPropertyChangeCommands[.schematic],

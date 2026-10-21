@@ -490,6 +490,8 @@ final class SchematicBlocksTests: XCTestCase {
         try apply([["op": "set_no_populate", "component": resistor, "no_populate": true, "instance": placed.instance]], block: "Channel")
         XCTAssertEqual(try file("top_block.json").dictionaryMap("block_instance_mappings")[placed.instance]?
             .dictionaryMap("components")[resistor]?.bool("nopopulate"), true)
+        XCTAssertEqual(project.flattenedBlock?.instanceNoPopulate[placed.instance]?[resistor], true)
+        XCTAssertEqual(project.flattenedBlock?.json.dictionaryMap("components")[flatID]?.bool("nopopulate"), true)
 
         XCTAssertThrowsError(try apply([["op": "set_refdes", "component": resistor, "refdes": "R8", "instance": "I9"]], block: "Channel"))
     }
@@ -519,6 +521,50 @@ final class SchematicBlocksTests: XCTestCase {
         XCTAssertFalse(instance.symbolTexts.contains { $0.text == "R?" })
         // And back, as an edit through the instance is written.
         XCTAssertTrue(instance.showingRefdes(drawn.drawnRefdes).symbolTexts.contains { $0.text == "R?" })
+    }
+
+    /// Through an instance, a component is (not) populated as the instance's
+    /// mapping says, and crossed out as Horizon crosses it: the same cross a
+    /// sheet draws for its own do-not-populate component.
+    func testASheetDrawsAnInstancesDoNotPopulate() throws {
+        var schematic = try file("top_schematic.json")
+        let sheetID = try XCTUnwrap(schematic.dictionaryMap("sheets").keys.first)
+        var sheet = try XCTUnwrap(schematic.dictionaryMap("sheets")[sheetID])
+        // A quarter turn, so the box the cross is drawn over turns with it.
+        sheet["symbols"] = ["s1": ["symbol": "part-symbol", "component": "r1", "gate": "gate",
+                                   "placement": ["shift": [10_000_000, 0], "angle": 16_384, "mirror": false]]]
+        schematic["sheets"] = [sheetID: sheet]
+        try put("top_schematic.json", schematic)
+        var top = try file("top_block.json")
+        top["components"] = ["r1": ["refdes": "R1", "value": "", "connections": JSONDictionary()]]
+        try put("top_block.json", top)
+        try put("pool/symbols/cache/part-symbol.json", ["uuid": "part-symbol", "unit": "unit", "pins": JSONDictionary(),
+            "junctions": ["a": ["position": [-2_000_000, -1_000_000]], "b": ["position": [2_000_000, 1_000_000]]],
+            "lines": ["l": ["from": "a", "to": "b", "width": 0]]])
+        try put("pool/units/cache/unit.json", ["uuid": "unit", "pins": JSONDictionary()])
+        try reload()
+
+        let populated = try topSheet
+        XCTAssertTrue(populated.noPopulateMarks.isEmpty)
+        let instance = populated.showingNoPopulate(["r1": true])
+        XCTAssertEqual(instance.symbols.first?.componentDetails?.noPopulate, true)
+        XCTAssertEqual(instance.componentInfo["r1"]?.noPopulate, true)
+        let cross = try XCTUnwrap(instance.noPopulateMarks.first)
+        XCTAssertEqual(instance.noPopulateMarks.count, 1)
+        // The turned box, x 9…11 and y −2…2 mm, grown by 0.2 mm.
+        XCTAssertEqual(Set(cross.points), [
+            HorizontalPoint(x: 8_800_000, y: -2_200_000), HorizontalPoint(x: 11_200_000, y: 2_200_000),
+            HorizontalPoint(x: 8_800_000, y: 2_200_000), HorizontalPoint(x: 11_200_000, y: -2_200_000),
+        ])
+        XCTAssertTrue(instance.showingNoPopulate(["r1": false]).noPopulateMarks.isEmpty)
+        XCTAssertEqual(populated.showingNoPopulate(["r2": true]).noPopulateMarks, [], "a component the mapping leaves out keeps its own")
+
+        top["components"] = ["r1": ["refdes": "R1", "value": "", "nopopulate": true, "connections": JSONDictionary()]]
+        try put("top_block.json", top)
+        try reload()
+        let own = try XCTUnwrap(try topSheet.noPopulateMarks.first)
+        XCTAssertEqual(Set(own.points), Set(cross.points))
+        XCTAssertTrue(try topSheet.showingNoPopulate(["r1": false]).noPopulateMarks.isEmpty)
     }
 
     func testAnnotateNumbersEachInstanceAsHorizonDoes() throws {

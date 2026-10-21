@@ -486,6 +486,8 @@ struct HorizontalSelectionPopoverView: View {
             [detailKey(for: "Keepout class"), detailKey(for: "Class")]
         case "priority":
             [detailKey(for: "Priority"), detailKey(for: property.label)]
+        case "noPopulate":
+            [detailKey(for: "DNP"), detailKey(for: property.label)]
         default:
             [detailKey(for: property.label)]
         }

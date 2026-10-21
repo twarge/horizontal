@@ -23,6 +23,38 @@ struct HorizontalSchematicNoPopulateMark: Identifiable, Hashable {
     }
 }
 
+extension HorizontalSchematicNoPopulateMark {
+    /// Horizon's cross over a do-not-populate symbol: `bounds`, the symbol's
+    /// box where `transform` places it, grown by 0.2 mm and crossed corner
+    /// to corner with 0.2 mm lines.
+    init(symbolID: String, bounds: HorizontalRect, transform: HorizontalPlacementTransform = .identity) {
+        let padding = 200_000.0
+        let lineWidth = 200_000.0
+        let min = HorizontalPoint(x: bounds.minX - padding, y: bounds.minY - padding)
+        let max = HorizontalPoint(x: bounds.maxX + padding, y: bounds.maxY + padding)
+        let topLeft = HorizontalPoint(x: min.x, y: max.y)
+        let bottomRight = HorizontalPoint(x: max.x, y: min.y)
+        self.init(
+            id: "\(symbolID)/nopopulate",
+            symbolID: symbolID,
+            firstLine: HorizontalSegment(
+                id: "\(symbolID)/nopopulate/0",
+                from: transform.applying(to: min),
+                to: transform.applying(to: max),
+                width: lineWidth,
+                layer: nil
+            ),
+            secondLine: HorizontalSegment(
+                id: "\(symbolID)/nopopulate/1",
+                from: transform.applying(to: topLeft),
+                to: transform.applying(to: bottomRight),
+                width: lineWidth,
+                layer: nil
+            )
+        )
+    }
+}
+
 /// A pool frame a sheet can draw its title block with.
 struct HorizontalSheetFrameOption: Identifiable, Hashable {
     /// The frame's uuid, lowercased.
@@ -1427,34 +1459,7 @@ struct HorizontalSchematic {
         guard let bounds = symbolNoPopulateBounds(from: symbolResource), !bounds.isEmpty else {
             return []
         }
-
-        let padding = 200_000.0
-        let min = HorizontalPoint(x: bounds.minX - padding, y: bounds.minY - padding)
-        let max = HorizontalPoint(x: bounds.maxX + padding, y: bounds.maxY + padding)
-        let topLeft = HorizontalPoint(x: min.x, y: max.y)
-        let bottomRight = HorizontalPoint(x: max.x, y: min.y)
-        let lineWidth = 200_000.0
-
-        return [
-            HorizontalSchematicNoPopulateMark(
-                id: "\(symbolInstanceID)/nopopulate",
-                symbolID: symbolInstanceID,
-                firstLine: HorizontalSegment(
-                    id: "\(symbolInstanceID)/nopopulate/0",
-                    from: symbolTransform.schematicGeometry.applying(to: min),
-                    to: symbolTransform.schematicGeometry.applying(to: max),
-                    width: lineWidth,
-                    layer: nil
-                ),
-                secondLine: HorizontalSegment(
-                    id: "\(symbolInstanceID)/nopopulate/1",
-                    from: symbolTransform.schematicGeometry.applying(to: topLeft),
-                    to: symbolTransform.schematicGeometry.applying(to: bottomRight),
-                    width: lineWidth,
-                    layer: nil
-                )
-            )
-        ]
+        return [HorizontalSchematicNoPopulateMark(symbolID: symbolInstanceID, bounds: bounds, transform: symbolTransform.schematicGeometry)]
     }
 
     private static func symbolNoPopulateBounds(from symbolResource: SchematicSymbolResource) -> HorizontalRect? {
