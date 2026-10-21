@@ -2054,6 +2054,7 @@ struct ProjectWorkspaceView: View {
                     onPlacePart: beginPartPlacement,
                     library: partLibrary,
                     usedPartIDs: Set(HorizontalPoolCacheUpdater.references(in: document.archive, project: project).keys),
+                    populatedPartIDs: HorizontalPoolCacheUpdater.populatedPartIDs(in: document.archive, project: project),
                     copyTargets: project.poolDirectory.map { HorizontalPoolPartCopier.targets(forProjectPool: project.baseURL.appendingPathComponent($0)) } ?? [],
                     onCopyToPool: isReadOnly ? nil : { partID, target in preparePoolCopy(partID: partID, to: target) },
                     onReviewUpdates: { showsPartUpdates = true },

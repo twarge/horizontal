@@ -223,12 +223,7 @@ enum HorizontalPoolCacheUpdater {
     /// "block", and Horizon doesn't always write that key (Billo's has none).
     static func references(in archive: HorizontalProjectArchive, project: HorizontalProject? = nil) -> [String: [String]] {
         var result = [String: Set<String>]()
-        let blocks: [JSONDictionary] = project.map { Array(HorizontalPoolCacheUsage.blocks(in: archive, project: $0).values) }
-            ?? archive.regularFilePaths.filter { $0.hasSuffix(".json") }.compactMap { path in
-                archive.regularFileData(relativePath: path).flatMap { try? JSONHelper.loadDictionary(from: $0) }
-                    .flatMap { $0.string("type") == "block" ? $0 : nil }
-            }
-        for json in blocks {
+        for json in blocks(in: archive, project: project) {
             for (_, component) in json.dictionaryMap("components") {
                 if let part = component.string("part")?.lowercased(), let refdes = component.string("refdes") {
                     result[part, default: []].insert(refdes)
@@ -245,6 +240,41 @@ enum HorizontalPoolCacheUpdater {
             }
         }
         return result.mapValues { $0.sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
+    }
+
+    /// The parts some component is fitted with: a part that only components
+    /// marked Do Not Populate use is missing. A block's components count once
+    /// for each of its instances, with that instance's Do Not Populate, as
+    /// the BOM counts them.
+    static func populatedPartIDs(in archive: HorizontalProjectArchive, project: HorizontalProject? = nil) -> Set<String> {
+        let components: [JSONDictionary] = project?.flattenedBlock.map { Array($0.json.dictionaryMap("components").values) }
+            ?? blocks(in: archive, project: project).flatMap { Array($0.dictionaryMap("components").values) }
+        var result = Set<String>()
+        for component in components where component.bool("nopopulate") != true {
+            if let part = component.string("part")?.lowercased() {
+                result.insert(part)
+            }
+        }
+        if components.isEmpty, let project {
+            let schematics = project.schematics.map(\.schematic) + (project.schematic.map { [$0] } ?? [])
+            let placements = schematics.flatMap { $0.sheets.flatMap(\.symbols) } + (project.board?.packages ?? [])
+            for placement in placements {
+                if let details = placement.componentDetails, !details.noPopulate, let part = details.partID {
+                    result.insert(part.lowercased())
+                }
+            }
+        }
+        return result
+    }
+
+    /// The design's blocks: the project's, or without it every block file in
+    /// the archive.
+    private static func blocks(in archive: HorizontalProjectArchive, project: HorizontalProject?) -> [JSONDictionary] {
+        project.map { Array(HorizontalPoolCacheUsage.blocks(in: archive, project: $0).values) }
+            ?? archive.regularFilePaths.filter { $0.hasSuffix(".json") }.compactMap { path in
+                archive.regularFileData(relativePath: path).flatMap { try? JSONHelper.loadDictionary(from: $0) }
+                    .flatMap { $0.string("type") == "block" ? $0 : nil }
+            }
     }
 
     static func review(poolURL: URL, files: [String: Data], sourcePools: [URL],
