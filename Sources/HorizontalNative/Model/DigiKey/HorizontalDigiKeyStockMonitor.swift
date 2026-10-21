@@ -111,6 +111,7 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
     static let shared = HorizontalDigiKeyStockMonitor()
 
     static let clientIDKey = "digikey.clientID"
+    static let packagingKey = "digikey.packaging"
     /// How long an answer stands before a part is asked about again.
     static let freshFor: TimeInterval = 12 * 60 * 60
     /// How long a request that failed waits before it is tried again.
@@ -142,7 +143,7 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
         /// Set up, and not asked about yet.
         case pending
         case checking
-        case answer(HorizontalDigiKeyAnswer, checkedAt: Date, isRefreshing: Bool)
+        case answer(HorizontalDigiKeyAnswer, checkedAt: Date, isRefreshing: Bool, packaging: HorizontalDigiKeyPackaging)
         case failed(String)
         /// Nothing known, and lookups stopped for `problem`.
         case unavailable(String)
@@ -159,6 +160,11 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
     @Published private(set) var verification: Verification?
     /// Bumped whenever the credentials change, so a view looks up again.
     @Published private(set) var credentialsRevision = 0
+    /// Which packaging's stock the column shows. Every packaging comes in one
+    /// answer, so changing it asks DigiKey nothing.
+    @Published var packaging: HorizontalDigiKeyPackaging {
+        didSet { defaults.set(packaging.rawValue, forKey: Self.packagingKey) }
+    }
 
     private enum Block {
         case credentials
@@ -188,6 +194,7 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
         self.cacheURL = cacheURL
         self.makeClient = makeClient
         clientID = defaults.string(forKey: Self.clientIDKey) ?? ""
+        packaging = defaults.string(forKey: Self.packagingKey).flatMap(HorizontalDigiKeyPackaging.init(rawValue:)) ?? .any
         hasClientSecret = secrets.exists()
         records = Self.loadRecords(from: cacheURL)
     }
@@ -208,7 +215,7 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
         guard isConfigured else { return .notSetUp }
         let key = query.key
         if let record = records[key] {
-            return .answer(record.answer, checkedAt: record.checkedAt, isRefreshing: checking.contains(key))
+            return .answer(record.answer, checkedAt: record.checkedAt, isRefreshing: checking.contains(key), packaging: packaging)
         }
         if checking.contains(key) { return .checking }
         if let failure = failures[key] { return .failed(failure.message) }
@@ -447,6 +454,12 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
 }
 
 extension HorizontalDigiKeyStockMonitor.CellState {
+    /// The packaging counted, for a part DigiKey stocks.
+    var selection: HorizontalDigiKeyStock.Selection? {
+        if case .answer(.stocked(let stock), _, _, let packaging) = self { return stock.selection(for: packaging) }
+        return nil
+    }
+
     /// The cell's text.
     var title: String {
         switch self {
@@ -454,8 +467,8 @@ extension HorizontalDigiKeyStockMonitor.CellState {
         case .notSetUp: "Not set up"
         case .pending: ""
         case .checking: "Checking"
-        case .answer(.stocked(let stock), _, _): stock.quantityAvailable.formatted()
-        case .answer(.notCarried, _, _): "Not carried"
+        case .answer(.stocked, _, _, _): selection?.quantity.formatted() ?? ""
+        case .answer(.notCarried, _, _, _): "Not carried"
         case .failed: "Error"
         case .unavailable: "Unavailable"
         }
@@ -464,24 +477,24 @@ extension HorizontalDigiKeyStockMonitor.CellState {
     /// Out of stock, winding down, or failed: drawn in orange.
     var isWarning: Bool {
         switch self {
-        case .answer(.stocked(let stock), _, _): stock.quantityAvailable == 0 || stock.isWindingDown
+        case .answer(.stocked(let stock), _, _, _): selection?.quantity == 0 || stock.isWindingDown
         case .failed, .unavailable: true
         default: false
         }
     }
 
     var isNumeric: Bool {
-        if case .answer(.stocked, _, _) = self { return true }
+        if case .answer(.stocked, _, _, _) = self { return true }
         return false
     }
 
     var productURL: URL? {
-        if case .answer(.stocked(let stock), _, _) = self { return stock.productURL }
+        if case .answer(.stocked(let stock), _, _, _) = self { return stock.productURL }
         return nil
     }
 
-    /// The cell's tooltip: what DigiKey has under each of its part numbers,
-    /// and when it was asked.
+    /// The cell's tooltip: the packaging counted, what DigiKey has under each
+    /// of its part numbers, and when it was asked.
     func help(for part: HorizontalPoolPart) -> String {
         switch self {
         case .noMPN:
@@ -494,13 +507,22 @@ extension HorizontalDigiKeyStockMonitor.CellState {
             return "Asking DigiKey about \(part.mpn)…"
         case .failed(let message), .unavailable(let message):
             return message
-        case .answer(let answer, let checkedAt, let isRefreshing):
+        case .answer(let answer, let checkedAt, let isRefreshing, let packaging):
             var lines: [String]
             switch answer {
             case .notCarried:
                 lines = ["DigiKey sells nothing under the MPN \(part.mpn)."]
             case .stocked(let stock):
-                lines = ["DigiKey has \(stock.quantityAvailable.formatted()) in stock: \(stock.manufacturer) \(stock.manufacturerProductNumber)"]
+                let selection = stock.selection(for: packaging)
+                lines = ["\(stock.manufacturer) \(stock.manufacturerProductNumber) at DigiKey"]
+                if let variation = selection.variation {
+                    let counted = "\(variation.packageType.isEmpty ? variation.digiKeyProductNumber : variation.packageType): \(selection.quantity.formatted())"
+                    lines.append(selection.isFallback
+                        ? "Not sold as \(packaging.title); showing \(counted)"
+                        : "Showing \(counted)")
+                } else {
+                    lines.append("\(selection.quantity.formatted()) in stock")
+                }
                 for variation in stock.variations where !variation.digiKeyProductNumber.isEmpty {
                     let package = variation.packageType.isEmpty ? "" : " (\(variation.packageType))"
                     let marketplace = variation.isMarketplace ? ", Marketplace" : ""
@@ -514,11 +536,14 @@ extension HorizontalDigiKeyStockMonitor.CellState {
                 if !status.isEmpty {
                     lines.append(status.joined(separator: ", "))
                 }
-                if stock.quantityAvailable == 0, let weeks = stock.manufacturerLeadWeeks {
+                if selection.quantity == 0, let weeks = stock.manufacturerLeadWeeks {
                     lines.append("Manufacturer lead time: \(weeks.allSatisfy(\.isNumber) ? "\(weeks) weeks" : weeks)")
                 }
                 if stock.matchedByMPNOnly, !part.manufacturer.isEmpty {
                     lines.append("Matched by MPN alone: DigiKey has no \(part.mpn) from \(part.manufacturer).")
+                }
+                if stock.productURL != nil {
+                    lines.append("Click to open the part on DigiKey.")
                 }
             }
             lines.append(isRefreshing

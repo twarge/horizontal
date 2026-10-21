@@ -40,6 +40,15 @@ struct HorizontalDigiKeySettingsSection: View {
             )
             .onSubmit { if canSave { save() } }
 
+            Picker("Packaging", selection: $monitor.packaging) {
+                ForEach(HorizontalDigiKeyPackaging.allCases) { packaging in
+                    Text(packaging.title).tag(packaging)
+                }
+            }
+            Text("DigiKey sells a part on cut tape, full reels and Digi-Reels under separate part numbers, each with its own stock. The column counts the packaging chosen here, or the most stocked one for a part that doesn't come in it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             HStack {
                 status
                 Spacer()

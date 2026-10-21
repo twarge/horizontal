@@ -70,6 +70,7 @@ struct HorizontalPartBrowserView: View {
     @State private var selectedPartID: HorizontalPoolPart.ID?
     @State private var sortOrder = [KeyPathComparator(\HorizontalPoolPart.mpn)]
     @Environment(\.horizonPoolRevealAction) private var poolRevealAction
+    @Environment(\.openURL) private var openURL
     @State private var pendingRevealTask: Task<Void, Never>?
     @State private var selectionChangedAt = Date.distantPast
     @State private var libraryFilter = HorizontalPartLibraryFilter.all
@@ -396,21 +397,35 @@ struct HorizontalPartBrowserView: View {
         }
     }
 
-    /// The part's stock at DigiKey: a count, right-aligned, orange when
-    /// none is left or the part is winding down; its tooltip names the
+    /// The part's stock at DigiKey, in the packaging Settings chooses: a
+    /// count, right-aligned, orange when none is left or the part is winding
+    /// down, and a link to the part's DigiKey page; its tooltip names the
     /// DigiKey part numbers behind it.
+    @ViewBuilder
     private func digiKeyStockCell(_ part: HorizontalPoolPart) -> some View {
         let state = digiKey.state(for: part)
-        return Text(state.title)
+        let text = Text(state.title)
             .monospacedDigit()
-            .foregroundStyle(state.isWarning ? Color.orange : state.isNumeric ? Color.primary : Color.secondary)
             .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: state.isNumeric ? .trailing : .leading)
             .contentShape(Rectangle())
-            .onTapGesture(count: 2) {
-                place(part)
+        if let url = state.productURL {
+            Button { openURL(url) } label: {
+                text.foregroundStyle(state.isWarning ? Color.orange : Color.accentColor)
             }
+            .buttonStyle(.plain)
+            #if os(macOS)
+            .pointerStyle(.link)
+            #endif
             .help(state.help(for: part))
+        } else {
+            text
+                .foregroundStyle(state.isWarning ? Color.orange : state.isNumeric ? Color.primary : Color.secondary)
+                .onTapGesture(count: 2) {
+                    place(part)
+                }
+                .help(state.help(for: part))
+        }
     }
 
     private var unavailableView: some View {
