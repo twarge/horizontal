@@ -320,8 +320,8 @@ class Project:
         params = {k: v for k, v in {"name": name, "id": id}.items() if v is not None}
         return self._call("get_net", **params)
 
-    def netlist(self, include_unconnected: bool = False) -> dict[str, Any]:
-        return self._call("netlist", include_unconnected=include_unconnected)
+    def netlist(self, include_unconnected: bool = False, compact: bool = False) -> dict[str, Any]:
+        return self._call("netlist", include_unconnected=include_unconnected, compact=compact)
 
     def bom(self, include_no_populate: bool = True) -> dict[str, Any]:
         return self._call("bom", include_no_populate=include_no_populate)

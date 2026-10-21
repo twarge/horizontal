@@ -772,9 +772,12 @@ def get_net(name: str | None = None, path: str | None = None, id: str | None = N
 
 
 @_tool
-def netlist(path: str | None = None, include_unconnected: bool = False) -> dict[str, Any]:
-    """The whole netlist: every net with its pins. Large; prefer get_net for one net."""
-    return _resolve(path).netlist(include_unconnected=include_unconnected)
+def netlist(path: str | None = None, include_unconnected: bool = False, compact: bool = True) -> dict[str, Any]:
+    """The whole netlist: every net with its pins. compact (the default) gives each pin as REFDES.PIN — with the
+    gate's suffix where a part repeats a pin name, U3A.IN+ — and each net its id, name, pins, and its class, power
+    or port flag and airwire count only when they aren't the default. compact false gives every pin in full, with
+    its ids and pads, which on a big board runs to hundreds of kilobytes; get_net gives one net that way."""
+    return _resolve(path).netlist(include_unconnected=include_unconnected, compact=compact)
 
 
 @_tool
@@ -1350,9 +1353,11 @@ def list_ops(path: str | None = None) -> list[dict[str, Any]]:
 def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: bool = False,
               pool_items: list[dict[str, Any]] | None = None, block: str | None = None) -> dict[str, Any]:
     """Apply edit operations. Each op is {"op": name, ...params}; see list_ops. Components and nets may be named by
-    refdes or net name, or by id — eight or more of an id's leading digits will do, "33b623e6…" as a reply shortens
-    it, when no other id begins the same; an unnamed net has only that. Every op that acts on one thing names it by
-    its own field (line, track, junction, …) or by id. When the project is open in Horizontal the edit lands there as
+    refdes or net name, or by id; an unnamed net has only that. Every op that acts on one thing names it by its own
+    field (line, track, junction, …) or by id. Wherever an op takes an id — a component, net, wire, junction, symbol
+    instance, text, label, track, via, a wire end's junction or symbol, the ids move_symbols and move_to_other_sheet
+    take — eight or more of its leading digits will do, "33b623e6…" as a reply shortens it, when no other id in the
+    project begins the same; several are an AMBIGUOUS_SELECTOR naming them. When the project is open in Horizontal the edit lands there as
     one undoable step, which the document autosaves; a project open in an editor cannot be edited on disk at all, and
     the attempt fails with DOCUMENT_OPEN naming the holder. dry_run validates without changing anything and reports
     any holder in blocked_by; it needs neither expected_revision nor operation_id, and its before_revision is the one
@@ -1378,8 +1383,9 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
     connected to them, whole and uncut; place_junction with the id of a junction that is there moves it.
     set_no_connect marks unused pins;
     set_pin_alternate picks a pin's function (SPI1_SCK on PA5) from what get_component(alternates=true) lists;
-    remap_part matches pins by name when pin_map is left out, folds gates onto a single-gate part, keeps every pad
-    of the same package, maps other pads by name, and with copper "drop" removes tracks on pads the new part lacks.
+    remap_part matches pins by name except where pin_map pairs them (by name, VSSA/VREF- → VSSA, or gate/pin),
+    folds gates onto a single-gate part, keeps every pad of the same package, maps other pads by name, and with
+    copper "drop" removes tracks on pads the new part lacks.
     Refer to sheets by name or uuid in a batch that adds or reorders sheets — page numbers move.
 
     Board rules: add_rule takes fields and orders the rule after its kind's; set_rule merges objects key by key.
