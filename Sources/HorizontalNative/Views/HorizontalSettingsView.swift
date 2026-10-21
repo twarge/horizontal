@@ -29,19 +29,6 @@ struct HorizontalSettingsView: View {
             }
             .editingUnlockConfirmation(isPresented: $confirmingEditingUnlock, appearanceSettings: appearanceSettings)
 
-            #if os(macOS)
-            // The listener is macOS-only, so the switch is too.
-            Section("Automation") {
-                Toggle("Enable MCP Server", isOn: appearanceSettings.liveServerEnabledBinding())
-                Text("Serves the documents you have open to the MCP server and the Python package, over a loopback socket on 127.0.0.1 carrying a per-launch token. Reads see unsaved edits, and an edit arrives as one undoable step. With this off they still read and write project files on disk, but cannot see or change what is open in the app.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                ClaudeCodeSetup()
-            }
-            #endif
-
-            HorizontalDigiKeySettingsSection()
-
             Section("App Theme") {
                 Picker("Theme", selection: appearanceSettings.appThemeBinding()) {
                     ForEach(HorizontalAppTheme.allCases) { theme in
@@ -157,6 +144,19 @@ struct HorizontalSettingsView: View {
             Section("Reset") {
                 resetControls
             }
+
+            #if os(macOS)
+            // The listener is macOS-only, so the switch is too.
+            Section("Automation") {
+                Toggle("Enable MCP Server", isOn: appearanceSettings.liveServerEnabledBinding())
+                Text("Serves the documents you have open to the MCP server and the Python package, over a loopback socket on 127.0.0.1 carrying a per-launch token. Reads see unsaved edits, and an edit arrives as one undoable step. With this off they still read and write project files on disk, but cannot see or change what is open in the app.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ClaudeCodeSetup()
+            }
+            #endif
+
+            HorizontalDigiKeySettingsSection()
         }
         .formStyle(.grouped)
         // The fixed size shapes the macOS Settings window; on iPad the form is
