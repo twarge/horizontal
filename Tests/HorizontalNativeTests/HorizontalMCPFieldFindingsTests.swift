@@ -159,18 +159,25 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         // By component and pin name, no instance id needed.
         try apply([["op": "draw_net_line", "from": ["kind": "pin", "component": "U1", "pin": "PA14"],
                     "to": ["kind": "junction", "junction": clock]]])
-        let unconnected = try error([["op": "draw_net_line", "from": ["kind": "pin", "component": "U1", "pin": "NRST"],
-                                      "to": ["kind": "junction", "junction": junction]]])
-        XCTAssertTrue(unconnected.contains("no net") && unconnected.contains("NRST"), unconnected)
+        // A pin marked not connected takes no wire; one on no net joins the
+        // wire's, as Horizon's wire tool connects it.
+        try apply([["op": "set_no_connect", "component": "U1", "pin": "NRST"]])
+        let marked = try error([["op": "draw_net_line", "from": ["kind": "pin", "component": "U1", "pin": "NRST"],
+                                 "to": ["kind": "junction", "junction": junction]]])
+        XCTAssertTrue(marked.contains("no-connect") && marked.contains("NRST"), marked)
+        try apply([["op": "set_no_connect", "component": "U1", "pin": "NRST", "no_connect": false]])
+        let joined = try apply([["op": "draw_net_line", "from": ["kind": "pin", "component": "U1", "pin": "NRST"],
+                                 "to": ["kind": "junction", "junction": junction]]])
+        XCTAssertEqual(changes(joined).first?["connected_pins"] as? [String], ["U1.NRST"])
         let missing = try error([["op": "draw_net_line", "from": ["kind": "pin", "component": "U1", "pin": "PZ9"],
                                   "to": ["kind": "junction", "junction": junction]]])
         XCTAssertTrue(missing.contains("No pin PZ9"), missing)
 
         // Coordinates come back with each wire, and pin names with pin ends.
         let lines = try XCTUnwrap(try result("list_net_lines", ["net": "SWDIO"]) as? [JSONDictionary])
-        XCTAssertEqual(lines.first?.dictionary("from")?.string("pin_name"), "PA13(JTMS/SWDIO)")
-        XCTAssertEqual(lines.first?.dictionary("from_mm")?.double("x_mm"), 100)
-        XCTAssertEqual(lines.first?.dictionary("to_mm")?.double("x_mm"), 90)
+        let line = try XCTUnwrap(lines.first { $0.dictionary("from")?.string("pin_name") == "PA13(JTMS/SWDIO)" }, "\(lines)")
+        XCTAssertEqual(line.dictionary("from_mm")?.double("x_mm"), 100)
+        XCTAssertEqual(line.dictionary("to_mm")?.double("x_mm"), 90)
     }
 
     func testNetlessJunctionsAreAdoptedRemovedAndPruned() throws {

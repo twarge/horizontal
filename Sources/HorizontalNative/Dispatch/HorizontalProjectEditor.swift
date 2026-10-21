@@ -115,7 +115,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .setPart: "Assign a pool part (and its entity) to a component; null clears the part."
         case .setNoPopulate: "Mark a component do-not-populate or not."
         case .setGroupTag: "Set the group and tag names Horizon uses to copy placement between identical sub-circuits."
-        case .ensureNet: "Create a net if no net has that id or name; returns its id."
+        case .ensureNet: "Create a net if no net has that id or name; returns its id. An empty name always makes a new net with no name."
         case .addBus: "Create a bus — a named bundle the nets in it travel as one line on a sheet."
         case .removeBus: "Remove a bus, its members, and the labels and rippers drawn for it."
         case .addBusMember: "Put a net in a bus under a member name."
@@ -139,7 +139,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .smash: "Horizon's Smash: a drawn symbol's texts — its refdes and value — become texts of its sheet that it owns, where it drew them, so place_text moves each on its own while they go on drawing what the component says. With board, the same for the silkscreen texts of its package on the board, which place_board_text moves. A symbol smashed already keeps its texts, and one whose texts are all gone is smashed afresh. The reply names the texts made."
         case .unsmash: "Horizon's Unsmash: delete the texts a smash gave a component's symbols (with board, its package), so they draw their own again. A symbol smashed with its texts gone, which draws no refdes or value, is put right this way too."
         case .removeSymbol: "Take a component's gate off its sheet, with the net lines that ended on it and the wiring left serving nothing — what find_dangling would call new debris — unless keep_wiring. The component and its connections stay."
-        case .drawNetLine: "Draw a wire between pins, block ports or junctions on one logical net. Does not change block connectivity, except that a block port on no net is connected to the wire's, as Horizon's wire tool does. A junction with no net yet takes the wire's."
+        case .drawNetLine: "Draw a wire between pins, block ports or junctions on one logical net. Does not change block connectivity, except as Horizon's wire tool does: a pin or block port on no net is connected to the wire's net, and two such ends get a new net with no name (created_net in the reply). A junction with no net yet takes the wire's. Ends on two different nets are refused."
         case .placeJunction: "Create a schematic junction on a net, reusing a compatible or net-less junction at the same point. An id that names a junction already on a sheet moves it, and the wires, labels and power symbols on it go with it."
         case .setNetLineEndpoint: "Retarget one end of an existing wire, keeping its id and logical net."
         case .removeNetLine: "Remove a wire from its sheet, and any junction at its ends that it leaves holding nothing."
@@ -148,7 +148,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .terminatePin: "Draw a short wire straight out from a symbol pin and end it in a net label or power symbol facing away from the pin. Connects the pin to the net first when it is on none."
         case .setNoConnect: "Mark component pins as deliberately not connected, or clear the mark. A pin on a net is refused unless disconnect is passed. all does it for every free pin of a gate or the whole component, as Horizon's Set all unconnected pins NC and Clear all NC pins do."
         case .setPinAlternate: "Choose the function a pin is drawn as — an alternate name its unit offers, such as SPI1_SCK on an MCU port pin — or a custom name, or go back to the primary name. get_component lists each pin's alternates and what is selected. The apply_ops reply gives warnings when a placed symbol will not draw the choice (one showing pins custom_only)."
-        case .remapPart: "Replace a component's part, preserving connections, symbols and wires atomically. Pins are matched by name unless an explicit gate/pin identity map is given."
+        case .remapPart: "Replace a component's part, preserving connections, symbols and wires atomically. Pins are matched by name, except where pin_map pairs them by name or gate/pin."
         case .placeText: "Write a text on a schematic sheet, or change one that is already there: move it, turn it, rewrite it. id names the text to change, from list_texts; give only what changes. x_mm, y_mm or both move it, and it keeps its uuid, layer and the rest. An id that names no text makes one under it, so a batch can name a text and edit or remove it later. A smashed symbol's texts (list_texts with smashed) are changed the same way, and go on drawing its refdes and value. The text starts at x_mm and runs right (origin is vertical alone); the reply gives the box it covers, extent_mm, and the symbols, labels, power symbols and texts it overlaps."
         case .removeText: "Remove a text from a schematic sheet."
         case .placePowerSymbol: "Draw a power symbol on a sheet: the ground or supply marker that says a point is on that net. Marks the net as a power net, since that is what one means."
@@ -247,7 +247,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .setGroupTag:
             return ["component": component, "group": "Group name, or null.", "tag": "Tag name, or null."]
         case .ensureNet:
-            return ["id": "Net UUID to use, or a name for it that later ops in the batch can use as its net (optional).", "name": "Net name.", "net_class": "Net class name or id (optional).", "is_power": "Power net (optional)."]
+            return ["id": "Net UUID to use, or a name for it that later ops in the batch can use as its net (optional).", "name": "Net name; \"\" makes a new net with no name, which a batch reaches by its id (\"id\": \"n1\").", "net_class": "Net class name or id (optional).", "is_power": "Power net (optional)."]
         case .addBus:
             return ["name": "Bus name.", "id": "Bus UUID to use, or a name later ops in the batch can use for it (optional)."]
         case .removeBus:
@@ -290,7 +290,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .connect:
             return ["component": component, "pin": "Pin name or uuid. A name is matched whole first, so one containing \"/\" works; otherwise gate/pin, by name or id.",
                     "gate": "Gate name, suffix or id, when the pin name is on several gates (optional).",
-                    "net": "Net name or id.", "create_net": "Create the net when it does not exist (default false)."]
+                    "net": "Net name or id; with create_net, \"\" or left out makes a new net with no name.",
+                    "create_net": "Create the net when it does not exist (default false)."]
         case .disconnect:
             return ["component": component, "pin": "Pin as for connect.", "gate": "Gate, as for connect (optional)."]
         case .placeSymbol:
@@ -378,7 +379,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "custom_direction": "The direction that custom name has: input, output, bidirectional, open_collector, passive, power_input, power_output or not_connected (optional; default unchanged, else bidirectional)."]
         case .remapPart:
             return ["component": component, "part": "Target imported pool part id.",
-                    "pin_map": "Optional object mapping old gateUUID/pinUUID to new gateUUID/pinUUID. Pins it leaves out are matched by gate and pin name; every connected or drawn pin has to map one way or the other.",
+                    "pin_map": "Optional object from pins of the old part to pins of the new one, each named as connect names a pin: by name or uuid, whole first (so VSSA/VREF- works), then as gate/pin, by name, suffix or uuid. Pins it leaves out are matched by gate and pin name; every connected or drawn pin has to map one way or the other.",
                     "symbols": "Optional object mapping target gate UUIDs to symbol UUIDs.",
                     "pad_map": "Optional old pad UUID to target pad UUID map for ambiguous physical pin mappings. A routed pad whose pin settles nothing goes to the pad of the same name.",
                     "copper": "What to do with tracks on pads the new part has nothing for, such as an exposed pad: refuse (default; the error names the pads) or drop, which removes them with the remap."]
@@ -940,19 +941,19 @@ final class HorizontalProjectEditor {
             let id = try componentID(params)
             let pin = try pinPath(params, componentID: id)
             let net: String
-            if let existing = try existingNetID(params) {
+            let unnamed = (params.string("net") ?? "").isEmpty
+            if unnamed, params.bool("create_net") ?? false {
+                // A net of its own with no name, as a wire from a free pin
+                // makes one in Horizon's wire tool.
+                net = try ensureNet(["name": ""]).0
+            } else if let existing = try existingNetID(params) {
                 net = existing
             } else if params.bool("create_net") ?? false, let name = params.string("net") {
                 net = try ensureNet(["name": name]).0
             } else {
                 throw HorizontalDispatchError.notFound("No net matches \(params["net"] ?? "nothing"); pass create_net to make it.")
             }
-            try updateComponent(id) { component in
-                var connections = component["connections"] as? JSONDictionary ?? [:]
-                connections[pin] = ["net": net]
-                component["connections"] = connections
-            }
-            touchedPins.insert("\(id)|\(pin.lowercased())")
+            try connect(id, pin: pin, to: net)
             change["component"] = id
             change["pin"] = pin
             change["net"] = net
@@ -1365,6 +1366,16 @@ final class HorizontalProjectEditor {
         throw HorizontalDispatchError.notFound("No net \(reference).")
     }
 
+    /// A component's pin, `gate uuid/pin uuid`, onto a net.
+    private func connect(_ componentID: String, pin: String, to net: String) throws {
+        try updateComponent(componentID) { component in
+            var connections = component["connections"] as? JSONDictionary ?? [:]
+            connections[pin] = ["net": net]
+            component["connections"] = connections
+        }
+        touchedPins.insert("\(componentID)|\(pin.lowercased())")
+    }
+
     /// The net `params` names, or nil when it names none, so a caller can
     /// make it; a name or short id that fits several nets is still an error.
     private func existingNetID(_ params: JSONDictionary) throws -> String? {
@@ -1389,11 +1400,15 @@ final class HorizontalProjectEditor {
         if let id = params.string("id")?.lowercased(), nets()[id] != nil {
             return (id, false)
         }
-        guard let name = params.string("name"), !name.isEmpty else {
-            throw HorizontalDispatchError.invalidParams("ensure_net needs a \"name\".")
+        // "" is a net with no name, which no name can find, so it is always new.
+        guard let name = params.string("name") else {
+            throw HorizontalDispatchError.invalidParams("ensure_net needs a \"name\" (\"\" for a net with none).")
         }
-        if params.string("id") == nil, let existing = try? netID(reference: name) {
+        if params.string("id") == nil, !name.isEmpty, let existing = try? netID(reference: name) {
             return (existing, false)
+        }
+        guard !name.isEmpty || params.bool("is_power") != true else {
+            throw HorizontalDispatchError.invalidParams("A power net needs a name.")
         }
         let classID = try params.string("net_class").map(netClassID) ?? (block.string("net_class_default") ?? Self.nullUUID)
         let id = params.string("id")?.lowercased() ?? UUID().uuidString.lowercased()
@@ -2048,10 +2063,7 @@ final class HorizontalProjectEditor {
     // MARK: - Pins
 
     /// Resolves the `pin` parameter to Horizon's `gate uuid/pin uuid` key.
-    ///
-    /// The whole reference is tried as a pin name or uuid first, because pin
-    /// names carry slashes of their own — `PA13(JTMS/SWDIO)` — and only then
-    /// split as gate/pin. A `gate` parameter narrows the search to one gate.
+    /// A `gate` parameter narrows the search to one gate.
     private func pinPath(_ params: JSONDictionary, componentID: String) throws -> String {
         guard let reference = params.string("pin"), !reference.isEmpty else {
             throw HorizontalDispatchError.invalidParams("Missing \"pin\".")
@@ -2062,8 +2074,18 @@ final class HorizontalProjectEditor {
         guard let entity = pool.entity(entityID) else {
             throw HorizontalDispatchError.notFound("Pool entity \(entityID) for \(componentID) is not in the project pool.")
         }
-        let refdes = component.string("refdes") ?? componentID
         let only = params.string("gate") == nil ? nil : try gate(params, componentID: componentID).id
+        return try pinPath(reference, of: entity, gate: only, owner: component.string("refdes") ?? componentID)
+    }
+
+    /// A pin of an entity by name or uuid, as Horizon's `gate uuid/pin uuid`.
+    ///
+    /// The whole reference is tried as a pin name or uuid first, because pin
+    /// names carry slashes of their own — `PA13(JTMS/SWDIO)`, `VSSA/VREF-` —
+    /// and only then split as gate/pin, the gate by name, suffix or uuid.
+    /// `owner` names the part in messages.
+    private func pinPath(_ reference: String, of entity: HorizontalDispatchPoolIndex.Entity, gate only: String? = nil,
+                         owner: String) throws -> String {
         let gates = entity.gates.filter { only == nil || $0.key == only }
 
         var matches = [String]()
@@ -2079,12 +2101,12 @@ final class HorizontalProjectEditor {
         if matches.count == 1 { return matches[0] }
         if matches.count > 1 {
             throw HorizontalDispatchError.invalidParams(
-                "Pin \(reference) is on \(matches.count) gates of \(refdes) (\(entity.name)); pass \"gate\" or name it as gate/pin."
+                "Pin \(reference) is on \(matches.count) gates of \(owner) (\(entity.name)); pass \"gate\" or name it as gate/pin."
             )
         }
         if !duplicated.isEmpty {
             throw HorizontalDispatchError.ambiguous(
-                "More than one pin of \(refdes) is called \(reference); name it by pin uuid. get_component lists them.",
+                "More than one pin of \(owner) is called \(reference); name it by pin uuid. get_component lists them.",
                 candidates: gates.flatMap { gateID, gate -> [String] in
                     guard let unitID = gate.unitID, let unit = pool.unit(unitID) else { return [] }
                     return unit.pins.filter { $0.value.name.caseInsensitiveCompare(reference) == .orderedSame }.keys.map { "\(gateID)/\($0)" }
@@ -2113,7 +2135,7 @@ final class HorizontalProjectEditor {
             .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         let listed = names.prefix(80).joined(separator: ", ") + (names.count > 80 ? ", … (\(names.count) in all)" : "")
         throw HorizontalDispatchError.notFound(
-            "No pin \(reference) on \(refdes) (\(entity.name))\(only == nil ? "" : " gate \(entity.gates[only!]?.name ?? only!)"). Pins: \(listed)."
+            "No pin \(reference) on \(owner) (\(entity.name))\(only == nil ? "" : " gate \(entity.gates[only!]?.name ?? only!)"). Pins: \(listed)."
         )
     }
 
@@ -3050,6 +3072,8 @@ final class HorizontalProjectEditor {
         var junction: String? = nil
         /// An instance's port on no net yet, which the wire connects.
         var port: (instance: String, net: String)? = nil
+        /// A component's pin on no net yet, which the wire connects.
+        var pin: (component: String, path: String)? = nil
     }
 
     private func wireEnd(_ endpoint: JSONDictionary, sheet selected: String? = nil) throws -> WireEnd {
@@ -3099,13 +3123,16 @@ final class HorizontalProjectEditor {
                 throw HorizontalDispatchError.invalidParams("The symbol drawing \(refdes) does not draw pin \(name), so there is nothing to wire to.")
             }
             let connection = components()[component]?.dictionary("connections")?.first { $0.key.lowercased() == path }?.value as? JSONDictionary
-            guard let net = connection?.string("net")?.lowercased(), block.dictionaryMap("nets")[net] != nil
-                    || block.dictionaryMap("nets").keys.contains(where: { $0.lowercased() == net }) else {
-                throw HorizontalDispatchError.invalidParams(connection == nil
-                    ? "\(refdes) pin \(name) is on no net. Connect it first (connect); a wire records a connection the block already makes."
-                    : "\(refdes) pin \(name) is marked no-connect. Connect it to a net first.")
+            let json = Self.pinEndpoint("\(instance.id)/\(pinID)"), identity = "pin/\(instance.id)/\(pinID)"
+            guard let connection else {
+                // On no net yet: the wire connects it, as Horizon's wire tool does.
+                return WireEnd(sheet: instance.sheet, net: nil, json: json, identity: identity, pin: (component, path))
             }
-            return WireEnd(sheet: instance.sheet, net: net, json: Self.pinEndpoint("\(instance.id)/\(pinID)"), identity: "pin/\(instance.id)/\(pinID)")
+            guard let net = connection.string("net")?.lowercased(), block.dictionaryMap("nets")[net] != nil
+                    || block.dictionaryMap("nets").keys.contains(where: { $0.lowercased() == net }) else {
+                throw HorizontalDispatchError.invalidParams("\(refdes) pin \(name) is marked no-connect. Connect it to a net first.")
+            }
+            return WireEnd(sheet: instance.sheet, net: net, json: json, identity: identity)
         }
         if endpoint.string("kind") == "port" {
             return try portWireEnd(endpoint, sheet: selected)
@@ -3212,7 +3239,16 @@ final class HorizontalProjectEditor {
         guard start.identity != end.identity else {
             throw HorizontalDispatchError.invalidParams("A wire needs two distinct endpoints.")
         }
-        guard let net = start.net ?? end.net else {
+        let net: String
+        var createdNet: String? = nil
+        if let known = start.net ?? end.net {
+            net = known
+        } else if [start, end].contains(where: { $0.pin != nil || $0.port != nil }) {
+            // Two ends on no net: Horizon's wire tool gives them a new net
+            // with no name, which a label names later.
+            net = try ensureNet(["name": ""]).0
+            createdNet = net
+        } else {
             throw HorizontalDispatchError.invalidParams("Neither end is on a net. Wire one end to a pin, label or power symbol, or place_junction it on a net.")
         }
         guard (start.net ?? net) == net, (end.net ?? net) == net else {
@@ -3220,6 +3256,7 @@ final class HorizontalProjectEditor {
         }
         var adopted = [String]()
         var connectedPorts = [JSONDictionary]()
+        var connectedPins = [String]()
         for wireEnd in [start, end] where wireEnd.net == nil {
             if let junction = wireEnd.junction {
                 try adoptJunction(junction, sheet: start.sheet, net: net)
@@ -3228,6 +3265,10 @@ final class HorizontalProjectEditor {
             if let port = wireEnd.port {
                 _ = try connectBlockPort(["instance": port.instance, "port": port.net, "net": net])
                 connectedPorts.append(["block_instance": port.instance, "port": port.net])
+            }
+            if let pin = wireEnd.pin {
+                try connect(pin.component, pin: pin.path, to: net)
+                connectedPins.append("\(components()[pin.component]?.string("refdes") ?? pin.component).\(pinName(pin.path, componentID: pin.component))")
             }
         }
         var id = try editObjectID(params)
@@ -3249,6 +3290,8 @@ final class HorizontalProjectEditor {
         var change: JSONDictionary = ["net_line": id, "sheet": start.sheet, "net": net, "created": created]
         if !adopted.isEmpty { change["adopted_junctions"] = adopted }
         if !connectedPorts.isEmpty { change["connected_ports"] = connectedPorts }
+        if !connectedPins.isEmpty { change["connected_pins"] = connectedPins }
+        if let createdNet { change["created_net"] = createdNet }
         return change
     }
 
@@ -3406,21 +3449,32 @@ final class HorizontalProjectEditor {
             throw HorizontalDispatchError.invalidParams("remap_part needs a part in the project pool; import_pool_part brings one in.")
         }
         guard params["pin_map"] == nil || params["pin_map"] is [String: String] else {
-            throw HorizontalDispatchError.invalidParams("pin_map must map gateUUID/pinUUID strings to gateUUID/pinUUID strings.")
+            throw HorizontalDispatchError.invalidParams("pin_map must map pins of the old part to pins of the new one, each a name or gate/pin.")
         }
         let rawMap = params["pin_map"] as? [String: String] ?? [:]
-        func identity(_ path: String, entity: HorizontalDispatchPoolIndex.Entity) -> Bool {
-            let pieces = path.split(separator: "/").map(String.init)
-            return pieces.count == 2 && entity.gates[pieces[0]]?.unitID.flatMap { pool.unit($0)?.pins[pieces[1]] } != nil
-        }
         guard let oldEntityID = component.string("entity"), let oldEntity = pool.entity(oldEntityID) else {
             throw HorizontalDispatchError.notFound("The old entity is missing.")
         }
+        /// A gateUUID/pinUUID as it stands, else a pin named as connect names
+        /// one: by name or uuid, whole first, then as gate/pin.
+        func path(_ reference: String, of entity: HorizontalDispatchPoolIndex.Entity, side: String) throws -> String {
+            let pieces = reference.lowercased().split(separator: "/").map(String.init)
+            if pieces.count == 2, entity.gates[pieces[0]]?.unitID.flatMap({ pool.unit($0)?.pins[pieces[1]] }) != nil {
+                return reference.lowercased()
+            }
+            do {
+                return try pinPath(reference, of: entity, owner: "the \(side) part").lowercased()
+            } catch let error as HorizontalDispatchError {
+                var error = error
+                error.message = "pin_map: " + error.message
+                throw error
+            }
+        }
         var mapping = [String: String]()
-        for (old, new) in rawMap {
-            let old = old.lowercased(), new = new.lowercased()
-            guard mapping[old] == nil, identity(old, entity: oldEntity), identity(new, entity: targetEntity) else {
-                throw HorizontalDispatchError.invalidParams("pin_map must contain unique, existing gateUUID/pinUUID identities: \(old) → \(new).")
+        for (oldReference, newReference) in rawMap.sorted(by: { $0.key < $1.key }) {
+            let old = try path(oldReference, of: oldEntity, side: "old"), new = try path(newReference, of: targetEntity, side: "new")
+            guard mapping[old] == nil else {
+                throw HorizontalDispatchError.invalidParams("pin_map names old pin \(oldReference) twice.")
             }
             mapping[old] = new
         }
@@ -3461,7 +3515,7 @@ final class HorizontalProjectEditor {
         let unmapped = needed.subtracting(mapping.keys).sorted()
         guard unmapped.isEmpty else {
             throw HorizontalDispatchError.invalidParams(
-                "\(unmapped.count) connected pins have no counterpart by name on the new part: \(unmapped.prefix(40).map { pinName($0, componentID: componentID) }.joined(separator: ", ")). Map them in pin_map; nothing was changed."
+                "\(unmapped.count) connected pins have no counterpart by name on the new part: \(unmapped.prefix(40).map { pinName($0, componentID: componentID) }.joined(separator: ", ")). Map them in pin_map, by pin name, e.g. {\"\(unmapped.first.map { pinName($0, componentID: componentID) } ?? "VSSA/VREF-")\": \"<new pin>\"}; nothing was changed."
             )
         }
         var connections = JSONDictionary(), altPins = JSONDictionary()

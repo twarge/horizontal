@@ -17,7 +17,7 @@ enum HorizontalDispatchValidation {
         let numbers: Set<String> = ["dpi", "margin_mm", "deadline_unix_ms", "factor"]
         let booleans: Set<String> = ["include_metadata", "include_unconnected", "include_no_populate", "dry_run",
                                      "mirrored", "redo", "allow_project_changes", "smashed", "airwires", "full",
-                                     "include_contents", "connected"]
+                                     "include_contents", "connected", "compact"]
         let objects: Set<String> = ["region", "options"]
         let arrays: Set<String> = ["ops", "items", "pool_items", "components", "nets", "layers", "layer_ids", "sections", "panes", "parts", "remove", "pads"]
         for (key, value) in params {

@@ -88,7 +88,8 @@ enum HorizontalDispatchMethods {
         .init(
             name: "netlist",
             summary: "The whole netlist: every net with its pins, plus unconnected pins.",
-            params: ["handle": "Project handle.", "include_unconnected": "Include pins with no net (default false)."],
+            params: ["handle": "Project handle.", "include_unconnected": "Include pins with no net (default false).",
+                     "compact": "Each pin as REFDES.PIN — with the gate's suffix where a part repeats a pin name, U3A.IN+ — and each net with only its id, name, pins and what isn't the default: on Billo, 22 KB where the full one is 348 KB (default false)."],
             handler: netlist
         ),
         .init(
@@ -942,6 +943,9 @@ enum HorizontalDispatchMethods {
     @Sendable private static func netlist(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
         let entry = try session.entry(for: params)
         let index = entry.index
+        if params.bool("compact") ?? false {
+            return compactNetlist(index, entry: entry, includeUnconnected: params.bool("include_unconnected") ?? false)
+        }
         var result: JSONDictionary = [
             "nets": index.sortedNets.map { netJSON($0, entry: entry, full: true) },
             "component_count": index.components.count,
@@ -951,6 +955,57 @@ enum HorizontalDispatchMethods {
             result["unconnected_pins"] = index.sortedComponents.flatMap { component in
                 component.pins.filter { $0.netID == nil }.map { pin -> JSONDictionary in
                     ["refdes": component.refdes, "pin": pin.pinName, "gate_suffix": pin.gateSuffix, "direction": pin.direction]
+                }
+            }
+        }
+        return result
+    }
+
+    /// The netlist a reader can take in whole: a net's id, name and pins,
+    /// each pin as REFDES.PIN, and its class, power or port flag and
+    /// airwires only when they aren't the default. A big board's full one runs
+    /// to hundreds of kilobytes, nearly all of it the ids in each pin.
+    private static func compactNetlist(_ index: HorizontalDesignIndex, entry: HorizontalDispatchProjectEntry,
+                                       includeUnconnected: Bool) -> JSONDictionary {
+        // The pin names a part has more than once, which its gates' suffixes
+        // tell apart: a quad op-amp's IN+.
+        var repeated = [String: Set<String>]()
+        func label(componentID: String, refdes: String, gateSuffix: String, pinName: String) -> String {
+            let names = repeated[componentID] ?? {
+                let pins = index.component(id: componentID)?.pins.map { $0.pinName.lowercased() } ?? []
+                let counted = Dictionary(grouping: pins) { $0 }.filter { $0.value.count > 1 }
+                let names = Set(counted.keys)
+                repeated[componentID] = names
+                return names
+            }()
+            let gate = names.contains(pinName.lowercased()) ? gateSuffix : ""
+            return "\(refdes)\(gate).\(pinName)"
+        }
+        let airwires = Dictionary(grouping: entry.project.board?.airwires ?? []) { $0.netID?.lowercased() ?? "" }
+        // The class a net is in unless it says otherwise: the top block's.
+        let blockFile = entry.project.blocks.first(where: \.isTop)?.blockFilename ?? entry.project.blockFilename
+        let block = blockFile.flatMap { entry.snapshot?.json(at: entry.project.baseURL.appendingPathComponent($0)) }
+        let defaultClass = block.flatMap { block in
+            block.string("net_class_default").flatMap { id in
+                block.dictionaryMap("net_classes").first { $0.key.lowercased() == id.lowercased() }?.value.string("name")
+            }
+        }
+        let nets = index.sortedNets.map { net -> JSONDictionary in
+            var json: JSONDictionary = [
+                "id": net.id, "name": net.name,
+                "pins": net.pins.map { label(componentID: $0.componentID, refdes: $0.refdes, gateSuffix: $0.gateSuffix, pinName: $0.pinName) }
+            ]
+            if net.isPower { json["is_power"] = true }
+            if net.isPort { json["is_port"] = true }
+            if let netClass = net.netClassName, !netClass.isEmpty, netClass != defaultClass { json["net_class"] = netClass }
+            if let count = airwires[net.id]?.count, count > 0 { json["airwire_count"] = count }
+            return json
+        }
+        var result: JSONDictionary = ["nets": nets, "component_count": index.components.count, "net_count": index.nets.count]
+        if includeUnconnected {
+            result["unconnected_pins"] = index.sortedComponents.flatMap { component in
+                component.pins.filter { $0.netID == nil }.map {
+                    label(componentID: component.id, refdes: component.refdes, gateSuffix: $0.gateSuffix, pinName: $0.pinName)
                 }
             }
         }
@@ -1245,7 +1300,8 @@ enum HorizontalDispatchMethods {
                 "Pass \"ops\", a non-empty array of operations, or commit a dry run by its plan_digest alone.")
         }
         // Names a batch gives what it makes become UUIDs before anything runs.
-        let (resolvedOps, handles) = try HorizontalEditHandles.resolve(rawOps, revision: entry.revision)
+        let ids = HorizontalProjectIDs(archive: entry.snapshot?.archive)
+        let (resolvedOps, handles) = try HorizontalEditHandles.resolve(rawOps, revision: entry.revision, existing: ids.id(matching:))
         let operations = try resolvedOps.enumerated().map { index, raw -> HorizontalEditOperation in
             guard let json = raw as? JSONDictionary else {
                 throw HorizontalDispatchError.invalidParams("Operation \(index) is not an object.")

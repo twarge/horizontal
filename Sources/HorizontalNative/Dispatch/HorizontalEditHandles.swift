@@ -1,4 +1,5 @@
 import Foundation
+import HorizontalProjectIO
 
 /// Names a batch gives the things it makes. An op whose id is the id of a new
 /// thing — a junction, a symbol instance, a wire, a component, a text — may
@@ -13,6 +14,12 @@ import Foundation
 /// id or a reference, means the same thing. A name only stands for its own
 /// kind: a junction called "GND" leaves every net field alone. A UUID is never
 /// a name, and a name no earlier op defined is passed on as it is.
+///
+/// A short id — eight or more of a UUID's leading digits, as a reply
+/// shortens one — that no op defined is the one thing in the project whose id
+/// begins that way, wherever an op names a wire, junction, symbol, text,
+/// label or anything else it acts on. Components and nets have resolvers of
+/// their own that take short ids, and look among their kind alone.
 enum HorizontalEditHandles {
     enum Kind: String {
         case component, net, bus, busMember = "bus_member", netTie = "net_tie", netClass = "net_class"
@@ -57,20 +64,44 @@ enum HorizontalEditHandles {
     static let endpointOps: Set<String> = ["draw_net_line", "set_net_line_endpoint"]
     static let endpointKeys = ["from", "to", "endpoint"]
 
+    /// Fields naming a thing of the project by id that a short id may stand
+    /// for. Not component, net and the like: their resolvers take short ids
+    /// among their own kind, and names besides.
+    static let shortIDFields: Set<String> = [
+        "line", "junction", "symbol_instance", "net_tie", "instance", "bus", "member",
+        "track", "via", "polygon", "plane", "hole", "keepout", "dimension"
+    ]
+    /// Lists of ids a short id may stand in.
+    static let shortIDLists: Set<String> = ["symbols", "junctions", "texts", "items"]
+
     private static let namespace = UUID(uuidString: "3b9d6f0e-8a1c-4e52-b7d4-5f2a9c0e6d13")!
 
     /// The ops with every name replaced by its UUID, and the names defined,
-    /// each with the UUID it became.
-    static func resolve(_ ops: [Any], revision: String) throws -> (ops: [Any], handles: [String: String]) {
+    /// each with the UUID it became. `existing` gives the one id in the
+    /// project a short id begins, nil for none; it throws for several.
+    static func resolve(_ ops: [Any], revision: String,
+                        existing: (String) throws -> String? = { _ in nil }) throws -> (ops: [Any], handles: [String: String]) {
         var defined = [Kind: [String: String]]()
         var handles = [String: String]()
         func uuid(_ value: Any?, _ kind: Kind) -> String? {
             guard let name = value as? String, UUID(uuidString: name) == nil else { return nil }
             return defined[kind]?[name]
         }
+        /// The whole id a short one stands for, or nil.
+        func expanded(_ value: Any?) throws -> String? {
+            guard let text = value as? String, UUID(uuidString: text) == nil,
+                  HorizontalDispatchValidation.uuidPrefix(text) != nil,
+                  !handles.keys.contains(text) else { return nil }
+            return try existing(text)
+        }
         let resolved = try ops.enumerated().map { index, raw -> Any in
             guard var op = raw as? JSONDictionary else { return raw }
             let name = op.string("op") ?? ""
+            do {
+                try expandShortIDs(in: &op, name: name, expanded: expanded)
+            } catch let error as HorizontalDispatchError {
+                throw error.inOperation(index, name)
+            }
             for (key, kind) in references {
                 if let id = uuid(op[key], kind) { op[key] = id }
             }
@@ -109,6 +140,29 @@ enum HorizontalEditHandles {
         return (resolved, handles)
     }
 
+    /// Short ids in `op` made whole: in the fields that name a thing by id,
+    /// in the lists of them, in a wire or track end's junction and symbol,
+    /// and in `id` — which on an op that makes something stands for the
+    /// thing that is there only when one is, and is a batch name otherwise.
+    private static func expandShortIDs(in op: inout JSONDictionary, name: String,
+                                       expanded: (Any?) throws -> String?) throws {
+        for key in shortIDFields {
+            if let id = try expanded(op[key]) { op[key] = id }
+        }
+        for key in shortIDLists {
+            guard let list = op[key] as? [Any] else { continue }
+            op[key] = try list.map { try expanded($0) ?? $0 }
+        }
+        for key in endpointKeys {
+            guard var end = op[key] as? JSONDictionary else { continue }
+            for field in ["junction", "symbol"] {
+                if let id = try expanded(end[field]) { end[field] = id }
+            }
+            op[key] = end
+        }
+        if let id = try expanded(op["id"]) { op["id"] = id }
+    }
+
     /// An op that fails over something a batch name stood for says so by the
     /// name, beside the UUID it became. When an earlier op in the batch took
     /// that thing away, it says which: removing a wire also removes the
@@ -138,5 +192,46 @@ enum HorizontalEditHandles {
         case let list as [Any]: list.contains { mentions($0, id) }
         default: false
         }
+    }
+}
+
+/// Every id the project's own files hold, for a short id to be looked up
+/// among: the keys of their uuid-keyed maps, which is how Horizon keeps
+/// everything it draws. Read once, and only when a short id comes up; the pool
+/// and the plane fills are left out.
+final class HorizontalProjectIDs {
+    private let archive: HorizontalProjectArchive?
+    private lazy var ids: [String] = Self.collect(archive)
+
+    init(archive: HorizontalProjectArchive?) {
+        self.archive = archive
+    }
+
+    /// The one id a short id begins, nil for none, and an ambiguity error
+    /// listing them for several.
+    func id(matching reference: String) throws -> String? {
+        try HorizontalDispatchValidation.id(matchingPrefix: reference, in: ids, kind: "object")
+    }
+
+    private static func collect(_ archive: HorizontalProjectArchive?) -> [String] {
+        guard let archive else { return [] }
+        var ids = Set<String>()
+        func walk(_ value: Any) {
+            if let map = value as? JSONDictionary {
+                for (key, child) in map {
+                    if key.count == 36, UUID(uuidString: key) != nil { ids.insert(key.lowercased()) }
+                    walk(child)
+                }
+            } else if let list = value as? [Any] {
+                list.forEach(walk)
+            }
+        }
+        for path in archive.regularFilePaths where path.hasSuffix(".json") && path != "planes.json"
+            && path.split(separator: "/").first != "pool" {
+            guard let data = archive.regularFileData(relativePath: path),
+                  let json = try? JSONSerialization.jsonObject(with: data) else { continue }
+            walk(json)
+        }
+        return Array(ids)
     }
 }

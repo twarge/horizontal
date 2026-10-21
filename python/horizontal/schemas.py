@@ -387,10 +387,11 @@ class RetireNet(NetOp):
 
 
 class Connect(ComponentOp):
+    """With create_net, a net "" or left out is a new net with no name."""
     op: Literal["connect"]
     pin: StrictStr
     gate: str | None = None
-    net: StrictStr
+    net: StrictStr | None = None
     create_net: bool = False
 
 
@@ -692,8 +693,9 @@ class SetPinAlternate(ComponentOp):
 
 
 class RemapPart(ComponentOp):
-    """pin_map is optional: pins it leaves out are matched by gate and pin name. copper says what becomes of
-    tracks on pads the new part has nothing for: refuse (the default, naming them) or drop."""
+    """pin_map is optional: it pairs old pins with new ones, each named as connect names a pin (VSSA/VREF- → VSSA,
+    or gate/pin), and pins it leaves out are matched by gate and pin name. copper says what becomes of tracks on
+    pads the new part has nothing for: refuse (the default, naming them) or drop."""
     op: Literal["remap_part"]
     part: StrictStr
     pin_map: dict[StrictStr, StrictStr] | None = None
