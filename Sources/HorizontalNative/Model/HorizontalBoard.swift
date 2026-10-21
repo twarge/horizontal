@@ -3660,7 +3660,8 @@ struct HorizontalBoard {
             .appendingPathComponent("cache")
             .appendingPathComponent("\(normalizedID(partID)).json")
 
-        guard let partURL = existingFileURL(candidatePartURL) else {
+        guard let partURL = existingFileURL(candidatePartURL)
+                ?? HorizontalProjectPoolIndex.url(.part, partID, poolURL: poolURL) else {
             return nil
         }
 
@@ -3748,7 +3749,8 @@ struct HorizontalBoard {
             .appendingPathComponent("cache")
             .appendingPathComponent("\(partID).json")
 
-        guard let partURL = existingFileURL(candidatePartURL) else {
+        guard let partURL = existingFileURL(candidatePartURL)
+                ?? HorizontalProjectPoolIndex.url(.part, partID, poolURL: poolURL) else {
             missingCache.insert(partID)
             return nil
         }
@@ -4023,7 +4025,7 @@ struct HorizontalBoard {
             .appendingPathComponent("cache")
             .appendingPathComponent("\(decalID).json")
 
-        guard let existingURL = existingFileURL(decalURL),
+        guard let existingURL = existingFileURL(decalURL) ?? HorizontalProjectPoolIndex.url(.decal, decalID, poolURL: poolURL),
               let decalJSON = try? JSONHelper.loadDictionary(from: existingURL) else {
             return nil
         }
@@ -4715,7 +4717,8 @@ struct HorizontalBoard {
             .appendingPathComponent("padstacks")
             .appendingPathComponent("cache")
             .appendingPathComponent("\(padstackID).json")
-        if let globalPadstackURL = existingFileURL(globalPadstackURL) {
+        if let globalPadstackURL = existingFileURL(globalPadstackURL)
+            ?? HorizontalProjectPoolIndex.url(.padstack, padstackID, poolURL: poolURL) {
             return try? JSONHelper.loadDictionary(from: globalPadstackURL)
         }
 
@@ -4859,6 +4862,7 @@ struct HorizontalBoard {
         return candidateURLs.lazy.compactMap { url in
             existingFileURL(url).flatMap { try? JSONHelper.loadDictionary(from: $0) }
         }.first
+            ?? HorizontalProjectPoolIndex.url(.padstack, padstackID, poolURL: poolURL).flatMap { try? JSONHelper.loadDictionary(from: $0) }
     }
 
     private static func holeDiameter(for hole: JSONDictionary, parameterSet: JSONDictionary?) -> Double? {
@@ -5794,17 +5798,16 @@ struct HorizontalBoard {
             return candidate
         }
 
-        guard let children = try? FileManager.default.contentsOfDirectory(
+        let children = (try? FileManager.default.contentsOfDirectory(
             at: cacheURL,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
-        ) else {
-            return nil
-        }
+        )) ?? []
 
         return children.first {
             $0.lastPathComponent.caseInsensitiveCompare(packageID) == .orderedSame
         }
+            ?? HorizontalProjectPoolIndex.url(.package, packageID, poolURL: poolURL)?.deletingLastPathComponent()
     }
 
     private static func existingFileURL(_ url: URL) -> URL? {

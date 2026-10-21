@@ -39,7 +39,8 @@ struct HorizontalPoolPart: Identifiable, Hashable {
     var isBasePart = false
     var excludeFromBOM = false
     var excludeFromPnP = false
-    /// The file the part was read from, when it came from a pool's cache.
+    /// The file the part was read from, when it came from the project pool:
+    /// its cache, or anywhere else the project keeps its own.
     var fileURL: URL? = nil
     /// The part this one derives from (`base`), lowercased.
     var baseID: String? = nil
@@ -56,15 +57,16 @@ struct HorizontalPoolPart: Identifiable, Hashable {
         return packageName.isEmpty || packageName == String(packageID.prefix(8)) ? packageID : packageName
     }
 
-    /// One part from the project pool's cache, resolved the way `loadAll`
-    /// resolves them (entity, gates, symbols, package name).
+    /// One part from the project pool, its cache or its own, resolved the way
+    /// `loadAll` resolves them (entity, gates, symbols, package name).
     static func loadCached(id: String, from poolURL: URL) -> HorizontalPoolPart? {
         let normalized = id.lowercased()
         let url = poolURL
             .appendingPathComponent("parts")
             .appendingPathComponent("cache")
             .appendingPathComponent("\(normalized).json")
-        guard let json = try? JSONHelper.loadDictionary(from: url) else {
+        guard let json = (try? JSONHelper.loadDictionary(from: url))
+                ?? HorizontalProjectPoolIndex.url(.part, normalized, poolURL: poolURL).flatMap({ try? JSONHelper.loadDictionary(from: $0) }) else {
             return nil
         }
         return PoolPartLoader(poolURL: poolURL).part(id: normalized, json: json)
@@ -76,14 +78,16 @@ struct HorizontalPoolPart: Identifiable, Hashable {
                 .appendingPathComponent("parts")
                 .appendingPathComponent("cache")
 
-            guard let partURLs = try? FileManager.default.contentsOfDirectory(
+            let cachedURLs = (try? FileManager.default.contentsOfDirectory(
                 at: partsURL,
                 includingPropertiesForKeys: nil
-            ) else {
-                return []
-            }
+            )) ?? []
+            // The project's own parts after the cache's, so a uuid in both is
+            // the cache's.
+            let partURLs = cachedURLs + HorizontalProjectPoolIndex.items(.part, poolURL: poolURL).values.sorted { $0.path < $1.path }
 
             let jsonByID = BoardLoadTimer.measure("  parse pool JSON files") { () -> [(String, JSONDictionary, URL)] in
+                var seen = Set<String>()
                 let result = partURLs
                     .filter { $0.pathExtension.lowercased() == "json" }
                     .compactMap { url -> (String, JSONDictionary, URL)? in
@@ -91,6 +95,9 @@ struct HorizontalPoolPart: Identifiable, Hashable {
                             return nil
                         }
                         let id = (json.string("uuid") ?? url.deletingPathExtension().lastPathComponent).lowercased()
+                        guard seen.insert(id).inserted else {
+                            return nil
+                        }
                         return (id, json, url)
                     }
                 return result
@@ -220,7 +227,13 @@ private final class PoolPartLoader {
             .appendingPathComponent("parts")
             .appendingPathComponent("cache")
             .appendingPathComponent("\(normalizedID(partID)).json")
-        return try? JSONHelper.loadDictionary(from: partURL)
+        return load(.part, partID, cacheURL: partURL)
+    }
+
+    /// The item's cache copy, else the project's own.
+    private func load(_ category: HorizontalPoolItemCategory, _ id: String, cacheURL: URL) -> JSONDictionary? {
+        (try? JSONHelper.loadDictionary(from: cacheURL))
+            ?? HorizontalProjectPoolIndex.url(category, id, poolURL: poolURL).flatMap { try? JSONHelper.loadDictionary(from: $0) }
     }
 
     private func packageName(for packageID: String) -> String? {
@@ -234,7 +247,7 @@ private final class PoolPartLoader {
             .appendingPathComponent("cache")
             .appendingPathComponent(packageID)
             .appendingPathComponent("package.json")
-        let name = (try? JSONHelper.loadDictionary(from: packageURL))?
+        let name = load(.package, packageID, cacheURL: packageURL)?
             .string("name")
             .flatMap(nonEmpty)
         packageNameCache[packageID] = name
@@ -247,7 +260,7 @@ private final class PoolPartLoader {
             .appendingPathComponent("entities")
             .appendingPathComponent("cache")
             .appendingPathComponent("\(entityID).json")
-        guard let json = try? JSONHelper.loadDictionary(from: entityURL) else {
+        guard let json = load(.entity, entityID, cacheURL: entityURL) else {
             return nil
         }
 
@@ -273,20 +286,25 @@ private final class PoolPartLoader {
         let symbolsURL = poolURL
             .appendingPathComponent("symbols")
             .appendingPathComponent("cache")
-        guard let symbolURLs = try? FileManager.default.contentsOfDirectory(
+        let cachedURLs = (try? FileManager.default.contentsOfDirectory(
             at: symbolsURL,
             includingPropertiesForKeys: nil
-        ) else {
-            return [:]
-        }
+        )) ?? []
+        // The project's own symbols after the cache's, so a uuid in both is
+        // the cache's.
+        let localURLs = HorizontalProjectPoolIndex.items(.symbol, poolURL: poolURL).values.sorted { $0.path < $1.path }
 
         var result = [String: [String]]()
-        for url in symbolURLs where url.pathExtension.lowercased() == "json" {
+        var seen = Set<String>()
+        for url in cachedURLs + localURLs where url.pathExtension.lowercased() == "json" {
             guard let json = try? JSONHelper.loadDictionary(from: url),
                   let unitID = json.string("unit").map(normalizedID) else {
                 continue
             }
             let symbolID = normalizedID(json.string("uuid") ?? url.deletingPathExtension().lastPathComponent)
+            guard seen.insert(symbolID).inserted else {
+                continue
+            }
             result[unitID, default: []].append(symbolID)
         }
 

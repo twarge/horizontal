@@ -214,7 +214,7 @@ struct HorizontalSchematic {
     var unplacedObjects: [HorizontalUnplacedObject]
     var bounds: HorizontalRect
     /// The frames a sheet can be given: the project pool's
-    /// (`frames/cache/`, where a sheet's frame is drawn from), by name.
+    /// (`frames/`, where a sheet's frame is drawn from), by name.
     var availableFrames: [HorizontalSheetFrameOption] = []
 
     private struct SchematicBlockInfo {
@@ -544,8 +544,9 @@ struct HorizontalSchematic {
         )
     }
 
-    /// Where a sheet's frame is drawn from: the project pool's cached copy,
-    /// `frames/cache/<uuid>.json`.
+    /// Where a sheet's frame is drawn from first: the project pool's cached
+    /// copy, `frames/cache/<uuid>.json`. A frame the project pool keeps
+    /// elsewhere is found by `HorizontalProjectPoolIndex`.
     static func frameURL(_ frameID: String, poolURL: URL) -> URL {
         poolURL
             .appendingPathComponent("frames")
@@ -581,15 +582,14 @@ struct HorizontalSchematic {
     }
 
     /// The frames a sheet of this project can draw: those in the project
-    /// pool's `frames/cache/`, under a file the loader finds by their uuid.
+    /// pool's `frames/cache/`, under a file the loader finds by their uuid,
+    /// and the project's own anywhere else under `frames/`.
     static func projectPoolFrames(poolURL: URL) -> [HorizontalSheetFrameOption] {
         let directory = poolURL.appendingPathComponent("frames").appendingPathComponent("cache")
-        guard let urls = try? FileManager.default.contentsOfDirectory(
+        let urls = (try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
-        return urls.compactMap { url -> HorizontalSheetFrameOption? in
+        )) ?? []
+        var frames = urls.compactMap { url -> HorizontalSheetFrameOption? in
             guard url.pathExtension.lowercased() == "json",
                   let json = try? JSONHelper.loadDictionary(from: url),
                   json.string("type") == "frame",
@@ -599,7 +599,14 @@ struct HorizontalSchematic {
             }
             return HorizontalSheetFrameOption(id: normalizedID(uuid), name: json.string("name") ?? "")
         }
-        .sorted { ($0.name.localizedLowercase, $0.id) < ($1.name.localizedLowercase, $1.id) }
+        let cachedIDs = Set(frames.map(\.id))
+        for (uuid, url) in HorizontalProjectPoolIndex.items(.frame, poolURL: poolURL) where !cachedIDs.contains(uuid) {
+            guard let json = try? JSONHelper.loadDictionary(from: url), json.string("type") == "frame" else {
+                continue
+            }
+            frames.append(HorizontalSheetFrameOption(id: uuid, name: json.string("name") ?? ""))
+        }
+        return frames.sorted { ($0.name.localizedLowercase, $0.id) < ($1.name.localizedLowercase, $1.id) }
     }
 
     static func load(from url: URL) throws -> HorizontalSchematic {
@@ -3690,7 +3697,7 @@ struct HorizontalSchematic {
             .appendingPathComponent("entities")
             .appendingPathComponent("cache")
             .appendingPathComponent("\(entityID).json")
-        guard let resolvedURL = existingFileURL(entityURL),
+        guard let resolvedURL = existingFileURL(entityURL) ?? HorizontalProjectPoolIndex.url(.entity, entityID, poolURL: poolURL),
               let entityJSON = try? JSONHelper.loadDictionary(from: resolvedURL) else {
             entityGateCache[entityID] = [:]
             return [:]
@@ -3717,20 +3724,25 @@ struct HorizontalSchematic {
         let symbolsURL = poolURL
             .appendingPathComponent("symbols")
             .appendingPathComponent("cache")
-        guard let symbolURLs = try? FileManager.default.contentsOfDirectory(
+        let cachedURLs = (try? FileManager.default.contentsOfDirectory(
             at: symbolsURL,
             includingPropertiesForKeys: nil
-        ) else {
-            return [:]
-        }
+        )) ?? []
+        // The project's own symbols after the cache's, so a uuid in both is
+        // the cache's.
+        let localURLs = HorizontalProjectPoolIndex.items(.symbol, poolURL: poolURL).values.sorted { $0.path < $1.path }
 
         var result = [String: [String]]()
-        for url in symbolURLs where url.pathExtension.lowercased() == "json" {
+        var seen = Set<String>()
+        for url in cachedURLs + localURLs where url.pathExtension.lowercased() == "json" {
             guard let symbolJSON = try? JSONHelper.loadDictionary(from: url),
                   let unitID = symbolJSON.string("unit").map(normalizedID) else {
                 continue
             }
             let symbolID = normalizedID(symbolJSON.string("uuid") ?? url.deletingPathExtension().lastPathComponent)
+            guard seen.insert(symbolID).inserted else {
+                continue
+            }
             result[unitID, default: []].append(symbolID)
         }
 
@@ -3765,7 +3777,7 @@ struct HorizontalSchematic {
             .appendingPathComponent("cache")
             .appendingPathComponent("\(symbolID).json")
 
-        guard let resolvedURL = existingFileURL(symbolURL),
+        guard let resolvedURL = existingFileURL(symbolURL) ?? HorizontalProjectPoolIndex.url(.symbol, symbolID, poolURL: poolURL),
               let symbolJSON = try? JSONHelper.loadDictionary(from: resolvedURL) else {
             return nil
         }
@@ -3784,7 +3796,8 @@ struct HorizontalSchematic {
             return cached
         }
 
-        guard let resolvedURL = existingFileURL(frameURL(frameID, poolURL: poolURL)),
+        guard let resolvedURL = existingFileURL(frameURL(frameID, poolURL: poolURL))
+                ?? HorizontalProjectPoolIndex.url(.frame, frameID, poolURL: poolURL),
               let frameJSON = try? JSONHelper.loadDictionary(from: resolvedURL) else {
             return nil
         }
@@ -3808,7 +3821,7 @@ struct HorizontalSchematic {
             .appendingPathComponent("cache")
             .appendingPathComponent("\(unitID).json")
 
-        guard let resolvedURL = existingFileURL(unitURL),
+        guard let resolvedURL = existingFileURL(unitURL) ?? HorizontalProjectPoolIndex.url(.unit, unitID, poolURL: poolURL),
               let unitJSON = try? JSONHelper.loadDictionary(from: resolvedURL) else {
             return nil
         }
@@ -3863,7 +3876,7 @@ struct HorizontalSchematic {
             .appendingPathComponent("cache")
             .appendingPathComponent("\(partID).json")
 
-        guard let resolvedURL = existingFileURL(partURL),
+        guard let resolvedURL = existingFileURL(partURL) ?? HorizontalProjectPoolIndex.url(.part, partID, poolURL: poolURL),
               let partJSON = try? JSONHelper.loadDictionary(from: resolvedURL) else {
             return nil
         }
@@ -3931,7 +3944,7 @@ struct HorizontalSchematic {
             .appendingPathComponent("cache")
             .appendingPathComponent("\(partID).json")
 
-        guard let resolvedURL = existingFileURL(partURL),
+        guard let resolvedURL = existingFileURL(partURL) ?? HorizontalProjectPoolIndex.url(.part, partID, poolURL: poolURL),
               let partJSON = try? JSONHelper.loadDictionary(from: resolvedURL) else {
             missingDetails.insert(partID)
             return nil
@@ -3994,8 +4007,9 @@ struct HorizontalSchematic {
             .appendingPathComponent(packageID)
             .appendingPathComponent("package.json")
 
-        guard let packageDirectory = existingDirectoryURL(packageURL.deletingLastPathComponent()),
-              let resolvedURL = existingFileURL(packageDirectory.appendingPathComponent("package.json")),
+        let cachedURL = existingDirectoryURL(packageURL.deletingLastPathComponent())
+            .flatMap { existingFileURL($0.appendingPathComponent("package.json")) }
+        guard let resolvedURL = cachedURL ?? HorizontalProjectPoolIndex.url(.package, packageID, poolURL: poolURL),
               let packageJSON = try? JSONHelper.loadDictionary(from: resolvedURL) else {
             return nil
         }

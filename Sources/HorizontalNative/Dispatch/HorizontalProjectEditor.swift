@@ -6395,8 +6395,9 @@ final class HorizontalProjectEditor {
 
     /// The frame a `frame` parameter names: nil for "none" or null, else a
     /// frame the project pool holds where a sheet's frame is drawn from
-    /// (`frames/cache/<uuid>.json`). One that is not there is refused with
-    /// where it is, since a sheet naming it would draw no frame at all.
+    /// (`frames/cache/<uuid>.json`, or the project's own anywhere else under
+    /// `frames/`). One that is not there is refused with where it is, since a
+    /// sheet naming it would draw no frame at all.
     private func resolvedFrame(_ value: Any?) throws -> (id: String, name: String)? {
         if value == nil || value is NSNull { return nil }
         guard let text = (value as? String)?.trimmingCharacters(in: .whitespaces), !text.isEmpty else {
@@ -6414,6 +6415,11 @@ final class HorizontalProjectEditor {
            let json = try? JSONHelper.loadDictionary(from: data), json.string("type") == "frame" {
             return (frameID, json.string("name") ?? "")
         }
+        if let url = HorizontalProjectPoolIndex.url(.frame, frameID, poolURL: poolURL),
+           let data = try store.read(url),
+           let json = try? JSONHelper.loadDictionary(from: data), json.string("type") == "frame" {
+            return (frameID, json.string("name") ?? "")
+        }
         let projectPool = HorizontalPoolLibrary.canonicalURL(poolURL).path
         let holder = HorizontalPoolLibrary.editorPoolURLs(forPoolRoot: poolURL).lazy.compactMap { url in
             HorizontalPoolLibrary.items(inPool: url, poolName: HorizontalPoolRegistryStore.poolInfo(at: url).name)
@@ -6427,7 +6433,7 @@ final class HorizontalProjectEditor {
         let name = holder.name.isEmpty ? frameID : "\(holder.name) (\(frameID))"
         if holder.poolURL.standardizedFileURL.path == projectPool {
             throw HorizontalDispatchError.notFound(
-                "Frame \(name) is in the project pool at \(holder.url.path), but a sheet's frame is drawn from frames/cache/\(frameID).json, where it is not."
+                "Frame \(name) is in the project pool at \(holder.url.path), but a sheet's frame is drawn from the pool's frames/ directory, where it is not."
             )
         }
         throw HorizontalDispatchError.notFound(
