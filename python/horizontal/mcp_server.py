@@ -788,8 +788,9 @@ def bom(path: str | None = None, include_no_populate: bool = True) -> dict[str, 
 def list_parts(path: str | None = None, scope: Literal["project", "pools", "all"] = "project",
                pool: Annotated[str | None, Field(description="Only parts this pool holds, named as a row's pools names it, e.g. \"Twinleaf Pool\".")] = None,
                fields: Annotated[list[str] | None, Field(description="Only these keys of each row (uuid always), e.g. [\"mpn\", \"pools\"]. The pools scopes run to a megabyte in full.")] = None) -> list[dict[str, Any]]:
-    """Parts the project can use. "project" (the default) lists only the project pool — the self-contained cache beside
-    the project, which is all a component can name today. "pools" lists the base pools it draws from, a part the
+    """Parts the project can use. "project" (the default) lists only the project pool beside the project — its
+    self-contained cache and the parts the project keeps itself, wherever under parts/ they sit — which is all a
+    component can name today. "pools" lists the base pools it draws from, a part the
     project has cached as its base pool holds it; "all" lists the project's parts, then the base pools' parts it does
     not have. A row with in_project_pool false needs import_pool_part before ensure_component can use it. Every row has
     the same keys; value is what the part stores, empty when it has none (a component on it shows its mpn), and
