@@ -36,6 +36,8 @@ struct HorizontalSettingsView: View {
             }
             #endif
 
+            HorizontalDigiKeySettingsSection()
+
             Section("App Theme") {
                 Picker("Theme", selection: appearanceSettings.appThemeBinding()) {
                     ForEach(HorizontalAppTheme.allCases) { theme in
