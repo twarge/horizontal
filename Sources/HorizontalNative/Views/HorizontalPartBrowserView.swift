@@ -62,6 +62,8 @@ struct HorizontalPartBrowserView: View {
     var onReviewUpdates: () -> Void = {}
     /// Opens the project pool cleanup, where the document offers one.
     var onCleanUp: (() -> Void)? = nil
+    /// What DigiKey stocks of each part, for the DigiKey Stock column.
+    @ObservedObject var digiKey: HorizontalDigiKeyStockMonitor = .shared
 
     @State private var searchScope: HorizontalPartSearchScope = .all
     @State private var searchText = ""
@@ -154,6 +156,12 @@ struct HorizontalPartBrowserView: View {
             pendingRevealTask?.cancel()
             pendingRevealTask = nil
         }
+        // Asks DigiKey about parts it has no fresh answer for whenever the
+        // parts or the credentials change, unless the column is hidden.
+        .task(id: digiKeyLookupSignature) {
+            guard showsDigiKeyStock else { return }
+            digiKey.lookUp(listedParts)
+        }
         #if os(macOS)
         .background(Color(nsColor: .controlBackgroundColor))
         #else
@@ -237,7 +245,19 @@ struct HorizontalPartBrowserView: View {
 
     /// The sum of the columns' minimum widths (plus row insets): the least
     /// width at which every column is still legible.
-    private static let minimumTableWidth: CGFloat = 1140
+    private static let minimumTableWidth: CGFloat = 1240
+
+    private static let digiKeyStockColumnID = "digikeyStock"
+
+    private var showsDigiKeyStock: Bool {
+        columnCustomization[visibility: Self.digiKeyStockColumnID] != .hidden
+    }
+
+    private var digiKeyLookupSignature: String {
+        guard digiKey.isConfigured, showsDigiKeyStock else { return "" }
+        let keys = listedParts.map { HorizontalDigiKeyQuery(part: $0).key }.sorted()
+        return "\(digiKey.credentialsRevision)\u{1E}" + keys.joined(separator: "\u{1E}")
+    }
 
     private var partTable: some View {
         // Table has no horizontal scrolling of its own — when the pane is
@@ -325,6 +345,14 @@ struct HorizontalPartBrowserView: View {
             .customizationID("package")
             .disabledCustomizationBehavior(.visibility)
 
+            // DigiKey's stock of the part's MPN. Not sortable: like the
+            // library columns, it comes from outside the part.
+            TableColumn("DigiKey Stock") { part in
+                digiKeyStockCell(part)
+            }
+            .width(min: 100, ideal: 110)
+            .customizationID(Self.digiKeyStockColumnID)
+
             TableColumn("Tags", value: \.tagList) { part in
                 tableText(part.tagList, part: part)
             }
@@ -358,6 +386,31 @@ struct HorizontalPartBrowserView: View {
                 }
             }
         }
+        let stock = digiKey.state(for: part)
+        if stock != .noMPN, stock != .notSetUp {
+            Divider()
+            if let url = stock.productURL {
+                Link("Open on DigiKey", destination: url)
+            }
+            Button("Check DigiKey Stock Again") { digiKey.lookUp([part], force: true) }
+        }
+    }
+
+    /// The part's stock at DigiKey: a count, right-aligned, orange when
+    /// none is left or the part is winding down; its tooltip names the
+    /// DigiKey part numbers behind it.
+    private func digiKeyStockCell(_ part: HorizontalPoolPart) -> some View {
+        let state = digiKey.state(for: part)
+        return Text(state.title)
+            .monospacedDigit()
+            .foregroundStyle(state.isWarning ? Color.orange : state.isNumeric ? Color.primary : Color.secondary)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: state.isNumeric ? .trailing : .leading)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                place(part)
+            }
+            .help(state.help(for: part))
     }
 
     private var unavailableView: some View {
