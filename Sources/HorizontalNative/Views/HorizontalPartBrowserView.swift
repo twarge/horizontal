@@ -54,6 +54,9 @@ struct HorizontalPartBrowserView: View {
     /// The parts components use, which are listed even when they are only a
     /// base other parts derive from.
     var usedPartIDs: Set<String> = []
+    /// The parts some component is fitted with, so a part only Do Not
+    /// Populate components use can be hidden; nil hides none for it.
+    var populatedPartIDs: Set<String>? = nil
     /// Attached pools a part no attached pool has can be copied into.
     var copyTargets: [HorizontalPoolCopyTarget] = []
     /// Copies a part into a pool (a plan the host confirms first).
@@ -74,6 +77,11 @@ struct HorizontalPartBrowserView: View {
     @State private var pendingRevealTask: Task<Void, Never>?
     @State private var selectionChangedAt = Date.distantPast
     @State private var libraryFilter = HorizontalPartLibraryFilter.all
+    /// Leaves out what isn't bought for the board: parts flagged exclude
+    /// from BOM (test pads, mounting holes) and parts only Do Not Populate
+    /// components use.
+    @AppStorage("Horizontal.partBrowser.hidesExcludedFromBOM") private var hidesExcludedFromBOM = true
+    @AppStorage("Horizontal.partBrowser.hidesDoNotPopulate") private var hidesDoNotPopulate = true
     @SceneStorage("Horizontal.partBrowser.columnCustomization")
     private var columnCustomization = TableColumnCustomization<HorizontalPoolPart>()
     /// Where in this pane the keyboard is, if anywhere: Return places only
@@ -99,8 +107,37 @@ struct HorizontalPartBrowserView: View {
         return parts.filter { !bases.contains($0.id.lowercased()) || used.contains($0.id.lowercased()) }
     }
 
+    /// The listed parts the exclusion toggles leave: what a search and the
+    /// DigiKey lookups see.
+    private var shownParts: [HorizontalPoolPart] {
+        listedParts.filter { !isHidden($0) }
+    }
+
+    private var hiddenCount: Int {
+        listedParts.count { isHidden($0) }
+    }
+
+    private func isHidden(_ part: HorizontalPoolPart) -> Bool {
+        Self.isHidden(part, used: usedPartIDs, populated: hidesDoNotPopulate ? populatedPartIDs : nil,
+                      hidesExcludedFromBOM: hidesExcludedFromBOM)
+    }
+
+    /// Whether a part is left out: flagged exclude from BOM, when those are
+    /// hidden, or used by components none of which is fitted. A part no
+    /// component uses is never Do Not Populate.
+    static func isHidden(_ part: HorizontalPoolPart, used: Set<String>, populated: Set<String>?, hidesExcludedFromBOM: Bool) -> Bool {
+        if hidesExcludedFromBOM, part.excludeFromBOM {
+            return true
+        }
+        let id = part.id.lowercased()
+        if let populated, used.contains(id), !populated.contains(id) {
+            return true
+        }
+        return false
+    }
+
     private var filteredParts: [HorizontalPoolPart] {
-        let parts = listedParts
+        let parts = shownParts
         let terms = searchText
             .split(whereSeparator: \.isWhitespace)
             .map { String($0).lowercased() }
@@ -161,7 +198,7 @@ struct HorizontalPartBrowserView: View {
         // parts or the credentials change, unless the column is hidden.
         .task(id: digiKeyLookupSignature) {
             guard showsDigiKeyStock else { return }
-            digiKey.lookUp(listedParts)
+            digiKey.lookUp(shownParts)
         }
         #if os(macOS)
         .background(Color(nsColor: .controlBackgroundColor))
@@ -209,7 +246,24 @@ struct HorizontalPartBrowserView: View {
             .labelsHidden()
             .fixedSize()
             .help("List the parts out of date with their pools, or the ones no attached pool has")
+
+            exclusionMenu
         }
+    }
+
+    private var exclusionMenu: some View {
+        Menu {
+            Toggle("Hide Parts Excluded from BOM", isOn: $hidesExcludedFromBOM)
+            Toggle("Hide Do Not Populate Parts", isOn: $hidesDoNotPopulate)
+            Divider()
+            Text(hiddenCount == 1 ? "1 part hidden" : "\(hiddenCount) parts hidden")
+        } label: {
+            Image(systemName: hidesExcludedFromBOM || hidesDoNotPopulate
+                ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+        }
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Hide test pads, mounting holes and other parts excluded from the BOM, and parts only Do Not Populate components use")
     }
 
     private var partCommands: some View {
@@ -256,7 +310,7 @@ struct HorizontalPartBrowserView: View {
 
     private var digiKeyLookupSignature: String {
         guard digiKey.isConfigured, showsDigiKeyStock else { return "" }
-        let keys = listedParts.map { HorizontalDigiKeyQuery(part: $0).key }.sorted()
+        let keys = shownParts.map { HorizontalDigiKeyQuery(part: $0).key }.sorted()
         return "\(digiKey.credentialsRevision)\u{1E}" + keys.joined(separator: "\u{1E}")
     }
 
