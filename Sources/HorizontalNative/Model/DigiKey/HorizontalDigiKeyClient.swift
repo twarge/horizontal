@@ -1,8 +1,11 @@
 import Foundation
 
 /// What DigiKey stocks of one part, as its Product Information API (v4)
-/// reports it: the quantity it can ship now, and the product that answered.
+/// reports it: the product that answered, and what it has under each of its
+/// packagings.
 struct HorizontalDigiKeyStock: Codable, Equatable, Sendable {
+    /// The product's own count, which DigiKey can report as 0 while its
+    /// packagings have stock; `selection(for:)` counts a packaging's.
     var quantityAvailable: Int
     var manufacturer: String
     var manufacturerProductNumber: String
@@ -30,6 +33,79 @@ struct HorizontalDigiKeyStock: Codable, Equatable, Sendable {
     /// won't be replenished.
     var isWindingDown: Bool {
         isDiscontinued || isObsolete || isEndOfLife
+    }
+
+    /// The packaging a count is taken from.
+    struct Selection: Equatable {
+        /// Nil when DigiKey listed no packagings, and the product's own count
+        /// stands.
+        var variation: Variation?
+        var quantity: Int
+        /// The part doesn't come in the packaging asked for, so the most
+        /// stocked of the others stands in.
+        var isFallback: Bool
+    }
+
+    /// What DigiKey has in `packaging`: the variation in it with the most
+    /// stock, one DigiKey ships itself before a Marketplace seller's, and cut
+    /// tape where two have the same (a Digi-Reel is cut from the same stock).
+    /// A part that doesn't come in it counts its most stocked packaging
+    /// instead.
+    func selection(for packaging: HorizontalDigiKeyPackaging) -> Selection {
+        let matching = packaging == .any ? variations : variations.filter(packaging.matches)
+        if let variation = Self.mostStocked(matching) {
+            return Selection(variation: variation, quantity: variation.quantityAvailable, isFallback: false)
+        }
+        if let variation = Self.mostStocked(variations) {
+            return Selection(variation: variation, quantity: variation.quantityAvailable, isFallback: true)
+        }
+        return Selection(variation: nil, quantity: quantityAvailable, isFallback: false)
+    }
+
+    private static func mostStocked(_ variations: [Variation]) -> Variation? {
+        func rank(_ variation: Variation) -> (Int, Int, Int) {
+            (variation.isMarketplace ? 0 : 1, variation.quantityAvailable, HorizontalDigiKeyPackaging.cutTape.matches(variation) ? 1 : 0)
+        }
+        return variations.max { rank($0) < rank($1) }
+    }
+}
+
+/// The packaging the DigiKey Stock column counts: DigiKey sells a part on cut
+/// tape, full reels and its own Digi-Reels as separate part numbers, each
+/// with its own stock.
+enum HorizontalDigiKeyPackaging: String, CaseIterable, Identifiable, Sendable {
+    /// Whichever packaging has the most: the default.
+    case any
+    case cutTape
+    case tapeAndReel
+    case digiReel
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .any: "Most Stocked"
+        case .cutTape: "Cut Tape"
+        case .tapeAndReel: "Tape & Reel"
+        case .digiReel: "Digi-Reel"
+        }
+    }
+
+    /// Whether a variation is in this packaging: by DigiKey's name for it,
+    /// else by the suffix its part numbers carry (CT-ND, TR-ND, DKR-ND).
+    func matches(_ variation: HorizontalDigiKeyStock.Variation) -> Bool {
+        let name = variation.packageType.lowercased()
+        let number = variation.digiKeyProductNumber.uppercased()
+        switch self {
+        case .cutTape:
+            return name.isEmpty ? number.hasSuffix("CT-ND") : name.contains("cut tape")
+        case .tapeAndReel:
+            return name.isEmpty ? number.hasSuffix("TR-ND") : name.contains("tape & reel") || name.contains("tape and reel")
+        case .digiReel:
+            return name.isEmpty ? number.hasSuffix("DKR-ND") : name.contains("digi-reel")
+        case .any:
+            return true
+        }
     }
 }
 
@@ -364,14 +440,14 @@ actor HorizontalDigiKeyClient {
 
     /// The product that answers for a part among those DigiKey found: one
     /// whose MPN is the part's, from the part's manufacturer where one is,
-    /// with the most stock where several are.
+    /// with the most stock in any packaging where several are.
     static func answer(for products: [Product], mpn: String, manufacturer: String) -> HorizontalDigiKeyAnswer {
         let wanted = normalizedMPN(mpn)
         let exact = products.filter { normalizedMPN($0.manufacturerProductNumber) == wanted }
         guard !exact.isEmpty else { return .notCarried }
         let sameMaker = exact.filter { manufacturersMatch($0.manufacturer, manufacturer) }
         let candidates = sameMaker.isEmpty ? exact : sameMaker
-        let best = candidates.max { $0.quantityAvailable < $1.quantityAvailable }!
+        let best = candidates.max { $0.mostStocked < $1.mostStocked }!
         var stock = best.stock
         stock.matchedByMPNOnly = sameMaker.isEmpty
         return .stocked(stock)
@@ -433,6 +509,10 @@ actor HorizontalDigiKeyClient {
                     isMarketplace: $0.MarketPlace ?? false
                 )
             }
+        }
+
+        var mostStocked: Int {
+            max(quantityAvailable, variations.map(\.quantityAvailable).max() ?? 0)
         }
 
         var stock: HorizontalDigiKeyStock {

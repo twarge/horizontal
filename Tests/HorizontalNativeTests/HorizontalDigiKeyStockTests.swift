@@ -37,6 +37,64 @@ final class HorizontalDigiKeyClientTests: XCTestCase {
                        "products the MPN is only the start of answer nothing")
     }
 
+    /// DigiKey can report a product's own count as 0 while its packagings
+    /// have stock (Stackpole's RMCF0402FT15K0, as it answered), so the count
+    /// is a packaging's.
+    func testTheCountIsThePackagingsNotTheProducts() throws {
+        let products = try JSONDecoder().decode(PricingFixture.self, from: DigiKeyFixtures.resistor).ProductPricings
+        guard case .stocked(let stock) = HorizontalDigiKeyClient.answer(for: products, mpn: "RMCF0402FT15K0", manufacturer: "Stackpole") else {
+            return XCTFail("stocked")
+        }
+        XCTAssertEqual(stock.quantityAvailable, 0, "as DigiKey sends it")
+        guard case .stocked(let unknownMaker) = HorizontalDigiKeyClient.answer(for: products, mpn: "RMCF0402FT15K0", manufacturer: "Nobody") else {
+            return XCTFail("stocked")
+        }
+        XCTAssertEqual(unknownMaker.manufacturer, "Stackpole Electronics Inc", "the product with the most in any packaging")
+
+        let mostStocked = stock.selection(for: .any)
+        XCTAssertEqual(mostStocked.quantity, 54820)
+        XCTAssertFalse(mostStocked.isFallback)
+        XCTAssertEqual(stock.selection(for: .cutTape).variation?.digiKeyProductNumber, "RMCF0402FT15K0CT-ND")
+        XCTAssertEqual(stock.selection(for: .cutTape).quantity, 54820)
+        XCTAssertEqual(stock.selection(for: .tapeAndReel).variation?.digiKeyProductNumber, "RMCF0402FT15K0TR-ND")
+        XCTAssertEqual(stock.selection(for: .tapeAndReel).quantity, 50000)
+        XCTAssertEqual(stock.selection(for: .digiReel).variation?.digiKeyProductNumber, "RMCF0402FT15K0DKR-ND")
+
+        let cell = HorizontalDigiKeyStockMonitor.CellState.answer(.stocked(stock), checkedAt: Date(), isRefreshing: false, packaging: .any)
+        XCTAssertEqual(cell.title, 54820.formatted())
+        XCTAssertFalse(cell.isWarning)
+        let part = DigiKeyFixtures.part(mpn: "RMCF0402FT15K0", manufacturer: "Stackpole")
+        let help = cell.help(for: part)
+        XCTAssertTrue(help.contains("Showing Cut Tape (CT): \(54820.formatted())"), "cut tape, of two with the same: \(help)")
+        XCTAssertFalse(help.contains("lead time"), "there is stock")
+        XCTAssertTrue(help.contains("Click to open the part on DigiKey."))
+    }
+
+    func testAPartNotSoldInThePackagingCountsItsMostStockedOne() throws {
+        let products = try JSONDecoder().decode(PricingFixture.self, from: DigiKeyFixtures.tubeOnly).ProductPricings
+        guard case .stocked(let stock) = HorizontalDigiKeyClient.answer(for: products, mpn: "OPA2189IDR", manufacturer: "Texas Instruments") else {
+            return XCTFail("stocked")
+        }
+        let selection = stock.selection(for: .cutTape)
+        XCTAssertTrue(selection.isFallback)
+        XCTAssertEqual(selection.variation?.digiKeyProductNumber, "296-OPA2189ID-ND", "DigiKey's own stock before a Marketplace seller's larger one")
+        XCTAssertEqual(selection.quantity, 812)
+
+        let cell = HorizontalDigiKeyStockMonitor.CellState.answer(.stocked(stock), checkedAt: Date(), isRefreshing: false, packaging: .cutTape)
+        XCTAssertEqual(cell.title, 812.formatted())
+        XCTAssertTrue(cell.help(for: DigiKeyFixtures.part(mpn: "OPA2189IDR", manufacturer: "Texas Instruments"))
+            .contains("Not sold as Cut Tape; showing Tube: \(812.formatted())"))
+    }
+
+    func testAPackagingIsKnownByItsPartNumberWhereDigiKeyNamesNone() {
+        let unnamed = HorizontalDigiKeyStock.Variation(digiKeyProductNumber: "311-10.0KLRCT-ND", packageType: "", quantityAvailable: 1)
+        XCTAssertTrue(HorizontalDigiKeyPackaging.cutTape.matches(unnamed))
+        XCTAssertFalse(HorizontalDigiKeyPackaging.tapeAndReel.matches(unnamed))
+        let reel = HorizontalDigiKeyStock.Variation(digiKeyProductNumber: "311-10.0KLRDKR-ND", packageType: "", quantityAvailable: 1)
+        XCTAssertTrue(HorizontalDigiKeyPackaging.digiReel.matches(reel))
+        XCTAssertFalse(HorizontalDigiKeyPackaging.tapeAndReel.matches(reel))
+    }
+
     func testManufacturersMatchWhenOneNameHoldsTheOther() {
         XCTAssertTrue(HorizontalDigiKeyClient.manufacturersMatch("Murata", "Murata Electronics"))
         XCTAssertTrue(HorizontalDigiKeyClient.manufacturersMatch("Maxim Integrated", "Analog Devices Inc./Maxim Integrated"))
@@ -215,16 +273,21 @@ final class HorizontalDigiKeyStockMonitorTests: XCTestCase {
         XCTAssertEqual(monitor.state(for: blank), .noMPN)
         try await waitUntilIdle(monitor)
 
-        guard case .answer(.stocked(let stock), _, false) = monitor.state(for: opAmp) else {
+        guard case .answer(.stocked(let stock), _, false, .any) = monitor.state(for: opAmp) else {
             return XCTFail("stocked: \(monitor.state(for: opAmp))")
         }
         XCTAssertEqual(stock.quantityAvailable, 51234)
-        XCTAssertEqual(monitor.state(for: opAmp).title, 51234.formatted())
-        guard case .answer(.notCarried, _, _) = monitor.state(for: missing) else {
+        XCTAssertEqual(monitor.state(for: opAmp).title, 40000.formatted(), "the most stocked packaging, by default")
+        guard case .answer(.notCarried, _, _, _) = monitor.state(for: missing) else {
             return XCTFail("not carried: \(monitor.state(for: missing))")
         }
         let asked = server.requests.count
         XCTAssertEqual(asked, 3, "a sign-in and one request per MPN")
+
+        monitor.packaging = .tapeAndReel
+        XCTAssertEqual(monitor.state(for: opAmp).title, 11234.formatted())
+        XCTAssertEqual(defaults.string(forKey: HorizontalDigiKeyStockMonitor.packagingKey), "tapeAndReel")
+        XCTAssertEqual(server.requests.count, asked, "another packaging asks DigiKey nothing")
 
         monitor.lookUp([opAmp, missing])
         XCTAssertEqual(server.requests.count, asked, "fresh answers are not asked for again")
@@ -238,8 +301,8 @@ final class HorizontalDigiKeyStockMonitorTests: XCTestCase {
         }
         let relaunched = HorizontalDigiKeyStockMonitor(defaults: defaults, secrets: .memory("secret"), cacheURL: cacheURL, makeClient: server.client(credentials:))
         XCTAssertEqual(relaunched.records.count, 2)
-        guard case .answer(.stocked, _, _) = relaunched.state(for: opAmp) else {
-            return XCTFail("kept: \(relaunched.state(for: opAmp))")
+        guard case .answer(.stocked, _, _, .tapeAndReel) = relaunched.state(for: opAmp) else {
+            return XCTFail("kept, with the packaging: \(relaunched.state(for: opAmp))")
         }
     }
 
@@ -325,6 +388,53 @@ private enum DigiKeyFixtures {
         }
       ],
       "ProductsCount": 3
+    }
+    """#.utf8)
+
+    /// Stackpole's RMCF0402FT15K0 as DigiKey answered: no count of its own.
+    static let resistor = Data(#"""
+    {
+      "ProductPricings": [
+        {
+          "ManufacturerProductNumber": "RMCF0402FT15K0",
+          "Manufacturer": {"Id": 738, "Name": "Stackpole Electronics Inc"},
+          "QuantityAvailable": 0,
+          "ProductUrl": "https://www.digikey.com/en/products/detail/stackpole-electronics-inc/RMCF0402FT15K0/1712506",
+          "ManufacturerLeadWeeks": "22",
+          "ProductVariations": [
+            {"DigiKeyProductNumber": "RMCF0402FT15K0DKR-ND", "QuantityAvailableforPackageType": 54820,
+             "PackageType": {"Id": 243, "Name": "Digi-Reel®"}, "MarketPlace": false},
+            {"DigiKeyProductNumber": "RMCF0402FT15K0TR-ND", "QuantityAvailableforPackageType": 50000,
+             "PackageType": {"Id": 1, "Name": "Tape & Reel (TR)"}, "MarketPlace": false},
+            {"DigiKeyProductNumber": "RMCF0402FT15K0CT-ND", "QuantityAvailableforPackageType": 54820,
+             "PackageType": {"Id": 2, "Name": "Cut Tape (CT)"}, "MarketPlace": false}
+          ]
+        },
+        {
+          "ManufacturerProductNumber": "RMCF0402FT15K0",
+          "Manufacturer": {"Id": 9999, "Name": "Some Reseller"},
+          "QuantityAvailable": 100
+        }
+      ]
+    }
+    """#.utf8)
+
+    /// A part sold in tubes only, with a Marketplace seller holding more.
+    static let tubeOnly = Data(#"""
+    {
+      "ProductPricings": [
+        {
+          "ManufacturerProductNumber": "OPA2189IDR",
+          "Manufacturer": {"Id": 296, "Name": "Texas Instruments"},
+          "QuantityAvailable": 0,
+          "ProductVariations": [
+            {"DigiKeyProductNumber": "296-OPA2189ID-ND", "QuantityAvailableforPackageType": 812,
+             "PackageType": {"Id": 4, "Name": "Tube"}, "MarketPlace": false},
+            {"DigiKeyProductNumber": "2156-OPA2189ID-ND", "QuantityAvailableforPackageType": 5000,
+             "PackageType": {"Id": 4, "Name": "Tube"}, "MarketPlace": true}
+          ]
+        }
+      ]
     }
     """#.utf8)
 
