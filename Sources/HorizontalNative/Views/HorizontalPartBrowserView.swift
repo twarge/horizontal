@@ -286,37 +286,33 @@ struct HorizontalPartBrowserView: View {
                 .leavesFieldOnEscape()
                 .focused($focus, equals: .search)
 
-            if !compact {
-                libraryFilterPicker
-                    .labelsHidden()
-                    .fixedSize()
-                    .help("List the parts out of date with their pools, or the ones no attached pool has")
-            }
-
-            exclusionMenu(compact: compact)
+            filterMenu
         }
     }
 
-    /// Compact, the Show picker rides in here too.
-    private func exclusionMenu(compact: Bool) -> some View {
+    /// The Show picker and the toggles that hide what isn't bought for the
+    /// board, behind one filter icon, filled while any of them leaves parts
+    /// out.
+    private var filterMenu: some View {
         Menu {
-            if compact {
+            Section("Show") {
                 libraryFilterPicker
                     .pickerStyle(.inline)
-                Divider()
+                    .labelsHidden()
             }
-            Toggle("Hide Parts Excluded from BOM", isOn: $hidesExcludedFromBOM)
-            Toggle("Hide Do Not Populate Parts", isOn: $hidesDoNotPopulate)
-            Divider()
-            Text(hiddenCount == 1 ? "1 part hidden" : "\(hiddenCount) parts hidden")
+            Section {
+                Toggle("Hide Parts Excluded from BOM", isOn: $hidesExcludedFromBOM)
+                Toggle("Hide Do Not Populate Parts", isOn: $hidesDoNotPopulate)
+                Divider()
+                Text(hiddenCount == 1 ? "1 part hidden" : "\(hiddenCount) parts hidden")
+            }
         } label: {
-            Image(systemName: hidesExcludedFromBOM || hidesDoNotPopulate || (compact && libraryFilter != .all)
+            Image(systemName: libraryFilter != .all || hidesExcludedFromBOM || hidesDoNotPopulate
                 ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
         }
         .menuIndicator(.hidden)
         .fixedSize()
-        .help((compact ? "Showing \(libraryFilter.title). " : "")
-              + "Hide test pads, mounting holes and other parts excluded from the BOM, and parts only Do Not Populate components use")
+        .help("Showing \(libraryFilter.title). List the parts out of date with their pools, or the ones no attached pool has, and hide test pads, mounting holes and other parts excluded from the BOM, and parts only Do Not Populate components use")
     }
 
     private func partCommands(compact: Bool) -> some View {
