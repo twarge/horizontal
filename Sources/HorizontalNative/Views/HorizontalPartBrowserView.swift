@@ -371,8 +371,10 @@ struct HorizontalPartBrowserView: View {
 
     private static let digiKeyStockColumnID = "digikeyStock"
 
+    /// The column is there while DigiKey is on in Settings, and shown unless
+    /// hidden from the table's header menu.
     private var showsDigiKeyStock: Bool {
-        columnCustomization[visibility: Self.digiKeyStockColumnID] != .hidden
+        digiKey.isEnabled && columnCustomization[visibility: Self.digiKeyStockColumnID] != .hidden
     }
 
     private var digiKeyLookupSignature: String {
@@ -476,13 +478,16 @@ struct HorizontalPartBrowserView: View {
             .customizationID("package")
             .disabledCustomizationBehavior(.visibility)
 
-            // DigiKey's stock of the part's MPN. Not sortable: like the
-            // library columns, it comes from outside the part.
-            TableColumn("DigiKey Stock") { part in
-                digiKeyStockCell(part)
+            // DigiKey's stock of the part's MPN, while DigiKey is on. Not
+            // sortable: like the library columns, it comes from outside the
+            // part.
+            if digiKey.isEnabled {
+                TableColumn("DigiKey Stock") { part in
+                    digiKeyStockCell(part)
+                }
+                .width(min: 100, ideal: 110)
+                .customizationID(Self.digiKeyStockColumnID)
             }
-            .width(min: 100, ideal: 110)
-            .customizationID(Self.digiKeyStockColumnID)
 
             TableColumn("Tags", value: \.tagList) { part in
                 tableText(part.tagList, part: part)
@@ -551,14 +556,7 @@ struct HorizontalPartBrowserView: View {
             }
         }
         #endif
-        let stock = digiKey.state(for: part)
-        if stock != .noMPN, stock != .notSetUp {
-            Divider()
-            if let url = stock.productURL {
-                Link("Open on DigiKey", destination: url)
-            }
-            Button("Check DigiKey Stock Again") { digiKey.lookUp([part], force: true) }
-        }
+        HorizontalDigiKeyMenuItems(state: digiKey.state(for: part)) { digiKey.lookUp([part], force: true) }
     }
 
     /// The pools a part can be opened in, each in a window of its own: the
@@ -735,5 +733,38 @@ struct HorizontalPartBrowserView: View {
         case .tags:
             return part.tagList.lowercased()
         }
+    }
+}
+
+/// A part's DigiKey entries in its context menu, the Parts pane's and the
+/// Pools pane's alike: Open on DigiKey once DigiKey has answered with the
+/// product's page, and a check, for a part with an MPN while DigiKey is on
+/// and set up; nothing otherwise. A menu can't change while it is open, so a
+/// part still being asked about says so rather than offering a link later.
+struct HorizontalDigiKeyMenuItems: View {
+    var state: HorizontalDigiKeyStockMonitor.CellState
+    var check: () -> Void
+
+    var body: some View {
+        switch state {
+        case .off, .noMPN, .notSetUp:
+            EmptyView()
+        default:
+            Divider()
+            if let url = state.productURL {
+                Link("Open on DigiKey", destination: url)
+            } else if state == .checking || state == .pending {
+                Text("Asking DigiKey…")
+            }
+            Button(state.hasAnswer ? "Check DigiKey Stock Again" : "Check DigiKey Stock", action: check)
+        }
+    }
+}
+
+extension HorizontalDigiKeyStockMonitor.CellState {
+    /// DigiKey has answered for the part, stocked or not.
+    var hasAnswer: Bool {
+        if case .answer = self { return true }
+        return false
     }
 }

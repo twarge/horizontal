@@ -74,6 +74,9 @@ struct HorizontalPoolLibraryItem: Identifiable, Hashable, Sendable {
     /// what a part is ("2.2uF") rather than what it is called.
     var value: String = ""
     var partDescription: String = ""
+    /// A part's MPN, a derived part's taken from its base; empty for one with
+    /// none (whose name is then its value), and for every other kind.
+    var mpn: String = ""
     var parametric: [String: String] = [:]
     /// A part's package uuid (lowercased, empty when it has none).
     var packageID: String = ""
@@ -348,6 +351,7 @@ enum HorizontalPoolLibrary {
                 symbolUnitID: category == .symbol ? (json.string("unit")?.lowercased() ?? "") : "",
                 value: category == .part ? (attributeString(json["value"]) ?? "") : "",
                 partDescription: category == .part ? (attributeString(json["description"]) ?? "") : "",
+                mpn: category == .part ? (attributeString(json["MPN"]) ?? "") : "",
                 parametric: category == .part ? (json["parametric"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String } : [:],
                 packageID: category == .part ? (json.string("package")?.lowercased() ?? "") : "",
                 isBasePart: category == .part && HorizontalPartRecord(json: json).resolved(base: nil).isBasePart,
@@ -397,6 +401,7 @@ enum HorizontalPoolLibrary {
             item.detail = part.manufacturer
             item.manufacturer = part.manufacturer
             item.value = part.value
+            item.mpn = part.mpn
             item.partDescription = part.description
             item.tags = part.tags.joined(separator: " ")
             item.packageID = part.packageID ?? ""

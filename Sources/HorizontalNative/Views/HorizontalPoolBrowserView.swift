@@ -415,6 +415,14 @@ struct HorizontalPoolBrowserView: View {
             applyPendingReveal()
         }
         .onAppear(perform: adoptReplacement)
+        // A part selected is asked about at DigiKey (when it is on and set
+        // up; a fresh answer is kept half a day), so its menu can open its
+        // page by the time it is right-clicked.
+        .onChange(of: selectedItemID) { _, _ in
+            if let selectedItem, selectedItem.category == .part {
+                HorizontalDigiKeyStockMonitor.shared.lookUp([HorizontalDigiKeyQuery(item: selectedItem)])
+            }
+        }
         .onChange(of: viewedPoolID) { _, _ in
             updateVisibleRows()
         }
@@ -1141,6 +1149,9 @@ struct HorizontalPoolBrowserView: View {
                 }
             }
         }
+        if item.category == .part {
+            digiKeyMenuItems(item)
+        }
         if !appearanceSettings.isReadOnlyOperationEnabled {
             Button("Duplicate…") {
                 duplicateItem(item)
@@ -1189,6 +1200,31 @@ struct HorizontalPoolBrowserView: View {
         }
         Button("Copy Path") {
             copyToPasteboard(item.url.path)
+        }
+    }
+
+    /// A part's Open on DigiKey, as the Parts pane has it, through the same
+    /// monitor and cache. The menu is built as it opens, so it reads the
+    /// monitor then rather than the browser observing every answer (each
+    /// would redraw a list of thousands); a part not asked about yet — one
+    /// right-clicked without being selected — is asked about now, for the
+    /// next time.
+    @ViewBuilder
+    private func digiKeyMenuItems(_ item: HorizontalPoolLibraryItem) -> some View {
+        let monitor = HorizontalDigiKeyStockMonitor.shared
+        let query = HorizontalDigiKeyQuery(item: item)
+        let state = monitor.state(for: query)
+        let _ = askDigiKeyIfUnasked(query, state)
+        HorizontalDigiKeyMenuItems(state: state == .pending ? .checking : state) {
+            monitor.lookUp([query], force: true)
+        }
+    }
+
+    /// After the menu is built, not while: the answer changes the monitor.
+    private func askDigiKeyIfUnasked(_ query: HorizontalDigiKeyQuery, _ state: HorizontalDigiKeyStockMonitor.CellState) {
+        guard state == .pending else { return }
+        DispatchQueue.main.async {
+            HorizontalDigiKeyStockMonitor.shared.lookUp([query])
         }
     }
 

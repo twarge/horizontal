@@ -1,9 +1,11 @@
 import SwiftUI
 
-/// Settings' DigiKey section: the API client ID and secret the Parts pane's
-/// DigiKey Stock column signs in with. The ID is a preference, the secret
-/// goes to the keychain, and saving signs in once to say whether DigiKey
-/// takes them.
+/// Settings' DigiKey section: a switch for all of it, then the API client
+/// ID and secret the Parts pane's DigiKey Stock column and the panes' Open
+/// on DigiKey sign in with. The ID is a preference, the secret goes to the
+/// keychain, and saving signs in once to say whether DigiKey takes them.
+/// Off, the app asks DigiKey nothing and shows no column and no menu items;
+/// the credentials stay, for turning it back on.
 struct HorizontalDigiKeySettingsSection: View {
     @ObservedObject var monitor: HorizontalDigiKeyStockMonitor = .shared
     @State private var clientID = ""
@@ -28,7 +30,15 @@ struct HorizontalDigiKeySettingsSection: View {
 
     var body: some View {
         Section("DigiKey") {
+            Toggle("Look Up Parts on DigiKey", isOn: $monitor.isEnabled)
+            Text(monitor.isEnabled
+                 ? "Shows DigiKey's stock in the Parts pane, and Open on DigiKey when right-clicking a part in the Parts and Pools panes."
+                 : "Off: Horizontal asks DigiKey nothing, and shows no DigiKey Stock column and no DigiKey menu items.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             TextField("Client ID", text: $clientID)
+                .disabled(!monitor.isEnabled)
                 .autocorrectionDisabled()
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
@@ -39,12 +49,14 @@ struct HorizontalDigiKeySettingsSection: View {
                 prompt: Text(monitor.hasClientSecret ? "Saved in the keychain" : "Required")
             )
             .onSubmit { if canSave { save() } }
+            .disabled(!monitor.isEnabled)
 
             Picker("Packaging", selection: $monitor.packaging) {
                 ForEach(HorizontalDigiKeyPackaging.allCases) { packaging in
                     Text(packaging.title).tag(packaging)
                 }
             }
+            .disabled(!monitor.isEnabled)
             Text("DigiKey sells a part on cut tape, full reels and Digi-Reels under separate part numbers, each with its own stock. The column counts the packaging chosen here, or the most stocked one for a part that doesn't come in it.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -55,7 +67,7 @@ struct HorizontalDigiKeySettingsSection: View {
                 Button("Remove", role: .destructive) { remove() }
                     .disabled(monitor.clientID.isEmpty && !monitor.hasClientSecret)
                 Button("Save") { save() }
-                    .disabled(!canSave)
+                    .disabled(!canSave || !monitor.isEnabled)
             }
 
             Text("The Parts pane's DigiKey Stock column asks DigiKey's Product Information API how many of each part's MPN DigiKey has in stock, once every 12 hours. Create an app with the Product Information V4 API on DigiKey's API portal and enter its client ID and secret here; the secret is kept in the keychain.")

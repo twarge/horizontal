@@ -17,6 +17,12 @@ struct HorizontalDigiKeyQuery: Hashable, Sendable {
         self.init(mpn: part.mpn, manufacturer: part.manufacturer)
     }
 
+    /// A part in the Pools pane, by its MPN (its base's, for a derived part
+    /// that inherits it). Any other kind of item has none.
+    init(item: HorizontalPoolLibraryItem) {
+        self.init(mpn: item.category == .part ? item.mpn : "", manufacturer: item.manufacturer)
+    }
+
     var key: String {
         HorizontalDigiKeyClient.normalizedMPN(mpn) + "\u{1F}" + HorizontalDigiKeyClient.normalizedManufacturer(manufacturer)
     }
@@ -105,12 +111,15 @@ struct HorizontalDigiKeySecretStore: Sendable {
 /// secret it signs in with are the app's, set in Settings.
 ///
 /// A refused sign-in stops the lookups until the credentials change, and a
-/// rate limit stops them until DigiKey says to come back.
+/// rate limit stops them until DigiKey says to come back. Settings' switch
+/// turns all of it off: no lookups, no requests, and no DigiKey column or
+/// menu items anywhere.
 @MainActor
 final class HorizontalDigiKeyStockMonitor: ObservableObject {
     static let shared = HorizontalDigiKeyStockMonitor()
 
     static let clientIDKey = "digikey.clientID"
+    static let enabledKey = "digikey.enabled"
     static let packagingKey = "digikey.packaging"
     /// How long an answer stands before a part is asked about again.
     static let freshFor: TimeInterval = 12 * 60 * 60
@@ -138,6 +147,8 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
 
     /// What the column shows for a part.
     enum CellState: Equatable {
+        /// Turned off in Settings.
+        case off
         case noMPN
         case notSetUp
         /// Set up, and not asked about yet.
@@ -160,6 +171,18 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
     @Published private(set) var verification: Verification?
     /// Bumped whenever the credentials change, so a view looks up again.
     @Published private(set) var credentialsRevision = 0
+    /// Settings' switch for everything DigiKey: off, nothing is asked and
+    /// nothing shows. On by default; kept between launches. Turning it off
+    /// stops the lookups in flight and keeps the answers already in.
+    @Published var isEnabled: Bool {
+        didSet {
+            guard isEnabled != oldValue else { return }
+            defaults.set(isEnabled, forKey: Self.enabledKey)
+            if !isEnabled {
+                stopLookups()
+            }
+        }
+    }
     /// Which packaging's stock the column shows. Every packaging comes in one
     /// answer, so changing it asks DigiKey nothing.
     @Published var packaging: HorizontalDigiKeyPackaging {
@@ -194,6 +217,7 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
         self.cacheURL = cacheURL
         self.makeClient = makeClient
         clientID = defaults.string(forKey: Self.clientIDKey) ?? ""
+        isEnabled = defaults.object(forKey: Self.enabledKey) as? Bool ?? true
         packaging = defaults.string(forKey: Self.packagingKey).flatMap(HorizontalDigiKeyPackaging.init(rawValue:)) ?? .any
         hasClientSecret = secrets.exists()
         records = Self.loadRecords(from: cacheURL)
@@ -210,7 +234,11 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
     }
 
     func state(for part: HorizontalPoolPart) -> CellState {
-        let query = HorizontalDigiKeyQuery(part: part)
+        state(for: HorizontalDigiKeyQuery(part: part))
+    }
+
+    func state(for query: HorizontalDigiKeyQuery) -> CellState {
+        guard isEnabled else { return .off }
         guard !query.mpn.isEmpty else { return .noMPN }
         guard isConfigured else { return .notSetUp }
         let key = query.key
@@ -232,7 +260,7 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
     }
 
     func lookUp(_ queries: [HorizontalDigiKeyQuery], force: Bool = false) {
-        guard isConfigured, isBlockLifted() else { return }
+        guard isEnabled, isConfigured, isBlockLifted() else { return }
         let now = Date()
         var batch: [String: HorizontalDigiKeyQuery] = [:]
         for query in queries where !query.mpn.isEmpty {
@@ -369,7 +397,7 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
     /// Signs in once, for Settings to say whether DigiKey takes the
     /// credentials.
     func verifyCredentials() async {
-        guard isConfigured, let client = currentClient() else {
+        guard isEnabled, isConfigured, let client = currentClient() else {
             verification = nil
             return
         }
@@ -392,11 +420,16 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
         }
     }
 
-    private func credentialsChanged() {
+    /// Ends every lookup in flight; their answers are dropped.
+    private func stopLookups() {
         generation += 1
         tasks.values.forEach { $0.cancel() }
         tasks.removeAll()
         checking.removeAll()
+    }
+
+    private func credentialsChanged() {
+        stopLookups()
         failures.removeAll()
         client = nil
         block = nil
@@ -463,6 +496,7 @@ extension HorizontalDigiKeyStockMonitor.CellState {
     /// The cell's text.
     var title: String {
         switch self {
+        case .off: ""
         case .noMPN: "-"
         case .notSetUp: "Not set up"
         case .pending: ""
@@ -497,6 +531,8 @@ extension HorizontalDigiKeyStockMonitor.CellState {
     /// of its part numbers, and when it was asked.
     func help(for part: HorizontalPoolPart) -> String {
         switch self {
+        case .off:
+            return "DigiKey is turned off in Settings."
         case .noMPN:
             return "This part has no MPN to look up on DigiKey."
         case .notSetUp:

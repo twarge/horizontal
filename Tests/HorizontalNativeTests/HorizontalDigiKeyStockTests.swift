@@ -334,6 +334,73 @@ final class HorizontalDigiKeyStockMonitorTests: XCTestCase {
         XCTAssertGreaterThan(server.requests.count, asked, "new credentials start over")
     }
 
+    /// Settings' switch: off, nothing is asked, nothing shows (the Parts
+    /// pane's column and both panes' menu items go by the state), and it
+    /// stays off at the next launch; on again, the lookups resume.
+    func testTheSwitchTurnsEverythingOff() async throws {
+        let server = DigiKeyStubServer { request, _ in
+            switch request.url?.path {
+            case "/v1/oauth2/token": .json(#"{"access_token":"t","expires_in":599}"#)
+            case "/products/v4/search/LM358DR/pricing": .json(DigiKeyFixtures.pricing)
+            default: .status(404, #"{"title":"Not Found"}"#)
+            }
+        }
+        let defaults = try makeDefaults()
+        let monitor = HorizontalDigiKeyStockMonitor(defaults: defaults, secrets: .memory("secret"), cacheURL: nil, makeClient: server.client(credentials:))
+        XCTAssertTrue(monitor.isEnabled, "on until turned off")
+        try monitor.saveCredentials(clientID: "id", clientSecret: nil)
+        let opAmp = DigiKeyFixtures.part(mpn: "LM358DR", manufacturer: "Texas Instruments")
+
+        monitor.isEnabled = false
+        XCTAssertEqual(monitor.state(for: opAmp), .off)
+        XCTAssertNil(monitor.state(for: opAmp).productURL)
+        monitor.lookUp([opAmp], force: true)
+        await monitor.verifyCredentials()
+        XCTAssertTrue(server.requests.isEmpty, "no request of any kind while off")
+        XCTAssertNil(monitor.verification)
+        let relaunched = HorizontalDigiKeyStockMonitor(defaults: defaults, secrets: .memory("secret"), cacheURL: nil, makeClient: server.client(credentials:))
+        XCTAssertFalse(relaunched.isEnabled, "kept between launches")
+
+        monitor.isEnabled = true
+        monitor.lookUp([opAmp])
+        XCTAssertEqual(monitor.state(for: opAmp), .checking)
+        monitor.isEnabled = false
+        XCTAssertTrue(monitor.checking.isEmpty, "turning it off stops what is in flight")
+        monitor.isEnabled = true
+        monitor.lookUp([opAmp])
+        try await waitUntilIdle(monitor)
+        XCTAssertNotNil(monitor.state(for: opAmp).productURL, "on again, the part's page is known")
+    }
+
+    /// A Pools pane part is asked about by its MPN, a derived part's from its
+    /// base, never by the name a part without an MPN shows (its value).
+    func testAPoolPartIsAskedAboutByItsMPN() {
+        func item(_ category: HorizontalPoolItemCategory, name: String, mpn: String) -> HorizontalPoolLibraryItem {
+            HorizontalPoolLibraryItem(
+                id: name, uuid: name, name: name, detail: "", tags: "", category: category, poolName: "Pool",
+                poolURL: URL(fileURLWithPath: "/pool"), url: URL(fileURLWithPath: "/pool/\(name).json"),
+                manufacturer: "Texas Instruments", mpn: mpn
+            )
+        }
+        XCTAssertEqual(HorizontalDigiKeyQuery(item: item(.part, name: "LM358DR", mpn: "LM358DR")).mpn, "LM358DR")
+        XCTAssertEqual(HorizontalDigiKeyQuery(item: item(.part, name: "10k", mpn: "")).mpn, "", "a value is no MPN")
+        XCTAssertEqual(HorizontalDigiKeyQuery(item: item(.package, name: "SOIC-8", mpn: "SOIC-8")).mpn, "")
+        XCTAssertEqual(HorizontalDigiKeyQuery(item: item(.part, name: "LM358DR", mpn: "LM358DR")).manufacturer, "Texas Instruments")
+
+        let base = HorizontalPoolLibraryItem(
+            id: "base", uuid: "base", name: "LM358", detail: "", tags: "", category: .part, poolName: "Pool",
+            poolURL: URL(fileURLWithPath: "/pool"), url: URL(fileURLWithPath: "/pool/base.json"), mpn: "LM358",
+            partRecord: HorizontalPartRecord(json: ["type": "part", "uuid": "base", "MPN": [false, "LM358"], "manufacturer": [false, "TI"]])
+        )
+        let derived = HorizontalPoolLibraryItem(
+            id: "derived", uuid: "derived", name: "", detail: "", tags: "", category: .part, poolName: "Pool",
+            poolURL: URL(fileURLWithPath: "/pool"), url: URL(fileURLWithPath: "/pool/derived.json"),
+            partRecord: HorizontalPartRecord(json: ["type": "part", "uuid": "derived", "base": "base", "MPN": [true, ""], "manufacturer": [true, ""]])
+        )
+        let resolved = HorizontalPoolLibrary.resolvingInheritance([base, derived])
+        XCTAssertEqual(resolved.last.map(HorizontalDigiKeyQuery.init(item:))?.mpn, "LM358", "inherited through the base")
+    }
+
     func testRemovingTheCredentialsForgetsTheSecret() throws {
         let secrets = HorizontalDigiKeySecretStore.memory()
         let monitor = HorizontalDigiKeyStockMonitor(defaults: try makeDefaults(), secrets: secrets, cacheURL: nil)
