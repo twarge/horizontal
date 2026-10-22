@@ -1151,7 +1151,10 @@ struct ProjectWorkspaceView: View {
                 onRenameBlock: { renameBlock($0, to: $1) },
                 onRemoveBlock: { removeBlock($0) },
                 onPlaceBlock: selectedSchematic == nil || isReadOnly || isEditingBlockSymbol ? nil : { placeBlock($0) },
-                placeableBlockIDs: placeableBlockIDs
+                placeableBlockIDs: placeableBlockIDs,
+                onSelectComponent: { sheet, componentID, position in
+                    showComponent(componentID, at: position, on: sheet)
+                }
             )
             // Without an explicit column width the sidebar is compressible to
             // nothing: the detail column below demanded the window's entire
@@ -2870,6 +2873,30 @@ struct ProjectWorkspaceView: View {
             if canvasCommandActionsByPane[pane]?.selectComponents?(componentIDs) == true, pane != origin {
                 crossProbedPanes.insert(pane)
             }
+        }
+    }
+
+    /// Find's component rows: the schematic on the component's sheet, the
+    /// component selected, and framed as `zoom_to` frames one, 20 mm about
+    /// its symbol and a margin. Another sheet swaps the canvas, which drops
+    /// its selection, so selecting and framing wait for it, as `zoom_to`
+    /// waits.
+    private func showComponent(_ componentID: String, at position: HorizontalPoint, on sheet: ProjectNavigatorSelection) {
+        visiblePanes.insert(.schematic)
+        let rect = HorizontalRect(center: position, size: 26_000_000)
+        let changesSheet = navigatorSelection != sheet
+        navigatorSelection = sheet
+        let reveal = {
+            selectComponents([componentID])
+            canvasCommandActionsByPane[.schematic]?.frameWorldRect?(rect)
+        }
+        if changesSheet {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                reveal()
+            }
+        } else {
+            reveal()
         }
     }
 

@@ -507,6 +507,20 @@ struct HorizontalIPadProjectView: View {
                     },
                     onRemoveSheet: { schematicURL, sheetID in
                         removeSheet(sheetID, schematicURL: schematicURL)
+                    },
+                    onSelectComponent: { sheet, componentID, position in
+                        // As on the Mac: the sheet, then the component
+                        // selected and framed once the canvas has swapped.
+                        let changesSheet = navigatorSelectionBinding.wrappedValue != sheet
+                        navigatorSelectionBinding.wrappedValue = sheet
+                        let rect = HorizontalRect(center: position, size: 26_000_000)
+                        Task { @MainActor in
+                            if changesSheet {
+                                try? await Task.sleep(for: .milliseconds(250))
+                            }
+                            selectComponents([componentID])
+                            schematicCanvasActions?.frameWorldRect?(rect)
+                        }
                     }
                 )
                 .listStyle(.sidebar)
