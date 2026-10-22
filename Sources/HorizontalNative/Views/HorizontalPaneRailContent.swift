@@ -415,10 +415,35 @@ struct PlacePowerSymbolToolButton: View {
     var body: some View {
         HorizontalRailHelpLabel(title: "Place power symbol") {
             Button(action: action) {
-                Image(systemName: "bolt.fill")
+                GroundSymbolShape()
+                    .stroke(style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+                    .frame(width: 19, height: 19)
+                    .accessibilityLabel("Power symbol")
             }
             .help("Place a power symbol (ground, supply)")
         }
+    }
+}
+
+/// The schematic ground symbol, as Horizon draws a ground power symbol: a
+/// stem down to three bars, each narrower than the one above. SF Symbols has
+/// none. A shape rather than a canvas, so it takes the button's style and
+/// dims with it.
+struct GroundSymbolShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let rect = rect.insetBy(dx: 2, dy: 2)
+        let barTop = rect.minY + rect.height * 0.46
+        let barGap = rect.height * 0.25
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.midX, y: barTop))
+        for (index, width) in [1.0, 0.62, 0.24].enumerated() {
+            let y = barTop + barGap * Double(index)
+            let half = rect.width * width / 2
+            path.move(to: CGPoint(x: rect.midX - half, y: y))
+            path.addLine(to: CGPoint(x: rect.midX + half, y: y))
+        }
+        return path
     }
 }
 
