@@ -74,6 +74,10 @@ struct HorizontalPartBrowserView: View {
     @State private var sortOrder = [KeyPathComparator(\HorizontalPoolPart.mpn)]
     @Environment(\.horizonPoolRevealAction) private var poolRevealAction
     @Environment(\.openURL) private var openURL
+    #if os(macOS)
+    /// For the pool windows Open in … opens.
+    @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
+    #endif
     @State private var pendingRevealTask: Task<Void, Never>?
     /// A fresh value asks the list to bring the selected part into view
     /// (`HorizontalTableScrollRequest`); a new selection does on its own.
@@ -499,7 +503,10 @@ struct HorizontalPartBrowserView: View {
         .focused($focus, equals: .table)
     }
 
-    /// Place, and for a part no attached pool has, a copy into one of them.
+    /// Place, and for a part no attached pool has, a copy into one of them;
+    /// then the part in a pool: this window's Pools pane, and, as the Pools
+    /// pane's own Open in … entries do, a window on the project pool or on
+    /// the pool the part was cached from, scrolled to it there.
     @ViewBuilder
     private func partContextMenu(_ part: HorizontalPoolPart) -> some View {
         if !isReadOnly, part.gates.first?.symbolID != nil {
@@ -512,6 +519,31 @@ struct HorizontalPartBrowserView: View {
                 }
             }
         }
+        #if os(macOS)
+        let pools = Self.poolsToOpen(part, projectPoolURL: poolURL, review: libraryRow(for: part))
+        #else
+        // No pool windows on iPadOS: the Pools pane is where a pool opens.
+        let pools = [HorizontalPoolCopyTarget]()
+        #endif
+        if poolRevealAction != nil || !pools.isEmpty {
+            Divider()
+        }
+        if let poolRevealAction {
+            Button("Show in Pools Pane") {
+                poolRevealAction(HorizontalPoolRevealRequest(category: .part, uuid: part.id))
+            }
+        }
+        #if os(macOS)
+        ForEach(pools) { pool in
+            Button("Open in \(pool.name)") {
+                HorizontalPoolWindowManager.shared.open(
+                    poolURL: pool.url,
+                    reveal: HorizontalPoolRevealRequest(category: .part, uuid: part.id),
+                    appearanceSettings: appearanceSettings
+                )
+            }
+        }
+        #endif
         let stock = digiKey.state(for: part)
         if stock != .noMPN, stock != .notSetUp {
             Divider()
@@ -520,6 +552,34 @@ struct HorizontalPartBrowserView: View {
             }
             Button("Check DigiKey Stock Again") { digiKey.lookUp([part], force: true) }
         }
+    }
+
+    /// The pools a part can be opened in, each in a window of its own: the
+    /// project's pool, which every listed part is in (named as the Pools pane
+    /// names it), then the pools the library review found it came from. A
+    /// pool that can't be read now (the sandbox wants a folder grant) is left
+    /// out, as is the project pool once more under another name.
+    static func poolsToOpen(
+        _ part: HorizontalPoolPart,
+        projectPoolURL: URL?,
+        review: HorizontalPartLibraryReview?
+    ) -> [HorizontalPoolCopyTarget] {
+        var pools = [HorizontalPoolCopyTarget]()
+        var seen = Set<String>()
+        func add(_ url: URL, name: String) {
+            let canonical = HorizontalPoolLibrary.canonicalURL(url)
+            guard HorizontalPoolLibrary.accessError(for: canonical) == nil, seen.insert(canonical.path).inserted else {
+                return
+            }
+            pools.append(HorizontalPoolCopyTarget(url: canonical, name: name))
+        }
+        if let projectPoolURL {
+            add(projectPoolURL, name: "Project pool")
+        }
+        for url in review?.sourcePoolURLs ?? [] {
+            add(url, name: HorizontalPoolRegistryStore.poolInfo(at: url).name)
+        }
+        return pools
     }
 
     /// The part's stock at DigiKey, in the packaging Settings chooses: a

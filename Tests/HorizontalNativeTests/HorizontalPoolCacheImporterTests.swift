@@ -265,8 +265,21 @@ final class HorizontalPoolCacheImporterTests: XCTestCase {
         let used = ["part-1": ["R1", "R2"]]
         var row = try XCTUnwrap(try cachedReview(references: used).parts.first)
         XCTAssertEqual(row.sourcePool, "Stock")
+        XCTAssertEqual(row.sourcePoolURLs.map(\.path), [HorizontalPoolLibrary.canonicalURL(poolURL).path],
+                       "where Open in Stock opens the part")
         XCTAssertEqual(row.statusTitle, "Current")
         XCTAssertFalse(row.isInNoAttachedPool)
+
+        // The Parts pane opens it in the project pool, then in Stock.
+        let part = try XCTUnwrap(HorizontalPoolPart.loadCached(id: "part-1", from: projectPoolURL))
+        let pools = HorizontalPartBrowserView.poolsToOpen(part, projectPoolURL: projectPoolURL, review: row)
+        XCTAssertEqual(pools.map(\.name), ["Project pool", "Stock"])
+        XCTAssertEqual(pools.map(\.url.path), [projectPoolURL, poolURL].map { HorizontalPoolLibrary.canonicalURL($0).path })
+        XCTAssertEqual(HorizontalPartBrowserView.poolsToOpen(part, projectPoolURL: nil, review: nil).map(\.name), [])
+        var unreadable = row
+        unreadable.sourcePoolURLs = [temporaryRoot.appendingPathComponent("gone", isDirectory: true), projectPoolURL]
+        XCTAssertEqual(HorizontalPartBrowserView.poolsToOpen(part, projectPoolURL: projectPoolURL, review: unreadable).map(\.name),
+                       ["Project pool"], "a pool that can't be read, and the project pool again, are left out")
 
         // The pool's symbol changes: the part is out of date where it's used.
         try changeSource("symbols/passive/resistor.json") { $0["name"] = "Resistor, redrawn" }
@@ -279,6 +292,7 @@ final class HorizontalPoolCacheImporterTests: XCTestCase {
         review = try cachedReview(pools: [], references: used)
         row = try XCTUnwrap(review.parts.first)
         XCTAssertNil(row.sourcePool)
+        XCTAssertEqual(row.sourcePoolURLs, [])
         XCTAssertEqual(row.statusTitle, "Not in an attached pool")
         XCTAssertTrue(row.isInNoAttachedPool)
         XCTAssertEqual(review.notInAttachedPoolInUse.map(\.id), ["part-1"])
@@ -293,6 +307,8 @@ final class HorizontalPoolCacheImporterTests: XCTestCase {
         row = try XCTUnwrap(try cachedReview(references: used).parts.first)
         XCTAssertEqual(row.status, .sourceUnavailable)
         XCTAssertEqual(row.sourcePool, "Stock")
+        XCTAssertEqual(row.sourcePoolURLs.map(\.path), [HorizontalPoolLibrary.canonicalURL(poolURL).path],
+                       "a pool that can't update the part still has it to open")
         XCTAssertEqual(row.statusTitle, "Source unavailable")
     }
 
@@ -365,6 +381,7 @@ final class HorizontalPoolCacheImporterTests: XCTestCase {
         let made = try XCTUnwrap(review.parts.first { $0.id == "part-new" })
         XCTAssertEqual(made.status, .current, made.message)
         XCTAssertEqual(made.sourcePool, "Mine")
+        XCTAssertEqual(made.sourcePoolURLs.map(\.path), [HorizontalPoolLibrary.canonicalURL(mine).path])
         XCTAssertEqual(review.parts.first { $0.id == "part-1" }?.sourcePool, "Stock")
         XCTAssertThrowsError(try HorizontalPoolPartCopier.plan(partID: "part-new", projectFiles: HorizontalPoolCacheUpdater.files(in: archive, poolDirectory: "pool"),
                                                                projectPoolURL: projectPoolURL, into: mine)) {
