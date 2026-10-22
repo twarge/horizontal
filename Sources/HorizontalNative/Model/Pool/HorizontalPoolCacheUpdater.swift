@@ -57,6 +57,9 @@ struct HorizontalPartLibraryReview: Identifiable, Sendable {
     /// is found holding it; nil for a project-only part and one no attached
     /// pool has.
     var sourcePool: String? = nil
+    /// Where those pools are, for opening the part in one: the pool it came
+    /// from once that is known, else every attached pool holding it.
+    var sourcePoolURLs: [URL] = []
 
     /// No pool the project is attached to holds the part: one made in the
     /// project, or one whose pool isn't registered or found here.
@@ -343,10 +346,14 @@ enum HorizontalPoolCacheUpdater {
             let partOrigin = metadata.files[partPath]?.poolUUID
             // Several holding it with nothing to say which: all of them,
             // since it is in an attached pool, just not one that is known.
-            row.sourcePool = partOrigin.flatMap { origin in
-                holders.first { HorizontalPoolRegistryStore.poolInfo(at: $0.poolURL).uuid == origin }?.poolName
-            } ?? (holders.isEmpty ? nil : holders.reduce(into: [String]()) { if !$0.contains($1.poolName) { $0.append($1.poolName) } }
-                .joined(separator: ", "))
+            let originHolder = partOrigin.flatMap { origin in
+                holders.first { HorizontalPoolRegistryStore.poolInfo(at: $0.poolURL).uuid == origin }
+            }
+            row.sourcePool = originHolder?.poolName
+                ?? (holders.isEmpty ? nil : holders.reduce(into: [String]()) { if !$0.contains($1.poolName) { $0.append($1.poolName) } }
+                    .joined(separator: ", "))
+            row.sourcePoolURLs = originHolder.map { [$0.poolURL] }
+                ?? holders.reduce(into: [URL]()) { if !$0.contains($1.poolURL) { $0.append($1.poolURL) } }
             do {
                 // Provenance wins over browsing order. A legacy copy's part needs a unique source.
                 var preferred = [String: String]()
@@ -394,6 +401,7 @@ enum HorizontalPoolCacheUpdater {
                     throw HorizontalDispatchError.failed(unresolvedSourceMessage(holders: holders, missingPools: missingPools))
                 }
                 row.sourcePool = sourcePart.poolName
+                row.sourcePoolURLs = [sourcePart.poolURL]
                 // A dependency in several pools with no recorded origin (one an
                 // earlier import had already cached, say) comes from the pool a
                 // fresh import of this part would take it from.
