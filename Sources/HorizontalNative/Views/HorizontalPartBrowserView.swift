@@ -207,76 +207,115 @@ struct HorizontalPartBrowserView: View {
         #endif
     }
 
+    /// One row; the commands under the search; then, for a pane narrower
+    /// than those (the pane split goes down to 280 points), the pickers as
+    /// menus behind icons and the commands as icons, so the toolbar always
+    /// fits. A wider row in a narrow pane was centred over the pane's edges,
+    /// painting the pane's background over its neighbour, left of the table.
     private var browserToolbar: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
-                searchControls
-                partCommands.fixedSize()
+                searchControls(compact: false)
+                partCommands(compact: false).fixedSize()
             }
             VStack(spacing: 8) {
-                searchControls
-                HStack { Spacer(); partCommands }
+                searchControls(compact: false)
+                HStack { Spacer(); partCommands(compact: false) }
+            }
+            VStack(spacing: 8) {
+                searchControls(compact: true)
+                HStack { Spacer(); partCommands(compact: true) }
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
     }
 
-    private var searchControls: some View {
-        HStack(spacing: 8) {
-            Picker("Search Field", selection: $searchScope) {
-                ForEach(HorizontalPartSearchScope.allCases) { scope in
-                    Text(scope.title).tag(scope)
-                }
+    private var scopePicker: some View {
+        Picker("Search Field", selection: $searchScope) {
+            ForEach(HorizontalPartSearchScope.allCases) { scope in
+                Text(scope.title).tag(scope)
             }
-            .labelsHidden()
-            .frame(width: 150)
-
-            TextField("Search Parts", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .frame(minWidth: 100)
-                .leavesFieldOnEscape()
-                .focused($focus, equals: .search)
-
-            Picker("Show", selection: $libraryFilter) {
-                ForEach(HorizontalPartLibraryFilter.allCases) { filter in
-                    Text(filter.title).tag(filter)
-                }
-            }
-            .labelsHidden()
-            .fixedSize()
-            .help("List the parts out of date with their pools, or the ones no attached pool has")
-
-            exclusionMenu
         }
     }
 
-    private var exclusionMenu: some View {
+    private var libraryFilterPicker: some View {
+        Picker("Show", selection: $libraryFilter) {
+            ForEach(HorizontalPartLibraryFilter.allCases) { filter in
+                Text(filter.title).tag(filter)
+            }
+        }
+    }
+
+    private func searchControls(compact: Bool) -> some View {
+        HStack(spacing: 8) {
+            if compact {
+                Menu {
+                    scopePicker
+                        .pickerStyle(.inline)
+                } label: {
+                    Image(systemName: "text.magnifyingglass")
+                }
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Search \(searchScope == .all ? "every field" : searchScope.title)")
+            } else {
+                scopePicker
+                    .labelsHidden()
+                    .frame(width: 150)
+            }
+
+            TextField("Search Parts", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: compact ? 60 : 100)
+                .leavesFieldOnEscape()
+                .focused($focus, equals: .search)
+
+            if !compact {
+                libraryFilterPicker
+                    .labelsHidden()
+                    .fixedSize()
+                    .help("List the parts out of date with their pools, or the ones no attached pool has")
+            }
+
+            exclusionMenu(compact: compact)
+        }
+    }
+
+    /// Compact, the Show picker rides in here too.
+    private func exclusionMenu(compact: Bool) -> some View {
         Menu {
+            if compact {
+                libraryFilterPicker
+                    .pickerStyle(.inline)
+                Divider()
+            }
             Toggle("Hide Parts Excluded from BOM", isOn: $hidesExcludedFromBOM)
             Toggle("Hide Do Not Populate Parts", isOn: $hidesDoNotPopulate)
             Divider()
             Text(hiddenCount == 1 ? "1 part hidden" : "\(hiddenCount) parts hidden")
         } label: {
-            Image(systemName: hidesExcludedFromBOM || hidesDoNotPopulate
+            Image(systemName: hidesExcludedFromBOM || hidesDoNotPopulate || (compact && libraryFilter != .all)
                 ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
         }
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Hide test pads, mounting holes and other parts excluded from the BOM, and parts only Do Not Populate components use")
+        .help((compact ? "Showing \(libraryFilter.title). " : "")
+              + "Hide test pads, mounting holes and other parts excluded from the BOM, and parts only Do Not Populate components use")
     }
 
-    private var partCommands: some View {
-        HStack(spacing: 8) {
+    private func partCommands(compact: Bool) -> some View {
+        let updates = library.review?.parts.filter { !$0.changes.isEmpty }.count ?? 0
+        return HStack(spacing: 8) {
             Button(action: onReviewUpdates) {
-                Label("Updates (\(library.review?.parts.filter { !$0.changes.isEmpty }.count ?? 0))", systemImage: "arrow.triangle.2.circlepath")
+                Label(compact ? "\(updates)" : "Updates (\(updates))", systemImage: "arrow.triangle.2.circlepath")
             }
             .disabled(library.review == nil)
-            .help("Review project parts against their source libraries")
+            .help("Review project parts against their source libraries (\(updates == 1 ? "1 update" : "\(updates) updates"))")
 
             if let onCleanUp {
                 Button(action: onCleanUp) {
-                    Label("Clean Up…", systemImage: "trash")
+                    commandLabel("Clean Up…", systemImage: "trash", compact: compact)
                 }
                 .disabled(isReadOnly)
                 .help("Remove project pool items nothing in the design uses")
@@ -291,10 +330,21 @@ struct HorizontalPartBrowserView: View {
             Button {
                 placeSelectedPart()
             } label: {
-                Label("Place", systemImage: "plus.square.on.square")
+                commandLabel("Place", systemImage: "plus.square.on.square", compact: compact)
             }
             .keyboardShortcut(focus == nil ? nil : KeyboardShortcut(.return, modifiers: []))
             .disabled(!canPlaceSelectedPart)
+            .help("Place the selected part in the schematic")
+        }
+    }
+
+    @ViewBuilder
+    private func commandLabel(_ title: String, systemImage: String, compact: Bool) -> some View {
+        if compact {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.iconOnly)
+        } else {
+            Label(title, systemImage: systemImage)
         }
     }
 

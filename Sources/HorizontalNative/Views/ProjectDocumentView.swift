@@ -2029,7 +2029,9 @@ struct ProjectWorkspaceView: View {
     private func splitContent(safeAreaInsets: EdgeInsets) -> some View {
         let panes = HorizontalPane.allCases.filter { visiblePanes.contains($0) }
 
-        ResizablePaneSplitView(panes: panes, sizeFractions: $paneSizeFractions) { pane, isLeadingPane in
+        // The leading pane runs under the navigator sidebar; its minimum
+        // counts only what shows beside it.
+        ResizablePaneSplitView(panes: panes, sizeFractions: $paneSizeFractions, leadingInset: safeAreaInsets.leading) { pane, isLeadingPane in
             paneView(
                 pane,
                 fitSafeAreaInsets: paneFitSafeAreaInsets(

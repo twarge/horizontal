@@ -629,12 +629,23 @@ struct HorizontalPoolBrowserView: View {
 
     // MARK: - Toolbar
 
-    /// Labels give way to icons when the pane is too narrow for them; the
-    /// menus keep their triangles, and each control's help names it.
+    /// Labels give way to icons when the pane is too narrow for them, and
+    /// then the search to a row of its own, so the toolbar always fits the
+    /// pane (which the split lets go down to 280 points); the menus keep
+    /// their triangles, and each control's help names it.
     private var browserToolbar: some View {
         ViewThatFits(in: .horizontal) {
             toolbarRow(compact: false)
             toolbarRow(compact: true)
+            VStack(spacing: 8) {
+                // Tighter, to fit the narrowest pane.
+                HStack(spacing: 4) {
+                    leadingToolbarControls(compact: true)
+                    Spacer(minLength: 0)
+                    trailingToolbarControls(compact: true)
+                }
+                searchField(minWidth: 60)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -642,41 +653,53 @@ struct HorizontalPoolBrowserView: View {
 
     private func toolbarRow(compact: Bool) -> some View {
         HStack(spacing: 8) {
-            if category == .part {
-                parametricDisclosure
+            leadingToolbarControls(compact: compact)
+            searchField(minWidth: compact ? 80 : 160)
+            trailingToolbarControls(compact: compact)
+        }
+    }
+
+    @ViewBuilder
+    private func leadingToolbarControls(compact: Bool) -> some View {
+        if category == .part {
+            parametricDisclosure
+        }
+
+        kindPicker(compact: compact)
+    }
+
+    private func searchField(minWidth: CGFloat) -> some View {
+        TextField("Search \(category.title)", text: $searchText)
+            .textFieldStyle(.roundedBorder)
+            .frame(minWidth: minWidth)
+            .leavesFieldOnEscape()
+            // Down from the search goes into the list, as in a Finder or
+            // Spotlight search, so the arrows can carry on through it.
+            .onKeyPress(.downArrow) {
+                focusList()
+                return .handled
             }
+    }
 
-            kindPicker(compact: compact)
+    @ViewBuilder
+    private func trailingToolbarControls(compact: Bool) -> some View {
+        if isLoading {
+            ProgressView()
+                .controlSize(.small)
+        }
 
-            TextField("Search \(category.title)", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .frame(minWidth: compact ? 80 : 160)
-                .leavesFieldOnEscape()
-                // Down from the search goes into the list, as in a Finder or
-                // Spotlight search, so the arrows can carry on through it.
-                .onKeyPress(.downArrow) {
-                    focusList()
-                    return .handled
-                }
+        poolsMenu(compact: compact)
 
-            if isLoading {
-                ProgressView()
-                    .controlSize(.small)
-            }
+        newItemMenu(compact: compact)
 
-            poolsMenu(compact: compact)
+        Toggle(isOn: $showsPreview) {
+            toolbarLabel("Preview", systemImage: "rectangle.bottomhalf.inset.filled", compact: compact)
+        }
+        .toggleStyle(.button)
+        .help("Show the selected item below the list")
 
-            newItemMenu(compact: compact)
-
-            Toggle(isOn: $showsPreview) {
-                toolbarLabel("Preview", systemImage: "rectangle.bottomhalf.inset.filled", compact: compact)
-            }
-            .toggleStyle(.button)
-            .help("Show the selected item below the list")
-
-            if partActions != nil {
-                partButton(compact: compact)
-            }
+        if partActions != nil {
+            partButton(compact: compact)
         }
     }
 
