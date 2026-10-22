@@ -338,7 +338,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "pool_write",
-            summary: "Write pool items (unit, entity, symbol, part, package, padstack) into the project pool cache and reload. Items already present with the same bytes are skipped. A live document takes them as one undoable step.",
+            summary: "Write pool items (unit, entity, symbol, part, package, padstack) into the project pool and reload. One the project pool has is written over where it is; a copy of an attached pool's item goes in the cache; one no pool has is the project's own, saved where the app saves a new item (parts/<mpn>.json, packages/<name>/package.json) and listed as Project-only. Items already present with the same bytes are skipped. A live document takes them as one undoable step.",
             params: ["handle": "Project handle.",
                      "items": "Array of pool item objects, each with \"type\" and \"uuid\"; or {\"from\": <uuid>, \"patch\": {…}, \"uuid\"?: <new uuid>}, the item from merged with the patch (RFC 7396: null removes a key), written over it or, under a new uuid, beside it. Optional on a commit naming its dry run's plan_digest.",
                      "dry_run": "Report the files it would write without writing (default false)."],
@@ -599,24 +599,34 @@ enum HorizontalDispatchMethods {
             throw HorizontalDispatchError.invalidParams(
                 "Pass \"items\", a non-empty array of pool item objects, or commit a dry run by its plan_digest alone.")
         }
-        let targets = try poolTargets(items, entry: entry)
+        let checked = try poolItems(items, entry: entry)
         defer {
             HorizontalPoolLibrary.invalidateCache()
             HorizontalPoolPadstacks.invalidateCaches()
         }
         let byDigestAlone = HorizontalDispatchMutation.committingByDigestAlone(params, payload: "items")
         return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params, byDigestAlone: byDigestAlone) { store in
+            let targets = try poolTargets(checked, entry: entry, store: store)
             let written = try writePoolItems(targets, to: store)
             return ["written": written, "skipped": targets.count - written.count, "applied": written.count,
                     "undo_name": "Write Pool Items"]
         }
     }
 
-    private static func poolTargets(_ items: [Any], entry: HorizontalDispatchProjectEntry) throws -> [(URL, Data)] {
-        guard let poolDirectory = entry.project.poolDirectory else {
+    /// A pool item `pool_write` or `apply`'s `pool_items` was given, checked,
+    /// with a `from` item's patch applied.
+    private struct PoolItemWrite {
+        var category: HorizontalPoolItemCategory
+        var uuid: String
+        var json: JSONDictionary
+        var model: HorizontalPoolItemModel
+    }
+
+    private static func poolItems(_ items: [Any], entry: HorizontalDispatchProjectEntry) throws -> [PoolItemWrite] {
+        guard entry.project.poolDirectory != nil else {
             throw HorizontalDispatchError.failed("The project has no pool directory.")
         }
-        var targets = [(URL, Data)]()
+        var checked = [PoolItemWrite]()
         for (index, raw) in items.enumerated() {
             guard var json = raw as? JSONDictionary else {
                 throw HorizontalDispatchError.invalidParams("Item \(index) is not an object.")
@@ -645,20 +655,108 @@ enum HorizontalDispatchMethods {
             guard let uuid = json.string("uuid")?.lowercased(), UUID(uuidString: uuid) != nil else {
                 throw HorizontalDispatchError.invalidParams("Item \(index) has no \"uuid\".")
             }
-            do { _ = try HorizontalPoolItemModel.load(category: category, json: json) }
+            let model: HorizontalPoolItemModel
+            do { model = try HorizontalPoolItemModel.load(category: category, json: json) }
             catch { throw HorizontalDispatchError.invalidParams("Invalid pool item \(index): \(error.localizedDescription)") }
-            let directory = entry.project.baseURL
-                .appendingPathComponent(poolDirectory)
-                .appendingPathComponent(HorizontalPoolItemFactory.directoryName(for: category))
-                .appendingPathComponent("cache")
-            let url = category == .package
-                ? directory.appendingPathComponent(uuid).appendingPathComponent("package.json")
-                : directory.appendingPathComponent("\(uuid).json")
-            guard !targets.contains(where: { $0.0 == url }) else { throw HorizontalDispatchError.invalidParams("Duplicate pool item target \(uuid).") }
-            targets.append((url, try HorizontalHorizonJSONWriter.data(json)))
+            guard !checked.contains(where: { $0.category == category && $0.uuid == uuid }) else {
+                throw HorizontalDispatchError.invalidParams("Duplicate pool item target \(uuid).")
+            }
+            checked.append(PoolItemWrite(category: category, uuid: uuid, json: json, model: model))
+        }
+        return checked
+    }
+
+    /// Where each item goes in the project pool as `store` holds it (field
+    /// finding 151). One the project pool has is written over where it is,
+    /// and a copy of an attached pool's item goes in the cache, where an
+    /// import would put it. One no pool has is the project's own, so it goes
+    /// where the app saves a new item, `parts/<mpn>.json` or
+    /// `packages/<name>/package.json`, a symbol beside its unit's path. In the
+    /// cache it read as a copy whose source is missing; here it is Project-only.
+    private static func poolTargets(_ items: [PoolItemWrite], entry: HorizontalDispatchProjectEntry,
+                                    store: HorizontalArchiveFileStore) throws -> [(URL, Data)] {
+        guard !items.isEmpty else { return [] }
+        guard let poolDirectory = entry.project.poolDirectory else {
+            throw HorizontalDispatchError.failed("The project has no pool directory.")
+        }
+        let poolURL = entry.project.baseURL.appendingPathComponent(poolDirectory)
+        let prefix = poolDirectory.hasSuffix("/") ? poolDirectory : poolDirectory + "/"
+        let paths = store.archive.regularFilePaths.filter { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) }
+        // Every path a new item must keep clear of, lowercased, since a Mac
+        // disk takes "parts/DAC.json" and "parts/dac.json" for one file.
+        var occupied = Set(paths.map { $0.lowercased() })
+        // The project pool's items by kind and uuid. A uuid in the cache and
+        // out of it is the cache's, as the part loaders read it first.
+        var existing = [String: String]()
+        for path in paths.sorted() where path.hasSuffix(".json") && !path.hasPrefix("3d_models/") && !path.hasPrefix(".") {
+            let isCached = path.split(separator: "/").dropFirst().first == "cache"
+            guard let data = store.archive.regularFileData(relativePath: prefix + path),
+                  let json = try? JSONHelper.loadDictionary(from: data),
+                  let uuid = json.string("uuid")?.lowercased() else { continue }
+            // An older padstack file gives its padstack type as its type.
+            let inPadstacks = path.hasPrefix("padstacks/") || path.split(separator: "/").dropFirst(2).first == "padstacks"
+            guard let category = json.string("type").flatMap(HorizontalPoolItemCategory.init(rawValue:)) ?? (inPadstacks ? .padstack : nil) else { continue }
+            let key = HorizontalPoolLibraryItem.key(category, uuid)
+            if existing[key] == nil || (isCached && existing[key]?.contains("/cache/") == false) { existing[key] = path }
+        }
+        // What the attached pools hold, read only when an item is new here.
+        var attached: Set<String>?
+        func inAttachedPool(_ key: String) throws -> Bool {
+            if attached == nil {
+                let own = HorizontalPoolLibrary.canonicalURL(poolURL).path
+                attached = Set(try HorizontalDispatchPool.poolURLs(for: entry).flatMap { url -> [String] in
+                    guard HorizontalPoolLibrary.canonicalURL(url).path != own, HorizontalPoolLibrary.accessError(for: url) == nil else { return [] }
+                    return HorizontalPoolLibrary.items(inPool: url, poolName: HorizontalPoolRegistryStore.poolInfo(at: url).name).map(\.itemKey)
+                })
+            }
+            return attached?.contains(key) == true
+        }
+        func available(_ path: String) -> String {
+            let isPackage = path.hasSuffix("/package.json")
+            func taken(_ candidate: String) -> Bool {
+                let lowered = candidate.lowercased()
+                guard isPackage else { return occupied.contains(lowered) }
+                let directory = String(lowered.dropLast("package.json".count))
+                return occupied.contains { $0.hasPrefix(directory) }
+            }
+            var candidate = path
+            var counter = 2
+            while taken(candidate) {
+                candidate = isPackage
+                    ? String(path.dropLast("/package.json".count)) + "-\(counter)/package.json"
+                    : String(path.dropLast(".json".count)) + "-\(counter).json"
+                counter += 1
+            }
+            return candidate
         }
 
-        return targets
+        var placed = [String: String]()
+        // Symbols last, so one can sit beside a unit written in the same batch.
+        for item in items.filter({ $0.category != .symbol }) + items.filter({ $0.category == .symbol }) {
+            let key = HorizontalPoolLibraryItem.key(item.category, item.uuid)
+            let kind = HorizontalPoolItemFactory.directoryName(for: item.category)
+            let path: String
+            if let current = existing[key] {
+                path = current
+            } else if try inAttachedPool(key) {
+                path = item.category == .package ? "\(kind)/cache/\(item.uuid)/package.json" : "\(kind)/cache/\(item.uuid).json"
+            } else if item.category == .symbol,
+                      let unitPath = item.json.string("unit").map({ HorizontalPoolLibraryItem.key(.unit, $0) }).flatMap({ placed[$0] ?? existing[$0] }),
+                      !unitPath.contains("/cache/") {
+                // units/<dir>/<name>.json draws as symbols/<dir>/<name>.json,
+                // as `suggestedURL` mirrors it.
+                path = available("\(kind)/" + unitPath.split(separator: "/").dropFirst().joined(separator: "/"))
+            } else {
+                let suggested = HorizontalPoolItemFactory.suggestedURL(for: item.model, in: poolURL)
+                path = available(String(suggested.path.dropFirst(poolURL.path.count + 1)))
+            }
+            placed[key] = path
+            occupied.insert(path.lowercased())
+        }
+        return try items.map { item in
+            let path = placed[HorizontalPoolLibraryItem.key(item.category, item.uuid)]!
+            return (poolURL.appendingPathComponent(path), try HorizontalHorizonJSONWriter.data(item.json))
+        }
     }
 
     private static func writePoolItems(_ targets: [(URL, Data)], to store: HorizontalProjectFileStore) throws -> [String] {
@@ -1315,7 +1413,7 @@ enum HorizontalDispatchMethods {
         let byDigestAlone = HorizontalDispatchMutation.committingByDigestAlone(params, payload: "ops")
         return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params, byDigestAlone: byDigestAlone) { store in
             if let items = params["pool_items"] as? [JSONDictionary] {
-                _ = try writePoolItems(poolTargets(items, entry: entry), to: store)
+                _ = try writePoolItems(poolTargets(poolItems(items, entry: entry), entry: entry, store: store), to: store)
             }
             let snapshot = HorizontalDispatchSnapshot(archive: store.archive, baseURL: entry.project.baseURL)
             let project = params["pool_items"] == nil ? entry.project : try HorizontalDispatchSession.project(from: snapshot, url: entry.url)
