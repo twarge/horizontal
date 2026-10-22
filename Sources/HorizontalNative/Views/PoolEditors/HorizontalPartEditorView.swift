@@ -165,6 +165,11 @@ struct HorizontalPartEditorView: View {
     @State private var picker: HorizontalPoolItemPickerRequest?
     @State private var selectedPinIDs = Set<String>()
     @State private var selectedPadIDs = Set<String>()
+    /// The pin and pad tables' columns as last arranged, for every window.
+    @AppStorage("Horizontal.partEditor.pinColumns")
+    private var pinColumns = TableColumnCustomization<HorizontalPartEditorContext.Pin>()
+    @AppStorage("Horizontal.partEditor.padColumns")
+    private var padColumns = TableColumnCustomization<HorizontalPartEditorContext.Pad>()
 
     private struct LoadKey: Equatable {
         var entityID: String?
@@ -520,33 +525,39 @@ struct HorizontalPartEditorView: View {
     }
 
     private var pinTable: some View {
-        Table(context?.pins ?? [], selection: $selectedPinIDs) {
+        Table(context?.pins ?? [], selection: $selectedPinIDs, columnCustomization: $pinColumns) {
             TableColumn("Gate") { pin in Text(pin.gateName) }
                 .width(min: 60, ideal: 90)
+                .customizationID("gate")
             TableColumn("Pin") { pin in Text(pin.pinName) }
                 .width(min: 80, ideal: 140)
+                .customizationID("pin")
             TableColumn("Mapped") { pin in
                 Image(systemName: isMapped(pin) ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(isMapped(pin) ? .green : .secondary)
             }
             .width(60)
+            .customizationID("mapped")
         }
         .frame(minHeight: 260)
     }
 
     private var padTable: some View {
-        Table(context?.pads ?? [], selection: $selectedPadIDs) {
+        Table(context?.pads ?? [], selection: $selectedPadIDs, columnCustomization: $padColumns) {
             TableColumn("Pad") { pad in Text(pad.name) }
                 .width(min: 60, ideal: 90)
+                .customizationID("pad")
             TableColumn("Gate") { pad in
                 Text(mappedPin(for: pad)?.gateName ?? "")
             }
             .width(min: 60, ideal: 90)
+            .customizationID("gate")
             TableColumn("Pin") { pad in
                 Text(mappedPin(for: pad)?.pinName ?? "")
                     .foregroundStyle(part.padMap[pad.id] != nil && mappedPin(for: pad) == nil ? .red : .primary)
             }
             .width(min: 80, ideal: 140)
+            .customizationID("pin")
         }
         .frame(minHeight: 260)
     }

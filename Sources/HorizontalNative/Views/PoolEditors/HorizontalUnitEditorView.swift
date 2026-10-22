@@ -13,6 +13,9 @@ struct HorizontalUnitEditorView: View {
     var commit: (HorizontalPoolUnit, String) -> Void
 
     @State private var selectedPinIDs = Set<String>()
+    /// The pin table's columns as last arranged, for every window.
+    @AppStorage("Horizontal.unitEditor.pinColumns")
+    private var pinColumns = TableColumnCustomization<HorizontalUnitPin>()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -64,13 +67,14 @@ struct HorizontalUnitEditorView: View {
     }
 
     private var pinTable: some View {
-        Table(unit.sortedPins, selection: $selectedPinIDs) {
+        Table(unit.sortedPins, selection: $selectedPinIDs, columnCustomization: $pinColumns) {
             TableColumn("Name") { pin in
                 HorizontalCommittedTextField(text: pin.primaryName, isReadOnly: isReadOnly) { value in
                     update(pin.id, "Rename Pin") { $0.primaryName = value }
                 }
             }
             .width(min: 90, ideal: 140)
+            .customizationID("name")
 
             TableColumn("Alternate names") { pin in
                 HorizontalCommittedTextField(
@@ -83,6 +87,7 @@ struct HorizontalUnitEditorView: View {
                 }
             }
             .width(min: 140, ideal: 240)
+            .customizationID("alternateNames")
 
             TableColumn("Direction") { pin in
                 Picker("Direction", selection: Binding(
@@ -97,6 +102,7 @@ struct HorizontalUnitEditorView: View {
                 .disabled(isReadOnly)
             }
             .width(min: 120, ideal: 150)
+            .customizationID("direction")
 
             TableColumn("Swap group") { pin in
                 HorizontalCommittedTextField(text: String(pin.swapGroup), isReadOnly: isReadOnly) { value in
@@ -106,6 +112,7 @@ struct HorizontalUnitEditorView: View {
                 }
             }
             .width(min: 70, ideal: 90)
+            .customizationID("swapGroup")
         }
         .frame(minHeight: 240)
     }

@@ -109,6 +109,13 @@ struct HorizontalPoolBrowserView: View {
     @State private var isLoading = false
     @State private var selectedItemID: HorizontalPoolLibraryItem.ID?
     @State private var sortOrder = [KeyPathComparator(\HorizontalPoolLibraryItem.name)]
+    /// The item list's columns as last arranged — order, widths — kept for
+    /// the app rather than the window, as every table's are.
+    @AppStorage("Horizontal.poolBrowser.itemColumns")
+    private var itemColumns = TableColumnCustomization<HorizontalPoolLibraryItem>()
+    /// Each parametric table's, by table name (`parametricColumns(for:)`).
+    @AppStorage("Horizontal.poolBrowser.parametricColumns")
+    private var parametricColumnsData = Data()
     @State private var isImportingPool = false
     @State private var addPoolFailurePath: String?
     @State private var scanGeneration = 0
@@ -957,22 +964,42 @@ struct HorizontalPoolBrowserView: View {
 
     // MARK: - Table
 
+    /// A parametric table's columns as last arranged, kept for the app
+    /// rather than the window. Each table has columns of its own, so each
+    /// keeps its own arrangement, by table name.
+    private func parametricColumns(for table: String) -> Binding<TableColumnCustomization<HorizontalParametricRow>> {
+        typealias Arrangements = [String: TableColumnCustomization<HorizontalParametricRow>]
+        return Binding {
+            let all = (try? JSONDecoder().decode(Arrangements.self, from: parametricColumnsData)) ?? [:]
+            return all[table] ?? TableColumnCustomization()
+        } set: { arrangement in
+            var all = (try? JSONDecoder().decode(Arrangements.self, from: parametricColumnsData)) ?? [:]
+            all[table] = arrangement
+            if let data = try? JSONEncoder().encode(all) {
+                parametricColumnsData = data
+            }
+        }
+    }
+
     private func itemTable(_ rows: [HorizontalPoolLibraryItem]) -> some View {
-        Table(rows, selection: $selectedItemID, sortOrder: $sortOrder) {
+        Table(rows, selection: $selectedItemID, sortOrder: $sortOrder, columnCustomization: $itemColumns) {
             TableColumn("Name", value: \.name) { item in
                 tableText(item.name)
             }
             .width(min: 160, ideal: 240)
+            .customizationID("name")
 
             TableColumn(category.detailTitle, value: \.detail) { item in
                 tableText(item.detail)
             }
             .width(min: 120, ideal: 180)
+            .customizationID("detail")
 
             TableColumn("Tags", value: \.tags) { item in
                 tableText(item.tags)
             }
             .width(min: 120, ideal: 200)
+            .customizationID("tags")
 
             TableColumn("Pool", value: \.poolsLabel) { item in
                 tableText(item.poolsLabel)
@@ -981,6 +1008,7 @@ struct HorizontalPoolBrowserView: View {
                           : "")
             }
             .width(min: 110, ideal: 160)
+            .customizationID("pool")
         }
         #if os(macOS)
         .alternatingRowBackgrounds(.enabled)
@@ -1003,21 +1031,25 @@ struct HorizontalPoolBrowserView: View {
     /// manufacturer and package, then a column per value, each sorting by
     /// number or naturally as its column does.
     private func parametricItemTable(_ table: HorizontalParametricTable, rows: [HorizontalParametricRow]) -> some View {
-        Table(rows, selection: $selectedItemID, sortOrder: $parametricSortOrder) {
+        Table(rows, selection: $selectedItemID, sortOrder: $parametricSortOrder,
+              columnCustomization: parametricColumns(for: table.name)) {
             TableColumn("MPN", sortUsing: HorizontalParametricRowComparator(key: HorizontalParametricRowComparator.mpn)) { row in
                 tableText(row.item.name)
             }
             .width(min: 140, ideal: 200)
+            .customizationID("mpn")
 
             TableColumn("Manufacturer", sortUsing: HorizontalParametricRowComparator(key: HorizontalParametricFilterColumn.manufacturerName)) { row in
                 tableText(row.item.manufacturer)
             }
             .width(min: 100, ideal: 140)
+            .customizationID("manufacturer")
 
             TableColumn("Package", sortUsing: HorizontalParametricRowComparator(key: HorizontalParametricFilterColumn.packageName)) { row in
                 tableText(row.packageName)
             }
             .width(min: 90, ideal: 120)
+            .customizationID("package")
 
             TableColumnForEach(table.columns) { column in
                 TableColumn(column.displayName,
@@ -1026,12 +1058,14 @@ struct HorizontalPoolBrowserView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .width(min: 70, ideal: 100)
+                .customizationID("value:" + column.name)
             }
 
             TableColumn("Pool", sortUsing: HorizontalParametricRowComparator(key: HorizontalParametricRowComparator.pool)) { row in
                 tableText(row.item.poolsLabel)
             }
             .width(min: 90, ideal: 140)
+            .customizationID("pool")
         }
         .id(table.name)
         #if os(macOS)
