@@ -3394,6 +3394,31 @@ extension NSResponder {
     }
 }
 
+extension HorizontalKeyboardResponder {
+    /// What a window's first responder is, `canvas` being the view of the
+    /// canvas asking. Selectable text is told by what it does, not by class:
+    /// SwiftUI's `textSelection` text is AppKit's private text interaction
+    /// view, an NSView that answers Copy (and Select All) without being an
+    /// NSText, and a view that answers Copy is somewhere to copy from.
+    init(_ responder: NSResponder?, canvas: NSView? = nil) {
+        guard let responder else {
+            self = .other
+            return
+        }
+        if let canvas, responder === canvas {
+            self = .canvas
+        } else if responder is NSText || responder is NSTextField {
+            self = .textInput
+        } else if responder.isKeyboardList {
+            self = .list
+        } else if responder is NSView, responder.responds(to: #selector(NSText.copy(_:))) {
+            self = .selectableText
+        } else {
+            self = .other
+        }
+    }
+}
+
 struct TrackpadCanvasMonitor: NSViewRepresentable {
     var onPan: (CGSize) -> Void
     var onMagnify: (CGFloat, CGPoint, CGSize) -> Void
@@ -3492,14 +3517,16 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
         var onCommand: ((HorizontalCanvasCommand) -> Void)?
         /// An interaction is in progress (placing, moving, drawing). One
         /// started from a pane, such as Place in the Pools pane, begins with
-        /// that pane's field or list focused, and its keys (R, E, Escape…)
-        /// belong to the interaction, so the canvas takes the focus. A click
-        /// back in the field or list gives it its keys again.
+        /// that pane's field, list or text focused, or with the pane holding
+        /// the keyboard, and its keys (R, E, Escape…) belong to the
+        /// interaction, so the canvas takes the focus. A click back in the
+        /// pane gives it its keys again.
         var handlesInteractionKeys = false {
             didSet {
-                guard handlesInteractionKeys, !oldValue, isOtherControlActive else { return }
+                guard handlesInteractionKeys, !oldValue, isOtherControlActive || !hasKeyboardFocus else { return }
                 DispatchQueue.main.async { [weak self] in
-                    guard let self, self.handlesInteractionKeys, self.isOtherControlActive, let window = self.window else { return }
+                    guard let self, self.handlesInteractionKeys, self.isOtherControlActive || !self.hasKeyboardFocus,
+                          let window = self.window else { return }
                     window.makeFirstResponder(self)
                     self.onRequestKeyboardFocus?()
                 }
@@ -3648,24 +3675,22 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
             }
 
             if event.type == .keyDown {
-                // A list elsewhere with the keyboard, such as the Pools pane's
-                // table or the navigator, takes its own keys (128): the arrows
-                // move its selection rather than the canvas's. The monitor sees
-                // every key in the window before the list does, and the
-                // keyboard-focused pane would otherwise take them. An
-                // interaction in progress still takes its own.
-                if isKeyboardListActive, !(handlesInteractionKeys && isInteractionKey(event)) {
-                    return event
-                }
-                // Multiple panes are visible at once on macOS, each with its own key
-                // monitor. Route canvas keyboard commands ONLY to the keyboard-focused
-                // pane (set by clicking a pane) so e.g. ⌘A doesn't select in every
-                // pane. An in-progress interaction still handles its own keys, and the
-                // first-responder check covers the brief window after a right-click
-                // before the focus state round-trips back.
-                guard hasKeyboardFocus
-                    || window.firstResponder === self
-                    || (handlesInteractionKeys && isInteractionKey(event)) else {
+                // The monitor sees every key in the window before any view
+                // does. A list elsewhere with the keyboard (the Pools pane's
+                // table, the navigator) keeps its keys (128), selected text
+                // its Copy and Select All, a field every key; otherwise only
+                // the keyboard-focused pane's canvas takes them (set by
+                // clicking a pane), so ⌘A doesn't select in every pane. An
+                // interaction in progress takes its own, and the
+                // first-responder check covers the moment after a right-click
+                // before the focus state comes back round.
+                guard HorizontalCanvasInputCore.canvasTakesKey(
+                    keyEvent(from: event),
+                    responder: keyboardResponder,
+                    paneHasKeyboard: hasKeyboardFocus,
+                    isInteractionKey: isInteractionKey(event),
+                    handlesInteractionKeys: handlesInteractionKeys
+                ) else {
                     return event
                 }
                 return handleKeyDown(event)
@@ -3952,20 +3977,18 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
             HorizontalCanvasInputCore.arrowDirection(keyEvent(from: event))
         }
 
+        /// What has the window's keyboard, this canvas among the choices.
+        private var keyboardResponder: HorizontalKeyboardResponder {
+            HorizontalKeyboardResponder(window?.firstResponder, canvas: self)
+        }
+
         private var isTextInputActive: Bool {
-            guard let firstResponder = window?.firstResponder else {
-                return false
-            }
-            return firstResponder is NSTextView || firstResponder is NSTextField
+            keyboardResponder == .textInput
         }
 
-        private var isKeyboardListActive: Bool {
-            window?.firstResponder?.isKeyboardList == true
-        }
-
-        /// A text field or a list has the keyboard.
+        /// A text field, selected text or a list has the keyboard.
         private var isOtherControlActive: Bool {
-            isTextInputActive || isKeyboardListActive
+            keyboardResponder.isControl
         }
 
         /// A click on the canvas ends editing in a field elsewhere (a pane's
@@ -3977,7 +4000,7 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
             guard isOtherControlActive, let window else { return }
             var view = window.contentView?.hitTest(locationInWindow)
             while let current = view {
-                if current is NSText || current is NSTextField || current.isKeyboardList { return }
+                if current !== self, HorizontalKeyboardResponder(current).isControl { return }
                 view = current.superview
             }
             window.makeFirstResponder(self)

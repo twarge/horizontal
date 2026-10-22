@@ -11,6 +11,32 @@ import SwiftUI
 // (NSEvent vs SwiftUI gestures/KeyPress) stays in the per-platform views and
 // feeds the neutral types below.
 
+/// What has the window's keyboard, as a canvas's key monitor sees it (the
+/// macOS views classify the first responder into this).
+enum HorizontalKeyboardResponder: Equatable, Sendable {
+    /// The canvas asking.
+    case canvas
+    /// A text field, or a text view: it keeps every key.
+    case textInput
+    /// Selectable text that isn't a text view: SwiftUI's `textSelection`
+    /// text (AppKit's text interaction view) in a pane's cells and previews.
+    /// It keeps Copy and Select All.
+    case selectableText
+    /// A table, outline, collection or browser: it keeps its own keys.
+    case list
+    /// Anything else (another canvas, the window), or nothing.
+    case other
+
+    /// Has the keyboard for itself, so a click on the canvas takes it back,
+    /// and the canvas's keyboard badge stands down while it has it.
+    var isControl: Bool {
+        switch self {
+        case .textInput, .selectableText, .list: true
+        case .canvas, .other: false
+        }
+    }
+}
+
 /// The four canvas-relevant modifier keys, independent of NSEvent/UIKey.
 struct HorizontalCanvasInputModifiers: OptionSet, Hashable {
     let rawValue: Int
@@ -333,6 +359,46 @@ enum HorizontalCanvasInputCore {
         switch event.characters?.lowercased() {
         case "c", "v", "x", "d": return true
         default: return false
+        }
+    }
+
+    /// Whether a canvas's key monitor takes a key, given what has the
+    /// window's keyboard. The monitor sees every key in the window before
+    /// any view does, so this is what lets everything else keep its keys:
+    ///
+    /// - a text field or text view keeps every key, even during an
+    ///   interaction, so typing in a pane's search never rotates or deletes;
+    /// - selected text (the Pools pane's preview, the Parts pane's cells)
+    ///   keeps Copy and Select All always. SwiftUI's selectable text is no
+    ///   text view — AppKit's text interaction view — so before this the
+    ///   canvas whose pane last had the keyboard took ⌘C as its own Copy and
+    ///   the text never saw it;
+    /// - a list, and selected text otherwise, keep their keys unless an
+    ///   interaction in progress (a placement started from a pane) wants
+    ///   them;
+    /// - the canvas takes the keys while it or its pane has the keyboard.
+    static func canvasTakesKey(
+        _ event: HorizontalCanvasKeyEvent,
+        responder: HorizontalKeyboardResponder,
+        paneHasKeyboard: Bool,
+        isInteractionKey: Bool,
+        handlesInteractionKeys: Bool
+    ) -> Bool {
+        let interaction = handlesInteractionKeys && isInteractionKey
+        switch responder {
+        case .textInput:
+            return false
+        case .selectableText:
+            if isClipboardCommand(event) || isSelectAllCommand(event) {
+                return false
+            }
+            return interaction
+        case .list:
+            return interaction
+        case .canvas:
+            return true
+        case .other:
+            return paneHasKeyboard || interaction
         }
     }
 
