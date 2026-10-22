@@ -267,10 +267,12 @@ final class HorizontalPoolPreviewTests: XCTestCase {
 
     func testPartPreviewInheritsFromItsBaseAndShowsItsPackage() throws {
         let (items, index) = try scannedIndex()
-        guard case .part(let table, let geometry) = HorizontalPoolPreviewBuilder.preview(for: try item(.part, "derived1", in: items), index: index) else {
+        guard case .part(let part) = HorizontalPoolPreviewBuilder.preview(for: try item(.part, "derived1", in: items), index: index) else {
             return XCTFail("a part previews as attributes plus package")
         }
+        let table = part.table
         func value(_ label: String) -> String? { table.fields.first { $0.label == label }?.value }
+        func links(_ label: String) -> [HorizontalPoolItemLink] { table.fields.first { $0.label == label }?.links ?? [] }
         XCTAssertEqual(value("MPN"), "BASE-1", "an inherited attribute reads through the base part")
         XCTAssertEqual(value("Manufacturer"), "ACME")
         XCTAssertEqual(value("Value"), "10k", "an own attribute wins")
@@ -278,8 +280,114 @@ final class HorizontalPoolPreviewTests: XCTestCase {
         XCTAssertEqual(value("Entity"), "Test entity")
         XCTAssertEqual(value("Base part"), "BASE-1")
         XCTAssertEqual(value("Tags"), "derived, base")
-        XCTAssertNotNil(geometry, "the part's package draws beside its attributes")
-        XCTAssertFalse(geometry?.pads.isEmpty ?? true)
+        XCTAssertNotNil(part.package, "the part's package draws beside its attributes")
+        XCTAssertFalse(part.package?.pads.isEmpty ?? true)
+
+        // The data, then what the part leads to, each a link to the item.
+        XCTAssertEqual(table.fields.map(\.label), [
+            "MPN", "Value", "Manufacturer", "Description", "Tags", "Base part", "Entity", "Unit", "Package", "Padstack",
+        ])
+        XCTAssertTrue(links("MPN").isEmpty, "the part's own data isn't a link")
+        XCTAssertEqual(links("Base part").map { "\($0.category.rawValue)|\($0.uuid)" }, ["part|base1"])
+        XCTAssertEqual(links("Entity").map { "\($0.category.rawValue)|\($0.uuid)" }, ["entity|e1"], "inherited through the base")
+        XCTAssertEqual(links("Unit").map(\.name), ["Test unit"])
+        XCTAssertEqual(links("Unit").first?.note, "", "one gate needs no gate names")
+        XCTAssertEqual(links("Package").map(\.uuid), ["pkg1"])
+        XCTAssertEqual(links("Padstack").map(\.name), ["TH round"], "the package's padstacks, found though its pad says PS1")
+        XCTAssertTrue(table.fields.flatMap(\.links).allSatisfy(\.isResolved))
+
+        // Its one gate, whose unit no browsed pool has a symbol for.
+        XCTAssertEqual(part.gates.map(\.title), ["Test unit"], "a gate without a suffix is its unit's name")
+        XCTAssertEqual(part.gates.first?.symbols.count, 0)
+    }
+
+    /// A quad op-amp: four gates on one unit, a power gate on another, the
+    /// op-amp unit drawn two ways.
+    private func writeQuadOpampFixture() throws {
+        func symbol(_ uuid: String, _ name: String, unit: String) -> JSONDictionary {
+            [
+                "type": "symbol", "uuid": uuid, "name": name, "unit": unit,
+                "junctions": ["j1": ["position": [0, 0]], "j2": ["position": [5_000_000, 0]]],
+                "lines": ["l1": ["from": "j1", "to": "j2", "width": 0, "layer": 0]],
+            ]
+        }
+        try write(["type": "unit", "uuid": "u-op", "name": "Opamp", "pins": JSONDictionary()], to: "pool/units/opamp.json")
+        try write(["type": "unit", "uuid": "u-pwr", "name": "Power", "pins": JSONDictionary()], to: "pool/units/power.json")
+        try write(symbol("s-op2", "Opamp, small", unit: "u-op"), to: "pool/symbols/opamp-small.json")
+        try write(symbol("s-op1", "Opamp", unit: "U-OP"), to: "pool/symbols/opamp.json")
+        try write(symbol("s-pwr", "Power pins", unit: "u-pwr"), to: "pool/symbols/power.json")
+        try write(
+            ["type": "entity", "uuid": "e-quad", "name": "Quad opamp", "prefix": "U",
+             "gates": [
+                "gB": ["name": "B", "suffix": "B", "swap_group": 1, "unit": "u-op"],
+                "gA": ["name": "A", "suffix": "A", "swap_group": 1, "unit": "u-op"],
+                "gP": ["name": "Power", "suffix": "P", "swap_group": 0, "unit": "u-pwr"],
+                "gC": ["name": "C", "suffix": "C", "swap_group": 1, "unit": "u-op"],
+             ]],
+            to: "pool/entities/quad.json"
+        )
+        try write(
+            ["type": "part", "uuid": "quad1", "MPN": [false, "QUAD-1"], "manufacturer": [false, "ACME"],
+             "value": [false, ""], "description": [false, ""], "datasheet": [false, ""],
+             "entity": "e-quad", "package": "pkg1", "tags": []],
+            to: "pool/parts/quad.json"
+        )
+    }
+
+    func testPartPreviewDrawsEachGatesSymbolsAndLinksEveryUnitAndSymbol() throws {
+        try writeQuadOpampFixture()
+        let (items, index) = try scannedIndex()
+        XCTAssertEqual(index.symbols(forUnit: "U-OP").map(\.name), ["Opamp", "Opamp, small"], "a unit's symbols, by name")
+        XCTAssertEqual(index.symbols(forUnit: "u1").count, 0)
+
+        guard case .part(let part) = HorizontalPoolPreviewBuilder.preview(for: try item(.part, "quad1", in: items), index: index) else {
+            return XCTFail("a part previews as a part")
+        }
+        XCTAssertEqual(part.gates.map(\.title), ["A: Opamp", "B: Opamp", "C: Opamp", "P: Power"], "Horizon's gate menu, by suffix")
+        XCTAssertEqual(part.gates.first?.symbols.map(\.name), ["Opamp", "Opamp, small"])
+        XCTAssertEqual(part.gates.last?.symbols.map(\.name), ["Power pins"])
+        XCTAssertTrue(part.gates.flatMap(\.symbols).allSatisfy { !($0.artwork?.lines.isEmpty ?? true) }, "every symbol is drawn")
+
+        func links(_ label: String) -> [HorizontalPoolItemLink] { part.table.fields.first { $0.label == label }?.links ?? [] }
+        XCTAssertEqual(links("Units").map(\.name), ["Opamp", "Power"], "each unit once, in gate order")
+        XCTAssertEqual(links("Units").map(\.note), ["gates A, B, C", "gate P"], "with the gates it is used for")
+        XCTAssertEqual(links("Symbols").map(\.name), ["Opamp", "Opamp, small", "Power pins"])
+        XCTAssertEqual(links("Symbols").map(\.note), ["for Opamp", "for Opamp", "for Power"], "with several units, each symbol names its own")
+        XCTAssertEqual(links("Symbols").map(\.uuid), ["s-op1", "s-op2", "s-pwr"])
+
+        // The context menu's "Show …" entries come from the same links.
+        let entity = try item(.entity, "e-quad", in: items)
+        let entityLinks = HorizontalPoolPreviewBuilder.links(for: entity, json: try JSONHelper.loadDictionary(from: entity.url), index: index)
+        XCTAssertEqual(entityLinks.map(\.role), [.unit, .unit, .symbol, .symbol, .symbol])
+        let symbol = try item(.symbol, "s-op1", in: items)
+        XCTAssertEqual(
+            HorizontalPoolPreviewBuilder.links(for: symbol, json: try JSONHelper.loadDictionary(from: symbol.url), index: index).map(\.uuid),
+            ["u-op"], "a symbol leads to its unit, however its file spells the uuid"
+        )
+        let package = try item(.package, "pkg1", in: items)
+        XCTAssertEqual(
+            HorizontalPoolPreviewBuilder.links(for: package, json: try JSONHelper.loadDictionary(from: package.url), index: index).map(\.name),
+            ["TH round"]
+        )
+    }
+
+    func testPartLinksToWhatNoBrowsedPoolHasAsPlainNames() throws {
+        try write(
+            ["type": "part", "uuid": "orphan1", "MPN": [false, "ORPHAN"], "manufacturer": [false, ""],
+             "value": [false, ""], "description": [false, ""], "datasheet": [false, ""],
+             "entity": "e1", "package": "0123456789abcdef", "tags": []],
+            to: "pool/parts/orphan.json"
+        )
+        let (items, index) = try scannedIndex()
+        guard case .part(let part) = HorizontalPoolPreviewBuilder.preview(for: try item(.part, "orphan1", in: items), index: index) else {
+            return XCTFail("a part previews as a part")
+        }
+        let package = try XCTUnwrap(part.table.fields.first { $0.label == "Package" }?.links.first)
+        XCTAssertFalse(package.isResolved, "no browsed pool has the package, so there is nowhere to go")
+        XCTAssertEqual(package.name, "01234567", "it is named by the start of its uuid")
+        XCTAssertNil(part.package)
+        XCTAssertNil(part.table.fields.first { $0.label == "Padstack" }, "no package, no padstacks")
+        XCTAssertTrue(part.table.fields.first { $0.label == "Entity" }?.links.first?.isResolved ?? false)
     }
 
     // MARK: - Real horizon-pool checkout

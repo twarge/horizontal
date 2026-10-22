@@ -497,9 +497,13 @@ struct HorizontalPoolBrowserView: View {
         #endif
     }
 
+    /// A part's links (its entity, units, symbols, package…) reveal the item
+    /// here, as the context menu's "Show …" entries do.
     private var previewPane: some View {
-        HorizontalPoolItemPreviewView(item: selectedItem, index: index)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        HorizontalPoolItemPreviewView(item: selectedItem, index: index) { request in
+            reveal(request)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // Greedy frames keep the toolbar pinned to the top: without them the
@@ -775,10 +779,7 @@ struct HorizontalPoolBrowserView: View {
             return nil
         }
         if let table = parametricTable {
-            let row = HorizontalPoolParametricSearch.rows([item], table: table) { packageID in
-                packageID.isEmpty ? "" : index.name(.package, uuid: packageID) ?? ""
-            }
-            return HorizontalPoolParametricSearch.filter(row, by: parametricFilters.applied).isEmpty ? nil : item
+            return parametricTableShows(item, table) ? item : nil
         }
         return item
     }
@@ -1065,8 +1066,7 @@ struct HorizontalPoolBrowserView: View {
             Divider()
             ForEach(related, id: \.item.id) { entry in
                 Button("Show \(entry.title)") {
-                    pendingReveal = HorizontalPoolRevealRequest(item: entry.item)
-                    applyPendingReveal()
+                    reveal(HorizontalPoolRevealRequest(item: entry.item))
                 }
             }
         }
@@ -1336,40 +1336,22 @@ struct HorizontalPoolBrowserView: View {
         scanGeneration += 1
     }
 
-    /// The items this one refers to, for the context menu's "Show …" entries:
-    /// a part's entity, package and base part; an entity's units; a symbol's
-    /// unit; a package's padstacks.
+    /// The items this one leads to that the browsed pools have, for the
+    /// context menu's "Show …" entries — what a part's preview links to
+    /// (`HorizontalPoolPreviewBuilder.references`): a part's base part,
+    /// entity, units, symbols, package and padstacks; an entity's units and
+    /// symbols; a symbol's unit; a package's padstacks.
     private func relatedItems(for item: HorizontalPoolLibraryItem) -> [(title: String, item: HorizontalPoolLibraryItem)] {
         guard let json = try? JSONHelper.loadDictionary(from: item.url) else {
             return []
         }
-        var entries = [(title: String, item: HorizontalPoolLibraryItem)]()
         var seen = Set<String>()
-        func add(_ category: HorizontalPoolItemCategory, _ uuid: String?, label: String) {
-            guard let uuid, let related = index.item(category, uuid: uuid.lowercased()), seen.insert(related.id).inserted else {
-                return
+        let entries = HorizontalPoolPreviewBuilder.links(for: item, json: json, index: index).compactMap { reference in
+            index.item(reference.category, uuid: reference.uuid).flatMap { related in
+                seen.insert(related.id).inserted ? (title: "\(reference.role.menuTitle) “\(related.name)”", item: related) : nil
             }
-            entries.append((title: "\(label) “\(related.name)”", item: related))
         }
-        switch item.category {
-        case .part:
-            add(.entity, json.string("entity"), label: "Entity")
-            add(.package, json.string("package"), label: "Package")
-            add(.part, json.string("base"), label: "Base Part")
-        case .entity:
-            for (_, gate) in json.dictionaryMap("gates").sorted(by: { $0.key < $1.key }) {
-                add(.unit, gate.string("unit"), label: "Unit")
-            }
-        case .symbol:
-            add(.unit, json.string("unit"), label: "Unit")
-        case .package:
-            for (_, pad) in json.dictionaryMap("pads").sorted(by: { $0.key < $1.key }) {
-                add(.padstack, pad.string("padstack"), label: "Padstack")
-            }
-        default:
-            break
-        }
-        return Array(entries.prefix(10))
+        return Array(entries.prefix(12))
     }
 
     // MARK: - Creating and duplicating
@@ -1637,6 +1619,16 @@ struct HorizontalPoolBrowserView: View {
         #endif
     }
 
+    /// Shows a request's item, or the first match of its search, here:
+    /// what a reveal from elsewhere in the window, a preview link and a
+    /// "Show …" entry all come through.
+    private func reveal(_ request: HorizontalPoolRevealRequest) {
+        pendingReveal = request
+        applyPendingReveal()
+    }
+
+    /// Applies the pending reveal once the scan has its item, then scrolls
+    /// the list to it, centred, however far down it is.
     private func applyPendingReveal() {
         guard let request = pendingReveal else {
             return
@@ -1647,6 +1639,9 @@ struct HorizontalPoolBrowserView: View {
             viewedPoolID = nil
             updateVisibleRows()
             selectedItemID = filteredItems.first?.id
+            if let selectedItem {
+                makeListed(selectedItem)
+            }
             pendingReveal = nil
             return
         }
@@ -1664,7 +1659,32 @@ struct HorizontalPoolBrowserView: View {
         category = request.category
         searchText = ""
         selectedItemID = item.id
+        makeListed(item)
         pendingReveal = nil
+    }
+
+    /// What a reveal does for a part the list would otherwise hide: one
+    /// that doesn't fit the components being replaced closes the banner, as
+    /// its close button does, and one the parametric table leaves out goes
+    /// back to every part. The item a reveal asked for is always on screen.
+    private func makeListed(_ item: HorizontalPoolLibraryItem) {
+        guard item.category == .part else {
+            return
+        }
+        if let replacement = activeReplacement, !replacement.isCompatible(item) {
+            dismissedReplacementKey = replacement.key
+        }
+        if let table = parametricTable, !parametricTableShows(item, table) {
+            parametricTableName = nil
+        }
+    }
+
+    /// Whether the parametric list shows `item` with its filters as they are.
+    private func parametricTableShows(_ item: HorizontalPoolLibraryItem, _ table: HorizontalParametricTable) -> Bool {
+        let row = HorizontalPoolParametricSearch.rows([item], table: table) { packageID in
+            packageID.isEmpty ? "" : index.name(.package, uuid: packageID) ?? ""
+        }
+        return !HorizontalPoolParametricSearch.filter(row, by: parametricFilters.applied).isEmpty
     }
 
     private func reloadItems() async {

@@ -118,6 +118,8 @@ struct HorizontalPoolLibraryIndex: Sendable {
     private var itemsByKey: [String: HorizontalPoolLibraryItem]
     /// The winning item per key, in scan order — what a picker lists.
     private var orderedItems: [HorizontalPoolLibraryItem]
+    /// Each unit's symbols (by lowercased unit uuid), sorted by name.
+    private var symbolsByUnit: [String: [HorizontalPoolLibraryItem]]
     /// Every manufacturer the browsed pools name, sorted, for completions.
     let manufacturers: [String]
     /// Every tag the browsed pools use, sorted, for completions.
@@ -145,15 +147,27 @@ struct HorizontalPoolLibraryIndex: Sendable {
         }
         self.itemsByKey = itemsByKey
         self.orderedItems = orderedItems
+        self.symbolsByUnit = Dictionary(grouping: orderedItems.filter { $0.category == .symbol && !$0.symbolUnitID.isEmpty }) {
+            $0.symbolUnitID
+        }.mapValues(Self.sortedByName)
         self.manufacturers = manufacturers.values.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
         self.tags = tags.values.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     /// Every item of one kind, sorted by name.
     func items(in category: HorizontalPoolItemCategory) -> [HorizontalPoolLibraryItem] {
-        orderedItems
-            .filter { $0.category == category }
-            .sorted { ($0.name.localizedLowercase, $0.uuid) < ($1.name.localizedLowercase, $1.uuid) }
+        Self.sortedByName(orderedItems.filter { $0.category == category })
+    }
+
+    /// The symbols drawn for a unit, sorted by name, as Horizon's entity
+    /// preview lists them for a gate (`SELECT … FROM symbols WHERE unit=?
+    /// ORDER BY name`).
+    func symbols(forUnit unitID: String) -> [HorizontalPoolLibraryItem] {
+        symbolsByUnit[unitID.lowercased()] ?? []
+    }
+
+    private static func sortedByName(_ items: [HorizontalPoolLibraryItem]) -> [HorizontalPoolLibraryItem] {
+        items.sorted { ($0.name.localizedLowercase, $0.uuid) < ($1.name.localizedLowercase, $1.uuid) }
     }
 
     func item(_ category: HorizontalPoolItemCategory, uuid: String) -> HorizontalPoolLibraryItem? {
