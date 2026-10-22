@@ -55,6 +55,10 @@ struct ProjectNavigatorView: View {
     var onPlaceBlock: ((String) -> Void)? = nil
     /// The blocks the sheet showing can use: not its own, nor one that uses it.
     var placeableBlockIDs: Set<String> = []
+    /// Find's components: (the sheet, the component, where its symbol
+    /// stands), when one listed under its sheet is clicked. Without it, Find
+    /// matches sheets alone.
+    var onSelectComponent: ((ProjectNavigatorSelection, String, HorizontalPoint) -> Void)? = nil
 
     @State private var renameTarget: SheetRenameTarget?
     @State private var renameDraft = ""
@@ -99,12 +103,13 @@ struct ProjectNavigatorView: View {
 
     var body: some View {
         let sheetIDsWithHighlightedNet = sheetIDsWithHighlightedNet
+        let componentMatches = componentMatchesBySheet
         List(selection: $selection) {
             if !project.schematics.isEmpty {
                 Section {
-                    ForEach(project.schematics.filter(schematicMatchesSearch)) { schematic in
+                    ForEach(project.schematics.filter { schematicMatchesSearch($0, componentMatches: componentMatches) }) { schematic in
                         let blockMatches = blockMatchesSearch(schematic.block, schematicFilename: schematic.schematicFilename)
-                        let sheets = sheetsForSearch(in: schematic, blockMatches: blockMatches)
+                        let sheets = sheetsForSearch(in: schematic, blockMatches: blockMatches, componentMatches: componentMatches)
 
                         if blockMatches || !isSearching {
                             NavigatorRow(
@@ -135,7 +140,8 @@ struct ProjectNavigatorView: View {
                         }
 
                         ForEach(sheets) { sheet in
-                            if matchesSearch("sheet", sheet.name, navigatorTitle(for: schematic.block)) || blockMatches || !isSearching {
+                            let matches = componentMatches[sheet.id] ?? []
+                            if matchesSearch("sheet", sheet.name, navigatorTitle(for: schematic.block)) || blockMatches || !isSearching || !matches.isEmpty {
                                 NavigatorRow(
                                     icon: schematic.block.isTop ? .sheet : .blockSheet,
                                     title: sheet.name,
@@ -150,6 +156,8 @@ struct ProjectNavigatorView: View {
                                         .sheet(blockID: schematic.block.uuid, sheetID: $0)
                                     }
                                 }
+                                componentRows(matches, on: .sheet(blockID: schematic.block.uuid, sheetID: sheet.id), indent: 36)
+                                    .disabled(!isAvailable(schematic.block))
                             }
                         }
                         .onMove(perform: sheetMoveHandler(orderedIDs: schematic.schematic.sheets.map(\.id), schematicURL: schematic.schematic.url))
@@ -186,7 +194,7 @@ struct ProjectNavigatorView: View {
                             }
                         }
                     }
-                    ForEach(schematic.sheets.filter { matchesSearch("sheet", $0.name) }) { sheet in
+                    ForEach(schematic.sheets.filter { matchesSearch("sheet", $0.name) || componentMatches[$0.id] != nil }) { sheet in
                         NavigatorRow(
                             icon: .sheet,
                             title: sheet.name,
@@ -197,6 +205,7 @@ struct ProjectNavigatorView: View {
                         .contextMenu {
                             sheetContextMenu(for: sheet, in: schematic.sheets, schematicURL: schematic.url) { .standaloneSheet($0) }
                         }
+                        componentRows(componentMatches[sheet.id] ?? [], on: .standaloneSheet(sheet.id), indent: 18)
                     }
                     .onMove(perform: sheetMoveHandler(orderedIDs: schematic.sheets.map(\.id), schematicURL: schematic.url))
                 }
@@ -558,22 +567,76 @@ struct ProjectNavigatorView: View {
         block.isTop ? "Schematic" : block.displayName
     }
 
-    private func schematicMatchesSearch(_ schematic: HorizontalProjectSchematic) -> Bool {
+    private func schematicMatchesSearch(_ schematic: HorizontalProjectSchematic, componentMatches: [String: [HorizontalNavigatorComponentMatch]]) -> Bool {
         blockMatchesSearch(schematic.block, schematicFilename: schematic.schematicFilename)
             || schematic.schematic.sheets.contains {
-                matchesSearch("sheet", $0.name)
+                matchesSearch("sheet", $0.name) || componentMatches[$0.id] != nil
             }
     }
 
-    private func sheetsForSearch(in schematic: HorizontalProjectSchematic, blockMatches: Bool) -> [HorizontalSchematicSheet] {
+    private func sheetsForSearch(
+        in schematic: HorizontalProjectSchematic,
+        blockMatches: Bool,
+        componentMatches: [String: [HorizontalNavigatorComponentMatch]]
+    ) -> [HorizontalSchematicSheet] {
         if !isSearching || blockMatches {
             return schematic.schematic.sheets
         }
 
         return schematic.schematic.sheets.filter {
-            matchesSearch("sheet", $0.name)
+            matchesSearch("sheet", $0.name) || componentMatches[$0.id] != nil
         }
     }
+
+    /// While Find has words, each sheet's components that match them, by
+    /// sheet id; a sheet with none is absent.
+    private var componentMatchesBySheet: [String: [HorizontalNavigatorComponentMatch]] {
+        guard onSelectComponent != nil else { return [:] }
+        let tokens = searchTokens
+        guard !tokens.isEmpty else { return [:] }
+        let sheets = project.schematics.isEmpty
+            ? project.schematic?.sheets ?? []
+            : project.schematics.flatMap(\.schematic.sheets)
+        var result = [String: [HorizontalNavigatorComponentMatch]]()
+        for sheet in sheets {
+            let matches = HorizontalNavigatorComponentSearch.matches(on: sheet, tokens: tokens)
+            if !matches.isEmpty {
+                result[sheet.id] = matches
+            }
+        }
+        return result
+    }
+
+    /// A sheet's matching components under it. A click takes the schematic
+    /// to the sheet and the component: they are buttons rather than
+    /// selectable rows, since what the navigator selects is the sheet.
+    @ViewBuilder
+    private func componentRows(_ matches: [HorizontalNavigatorComponentMatch], on sheet: ProjectNavigatorSelection, indent: CGFloat) -> some View {
+        if let onSelectComponent {
+            ForEach(matches.prefix(Self.componentRowLimit)) { match in
+                Button {
+                    onSelectComponent(sheet, match.componentID, match.position)
+                } label: {
+                    NavigatorRow(icon: "memorychip", title: match.refdes, detail: match.detail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, indent)
+                .help("Show \(match.refdes) on its sheet")
+            }
+            if matches.count > Self.componentRowLimit {
+                Text("\(matches.count - Self.componentRowLimit) more on this sheet")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, indent)
+            }
+        }
+    }
+
+    /// Enough to find what was searched for; a word every part has would
+    /// otherwise list the whole design.
+    private static let componentRowLimit = 50
 
     private var selectedSummary: NavigatorSelectionSummary? {
         guard let selection else {
