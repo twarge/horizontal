@@ -39,6 +39,8 @@ struct HorizontalIPadProjectView: View {
     @State private var planesNeedUpdate = false
     @State private var planePourCache = HorizontalPlanePourCache()
     @State private var powerNetsPopoverPresented = false
+    /// The first launch's offer of Horizon's default pool.
+    @State private var isOfferingDefaultPool = false
     @State private var selectedNetIDs = Set<String>()
     @State private var highlightedNetIDs = Set<String>()
     @State private var selectedComponentIDs = Set<String>()
@@ -139,6 +141,17 @@ struct HorizontalIPadProjectView: View {
         } else {
             projectBody
                 .environment(\.horizonPoolRevealAction, revealInPools)
+                // The first project the app opens offers Horizon's default
+                // pool, once, as the Mac does at its first launch.
+                .task {
+                    if HorizontalDefaultPool.shouldOfferAtLaunch {
+                        HorizontalDefaultPool.markOffered()
+                        isOfferingDefaultPool = true
+                    }
+                }
+                .sheet(isPresented: $isOfferingDefaultPool) {
+                    HorizontalDefaultPoolSheet()
+                }
                 .alert("Could Not Place Part", isPresented: libraryPlacementErrorPresented) {
                     Button("OK", role: .cancel) {}
                 } message: {

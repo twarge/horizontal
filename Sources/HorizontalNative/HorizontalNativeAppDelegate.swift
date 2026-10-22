@@ -7,6 +7,11 @@ final class HorizontalNativeAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
             guard !Self.hasVisibleDocumentWindow else {
+                // Opened with a document, the first launch still offers it.
+                if HorizontalDefaultPool.shouldOfferAtLaunch {
+                    HorizontalDefaultPool.markOffered()
+                    HorizontalDefaultPoolWindow.shared.show()
+                }
                 return
             }
 
@@ -20,6 +25,17 @@ final class HorizontalNativeAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openProject() {
+        // The first launch offers Horizon's default pool first; the Open
+        // panel follows once the offer is closed, unless a document opened
+        // meanwhile.
+        if HorizontalDefaultPool.shouldOfferAtLaunch {
+            HorizontalDefaultPool.markOffered()
+            HorizontalDefaultPoolWindow.shared.show { [weak self] in
+                guard !Self.hasVisibleDocumentWindow else { return }
+                self?.openProject()
+            }
+            return
+        }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = HorizontalProjectDocument.readableContentTypes
         panel.allowsMultipleSelection = false

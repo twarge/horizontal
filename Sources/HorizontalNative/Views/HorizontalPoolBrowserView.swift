@@ -98,6 +98,8 @@ struct HorizontalPoolBrowserView: View {
     var partActions: HorizontalPoolPartActions? = nil
 
     @ObservedObject private var registry = HorizontalPoolRegistry.shared
+    /// iPad: the default pool's offer, as a sheet (the Mac has a window).
+    @State private var isOfferingDefaultPool = false
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
     #if os(iOS)
     @State private var editingItem: HorizontalPoolLibraryItem?
@@ -453,6 +455,15 @@ struct HorizontalPoolBrowserView: View {
             .environmentObject(appearanceSettings)
         }
         #endif
+        .sheet(isPresented: $isOfferingDefaultPool) {
+            HorizontalDefaultPoolSheet()
+        }
+        // A pool registered elsewhere, such as the default pool's clone, is
+        // browsed as soon as it is.
+        .onChange(of: registry.pools) { _, _ in
+            HorizontalPoolLibrary.invalidateCache()
+            scanGeneration += 1
+        }
         .fileImporter(isPresented: $isImportingPool, allowedContentTypes: [.folder]) { result in
             guard case .success(let url) = result else {
                 return
@@ -895,6 +906,17 @@ struct HorizontalPoolBrowserView: View {
                 isImportingPool = true
             } label: {
                 Label("Add Pool…", systemImage: "plus")
+            }
+            if !registry.pools.contains(where: { $0.uuid.caseInsensitiveCompare(HorizontalDefaultPool.uuid) == .orderedSame }) {
+                Button {
+                    #if os(macOS)
+                    HorizontalDefaultPoolWindow.shared.show()
+                    #else
+                    isOfferingDefaultPool = true
+                    #endif
+                } label: {
+                    Label("Get Horizon Default Pool…", systemImage: "arrow.down.circle")
+                }
             }
         } label: {
             toolbarLabel(viewedPool?.name ?? "Pools", systemImage: "books.vertical", compact: compact)
