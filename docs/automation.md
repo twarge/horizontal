@@ -47,8 +47,8 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `project_info`, `project_files` | blocks, sheets, counts, diagnostics; files in the captured source |
 | `freeze_project`, `analysis_snapshot`, `transaction_status` | immutable read context; electrical evidence; mutation receipt lookup — `committed`, `not_committed` with the error, or `unknown` when the document never saw that id |
 | `list_sheets` | sheets in the PDF exporter's page order |
-| `list_components`, `get_component` | components with part details; one component with every pin, its net, symbol and board placements |
-| `list_nets`, `get_net`, `netlist` | nets with class and flags; one net with its pins, routing counts, and airwire geometry; the whole netlist |
+| `list_components`, `get_component` | components with part details; one component with every pin, its net, symbol and board placements. In a hierarchical design an instance's refdes or flat uuid reads as that instance: its refdes, package and pins on the flattened nets, with `instance` and `instance_of` |
+| `list_nets`, `get_net`, `netlist` | nets with class and flags; one net with its pins, routing counts, and airwire geometry; the whole netlist. A top block net's pins are the flattened design's, each instance's under its refdes with `instance_id`; `block_ports` names the instance ports wired to a net, and a sub-block's net says its `block`. A name a sub-block and the top block share is the top block's |
 | `bom` | grouped the way the BOM exporter groups; a part flagged `exclude_bom` (a test pad, a mounting hole) is left out, as Horizon leaves it out, and so is a component with no part; `excluded` and `without_part` name those components |
 | `list_symbols` | symbol instances on the sheets: component, gate, placement, and the instance id the schematic ops take |
 | `list_junctions` | schematic junction IDs, positions, resolved nets and sheet identities for wire endpoints |
@@ -77,7 +77,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `recompute_connectivity` | the editor's post-edit connectivity pass, in memory |
 | `check` | see below |
 | `export` | the app's exporters into a directory outside the project |
-| `render_sheet`, `render_board` | PNG, base64 or written to a path, via the PDF exporters and Core Graphics; `region` renders part of a sheet or board. A board render draws the package, assembly and courtyard layers as outlines, so the pads and tracks under a package body show |
+| `render_sheet`, `render_board` | PNG, base64 or written to a path, via the PDF exporters and Core Graphics; `region` renders part of a sheet or board. A sheet is drawn as its own PDF page; a sub-block's, as the page of the `instance` asked for (the first by default), `page` and `instance` saying which. A board render draws the package, assembly and courtyard layers as outlines, so the pads and tracks under a package body show |
 | `list_groups` | Horizon groups (sub-circuit instances) with members by tag and placement |
 | `zoom_to`, `render_viewport` | Live channel: frame a component or net in a pane, or with `pane: "all"` in every showing pane that can show it, the 3D view included; render what a pane shows |
 

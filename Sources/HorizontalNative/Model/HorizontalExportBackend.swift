@@ -99,23 +99,54 @@ enum HorizontalExportBackend {
         try writeCSV(lines, to: url)
     }
 
+    /// The pages the schematic PDF prints, in order. Horizon prints the
+    /// design page by page: each sheet of a block once for every instance
+    /// that reaches it, under that instance's refdes; a schematic standing
+    /// alone prints its sheets.
+    static func schematicPages(of project: HorizontalProject) -> [HorizontalSchematicPage] {
+        let pages = project.schematicPages
+        guard pages.isEmpty else { return pages }
+        let schematics = project.schematics.isEmpty
+            ? project.schematic.map { [HorizontalProjectSchematic(block: HorizontalProjectBlock(uuid: $0.uuid, blockFilename: nil, schematicFilename: $0.url.lastPathComponent, symbolFilename: nil, isTop: true), schematicFilename: $0.url.lastPathComponent, schematic: $0)] } ?? []
+            : project.schematics
+        return schematics.flatMap { entry in entry.schematic.sheets.map { (entry.block, $0) } }.enumerated().map {
+            HorizontalSchematicPage(block: $0.element.0, sheet: $0.element.1, path: [], number: $0.offset + 1)
+        }
+    }
+
+    /// One page as the schematic PDF prints it, alone in a PDF of its own —
+    /// what a render rasterizes, so it is the page the PDF has whatever comes
+    /// before it. `total` numbers its frame among the design's pages; nil
+    /// draws the sheet as its block holds it, for a block no instance uses.
+    /// Returns the sheet as drawn.
+    @discardableResult
+    static func exportSchematicPage(
+        project: HorizontalProject,
+        page: HorizontalSchematicPage,
+        total: Int?,
+        settings: HorizontalSchematicPDFExportSettings,
+        palette: HorizontalCanvasPalette = HorizontalCanvasPalette.defaultPalette(kind: .schematic, mode: .light),
+        to url: URL
+    ) throws -> HorizontalSchematicSheet {
+        let sheet = total.map { project.drawnSheet(for: page, of: $0) } ?? page.sheet
+        let bounds = schematicPageBounds(for: sheet)
+        let pageSize = pdfPageSize(for: bounds)
+        try writePDF(to: url, title: "\(project.displayTitle) Schematic", initialPageSize: pageSize) { context, _ in
+            context.beginPDFPage(pdfPageInfo(pageSize: pageSize))
+            drawSchematicSheet(sheet, context: context, transform: PDFWorldTransform(bounds: bounds, pageSize: pageSize, margin: 0),
+                               palette: palette, minimumLineWidthMM: settings.minimumLineWidthMM)
+            context.endPDFPage()
+        }
+        return sheet
+    }
+
     private static func exportSchematicPDF(
         project: HorizontalProject,
         settings: HorizontalSchematicPDFExportSettings,
         palette: HorizontalCanvasPalette,
         to url: URL
     ) throws {
-        let schematics = project.schematics.isEmpty
-            ? project.schematic.map { [HorizontalProjectSchematic(block: HorizontalProjectBlock(uuid: $0.uuid, blockFilename: nil, schematicFilename: $0.url.lastPathComponent, symbolFilename: nil, isTop: true), schematicFilename: $0.url.lastPathComponent, schematic: $0)] } ?? []
-            : project.schematics
-        // Horizon prints the design page by page: each sheet of a block once
-        // for every instance that reaches it, under that instance's refdes.
-        var pages = project.schematicPages
-        if pages.isEmpty {
-            pages = schematics.flatMap { entry in entry.schematic.sheets.map { (entry.block, $0) } }.enumerated().map {
-                HorizontalSchematicPage(block: $0.element.0, sheet: $0.element.1, path: [], number: $0.offset + 1)
-            }
-        }
+        let pages = schematicPages(of: project)
         guard !pages.isEmpty else {
             throw HorizontalExportError("No schematic sheets loaded.")
         }

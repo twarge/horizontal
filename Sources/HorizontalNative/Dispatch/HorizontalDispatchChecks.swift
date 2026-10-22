@@ -107,12 +107,19 @@ enum HorizontalDispatchChecks {
             messages.append(Message(level: "error", category: "annotation", title: "Duplicate reference designator", detail: "\(count) components are named \(refdes).", refdes: refdes))
         }
 
+        // A top block net's pins are the flattened design's, every instance's
+        // among them. A sub-block's own net reaches further through the ports
+        // of the blocks it uses, each of which counts.
         for net in index.sortedNets {
-            if net.pins.count == 1, !net.isPort {
-                let pin = net.pins[0]
-                messages.append(Message(level: "warning", category: "connectivity", title: "Net has a single pin", detail: "Only \(pin.refdes) pin \(pin.pinName) is on it.", net: net.name))
-            } else if net.pins.isEmpty {
-                messages.append(Message(level: "info", category: "connectivity", title: "Net has no pins", detail: "The net exists in the block but nothing connects to it.", net: net.name))
+            let ports = net.blockID == nil ? [] : net.ports
+            let reach = net.pins.count + ports.count
+            let block = net.blockName.map { " In block \($0)." } ?? ""
+            if reach == 1, !net.isPort {
+                let detail = net.pins.first.map { "Only \($0.refdes) pin \($0.pinName) is on it." }
+                    ?? "Only \(ports[0].instanceRefdes)'s port \(ports[0].portName) is on it."
+                messages.append(Message(level: "warning", category: "connectivity", title: "Net has a single pin", detail: detail + block, net: net.name))
+            } else if reach == 0 {
+                messages.append(Message(level: "info", category: "connectivity", title: "Net has no pins", detail: "The net exists in the block but nothing connects to it." + block, net: net.name))
             }
         }
 

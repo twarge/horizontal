@@ -11,6 +11,9 @@ struct HorizontalSchematicPage: Identifiable {
     var path: [String]
     /// The page number, from 1.
     var number: Int
+    /// The instances on the way to the sheet by refdes, as the PDF's outline
+    /// names them: ["ADC1"].
+    var refdesPath: [String] = []
 
     var id: String { (path + [sheet.id]).joined(separator: "/") }
 }
@@ -25,20 +28,20 @@ extension HorizontalProject {
             return []
         }
         var pages = [HorizontalSchematicPage]()
-        func visit(_ entry: HorizontalProjectSchematic, path: [String]) {
+        func visit(_ entry: HorizontalProjectSchematic, path: [String], refdes: [String]) {
             guard path.count < HorizontalBlockFlattener.maximumDepth else { return }
             for sheet in entry.schematic.sheets.sorted(by: { ($0.index, $0.id) < ($1.index, $1.id) }) {
-                pages.append(HorizontalSchematicPage(block: entry.block, sheet: sheet, path: path, number: pages.count + 1))
+                pages.append(HorizontalSchematicPage(block: entry.block, sheet: sheet, path: path, number: pages.count + 1, refdesPath: refdes))
                 let symbols = sheet.blockSymbols.sorted { $0.refdes.localizedStandardCompare($1.refdes) == .orderedAscending }
                 for symbol in symbols {
                     guard let child = schematics.first(where: { $0.block.uuid.caseInsensitiveCompare(symbol.blockID) == .orderedSame }) else {
                         continue
                     }
-                    visit(child, path: path + [symbol.instanceID.lowercased()])
+                    visit(child, path: path + [symbol.instanceID.lowercased()], refdes: refdes + [symbol.refdes])
                 }
             }
         }
-        visit(top, path: [])
+        visit(top, path: [], refdes: [])
         return pages
     }
 

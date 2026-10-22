@@ -1538,6 +1538,99 @@ final class HorizontalProjectEditorTests: XCTestCase {
                        "R7 is on the sub-block's sheet only")
     }
 
+    /// A Channel block with a resistor whose pin 1 is the block's port IN, used
+    /// twice on the top sheet (CHA and CHB, R1 there as R11 and R12) with both
+    /// ports wired to a top net also called IN. Returns the block's uuid.
+    @discardableResult
+    private func twoChannels(wire: Bool = true) throws -> String {
+        let added = try apply([["op": "add_block", "name": "Channel"]])
+        let block = try XCTUnwrap((added["changes"] as? [[String: Any]])?.first?["block"] as? String)
+        _ = try result("apply", ["block": "Channel", "ops": [
+            ["op": "ensure_component", "id": "r", "refdes": "R1", "part": partID],
+            ["op": "place_symbol", "component": "r", "x_mm": 30, "y_mm": 30],
+            ["op": "ensure_net", "name": "IN"],
+            ["op": "set_net_port", "net": "IN", "port_direction": "input"],
+            ["op": "place_block_port", "net": "IN", "x_mm": -10, "y_mm": 0, "orientation": "left"],
+            ["op": "connect", "component": "r", "pin": "1", "net": "IN"]
+        ]])
+        guard wire else { return block }
+        _ = try apply([
+            ["op": "add_block_instance", "id": "a", "block": "Channel", "refdes": "CHA"],
+            ["op": "add_block_instance", "id": "b", "block": "Channel", "refdes": "CHB"],
+            ["op": "place_block_symbol", "instance": "a", "x_mm": 50, "y_mm": 50],
+            ["op": "place_block_symbol", "instance": "b", "x_mm": 50, "y_mm": 100],
+            ["op": "connect_block_port", "instance": "a", "port": "IN", "net": "IN", "create_net": true],
+            ["op": "connect_block_port", "instance": "b", "port": "IN", "net": "IN"]
+        ])
+        _ = try result("apply", ["block": "Channel", "ops": [
+            ["op": "set_refdes", "component": "R1", "instance": "CHA", "refdes": "R11"],
+            ["op": "set_refdes", "component": "R1", "instance": "CHB", "refdes": "R12"]
+        ]])
+        return block
+    }
+
+    /// The reads see a hierarchical design as Horizon flattens it: a top net
+    /// has the pins its instances put on it, under their refdes, and the
+    /// ports that reach it; a sub-block's port net of the same name gives way
+    /// to it; and an instance's refdes is a component of its own.
+    func testAHierarchicalDesignReadsAsItsInstancesWireIt() throws {
+        let block = try twoChannels()
+
+        let net = try XCTUnwrap(try result("get_net", ["name": "IN"]) as? [String: Any], "the top block's IN, not ambiguous")
+        XCTAssertNil(net["block"], "the top block's own net")
+        let pins = try XCTUnwrap(net["pins"] as? [[String: Any]])
+        XCTAssertEqual(pins.map { $0["refdes"] as? String }, ["R11", "R12"], "each instance's R1, not the block's own")
+        XCTAssertTrue(pins.allSatisfy { $0["instance_id"] is String })
+        XCTAssertEqual((net["block_ports"] as? [[String: Any]])?.map { $0["instance"] as? String }, ["CHA", "CHB"])
+        XCTAssertEqual((net["block_ports"] as? [[String: Any]])?.first?["port"] as? String, "IN")
+
+        let nets = try XCTUnwrap(try result("list_nets") as? [[String: Any]])
+        let own = try XCTUnwrap(nets.first { $0["name"] as? String == "IN" && $0["block_id"] as? String == block }, "\(nets)")
+        XCTAssertEqual(own["block"] as? String, "Channel")
+
+        let r12 = try component("R12")
+        XCTAssertEqual(r12["refdes"] as? String, "R12")
+        XCTAssertEqual(r12["instance"] as? String, "CHB")
+        XCTAssertNotNil(r12["instance_of"] as? String)
+        XCTAssertEqual(try pinNets(r12)["1"], "IN")
+        XCTAssertEqual(try XCTUnwrap(try result("get_component", ["id": try XCTUnwrap(r12["id"] as? String)]) as? [String: Any])["refdes"] as? String,
+                       "R12", "by its flat uuid too")
+
+        let report = try XCTUnwrap(try result("check", ["full": true]) as? [String: Any])
+        let connectivity = try XCTUnwrap(report["messages"] as? [[String: Any]]).filter { $0["category"] as? String == "connectivity" }
+        XCTAssertFalse(connectivity.contains { $0["net"] as? String == "IN" }, "\(connectivity)")
+    }
+
+    /// A sub-block's sheet renders as the page of the instance asked for,
+    /// numbered as the PDF numbers it; one no instance uses, as its block
+    /// holds it; and without block_id a sheet index is the top block's.
+    func testASubBlocksSheetRendersAsAnInstancesPage() throws {
+        let block = try twoChannels(wire: false)
+        let unused = try XCTUnwrap(try result("render_sheet", ["block_id": block, "sheet": 1, "dpi": 20]) as? [String: Any])
+        XCTAssertNil(unused["page"])
+        XCTAssertNotNil(unused["note"], "a block no instance uses is no page of the PDF")
+
+        try twoChannelsInstances()
+        let top = try XCTUnwrap(try result("render_sheet", ["sheet": 1, "dpi": 20]) as? [String: Any], "the top block's sheet 1")
+        XCTAssertEqual(top["page"] as? Int, 1)
+        let second = try XCTUnwrap(try result("render_sheet", ["block_id": block, "sheet": 1, "instance": "CHB", "dpi": 20]) as? [String: Any])
+        XCTAssertEqual(second["page"] as? Int, 3, "after the top sheet and CHA's page")
+        XCTAssertEqual(second["instance"] as? String, "CHB")
+        let first = try XCTUnwrap(try result("render_sheet", ["block_id": block, "sheet": 1, "dpi": 20]) as? [String: Any])
+        XCTAssertEqual(first["instance"] as? String, "CHA", "the first instance by default")
+        XCTAssertNotNil(try call("render_sheet", ["block_id": block, "sheet": 1, "instance": "CHZ"])["error"])
+        XCTAssertNil(try call("find_dangling", ["sheet": 1])["error"], "sheet 1 is the top block's")
+    }
+
+    private func twoChannelsInstances() throws {
+        _ = try apply([
+            ["op": "add_block_instance", "id": "a", "block": "Channel", "refdes": "CHA"],
+            ["op": "add_block_instance", "id": "b", "block": "Channel", "refdes": "CHB"],
+            ["op": "place_block_symbol", "instance": "a", "x_mm": 50, "y_mm": 50],
+            ["op": "place_block_symbol", "instance": "b", "x_mm": 50, "y_mm": 100]
+        ])
+    }
+
     /// A block cannot use itself, and editing a sub-block edits that block.
     func testBlockScopingReachesTheSecondBlock() throws {
         let sub = try addSecondBlock(named: "Regulator", portNet: "VOUT")
