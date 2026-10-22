@@ -751,6 +751,9 @@ final class HorizontalProjectEditor {
     private let store: HorizontalProjectFileStore
     private let pool: HorizontalDispatchPoolIndex
     private let poolURL: URL?
+    /// The project as the transaction holds it, when the editor runs in one:
+    /// what `pool_write` or `pool_items` wrote is here before it is on disk.
+    private let snapshot: HorizontalDispatchSnapshot?
     private var files: [String: JSONDictionary] = [:]
     private var fileURLs: [String: URL] = [:]
     private var dirty = Set<String>()
@@ -768,6 +771,7 @@ final class HorizontalProjectEditor {
          snapshot: HorizontalDispatchSnapshot? = nil, block reference: String? = nil) throws {
         self.project = project
         self.store = store
+        self.snapshot = snapshot
         pool = HorizontalDispatchPoolIndex(project: project, snapshot: snapshot)
         poolURL = project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }
 
@@ -6473,6 +6477,14 @@ final class HorizontalProjectEditor {
            let data = try store.read(url),
            let json = try? JSONHelper.loadDictionary(from: data), json.string("type") == "frame" {
             return (frameID, json.string("name") ?? "")
+        }
+        // The project's own frame, outside the cache, that the index (which
+        // reads the disk) can't see yet: one written in this batch, or into a
+        // live document since it was saved (field finding 151).
+        for url in snapshot?.jsonFiles(under: poolURL.appendingPathComponent("frames")) ?? [] where !url.path.contains("/frames/cache/") {
+            if let json = snapshot?.json(at: url), json.string("type") == "frame", json.string("uuid")?.lowercased() == frameID {
+                return (frameID, json.string("name") ?? "")
+            }
         }
         let projectPool = HorizontalPoolLibrary.canonicalURL(poolURL).path
         let holder = HorizontalPoolLibrary.editorPoolURLs(forPoolRoot: poolURL).lazy.compactMap { url in

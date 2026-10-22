@@ -900,7 +900,11 @@ def clean_up_project_pool(remove: list[str] | None = None, path: str | None = No
 
 @_tool
 def pool_write(items: list[dict[str, Any]] = [], path: str | None = None, dry_run: bool = False) -> dict[str, Any]:
-    """Write pool items — unit, entity, symbol, part, package, padstack — into the project pool cache and reload.
+    """Write pool items — unit, entity, symbol, part, package, padstack — into the project pool and reload. One
+    the project pool has is written over where it is, and a copy of an attached pool's item goes in its cache. One
+    no pool has is the project's own: it goes where Horizontal saves a new item (parts/<mpn>.json,
+    packages/<name>/package.json, a symbol beside its unit) and list_part_updates calls it projectOnly. written
+    gives the paths.
     Each item is the pool item's own JSON, with its "type" and "uuid"; or {"from": <uuid>, "patch": {...},
     "uuid": <new uuid>}, the item from (as get_pool_item reads it) merged with the patch as RFC 7396 merges —
     objects key by key, null removing a key — written over it, or beside it under a new uuid to derive one. Use

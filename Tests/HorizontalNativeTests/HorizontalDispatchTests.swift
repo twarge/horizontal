@@ -178,7 +178,8 @@ final class HorizontalDispatchTests: XCTestCase {
         ]
         let written = try XCTUnwrap(try result("pool_write", ["handle": handle, "items": [unit]]) as? [String: Any])
         XCTAssertEqual((written["written"] as? [String])?.count, 1)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: packageURL.appendingPathComponent("pool/units/cache/\(unitID).json").path))
+        // No pool has it, so it is the project's own, named as the app names a new unit.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: packageURL.appendingPathComponent("pool/units/thing.json").path))
         let again = try XCTUnwrap(try result("pool_write", ["handle": handle, "items": [unit]]) as? [String: Any])
         XCTAssertEqual(again["skipped"] as? Int, 1, "identical bytes are not rewritten")
 
