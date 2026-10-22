@@ -65,6 +65,9 @@ struct HorizontalPartBrowserView: View {
     var onReviewUpdates: () -> Void = {}
     /// Opens the project pool cleanup, where the document offers one.
     var onCleanUp: (() -> Void)? = nil
+    /// Selects and highlights the components fitted with a part, in the
+    /// schematic and on the board, where the document offers it.
+    var onSelectUses: ((HorizontalPoolPart.ID) -> Void)? = nil
     /// What DigiKey stocks of each part, for the DigiKey Stock column.
     @ObservedObject var digiKey: HorizontalDigiKeyStockMonitor = .shared
 
@@ -507,6 +510,11 @@ struct HorizontalPartBrowserView: View {
     private func partContextMenu(_ part: HorizontalPoolPart) -> some View {
         if !isReadOnly, part.gates.first?.symbolID != nil {
             Button("Place in Schematic") { place(part) }
+        }
+        // Finding where a part is used: the project's Find matches sheets,
+        // not what is on them.
+        if let onSelectUses, usedPartIDs.contains(part.id.lowercased()) {
+            Button("Select Components Using This Part") { onSelectUses(part.id) }
         }
         if let onCopyToPool, !isReadOnly, !copyTargets.isEmpty, libraryRow(for: part)?.isInNoAttachedPool == true {
             Menu("Copy to Pool") {
