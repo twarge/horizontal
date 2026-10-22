@@ -80,6 +80,7 @@ final class HorizontalReadOnlyCanvasCommandTests: XCTestCase {
         set.drawDimension = {}
         set.addText = {}
         set.placePowerSymbol = {}
+        set.placeNetLabel = {}
         set.placeBusLabel = {}
         set.placeBusRipper = {}
         set.tieNets = {}
@@ -101,7 +102,8 @@ final class HorizontalReadOnlyCanvasCommandTests: XCTestCase {
             ("net line", locked.canDrawNetLine), ("track", locked.canDrawTrack),
             ("graphics", locked.canDrawGraphics), ("plane", locked.canDrawPlane),
             ("dimension", locked.canDrawDimension), ("text", locked.canAddText),
-            ("power symbol", locked.canPlacePowerSymbol), ("bus label", locked.canPlaceBusLabel),
+            ("power symbol", locked.canPlacePowerSymbol), ("net label", locked.canPlaceNetLabel),
+            ("bus label", locked.canPlaceBusLabel),
             ("bus ripper", locked.canPlaceBusRipper), ("tie nets", locked.canTieNets),
             ("pad", locked.canPlacePad), ("hole", locked.canPlaceHole),
             ("pour", locked.canUpdateAllPlanes), ("round off", locked.canRoundOffVertex),
@@ -120,6 +122,7 @@ final class HorizontalReadOnlyCanvasCommandTests: XCTestCase {
         XCTAssertTrue(open.canDrawTrack)
         XCTAssertTrue(open.canDrawDimension)
         XCTAssertTrue(open.canAddText)
+        XCTAssertTrue(open.canPlaceNetLabel)
         XCTAssertTrue(open.canPlaceBusLabel)
         XCTAssertTrue(open.canPlaceBusRipper)
         XCTAssertTrue(open.canTieNets)

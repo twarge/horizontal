@@ -98,6 +98,7 @@ struct HorizontalCanvasCommandActions {
     var canShowInProjectPoolManager: Bool = false
     var canRoundOffVertex: Bool = false
     var canPlacePowerSymbol: Bool = false
+    var canPlaceNetLabel: Bool = false
     var canPlaceBusLabel: Bool = false
     var canPlaceBusRipper: Bool = false
     var canTieNets: Bool = false
@@ -462,6 +463,11 @@ struct HorizontalViewCommands: Commands {
                     }
                 }
                 .disabled(canvasCommandActions?.canPlacePowerSymbol != true)
+
+                Button("Place Net Label") {
+                    canvasCommandActions?.dispatch(.placeNetLabel)
+                }
+                .disabled(canvasCommandActions?.canPlaceNetLabel != true)
 
                 Button("Place Bus Label…") {
                     canvasCommandActions?.dispatch(.placeBusLabel)

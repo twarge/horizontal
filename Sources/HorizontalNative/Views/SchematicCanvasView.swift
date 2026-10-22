@@ -122,6 +122,43 @@ struct SchematicCanvasView: View {
         var notice: String?
     }
 
+    /// Horizon's place-net-label, place-bus-label and place-bus-ripper tools
+    /// in flight: the mark follows the cursor on the draft, and a click puts
+    /// it down, then the next one comes, the same way round. A net label is
+    /// a sheet edit (`HorizontalSchematicNetLabelTool`); a bus's marks name
+    /// the block's buses, so their click makes them through the bus ops,
+    /// which reload the sheet, and the tool comes back after the reload.
+    private struct PlaceLabelState {
+        enum Kind {
+            case net
+            case bus(ChosenBus)
+            case busRipper(ChosenBus, member: ChosenBusMember)
+        }
+
+        var kind: Kind
+        /// The sheet before this mark: what Esc goes back to.
+        var originalSheet: HorizontalSchematicSheet
+        /// The draft mark's ids: the label (or ripper) and, for a net label,
+        /// the junction it stands on.
+        var markID: String
+        var junctionID: String
+        var orientation: String
+        /// Why the last click did nothing, for the status line.
+        var notice: String?
+    }
+
+    /// A click whose edit reloads the sheet — a bus's mark, made by the bus
+    /// ops, or a net label that merged project nets — picks the tool up
+    /// again after the reload: for a bus's mark, once the sheet comes back
+    /// with more bus marks than `busMarkCount`. `deadline` keeps a reload
+    /// that never comes (a refused op) from arming it much later.
+    private struct PendingLabelRearm {
+        var kind: PlaceLabelState.Kind
+        var orientation: String
+        var busMarkCount: Int?
+        var deadline: Date
+    }
+
     /// Symbol editor: Horizon's resize tool — the cursor's offset from where
     /// it started grows the symbol outwards on every side.
     private struct ResizeSymbolState {
@@ -311,6 +348,11 @@ struct SchematicCanvasView: View {
     @State private var placePartState: PlacePartState?
     @State private var placePinState: PlacePinState?
     @State private var placePowerSymbolState: PlacePowerSymbolState?
+    @State private var placeLabelState: PlaceLabelState?
+    @State private var pendingLabelRearm: PendingLabelRearm?
+    /// The way a net label reads when its tool starts: the last one placed,
+    /// as Horizon's tool remembers it.
+    @State private var lastNetLabelOrientation = "right"
     /// The orientation the next placed pin starts with — the last one used,
     /// as Horizon's map-pin tool remembers it.
     @State private var placePinOrientation = HorizontalPinOrientation.right
@@ -798,6 +840,10 @@ struct SchematicCanvasView: View {
                     commitPlacePowerSymbol(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
                     return
                 }
+                if placeLabelState != nil {
+                    commitPlaceLabel(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+                    return
+                }
                 if placePartState != nil {
                     commitPlacePart()
                     return
@@ -845,6 +891,7 @@ struct SchematicCanvasView: View {
                 guard placePartState == nil,
                       placePinState == nil,
                       placePowerSymbolState == nil,
+                      placeLabelState == nil,
                       resizeSymbolState == nil,
                       moveState == nil,
                       drawNetLineState == nil,
@@ -914,14 +961,15 @@ struct SchematicCanvasView: View {
                 #endif
             },
             canvasDisplayTransformReportTrigger: inlineTextEditorReportTrigger,
-            allowsContextMenu: placePartState == nil && placePinState == nil && placePowerSymbolState == nil && resizeSymbolState == nil && moveState == nil && drawNetLineState == nil && drawGraphicsState == nil,
-            handlesInteractionKeys: placePartState != nil || placePinState != nil || placePowerSymbolState != nil || resizeSymbolState != nil || moveState != nil || drawNetLineState != nil || drawGraphicsState != nil,
+            allowsContextMenu: placePartState == nil && placePinState == nil && placePowerSymbolState == nil && placeLabelState == nil && resizeSymbolState == nil && moveState == nil && drawNetLineState == nil && drawGraphicsState == nil,
+            handlesInteractionKeys: placePartState != nil || placePinState != nil || placePowerSymbolState != nil || placeLabelState != nil || resizeSymbolState != nil || moveState != nil || drawNetLineState != nil || drawGraphicsState != nil,
             usesCrosshairCursor: drawNetLineState != nil || drawGraphicsState != nil,
             hasKeyboardFocus: hasKeyboardFocus,
             onRequestKeyboardFocus: onRequestKeyboardFocus,
             samplesCursorContinuously: placePartState != nil
                 || placePinState != nil
                 || placePowerSymbolState != nil
+                || placeLabelState != nil
                 || resizeSymbolState != nil
                 || moveState?.tracksCursor == true
                 || drawNetLineState != nil
@@ -937,6 +985,8 @@ struct SchematicCanvasView: View {
             placePartState = nil
             placePinState = nil
             placePowerSymbolState = nil
+            placeLabelState = nil
+            pendingLabelRearm = nil
             resizeSymbolState = nil
             placedPinHistory = []
             drawNetLineState = nil
@@ -956,6 +1006,7 @@ struct SchematicCanvasView: View {
         }
         .onChange(of: syncRevision) { _, _ in
             adoptExternallyUpdatedSheet()
+            rearmLabelToolIfPending()
         }
         .onAppear {
             configureUndoTarget()
@@ -1002,6 +1053,7 @@ struct SchematicCanvasView: View {
                 cancelPlacePart()
                 cancelPlacePin()
                 cancelPlacePowerSymbol()
+                cancelPlaceLabel()
                 cancelResizeSymbol()
                 cancelDrawGraphics()
                 cancelDrawNetLine()
@@ -1138,6 +1190,7 @@ struct SchematicCanvasView: View {
         hasher.combine(selectedUnplacedObjectID)
         hasher.combine(moveState != nil)
         hasher.combine(placePartState != nil)
+        hasher.combine(placeLabelState != nil)
         hasher.combine(drawNetLineState != nil)
         hasher.combine(netSegmentSelection != nil)
         hasher.combine(drawGraphicsState?.primitive.rawValue)
@@ -1297,6 +1350,17 @@ struct SchematicCanvasView: View {
             let notice = state.notice.map { "   \($0)" } ?? ""
             return "Place power symbol \(name): click places   a junction or pin attaches   R rotates   E mirrors   Esc ends" + notice
         }
+        if let state = placeLabelState {
+            let notice = state.notice.map { "   \($0)" } ?? ""
+            switch state.kind {
+            case .net:
+                return "Label net: click a wire, junction or unconnected pin   R rotates   E mirrors   Esc ends" + notice
+            case .bus(let bus):
+                return "Label bus \(bus.name): click places   R rotates   E mirrors   Esc ends" + notice
+            case .busRipper(let bus, let member):
+                return "Bus ripper \(bus.name) › \(member.name): click places   R rotates   E mirrors   Esc ends" + notice
+            }
+        }
         if let state = placePinState {
             let name = sheet.placeableObjects.first { normalizedID($0.id) == normalizedID(state.pinID) }?.label ?? "pin"
             let autoplace = canAutoplacePin ? "   Autoplace via the Design menu" : ""
@@ -1421,6 +1485,7 @@ struct SchematicCanvasView: View {
             && placePartState == nil
             && placePinState == nil
             && placePowerSymbolState == nil
+            && placeLabelState == nil
             && resizeSymbolState == nil
             && !isTextPlacementView
             && moveState == nil
@@ -2424,6 +2489,7 @@ struct SchematicCanvasView: View {
         }
         guard moveState == nil,
               placePowerSymbolState == nil,
+              placeLabelState == nil,
               drawNetLineState == nil,
               drawGraphicsState == nil else {
             return
@@ -2468,6 +2534,7 @@ struct SchematicCanvasView: View {
         guard moveState == nil,
               placePartState == nil,
               placePowerSymbolState == nil,
+              placeLabelState == nil,
               drawNetLineState == nil,
               drawGraphicsState == nil else {
             return
@@ -3042,6 +3109,7 @@ struct SchematicCanvasView: View {
               placePartState == nil,
               placePinState == nil,
               placePowerSymbolState == nil,
+              placeLabelState == nil,
               resizeSymbolState == nil,
               drawNetLineState == nil,
               drawGraphicsState == nil else {
@@ -3117,7 +3185,7 @@ struct SchematicCanvasView: View {
     private func beginSchematicPaste(_ clipboard: HorizontalSchematicClipboard, actionName: String) {
         guard !isReadOnly, !editorProfile.isPoolMode,
               moveState == nil, placePartState == nil, placePinState == nil,
-              placePowerSymbolState == nil, resizeSymbolState == nil,
+              placePowerSymbolState == nil, placeLabelState == nil, resizeSymbolState == nil,
               drawNetLineState == nil, drawGraphicsState == nil else { return }
         let cursor = snapSchematicPointToGrid(lastCursorWorldPoint ?? clipboard.anchor)
         guard let placement = onPreparePaste?(clipboard, cursor, actionName) else { return }
@@ -3308,6 +3376,11 @@ struct SchematicCanvasView: View {
               drawNetLineState == nil else {
             return
         }
+        // A mark in hand goes, as picking another tool drops it, before the
+        // wire takes the sheet: it would otherwise be drawn into the wire's.
+        cancelPlacePowerSymbol()
+        cancelPlaceLabel()
+        pendingLabelRearm = nil
         // Horizon's wire starts on no net: the first thing it touches gives
         // it one.
         drawNetLineState = DrawNetLineState(session: .init(sheet: sheet), cursor: lastCursorWorldPoint)
@@ -4220,6 +4293,10 @@ struct SchematicCanvasView: View {
             mirrorPlacingPowerSymbol()
             return
         }
+        if placeLabelState != nil {
+            turnPlacingLabel(mirror: true)
+            return
+        }
         let cursor = transformPivotCursor
         transformSelection(actionName: "Mirror") { center, draft in
             mirrorSelectedObjects(around: cursor ?? center, sheet: &draft)
@@ -4240,6 +4317,10 @@ struct SchematicCanvasView: View {
         }
         if placePowerSymbolState != nil {
             rotatePlacingPowerSymbol()
+            return
+        }
+        if placeLabelState != nil {
+            turnPlacingLabel(mirror: false)
             return
         }
         let cursor = transformPivotCursor
@@ -8278,7 +8359,7 @@ struct SchematicCanvasView: View {
     private func canvasCommandHandlers() -> HorizontalCanvasCommandHandlerSet {
         var handlers = HorizontalCanvasCommandHandlerSet(
             isReadOnly: isReadOnly,
-            hasInteraction: placePartState != nil || placePinState != nil || placePowerSymbolState != nil || resizeSymbolState != nil
+            hasInteraction: placePartState != nil || placePinState != nil || placePowerSymbolState != nil || placeLabelState != nil || resizeSymbolState != nil
                 || drawGraphicsState != nil || drawNetLineState != nil || moveState != nil,
             selectAll: selectAllObjects,
             deleteSelection: deleteSelection,
@@ -8302,11 +8383,11 @@ struct SchematicCanvasView: View {
             toggleRectanglePlacementMode: toggleRectanglePlacementMode,
             moveSelectionBy: moveSelectionByGrid,
             placePowerSymbol: canPlacePowerSymbol ? { beginPlacePowerSymbol() } : nil,
-            placeBusLabel: canEditBlockObjects ? { beginPlaceBusLabel() } : nil,
+            placeBusLabel: canPlaceBusLabel ? { beginPlaceBusLabel() } : nil,
             placeBusRipper: canPlaceBusRipper ? { beginPlaceBusRipper() } : nil,
             tieNets: canTieNets ? { beginTieNets() } : nil,
             managePowerNet: editorProfile.isPoolMode ? nil : { applyPowerNetCommand($0) },
-            hasPlacementInteraction: placePinState != nil || placePowerSymbolState != nil,
+            hasPlacementInteraction: placePinState != nil || placePowerSymbolState != nil || placeLabelState != nil,
             commitInteraction: {
                 if resizeSymbolState != nil {
                     commitResizeSymbol()
@@ -8314,6 +8395,10 @@ struct SchematicCanvasView: View {
                     // Return drops the symbol where the cursor is.
                     if let cursor = lastCursorWorldPoint {
                         commitPlacePowerSymbol(at: cursor, worldUnitsPerPoint: 0)
+                    }
+                } else if placeLabelState != nil {
+                    if let cursor = lastCursorWorldPoint {
+                        commitPlaceLabel(at: cursor, worldUnitsPerPoint: 0)
                     }
                 } else if placePinState != nil {
                     commitPlacePin()
@@ -8332,6 +8417,8 @@ struct SchematicCanvasView: View {
                     cancelResizeSymbol()
                 } else if placePowerSymbolState != nil {
                     cancelPlacePowerSymbol()
+                } else if placeLabelState != nil {
+                    cancelPlaceLabel()
                 } else if placePinState != nil {
                     cancelPlacePin()
                 } else if placePartState != nil {
@@ -8347,6 +8434,9 @@ struct SchematicCanvasView: View {
                 }
             }
         )
+        if canPlaceLabel {
+            handlers.placeNetLabel = { beginPlaceNetLabel() }
+        }
         handlers.copySelection = canCopySchematicSelection ? { copySchematicSelection() } : nil
         if !editorProfile.isPoolMode, onApplyProjectEdit != nil {
             handlers.setAllUnconnectedPinsNC = { setAllNoConnect(true) }
@@ -8375,6 +8465,7 @@ struct SchematicCanvasView: View {
             // editor (which edits a placed component) do not apply.
             handlers.drawNetLine = nil
             handlers.placePowerSymbol = nil
+            handlers.placeNetLabel = nil
             handlers.managePowerNet = nil
             handlers.moveNetSegmentToExistingNet = nil
             handlers.moveNetSegmentToNewNet = nil
@@ -8443,6 +8534,12 @@ struct SchematicCanvasView: View {
             return
         }
 
+        if placeLabelState != nil {
+            updatePlaceLabel(to: point, worldUnitsPerPoint: worldUnitsPerPoint)
+            hoveredObject = nil
+            return
+        }
+
         if resizeSymbolState != nil {
             updateResizeSymbol(to: point)
             hoveredObject = nil
@@ -8487,6 +8584,7 @@ struct SchematicCanvasView: View {
               placePartState == nil,
               placePinState == nil,
               placePowerSymbolState == nil,
+              placeLabelState == nil,
               resizeSymbolState == nil,
               drawNetLineState == nil,
               drawGraphicsState == nil,
@@ -13394,9 +13492,15 @@ extension SchematicCanvasView {
         canEditBlockObjects && selectableNamedNets(powerOnly: false).count >= 2
     }
 
+    /// A bus's marks are made through the bus ops, so there has to be a host
+    /// to run them.
+    private var canPlaceBusLabel: Bool {
+        canPlaceLabel && onApplyProjectEdit != nil
+    }
+
     /// A ripper takes a net off a bus, so there has to be a net to take.
     private var canPlaceBusRipper: Bool {
-        canEditBlockObjects && !selectableNamedNets(powerOnly: false).isEmpty
+        canPlaceBusLabel && !selectableNamedNets(powerOnly: false).isEmpty
     }
 
     /// Where a bus label, ripper or tie lands: the last place the cursor was
@@ -13410,6 +13514,7 @@ extension SchematicCanvasView {
     /// does not exist yet.
     private struct ChosenBus {
         var id: String
+        var name: String
         var creation: [JSONDictionary]
         var members: [HorizontalBusDetails.Member]
     }
@@ -13417,43 +13522,30 @@ extension SchematicCanvasView {
     /// One member of that bus, likewise.
     private struct ChosenBusMember {
         var id: String
+        var name: String
         var creation: [JSONDictionary]
     }
 
-    /// Design menu: name a bus on the sheet, the way a net label names a net.
+    /// Design menu / the rail's Shift-Label: name a bus on the sheet, the way
+    /// a net label names a net. The label follows the cursor until a click.
     private func beginPlaceBusLabel() {
-        guard canEditBlockObjects else { return }
-        let point = blockObjectPlacementPoint
+        guard canPlaceBusLabel else { return }
         chooseBus(title: "Place Bus Label", message: "Which bus does this label name?") { bus in
-            var operations = bus.creation
-            operations.append([
-                "op": "place_bus_label",
-                "bus": bus.id,
-                "sheet": sheet.id,
-                "x_mm": Self.millimetres(point.x),
-                "y_mm": Self.millimetres(point.y),
-            ])
-            applyProjectEdit(operations, actionName: "Place Bus Label")
+            endToolsForLabelPlacement()
+            startPlacingLabel(.bus(bus), orientation: "right")
         }
     }
 
-    /// Design menu: take one member off a bus, so that net can be wired on
-    /// its own.
+    /// Design menu / the rail's Shift-Draw: take one member off a bus, so
+    /// that net can be wired on its own. The ripper follows the cursor until
+    /// a click, and the next member comes after it, as Horizon's tool rips a
+    /// bus member after member.
     private func beginPlaceBusRipper() {
         guard canPlaceBusRipper else { return }
-        let point = blockObjectPlacementPoint
         chooseBus(title: "Place Bus Ripper", message: "Which bus does the net come off?") { bus in
             chooseBusMember(of: bus) { member in
-                var operations = bus.creation + member.creation
-                operations.append([
-                    "op": "place_bus_ripper",
-                    "bus": bus.id,
-                    "member": member.id,
-                    "sheet": sheet.id,
-                    "x_mm": Self.millimetres(point.x),
-                    "y_mm": Self.millimetres(point.y),
-                ])
-                applyProjectEdit(operations, actionName: "Place Bus Ripper")
+                endToolsForLabelPlacement()
+                startPlacingLabel(.busRipper(bus, member: member), orientation: "up")
             }
         }
     }
@@ -13500,11 +13592,11 @@ extension SchematicCanvasView {
         let buses = sheet.busDetails
         func made(_ name: String) -> ChosenBus {
             let id = UUID().uuidString.lowercased()
-            return ChosenBus(id: id, creation: [["op": "add_bus", "name": name, "id": id]], members: [])
+            return ChosenBus(id: id, name: name, creation: [["op": "add_bus", "name": name, "id": id]], members: [])
         }
         func chosen(_ id: String) -> ChosenBus? {
             buses.first { normalizedID($0.id) == normalizedID(id) }
-                .map { ChosenBus(id: $0.id, creation: [], members: $0.members) }
+                .map { ChosenBus(id: $0.id, name: $0.name, creation: [], members: $0.members) }
         }
         #if os(macOS)
         switch HorizontalSchematicObjectPrompt.choose(
@@ -13551,11 +13643,12 @@ extension SchematicCanvasView {
             // A member already carrying this net is the one to rip: adding a
             // second would put the same net in the bus twice.
             if let existing = bus.members.first(where: { $0.netID.map(normalizedID) == normalizedID(net.id) }) {
-                return ChosenBusMember(id: existing.id, creation: [])
+                return ChosenBusMember(id: existing.id, name: existing.name, creation: [])
             }
             let id = UUID().uuidString.lowercased()
             return ChosenBusMember(
                 id: id,
+                name: net.name,
                 creation: [["op": "add_bus_member", "bus": bus.id, "name": net.name, "net": net.id, "id": id]]
             )
         }
@@ -13578,7 +13671,7 @@ extension SchematicCanvasView {
             if choice == Self.newBusMemberOptionID {
                 pickNet(afterAnotherPrompt: true)
             } else {
-                use(ChosenBusMember(id: choice, creation: []))
+                use(ChosenBusMember(id: choice, name: bus.members.first { $0.id == choice }?.name ?? "", creation: []))
             }
         }
         var options = bus.members.map { HorizontalSelectionPropertyOption(id: $0.id, title: $0.name) }
@@ -13683,6 +13776,7 @@ extension SchematicCanvasView {
             && placePartState == nil
             && placePinState == nil
             && placePowerSymbolState == nil
+            && placeLabelState == nil
             && resizeSymbolState == nil
             && drawNetLineState == nil
             && drawGraphicsState == nil
@@ -13799,6 +13893,8 @@ extension SchematicCanvasView {
             if placePowerSymbolState != nil {
                 cancelPlacePowerSymbol()
             }
+            cancelPlaceLabel()
+            pendingLabelRearm = nil
             startPlacingPowerSymbol(netID: netID)
         }
     }
@@ -14142,6 +14238,280 @@ extension SchematicCanvasView {
         publishCanvasCommandActions()
     }
 
+    // MARK: Place labels (Horizon's place-net-label, -bus-label and -bus-ripper tools)
+
+    /// A label tool starts on a writable sheet with nothing in hand that it
+    /// would cut short. The wire tool, a power symbol or another label tool
+    /// give way to it, as they give way to one another.
+    private var canPlaceLabel: Bool {
+        !isReadOnly
+            && !editorProfile.isPoolMode
+            && mode == .sheet
+            && moveState == nil
+            && placePartState == nil
+            && placePinState == nil
+            && resizeSymbolState == nil
+    }
+
+    /// Ends the tool in hand for a label tool, as picking another tool does:
+    /// wires already laid stay, as Escape keeps them; a mark following the
+    /// cursor goes.
+    private func endToolsForLabelPlacement() {
+        commitDrawNetLine()
+        if drawGraphicsState != nil {
+            endDrawGraphicsInteraction()
+        }
+        cancelPlacePowerSymbol()
+        cancelPlaceLabel()
+        pendingLabelRearm = nil
+    }
+
+    /// The rail's Label Net and B: Horizon's place-net-label tool.
+    private func beginPlaceNetLabel() {
+        guard canPlaceLabel else { return }
+        endToolsForLabelPlacement()
+        startPlacingLabel(.net, orientation: lastNetLabelOrientation)
+    }
+
+    /// Arms the tool: the mark at the cursor, on the draft.
+    private func startPlacingLabel(_ kind: PlaceLabelState.Kind, orientation: String) {
+        guard canPlaceLabel else { return }
+        let originalSheet = sheet
+        var draft = sheet
+        let markID = UUID().uuidString.lowercased()
+        let junctionID = UUID().uuidString.lowercased()
+        let point = snapSchematicPointToGrid(lastCursorWorldPoint ?? draft.bounds.center)
+        switch kind {
+        case .net:
+            draft.addNetLabelInHand(labelID: markID, junctionID: junctionID, at: point, orientation: orientation)
+        case .bus(let bus):
+            draft.busLabels.append(HorizontalBusLabel(
+                id: markID,
+                text: "B:\(bus.name)",
+                position: point,
+                size: HorizontalSchematicSheet.netLabelDefaultSize,
+                orientation: orientation
+            ))
+        case .busRipper(_, let member):
+            draft.setBusRipperInHand(id: markID, memberName: member.name, at: point, orientation: orientation)
+        }
+        editedSheet = draft
+        placeLabelState = PlaceLabelState(
+            kind: kind,
+            originalSheet: originalSheet,
+            markID: markID,
+            junctionID: junctionID,
+            orientation: orientation
+        )
+        selectedObjects = []
+        selectedUnplacedObjectID = nil
+        hoveredObject = nil
+        clearNetSegmentSelection()
+        invalidateSelectableCache()
+        publishSelectionContext()
+        publishCanvasCommandActions()
+    }
+
+    /// How near a junction or pin the cursor has to be for a click to take it.
+    private static func labelTargetTolerance(worldUnitsPerPoint: Double) -> Double {
+        max(worldUnitsPerPoint * 8, 50_000)
+    }
+
+    private func updatePlaceLabel(to point: HorizontalPoint, worldUnitsPerPoint: Double) {
+        guard var state = placeLabelState, var draft = editedSheet else { return }
+        switch state.kind {
+        case .net:
+            guard draft.junctions[state.junctionID] != point else { return }
+            draft.moveNetLabelInHand(
+                labelID: state.markID,
+                junctionID: state.junctionID,
+                to: point,
+                tolerance: Self.labelTargetTolerance(worldUnitsPerPoint: worldUnitsPerPoint)
+            )
+        case .bus:
+            guard let index = draft.busLabels.firstIndex(where: { $0.id == state.markID }),
+                  draft.busLabels[index].position != point else { return }
+            draft.busLabels[index].position = point
+        case .busRipper(_, let member):
+            guard draft.busRipperLines.first(where: { $0.id == "\(state.markID)/bus-ripper" })?.from != point else { return }
+            draft.setBusRipperInHand(id: state.markID, memberName: member.name, at: point, orientation: state.orientation)
+        }
+        editedSheet = draft
+        if state.notice != nil {
+            state.notice = nil
+            placeLabelState = state
+        }
+        invalidateSelectableCache()
+    }
+
+    /// R and E: Horizon's `transform_orientation`, a quarter turn clockwise
+    /// or a flip of left and right; a ripper flips as `BusRipper::mirror`
+    /// does, keeping its foot on the bus.
+    private func turnPlacingLabel(mirror: Bool) {
+        guard var state = placeLabelState, var draft = editedSheet else { return }
+        let turned: String
+        if case .busRipper = state.kind, mirror {
+            switch state.orientation {
+            case "up": turned = "left"
+            case "right": turned = "down"
+            case "down": turned = "right"
+            default: turned = "up"
+            }
+        } else {
+            turned = mirror ? mirroredOrientation(state.orientation) : rotatedOrientation(state.orientation, by: Self.quarterTurnAngle)
+        }
+        state.orientation = turned
+        switch state.kind {
+        case .net:
+            if let index = draft.netLabels.firstIndex(where: { $0.id == state.markID }) {
+                draft.netLabels[index].orientation = turned
+            }
+            lastNetLabelOrientation = turned
+        case .bus:
+            if let index = draft.busLabels.firstIndex(where: { $0.id == state.markID }) {
+                draft.busLabels[index].orientation = turned
+            }
+        case .busRipper(_, let member):
+            if let foot = draft.busRipperLines.first(where: { $0.id == "\(state.markID)/bus-ripper" })?.from {
+                draft.setBusRipperInHand(id: state.markID, memberName: member.name, at: foot, orientation: turned)
+            }
+        }
+        editedSheet = draft
+        placeLabelState = state
+        invalidateSelectableCache()
+    }
+
+    /// The click. A net label hangs on what is under it and the sheet's
+    /// wiring is brought up to date, as the wire tool's commit does; a bus's
+    /// mark is made by the bus ops. Then the next one, the same way round.
+    private func commitPlaceLabel(at point: HorizontalPoint, worldUnitsPerPoint: Double) {
+        guard !isReadOnly, var state = placeLabelState, let inHand = editedSheet else { return }
+        switch state.kind {
+        case .net:
+            var draft = inHand
+            let target = draft.netLabelTarget(
+                at: point,
+                tolerance: Self.labelTargetTolerance(worldUnitsPerPoint: worldUnitsPerPoint),
+                excludingJunction: state.junctionID
+            )
+            if let notice = draft.dropNetLabel(labelID: state.markID, junctionID: state.junctionID, on: target) {
+                state.notice = notice
+                placeLabelState = state
+                return
+            }
+            let original = state.originalSheet
+            let orientation = state.orientation
+            placeLabelState = nil
+            connectSchematicWiring(draft, since: original) { result in
+                guard let result else {
+                    // A merge refused or cancelled: the label stays in hand.
+                    editedSheet = inHand
+                    placeLabelState = state
+                    invalidateSelectableCache()
+                    return
+                }
+                if commitMergingNets(result, actionName: "Place Net Label") {
+                    pendingLabelRearm = PendingLabelRearm(kind: .net, orientation: orientation, busMarkCount: nil,
+                                                          deadline: Date().addingTimeInterval(30))
+                    return
+                }
+                editedSheet = result.sheet
+                invalidateSelectableCache()
+                registerUndoSnapshot(original, actionName: "Place Net Label")
+                onSheetChange(result.sheet)
+                publishSelectionContext()
+                startPlacingLabel(.net, orientation: orientation)
+            }
+        case .bus(let bus):
+            // A bus label's junction carries no net, so the ops would take
+            // the net off a junction of one.
+            let key = pointKey(point)
+            if state.originalSheet.junctions.contains(where: { pointKey($0.value) == key && state.originalSheet.junctionNetIDs[$0.key] != nil }) {
+                state.notice = "That junction is on a net; a net label names it"
+                placeLabelState = state
+                return
+            }
+            var operations = bus.creation
+            operations.append(busMarkPlacement("place_bus_label", bus: bus.id, at: point, orientation: state.orientation))
+            commitBusMark(state, operations: operations, actionName: "Place Bus Label",
+                          next: .bus(ChosenBus(id: bus.id, name: bus.name, creation: [], members: bus.members)))
+        case .busRipper(let bus, let member):
+            var operations = bus.creation + member.creation
+            var placement = busMarkPlacement("place_bus_ripper", bus: bus.id, at: point, orientation: state.orientation)
+            placement["member"] = member.id
+            operations.append(placement)
+            commitBusMark(state, operations: operations, actionName: "Place Bus Ripper",
+                          next: .busRipper(ChosenBus(id: bus.id, name: bus.name, creation: [], members: bus.members),
+                                           member: ChosenBusMember(id: member.id, name: member.name, creation: [])))
+        }
+    }
+
+    private func busMarkPlacement(_ op: String, bus busID: String, at point: HorizontalPoint, orientation: String) -> JSONDictionary {
+        [
+            "op": op,
+            "bus": busID,
+            "sheet": sheet.id,
+            "x_mm": Self.millimetres(point.x),
+            "y_mm": Self.millimetres(point.y),
+            "orientation": orientation,
+        ]
+    }
+
+    /// Hands a bus's mark to the ops, one undo step that reloads the sheet;
+    /// the tool picks up again once the mark is on it (`rearmLabelToolIfPending`).
+    private func commitBusMark(_ state: PlaceLabelState, operations: [JSONDictionary], actionName: String, next: PlaceLabelState.Kind) {
+        pendingLabelRearm = PendingLabelRearm(
+            kind: next,
+            orientation: state.orientation,
+            busMarkCount: state.originalSheet.busLabels.count + state.originalSheet.busRipperLines.count,
+            deadline: Date().addingTimeInterval(30)
+        )
+        placeLabelState = nil
+        editedSheet = state.originalSheet
+        invalidateSelectableCache()
+        applyProjectEdit(operations, actionName: actionName)
+    }
+
+    /// After the reload a bus mark's click asked for: the tool again, the
+    /// ripper on the bus's next member in name order, wrapping round. A
+    /// reload that isn't that one (the ops were refused, so the sheet has
+    /// no new mark) ends it.
+    private func rearmLabelToolIfPending() {
+        guard let pending = pendingLabelRearm else { return }
+        pendingLabelRearm = nil
+        guard Date() < pending.deadline else { return }
+        if let count = pending.busMarkCount, sheet.busLabels.count + sheet.busRipperLines.count <= count {
+            return
+        }
+        var kind = pending.kind
+        if case .busRipper(let bus, let member) = kind {
+            guard let details = sheet.busDetails.first(where: { normalizedID($0.id) == normalizedID(bus.id) }) else { return }
+            let members = details.members.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            guard !members.isEmpty else { return }
+            let placed = members.firstIndex { normalizedID($0.id) == normalizedID(member.id) } ?? -1
+            let next = members[(placed + 1) % members.count]
+            kind = .busRipper(
+                ChosenBus(id: details.id, name: details.name, creation: [], members: details.members),
+                member: ChosenBusMember(id: next.id, name: next.name, creation: [])
+            )
+        }
+        startPlacingLabel(kind, orientation: pending.orientation)
+    }
+
+    /// Drops the mark still following the cursor; the ones placed stay.
+    private func cancelPlaceLabel() {
+        guard let state = placeLabelState else {
+            return
+        }
+        editedSheet = state.originalSheet
+        placeLabelState = nil
+        selectedObjects = []
+        hoveredObject = nil
+        invalidateSelectableCache()
+        publishSelectionContext()
+        publishCanvasCommandActions()
+    }
+
     // MARK: Place pin (Horizon's map-pin tool)
 
     /// "Place Pin" with nothing chosen: the first unplaced pin in name order.
@@ -14371,6 +14741,7 @@ extension SchematicCanvasView {
         placePartState = nil
         placePinState = nil
         placePowerSymbolState = nil
+        placeLabelState = nil
         resizeSymbolState = nil
         drawNetLineState = nil
         drawGraphicsState = nil

@@ -301,6 +301,7 @@ enum HorizontalCanvasInputCore {
         }
 
         switch characters {
+        case "b": return .placeNetLabel
         case "e": return .mirrorSelection
         case "i": return .editSymbolPinNames
         case "k": return .bendNetLine

@@ -1964,16 +1964,27 @@ enum HorizontalProjectJSONApplicator {
     }
 
     private static func patchSchematicNetLabels(_ json: inout JSONDictionary, labels: [HorizontalSchematicNetLabel], junctions: [String: HorizontalPoint]) {
-        guard var map = json["net_labels"] as? JSONDictionary else {
-            return
-        }
+        var map = json["net_labels"] as? JSONDictionary ?? [:]
         removeEntriesNotIn(&map, keeping: labels.map(\.id))
 
         for label in labels {
-            guard let itemKey = matchingKey(label.id, in: map),
-                  var item = map[itemKey] as? JSONDictionary else {
+            // A label the canvas placed is a new entry, with Horizon's
+            // defaults for what the canvas doesn't model; the rest are
+            // updated in place. Horizon can't load a label without a
+            // junction, so a new one needs one where it stands, and an id
+            // of its own rather than a copy's prefixed one.
+            let existingKey = matchingKey(label.id, in: map)
+            let junction: String?
+            if let id = label.junctionID, junctions[id].map(jsonPointKey) == jsonPointKey(label.position) {
+                junction = id
+            } else {
+                junction = junctionID(at: label.position, in: junctions)
+            }
+            guard existingKey != nil || (junction != nil && !label.id.contains("/")) else {
                 continue
             }
+            let itemKey = existingKey ?? label.id
+            var item = existingKey.flatMap { map[$0] as? JSONDictionary } ?? ["offsheet_refs": true, "show_port": false]
             item["size"] = jsonNumber(label.size)
             // A flip or turn changes only this, and Horizon reads it back.
             item["orientation"] = label.orientation
@@ -1981,10 +1992,8 @@ enum HorizontalProjectJSONApplicator {
             if label.showsPort || item["show_port"] != nil {
                 item["show_port"] = label.showsPort
             }
-            if let id = label.junctionID, junctions[id].map(jsonPointKey) == jsonPointKey(label.position) {
-                item["junction"] = id
-            } else if let id = junctionID(at: label.position, in: junctions) {
-                item["junction"] = id
+            if let junction {
+                item["junction"] = junction
             }
             if let netID = label.netID {
                 item["last_net"] = netID

@@ -2241,9 +2241,17 @@ struct ProjectWorkspaceView: View {
                         DrawingToolButtonGroup { primitive in
                             schematicDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
                         }
-                        DrawNetLineToolButton {
-                            schematicDrawNetLineCommand = HorizontalDrawNetLineCommand()
-                        }
+                        DrawNetToolButton(
+                            onDrawNet: { schematicDrawNetLineCommand = HorizontalDrawNetLineCommand() },
+                            onPlaceBusRipper: { canvasCommandActionsByPane[.schematic]?.dispatch(.placeBusRipper) },
+                            canPlaceBusRipper: canvasCommandActionsByPane[.schematic]?.canPlaceBusRipper == true
+                        )
+                        LabelNetToolButton(
+                            onLabelNet: { canvasCommandActionsByPane[.schematic]?.dispatch(.placeNetLabel) },
+                            canLabelNet: canvasCommandActionsByPane[.schematic]?.canPlaceNetLabel == true,
+                            onLabelBus: { canvasCommandActionsByPane[.schematic]?.dispatch(.placeBusLabel) },
+                            canLabelBus: canvasCommandActionsByPane[.schematic]?.canPlaceBusLabel == true
+                        )
                         PlacePowerSymbolToolButton {
                             powerNetsPopoverPresented.toggle()
                         }
@@ -2256,14 +2264,6 @@ struct ProjectWorkspaceView: View {
                             )
                         }
                         .disabled(selectedSchematic == nil)
-                        PlaceBusLabelToolButton {
-                            canvasCommandActionsByPane[.schematic]?.dispatch(.placeBusLabel)
-                        }
-                        .disabled(canvasCommandActionsByPane[.schematic]?.canPlaceBusLabel != true)
-                        PlaceBusRipperToolButton {
-                            canvasCommandActionsByPane[.schematic]?.dispatch(.placeBusRipper)
-                        }
-                        .disabled(canvasCommandActionsByPane[.schematic]?.canPlaceBusRipper != true)
                         TieNetsToolButton {
                             canvasCommandActionsByPane[.schematic]?.dispatch(.tieNets)
                         }
