@@ -2813,50 +2813,69 @@ struct HorizontalSchematic {
             }
 
             let orientation = item.string("orientation") ?? (item.bool("mirror") == true ? "left" : "up")
-            let connector = junction + busRipperConnectorOffset(for: orientation)
             let busID = item.string("bus").map(normalizedID)
             let memberID = item.string("bus_member").map(normalizedID)
             let memberNetID = busID.flatMap { busID in
                 memberID.flatMap { buses[busID]?.members[$0]?.netID }
             }
-            artwork.ripperConnectorPositions[normalizedID(id)] = connector
-            artwork.ripperLines.append(
-                HorizontalSegment(
-                    id: "\(id)/bus-ripper",
-                    from: junction,
-                    to: connector,
-                    width: 0,
-                    layer: nil,
-                    netID: memberNetID
-                )
-            )
-
             let memberName = busID.flatMap { busID in
                 memberID.flatMap { buses[busID]?.members[$0]?.name }
             } ?? item.string("bus_member").map { String($0.prefix(8)) } ?? ""
-            guard !memberName.isEmpty else {
-                continue
-            }
-
-            let textPosition = item.string("text_position") ?? "top"
-            let textShift = textPosition == "bottom" ? -500_000.0 : 500_000.0
-            let textOrigin: HorizontalTextOrigin = textPosition == "bottom" ? .bottom : .baseline
-            let textAngle = orientation == "left" || orientation == "down" ? 32_768 : 0
-            artwork.ripperTexts.append(
-                HorizontalText(
-                    id: "\(id)/bus-ripper-text",
-                    text: memberName,
-                    position: connector + HorizontalPoint(x: 0, y: textShift),
-                    size: 1_500_000,
-                    layer: nil,
-                    netID: memberNetID,
-                    angle: textAngle,
-                    origin: textOrigin
-                )
+            let drawn = busRipperArtwork(
+                id: id,
+                junction: junction,
+                orientation: orientation,
+                memberName: memberName,
+                memberNetID: memberNetID,
+                textPosition: item.string("text_position") ?? "top"
             )
+            artwork.ripperConnectorPositions[normalizedID(id)] = drawn.line.to
+            artwork.ripperLines.append(drawn.line)
+            if let text = drawn.text {
+                artwork.ripperTexts.append(text)
+            }
         }
 
         return artwork
+    }
+
+    /// A bus ripper as the sheet draws it: a stroke from its junction on the
+    /// bus out to the connector a wire takes the member's net from, and the
+    /// member's name over the connector (none without a name).
+    static func busRipperArtwork(
+        id: String,
+        junction: HorizontalPoint,
+        orientation: String,
+        memberName: String,
+        memberNetID: String? = nil,
+        textPosition: String = "top"
+    ) -> (line: HorizontalSegment, text: HorizontalText?) {
+        let connector = junction + busRipperConnectorOffset(for: orientation)
+        let line = HorizontalSegment(
+            id: "\(id)/bus-ripper",
+            from: junction,
+            to: connector,
+            width: 0,
+            layer: nil,
+            netID: memberNetID
+        )
+        guard !memberName.isEmpty else {
+            return (line, nil)
+        }
+        let textShift = textPosition == "bottom" ? -500_000.0 : 500_000.0
+        let textOrigin: HorizontalTextOrigin = textPosition == "bottom" ? .bottom : .baseline
+        let textAngle = orientation == "left" || orientation == "down" ? 32_768 : 0
+        let text = HorizontalText(
+            id: "\(id)/bus-ripper-text",
+            text: memberName,
+            position: connector + HorizontalPoint(x: 0, y: textShift),
+            size: 1_500_000,
+            layer: nil,
+            netID: memberNetID,
+            angle: textAngle,
+            origin: textOrigin
+        )
+        return (line, text)
     }
 
     private static func parseBlockSymbolArtwork(

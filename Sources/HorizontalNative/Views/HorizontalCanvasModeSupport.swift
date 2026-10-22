@@ -296,6 +296,7 @@ struct HorizontalCanvasCommandHandlerSet {
     var placeRefdesAndValue: (() -> Void)? = nil
     var placeDot: (() -> Void)? = nil
     var placePowerSymbol: (() -> Void)? = nil
+    var placeNetLabel: (() -> Void)? = nil
     var placeBusLabel: (() -> Void)? = nil
     var placeBusRipper: (() -> Void)? = nil
     var tieNets: (() -> Void)? = nil
@@ -397,6 +398,9 @@ struct HorizontalCanvasCommandHandlerSet {
         case .placePowerSymbol:
             guard !isReadOnly else { return }
             placePowerSymbol?()
+        case .placeNetLabel:
+            guard !isReadOnly else { return }
+            placeNetLabel?()
         case .placeBusLabel:
             guard !isReadOnly else { return }
             placeBusLabel?()
@@ -570,6 +574,7 @@ struct HorizontalCanvasCommandHandlerSet {
             canShowInProjectPoolManager: showInProjectPoolManager != nil,
             canRoundOffVertex: writable && roundOffVertex != nil,
             canPlacePowerSymbol: writable && placePowerSymbol != nil,
+            canPlaceNetLabel: writable && placeNetLabel != nil,
             canPlaceBusLabel: writable && placeBusLabel != nil,
             canPlaceBusRipper: writable && placeBusRipper != nil,
             canTieNets: writable && tieNets != nil,

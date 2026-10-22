@@ -144,6 +144,9 @@ enum HorizontalCanvasCommand {
     /// Schematic: pick a power net and drop its symbols (Horizon's
     /// place-power-symbol tool).
     case placePowerSymbol
+    /// Schematic: drop net labels on wires, junctions and pins (Horizon's
+    /// place-net-label tool).
+    case placeNetLabel
     /// Schematic: name a bus on the sheet, the way a net label names a net.
     case placeBusLabel
     /// Schematic: take one member off a bus so it can be wired on its own.

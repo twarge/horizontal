@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 // Cross-platform rail content components (layer/grid controls and tool buttons)
 // extracted from ProjectDocumentView.swift so they compile on iOS as well as macOS.
@@ -396,16 +399,117 @@ struct BoardUpdatePlanesToolButton: View {
     }
 }
 
-struct DrawNetLineToolButton: View {
+/// One of the two tools a `ShiftAlternateToolButton` offers.
+struct RailToolChoice {
+    var title: String
+    var help: String
+    var systemImage: String
+    var isEnabled = true
     var action: () -> Void
+}
+
+/// A rail button with a second tool behind Shift, the way Horizon pairs a
+/// net tool with its bus tool. On the Mac, holding Shift shows the second
+/// tool's icon and name, and a click with Shift down runs it. Right-click
+/// (or a long press, which is how an iPad without Shift gets there) offers
+/// both.
+struct ShiftAlternateToolButton: View {
+    var primary: RailToolChoice
+    var alternate: RailToolChoice
+
+    @State private var isShiftDown = false
 
     var body: some View {
-        HorizontalRailHelpLabel(title: "Draw net") {
-            Button(action: action) {
-                Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
+        let shown = isShiftDown ? alternate : primary
+        HorizontalRailHelpLabel(title: shown.title) {
+            Button(action: run) {
+                Image(systemName: shown.systemImage)
             }
-            .help("Draw net line (N)")
+            .help(shown.help)
+            .disabled(!shown.isEnabled)
+            .accessibilityLabel(shown.title)
+            .contextMenu {
+                Button(primary.title, systemImage: primary.systemImage, action: primary.action)
+                    .disabled(!primary.isEnabled)
+                Button(alternate.title, systemImage: alternate.systemImage, action: alternate.action)
+                    .disabled(!alternate.isEnabled)
+            }
         }
+        #if os(macOS)
+        // Only Shift going down or up, not the state at the start: AppKit's
+        // global modifier state can say Shift is held when nothing is (seen
+        // 2026-10-21), and the rail then showed the bus tools on launch.
+        .onModifierKeysChanged(mask: .shift, initial: false) { _, keys in
+            isShiftDown = keys.contains(.shift)
+        }
+        #endif
+    }
+
+    /// Reads Shift from the click itself rather than from the icon, which
+    /// only follows the keys while the window is key, or the global state,
+    /// which can be stale.
+    private func run() {
+        #if os(macOS)
+        let shifted = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
+        let tool = shifted ? alternate : primary
+        #else
+        let tool = primary
+        #endif
+        if tool.isEnabled {
+            tool.action()
+        }
+    }
+}
+
+/// The rail's wire tool, with the bus ripper behind Shift.
+struct DrawNetToolButton: View {
+    var onDrawNet: () -> Void
+    var onPlaceBusRipper: () -> Void
+    var canPlaceBusRipper: Bool
+
+    var body: some View {
+        ShiftAlternateToolButton(
+            primary: RailToolChoice(
+                title: "Draw net",
+                help: "Draw net line (N). Hold Shift for a bus ripper",
+                systemImage: "point.topleft.down.curvedto.point.bottomright.up",
+                action: onDrawNet
+            ),
+            alternate: RailToolChoice(
+                title: "Bus ripper",
+                help: "Take one net off a bus so it can be wired on its own",
+                systemImage: "arrow.triangle.branch",
+                isEnabled: canPlaceBusRipper,
+                action: onPlaceBusRipper
+            )
+        )
+    }
+}
+
+/// The rail's net label tool, with the bus label behind Shift.
+struct LabelNetToolButton: View {
+    var onLabelNet: () -> Void
+    var canLabelNet: Bool
+    var onLabelBus: () -> Void
+    var canLabelBus: Bool
+
+    var body: some View {
+        ShiftAlternateToolButton(
+            primary: RailToolChoice(
+                title: "Label net",
+                help: "Place net labels (B). Hold Shift to label a bus",
+                systemImage: "tag",
+                isEnabled: canLabelNet,
+                action: onLabelNet
+            ),
+            alternate: RailToolChoice(
+                title: "Label bus",
+                help: "Name a bus on this sheet",
+                systemImage: "tag.fill",
+                isEnabled: canLabelBus,
+                action: onLabelBus
+            )
+        )
     }
 }
 
@@ -469,32 +573,6 @@ struct AddTextToolButton: View {
                 Image(systemName: "character.textbox")
             }
             .help("Add a text annotation")
-        }
-    }
-}
-
-struct PlaceBusLabelToolButton: View {
-    var action: () -> Void
-
-    var body: some View {
-        HorizontalRailHelpLabel(title: "Bus label") {
-            Button(action: action) {
-                Image(systemName: "tag")
-            }
-            .help("Name a bus on this sheet")
-        }
-    }
-}
-
-struct PlaceBusRipperToolButton: View {
-    var action: () -> Void
-
-    var body: some View {
-        HorizontalRailHelpLabel(title: "Bus ripper") {
-            Button(action: action) {
-                Image(systemName: "arrow.triangle.branch")
-            }
-            .help("Take one net off a bus so it can be wired on its own")
         }
     }
 }

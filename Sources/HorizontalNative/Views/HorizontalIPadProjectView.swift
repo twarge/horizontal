@@ -1294,9 +1294,17 @@ struct HorizontalIPadProjectView: View {
                     DrawingToolButtonGroup { primitive in
                         schematicDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
                     }
-                    DrawNetLineToolButton {
-                        schematicDrawNetLineCommand = HorizontalDrawNetLineCommand()
-                    }
+                    DrawNetToolButton(
+                        onDrawNet: { schematicDrawNetLineCommand = HorizontalDrawNetLineCommand() },
+                        onPlaceBusRipper: { schematicCanvasActions?.dispatch(.placeBusRipper) },
+                        canPlaceBusRipper: schematicCanvasActions?.canPlaceBusRipper == true
+                    )
+                    LabelNetToolButton(
+                        onLabelNet: { schematicCanvasActions?.dispatch(.placeNetLabel) },
+                        canLabelNet: schematicCanvasActions?.canPlaceNetLabel == true,
+                        onLabelBus: { schematicCanvasActions?.dispatch(.placeBusLabel) },
+                        canLabelBus: schematicCanvasActions?.canPlaceBusLabel == true
+                    )
                     PlacePowerSymbolToolButton {
                         powerNetsPopoverPresented.toggle()
                     }
@@ -1308,14 +1316,6 @@ struct HorizontalIPadProjectView: View {
                             onDismiss: { powerNetsPopoverPresented = false }
                         )
                     }
-                    PlaceBusLabelToolButton {
-                        schematicCanvasActions?.dispatch(.placeBusLabel)
-                    }
-                    .disabled(schematicCanvasActions?.canPlaceBusLabel != true)
-                    PlaceBusRipperToolButton {
-                        schematicCanvasActions?.dispatch(.placeBusRipper)
-                    }
-                    .disabled(schematicCanvasActions?.canPlaceBusRipper != true)
                     TieNetsToolButton {
                         schematicCanvasActions?.dispatch(.tieNets)
                     }
