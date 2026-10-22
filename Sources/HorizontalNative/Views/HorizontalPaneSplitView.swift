@@ -12,6 +12,11 @@ struct ResizablePaneSplitView<Content: View>: View {
     @Binding var sizeFractions: [HorizontalPane: CGFloat]
     var minimumPaneWidth: CGFloat = 280
     var handleWidth: CGFloat = 10
+    /// How much of the leading pane lies under the navigator sidebar, which
+    /// the split runs beneath. The leading pane's minimum adds it, so a
+    /// leading pane dragged narrow still shows `minimumPaneWidth` of itself
+    /// beside the sidebar rather than a sliver.
+    var leadingInset: CGFloat = 0
     @ViewBuilder var content: (HorizontalPane, Bool) -> Content
 
     @State private var activeDrag: SplitDrag?
@@ -26,12 +31,22 @@ struct ResizablePaneSplitView<Content: View>: View {
                     let index = slot.index
                     let pane = slot.pane
 
+                    // A pane never paints past its own width. Content wider
+                    // than a narrow pane (a toolbar that couldn't shrink) is
+                    // centred on it, so it ran over the panes on both sides:
+                    // the Parts pane's background covered the right of the
+                    // Pools pane, a band left of its own table, and the
+                    // divider between them, which then couldn't be grabbed.
                     content(pane, index == panes.startIndex)
                         .frame(width: layout.widths[index])
+                        .clipped()
 
                     if index < panes.index(before: panes.endIndex) {
+                        // Above both its panes, so it is always the divider
+                        // that takes a drag there.
                         SplitHandle()
                             .frame(width: handleWidth)
+                            .zIndex(1)
                             .gesture(
                                 DragGesture(
                                     minimumDistance: 0,
@@ -76,8 +91,13 @@ struct ResizablePaneSplitView<Content: View>: View {
             return Array(repeating: 0, count: panes.count)
         }
 
-        guard contentWidth >= minimumPaneWidth * CGFloat(panes.count) else {
-            return Array(repeating: contentWidth / CGFloat(panes.count), count: panes.count)
+        guard contentWidth >= panes.indices.reduce(CGFloat.zero, { $0 + minimumWidth(at: $1) }) else {
+            // Too narrow for every minimum: even shares of what the sidebar
+            // leaves, the leading pane's taking the sidebar's part too.
+            let inset = min(max(leadingInset, 0), contentWidth)
+            var widths = Array(repeating: (contentWidth - inset) / CGFloat(panes.count), count: panes.count)
+            widths[panes.startIndex] += inset
+            return widths
         }
 
         let fractions = normalizedFractions()
@@ -87,7 +107,7 @@ struct ResizablePaneSplitView<Content: View>: View {
 
         while didLockWidth {
             didLockWidth = false
-            let remainingWidth = contentWidth - minimumPaneWidth * CGFloat(lockedIndices.count)
+            let remainingWidth = contentWidth - lockedIndices.reduce(CGFloat.zero) { $0 + minimumWidth(at: $1) }
             let remainingFraction = panes.indices
                 .filter { !lockedIndices.contains($0) }
                 .reduce(CGFloat.zero) { $0 + fractions[$1] }
@@ -98,8 +118,8 @@ struct ResizablePaneSplitView<Content: View>: View {
 
             for index in panes.indices where !lockedIndices.contains(index) {
                 widths[index] = remainingWidth * fractions[index] / remainingFraction
-                if widths[index] < minimumPaneWidth {
-                    widths[index] = minimumPaneWidth
+                if widths[index] < minimumWidth(at: index) {
+                    widths[index] = minimumWidth(at: index)
                     lockedIndices.insert(index)
                     didLockWidth = true
                 }
@@ -107,6 +127,11 @@ struct ResizablePaneSplitView<Content: View>: View {
         }
 
         return widths
+    }
+
+    /// The least a pane is given: `minimumPaneWidth` of it in view.
+    private func minimumWidth(at index: Int) -> CGFloat {
+        minimumPaneWidth + (index == panes.startIndex ? max(leadingInset, 0) : 0)
     }
 
     private func normalizedFractions() -> [CGFloat] {
@@ -146,9 +171,16 @@ struct ResizablePaneSplitView<Content: View>: View {
         let leftIndex = handleIndex
         let rightIndex = handleIndex + 1
         let pairWidth = drag.widths[leftIndex] + drag.widths[rightIndex]
-        let minimumWidth = min(minimumPaneWidth, max(pairWidth / 2, 1))
+        // A pair too narrow for both minimums shares them out in proportion.
+        var leftMinimum = minimumWidth(at: leftIndex)
+        var rightMinimum = minimumWidth(at: rightIndex)
+        if leftMinimum + rightMinimum > pairWidth {
+            let scale = pairWidth / max(leftMinimum + rightMinimum, 1)
+            leftMinimum *= scale
+            rightMinimum *= scale
+        }
         let proposedLeftWidth = (drag.widths[leftIndex] + translation)
-            .clamped(to: minimumWidth...(pairWidth - minimumWidth))
+            .clamped(to: leftMinimum...max(pairWidth - rightMinimum, leftMinimum))
 
         var resizedWidths = drag.widths
         resizedWidths[leftIndex] = proposedLeftWidth

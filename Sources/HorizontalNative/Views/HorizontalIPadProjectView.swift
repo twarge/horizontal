@@ -951,7 +951,8 @@ struct HorizontalIPadProjectView: View {
                 panes: shownPanes,
                 sizeFractions: $paneSizeFractions,
                 minimumPaneWidth: 300,
-                handleWidth: 16
+                handleWidth: 16,
+                leadingInset: proxy.safeAreaInsets.leading
             ) { pane, isLeadingPane in
                 paneContent(
                     pane,
