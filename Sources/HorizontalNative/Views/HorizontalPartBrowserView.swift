@@ -75,6 +75,9 @@ struct HorizontalPartBrowserView: View {
     @Environment(\.horizonPoolRevealAction) private var poolRevealAction
     @Environment(\.openURL) private var openURL
     @State private var pendingRevealTask: Task<Void, Never>?
+    /// A fresh value asks the list to bring the selected part into view
+    /// (`HorizontalTableScrollRequest`); a new selection does on its own.
+    @State private var scrollToken = 0
     @State private var selectionChangedAt = Date.distantPast
     @State private var libraryFilter = HorizontalPartLibraryFilter.all
     /// Leaves out what isn't bought for the board: parts flagged exclude
@@ -193,6 +196,14 @@ struct HorizontalPartBrowserView: View {
             selectionChangedAt = Date()
             pendingRevealTask?.cancel()
             pendingRevealTask = nil
+        }
+        // A re-sort, or the selection coming back into a filtered list,
+        // keeps the selected part where it can be seen.
+        .onChange(of: sortOrder) { _, _ in
+            scrollToken += 1
+        }
+        .onChange(of: libraryFilter) { _, _ in
+            scrollToken += 1
         }
         // Asks DigiKey about parts it has no fresh answer for whenever the
         // parts or the credentials change, unless the column is hidden.
@@ -381,9 +392,18 @@ struct HorizontalPartBrowserView: View {
         }
     }
 
+    /// The selected part's row, for the list's scroll anchor.
+    private func scrollRequest(in rows: [HorizontalPoolPart]) -> HorizontalTableScrollRequest? {
+        guard let selectedPartID, let row = rows.firstIndex(where: { $0.id == selectedPartID }) else {
+            return nil
+        }
+        return HorizontalTableScrollRequest(rowID: selectedPartID, row: row, rowCount: rows.count, centers: false, token: scrollToken)
+    }
+
     private var sortableTable: some View {
-        Table(
-            filteredParts,
+        let rows = filteredParts
+        return Table(
+            rows,
             selection: $selectedPartID,
             sortOrder: $sortOrder,
             columnCustomization: $columnCustomization
@@ -470,6 +490,7 @@ struct HorizontalPartBrowserView: View {
         .alternatingRowBackgrounds(.enabled)
         #endif
         .textSelection(.enabled)
+        .tableScrollRequest(scrollRequest(in: rows))
         .contextMenu(forSelectionType: HorizontalPoolPart.ID.self) { ids in
             if let id = ids.first, let part = parts.first(where: { $0.id == id }) {
                 partContextMenu(part)

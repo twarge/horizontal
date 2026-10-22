@@ -114,6 +114,11 @@ struct HorizontalPoolBrowserView: View {
     @State private var scanGeneration = 0
     @State private var showsPreview = true
     @State private var pendingReveal: HorizontalPoolRevealRequest?
+    /// Asks the list to bring the selected row into view: a fresh token per
+    /// ask, centred for a reveal (`HorizontalTableScrollRequest`). A new
+    /// selection, a new table and a re-sort keep it in view on their own.
+    @State private var scrollToken = 0
+    @State private var scrollCenters = false
     @State private var creationError: String?
     @State private var pickerRequest: PoolItemPickerRequest?
     /// Pools > View: one browsed pool's own items (its `BrowsedPool.id`), or
@@ -417,6 +422,13 @@ struct HorizontalPoolBrowserView: View {
         .onChange(of: parametricTableName) { _, _ in
             parametricFilters.reset()
             parametricSortOrder = [HorizontalParametricRowComparator(key: HorizontalParametricRowComparator.mpn)]
+        }
+        // A re-sort moves the selected row; keep it where it can be seen.
+        .onChange(of: sortOrder) { _, _ in
+            scrollToSelection(centered: false)
+        }
+        .onChange(of: parametricSortOrder) { _, _ in
+            scrollToSelection(centered: false)
         }
         #if os(iOS)
         .fullScreenCover(item: $editingItem) { item in
@@ -974,6 +986,7 @@ struct HorizontalPoolBrowserView: View {
         .alternatingRowBackgrounds(.enabled)
         #endif
         .textSelection(.enabled)
+        .tableScrollRequest(scrollRequest(rowIDs: rows.map(\.id)))
         .contextMenu(forSelectionType: HorizontalPoolLibraryItem.ID.self) { selection in
             if let item = item(for: selection) {
                 itemContextMenu(item)
@@ -1024,6 +1037,7 @@ struct HorizontalPoolBrowserView: View {
         #if os(macOS)
         .alternatingRowBackgrounds(.enabled)
         #endif
+        .tableScrollRequest(scrollRequest(rowIDs: rows.map(\.id)))
         .contextMenu(forSelectionType: HorizontalPoolLibraryItem.ID.self) { selection in
             if let item = item(for: selection) {
                 itemContextMenu(item)
@@ -1034,6 +1048,29 @@ struct HorizontalPoolBrowserView: View {
             }
         }
         .focused($isListFocused)
+    }
+
+    /// The selected row, for the list's scroll anchor, among the rows the
+    /// table is given in the order it shows them; nil while the selection is
+    /// on none of them.
+    private func scrollRequest(rowIDs: [HorizontalPoolLibraryItem.ID]) -> HorizontalTableScrollRequest? {
+        guard let selectedItemID, let row = rowIDs.firstIndex(of: selectedItemID) else {
+            return nil
+        }
+        return HorizontalTableScrollRequest(
+            rowID: selectedItemID,
+            row: row,
+            rowCount: rowIDs.count,
+            centers: scrollCenters,
+            token: scrollToken
+        )
+    }
+
+    /// Brings the selected row into view once the list shows it, centred
+    /// when it is out of view and `centered`.
+    private func scrollToSelection(centered: Bool) {
+        scrollCenters = centered
+        scrollToken += 1
     }
 
     private func item(for selection: Set<HorizontalPoolLibraryItem.ID>) -> HorizontalPoolLibraryItem? {
@@ -1643,6 +1680,7 @@ struct HorizontalPoolBrowserView: View {
                 makeListed(selectedItem)
             }
             pendingReveal = nil
+            scrollToSelection(centered: true)
             return
         }
         let uuid = request.uuid.lowercased()
@@ -1661,6 +1699,7 @@ struct HorizontalPoolBrowserView: View {
         selectedItemID = item.id
         makeListed(item)
         pendingReveal = nil
+        scrollToSelection(centered: true)
     }
 
     /// What a reveal does for a part the list would otherwise hide: one
