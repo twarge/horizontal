@@ -92,7 +92,10 @@ struct HorizontalPartBrowserView: View {
     /// components use.
     @AppStorage("Horizontal.partBrowser.hidesExcludedFromBOM") private var hidesExcludedFromBOM = true
     @AppStorage("Horizontal.partBrowser.hidesDoNotPopulate") private var hidesDoNotPopulate = true
-    @SceneStorage("Horizontal.partBrowser.columnCustomization")
+    /// The columns as last arranged — order, widths, which are shown — kept
+    /// for the app rather than the window, so every window's Parts pane
+    /// opens the same way.
+    @AppStorage("Horizontal.partBrowser.columnCustomization")
     private var columnCustomization = TableColumnCustomization<HorizontalPoolPart>()
     /// Where in this pane the keyboard is, if anywhere: Return places only
     /// from here. A window-wide Return placed this pane's part from wherever
