@@ -4685,6 +4685,17 @@ extension HorizontalSchematicSheet {
             || blockSymbolPorts.contains { matches($0.netID) }
             || junctionNetIDs.values.contains { matches($0) }
     }
+
+    /// Whether this sheet draws any of `componentIDs`: a symbol of one of
+    /// their gates. Pass them lowercased.
+    func containsAnyComponent(_ componentIDs: Set<String>) -> Bool {
+        guard !componentIDs.isEmpty else {
+            return false
+        }
+        return symbols.contains { symbol in
+            (symbol.componentID ?? symbol.componentDetails?.componentID).map { componentIDs.contains($0.lowercased()) } ?? false
+        }
+    }
 }
 
 extension HorizontalSchematicSheet {

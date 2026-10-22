@@ -1127,6 +1127,7 @@ struct ProjectWorkspaceView: View {
                 selection: $navigatorSelection,
                 searchText: $navigatorSearchText,
                 highlightedNetIDs: highlightedNetIDs,
+                markedComponentIDs: selectedComponentIDs.union(highlightedComponentIDs),
                 highlightColor: appearanceSettings.palette(for: .schematic, colorScheme: colorScheme).junction,
                 allowsSheetEditing: !isReadOnly,
                 allowsBlockEditing: true,

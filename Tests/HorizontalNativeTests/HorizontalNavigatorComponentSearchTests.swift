@@ -48,6 +48,16 @@ final class HorizontalNavigatorComponentSearchTests: XCTestCase {
         XCTAssertEqual(matches.first?.detail, "GRM155R71C104KA88D")
     }
 
+    /// The navigator marks the sheets that draw a selected part, as it marks
+    /// those that draw a highlighted net.
+    func testASheetDrawingASelectedPartIsMarked() {
+        let sheet = sheet()
+        XCTAssertTrue(sheet.containsAnyComponent(["c-u1"]), "one of its gates is on the sheet")
+        XCTAssertTrue(sheet.containsAnyComponent(["elsewhere", "c-r2"]))
+        XCTAssertFalse(sheet.containsAnyComponent(["elsewhere"]))
+        XCTAssertFalse(sheet.containsAnyComponent([]))
+    }
+
     func testWordsSplitOnSpacesAndCommasWithoutCase() {
         XCTAssertEqual(HorizontalNavigatorComponentSearch.tokens(" R1, OPA2328  x"), ["r1", "opa2328", "x"])
     }

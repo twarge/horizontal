@@ -491,6 +491,7 @@ struct HorizontalIPadProjectView: View {
                     searchText: $navigatorSearchText,
                     availableBlockIDs: shownBlockIDs(in: project),
                     highlightedNetIDs: highlightedNetIDs,
+                    markedComponentIDs: selectedComponentIDs.union(highlightedComponentIDs),
                     highlightColor: appearanceSettings.palette(for: .schematic, colorScheme: colorScheme).junction,
                     allowsSheetEditing: !isReadOnly,
                     onRenameSheet: { schematicURL, sheetID, name in
