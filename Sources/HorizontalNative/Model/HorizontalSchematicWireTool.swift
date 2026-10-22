@@ -307,6 +307,11 @@ enum HorizontalSchematicWireTool {
             return .done
         }
 
+        /// `/`: Horizon's posture, the other way round the corner.
+        mutating func flipBend() {
+            bend = bend == .xy ? .yx : .xy
+        }
+
         private mutating func merge(_ from: String, into: String) {
             let from = from.lowercased(), into = into.lowercased()
             sheet.mergeNet(from, into: into)

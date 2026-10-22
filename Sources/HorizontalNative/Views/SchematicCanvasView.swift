@@ -1340,7 +1340,7 @@ struct SchematicCanvasView: View {
             )
         }
         if drawNetLineState != nil {
-            return "Net: click points   Double-click or Return commits   Esc cancels"
+            return "Net: click points   / flips the bend   Double-click or Return commits   Esc cancels"
         }
         if placePartState != nil {
             return "Place: click to place   Esc cancels"
@@ -3465,6 +3465,14 @@ struct SchematicCanvasView: View {
             onSheetChange(result.sheet)
             publishSelectionContext()
         }
+    }
+
+    /// `/` while drawing a wire: the bend goes the other way round, as
+    /// Horizon's posture key turns it in the net and track tools alike.
+    private func flipNetLinePosture() {
+        guard var state = drawNetLineState else { return }
+        state.session.flipBend()
+        drawNetLineState = state
     }
 
     private func cancelDrawNetLine() {
@@ -8436,6 +8444,9 @@ struct SchematicCanvasView: View {
         )
         if canPlaceLabel {
             handlers.placeNetLabel = { beginPlaceNetLabel() }
+        }
+        if drawNetLineState != nil {
+            handlers.flipTrackPosture = { flipNetLinePosture() }
         }
         handlers.copySelection = canCopySchematicSelection ? { copySchematicSelection() } : nil
         if !editorProfile.isPoolMode, onApplyProjectEdit != nil {

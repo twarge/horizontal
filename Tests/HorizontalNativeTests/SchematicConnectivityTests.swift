@@ -342,6 +342,22 @@ final class SchematicConnectivityTests: XCTestCase {
 
         XCTAssertEqual(touched, [HorizontalCanvasModeSupport.pointKey(point(0, 0)), HorizontalCanvasModeSupport.pointKey(point(4, 3))])
     }
+
+    // MARK: - Posture
+
+    /// `/`, as in Horizon's net and track tools: the wire goes the other way
+    /// round its corner.
+    func testThePostureKeyTurnsTheWireTheOtherWayRoundTheCorner() {
+        var session = HorizontalSchematicWireTool.Session(sheet: sheet())
+        XCTAssertEqual(session.bend, .xy)
+        let xy = HorizontalSchematicWireTool.path(from: point(0, 0), to: point(4, 3), bend: session.bend)
+        session.flipBend()
+        XCTAssertEqual(session.bend, .yx)
+        let yx = HorizontalSchematicWireTool.path(from: point(0, 0), to: point(4, 3), bend: session.bend)
+        XCTAssertNotEqual(xy, yx)
+        session.flipBend()
+        XCTAssertEqual(session.bend, .xy)
+    }
 }
 
 private extension Array where Element == String {

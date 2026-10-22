@@ -603,7 +603,8 @@ struct HorizontalViewCommands: Commands {
 
             if !isLocked {
                 Divider()
-                Button("Flip Track Posture") {
+                // Tracks and schematic wires alike: Horizon's posture key.
+                Button("Flip Posture") {
                     canvasCommandActions?.dispatch(.flipTrackPosture)
                 }
                 .disabled(canvasCommandActions?.canFlipTrackPosture != true)
