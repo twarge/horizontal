@@ -27,6 +27,10 @@ struct ProjectNavigatorView: View {
     /// Sheets drawing any of these nets are marked, so a highlighted net can
     /// be followed from page to page.
     var highlightedNetIDs: Set<String> = []
+    /// Sheets drawing any of these components are marked the same way: the
+    /// parts selected or highlighted anywhere in the window, so a part picked
+    /// on the board or in a list can be found among the pages.
+    var markedComponentIDs: Set<String> = []
     /// The schematic canvas's highlight colour, so the mark matches it.
     var highlightColor = Color.accentColor
     var allowsSheetEditing = false
@@ -101,8 +105,33 @@ struct ProjectNavigatorView: View {
         return Set(sheets.filter { $0.containsAnyNet(netIDs) }.map(\.id))
     }
 
+    /// Component IDs are per block, so a sheet of another block never matches.
+    private var sheetIDsWithMarkedComponent: Set<String> {
+        guard !markedComponentIDs.isEmpty else {
+            return []
+        }
+        let componentIDs = Set(markedComponentIDs.map { $0.lowercased() })
+        let sheets = project.schematics.isEmpty
+            ? project.schematic?.sheets ?? []
+            : project.schematics.flatMap(\.schematic.sheets)
+        return Set(sheets.filter { $0.containsAnyComponent(componentIDs) }.map(\.id))
+    }
+
+    /// Why a sheet is marked, for its row's tooltip; nil when it isn't.
+    private func markReason(for sheetID: String, net: Set<String>, component: Set<String>) -> String? {
+        var reasons = [String]()
+        if net.contains(sheetID) {
+            reasons.append("the highlighted net")
+        }
+        if component.contains(sheetID) {
+            reasons.append(markedComponentIDs.count == 1 ? "the selected part" : "selected parts")
+        }
+        return reasons.isEmpty ? nil : "Contains " + reasons.joined(separator: " and ")
+    }
+
     var body: some View {
         let sheetIDsWithHighlightedNet = sheetIDsWithHighlightedNet
+        let sheetIDsWithMarkedComponent = sheetIDsWithMarkedComponent
         let componentMatches = componentMatchesBySheet
         List(selection: $selection) {
             if !project.schematics.isEmpty {
@@ -145,7 +174,7 @@ struct ProjectNavigatorView: View {
                                 NavigatorRow(
                                     icon: schematic.block.isTop ? .sheet : .blockSheet,
                                     title: sheet.name,
-                                    marksHighlightedNet: sheetIDsWithHighlightedNet.contains(sheet.id),
+                                    markReason: markReason(for: sheet.id, net: sheetIDsWithHighlightedNet, component: sheetIDsWithMarkedComponent),
                                     highlightColor: highlightColor
                                 )
                                 .padding(.leading, 18)
@@ -198,7 +227,7 @@ struct ProjectNavigatorView: View {
                         NavigatorRow(
                             icon: .sheet,
                             title: sheet.name,
-                            marksHighlightedNet: sheetIDsWithHighlightedNet.contains(sheet.id),
+                            markReason: markReason(for: sheet.id, net: sheetIDsWithHighlightedNet, component: sheetIDsWithMarkedComponent),
                             highlightColor: highlightColor
                         )
                         .tag(ProjectNavigatorSelection.standaloneSheet(sheet.id))
@@ -834,16 +863,19 @@ struct NavigatorRow: View {
     var icon: NavigatorIcon
     var title: String
     var detail: String?
-    /// A sheet that draws the highlighted net.
-    var marksHighlightedNet = false
+    /// A sheet that draws the highlighted net or a selected part, and why,
+    /// for the tooltip; it reads bold, with a dot in the highlight colour.
+    var markReason: String? = nil
     var highlightColor = Color.accentColor
+
+    private var isMarked: Bool { markReason != nil }
 
     var body: some View {
         Label {
             HStack(spacing: 6) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .fontWeight(marksHighlightedNet ? .semibold : nil)
+                        .fontWeight(isMarked ? .semibold : nil)
                         .lineLimit(1)
                     if let detail {
                         Text(detail)
@@ -852,7 +884,7 @@ struct NavigatorRow: View {
                             .lineLimit(1)
                     }
                 }
-                if marksHighlightedNet {
+                if isMarked {
                     Spacer(minLength: 0)
                     Circle()
                         .fill(highlightColor)
@@ -869,10 +901,10 @@ struct NavigatorRow: View {
                     HorizontalOpAmpIconView()
                 }
             }
-            .foregroundStyle(marksHighlightedNet ? AnyShapeStyle(highlightColor) : AnyShapeStyle(.secondary))
+            .foregroundStyle(isMarked ? AnyShapeStyle(highlightColor) : AnyShapeStyle(.secondary))
         }
-        .help(marksHighlightedNet ? "Contains the highlighted net" : "")
-        .accessibilityValue(marksHighlightedNet ? "Contains the highlighted net" : "")
+        .help(markReason ?? "")
+        .accessibilityValue(markReason ?? "")
     }
 }
 
