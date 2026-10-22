@@ -543,9 +543,9 @@ struct HorizontalSelectionPopoverView: View {
 
     @ViewBuilder
     private func detailValueView(for detail: HorizontalSelectionHUDDetail) -> some View {
-        if isDatasheetDetail(detail), let url = datasheetURL(detail.value) {
+        if isDatasheetDetail(detail), let url = HorizontalDatasheetLink.url(detail.value) {
             Link(destination: url) {
-                datasheetText(detail.value)
+                datasheetText(HorizontalDatasheetLink.shortText(url))
                     .foregroundStyle(Color.accentColor)
             }
             .buttonStyle(.plain)
@@ -581,18 +581,6 @@ struct HorizontalSelectionPopoverView: View {
 
     private func isDatasheetDetail(_ detail: HorizontalSelectionHUDDetail) -> Bool {
         detail.label.caseInsensitiveCompare("Datasheet") == .orderedSame
-    }
-
-    private func datasheetURL(_ value: String) -> URL? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let url = URL(string: trimmed), url.scheme != nil {
-            return url
-        }
-        if trimmed.contains("."), !trimmed.contains(" "),
-           let url = URL(string: "https://\(trimmed)") {
-            return url
-        }
-        return nil
     }
 
     @ViewBuilder

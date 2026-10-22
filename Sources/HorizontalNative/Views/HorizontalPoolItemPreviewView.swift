@@ -546,10 +546,10 @@ private struct HorizontalPoolPreviewTableView: View {
                     itemLink(link)
                 }
             }
-        } else if field.label == "Datasheet", let url = URL(string: field.value), url.scheme != nil {
-            Link(field.value, destination: url)
+        } else if field.label == "Datasheet", let url = HorizontalDatasheetLink.url(field.value) {
+            Link(HorizontalDatasheetLink.shortText(url), destination: url)
                 .lineLimit(1)
-                .truncationMode(.middle)
+                .help(field.value)
         } else {
             Text(field.value)
         }
