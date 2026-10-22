@@ -1,11 +1,15 @@
 import SwiftUI
 
 /// The library browser's preview pane: a drawing for symbols, frames,
-/// packages, padstacks and decals, a table for units, entities and parts.
-/// Sits below the item list; follows the selection.
+/// packages, padstacks and decals, a table for units and entities, and for
+/// parts their data, their symbols and their footprint. Sits below the item
+/// list; follows the selection.
 struct HorizontalPoolItemPreviewView: View {
     var item: HorizontalPoolLibraryItem?
     var index: HorizontalPoolLibraryIndex
+    /// Takes the browser to an item a part's data links to (its entity,
+    /// units, symbols, package…). Nil shows those names as plain text.
+    var onReveal: ((HorizontalPoolRevealRequest) -> Void)? = nil
 
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
     @Environment(\.colorScheme) private var colorScheme
@@ -57,11 +61,21 @@ struct HorizontalPoolItemPreviewView: View {
         case .board(let geometry, let hiddenLayers):
             HorizontalBoardPreviewCanvas(geometry: geometry, hiddenLayers: hiddenLayers, palette: boardPalette)
         case .table(let table):
-            HorizontalPoolPreviewTableView(table: table)
-        case .part(let table, let geometry):
+            HorizontalPoolPreviewTableView(table: table, onReveal: onReveal)
+        case .part(let part):
+            // Horizon's part preview: the data on top, the entity's symbols
+            // below it, the footprint beside both. The data and the symbols
+            // split the column's height; the data scrolls.
             HStack(spacing: 0) {
-                HorizontalPoolPreviewTableView(table: table)
-                if let geometry {
+                VStack(spacing: 0) {
+                    HorizontalPoolPreviewTableView(table: part.table, onReveal: onReveal)
+                    if !part.gates.isEmpty {
+                        Divider()
+                        HorizontalPoolPartSymbolView(gates: part.gates, palette: schematicPalette)
+                            .id(item.id)
+                    }
+                }
+                if let geometry = part.package {
                     Divider()
                     HorizontalBoardPreviewCanvas(
                         geometry: geometry,
@@ -150,6 +164,95 @@ private struct HorizontalSymbolPreviewCanvas: View {
             HorizontalPoolPreviewDrawing.strokeTexts(artwork.texts, color: palette.pinAnnotation, context: context, transform: transform)
         }
         .background(palette.background)
+    }
+}
+
+/// A part's symbols, Horizon's entity preview: a gate menu ("A: Opamp") when
+/// the entity has several, a symbol menu when the gate's unit has several,
+/// and the chosen symbol drawn below them. A unit's choice of symbol holds
+/// for every gate that uses the unit.
+private struct HorizontalPoolPartSymbolView: View {
+    var gates: [HorizontalPoolPartPreview.Gate]
+    var palette: HorizontalCanvasPalette
+
+    @State private var gateID: String?
+    @State private var symbolIDByUnit: [String: String] = [:]
+
+    private var gate: HorizontalPoolPartPreview.Gate? {
+        gates.first { $0.id == gateID } ?? gates.first
+    }
+
+    private func symbol(of gate: HorizontalPoolPartPreview.Gate) -> HorizontalPoolPartPreview.Symbol? {
+        gate.symbols.first { $0.id == symbolIDByUnit[gate.unitID] } ?? gate.symbols.first
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let gate {
+                header(gate)
+                Divider()
+                drawing(gate)
+            }
+        }
+    }
+
+    /// A lone gate goes unnamed: it is the entity's only one, and its unit's
+    /// name is the symbol's more often than not. The menus narrow, their
+    /// titles truncating, in a narrow pane.
+    private func header(_ gate: HorizontalPoolPartPreview.Gate) -> some View {
+        HStack(spacing: 6) {
+            if gates.count > 1 {
+                Text("Gate")
+                    .foregroundStyle(.secondary)
+                Picker("Gate", selection: Binding(get: { gate.id }, set: { gateID = $0 })) {
+                    ForEach(gates) { gate in
+                        Text(gate.title).tag(gate.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 220)
+            }
+            Text("Symbol")
+                .foregroundStyle(.secondary)
+                .padding(.leading, gates.count > 1 ? 4 : 0)
+            if gate.symbols.count > 1, let current = symbol(of: gate) {
+                Picker("Symbol", selection: Binding(get: { current.id }, set: { symbolIDByUnit[gate.unitID] = $0 })) {
+                    ForEach(gate.symbols) { symbol in
+                        Text(symbol.name).tag(symbol.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 220)
+            } else {
+                Text(symbol(of: gate)?.name ?? "None")
+                    .foregroundStyle(gate.symbols.isEmpty ? .secondary : .primary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.callout)
+        .controlSize(.small)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+    }
+
+    @ViewBuilder
+    private func drawing(_ gate: HorizontalPoolPartPreview.Gate) -> some View {
+        let symbol = symbol(of: gate)
+        if let artwork = symbol?.artwork {
+            HorizontalSymbolPreviewCanvas(artwork: artwork, palette: palette)
+        } else {
+            // Past the preview's limit (an entity with dozens of units), or
+            // a file that can't be read.
+            Text(symbol.map { "“\($0.name)” isn’t drawn here." }
+                 ?? "No browsed pool has a symbol for the unit “\(gate.unitName)”.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(palette.background)
+        }
     }
 }
 
@@ -387,6 +490,7 @@ enum HorizontalPoolPreviewDrawing {
 
 private struct HorizontalPoolPreviewTableView: View {
     var table: HorizontalPoolItemPreviewTable
+    var onReveal: ((HorizontalPoolRevealRequest) -> Void)?
 
     var body: some View {
         ScrollView {
@@ -436,12 +540,124 @@ private struct HorizontalPoolPreviewTableView: View {
 
     @ViewBuilder
     private func fieldValue(_ field: HorizontalPoolItemPreviewTable.Field) -> some View {
-        if field.label == "Datasheet", let url = URL(string: field.value), url.scheme != nil {
+        if !field.links.isEmpty {
+            HorizontalPoolPreviewFlowLayout(spacing: 10, lineSpacing: 3) {
+                ForEach(field.links) { link in
+                    itemLink(link)
+                }
+            }
+        } else if field.label == "Datasheet", let url = URL(string: field.value), url.scheme != nil {
             Link(field.value, destination: url)
                 .lineLimit(1)
                 .truncationMode(.middle)
         } else {
             Text(field.value)
         }
+    }
+
+    /// An item the part leads to, as the Parts pane draws its links: the
+    /// name in the accent colour, the pointing hand over it, and what tells
+    /// it apart after it. One no browsed pool has stays plain text.
+    @ViewBuilder
+    private func itemLink(_ link: HorizontalPoolItemLink) -> some View {
+        let note = link.note.isEmpty ? nil : Text(link.note).foregroundStyle(.secondary)
+        if link.isResolved, let onReveal {
+            Button {
+                onReveal(HorizontalPoolRevealRequest(category: link.category, uuid: link.uuid))
+            } label: {
+                HStack(spacing: 4) {
+                    Text(link.name)
+                        .foregroundStyle(Color.accentColor)
+                    note
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            #if os(macOS)
+            .pointerStyle(.link)
+            #endif
+            .help("Show the \(link.role.menuTitle.lowercased()) “\(link.name)” in the list")
+        } else {
+            HStack(spacing: 4) {
+                Text(link.name)
+                note
+            }
+            .help(link.isResolved ? "" : "No browsed pool has this \(link.role.menuTitle.lowercased()) (\(link.uuid)).")
+        }
+    }
+}
+
+/// Lays its views out in rows, left to right, wrapping when the next one
+/// doesn't fit: a part's several units, symbols or padstacks in the one
+/// column a field's value has.
+private struct HorizontalPoolPreviewFlowLayout: Layout {
+    var spacing: CGFloat
+    var lineSpacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(subviews, width: proposal.width)
+        let width = rows.map(\.width).max() ?? 0
+        let height = rows.map(\.height).reduce(0, +) + lineSpacing * CGFloat(max(rows.count - 1, 0))
+        return CGSize(width: proposal.width.map { min($0, width) } ?? width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in arrange(subviews, width: bounds.width) {
+            var x = bounds.minX
+            for item in row.items {
+                subviews[item.index].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(item.size))
+                x += item.size.width + spacing
+            }
+            y += row.height + lineSpacing
+        }
+    }
+
+    /// The first row's baseline, so the field's label lines up with it in
+    /// the grid rather than with the bottom of several rows.
+    func explicitAlignment(
+        of guide: VerticalAlignment,
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGFloat? {
+        guard guide == .firstTextBaseline, let first = subviews.first else {
+            return nil
+        }
+        return bounds.minY + first.dimensions(in: .unspecified)[.firstTextBaseline]
+    }
+
+    private struct Row {
+        var items: [(index: Int, size: CGSize)] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    /// Rows for a width; nil (the ideal size) is one row. A view wider than
+    /// the width gets a row of its own, as wide as the width, and wraps
+    /// within it (a unit with a long name).
+    private func arrange(_ subviews: Subviews, width: CGFloat?) -> [Row] {
+        var rows = [Row]()
+        var row = Row()
+        for index in subviews.indices {
+            var size = subviews[index].sizeThatFits(.unspecified)
+            if let width, size.width > width {
+                size = subviews[index].sizeThatFits(ProposedViewSize(width: width, height: nil))
+                size.width = min(size.width, width)
+            }
+            let widthWith = row.items.isEmpty ? size.width : row.width + spacing + size.width
+            if let width, !row.items.isEmpty, widthWith > width {
+                rows.append(row)
+                row = Row()
+            }
+            row.width = row.items.isEmpty ? size.width : row.width + spacing + size.width
+            row.height = max(row.height, size.height)
+            row.items.append((index, size))
+        }
+        if !row.items.isEmpty {
+            rows.append(row)
+        }
+        return rows
     }
 }

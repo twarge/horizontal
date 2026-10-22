@@ -222,7 +222,7 @@ enum HorizontalPoolCacheImporter {
                     continue
                 }
                 _ = try cacheFlatItem(.unit, uuid: unitID)
-                let symbols = index.items(in: .symbol).filter { $0.symbolUnitID == unitID }
+                let symbols = index.symbols(forUnit: unitID)
                 guard !symbols.isEmpty else {
                     throw HorizontalPoolCacheImporterError.noSymbol(unitID: unitID)
                 }
