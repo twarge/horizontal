@@ -126,6 +126,12 @@ struct HorizontalDesignComponent {
     var partDisplayValue: String = ""
     var blockID: String? = nil
     var physicalTerminals: [JSONDictionary] = []
+    /// For one use of a sub-block's component, read through its instance: the
+    /// component of the block it is, and the instance path ("ADC1") it is in.
+    /// Its id is then the flat uuid the board names it by, its refdes, board
+    /// placement and pins' nets the instance's.
+    var instanceOf: String? = nil
+    var instancePath: String? = nil
 
     var connectedPins: [HorizontalDesignPin] { pins.filter { $0.netID != nil } }
 }
@@ -140,6 +146,22 @@ struct HorizontalDesignNetPin: Hashable {
     var gateID: String = ""
     var pinID: String = ""
     var physicalPads: [HorizontalDesignPad] = []
+    /// The flat uuid of the instance whose pin this is, when the component is
+    /// a sub-block's used through an instance (refdes is then the instance's).
+    var instanceID: String? = nil
+}
+
+/// A block instance's port wired to a net of the block that uses it: how a
+/// net reaches the inside of a sub-block.
+struct HorizontalDesignNetPort: Hashable {
+    /// The instance, by uuid and refdes.
+    var instanceID: String
+    var instanceRefdes: String
+    /// The block it is an instance of, and the port: its net in that block.
+    var blockID: String
+    var blockName: String
+    var portNetID: String
+    var portName: String
 }
 
 /// One use of a component: the component itself in the top block, or a
@@ -165,7 +187,17 @@ struct HorizontalDesignNet {
     var netClassName: String?
     var isPower: Bool
     var isPort: Bool
+    /// In a design whose top block uses others, a top block net's pins are
+    /// the flattened design's: its own components' and every instance's
+    /// that reaches it through a port or as a power net, under the instance's
+    /// refdes. A sub-block's own net has that block's components' pins.
     var pins: [HorizontalDesignNetPin]
+    /// The sub-block the net is a net of; nil for the top block's (power nets
+    /// among them, which every block shares).
+    var blockID: String? = nil
+    var blockName: String? = nil
+    /// The block instances in the net's own block whose ports are wired to it.
+    var ports: [HorizontalDesignNetPort] = []
 }
 
 struct HorizontalDesignSheet {
@@ -205,16 +237,25 @@ struct HorizontalDesignIndex {
     /// `tag_names`).
     private(set) var groupNames: [String: String] = [:]
     private(set) var tagNames: [String: String] = [:]
+    /// The top block's uuid, nil for a schematic that stands alone.
+    private(set) var topBlockID: String?
+    /// Each instance's pins as the flattened block wires them, by flat
+    /// component uuid and gate/pin path: the flat net, or no-connect.
+    private(set) var instanceNets: [String: [String: String]] = [:]
+    private(set) var instanceNoConnects: [String: Set<String>] = [:]
 
     init(project: HorizontalProject, snapshot: HorizontalDispatchSnapshot? = nil) {
         let pool = HorizontalDispatchPoolIndex(project: project, snapshot: snapshot)
         let block = Self.loadTopBlockJSON(project: project, snapshot: snapshot)
         var blockComponents = Self.lowercasedKeys(block?.dictionaryMap("components") ?? [:])
         var componentBlocks = [String: String]()
+        var blockFiles = [String: JSONDictionary]()
+        topBlockID = project.blocks.first(where: \.isTop)?.uuid.lowercased()
         for definition in project.blocks {
             guard let filename = definition.blockFilename else { continue }
             let url = project.baseURL.appendingPathComponent(filename)
             let json = snapshot.map { $0.json(at: url) } ?? (try? JSONHelper.loadDictionary(from: url))
+            blockFiles[definition.uuid.lowercased()] = json
             for (id, component) in json?.dictionaryMap("components") ?? [:] {
                 blockComponents[id.lowercased()] = component
                 componentBlocks[id.lowercased()] = definition.uuid
@@ -515,14 +556,130 @@ struct HorizontalDesignIndex {
                 ))
             }
         }
+        assignBlocks(project: project, top: block ?? [:], blockFiles: blockFiles)
+        if let flattened = project.flattenedBlock, flattened.isHierarchical {
+            addInstancePins(flattened, templates: Set(componentBlocks.filter { $0.value.lowercased() != topBlockID }.keys))
+        }
         for netID in nets.keys {
             nets[netID]?.pins.sort { lhs, rhs in
                 (lhs.refdes, lhs.componentID, lhs.gateID, lhs.pinID) < (rhs.refdes, rhs.componentID, rhs.gateID, rhs.pinID)
             }
         }
-        for net in nets.values where !net.name.isEmpty {
+        // A name both a sub-block and the top block use is the top block's.
+        for net in nets.values.sorted(by: { ($0.blockID == nil ? 1 : 0, $0.id) < ($1.blockID == nil ? 1 : 0, $1.id) }) where !net.name.isEmpty {
             netIDsByName[net.name] = net.id
         }
+    }
+
+    /// Which block each net is a net of, and the block instances wired to it.
+    /// A power net is every block's, and so the top block's.
+    private mutating func assignBlocks(project: HorizontalProject, top: JSONDictionary, blockFiles: [String: JSONDictionary]) {
+        let topNets = top.dictionaryMap("nets").reduce(into: [String: JSONDictionary]()) { $0[$1.key.lowercased()] = $1.value }
+        let name = { (id: String) in project.blocks.first { $0.uuid.lowercased() == id }?.displayName ?? id }
+        var owners = [String: (id: String, name: String)]()
+        var ports = [String: [HorizontalDesignNetPort]]()
+        for (blockID, json) in blockFiles {
+            let blockNets = json.dictionaryMap("nets")
+            if blockID != topBlockID {
+                for netID in blockNets.keys.map({ $0.lowercased() }) where topNets[netID] == nil {
+                    owners[netID] = (blockID, name(blockID))
+                }
+            }
+            for (instanceID, instance) in json.dictionaryMap("block_instances") {
+                guard let used = instance.string("block")?.lowercased() else { continue }
+                let usedNets = blockFiles[used]?.dictionaryMap("nets") ?? [:]
+                for (port, connection) in instance.dictionaryMap("connections") {
+                    guard let netID = connection.string("net")?.lowercased() else { continue }
+                    let portName = usedNets.first { $0.key.lowercased() == port.lowercased() }?.value.string("name") ?? port
+                    ports[netID, default: []].append(HorizontalDesignNetPort(
+                        instanceID: instanceID.lowercased(), instanceRefdes: instance.string("refdes") ?? "",
+                        blockID: used, blockName: name(used), portNetID: port.lowercased(), portName: portName))
+                }
+                // A net that nothing but a port reaches is still the block's net.
+                for netID in Set(instance.dictionaryMap("connections").values.compactMap { $0.string("net")?.lowercased() })
+                    where nets[netID] == nil {
+                    let net = json.dictionaryMap("nets").first { $0.key.lowercased() == netID }?.value
+                    nets[netID] = HorizontalDesignNet(id: netID, name: net?.string("name") ?? "", netClassName: nil,
+                                                      isPower: net?.bool("is_power") ?? false, isPort: net?.bool("is_port") ?? false, pins: [])
+                }
+            }
+        }
+        for netID in nets.keys {
+            if let owner = owners[netID] {
+                nets[netID]?.blockID = owner.id
+                nets[netID]?.blockName = owner.name
+            }
+            nets[netID]?.ports = (ports[netID] ?? []).sorted { ($0.instanceRefdes, $0.portName) < ($1.instanceRefdes, $1.portName) }
+        }
+    }
+
+    /// The flattened design on the top block's nets: every instance's pins,
+    /// under its refdes, on the net its port is wired to or the power net it
+    /// shares. A sub-block's own components are no part of the design but
+    /// through their instances, so they leave the top block's power nets.
+    private mutating func addInstancePins(_ flattened: HorizontalFlattenedBlock, templates: Set<String>) {
+        for netID in nets.keys where nets[netID]?.blockID == nil {
+            nets[netID]?.pins.removeAll { templates.contains($0.componentID) }
+        }
+        for (flatID, flat) in flattened.json.dictionaryMap("components") {
+            let id = flatID.lowercased()
+            guard let path = flattened.componentPaths[id], path.count > 1, let templateID = path.last,
+                  let template = components[templateID] else { continue }
+            var connected = [String: String]()
+            var noConnect = Set<String>()
+            for (pinPath, connection) in flat.dictionaryMap("connections") {
+                if let netID = connection.string("net")?.lowercased() { connected[pinPath.lowercased()] = netID }
+                else { noConnect.insert(pinPath.lowercased()) }
+            }
+            instanceNets[id] = connected
+            instanceNoConnects[id] = noConnect
+            let refdes = flat.string("refdes") ?? template.refdes
+            for pin in template.pins {
+                guard let netID = connected[pin.gatePinPath.lowercased()], nets[netID] != nil, nets[netID]?.blockID == nil else { continue }
+                nets[netID]?.pins.append(HorizontalDesignNetPin(
+                    componentID: templateID, refdes: refdes, gateName: pin.gateName, gateSuffix: pin.gateSuffix,
+                    pinName: pin.pinName, direction: pin.direction, gateID: pin.gateID, pinID: pin.pinID,
+                    physicalPads: pin.physicalPads, instanceID: id))
+            }
+        }
+    }
+
+    /// The nets a name selects. A sub-block's port net can share a name with
+    /// the top block net its instances are wired to; `block`'s own net is
+    /// chosen when that block has one, else the top block's, and only names
+    /// still shared by two nets of one standing come back as several.
+    func nets(named name: String, block: String? = nil) -> [HorizontalDesignNet] {
+        let all = sortedNets.filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+        guard all.count > 1 else { return all }
+        if let block = block?.lowercased() {
+            let own = all.filter { ($0.blockID?.lowercased() ?? topBlockID) == block }
+            if own.count == 1 { return own }
+        }
+        let top = all.filter { $0.blockID == nil }
+        return top.count == 1 ? top : all
+    }
+
+    /// One use of a sub-block's component, read through its instance: the
+    /// block's component under the instance's flat uuid, refdes, no-populate
+    /// and board package, its pins on the flattened design's nets.
+    func component(instance: HorizontalDesignInstance) -> HorizontalDesignComponent? {
+        guard !instance.instancePath.isEmpty, var view = components[instance.componentID] else { return nil }
+        let connected = instanceNets[instance.id] ?? [:]
+        let noConnect = instanceNoConnects[instance.id] ?? []
+        view.instanceOf = view.id
+        view.instancePath = instance.instancePath
+        view.id = instance.id
+        view.refdes = instance.refdes
+        view.noPopulate = instance.noPopulate
+        view.boardPlacement = instance.boardPlacement
+        view.pins = view.pins.map { pin in
+            var pin = pin
+            let key = pin.gatePinPath.lowercased()
+            pin.netID = connected[key]
+            pin.connectionState = noConnect.contains(key) ? "no_connect" : (pin.netID == nil ? "unconnected" : "connected")
+            return pin
+        }
+        return view
     }
 
     func groupName(_ id: String?) -> String? {
@@ -547,22 +704,41 @@ struct HorizontalDesignIndex {
         nets.values.sorted { ($0.name, $0.id) < ($1.name, $1.id) }
     }
 
+    /// A component by refdes: the top block's, else the one instance of a
+    /// sub-block's component that has it (read through that instance), else
+    /// a sub-block's own component — the refdes its instances show unless
+    /// their mapping gives them another.
     func component(refdes: String) -> HorizontalDesignComponent? {
-        if let id = componentIDsByRefdes[refdes], let component = components[id] {
+        let named = components.values.filter { $0.refdes.caseInsensitiveCompare(refdes) == .orderedSame }
+        let isTop = { (component: HorizontalDesignComponent) in component.blockID == nil || component.blockID?.lowercased() == topBlockID }
+        if let id = componentIDsByRefdes[refdes], let component = components[id], isTop(component) {
             return component
         }
-        return components.values.first { $0.refdes.caseInsensitiveCompare(refdes) == .orderedSame }
+        if let component = named.first(where: isTop) {
+            return component
+        }
+        let uses = instances.filter { !$0.instancePath.isEmpty && $0.refdes.caseInsensitiveCompare(refdes) == .orderedSame }
+        if uses.count == 1, let view = component(instance: uses[0]) {
+            return view
+        }
+        return componentIDsByRefdes[refdes].flatMap { components[$0] } ?? named.first
     }
 
+    /// A component by uuid, an instance's flat uuid among them.
     func component(id: String) -> HorizontalDesignComponent? {
-        components[id.lowercased()]
+        let id = id.lowercased()
+        if let component = components[id] {
+            return component
+        }
+        return instances.first { $0.id == id }.flatMap { component(instance: $0) }
     }
 
     func net(named name: String) -> HorizontalDesignNet? {
         if let id = netIDsByName[name], let net = nets[id] {
             return net
         }
-        return nets.values.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+        let found = nets(named: name)
+        return found.count == 1 ? found[0] : found.first
     }
 
     func net(id: String) -> HorizontalDesignNet? {
@@ -585,7 +761,8 @@ struct HorizontalDesignIndex {
     /// a reply's "33b623e6…" is named the way it was shown.
     func component(idOrPrefix reference: String) throws -> HorizontalDesignComponent? {
         if let component = component(id: reference) { return component }
-        return try HorizontalDispatchValidation.id(matchingPrefix: reference, in: components.keys, kind: "component").flatMap { components[$0] }
+        let ids = Array(components.keys) + instances.filter { !$0.instancePath.isEmpty }.map(\.id)
+        return try HorizontalDispatchValidation.id(matchingPrefix: reference, in: ids, kind: "component").flatMap { component(id: $0) }
     }
 
     func net(idOrPrefix reference: String) throws -> HorizontalDesignNet? {

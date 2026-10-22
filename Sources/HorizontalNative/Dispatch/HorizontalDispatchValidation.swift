@@ -126,7 +126,7 @@ enum HorizontalDispatchValidation {
 
     static func net(_ selector: String, index: HorizontalDesignIndex) throws -> HorizontalDesignNet {
         guard !selector.isEmpty else { throw HorizontalDispatchError.invalidParams("Use the UUID to select an unnamed net.") }
-        var matches = index.sortedNets.filter { $0.id.caseInsensitiveCompare(selector) == .orderedSame || $0.name.caseInsensitiveCompare(selector) == .orderedSame }
+        var matches = index.net(id: selector).map { [$0] } ?? index.nets(named: selector)
         if matches.isEmpty, let id = try id(matchingPrefix: selector, in: index.nets.keys, kind: "net"),
            let net = index.net(id: id) { matches = [net] }
         guard let first = matches.first else { throw HorizontalDispatchError.notFound("No net \(selector).") }
@@ -145,6 +145,12 @@ enum HorizontalDispatchValidation {
             && (params.string("sheet_id").map { sheet.id.caseInsensitiveCompare($0) == .orderedSame } ?? true)
         }
         guard !found.isEmpty else { throw HorizontalDispatchError.notFound("No sheet matches the selector.") }
+        // Without block_id, an index or a name is the top block's sheet when
+        // it has one: a sub-block's "First sheet" is reached by naming it.
+        if found.count > 1, params["block_id"] == nil {
+            let top = found.filter(\.isTopBlock)
+            if top.count == 1 { return top[0] }
+        }
         guard found.count == 1 else { throw HorizontalDispatchError.ambiguous("Sheet selector is ambiguous; use block_id and sheet_id.", candidates: found.map { "\($0.blockID ?? "")/\($0.id)" }) }
         return found[0]
     }

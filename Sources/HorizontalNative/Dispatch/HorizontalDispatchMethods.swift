@@ -430,6 +430,7 @@ enum HorizontalDispatchMethods {
                 "name": "Sheet name (alternative to sheet).",
                 "sheet_id": "Sheet id (alternative to sheet).",
                 "block_id": "Block UUID to disambiguate a sheet.",
+                "instance": "For a sub-block's sheet, the instance whose page to draw: its refdes path (ADC1, or I1/I2) or uuid. Default the first; a block no instance uses is drawn as it holds it.",
                 "region": "Optional {min_x_mm, min_y_mm, max_x_mm, max_y_mm} to render only that part of the sheet.",
                 "dpi": "Resolution (default 150).",
                 "max_pixels": "Cap on the longer side (default 4096).",
@@ -982,7 +983,7 @@ enum HorizontalDispatchMethods {
             if let at = ends[pin.gatePinPath.lowercased()] { pinJSON["at"] = at }
             if let netID = pin.netID {
                 pinJSON["net_id"] = netID
-                pinJSON["net"] = entry.index.net(id: netID)?.name ?? ""
+                pinJSON["net"] = entry.index.netName(id: netID) ?? ""
             } else {
                 pinJSON["net"] = NSNull()
             }
@@ -1024,9 +1025,9 @@ enum HorizontalDispatchMethods {
         let entry = try session.entry(for: params)
         let net: HorizontalDesignNet?
         if let name = params.string("name") {
-            let candidates = entry.index.sortedNets.filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+            let candidates = entry.index.nets(named: name)
             if candidates.count > 1 { throw HorizontalDispatchError.ambiguous("Net name is ambiguous; use id.", candidates: candidates.map(\.id)) }
-            net = entry.index.net(named: name)
+            net = candidates.first
         } else if let id = params.string("id") {
             net = try entry.index.net(idOrPrefix: id)
         } else {
@@ -1512,6 +1513,8 @@ enum HorizontalDispatchMethods {
         for refdes in (params["components"] as? [Any])?.map({ "\($0)" }) ?? [] {
             let component = try HorizontalDispatchValidation.component(refdes, index: index)
             componentIDs.insert(component.id)
+            // An instance's package is its flat uuid; its symbol, the block's component's.
+            if let template = component.instanceOf { componentIDs.insert(template) }
         }
         var netIDs = Set<String>()
         for name in (params["nets"] as? [Any])?.map({ "\($0)" }) ?? [] {
@@ -1698,18 +1701,26 @@ enum HorizontalDispatchMethods {
         let entry = try session.entry(for: params)
         let selected = try HorizontalDispatchValidation.sheet(params, index: entry.index, defaultFirst: true)
         let project = try entry.snapshot?.materializedProject() ?? entry.project
-        let (image, sheet) = try HorizontalDispatchRender.renderSheet(
+        let (image, sheet, page) = try HorizontalDispatchRender.renderSheet(
             project: project,
             sheetIndex: nil,
             sheetName: nil,
             sheetID: selected?.id,
             blockID: selected?.blockID,
+            instance: params.string("instance"),
             region: try regionParam(params),
             dpi: params.double("dpi") ?? 150,
             maxPixels: params.int("max_pixels") ?? 4096
         )
         var result = imageJSON(image, outputPath: params.string("output_path"))
         result["sheet"] = ["index": sheet.index, "name": sheet.name, "id": sheet.id]
+        if let page {
+            // Its number in the schematic PDF, and the instance it is drawn for.
+            result["page"] = page.number
+            if !page.refdesPath.isEmpty { result["instance"] = page.refdesPath.joined(separator: "/") }
+        } else if selected?.isTopBlock == false {
+            result["note"] = "No instance uses this block, so its sheet is drawn as the block holds it; it is no page of the PDF."
+        }
         return result
     }
 
@@ -2063,7 +2074,7 @@ enum HorizontalDispatchMethods {
             }
             result["airwires"] = airwiresJSON
         } else {
-            let (image, sheet) = try HorizontalDispatchRender.renderSheet(project: project, sheetIndex: nil, sheetName: nil, sheetID: state.value.1, region: region, dpi: dpi, maxPixels: maxPixels)
+            let (image, sheet, _) = try HorizontalDispatchRender.renderSheet(project: project, sheetIndex: nil, sheetName: nil, sheetID: state.value.1, region: region, dpi: dpi, maxPixels: maxPixels)
             result = imageJSON(image, outputPath: params.string("output_path"))
             result["sheet"] = ["index": sheet.index, "name": sheet.name, "id": sheet.id]
         }
@@ -2231,6 +2242,12 @@ enum HorizontalDispatchMethods {
         json["electrical_value"] = HorizontalElectricalValue.parse(effective, refdes: component.refdes,
                                                                     parametric: component.details?.parametricValues ?? [:])
         json["block_id"] = component.blockID as Any
+        if let template = component.instanceOf {
+            // One use of a sub-block's component: its pins' nets, refdes and
+            // package are this instance's; instance_of is the block's own.
+            json["instance_of"] = template
+            json["instance"] = component.instancePath ?? ""
+        }
         json["physical_terminals"] = component.physicalTerminals
         if let index, let instances = instancesJSON(component, index: index) {
             json["instances"] = instances
@@ -2292,6 +2309,13 @@ enum HorizontalDispatchMethods {
             "is_port": net.isPort,
             "pin_count": net.pins.count
         ]
+        if let blockID = net.blockID {
+            json["block_id"] = blockID
+            json["block"] = net.blockName ?? blockID
+        }
+        if !net.ports.isEmpty {
+            json["port_count"] = net.ports.count
+        }
         if let board = entry.project.board {
             json["track_count"] = board.tracks.filter { $0.netID?.lowercased() == net.id }.count
             json["airwire_count"] = board.airwires.filter { $0.netID?.lowercased() == net.id }.count
@@ -2300,9 +2324,19 @@ enum HorizontalDispatchMethods {
             return json
         }
         json["pins"] = net.pins.map { pin -> JSONDictionary in
-            ["refdes": pin.refdes, "component_id": pin.componentID, "pin": pin.pinName, "gate": pin.gateName, "gate_suffix": pin.gateSuffix, "direction": pin.direction,
-             "gate_id": pin.gateID, "pin_id": pin.pinID, "gate_pin_path": "\(pin.gateID)/\(pin.pinID)",
-             "physical_pads": pin.physicalPads.map { ["id": $0.id, "name": $0.name] }]
+            var pinJSON: JSONDictionary = [
+                "refdes": pin.refdes, "component_id": pin.componentID, "pin": pin.pinName, "gate": pin.gateName, "gate_suffix": pin.gateSuffix, "direction": pin.direction,
+                "gate_id": pin.gateID, "pin_id": pin.pinID, "gate_pin_path": "\(pin.gateID)/\(pin.pinID)",
+                "physical_pads": pin.physicalPads.map { ["id": $0.id, "name": $0.name] }]
+            // A sub-block's component, on this net through one of its instances.
+            if let instance = pin.instanceID { pinJSON["instance_id"] = instance }
+            return pinJSON
+        }
+        if !net.ports.isEmpty {
+            json["block_ports"] = net.ports.map { port -> JSONDictionary in
+                ["instance": port.instanceRefdes, "instance_id": port.instanceID, "block": port.blockName,
+                 "block_id": port.blockID, "port": port.portName, "port_net_id": port.portNetID]
+            }
         }
         if let board = entry.project.board {
             let airwires = board.airwires.filter { $0.netID?.lowercased() == net.id }
@@ -2375,7 +2409,7 @@ enum HorizontalDispatchMethods {
     private static func netFilter(_ entry: HorizontalDispatchProjectEntry, _ params: JSONDictionary) throws -> String? {
         guard let reference = params.string("net"), !reference.isEmpty else { return nil }
         if let net = entry.index.net(id: reference) { return net.id }
-        let named = entry.index.sortedNets.filter { $0.name.caseInsensitiveCompare(reference) == .orderedSame }
+        let named = entry.index.nets(named: reference, block: try selectedBlock(entry, params)?.uuid)
         guard named.count <= 1 else {
             throw HorizontalDispatchError.ambiguous("More than one net is named \(reference); use its id.", candidates: named.map(\.id))
         }

@@ -1470,9 +1470,13 @@ def place_component(refdes: str, path: str | None = None, x_mm: float | None = N
 
 
 @_tool
-def render_sheet(path: str | None = None, sheet: int | None = None, name: str | None = None, region: Region | None = None, dpi: float = 110, sheet_id: str | None = None, block_id: str | None = None) -> dict[str, Any]:
-    """Render one schematic sheet as a PNG image (by index or name; default the first sheet). region {min_x_mm, min_y_mm, max_x_mm, max_y_mm} renders only that part, at higher effective detail."""
-    params = {k: v for k, v in {"sheet": sheet, "name": name, "region": region.model_dump() if region else None, "sheet_id": sheet_id, "block_id": block_id}.items() if v is not None}
+def render_sheet(path: str | None = None, sheet: int | None = None, name: str | None = None, region: Region | None = None, dpi: float = 110, sheet_id: str | None = None, block_id: str | None = None, instance: str | None = None) -> dict[str, Any]:
+    """Render one schematic sheet as a PNG image (by index or name; default the first sheet; without block_id an index or
+    name is the top block's sheet). A sub-block's sheet is drawn as the page of one instance, which instance (its refdes
+    path, ADC1, or uuid) picks, the first by default; page and instance in the reply say which. A block no instance uses
+    is drawn as it holds it. region {min_x_mm, min_y_mm, max_x_mm, max_y_mm} renders only that part, at higher
+    effective detail."""
+    params = {k: v for k, v in {"sheet": sheet, "name": name, "region": region.model_dump() if region else None, "sheet_id": sheet_id, "block_id": block_id, "instance": instance}.items() if v is not None}
     return _resolve(path)._call("render_sheet", dpi=dpi, max_pixels=2400, **params)
 
 

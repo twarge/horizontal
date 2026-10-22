@@ -4,7 +4,8 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// PNG renders of sheets and the board, made by running the app's own PDF
-/// exporters into a temporary directory and rasterizing the page.
+/// exporters into a temporary directory and rasterizing the page: a sheet's
+/// page on its own, the board's drawing whole.
 enum HorizontalDispatchRender {
     struct Image {
         var png: Data
@@ -12,41 +13,77 @@ enum HorizontalDispatchRender {
         var height: Int
     }
 
+    /// A sheet as the schematic PDF prints it, rasterized. A block's sheet is
+    /// a page once for every instance that reaches it; `instance` (refdes
+    /// path, "ADC1", or instance uuid) picks which, the first otherwise. A
+    /// block no instance uses is drawn as it holds it. Also gives back the
+    /// page drawn, nil for such a block.
     static func renderSheet(
         project: HorizontalProject,
         sheetIndex: Int?,
         sheetName: String?,
         sheetID: String? = nil,
         blockID: String? = nil,
+        instance: String? = nil,
         region: HorizontalRect? = nil,
         dpi: Double,
         maxPixels: Int
-    ) throws -> (Image, HorizontalSchematicSheet) {
+    ) throws -> (Image, HorizontalSchematicSheet, HorizontalSchematicPage?) {
         let all = HorizontalDesignIndex.schematics(of: project)
-        let scoped = all.flatMap { block in block.schematic.sheets.map { (blockID: block.block.uuid, sheet: $0) } }
-        let sheets = scoped.map(\.sheet)
-        guard !sheets.isEmpty else {
+        let scoped = all.flatMap { block in block.schematic.sheets.map { (block: block.block, sheet: $0) } }
+        guard !scoped.isEmpty else {
             throw HorizontalDispatchError.failed("The project has no schematic sheets.")
         }
-        let matches = scoped.indices.filter { index in
+        var matches = scoped.indices.filter { index in
             let value = scoped[index]
-            return (blockID.map { value.blockID.caseInsensitiveCompare($0) == .orderedSame } ?? true)
+            return (blockID.map { value.block.uuid.caseInsensitiveCompare($0) == .orderedSame } ?? true)
                 && (sheetID.map { value.sheet.id.caseInsensitiveCompare($0) == .orderedSame } ?? true)
                 && (sheetIndex.map { value.sheet.index == $0 } ?? true)
                 && (sheetName.map { value.sheet.name.caseInsensitiveCompare($0) == .orderedSame } ?? true)
         }
+        // Without a block, an index or a name is the top block's sheet.
+        if matches.count > 1, blockID == nil {
+            let top = matches.filter { scoped[$0].block.isTop }
+            if top.count == 1 { matches = top }
+        }
         guard let position = matches.first else { throw HorizontalDispatchError.notFound("No sheet matches the selector.") }
         if matches.count > 1 && (sheetID != nil || sheetIndex != nil || sheetName != nil || blockID != nil) {
-            throw HorizontalDispatchError.ambiguous("Sheet selector is ambiguous.", candidates: matches.map { "\(scoped[$0].blockID)/\(scoped[$0].sheet.id)" })
+            throw HorizontalDispatchError.ambiguous("Sheet selector is ambiguous.", candidates: matches.map { "\(scoped[$0].block.uuid)/\(scoped[$0].sheet.id)" })
         }
-        let sheet = sheets[position]
-        let pdfURL = try exportPDF(project: project, section: .schematicPDF) { _ in }
-        defer { try? FileManager.default.removeItem(at: pdfURL.deletingLastPathComponent()) }
+        let target = scoped[position]
+        let pages = HorizontalExportBackend.schematicPages(of: project)
+        var candidates = pages.filter {
+            $0.block.uuid.caseInsensitiveCompare(target.block.uuid) == .orderedSame
+                && $0.sheet.id.caseInsensitiveCompare(target.sheet.id) == .orderedSame
+        }
+        if let instance {
+            let wanted = instance.lowercased()
+            candidates = candidates.filter { page in
+                page.refdesPath.joined(separator: "/").lowercased() == wanted
+                    || page.path.joined(separator: "/") == wanted || page.path.last == wanted
+            }
+            guard !candidates.isEmpty else {
+                throw HorizontalDispatchError.notFound("No instance \(instance) draws sheet \(target.sheet.name).")
+            }
+        }
+        let page = candidates.first
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("horizontal-render-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pdfURL = directory.appendingPathComponent("sheet.pdf")
+        let drawn = try HorizontalExportBackend.exportSchematicPage(
+            project: project,
+            page: page ?? HorizontalSchematicPage(block: target.block, sheet: target.sheet, path: [], number: 1),
+            total: page == nil ? nil : pages.count,
+            settings: HorizontalExportSettings(project: project).schematicPDF,
+            to: pdfURL
+        )
         // The exporter fits the sheet's frame (or its content) onto a page with
         // no margin; the same mapping locates a region on that page.
-        let crop = region.map { pageRect(for: $0, bounds: sheetPageBounds(sheet), margin: 0) }
-        let image = try rasterize(pdfURL: pdfURL, page: position + 1, dpi: dpi, maxPixels: maxPixels, crop: crop)
-        return (image, sheet)
+        let crop = region.map { pageRect(for: $0, bounds: sheetPageBounds(drawn), margin: 0) }
+        let image = try rasterize(pdfURL: pdfURL, page: 1, dpi: dpi, maxPixels: maxPixels, crop: crop)
+        return (image, target.sheet, page)
     }
 
     static func renderBoard(

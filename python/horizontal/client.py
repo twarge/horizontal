@@ -636,9 +636,11 @@ class Project:
         dpi: float = 150,
         max_pixels: int = 4096,
         output_path: str | Path | None = None,
+        instance: str | None = None,
     ) -> bytes | Path:
         """A sheet as PNG bytes, or the path written. `region` is
-        {"min_x_mm", "min_y_mm", "max_x_mm", "max_y_mm"} to render part of it."""
+        {"min_x_mm", "min_y_mm", "max_x_mm", "max_y_mm"} to render part of it;
+        `instance` picks which instance's page a sub-block's sheet is drawn as."""
         params: dict[str, Any] = {"dpi": dpi, "max_pixels": max_pixels}
         if sheet is not None:
             params["sheet"] = sheet
@@ -648,6 +650,8 @@ class Project:
             params["sheet_id"] = sheet_id
         if block_id is not None:
             params["block_id"] = block_id
+        if instance is not None:
+            params["instance"] = instance
         if region is not None:
             params["region"] = region
         if output_path is not None:
