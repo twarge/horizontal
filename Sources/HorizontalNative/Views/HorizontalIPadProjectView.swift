@@ -1166,7 +1166,17 @@ struct HorizontalIPadProjectView: View {
             copyTargets: project.poolDirectory.map { HorizontalPoolPartCopier.targets(forProjectPool: project.baseURL.appendingPathComponent($0)) } ?? [],
             onCopyToPool: isReadOnly ? nil : { partID, target in preparePoolCopy(partID: partID, to: target) },
             onReviewUpdates: { showsPartUpdates = true },
-            onCleanUp: poolCleanupAction(for: project)
+            onCleanUp: poolCleanupAction(for: project),
+            onSelectUses: { partID in
+                // As on the Mac, less the sheet change: selected and
+                // highlighted, so a sheet that draws them shows them.
+                let componentIDs = Set(HorizontalDesignIndex(project: project).sortedComponents
+                    .filter { $0.partID?.caseInsensitiveCompare(partID) == .orderedSame }
+                    .map(\.id))
+                guard !componentIDs.isEmpty else { return }
+                selectComponents(componentIDs)
+                highlightedComponentIDs = componentIDs
+            }
         )
     }
 

@@ -2060,7 +2060,8 @@ struct ProjectWorkspaceView: View {
                     copyTargets: project.poolDirectory.map { HorizontalPoolPartCopier.targets(forProjectPool: project.baseURL.appendingPathComponent($0)) } ?? [],
                     onCopyToPool: isReadOnly ? nil : { partID, target in preparePoolCopy(partID: partID, to: target) },
                     onReviewUpdates: { showsPartUpdates = true },
-                    onCleanUp: poolCleanupAction
+                    onCleanUp: poolCleanupAction,
+                    onSelectUses: { selectComponents(usingPart: $0) }
                 )
             }
         case .library:
@@ -2870,6 +2871,30 @@ struct ProjectWorkspaceView: View {
                 crossProbedPanes.insert(pane)
             }
         }
+    }
+
+    /// The Parts pane's Select Components Using This Part: every component
+    /// fitted with the part, selected and highlighted on the board and in
+    /// the schematic. When the schematic shows a sheet that draws none of
+    /// them, it goes to the first sheet that does, as `zoom_to` would; the
+    /// highlight follows a page change where the selection doesn't.
+    private func selectComponents(usingPart partID: String) {
+        let users = HorizontalDesignIndex(project: project).sortedComponents
+            .filter { $0.partID?.caseInsensitiveCompare(partID) == .orderedSame }
+        guard !users.isEmpty else { return }
+        let componentIDs = Set(users.map(\.id))
+        let placements = users.flatMap(\.symbolPlacements)
+        let currentSheetID: String? = switch navigatorSelection {
+        case .sheet(_, let sheetID), .standaloneSheet(let sheetID): sheetID
+        default: nil
+        }
+        if visiblePanes.contains(.schematic),
+           !placements.contains(where: { $0.sheetID == currentSheetID }),
+           let first = placements.min(by: { $0.sheetIndex < $1.sheetIndex }) {
+            navigatorSelection = first.blockID.map { .sheet(blockID: $0, sheetID: first.sheetID) } ?? .standaloneSheet(first.sheetID)
+        }
+        selectComponents(componentIDs)
+        highlightSelectedComponents(componentIDs)
     }
 
     /// A schematic page change drops the page's selection, but a highlight
