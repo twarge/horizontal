@@ -13695,7 +13695,8 @@ extension SchematicCanvasView {
         guard canPlacePowerSymbol else {
             return
         }
-        let nets = selectableNamedNets(powerOnly: true)
+        // In the order the power net editor keeps.
+        let nets = HorizontalPowerNetOrder.sorted(selectableNamedNets(powerOnly: true), id: \.id)
         #if os(macOS)
         switch HorizontalPowerNetPrompt.run(nets: nets.map { HorizontalPowerNetPrompt.Option(id: $0.id, name: $0.name) }) {
         case .existing(let netID):
