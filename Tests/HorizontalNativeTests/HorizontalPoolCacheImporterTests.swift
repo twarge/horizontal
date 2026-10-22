@@ -218,6 +218,28 @@ final class HorizontalPoolCacheImporterTests: XCTestCase {
         XCTAssertEqual(try cachedReview(files: files).parts.first?.status, .current)
     }
 
+    /// A symbol the library adds to one of the part's units is another way
+    /// the unit could be drawn, not an update (Weevling's J2, placed with the
+    /// 1×4 connector symbol, was offered the 2×2): Horizon caches the symbol a
+    /// gate is placed with, and its cache update never adds an item.
+    func testASymbolTheProjectDoesNotHaveIsNotAnUpdate() throws {
+        try importFixture()
+        try write(["type": "symbol", "uuid": "sym-2", "name": "Resistor (box)", "unit": "unit-1",
+                   "pins": [:], "junctions": [:], "lines": [:], "arcs": [:], "texts": [:]],
+                  to: "stock/symbols/passive/resistor-box.json")
+        let row = try XCTUnwrap(try cachedReview().parts.first)
+        XCTAssertEqual(row.status, .current)
+        XCTAssertEqual(row.changes.map(\.path), [])
+        XCTAssertFalse(row.dependencies.contains("symbols/cache/sym-2.json"))
+        XCTAssertNil(row.origins["symbols/cache/sym-2.json"])
+
+        // The symbol the project has still updates beside it.
+        try changeSource("symbols/passive/resistor.json") { $0["name"] = "Updated resistor" }
+        let updated = try XCTUnwrap(try cachedReview().parts.first)
+        XCTAssertEqual(updated.changes.map(\.path), ["symbols/cache/sym-1.json"])
+        XCTAssertNil(try cachedReview().updates(selecting: ["part-1"])["symbols/cache/sym-2.json"])
+    }
+
     func testFormattingAndEditorMetadataDoNotProduceUpdates() throws {
         try importFixture()
         var json = try JSONHelper.loadDictionary(from: poolURL.appendingPathComponent("symbols/passive/resistor.json"))

@@ -428,7 +428,18 @@ enum HorizontalPoolCacheUpdater {
                 let plannedByPath = try Dictionary(uniqueKeysWithValues: planned.map {
                     (try HorizontalPoolCacheProvenance.relativePath($0.url, in: poolURL), $0.data)
                 })
-                let nextMetadata = try HorizontalPoolCacheProvenance.load(plannedByPath[HorizontalPoolCacheProvenance.path])
+                var nextMetadata = try HorizontalPoolCacheProvenance.load(plannedByPath[HorizontalPoolCacheProvenance.path])
+                // A fresh import brings every symbol of the part's units, but a
+                // unit's symbols are alternatives a gate is placed with, and
+                // Horizon caches only the one it uses: its cache update never
+                // adds an item. A symbol the project doesn't have is not an
+                // update, then, only another way the unit could be drawn (the
+                // 2×2 of a connector placed as its 1×4).
+                for path in nextMetadata.files.keys where files[path] == nil {
+                    if let planned = plannedByPath[path], (try? JSONHelper.loadDictionary(from: planned))?.string("type") == "symbol" {
+                        nextMetadata.files.removeValue(forKey: path)
+                    }
+                }
                 row.origins = nextMetadata.files
                 // Never drop an existing symbol or other dependency still used by the design.
                 for path in row.dependencies where path != partPath {
