@@ -131,6 +131,73 @@ final class HorizontalCanvasInputCoreTests: XCTestCase {
         XCTAssertFalse(HorizontalCanvasInputCore.isClipboardCommand(key("c")))
     }
 
+    /// Who gets a key: selected text in the Pools pane's preview keeps ⌘C
+    /// and ⌘A even while the schematic's pane has the keyboard and a
+    /// placement is in progress (the bug: the canvas took ⌘C as its Copy).
+    func testWhatHasTheKeyboardDecidesWhetherTheCanvasTakesAKey() {
+        func takes(_ event: HorizontalCanvasKeyEvent, _ responder: HorizontalKeyboardResponder,
+                   paneHasKeyboard: Bool = true, interaction: Bool = false) -> Bool {
+            HorizontalCanvasInputCore.canvasTakesKey(
+                event,
+                responder: responder,
+                paneHasKeyboard: paneHasKeyboard,
+                isInteractionKey: interaction,
+                handlesInteractionKeys: interaction
+            )
+        }
+        let copy = key("c", .command)
+        let selectAll = key("a", .command)
+        let rotate = key("r")
+
+        for event in [copy, selectAll] {
+            XCTAssertFalse(takes(event, .selectableText), "selected text keeps Copy and Select All")
+            XCTAssertFalse(takes(event, .selectableText, interaction: true), "even during an interaction")
+            XCTAssertFalse(takes(event, .textInput, interaction: true), "a field keeps every key")
+            XCTAssertTrue(takes(event, .canvas), "the canvas with the keyboard copies its own selection")
+            XCTAssertTrue(takes(event, .other), "and so does its pane's, with the keyboard")
+            XCTAssertFalse(takes(event, .other, paneHasKeyboard: false), "not once the Pools or Parts pane has it")
+        }
+        XCTAssertFalse(takes(rotate, .selectableText), "selected text has the keyboard")
+        XCTAssertTrue(takes(rotate, .selectableText, interaction: true), "but an interaction in progress keeps its keys")
+        XCTAssertFalse(takes(rotate, .list))
+        XCTAssertTrue(takes(rotate, .list, interaction: true))
+        XCTAssertFalse(takes(rotate, .textInput, interaction: true))
+        XCTAssertTrue(takes(rotate, .canvas, paneHasKeyboard: false), "the canvas itself first responder")
+        XCTAssertTrue(takes(rotate, .other, paneHasKeyboard: false, interaction: true))
+
+        XCTAssertTrue(HorizontalKeyboardResponder.selectableText.isControl)
+        XCTAssertTrue(HorizontalKeyboardResponder.list.isControl)
+        XCTAssertTrue(HorizontalKeyboardResponder.textInput.isControl)
+        XCTAssertFalse(HorizontalKeyboardResponder.canvas.isControl)
+        XCTAssertFalse(HorizontalKeyboardResponder.other.isControl)
+    }
+
+    #if os(macOS)
+    /// SwiftUI's selectable text is no NSText: AppKit's text interaction view
+    /// answers Copy and Select All, and that is how it is known.
+    func testTheFirstResponderIsToldApartByWhatItDoes() {
+        final class SelectableText: NSView {
+            @objc func copy(_ sender: Any?) {}
+            override func selectAll(_ sender: Any?) {}
+        }
+        final class SelectsAllOnly: NSView {
+            override func selectAll(_ sender: Any?) {}
+        }
+        let canvas = NSView()
+        XCTAssertEqual(HorizontalKeyboardResponder(canvas, canvas: canvas), .canvas)
+        XCTAssertEqual(HorizontalKeyboardResponder(canvas), .other, "another canvas")
+        XCTAssertEqual(HorizontalKeyboardResponder(NSTextField()), .textInput)
+        XCTAssertEqual(HorizontalKeyboardResponder(NSTextView()), .textInput, "a field editor, or a text view")
+        XCTAssertEqual(HorizontalKeyboardResponder(NSTableView()), .list)
+        XCTAssertEqual(HorizontalKeyboardResponder(NSOutlineView()), .list, "SwiftUI's Table is an outline view")
+        XCTAssertEqual(HorizontalKeyboardResponder(SelectableText()), .selectableText)
+        XCTAssertEqual(HorizontalKeyboardResponder(SelectsAllOnly()), .other, "nothing to copy from")
+        XCTAssertEqual(HorizontalKeyboardResponder(NSView()), .other)
+        XCTAssertEqual(HorizontalKeyboardResponder(NSWindow()), .other, "the window itself, nothing focused")
+        XCTAssertEqual(HorizontalKeyboardResponder(nil), .other)
+    }
+    #endif
+
     func testAllowedWithoutCanvasFocus() {
         XCTAssertFalse(HorizontalCanvasInputCore.allowedWithoutCanvasFocus(.highlightNet))
         XCTAssertTrue(HorizontalCanvasInputCore.allowedWithoutCanvasFocus(.rotateSelection))

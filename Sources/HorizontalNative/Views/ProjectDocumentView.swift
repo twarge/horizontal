@@ -530,12 +530,10 @@ struct WorkspaceKeyCommandMonitor: NSViewRepresentable {
             }
         }
 
-        /// A text field or a list has the keyboard, and with it its keys.
+        /// A text field, selected text or a list has the keyboard, and with
+        /// it its keys.
         private var isControlActive: Bool {
-            guard let firstResponder = window?.firstResponder else {
-                return false
-            }
-            return firstResponder is NSTextView || firstResponder is NSTextField || firstResponder.isKeyboardList
+            HorizontalKeyboardResponder(window?.firstResponder).isControl
         }
 
         private func reportControlFocus() {
@@ -1693,7 +1691,7 @@ struct ProjectWorkspaceView: View {
         }
         live.zoomBy = { pane, factor in
             let candidates: [HorizontalPane?] = [pane, activeCanvasCommandPane, .board, .schematic, .threeD]
-            guard let target = candidates.compactMap({ $0 }).first(where: { visiblePanes.contains($0) }) else {
+            guard let target = candidates.compactMap({ $0 }).first(where: { $0.hasCanvas && visiblePanes.contains($0) }) else {
                 return
             }
             if target == .threeD {
@@ -2066,6 +2064,7 @@ struct ProjectWorkspaceView: View {
                     onCleanUp: poolCleanupAction,
                     onSelectUses: { selectComponents(usingPart: $0) }
                 )
+                .claimsKeyboardOnClick(leadingInset: fitSafeAreaInsets.leading) { activeCanvasCommandPane = .parts }
             }
         case .library:
             ViewerPane(title: "Pools", subtitle: poolsPaneSubtitle) {
@@ -2075,6 +2074,7 @@ struct ProjectWorkspaceView: View {
                     revealRequest: libraryRevealRequest,
                     partActions: libraryPartActions
                 )
+                .claimsKeyboardOnClick(leadingInset: fitSafeAreaInsets.leading) { activeCanvasCommandPane = .library }
             }
         case .schematic:
             if case .blockSymbol(let blockID) = navigatorSelection, let blockSymbol = blockSymbolForEditing(blockID) {
@@ -2730,7 +2730,13 @@ struct ProjectWorkspaceView: View {
         }
     }
 
+    /// The Edit menu's canvas commands: the keyboard-focused canvas's, or,
+    /// while a pane without a canvas (Pools, Parts) has the keyboard, none, so
+    /// ⌘A there is no Select All in the schematic.
     private var activeCanvasCommandActions: HorizontalCanvasCommandActions? {
+        if let activeCanvasCommandPane, !activeCanvasCommandPane.hasCanvas, visiblePanes.contains(activeCanvasCommandPane) {
+            return nil
+        }
         let preferredPanes = [
             activeCanvasCommandPane,
             visiblePanes.contains(.schematic) ? .schematic : nil,

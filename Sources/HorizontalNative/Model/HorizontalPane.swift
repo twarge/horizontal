@@ -29,6 +29,16 @@ enum HorizontalPane: String, CaseIterable, Codable, Identifiable {
         }
     }
 
+    /// A canvas pane: one with canvas commands (select, copy, rotate…) and a
+    /// view to zoom. The Pools and Parts panes are lists; with the keyboard,
+    /// they take its keys for themselves.
+    var hasCanvas: Bool {
+        switch self {
+        case .schematic, .board, .threeD: true
+        case .parts, .library: false
+        }
+    }
+
     var keyboardShortcut: KeyEquivalent {
         switch self {
         case .parts: "1"
