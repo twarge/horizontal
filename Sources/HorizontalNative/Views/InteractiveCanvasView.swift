@@ -3400,6 +3400,7 @@ extension HorizontalKeyboardResponder {
     /// SwiftUI's `textSelection` text is AppKit's private text interaction
     /// view, an NSView that answers Copy (and Select All) without being an
     /// NSText, and a view that answers Copy is somewhere to copy from.
+    @MainActor
     init(_ responder: NSResponder?, canvas: NSView? = nil) {
         guard let responder else {
             self = .other
