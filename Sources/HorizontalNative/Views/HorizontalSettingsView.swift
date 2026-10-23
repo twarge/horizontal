@@ -156,6 +156,8 @@ struct HorizontalSettingsView: View {
             }
             #endif
 
+            HorizontalPoolsSettingsSection()
+
             HorizontalDigiKeySettingsSection()
         }
         .formStyle(.grouped)

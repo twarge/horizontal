@@ -119,6 +119,8 @@ struct HorizontalPoolBrowserView: View {
     @AppStorage("Horizontal.poolBrowser.parametricColumns")
     private var parametricColumnsData = Data()
     @State private var isImportingPool = false
+    @State private var isManagingPools = false
+    @ObservedObject private var poolUpdater = HorizontalPoolUpdater.shared
     @State private var addPoolFailurePath: String?
     @State private var scanGeneration = 0
     @State private var showsPreview = true
@@ -457,6 +459,14 @@ struct HorizontalPoolBrowserView: View {
         #endif
         .sheet(isPresented: $isOfferingDefaultPool) {
             HorizontalDefaultPoolSheet()
+        }
+        .onChange(of: poolUpdater.updatesCompleted) {
+            // An update changed a pool's files: read its items again.
+            HorizontalPoolLibrary.invalidateCache()
+            scanGeneration += 1
+        }
+        .sheet(isPresented: $isManagingPools) {
+            HorizontalManagePoolsSheet()
         }
         // A pool registered elsewhere, such as the default pool's clone, is
         // browsed as soon as it is.
@@ -907,6 +917,12 @@ struct HorizontalPoolBrowserView: View {
             } label: {
                 Label("Add Pool…", systemImage: "plus")
             }
+            Button {
+                isManagingPools = true
+            } label: {
+                Label("Manage Pools…", systemImage: "gearshape")
+            }
+            .help("The registered pools, and updating the ones that are git checkouts")
             if !registry.pools.contains(where: { $0.uuid.caseInsensitiveCompare(HorizontalDefaultPool.uuid) == .orderedSame }) {
                 Button {
                     #if os(macOS)
@@ -958,6 +974,14 @@ struct HorizontalPoolBrowserView: View {
     private func poolMenu(title: String, url: URL, accessError: String? = nil) -> some View {
         Menu {
             Text(url.path)
+            if accessError == nil, let checkout = poolUpdater.checkout(at: url) {
+                Button("Update from Git") {
+                    poolUpdater.update(url)
+                    isManagingPools = true
+                }
+                .disabled(poolUpdater.isBusy(url))
+                .help("Fetch \(checkout.remoteDescription) over HTTPS and bring this pool up to date")
+            }
             if let accessError {
                 Text("Not readable: \(accessError)")
                 Button("Grant Access…") {
