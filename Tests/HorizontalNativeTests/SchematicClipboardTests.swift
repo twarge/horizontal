@@ -558,6 +558,120 @@ extension SchematicClipboardTests {
         XCTAssertFalse(r1Connections.values.contains { $0.string("net")?.lowercased() == other.lowercased() }, "R1 joined nothing of OTHER")
     }
 
+    /// A block symbol Move to Other Sheet brings across lands where it is
+    /// put down, as the wiring with it does: its placement is moved with
+    /// its artwork, so the sheet written back after the drop keeps it there.
+    @MainActor func testABlockSymbolMovedToOtherSheetLandsWhereItIsPutDown() async throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required for the canvas") }
+        _ = NSApplication.shared
+        let fixture = try blockFixture()
+        let source = fixture.sheet
+        let blockSymbol = try XCTUnwrap(source.blockSymbols.first)
+        let destinationID = try XCTUnwrap(fixture.project.schematic?.sheets.last?.id)
+        let edited = try HorizontalCanvasProjectEdit.archive(
+            applying: [["op": "move_to_other_sheet", "items": [blockSymbol.id], "sheet": source.id, "to_sheet": destinationID]],
+            to: fixture.archive, in: fixture.project
+        )
+        var moved = try HorizontalProject.loadSnapshot(of: edited.archive)
+        moved.rebaseURLs(onto: fixture.project)
+        let state = CanvasState(Fixture(archive: edited.archive, project: moved))
+        let arrived = try XCTUnwrap(edited.changes.first?.dictionary("moved"))
+        let refs = HorizontalSchematicMoveToSheet.refs(moved: arrived)
+        let destination = try XCTUnwrap(moved.schematic?.sheets.first { $0.id == destinationID })
+        XCTAssertEqual(destination.blockSymbols.first?.placement.shift, blockSymbol.placement.shift, "it arrives where it was")
+
+        let defaults = UserDefaults(suiteName: "arrival-block-\(UUID().uuidString)")!
+        let hosted = NSHostingView(rootView: ArrivalCanvas(state: state, sheetID: destinationID)
+            .environmentObject(HorizontalAppearanceSettings(defaults: defaults)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 650),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosted
+        window.orderFront(nil)
+        defer { window.close() }
+        func settle(_ predicate: () -> Bool) async -> Bool {
+            let deadline = Date().addingTimeInterval(5)
+            while !predicate(), Date() < deadline { try? await Task.sleep(for: .milliseconds(30)) }
+            return predicate()
+        }
+        let mounted = await settle { state.actions != nil }
+        XCTAssertTrue(mounted)
+        state.moveRequest = HorizontalSchematicMoveRequest(
+            sheetID: destinationID, refs: refs,
+            placement: try state.arrival(HorizontalSchematicMoveToSheet.ids(moved: arrived), refs: refs, on: destination)
+        )
+        let placing = await settle { state.actions?.canCommitInteraction == true }
+        XCTAssertTrue(placing)
+        state.actions?.dispatch(.moveSelectionBy(HorizontalPoint(x: 20_000_000, y: 10_000_000)))
+        state.undo.beginUndoGrouping()
+        state.actions?.dispatch(.commitInteraction)
+        state.undo.endUndoGrouping()
+        let committed = await settle { state.revision == 1 }
+        XCTAssertTrue(committed)
+        XCTAssertNil(state.error)
+        let placed = try XCTUnwrap(state.fixture.project.schematic?.sheets.first { $0.id == destinationID })
+        let landed = try XCTUnwrap(placed.blockSymbols.first { $0.id.lowercased() == blockSymbol.id.lowercased() })
+        XCTAssertEqual(landed.placement.shift, blockSymbol.placement.shift + HorizontalPoint(x: 20_000_000, y: 10_000_000),
+                       "the block symbol lands where it was put down")
+        let port = try XCTUnwrap(placed.blockSymbolPorts.first { $0.id.lowercased().hasPrefix(blockSymbol.id.lowercased() + "/block-port/") })
+        let wasPort = try XCTUnwrap(destination.blockSymbolPorts.first { $0.id == port.id })
+        XCTAssertEqual(port.from, wasPort.from + HorizontalPoint(x: 20_000_000, y: 10_000_000), "and its ports with it, once")
+    }
+
+    /// A block symbol's ports are its own, as a symbol's pins are: selecting
+    /// everything selects the block symbol, not its ports beside it, which a
+    /// move would otherwise take along twice, once with the block symbol and
+    /// once on their own.
+    @MainActor func testABlockSymbolsPortsAreSelectedAsTheBlockSymbol() async throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required for the canvas") }
+        _ = NSApplication.shared
+        let fixture = try blockFixture()
+        XCTAssertFalse(fixture.sheet.blockSymbolPorts.isEmpty)
+        let state = CanvasState(fixture)
+        let defaults = UserDefaults(suiteName: "block-ports-\(UUID().uuidString)")!
+        let hosted = NSHostingView(rootView: ArrivalCanvas(state: state, sheetID: fixture.sheet.id)
+            .environmentObject(HorizontalAppearanceSettings(defaults: defaults)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 650),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosted
+        window.orderFront(nil)
+        defer { window.close() }
+        func settle(_ predicate: () -> Bool) async -> Bool {
+            let deadline = Date().addingTimeInterval(5)
+            while !predicate(), Date() < deadline { try? await Task.sleep(for: .milliseconds(30)) }
+            return predicate()
+        }
+        let mounted = await settle { state.actions != nil }
+        XCTAssertTrue(mounted)
+        state.actions?.dispatch(.selectAll)
+        let selected = await settle { state.details.hasSelection }
+        XCTAssertTrue(selected)
+        let types = Set(state.details.groups.map(\.type))
+        XCTAssertTrue(types.contains(.schematicBlockSymbol), "\(types)")
+        XCTAssertFalse(types.contains(.blockSymbolPort), "its ports go with it, not beside it")
+        XCTAssertEqual(state.details.groups.first { $0.type == .schematicBlockSymbol }?.items.count, 1)
+    }
+
+    /// The fixture with a Channel block, its one port IN, drawn on the
+    /// first sheet as CHA.
+    private func blockFixture() throws -> Fixture {
+        var fixture = try fixture()
+        fixture = try applying([["op": "add_block", "name": "Channel"]], to: fixture)
+        let inBlock = try HorizontalCanvasProjectEdit.archive(applying: [
+            ["op": "ensure_net", "name": "IN"],
+            ["op": "set_net_port", "net": "IN", "port_direction": "input"],
+            ["op": "place_block_port", "net": "IN", "x_mm": -10, "y_mm": 0, "orientation": "left"]
+        ], to: fixture.archive, in: fixture.project, block: "Channel").archive
+        var reloaded = try HorizontalProject.loadSnapshot(of: inBlock)
+        reloaded.rebaseURLs(onto: fixture.project)
+        fixture = Fixture(archive: inBlock, project: reloaded)
+        return try applying([
+            ["op": "add_block_instance", "id": "a", "block": "Channel", "refdes": "CHA"],
+            ["op": "place_block_symbol", "instance": "a", "x_mm": 60, "y_mm": 40]
+        ], to: fixture)
+    }
+
     @MainActor func testMountedDuplicatePreviewCancelCommitAndUndoRedo() async throws {
         guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required for the canvas") }
         _ = NSApplication.shared
