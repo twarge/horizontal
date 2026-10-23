@@ -108,7 +108,7 @@ enum HorizontalGitClone {
 
     private static let userAgent = "git/2.0 (Horizontal)"
 
-    private static func get(_ url: URL, session: URLSession) async throws -> Data {
+    static func get(_ url: URL, session: URLSession) async throws -> Data {
         var request = URLRequest(url: url)
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: request)
@@ -116,7 +116,7 @@ enum HorizontalGitClone {
         return data
     }
 
-    private static func post(
+    static func post(
         _ url: URL,
         body: Data,
         session: URLSession,

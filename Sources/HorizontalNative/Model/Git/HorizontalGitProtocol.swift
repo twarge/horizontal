@@ -119,13 +119,19 @@ enum HorizontalGitProtocol {
 
     /// The body of a `git-upload-pack` request for a fresh clone of `want`:
     /// no haves, so the server answers NAK and sends the whole history.
-    static func uploadPackRequest(want: String, capabilities offered: Set<String>) -> Data {
+    /// `haves` are commits the client has, for a fetch into a clone: the
+    /// server answers with a pack of only what they lack. It isn't asked for
+    /// a thin pack, so every delta's base is in the pack.
+    static func uploadPackRequest(want: String, haves: [String] = [], capabilities offered: Set<String>) -> Data {
         var asked = [String]()
         if let band = SideBand(offered).capability { asked.append(band) }
         if offered.contains("ofs-delta") { asked.append("ofs-delta") }
         asked.append("agent=horizontal/1")
         var body = pktLine("want \(want) \(asked.joined(separator: " "))\n")
         body.append(flush)
+        for have in haves {
+            body.append(pktLine("have \(have)\n"))
+        }
         body.append(pktLine("done\n"))
         return body
     }

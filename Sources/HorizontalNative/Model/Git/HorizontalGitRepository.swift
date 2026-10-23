@@ -15,12 +15,50 @@ enum HorizontalGitRepository {
         var isTree: Bool { mode == "40000" }
     }
 
-    /// One file of the checkout, for the git index.
-    struct IndexEntry {
+    /// One file of the checkout, for the git index: what git compares the
+    /// file on disk against to tell whether it changed.
+    struct IndexEntry: Equatable {
         var path: [UInt8]
         var mode: UInt32
         var id: Data
-        var stat: Darwin.stat
+        var ctimeSeconds: UInt32 = 0
+        var ctimeNanoseconds: UInt32 = 0
+        var mtimeSeconds: UInt32 = 0
+        var mtimeNanoseconds: UInt32 = 0
+        var device: UInt32 = 0
+        var inode: UInt32 = 0
+        var uid: UInt32 = 0
+        var gid: UInt32 = 0
+        var size: UInt32 = 0
+        /// Git's assume-valid bit, which `update-index --assume-unchanged` sets.
+        var assumeValid = false
+
+        init(path: [UInt8], mode: UInt32, id: Data) {
+            self.path = path
+            self.mode = mode
+            self.id = id
+        }
+
+        init(path: [UInt8], mode: UInt32, id: Data, stat info: Darwin.stat) {
+            self.init(path: path, mode: mode, id: id)
+            ctimeSeconds = UInt32(truncatingIfNeeded: info.st_ctimespec.tv_sec)
+            ctimeNanoseconds = UInt32(truncatingIfNeeded: info.st_ctimespec.tv_nsec)
+            mtimeSeconds = UInt32(truncatingIfNeeded: info.st_mtimespec.tv_sec)
+            mtimeNanoseconds = UInt32(truncatingIfNeeded: info.st_mtimespec.tv_nsec)
+            device = UInt32(truncatingIfNeeded: info.st_dev)
+            inode = UInt32(truncatingIfNeeded: info.st_ino)
+            uid = UInt32(truncatingIfNeeded: info.st_uid)
+            gid = UInt32(truncatingIfNeeded: info.st_gid)
+            size = mode == 0o160000 ? 0 : UInt32(truncatingIfNeeded: info.st_size)
+        }
+
+        /// The file is as the index saw it, by the stat git trusts.
+        func matches(_ info: Darwin.stat) -> Bool {
+            mtimeSeconds == UInt32(truncatingIfNeeded: info.st_mtimespec.tv_sec)
+                && mtimeNanoseconds == UInt32(truncatingIfNeeded: info.st_mtimespec.tv_nsec)
+                && size == UInt32(truncatingIfNeeded: info.st_size)
+                && inode == UInt32(truncatingIfNeeded: info.st_ino)
+        }
     }
 
     /// "<mode> <name>\0<20-byte id>", over and over.
@@ -180,19 +218,12 @@ enum HorizontalGitRepository {
         append(UInt32(sorted.count), to: &out)
         for entry in sorted {
             let start = out.count
-            let info = entry.stat
-            append(UInt32(truncatingIfNeeded: info.st_ctimespec.tv_sec), to: &out)
-            append(UInt32(truncatingIfNeeded: info.st_ctimespec.tv_nsec), to: &out)
-            append(UInt32(truncatingIfNeeded: info.st_mtimespec.tv_sec), to: &out)
-            append(UInt32(truncatingIfNeeded: info.st_mtimespec.tv_nsec), to: &out)
-            append(UInt32(truncatingIfNeeded: info.st_dev), to: &out)
-            append(UInt32(truncatingIfNeeded: info.st_ino), to: &out)
-            append(entry.mode, to: &out)
-            append(UInt32(truncatingIfNeeded: info.st_uid), to: &out)
-            append(UInt32(truncatingIfNeeded: info.st_gid), to: &out)
-            append(entry.mode == 0o160000 ? 0 : UInt32(truncatingIfNeeded: info.st_size), to: &out)
+            for value in [entry.ctimeSeconds, entry.ctimeNanoseconds, entry.mtimeSeconds, entry.mtimeNanoseconds,
+                          entry.device, entry.inode, entry.mode, entry.uid, entry.gid, entry.size] {
+                append(value, to: &out)
+            }
             out.append(entry.id)
-            let flags = UInt16(min(entry.path.count, 0xFFF))
+            let flags = UInt16(min(entry.path.count, 0xFFF)) | (entry.assumeValid ? 0x8000 : 0)
             out.append(contentsOf: [UInt8(flags >> 8), UInt8(flags & 0xFF)])
             out.append(contentsOf: entry.path)
             // NULs to the next multiple of eight, at least one.
@@ -201,6 +232,72 @@ enum HorizontalGitRepository {
         }
         out.append(Data(Insecure.SHA1.hash(data: out)))
         return out
+    }
+
+    /// A git index of version 2 or 3, its entries as written. Its extensions
+    /// are caches git rebuilds and are left behind, except the ones that
+    /// change what the entries mean (a split or sparse index), which, like
+    /// version 4, conflicts and sparse checkouts, are refused.
+    static func readIndex(_ data: Data) throws -> [IndexEntry] {
+        let bytes = [UInt8](data)
+        func word(_ offset: Int) -> UInt32 { bytes[offset..<offset + 4].reduce(0) { ($0 << 8) | UInt32($1) } }
+        guard bytes.count >= 32, bytes[0..<4].elementsEqual(Array("DIRC".utf8)) else {
+            throw HorizontalGitUpdateError.unsupported("its git index is unreadable")
+        }
+        let version = word(4)
+        guard version == 2 || version == 3 else {
+            throw HorizontalGitUpdateError.unsupported("its git index is version \(version)")
+        }
+        let body = bytes.count - 20
+        if !bytes[body...].allSatisfy({ $0 == 0 }) {
+            guard Data(Insecure.SHA1.hash(data: Data(bytes[..<body]))) == Data(bytes[body...]) else {
+                throw HorizontalGitUpdateError.unsupported("its git index is damaged")
+            }
+        }
+        var entries = [IndexEntry]()
+        var cursor = 12
+        for _ in 0..<Int(word(8)) {
+            guard cursor + 62 <= body else { throw HorizontalGitUpdateError.unsupported("its git index is cut short") }
+            let start = cursor
+            var entry = IndexEntry(path: [], mode: word(cursor + 24), id: Data(bytes[(cursor + 40)..<(cursor + 60)]))
+            entry.ctimeSeconds = word(cursor)
+            entry.ctimeNanoseconds = word(cursor + 4)
+            entry.mtimeSeconds = word(cursor + 8)
+            entry.mtimeNanoseconds = word(cursor + 12)
+            entry.device = word(cursor + 16)
+            entry.inode = word(cursor + 20)
+            entry.uid = word(cursor + 28)
+            entry.gid = word(cursor + 32)
+            entry.size = word(cursor + 36)
+            let flags = UInt16(bytes[cursor + 60]) << 8 | UInt16(bytes[cursor + 61])
+            entry.assumeValid = flags & 0x8000 != 0
+            guard (flags >> 12) & 0x3 == 0 else {
+                throw HorizontalGitUpdateError.unsupported("it's in the middle of a merge; finish it with git")
+            }
+            cursor += 62
+            if flags & 0x4000 != 0 {
+                guard version == 3, cursor + 2 <= body else { throw HorizontalGitUpdateError.unsupported("its git index is malformed") }
+                guard bytes[cursor] == 0, bytes[cursor + 1] == 0 else {
+                    throw HorizontalGitUpdateError.unsupported("it's a sparse checkout, or has files added with intent to add")
+                }
+                cursor += 2
+            }
+            guard let nul = bytes[cursor..<body].firstIndex(of: 0) else {
+                throw HorizontalGitUpdateError.unsupported("its git index is malformed")
+            }
+            entry.path = Array(bytes[cursor..<nul])
+            // NULs to the next multiple of eight, at least one.
+            cursor = start + ((nul - start) / 8 + 1) * 8
+            entries.append(entry)
+        }
+        while cursor + 8 <= body {
+            let signature = String(decoding: bytes[cursor..<cursor + 4], as: UTF8.self)
+            guard signature != "link", signature != "sdir" else {
+                throw HorizontalGitUpdateError.unsupported("its git index is split or sparse")
+            }
+            cursor += 8 + Int(word(cursor + 4))
+        }
+        return entries
     }
 
     private static func write(_ text: String, to url: URL) throws {

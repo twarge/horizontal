@@ -166,6 +166,10 @@ final class HorizontalGitPack {
         progress(objectCount, objectCount)
     }
 
+    func contains(_ id: Data) -> Bool {
+        entryByID[id] != nil
+    }
+
     /// The object named `id`.
     func object(_ id: Data) throws -> Object {
         guard let index = entryByID[id] else {
@@ -369,20 +373,25 @@ final class HorizontalGitPack {
     /// how many bytes of the pack it took: a pack records no lengths, so the
     /// next object starts where zlib stopped.
     private func inflate(at start: Int, size: Int) throws -> ([UInt8], consumed: Int) {
+        try bytes.withUnsafeBytes { try Self.inflate($0, at: start, size: size) }
+    }
+
+    static func inflate(_ input: UnsafeRawBufferPointer, at start: Int, size: Int) throws -> ([UInt8], consumed: Int) {
+        guard start < input.count else {
+            throw HorizontalGitCloneError.corruptPack("an object starts past the end of its pack")
+        }
         var stream = z_stream()
         guard inflateInit_(&stream, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else {
             throw HorizontalGitCloneError.corruptPack("zlib wouldn't start")
         }
         defer { inflateEnd(&stream) }
         var output = [UInt8](repeating: 0, count: max(size, 1))
-        let status: Int32 = bytes.withUnsafeBufferPointer { input in
-            output.withUnsafeMutableBufferPointer { out in
-                stream.next_in = UnsafeMutablePointer(mutating: input.baseAddress! + start)
-                stream.avail_in = uInt(input.count - start)
-                stream.next_out = out.baseAddress
-                stream.avail_out = uInt(out.count)
-                return zlib.inflate(&stream, Z_FINISH)
-            }
+        let status: Int32 = output.withUnsafeMutableBufferPointer { out in
+            stream.next_in = UnsafeMutablePointer(mutating: input.baseAddress!.assumingMemoryBound(to: UInt8.self) + start)
+            stream.avail_in = uInt(input.count - start)
+            stream.next_out = out.baseAddress
+            stream.avail_out = uInt(out.count)
+            return zlib.inflate(&stream, Z_FINISH)
         }
         guard status == Z_STREAM_END, Int(stream.total_out) == size else {
             throw HorizontalGitCloneError.corruptPack("an object didn't inflate to its size")
