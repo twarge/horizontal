@@ -407,6 +407,25 @@ extension SchematicClipboardTests {
             } catch { self.error = error; return nil }
         }
 
+        @Published var moveRequest: HorizontalSchematicMoveRequest?
+
+        /// Placed as the host places what Move to Other Sheet brought.
+        func arrival(_ ids: Set<String>, refs: [HorizontalSelectableRef], on sheet: HorizontalSchematicSheet) throws -> HorizontalSchematicPastePlacement {
+            let paste = try HorizontalSchematicClipboardEditor.arrival(ids, refs: refs, on: sheet, schematicURL: fixture.project.schematic!.url,
+                                                                      archive: fixture.archive, project: fixture.project)
+            return HorizontalSchematicPastePlacement(paste: paste) { transform, wiring in
+                do {
+                    let archive = try paste.placedArchive(transform, in: self.fixture.archive, wiring: wiring,
+                        schematicURL: self.fixture.project.schematic!.url, project: self.fixture.project)
+                    var reloaded = try HorizontalProject.loadSnapshot(of: archive)
+                    reloaded.rebaseURLs(onto: self.fixture.project)
+                    self.target.registerUndo(from: self.fixture, actionName: "Move", undoManager: self.undo)
+                    self.fixture = Fixture(archive: archive, project: reloaded)
+                    self.revision += 1
+                } catch { self.error = error }
+            }
+        }
+
         func prepare(_ clipboard: HorizontalSchematicClipboard, _ point: HorizontalPoint, _ name: String) -> HorizontalSchematicPastePlacement? {
             do {
                 let paste = try HorizontalSchematicClipboardEditor.prepare(clipboard, at: point,
@@ -439,6 +458,104 @@ extension SchematicClipboardTests {
                 onSelectionDetailsChange: { state.details = $0 },
                 onCanvasCommandActionsChange: { state.actions = $0 }, syncRevision: state.revision)
         }
+    }
+
+    private struct ArrivalCanvas: View {
+        @ObservedObject var state: CanvasState
+        var sheetID: String
+        @State private var viewport = CanvasViewport()
+        var body: some View {
+            let sheets = state.fixture.project.schematic!.sheets
+            SchematicCanvasView(sheet: sheets.first { $0.id == sheetID }!, allSheets: sheets,
+                viewport: $viewport, undoManager: state.undo,
+                onSheetChange: { _ in XCTFail("What arrived must be placed through the project transaction") },
+                onCopySelection: state.copy, onPreparePaste: state.prepare,
+                onClipboardError: { state.error = $0 },
+                onSelectionDetailsChange: { state.details = $0 },
+                onCanvasCommandActionsChange: { state.actions = $0 },
+                onMoveToOtherSheet: { _, _ in }, moveRequest: state.moveRequest, syncRevision: state.revision)
+        }
+    }
+
+    /// Move to Other Sheet brings R1 and its wiring onto a sheet with a wire
+    /// of another net right where R1's VCC pin arrives. Placing what arrived
+    /// takes none of that wire along and joins nothing to it: the wire stays,
+    /// OTHER stays its own net, and R1 lands where it was put.
+    @MainActor func testWhatMoveToOtherSheetBringsIsPlacedWithoutTheWiringItArrivedOn() async throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required for the canvas") }
+        _ = NSApplication.shared
+        var fixture = try fixture()
+        let source = fixture.sheet
+        let destinationID = try XCTUnwrap(fixture.project.schematic?.sheets.last?.id)
+        let nets = try block(fixture.archive).dictionaryMap("nets")
+        let vcc = try XCTUnwrap(nets.first { $0.value.string("name") == "VCC" }?.key).lowercased()
+        let r1 = try XCTUnwrap(try block(fixture.archive).dictionaryMap("components").first { $0.value.string("refdes") == "R1" }?.key)
+        let r1Symbol = try XCTUnwrap(source.symbols.first { $0.componentID?.lowercased() == r1.lowercased() })
+        let vccPin = try XCTUnwrap(source.symbolPins.first {
+            $0.id.lowercased().hasPrefix(r1Symbol.id.lowercased() + "/") && $0.id.contains("/pin/") && $0.netID?.lowercased() == vcc
+        })
+        let landing = vccPin.from
+        let j1 = UUID().uuidString.lowercased(), j2 = UUID().uuidString.lowercased()
+        fixture = try applying([
+            ["op": "ensure_net", "name": "OTHER"],
+            ["op": "place_junction", "id": j1, "net": "OTHER", "sheet": destinationID, "x_mm": landing.x / 1_000_000, "y_mm": landing.y / 1_000_000],
+            ["op": "place_junction", "id": j2, "net": "OTHER", "sheet": destinationID, "x_mm": landing.x / 1_000_000, "y_mm": landing.y / 1_000_000 + 20],
+            ["op": "draw_net_line", "sheet": destinationID, "from": ["kind": "junction", "junction": j1], "to": ["kind": "junction", "junction": j2]]
+        ], to: fixture)
+        let edited = try HorizontalCanvasProjectEdit.archive(
+            applying: [["op": "move_to_other_sheet", "items": [r1Symbol.id], "sheet": source.id, "to_sheet": destinationID]],
+            to: fixture.archive, in: fixture.project
+        )
+        var moved = try HorizontalProject.loadSnapshot(of: edited.archive)
+        moved.rebaseURLs(onto: fixture.project)
+        let state = CanvasState(Fixture(archive: edited.archive, project: moved))
+        let arrived = try XCTUnwrap(edited.changes.first?.dictionary("moved"))
+        let refs = HorizontalSchematicMoveToSheet.refs(moved: arrived)
+        let destination = try XCTUnwrap(moved.schematic?.sheets.first { $0.id == destinationID })
+        XCTAssertEqual(destination.junctions[j1], landing, "R1's pin arrives on the other net's junction")
+
+        let defaults = UserDefaults(suiteName: "arrival-canvas-\(UUID().uuidString)")!
+        let hosted = NSHostingView(rootView: ArrivalCanvas(state: state, sheetID: destinationID)
+            .environmentObject(HorizontalAppearanceSettings(defaults: defaults)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 650),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosted
+        window.orderFront(nil)
+        defer { window.close() }
+        func settle(_ predicate: () -> Bool) async -> Bool {
+            let deadline = Date().addingTimeInterval(5)
+            while !predicate(), Date() < deadline { try? await Task.sleep(for: .milliseconds(30)) }
+            return predicate()
+        }
+        let mounted = await settle { state.actions != nil }
+        XCTAssertTrue(mounted)
+        state.moveRequest = HorizontalSchematicMoveRequest(
+            sheetID: destinationID, refs: refs,
+            placement: try state.arrival(HorizontalSchematicMoveToSheet.ids(moved: arrived), refs: refs, on: destination)
+        )
+        let placing = await settle { state.actions?.canCommitInteraction == true }
+        XCTAssertTrue(placing)
+        XCTAssertEqual(state.fixture.archive, edited.archive, "following the cursor edits nothing")
+        state.actions?.dispatch(.moveSelectionBy(HorizontalPoint(x: 20_000_000, y: 0)))
+        state.undo.beginUndoGrouping()
+        state.actions?.dispatch(.commitInteraction)
+        state.undo.endUndoGrouping()
+        let committed = await settle { state.revision == 1 }
+        XCTAssertTrue(committed)
+        XCTAssertNil(state.error)
+        XCTAssertEqual(state.undo.undoActionName, "Move")
+
+        let placed = try XCTUnwrap(state.fixture.project.schematic?.sheets.first { $0.id == destinationID })
+        XCTAssertEqual(placed.junctions[j1], landing, "the wire R1 arrived on stays where it was")
+        XCTAssertEqual(placed.junctions[j2], landing + HorizontalPoint(x: 0, y: 20_000_000))
+        XCTAssertEqual(placed.symbols.first { $0.id == r1Symbol.id }?.position, r1Symbol.position + HorizontalPoint(x: 20_000_000, y: 0))
+        let placedNets = try block(state.fixture.archive).dictionaryMap("nets")
+        let other = try XCTUnwrap(placedNets.first { $0.value.string("name") == "OTHER" }?.key, "OTHER isn't merged away")
+        XCTAssertNotNil(placedNets.first { $0.value.string("name") == "VCC" }, "nor is VCC")
+        XCTAssertEqual(placed.netLines.filter { $0.netID?.lowercased() == other.lowercased() }.count, 1)
+        let r1Connections = try XCTUnwrap(try block(state.fixture.archive).dictionaryMap("components")[r1]?.dictionaryMap("connections"))
+        XCTAssertFalse(r1Connections.values.contains { $0.string("net")?.lowercased() == other.lowercased() }, "R1 joined nothing of OTHER")
     }
 
     @MainActor func testMountedDuplicatePreviewCancelCommitAndUndoRedo() async throws {

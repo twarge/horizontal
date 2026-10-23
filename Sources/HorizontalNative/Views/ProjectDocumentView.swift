@@ -3843,11 +3843,37 @@ struct ProjectWorkspaceView: View {
             )
             try applyLiveArchive(edited.archive, actionName: "Move to Other Sheet")
             let moved = edited.changes.first?.dictionary("moved") ?? [:]
+            let refs = HorizontalSchematicMoveToSheet.refs(moved: moved)
             visiblePanes.insert(.schematic)
             navigatorSelection = block.map { .sheet(blockID: $0.uuid, sheetID: sheetID) } ?? .standaloneSheet(sheetID)
-            pendingSchematicMove = HorizontalSchematicMoveRequest(sheetID: sheetID, refs: HorizontalSchematicMoveToSheet.refs(moved: moved))
+            pendingSchematicMove = HorizontalSchematicMoveRequest(
+                sheetID: sheetID, refs: refs,
+                placement: arrivalPlacement(HorizontalSchematicMoveToSheet.ids(moved: moved), refs: refs, sheetID: sheetID, schematicURL: url)
+            )
         } catch {
             projectEditError = HorizontalCanvasProjectEdit.message(for: error)
+        }
+    }
+
+    /// What Move to Other Sheet brought onto `sheetID`, to place as a paste
+    /// is placed; nil leaves the canvas its ordinary move.
+    private func arrivalPlacement(
+        _ ids: Set<String>, refs: [HorizontalSelectableRef], sheetID: String, schematicURL: URL
+    ) -> HorizontalSchematicPastePlacement? {
+        guard let sheet = project.schematics
+            .first(where: { $0.schematic.url.standardizedFileURL == schematicURL })?.schematic.sheets
+            .first(where: { $0.id.caseInsensitiveCompare(sheetID) == .orderedSame }),
+              let paste = try? HorizontalSchematicClipboardEditor.arrival(
+                  ids, refs: refs, on: sheet, schematicURL: schematicURL, archive: document.archive, project: project
+              ) else {
+            return nil
+        }
+        return HorizontalSchematicPastePlacement(paste: paste) { transform, wiring in
+            do {
+                try applyLiveArchive(paste.placedArchive(transform, in: document.archive, wiring: wiring,
+                                                         schematicURL: schematicURL, project: project),
+                                     actionName: "Move")
+            } catch { projectEditError = HorizontalCanvasProjectEdit.message(for: error) }
         }
     }
 

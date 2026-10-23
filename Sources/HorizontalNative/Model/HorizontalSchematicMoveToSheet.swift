@@ -10,10 +10,19 @@ struct HorizontalCanvasSheetTarget: Identifiable, Hashable {
 /// What the host hands the canvas after Move to Other Sheet: the sheet the
 /// items went to and their refs there, which the canvas selects, then starts
 /// moving, as Horizon begins its Move tool on what it brought across.
+/// `placement` moves them as a paste is placed: they arrive where they were,
+/// on top of whatever that sheet has there, and a move planned by where
+/// things are would take that wiring along and join it where they are put
+/// down; placed, only what arrived moves, and joins only where it lands.
 struct HorizontalSchematicMoveRequest: Identifiable, Equatable {
     var id = UUID()
     var sheetID: String
     var refs: [HorizontalSelectableRef]
+    var placement: HorizontalSchematicPastePlacement? = nil
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.sheetID == rhs.sheetID && lhs.refs == rhs.refs
+    }
 }
 
 /// The canvas's side of `move_to_other_sheet`: which selected refs are sheet
@@ -46,6 +55,12 @@ enum HorizontalSchematicMoveToSheet {
             guard !id.contains("/"), seen.insert(id.lowercased()).inserted else { return nil }
             return id
         }
+    }
+
+    /// The ids a `move_to_other_sheet` change's `moved` names, as the sheet
+    /// stores them.
+    static func ids(moved: JSONDictionary) -> Set<String> {
+        Set(moved.keys.filter { collectionTypes[$0] != nil }.flatMap { (moved[$0] as? [String] ?? []).map { $0.lowercased() } })
     }
 
     /// The refs a `move_to_other_sheet` change's `moved` names.
