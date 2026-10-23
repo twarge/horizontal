@@ -326,6 +326,20 @@ enum HorizontalSchematicClipboardEditor {
                                         schematicPath: context.schematicPath, sheetKey: context.sheetKey)
     }
 
+    /// What Move to Other Sheet brought across, as a paste of itself: the
+    /// items `ids` names, in `archive` already and drawn on `sheet`, placed
+    /// as a paste is placed, rigidly and joined only where they land.
+    static func arrival(
+        _ ids: Set<String>, refs: [HorizontalSelectableRef], on sheet: HorizontalSchematicSheet, schematicURL: URL,
+        archive: HorizontalProjectArchive, project: HorizontalProject
+    ) throws -> HorizontalSchematicPaste {
+        guard !refs.isEmpty else { throw HorizontalDispatchError.invalidParams("Nothing arrived to place.") }
+        let context = try context(schematicURL: schematicURL, sheetID: sheet.id, archive: archive, project: project)
+        return HorizontalSchematicPaste(baseArchive: archive, archive: archive, sheet: sheet, refs: refs,
+                                        pastedIDs: Set(ids.map { $0.lowercased() }),
+                                        schematicPath: context.schematicPath, sheetKey: context.sheetKey)
+    }
+
     private struct Context {
         var blockPath: String
         var schematicPath: String

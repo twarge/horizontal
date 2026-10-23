@@ -3189,6 +3189,12 @@ struct SchematicCanvasView: View {
               drawNetLineState == nil, drawGraphicsState == nil else { return }
         let cursor = snapSchematicPointToGrid(lastCursorWorldPoint ?? clipboard.anchor)
         guard let placement = onPreparePaste?(clipboard, cursor, actionName) else { return }
+        beginSchematicPlacement(placement, at: cursor)
+    }
+
+    /// The items `placement` holds follow the cursor from `cursor`, moved
+    /// rigidly and alone: nothing they were put on top of comes with them.
+    private func beginSchematicPlacement(_ placement: HorizontalSchematicPastePlacement, at cursor: HorizontalPoint) {
         let before = editedSheet
         let previousSelection = selectedObjects
         editedSheet = placement.paste.sheet
@@ -8762,7 +8768,15 @@ struct SchematicCanvasView: View {
             let present = Set(schematicSelectableScene().refs())
             selectedObjects = request.refs.filter(present.contains)
             #if os(macOS)
-            if !selectedObjects.isEmpty { beginMove(tracksCursor: true, actionName: "Move to Other Sheet") }
+            guard !selectedObjects.isEmpty else { return }
+            if let placement = request.placement {
+                // They arrived where they were, on whatever this sheet has
+                // there: placed, they take none of it along.
+                let start = lastCursorWorldPoint ?? schematicSelectionCenter() ?? .zero
+                beginSchematicPlacement(placement, at: snapSchematicPointToGrid(start))
+            } else {
+                beginMove(tracksCursor: true, actionName: "Move to Other Sheet")
+            }
             #endif
         }
     }
