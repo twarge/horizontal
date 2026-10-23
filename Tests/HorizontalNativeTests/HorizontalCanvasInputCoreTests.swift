@@ -175,7 +175,7 @@ final class HorizontalCanvasInputCoreTests: XCTestCase {
     #if os(macOS)
     /// SwiftUI's selectable text is no NSText: AppKit's text interaction view
     /// answers Copy and Select All, and that is how it is known.
-    func testTheFirstResponderIsToldApartByWhatItDoes() {
+    @MainActor func testTheFirstResponderIsToldApartByWhatItDoes() {
         final class SelectableText: NSView {
             @objc func copy(_ sender: Any?) {}
             override func selectAll(_ sender: Any?) {}
