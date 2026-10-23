@@ -529,6 +529,11 @@ struct HorizontalSchematicPaste {
             symbol.angle = placement.angle
             symbol.mirrored = placement.mirrored
         }
+        // The placement too, not only the artwork: the sheet written back
+        // after the drop's wiring pass takes a block symbol's from here.
+        update(&result.blockSymbols) { blockSymbol in
+            blockSymbol.placement = transform.accumulatedSchematic(with: blockSymbol.placement)
+        }
         update(&result.netLines, segment)
         update(&result.drawingLines, segment)
         update(&result.drawingArcs, arc)

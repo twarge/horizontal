@@ -4570,6 +4570,11 @@ struct SchematicCanvasView: View {
                 } else {
                     expanded.append(contentsOf: junctionRefs)
                 }
+            case .blockSymbolPort:
+                // A port moves as its block symbol does, never on its own.
+                if let owner = objectIDPrefix(in: ref.id, separators: ["block-port", "port"]) {
+                    expanded.append(HorizontalSelectableRef(id: owner, type: .schematicBlockSymbol))
+                }
             default:
                 expanded.append(ref)
             }
@@ -4779,9 +4784,8 @@ struct SchematicCanvasView: View {
                 moveBusRipper(ref: ref, by: delta, sheet: &sheet, movedKeys: &movedJunctionKeys)
             case .schematicBlockSymbol:
                 moveSchematicBlockSymbol(ref: ref, by: delta, sheet: &sheet, movedKeys: &movedJunctionKeys)
-            case .blockSymbolPort:
-                moveSegment(&sheet.blockSymbolPorts, ref: ref, by: delta)
-            case .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
+            case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .symbolPin, .track, .via:
+                // A port goes with its block symbol, moved with it above.
                 break
             }
         }
@@ -11430,13 +11434,15 @@ struct SchematicCanvasView: View {
         }
 
         if displayOptions.blockSymbols {
+            // Its ports are the block symbol's, as a symbol's pins are its
+            // symbol's: picked, they pick the whole block symbol, and they
+            // move with it once.
             selectables.append(contentsOf: groupedSchematicSelectables(
                 type: .schematicBlockSymbol,
-                segments: sheet.blockSymbolLines,
+                segments: sheet.blockSymbolLines + sheet.blockSymbolPorts,
                 texts: sheet.blockSymbolTexts,
-                separators: ["line", "port", "text"]
+                separators: ["line", "block-port", "port", "text"]
             ))
-            selectables.append(contentsOf: segmentSelectables(sheet.blockSymbolPorts, type: .blockSymbolPort))
         }
 
         if displayOptions.power {
