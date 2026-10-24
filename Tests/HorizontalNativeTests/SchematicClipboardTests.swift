@@ -653,6 +653,76 @@ extension SchematicClipboardTests {
         XCTAssertEqual(state.details.groups.first { $0.type == .schematicBlockSymbol }?.items.count, 1)
     }
 
+    /// A move draws the sheet it started from, plus the move so far, until
+    /// it ends, whatever the host's sheet is meanwhile. The host's sheet is
+    /// already the committed one in the pass SwiftUI runs with the move's
+    /// state just before it ends; drawn from it, a sheet's first move showed
+    /// what moved at twice the distance for a frame. Here the host's sheet
+    /// becomes the moved one while the move is on, and the junction is still
+    /// where the move began until the move is let go.
+    @MainActor func testAMoveDrawsTheSheetItStartedFromWhateverTheHostHasMeanwhile() async throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required for the canvas") }
+        _ = NSApplication.shared
+        var fixture = try fixture()
+        let destinationID = try XCTUnwrap(fixture.project.schematic?.sheets.last?.id)
+        let j0 = UUID().uuidString.lowercased(), j1 = UUID().uuidString.lowercased(), j2 = UUID().uuidString.lowercased()
+        fixture = try applying([
+            ["op": "place_junction", "id": j0, "net": "VCC", "sheet": destinationID, "x_mm": 40, "y_mm": 40],
+            ["op": "place_junction", "id": j1, "net": "VCC", "sheet": destinationID, "x_mm": 40, "y_mm": 20],
+            ["op": "place_junction", "id": j2, "net": "VCC", "sheet": destinationID, "x_mm": 20, "y_mm": 40],
+            ["op": "draw_net_line", "sheet": destinationID, "from": ["kind": "junction", "junction": j0], "to": ["kind": "junction", "junction": j1]],
+            ["op": "draw_net_line", "sheet": destinationID, "from": ["kind": "junction", "junction": j0], "to": ["kind": "junction", "junction": j2]]
+        ], to: fixture)
+        // The sheet as the move commits it, and changed besides, so nothing
+        // built for the sheet before is reused for it.
+        let committed = try applying([
+            ["op": "place_junction", "id": j0, "sheet": destinationID, "x_mm": 40, "y_mm": 45.08],
+            ["op": "place_text", "sheet": destinationID, "text": "changed", "x_mm": 80, "y_mm": 80]
+        ], to: fixture)
+        let state = CanvasState(fixture)
+        let defaults = UserDefaults(suiteName: "move-base-\(UUID().uuidString)")!
+        let hosted = NSHostingView(rootView: ArrivalCanvas(state: state, sheetID: destinationID)
+            .environmentObject(HorizontalAppearanceSettings(defaults: defaults)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 650),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosted
+        window.orderFront(nil)
+        defer { window.close() }
+        func settle(_ predicate: () -> Bool) async -> Bool {
+            let deadline = Date().addingTimeInterval(5)
+            while !predicate(), Date() < deadline { try? await Task.sleep(for: .milliseconds(30)) }
+            return predicate()
+        }
+        func junctionPosition() -> String? {
+            state.details.groups.first { $0.type == .junction }?.items.first?.subtitle
+        }
+        let mounted = await settle { state.actions != nil }
+        XCTAssertTrue(mounted)
+        // The junction alone, selected as an arrival is, then a keyboard move
+        // as the arrow keys make one.
+        state.moveRequest = HorizontalSchematicMoveRequest(sheetID: destinationID, refs: [HorizontalSelectableRef(id: j0, type: .junction)])
+        let selected = await settle { junctionPosition() != nil }
+        XCTAssertTrue(selected)
+        state.actions?.dispatch(.cancelInteraction)
+        let still = await settle { state.actions?.canCommitInteraction == false }
+        XCTAssertTrue(still)
+        for _ in 0..<2 {
+            state.actions?.dispatch(.moveSelectionBy(HorizontalPoint(x: 0, y: 2_540_000)))
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        XCTAssertEqual(junctionPosition(), "40.00 mm, 40.00 mm")
+
+        state.fixture = committed
+        try? await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(junctionPosition(), "40.00 mm, 40.00 mm", "the move's own sheet, not the host's moved one")
+
+        // Let go, the canvas draws the host's sheet again.
+        state.actions?.dispatch(.cancelInteraction)
+        let hosts = await settle { junctionPosition() == "40.00 mm, 45.08 mm" }
+        XCTAssertTrue(hosts, "\(junctionPosition() ?? "nothing selected")")
+    }
+
     /// The fixture with a Channel block, its one port IN, drawn on the
     /// first sheet as CHA.
     private func blockFixture() throws -> Fixture {

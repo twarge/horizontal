@@ -490,8 +490,15 @@ struct SchematicCanvasView: View {
         self.syncRevision = syncRevision
     }
 
+    /// The sheet drawn and hit-tested. While a move is on, that is the sheet
+    /// it started from: its preview draws the moved things at their place on
+    /// it plus the move so far. The host's sheet can already be the committed
+    /// one in the pass SwiftUI runs with the move's state just before it ends
+    /// (on a sheet's first edit, before there is an edited copy), and the
+    /// move added to the committed sheet drew what moved twice as far for a
+    /// frame.
     private var sheet: HorizontalSchematicSheet {
-        editedSheet ?? sourceSheet
+        editedSheet ?? moveState?.originalSheet ?? sourceSheet
     }
 
     private var editorProfile: HorizontalSchematicEditorProfile {
