@@ -626,7 +626,9 @@ enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
             rule["diameter_max"] = 10_000_000
         case .via:
             rule["match"] = context.defaultMatch()
-            rule["padstack"] = ""
+            // The board's default via, as Horizon's rule editor starts one
+            // from the pool's; blank where the pool names none.
+            rule["padstack"] = context.board?.defaultViaPadstackID ?? ""
             rule["parameter_set"] = [
                 "via_diameter": 500_000,
                 "hole_diameter": 200_000

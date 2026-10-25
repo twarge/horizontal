@@ -155,6 +155,7 @@ enum HorizontalProjectJSONApplicator {
         patchHoles(&json, key: "holes", holes: board.holes)
         patchVias(&json, vias: board.vias)
         patchNewBoardVias(&json, vias: board.vias, junctions: board.junctions, padstackID: board.viaTemplate?.padstackID)
+        patchUnstatedViaRules(&json, rules: board.rules)
         patchPlanes(&json, planes: board.planes)
         patchKeepouts(&json, keepouts: board.keepouts)
         patchDimensions(&json, dimensions: board.dimensions, removing: board.removedDimensionIDs)
@@ -1348,6 +1349,22 @@ enum HorizontalProjectJSONApplicator {
             map[via.id] = item
         }
         json["vias"] = map
+    }
+
+    /// A board whose rules say nothing about vias, as Horizontal's template
+    /// wrote them before it gave a new board Horizon's via rule, gets the one
+    /// the loader gave it in their place (`HorizontalBoard.load`), so the vias
+    /// a route takes from it have a rule to take their shape from. Rules that
+    /// state their vias, even none, are the Rules editor's, and stay as they are.
+    private static func patchUnstatedViaRules(_ json: inout JSONDictionary, rules: HorizontalBoardRules) {
+        var fileRules = json["rules"] as? JSONDictionary ?? [:]
+        guard fileRules["via"] == nil, !rules.viaRules.isEmpty else {
+            return
+        }
+        fileRules["via"] = rules.viaRules.reduce(into: JSONDictionary()) { result, rule in
+            result[rule.id] = rule.json
+        }
+        json["rules"] = fileRules
     }
 
     private static func patchBoardDrawingLines(

@@ -25,6 +25,22 @@ public extension HorizontalProjectArchive {
     /// project file names none.
     static let projectPoolDirectoryName = "pool"
 
+    /// horizon-pool's "Circular via", its `default_via`, which opens the
+    /// solder mask over the via, and its "Circular via (tented)", which does not.
+    static let horizonPoolCircularVia = "3c4a52fe-3ae0-4c3e-a108-824b53d6d6da"
+    static let horizonPoolTentedCircularVia = "8b6dee4b-af88-4c0f-b38b-c5364649e65e"
+
+    /// The padstack a board's default via rule takes, where Horizon takes the
+    /// pool's `default_via`: that via, tented. horizon-pool's default is its
+    /// Circular via, so its tented Circular via stands in for it; a pool that
+    /// names another via keeps its own. Nil when the pool names none.
+    static func defaultViaPadstack(poolDefaultVia: String?) -> String? {
+        guard let via = poolDefaultVia?.lowercased(), !via.isEmpty, via != nullUUID else {
+            return nil
+        }
+        return via == horizonPoolCircularVia ? horizonPoolTentedCircularVia : via
+    }
+
     /// A project pool's `pool.json`, the keys `PoolInfo::save` writes.
     static func projectPoolJSON(_ pool: HorizontalProjectPoolTemplate = HorizontalProjectPoolTemplate(), name: String = "Project pool") -> [String: Any] {
         [
@@ -157,10 +173,11 @@ public extension HorizontalProjectArchive {
         ]
 
         // Horizon's `Project::create` gives a new board one via rule, with the
-        // pool's default via, so a route's `v` has a via to drop. RuleVia's
-        // own defaults: every net, a 0.5 mm via with a 0.2 mm hole.
+        // pool's default via, so a route's `v` has a via to drop; here that
+        // via tented. RuleVia's own defaults: every net, a 0.5 mm via with a
+        // 0.2 mm hole.
         var rules = [String: Any]()
-        if let via = pool.defaultViaUUID?.lowercased(), !via.isEmpty, via != nullUUID {
+        if let via = defaultViaPadstack(poolDefaultVia: pool.defaultViaUUID) {
             rules["via"] = [
                 newID(): [
                     "enabled": true,
