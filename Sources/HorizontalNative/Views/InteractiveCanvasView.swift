@@ -947,8 +947,8 @@ struct InteractiveCanvasView: View {
                         onModifiersChanged: { modifiers in
                             currentInputModifiers = modifiers
                         },
-                        onMoveSelectionByGrid: { direction, fine in
-                            moveSelectionByGrid(direction: direction, fine: fine)
+                        onMoveSelectionByGrid: { direction, steps in
+                            moveSelectionByGrid(direction: direction, steps: steps)
                         },
                         handlesSelectionDeletion: handlesSelectionDeletion,
                         undoManager: undoManager,
@@ -1031,11 +1031,10 @@ struct InteractiveCanvasView: View {
                                 return true
                             }
                             if let direction = HorizontalCanvasInputCore.arrowDirection(keyEvent) {
-                                let modifiers = keyEvent.modifiers
-                                guard modifiers.isEmpty || modifiers == .option else {
+                                guard let steps = HorizontalCanvasInputCore.arrowGridSteps(keyEvent.modifiers) else {
                                     return false
                                 }
-                                moveSelectionByGrid(direction: direction, fine: modifiers == .option)
+                                moveSelectionByGrid(direction: direction, steps: steps)
                                 return true
                             }
                             if HorizontalCanvasInputCore.isDelete(keyEvent) {
@@ -2195,15 +2194,14 @@ struct InteractiveCanvasView: View {
         HorizontalCanvasInputCore.snapToGrid(point, grid: grid, divisor: divisor)
     }
 
-    private func moveSelectionByGrid(direction: HorizontalPoint, fine: Bool) {
+    private func moveSelectionByGrid(direction: HorizontalPoint, steps: Double) {
         guard let grid else {
             return
         }
 
-        let divisor = fine ? 10.0 : 1.0
         let delta = HorizontalPoint(
-            x: direction.x * grid.spacing.x / divisor,
-            y: direction.y * grid.spacing.y / divisor
+            x: direction.x * grid.spacing.x * steps,
+            y: direction.y * grid.spacing.y * steps
         )
         onCommand(.moveSelectionBy(delta))
     }
@@ -3433,7 +3431,7 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
     var onCursorLocationChange: (CGPoint?) -> Void
     var onGridDivisorChange: (Int) -> Void
     var onModifiersChanged: (HorizontalCanvasInputModifiers) -> Void
-    var onMoveSelectionByGrid: (HorizontalPoint, Bool) -> Void
+    var onMoveSelectionByGrid: (HorizontalPoint, Double) -> Void
     var handlesSelectionDeletion: Bool
     var undoManager: UndoManager?
     var onCommand: (HorizontalCanvasCommand) -> Void
@@ -3512,7 +3510,7 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
         var onCursorLocationChange: ((CGPoint?) -> Void)?
         var onGridDivisorChange: ((Int) -> Void)?
         var onModifiersChanged: ((HorizontalCanvasInputModifiers) -> Void)?
-        var onMoveSelectionByGrid: ((HorizontalPoint, Bool) -> Void)?
+        var onMoveSelectionByGrid: ((HorizontalPoint, Double) -> Void)?
         var handlesSelectionDeletion = false
         var canvasUndoManager: UndoManager?
         var onCommand: ((HorizontalCanvasCommand) -> Void)?
@@ -3875,11 +3873,10 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
             }
 
             if let arrowDirection = arrowDirection(from: event) {
-                let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
-                guard modifiers.isEmpty || modifiers == .option else {
+                guard let steps = HorizontalCanvasInputCore.arrowGridSteps(inputModifiers(from: event.modifierFlags)) else {
                     return event
                 }
-                onMoveSelectionByGrid?(arrowDirection, modifiers == .option)
+                onMoveSelectionByGrid?(arrowDirection, steps)
                 return nil
             }
 
