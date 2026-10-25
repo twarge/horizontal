@@ -118,4 +118,30 @@ final class HorizontalSelectableSpatialIndexTests: XCTestCase {
         XCTAssertEqual(index.smallestSelectable(at: HorizontalPoint(x: 100, y: 100), expand: 50)?.id, "x")
         XCTAssertNil(index.smallestSelectable(at: HorizontalPoint(x: 1_000_000, y: 0), expand: 50))
     }
+
+    #if os(macOS)
+    /// On a Mac a click hits a via, or a track thinner than 14 pt on screen,
+    /// within 7 pt of it, where it hit within 10 like Horizon; a track drawn
+    /// wider than that is hit only on itself.
+    func testOnAMacAClickHitsWithinSevenPointsOfAViaOrAThinTrack() {
+        let nmPerPoint = 10_000.0
+        let via = HorizontalSelectable.point(ref: HorizontalSelectableRef(id: "via", type: .via), at: .zero)
+        let thin = HorizontalSelectable.line(
+            ref: HorizontalSelectableRef(id: "thin", type: .track),
+            from: HorizontalPoint(x: 5_000_000, y: 0), to: HorizontalPoint(x: 7_000_000, y: 0), width: 100_000)
+        let wide = HorizontalSelectable.line(
+            ref: HorizontalSelectableRef(id: "wide", type: .track),
+            from: HorizontalPoint(x: 10_000_000, y: 0), to: HorizontalPoint(x: 12_000_000, y: 0), width: 300_000)
+        let scene = HorizontalCanvasSelectableScene(selectables: [via, thin, wide])
+        func hit(_ x: Double, _ yPoints: Double, dx: Double = 0) -> String? {
+            scene.hitSelectable(at: HorizontalPoint(x: x + dx * nmPerPoint, y: yPoints * nmPerPoint), worldUnitsPerPoint: nmPerPoint)?.id
+        }
+        XCTAssertEqual(hit(0, 0, dx: 6), "via")
+        XCTAssertNil(hit(0, 0, dx: 8), "8 pt off a via misses")
+        XCTAssertEqual(hit(6_000_000, 6), "thin")
+        XCTAssertNil(hit(6_000_000, 8), "and 8 pt off a 10 pt track")
+        XCTAssertEqual(hit(11_000_000, 14), "wide", "a 30 pt track is hit on itself")
+        XCTAssertNil(hit(11_000_000, 16), "and not beside it")
+    }
+    #endif
 }

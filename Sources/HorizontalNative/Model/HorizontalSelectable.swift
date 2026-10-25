@@ -134,7 +134,19 @@ struct HorizontalSelectionToolSettings: Equatable, Hashable {
 }
 
 struct HorizontalSelectable: Hashable {
+    /// The smallest a selectable's hit box gets on screen, in points, along
+    /// each of its own axes (`inside(_:expand:)`): a click hits a small object
+    /// within half of this of its centre, and a thin one, a track or a wire,
+    /// within half of this of its centre line. Anything larger on screen is
+    /// hit only on itself. Horizon's `min_selectable_size` is 20 px, more than
+    /// a mouse needs: on a crowded board it hands a click to the via or
+    /// junction beside what was aimed at, as the smallest hit wins. A finger
+    /// needs all of it, so iPad keeps 20.
+    #if os(macOS)
+    static let minimumScreenSize = 14.0
+    #else
     static let minimumScreenSize = 20.0
+    #endif
     static let selectionOutlineScreenMargin: Float = 4.0
     private static let cornerExpansionWorld = 100.0
 
