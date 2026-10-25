@@ -21,11 +21,13 @@ Or, in a Claude Code session:
     /plugin install horizontal --marketplace twarge/horizontal
 
 Start a new session afterwards; MCP servers load when a session starts.
-Settings > Automation in Horizontal shows the same commands with a Copy button.
+Settings > MCP Server in Horizontal shows the same commands with a Copy button;
+choose Claude Code in the client picker. Codex uses the same server and skills
+with its own plugin packaging; see [codex.md](codex.md).
 
 In Horizontal:
 
-1. Turn on **Settings > Automation > Enable MCP Server**. Without it, Claude
+1. Turn on **Settings > MCP Server > Enable MCP Server**. Without it, Claude
    can read and write project files on disk, but cannot see or change what is
    open in the app.
 2. Open projects from their `.hprj`, and grant the app access to the
@@ -84,8 +86,9 @@ checkout with `make native`, or set `HORIZONTAL_DYLIB` / `HORIZONTAL_CLI`.
     claude plugin marketplace update twarge
 
 The plugin's `version` pins installs until it changes. It follows the Python
-package's version, so a release bumps `version` in `python/pyproject.toml` and
-`python/.claude-plugin/plugin.json` together. A test enforces that.
+package's version, so a release bumps `version` in `python/pyproject.toml`,
+`python/plugin.json`, `python/.claude-plugin/plugin.json` and the root package
+entry in `python/uv.lock` together. A test enforces that.
 
 ## Developing the plugin
 
@@ -98,6 +101,8 @@ package's version, so a release bumps `version` in `python/pyproject.toml` and
   - The manifest's server entry runs `uv run --frozen --project
     ${CLAUDE_PLUGIN_ROOT} horizontal-mcp`. Its virtual environment lives in
     `${CLAUDE_PLUGIN_DATA}`, which survives updates.
+  - Both client launchers request Python 3.13. uv downloads it if necessary,
+    avoiding dependency builds against the newest installed Python.
 - **Trying changes.** Use `claude --plugin-dir ./python`, or add the checkout
   as a local marketplace (`claude plugin marketplace add ./`). A local
   marketplace reads the plugin in place.

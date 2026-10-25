@@ -23,13 +23,23 @@ explicitly.
 
 The model, exporters, and checks run without the app through one JSON-RPC
 dispatcher: a `horizontal` command line tool, a dynamic library that the
-`python/` package loads with ctypes, an MCP server for Claude Code on top of
+`python/` package loads with ctypes, an MCP server for Codex and Claude Code on top of
 that package, and a live channel the app serves while a document is open so
 the same calls reach unsaved state and edits land on the undo stack.
 `make native python` builds it; `docs/automation.md` has the method list, the
 edit vocabulary, and what remains.
 
-For Claude Code, install the plugin, which brings the MCP server and skills
+For Codex, install the plugin, which brings the MCP server and skills for
+connection setup, reviews, edits and fabrication outputs ([docs/codex.md](docs/codex.md)):
+
+```sh
+codex plugin marketplace add twarge/horizontal
+codex plugin add horizontal@twarge
+```
+
+**Settings > MCP Server** in the app has the basic setup steps and commands.
+
+For Claude Code, install the plugin, which brings the same MCP server and skills
 for reviews, edits and fabrication outputs ([docs/claude-code.md](docs/claude-code.md)):
 
 ```sh

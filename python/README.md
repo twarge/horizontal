@@ -32,7 +32,17 @@ The MCP server:
 is what `.mcp.json` at the repository root launches for Claude Code. Set
 `HORIZONTAL_PROJECT` to make the `path` argument of every tool optional.
 
-This directory is also the root of the Claude Code plugin
+This directory is also the root of the Codex plugin (`plugin.json`, `mcp.json`,
+`skills/`), listed by `.agents/plugins/marketplace.json` at the repository root:
+
+    codex plugin marketplace add twarge/horizontal
+    codex plugin add horizontal@twarge
+
+The plugin's setup action uses the connection skill. Basic instructions are in
+the app's **Settings > MCP Server** section; see [../docs/codex.md](../docs/codex.md)
+for installation, live discovery and local development.
+
+The same directory is the root of the Claude Code plugin
 (`.claude-plugin/plugin.json`, `skills/`), which the marketplace at the
 repository root lists. Install it with:
 

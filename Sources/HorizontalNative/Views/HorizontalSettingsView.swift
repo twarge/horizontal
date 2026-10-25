@@ -147,12 +147,12 @@ struct HorizontalSettingsView: View {
 
             #if os(macOS)
             // The listener is macOS-only, so the switch is too.
-            Section("Automation") {
+            Section("MCP Server") {
                 Toggle("Enable MCP Server", isOn: appearanceSettings.liveServerEnabledBinding())
-                Text("Serves the documents you have open to the MCP server and the Python package, over a loopback socket on 127.0.0.1 carrying a per-launch token. Reads see unsaved edits, and an edit arrives as one undoable step. With this off they still read and write project files on disk, but cannot see or change what is open in the app.")
+                Text("Lets connected assistants read the documents you have open, including unsaved changes. Edits arrive as undoable steps and are autosaved.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                ClaudeCodeSetup()
+                HorizontalMCPSetup()
             }
             #endif
 
@@ -406,35 +406,69 @@ struct HorizontalSettingsView: View {
 }
 
 #if os(macOS)
-/// How to connect Claude Code. The sandboxed app can neither run `claude` nor
-/// write its settings, so it shows the commands to copy into a terminal.
-private struct ClaudeCodeSetup: View {
-    static let commands = """
-        claude plugin marketplace add twarge/horizontal
-        claude plugin install horizontal@twarge
-        """
-    static let guide = URL(string: "https://github.com/twarge/horizontal/blob/main/docs/claude-code.md")!
+/// The sandboxed app cannot configure another app, so installation is explicit.
+private struct HorizontalMCPSetup: View {
+    private enum Client: String, CaseIterable, Identifiable {
+        case codex = "Codex"
+        case claudeCode = "Claude Code"
 
+        var id: Self { self }
+
+        var commands: String {
+            switch self {
+            case .codex:
+                return """
+                    codex plugin marketplace add twarge/horizontal
+                    codex plugin add horizontal@twarge
+                    """
+            case .claudeCode:
+                return """
+                    claude plugin marketplace add twarge/horizontal
+                    claude plugin install horizontal@twarge
+                    """
+            }
+        }
+
+        var guide: URL {
+            let page = self == .codex ? "codex" : "claude-code"
+            return URL(string: "https://github.com/twarge/horizontal/blob/main/docs/\(page).md")!
+        }
+    }
+
+    @State private var client: Client = .codex
     @State private var copied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Claude Code")
-            Text(Self.commands)
+            Picker("Connect with", selection: $client) {
+                ForEach(Client.allCases) { client in
+                    Text(client.rawValue).tag(client)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text("1. Install uv and the \(client.rawValue) command-line tool, then run these commands in Terminal.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(client.commands)
                 .font(.system(.caption, design: .monospaced))
                 .textSelection(.enabled)
             HStack {
                 Button(copied ? "Copied" : "Copy Commands") {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(Self.commands, forType: .string)
+                    NSPasteboard.general.setString(client.commands, forType: .string)
                     copied = true
                 }
-                Link("Setup Guide", destination: Self.guide)
+                Link("Setup Guide", destination: client.guide)
+                Link("Install uv", destination: URL(string: "https://docs.astral.sh/uv/getting-started/installation/")!)
             }
-            Text("Run these in a terminal, then start a new Claude Code session. The plugin's MCP server reaches the documents open here while Enable MCP Server is on, and needs uv installed.")
+            Text("2. Keep Enable MCP Server on. Open your project and grant Horizontal access to its containing folder when asked.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("3. Start a new \(client.rawValue) chat and ask it to connect to your project in Horizontal. The plugin includes setup help and skills for reviews, edits, and exports.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        .onChange(of: client) { _, _ in copied = false }
     }
 }
 #endif

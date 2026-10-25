@@ -1,7 +1,7 @@
 {
   "name": "horizontal",
   "displayName": "Horizontal",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "The horizontal MCP server over Horizontal's own model, with skills for connecting, design review, safe edits and fabrication outputs.",
   "author": {
     "name": "Tom Kornack",
@@ -15,7 +15,7 @@
     "horizontal": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "--frozen", "--quiet", "--project", "${CLAUDE_PLUGIN_ROOT}", "horizontal-mcp"],
+      "args": ["run", "--python", "3.13", "--frozen", "--quiet", "--project", "${CLAUDE_PLUGIN_ROOT}", "horizontal-mcp"],
       "env": {
         "UV_PROJECT_ENVIRONMENT": "${CLAUDE_PLUGIN_DATA}/venv"
       }

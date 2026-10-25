@@ -1,4 +1,4 @@
-"""The Claude Code plugin and marketplace that ship this package, and the skills in it."""
+"""Codex and Claude Code packaging, onboarding, and shared skill contracts."""
 
 import json
 import re
@@ -25,6 +25,8 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.marketplace = json.loads((REPOSITORY / ".claude-plugin" / "marketplace.json").read_text())
         self.manifest = json.loads((PACKAGE / ".claude-plugin" / "plugin.json").read_text())
         self.pyproject = tomllib.loads((PACKAGE / "pyproject.toml").read_text())
+        self.portable = json.loads((PACKAGE / "plugin.json").read_text())
+        self.codex_marketplace = json.loads((REPOSITORY / ".agents/plugins/marketplace.json").read_text())
 
     def test_marketplace_lists_this_package_as_the_plugin(self):
         entry = next(p for p in self.marketplace["plugins"] if p["name"] == self.manifest["name"])
@@ -33,6 +35,33 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
     def test_plugin_version_follows_the_package(self):
         # Setting version pins users to it, so it moves with the package it runs.
         self.assertEqual(self.manifest["version"], self.pyproject["project"]["version"])
+        self.assertEqual(self.portable["version"], self.manifest["version"])
+        lock = tomllib.loads((PACKAGE / "uv.lock").read_text())
+        package = next(p for p in lock["package"] if p["name"] == self.portable["name"])
+        self.assertEqual(package["version"], self.portable["version"])
+
+    def test_codex_catalog_and_onboarding_resolve_inside_the_package(self):
+        entry = next(p for p in self.codex_marketplace["plugins"] if p["name"] == self.portable["name"])
+        self.assertEqual((REPOSITORY / entry["source"]["path"]).resolve(), PACKAGE)
+        settings = self.portable["extensions"]["com.openai"]
+        self.assertTrue(settings["requires_local_executor"])
+        onboarding = (PACKAGE / settings["onboardingSkill"]).resolve()
+        self.assertTrue(onboarding.is_relative_to(PACKAGE))
+        self.assertTrue(onboarding.is_file())
+        self.assertEqual(frontmatter(onboarding.read_text())["name"], "connect")
+
+    def test_portable_server_uses_installed_source_and_writable_data(self):
+        config = json.loads((PACKAGE / "mcp.json").read_text())["mcpServers"]["horizontal"]
+        self.assertEqual(config["type"], "stdio")
+        self.assertEqual(config["command"], "uv")
+        root = config["args"][config["args"].index("--project") + 1]
+        self.assertEqual(root, "${PLUGIN_ROOT}")
+        self.assertIn("--frozen", config["args"])
+        self.assertIn(config["args"][-1], self.pyproject["project"]["scripts"])
+        self.assertTrue(config["env"]["UV_PROJECT_ENVIRONMENT"].startswith("${PLUGIN_DATA}/"))
+        claude_args = self.manifest["mcpServers"]["horizontal"]["args"]
+        self.assertEqual(config["args"][config["args"].index("--python") + 1],
+                         claude_args[claude_args.index("--python") + 1])
 
     def test_server_runs_the_package_script_from_the_installed_plugin(self):
         server_config = self.manifest["mcpServers"]["horizontal"]

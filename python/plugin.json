@@ -1,0 +1,28 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "horizontal",
+  "version": "0.2.1",
+  "description": "Connect to Horizontal, review PCB designs, make undoable edits, and export fabrication files.",
+  "author": {"name": "Tom Kornack", "email": "tom@twarge.com"},
+  "homepage": "https://github.com/twarge/horizontal/blob/main/docs/codex.md",
+  "repository": "https://github.com/twarge/horizontal",
+  "license": "Apache-2.0",
+  "keywords": ["pcb", "eda", "horizon-eda", "hardware", "schematic", "mcp"],
+  "extensions": {
+    "com.openai": {
+      "requires_local_executor": true,
+      "onboardingSkill": "./skills/connect/SKILL.md",
+      "interface": {
+        "displayName": "Horizontal",
+        "shortDescription": "Review and edit PCB designs in Horizontal",
+        "developerName": "Tom Kornack",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write"],
+        "defaultPrompt": [
+          "Connect to the project I have open in Horizontal.",
+          "Review my board in Horizontal."
+        ]
+      }
+    }
+  }
+}
