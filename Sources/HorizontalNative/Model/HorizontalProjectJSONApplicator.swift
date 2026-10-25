@@ -1314,27 +1314,32 @@ enum HorizontalProjectJSONApplicator {
         junctions: [String: HorizontalPoint],
         padstackID: String?
     ) {
-        guard let padstackID else {
-            return
-        }
         var map = json["vias"] as? JSONDictionary ?? [:]
         for via in vias where !via.id.contains("/") {
             guard matchingKey(via.id, in: map) == nil else {
                 continue
             }
-            guard let junctionID = junctionID(at: via.position, in: junctions) else {
+            // Its own padstack (a route's via has its rule's, a pasted one
+            // the one it was copied with), else the board's.
+            guard let padstack = via.padstackID ?? padstackID,
+                  let junctionID = junctionID(at: via.position, in: junctions) else {
                 continue
             }
-            var parameterSet: JSONDictionary = ["via_diameter": jsonNumber(via.size)]
+            var parameterSet = via.parameterSet.reduce(into: JSONDictionary()) { result, item in
+                result[item.key] = jsonNumber(item.value)
+            }
+            parameterSet["via_diameter"] = jsonNumber(via.size)
             if let hole = via.holeSize {
                 parameterSet["hole_diameter"] = jsonNumber(hole)
             }
+            // A via shaped by the rules goes on taking its shape from them,
+            // as Horizon's router writes one.
             var item: JSONDictionary = [
                 "junction": junctionID,
-                "padstack": padstackID,
+                "padstack": padstack,
                 "parameter_set": parameterSet,
-                "from_rules": false,
-                "source": "local",
+                "from_rules": via.fromRules,
+                "source": via.fromRules ? "rules" : "local",
                 "locked": false
             ]
             if let netID = via.netID {

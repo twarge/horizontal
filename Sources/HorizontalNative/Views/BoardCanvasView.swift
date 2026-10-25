@@ -321,6 +321,10 @@ struct BoardCanvasView: View {
         var cornerStyle: BoardTrackCornerStyle = .ninety
         var segmentCount = 0
         var viaCount = 0
+        /// `v` armed a via, as Horizon's router places one: it rides on the
+        /// end of the route at the cursor, and the next click lays the route
+        /// there, drops the via at its end and carries on on the far layer.
+        var placesVia = false
 
         /// Whether the route has committed anything to the draft board yet
         /// (segments or vias) — gates finishing so an empty route is discarded.
@@ -340,6 +344,7 @@ struct BoardCanvasView: View {
         var layer: Int
         var segmentCount: Int
         var viaCount: Int
+        var placesVia: Bool
     }
 
     private typealias DrawGraphicsResult = HorizontalCanvasDrawGraphicsResult
@@ -1289,6 +1294,8 @@ struct BoardCanvasView: View {
         hasher.combine(drawTrackState != nil)
         hasher.combine(drawTrackState?.segmentCount ?? 0)
         hasher.combine(drawTrackState?.cornerStyle.rawValue)
+        // The route's net, found by its first click, decides whether it has a via.
+        hasher.combine(canToggleVia)
         hasher.combine(boardClipboard.isEmpty)
         hasher.combine(pastePlacementState != nil)
         return hasher.finalize()
@@ -1394,9 +1401,21 @@ struct BoardCanvasView: View {
             if state.anchor == nil {
                 return "Track (\(layerName), \(widthMM) mm): click to start   W width   Esc cancels"
             }
-            let viaHint = canToggleVia ? "   V via" : ""
             let undoHint = trackRouteHistory.isEmpty ? "" : "   ⌫ back"
-            return "Track (\(layerName), \(widthMM) mm, \(state.cornerStyle.label)): click to route   / posture   C corner (90/45/arc)   W width\(viaHint)\(undoHint)   Return/double-click finishes   Esc cancels"
+            // Horizon's tip says where an armed via's shape comes from.
+            var viaHint = board.rules.viaRules.isEmpty
+                ? "   V via (no via rules, and no default via in the pool)"
+                : "   V via (no via rule for this net)"
+            var viaArmed = ""
+            if let via = routeVia(netID: state.netID) {
+                viaHint = state.placesVia ? "   V no via" : "   V via"
+                if state.placesVia {
+                    let diameter = String(format: "%g", via.diameter / 1_000_000)
+                    let hole = String(format: "%g", via.holeDiameter / 1_000_000)
+                    viaArmed = ", via \(diameter)/\(hole) mm\(via.fromRules ? " from rules" : "")"
+                }
+            }
+            return "Track (\(layerName), \(widthMM) mm, \(state.cornerStyle.label)\(viaArmed)): click to route   / posture   C corner (90/45/arc)   W width\(viaHint)\(undoHint)   Return/double-click finishes   Esc cancels"
         }
         // Ahead of the move hint: placing a package rides the move tool.
         if let state = packagePlacementState {
@@ -4743,6 +4762,13 @@ struct BoardCanvasView: View {
 
         guard let anchor = state.anchor,
               pointKey(anchor) != pointKey(target) else {
+            // A click on the end of the route with a via armed drops it
+            // there: on the track or via the route began from, or where the
+            // last click left it. Not in a pad the route began on, which
+            // connects it already.
+            if state.placesVia, endPad == nil {
+                layRoute([], to: target, endsOnPad: false, netID: state.netID, state: &state)
+            }
             state.cursor = target
             drawTrackState = state
             return
@@ -4788,48 +4814,62 @@ struct BoardCanvasView: View {
             return
         }
 
-        pushTrackRouteStep(state)
-        var draft = editedBoard ?? sourceBoard
-        if !state.anchorOnPad {
-            _ = mergeBoardJunctions(at: anchor, preferredID: state.anchorJunctionID, netID: netID, board: &draft)
-        }
-        var segmentCount = 0
-        var endJunctionID = state.anchorJunctionID
-        for spec in specs {
-            // Junction at the forward vertex, unless it is the pad target.
-            let toIsPadTarget = endPad != nil && pointKey(spec.to) == pointKey(target)
-            var junctionID: String?
-            if !toIsPadTarget {
-                junctionID = mergeBoardJunctions(at: spec.to, preferredID: nil, netID: netID, board: &draft)
-            }
-            let ends = spec.renderEndpoints
-            draft.tracks.append(
-                HorizontalSegment(
-                    id: UUID().uuidString.lowercased(),
-                    from: ends.from,
-                    to: ends.to,
-                    width: state.width,
-                    layer: state.layer,
-                    center: spec.center,
-                    netID: netID
-                )
-            )
-            segmentCount += 1
-            endJunctionID = junctionID
-        }
-        editedBoard = draft
-        invalidateSelectableCache()
-
-        state.anchor = target
-        state.anchorJunctionID = endJunctionID
-        state.anchorOnPad = endPad != nil
-        state.netID = netID
+        // The armed via goes at the end of what this click lays. A click on a
+        // pad ends the route in the pad instead, and drops no via in it.
+        layRoute(specs, to: target, endsOnPad: endPad != nil, netID: netID, state: &state)
         state.cursor = target
-        state.segmentCount += segmentCount
         drawTrackState = state
 
         if endPad != nil, state.segmentCount > 0 {
             commitDrawTrack()
+        }
+    }
+
+    /// Lays one click's worth of route on the draft board, with the via `v`
+    /// armed (`BoardTrackRouting.lay`), and moves the route's head on. One
+    /// step for Backspace to take back, when it laid anything.
+    private func layRoute(
+        _ specs: [BoardTrackSegmentSpec],
+        to target: HorizontalPoint,
+        endsOnPad: Bool,
+        netID: String?,
+        state: inout DrawTrackState
+    ) {
+        guard let anchor = state.anchor else {
+            return
+        }
+        let head = BoardTrackRouteHead(
+            anchor: anchor,
+            anchorJunctionID: state.anchorJunctionID,
+            anchorOnPad: state.anchorOnPad,
+            netID: netID,
+            width: state.width,
+            layer: state.layer,
+            placesVia: state.placesVia
+        )
+        var draft = editedBoard ?? sourceBoard
+        let laid = BoardTrackRouting.lay(
+            specs, to: target, endsOnPad: endsOnPad,
+            via: state.placesVia ? routeVia(netID: netID) : nil,
+            from: head, on: &draft
+        )
+        guard laid.segments > 0 || laid.vias > 0 else {
+            return
+        }
+        pushTrackRouteStep(state)
+        editedBoard = draft
+        invalidateSelectableCache()
+
+        state.anchor = laid.head.anchor
+        state.anchorJunctionID = laid.head.anchorJunctionID
+        state.anchorOnPad = laid.head.anchorOnPad
+        state.netID = netID
+        state.layer = laid.head.layer
+        state.placesVia = laid.head.placesVia
+        state.segmentCount += laid.segments
+        state.viaCount += laid.vias
+        if laid.vias > 0 {
+            followRouteLayer(state.layer)
         }
     }
 
@@ -4895,7 +4935,8 @@ struct BoardCanvasView: View {
                 width: state.width,
                 layer: state.layer,
                 segmentCount: state.segmentCount,
-                viaCount: state.viaCount
+                viaCount: state.viaCount,
+                placesVia: state.placesVia
             )
         )
     }
@@ -4924,6 +4965,7 @@ struct BoardCanvasView: View {
             return
         }
         editedBoard = step.board
+        let layerBefore = state.layer
         state.anchor = step.anchor
         state.anchorJunctionID = step.anchorJunctionID
         state.anchorOnPad = step.anchorOnPad
@@ -4932,7 +4974,11 @@ struct BoardCanvasView: View {
         state.layer = step.layer
         state.segmentCount = step.segmentCount
         state.viaCount = step.viaCount
+        state.placesVia = step.placesVia
         drawTrackState = state
+        if state.layer != layerBefore {
+            followRouteLayer(state.layer)
+        }
         invalidateSelectableCache()
     }
 
@@ -5006,25 +5052,53 @@ struct BoardCanvasView: View {
             return
         }
         let polylines = trackPreviewPolylines(state)
-        guard !polylines.isEmpty else {
-            return
-        }
-        var path = Path()
-        for points in polylines where points.count >= 2 {
-            path.move(to: transform.point(points[0]))
-            for point in points.dropFirst() {
-                path.addLine(to: transform.point(point))
+        let color = layerColor(for: state.layer).opacity(0.5)
+        if !polylines.isEmpty {
+            var path = Path()
+            for points in polylines where points.count >= 2 {
+                path.move(to: transform.point(points[0]))
+                for point in points.dropFirst() {
+                    path.addLine(to: transform.point(point))
+                }
             }
-        }
-        context.stroke(
-            path,
-            with: .color(layerColor(for: state.layer).opacity(0.5)),
-            style: StrokeStyle(
-                lineWidth: transform.strokeWidth(state.width, minimum: 1.6),
-                lineCap: .round,
-                lineJoin: .round
+            context.stroke(
+                path,
+                with: .color(color),
+                style: StrokeStyle(
+                    lineWidth: transform.strokeWidth(state.width, minimum: 1.6),
+                    lineCap: .round,
+                    lineJoin: .round
+                )
             )
-        )
+        }
+        if let ring = armedViaPreviewRing(state, polylines: polylines) {
+            var path = Path()
+            for contour in ring {
+                path.addLines(contour.map(transform.point))
+                path.closeSubpath()
+            }
+            context.fill(path, with: .color(color), style: FillStyle(eoFill: true, antialiased: true))
+        }
+    }
+
+    /// The armed via's ring, outline then hole, where the next click drops it:
+    /// on the end of the preview, or on the end of the route itself while the
+    /// cursor rests there (see `addDrawTrackPoint`). Nil with no via armed,
+    /// and over a pad, where a click ends the route in the pad and drops none.
+    private func armedViaPreviewRing(_ state: DrawTrackState, polylines: [[HorizontalPoint]]) -> [[HorizontalPoint]]? {
+        guard state.placesVia, let via = routeVia(netID: state.netID) else {
+            return nil
+        }
+        var head = polylines.last?.last
+        if head == nil, !state.anchorOnPad, let anchor = state.anchor, let cursor = state.cursor,
+           pointKey(anchor) == pointKey(cursor) {
+            head = anchor
+        }
+        guard let head, boardPadReference(at: head, layer: state.layer) == nil else {
+            return nil
+        }
+        let place = HorizontalPlacementTransform(shift: head, angle: 0, mirrored: false)
+        return [place.circle(diameter: via.diameter, segments: 32), place.circle(diameter: via.holeDiameter, segments: 32)]
     }
 
     /// `c`: cycle the track corner style (90° ↔ 45°) while routing, else flip
@@ -5062,18 +5136,22 @@ struct BoardCanvasView: View {
     }
 
     private var canToggleVia: Bool {
-        drawTrackState != nil && board.viaTemplate != nil
+        guard let state = drawTrackState else {
+            return false
+        }
+        return routeVia(netID: state.netID) != nil
     }
 
-    /// `v`: drop a through via at the current route head and switch the active
-    /// copper layer so subsequent segments route on the far side. The via, its
-    /// hole and a junction all share the anchor position; connectivity unifies
-    /// them by position. No-op when the board has no via template (no padstack).
+    /// `v`: arm a via at the end of the route, or disarm it, as Horizon's
+    /// router toggles via placement. It rides on the cursor end of the
+    /// preview; the next click lays the route there and drops it at the end
+    /// (see `addDrawTrackPoint`). Nothing happens where no via rule gives the
+    /// route's net a via (`routeVia`).
     private func toggleVia() {
         guard !isReadOnly,
               var state = drawTrackState,
-              let anchor = state.anchor,
-              let template = board.viaTemplate else {
+              state.anchor != nil,
+              routeVia(netID: state.netID) != nil else {
             return
         }
         #if canImport(HorizontalPushShoveRouter)
@@ -5090,46 +5168,33 @@ struct BoardCanvasView: View {
             return
         }
         #endif
-        let netID = state.netID
-        pushTrackRouteStep(state)
-        var draft = editedBoard ?? sourceBoard
-        let junctionID = mergeBoardJunctions(at: anchor, preferredID: state.anchorJunctionID, netID: netID, board: &draft)
-        let viaID = UUID().uuidString.lowercased()
-        let viaDiameter = toolSettings.resolvedViaDiameter(template: template)
-        let viaHole = toolSettings.resolvedViaHoleDiameter(template: template)
-        draft.vias.append(
-            HorizontalMarker(
-                id: viaID,
-                position: anchor,
-                size: viaDiameter,
-                holeSize: viaHole,
-                layer: nil,
-                connectedLayers: BoardTrackRouting.throughViaLayers(copperLayerCount: board.copperLayerCount),
-                netID: netID,
-                // Track-tool vias are pinned (patchNewBoardVias writes net_set),
-                // so the model pins them too.
-                netSetID: netID
-            )
-        )
-        draft.viaHoles.append(
-            HorizontalHole(
-                id: "\(viaID)/hole",
-                position: anchor,
-                diameter: viaHole,
-                length: viaHole,
-                shape: .round,
-                plated: true,
-                netID: netID
-            )
-        )
-        editedBoard = draft
-        invalidateSelectableCache()
-
-        state.layer = BoardTrackRouting.oppositeRoutingLayer(state.layer)
-        state.anchorJunctionID = junctionID
-        state.anchorOnPad = false
-        state.viaCount += 1
+        state.placesVia.toggle()
         drawTrackState = state
+    }
+
+    /// The via the route drops on `netID`: the board's (`HorizontalBoard.routeVia`),
+    /// at the size the tool settings give a via when they give one, which
+    /// makes it the via's own.
+    private func routeVia(netID: String?) -> HorizontalBoardViaTemplate? {
+        guard var via = board.routeVia(netID: netID) else {
+            return nil
+        }
+        if toolSettings.viaDiameter != nil || toolSettings.viaHoleDiameter != nil {
+            via.diameter = toolSettings.resolvedViaDiameter(template: via)
+            via.holeDiameter = toolSettings.resolvedViaHoleDiameter(template: via)
+            via.fromRules = false
+        }
+        return via
+    }
+
+    /// The working layer follows the route through a via, as Horizon sets its
+    /// work layer to the router's, so the layer picker says where the route
+    /// now runs and the next route starts there. Asked only for a change: the
+    /// pane solos the layer when asked for the one it already has.
+    private func followRouteLayer(_ layer: Int) {
+        if drawingLayer != layer {
+            onSelectDrawingLayer(layer)
+        }
     }
 
     /// `w`: set an explicit track width for the current and subsequent routes,
@@ -5482,10 +5547,6 @@ struct BoardCanvasView: View {
         mergeBoardJunctions(at: point, preferredID: nil, netID: nil, board: &board)
     }
 
-    private func existingBoardJunctionID(matching id: String, in board: HorizontalBoard) -> String? {
-        board.junctions.keys.first { normalizedID($0) == normalizedID(id) }
-    }
-
     @discardableResult
     private func mergeBoardJunctions(
         at point: HorizontalPoint,
@@ -5493,29 +5554,7 @@ struct BoardCanvasView: View {
         netID: String?,
         board: inout HorizontalBoard
     ) -> String {
-        let key = pointKey(point)
-        let matchingIDs = board.junctions
-            .filter { pointKey($0.value) == key }
-            .map(\.key)
-        let existingPreferredID = preferredID.flatMap { existingBoardJunctionID(matching: $0, in: board) }
-        let keepID = existingPreferredID ?? matchingIDs.first ?? preferredID ?? UUID().uuidString.lowercased()
-        let keepNetID = board.junctionNetIDs[keepID]
-            ?? netID
-            ?? matchingIDs.compactMap { board.junctionNetIDs[$0] }.first
-
-        board.junctions[keepID] = point
-        if let keepNetID {
-            board.junctionNetIDs[keepID] = keepNetID
-        } else {
-            board.junctionNetIDs.removeValue(forKey: keepID)
-        }
-
-        for junctionID in matchingIDs where normalizedID(junctionID) != normalizedID(keepID) {
-            board.junctions.removeValue(forKey: junctionID)
-            board.junctionNetIDs.removeValue(forKey: junctionID)
-        }
-
-        return keepID
+        BoardTrackRouting.mergeJunctions(at: point, preferredID: preferredID, netID: netID, board: &board)
     }
 
     private func graphicsResult(
@@ -12387,11 +12426,17 @@ struct BoardCanvasView: View {
         }
 
         // Track preview: a translucent rubber-band route at the real copper
-        // width on the active layer, following the cursor between clicks. Drawn
-        // solid (not dashed) so it reads as a ghost of the finished track.
+        // width on the active layer, following the cursor between clicks, with
+        // the via `v` armed on its end. Drawn solid (not dashed) so it reads as
+        // a ghost of the finished track.
+        var triangles = [HorizontalMetalTrianglePrimitive]()
         if let track = drawTrackState {
             let color = HorizontalMetalRGBA(layerColor(for: track.layer).opacity(0.5))
-            for routePoints in trackPreviewPolylines(track) {
+            let polylines = trackPreviewPolylines(track)
+            if let ring = armedViaPreviewRing(track, polylines: polylines) {
+                triangles = HorizontalMetalTessellator.fragmentTriangles(ring, color: color)
+            }
+            for routePoints in polylines {
                 for pair in zip(routePoints, routePoints.dropFirst()) where pointKey(pair.0) != pointKey(pair.1) {
                     lines.append(
                         HorizontalMetalLinePrimitive(
@@ -12427,13 +12472,14 @@ struct BoardCanvasView: View {
             }
         }
 
-        guard !lines.isEmpty else {
+        guard !lines.isEmpty || !triangles.isEmpty else {
             return .empty
         }
-        let key = lines.hashValue
+        // One key for both, as the overlay keys the preview by its line key.
+        let key = lines.hashValue &* 31 &+ triangles.hashValue
         return BoardMetalLineBatch(
             triangleKey: key,
-            triangles: [],
+            triangles: triangles,
             lineKey: key,
             lines: lines,
             handleKey: 0,
