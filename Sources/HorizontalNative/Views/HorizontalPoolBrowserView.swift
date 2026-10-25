@@ -1196,7 +1196,7 @@ struct HorizontalPoolBrowserView: View {
             }
         }
         if item.category == .part {
-            digiKeyMenuItems(item)
+            distributorMenuItems(item)
         }
         if !appearanceSettings.isReadOnlyOperationEnabled {
             Button("Duplicate…") {
@@ -1249,19 +1249,22 @@ struct HorizontalPoolBrowserView: View {
         }
     }
 
-    /// A part's Open on DigiKey, as the Parts pane has it, through the same
-    /// monitor and cache. The menu is built as it opens, so it reads the
-    /// monitor then rather than the browser observing every answer (each
-    /// would redraw a list of thousands); a part not asked about yet — one
-    /// right-clicked without being selected — is asked about now, for the
-    /// next time.
+    /// A part's Open on DigiKey and the like, as the Parts pane has them,
+    /// through the same monitor and cache. The menu is built as it opens, so
+    /// it reads the monitor then rather than the browser observing every
+    /// answer (each would redraw a list of thousands); a part not asked about
+    /// yet — one right-clicked without being selected — is asked about now,
+    /// so the next menu opens DigiKey's page for it rather than its search.
     @ViewBuilder
-    private func digiKeyMenuItems(_ item: HorizontalPoolLibraryItem) -> some View {
+    private func distributorMenuItems(_ item: HorizontalPoolLibraryItem) -> some View {
         let monitor = HorizontalDigiKeyStockMonitor.shared
         let query = HorizontalDigiKeyQuery(item: item)
         let state = monitor.state(for: query)
         let _ = askDigiKeyIfUnasked(query, state)
-        HorizontalDigiKeyMenuItems(state: state == .pending ? .checking : state) {
+        HorizontalPartDistributorMenuItems(
+            links: HorizontalPartPageLink.links(mpn: query.mpn, manufacturer: query.manufacturer, digiKey: monitor),
+            digiKeyState: state
+        ) {
             monitor.lookUp([query], force: true)
         }
     }

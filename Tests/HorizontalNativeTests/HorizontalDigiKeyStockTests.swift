@@ -372,6 +372,48 @@ final class HorizontalDigiKeyStockMonitorTests: XCTestCase {
         XCTAssertNotNil(monitor.state(for: opAmp).productURL, "on again, the part's page is known")
     }
 
+    /// A part's Open on DigiKey, on the canvases and in the panes: DigiKey's
+    /// search for its MPN until the API has answered, then the product page
+    /// it answered with, which stays once the credentials go; none while
+    /// DigiKey is off, or for a part with no MPN.
+    func testAPartsDigiKeyLinkIsItsSearchUntilDigiKeyAnswers() async throws {
+        let server = DigiKeyStubServer { request, _ in
+            switch request.url?.path {
+            case "/v1/oauth2/token": .json(#"{"access_token":"t","expires_in":599}"#)
+            case "/products/v4/search/LM358DR/pricing": .json(DigiKeyFixtures.pricing)
+            default: .status(404, #"{"title":"Not Found"}"#)
+            }
+        }
+        let monitor = HorizontalDigiKeyStockMonitor(defaults: try makeDefaults(), secrets: .memory(), cacheURL: nil, makeClient: server.client(credentials:))
+        func links(_ mpn: String, _ manufacturer: String = "Texas Instruments") -> [HorizontalPartPageLink] {
+            HorizontalPartPageLink.links(mpn: mpn, manufacturer: manufacturer, digiKey: monitor)
+        }
+
+        let search = links(" LM358DR ")
+        XCTAssertEqual(search.map(\.title), ["Open on DigiKey"], "no credentials needed")
+        XCTAssertEqual(search.first?.url.absoluteString, "https://www.digikey.com/en/products/result?keywords=LM358DR")
+        XCTAssertEqual(links("AB+C#1/2&x=y").first?.url.absoluteString,
+                       "https://www.digikey.com/en/products/result?keywords=AB%2BC%231/2%26x%3Dy",
+                       "an MPN reaches the search as itself")
+        XCTAssertEqual(links(" "), [], "no MPN, no link")
+        XCTAssertTrue(server.requests.isEmpty, "a link asks DigiKey nothing")
+
+        try monitor.saveCredentials(clientID: "id", clientSecret: "secret")
+        monitor.lookUp([HorizontalDigiKeyQuery(mpn: "LM358DR", manufacturer: "Texas Instruments")])
+        try await waitUntilIdle(monitor)
+        let page = "https://www.digikey.com/en/products/detail/texas-instruments/LM358DR/555886"
+        XCTAssertEqual(links("LM358DR").first?.url.absoluteString, page, "the page DigiKey answered with")
+        XCTAssertEqual(links("LM358DR", "Onsemi").first?.url.absoluteString,
+                       "https://www.digikey.com/en/products/result?keywords=LM358DR",
+                       "another maker's part is not the one DigiKey answered about")
+
+        try monitor.removeCredentials()
+        XCTAssertEqual(links("LM358DR").first?.url.absoluteString, page, "the page outlasts the credentials")
+
+        monitor.isEnabled = false
+        XCTAssertEqual(links("LM358DR"), [], "none while DigiKey is off")
+    }
+
     /// A Pools pane part is asked about by its MPN, a derived part's from its
     /// base, never by the name a part without an MPN shows (its value).
     func testAPoolPartIsAskedAboutByItsMPN() {

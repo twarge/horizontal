@@ -2946,6 +2946,9 @@ struct BoardCanvasView: View {
             } else {
                 entries.append(.todo(title: "Open datasheet"))
             }
+            for link in packagePartPageLinks(for: ref) {
+                entries.append(.action(title: link.title, .openURL(link.url)))
+            }
         }
 
         return entries
@@ -3035,6 +3038,15 @@ struct BoardCanvasView: View {
             return nil
         }
         return Self.datasheetURL(datasheet)
+    }
+
+    /// Open on each distributor Settings has on, for the package's part.
+    private func packagePartPageLinks(for ref: HorizontalSelectableRef) -> [HorizontalPartPageLink] {
+        guard ref.type == .boardPackage,
+              let component = board.packages.first(where: { normalizedID($0.id) == normalizedID(ref.id) })?.componentDetails else {
+            return []
+        }
+        return HorizontalPartPageLink.links(mpn: component.mpn ?? "", manufacturer: component.manufacturer ?? "")
     }
 
     /// Turns a datasheet attribute string into an openable URL: an explicit

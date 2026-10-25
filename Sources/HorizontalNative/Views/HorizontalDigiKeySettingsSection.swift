@@ -1,11 +1,12 @@
 import SwiftUI
 
 /// Settings' DigiKey section: a switch for all of it, then the API client
-/// ID and secret the Parts pane's DigiKey Stock column and the panes' Open
-/// on DigiKey sign in with. The ID is a preference, the secret goes to the
-/// keychain, and saving signs in once to say whether DigiKey takes them.
-/// Off, the app asks DigiKey nothing and shows no column and no menu items;
-/// the credentials stay, for turning it back on.
+/// ID and secret the Parts pane's DigiKey Stock column signs in with. The
+/// ID is a preference, the secret goes to the keychain, and saving signs in
+/// once to say whether DigiKey takes them. A part's Open on DigiKey needs
+/// neither: it opens the page the API answered with, or DigiKey's search
+/// for the MPN. Off, the app asks DigiKey nothing and shows no column and no
+/// menu items; the credentials stay, for turning it back on.
 struct HorizontalDigiKeySettingsSection: View {
     @ObservedObject var monitor: HorizontalDigiKeyStockMonitor = .shared
     @State private var clientID = ""
@@ -32,7 +33,7 @@ struct HorizontalDigiKeySettingsSection: View {
         Section("DigiKey") {
             Toggle("Look Up Parts on DigiKey", isOn: $monitor.isEnabled)
             Text(monitor.isEnabled
-                 ? "Shows DigiKey's stock in the Parts pane, and Open on DigiKey when right-clicking a part in the Parts and Pools panes."
+                 ? "Shows DigiKey's stock in the Parts pane, and Open on DigiKey when right-clicking a part on the schematic, on the board, or in the Parts and Pools panes."
                  : "Off: Horizontal asks DigiKey nothing, and shows no DigiKey Stock column and no DigiKey menu items.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -70,7 +71,7 @@ struct HorizontalDigiKeySettingsSection: View {
                     .disabled(!canSave || !monitor.isEnabled)
             }
 
-            Text("The Parts pane's DigiKey Stock column asks DigiKey's Product Information API how many of each part's MPN DigiKey has in stock, once every 12 hours. Create an app with the Product Information V4 API on DigiKey's API portal and enter its client ID and secret here; the secret is kept in the keychain.")
+            Text("The Parts pane's DigiKey Stock column asks DigiKey's Product Information API how many of each part's MPN DigiKey has in stock, once every 12 hours. Create an app with the Product Information V4 API on DigiKey's API portal and enter its client ID and secret here; the secret is kept in the keychain. Open on DigiKey works without them, through DigiKey's search for the part's MPN.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Link("DigiKey API Portal", destination: Self.portalURL)
