@@ -1403,9 +1403,12 @@ struct BoardCanvasView: View {
             }
             let undoHint = trackRouteHistory.isEmpty ? "" : "   ⌫ back"
             // Horizon's tip says where an armed via's shape comes from.
-            var viaHint = board.rules.viaRules.isEmpty
-                ? "   V via (no via rules, and no default via in the pool)"
-                : "   V via (no via rule for this net)"
+            var viaHint = "   V via (no via rule for this net)"
+            if board.rules.viaRules.isEmpty {
+                viaHint = board.rules.statesViaRules
+                    ? "   V via (the board has no via rules)"
+                    : "   V via (no via rules, and no default via in the pool)"
+            }
             var viaArmed = ""
             if let via = routeVia(netID: state.netID) {
                 viaHint = state.placesVia ? "   V no via" : "   V via"

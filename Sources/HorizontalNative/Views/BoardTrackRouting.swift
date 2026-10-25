@@ -398,21 +398,18 @@ enum BoardTrackRouting {
     /// from the rules. Where that rule names no padstack, or no rule takes
     /// the net, Horizon drops no via, and neither does this.
     ///
-    /// A board with no via rules at all, as Horizontal's new-document template
-    /// wrote them until it gave a new board Horizon's, gets a via of its own
-    /// instead: the shape its own vias or first via definition have
-    /// (`template`), else the via rule Horizon would have given it, the
-    /// project pool's default via at RuleVia's 0.5 mm with a 0.2 mm hole.
+    /// A board whose rules say nothing about vias has Horizon's default via
+    /// rule by the time it loads, when its pool names a default via
+    /// (`HorizontalBoard.load`). One with neither gets a via of its own, the
+    /// shape its own vias or first via definition have (`template`), so that
+    /// it still gets one.
     static func routeVia(
         netID: String?,
         rules: HorizontalBoardRules,
-        template: HorizontalBoardViaTemplate?,
-        poolDefaultVia: String? = nil
+        template: HorizontalBoardViaTemplate?
     ) -> HorizontalBoardViaTemplate? {
-        guard !rules.viaRules.isEmpty else {
-            return template ?? poolDefaultVia.map {
-                HorizontalBoardViaTemplate(padstackID: $0, diameter: 500_000, holeDiameter: 200_000)
-            }
+        guard rules.statesViaRules || !rules.viaRules.isEmpty else {
+            return template
         }
         guard let rule = rules.via(net: netID), let padstack = rule.padstackID else {
             return nil
@@ -659,7 +656,6 @@ struct BoardTrackRouteStepResult: Equatable {
 extension HorizontalBoard {
     /// The via a route drops on `netID`: see `BoardTrackRouting.routeVia`.
     func routeVia(netID: String?) -> HorizontalBoardViaTemplate? {
-        BoardTrackRouting.routeVia(
-            netID: netID, rules: rules, template: viaTemplate, poolDefaultVia: poolDefaultViaPadstackID)
+        BoardTrackRouting.routeVia(netID: netID, rules: rules, template: viaTemplate)
     }
 }

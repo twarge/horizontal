@@ -59,9 +59,9 @@ final class HorizontalProjectTemplateTests: XCTestCase {
     }
 
     /// Horizon's `Project::create` gives a new board one via rule, with the
-    /// pool's default via, so a route has a via to drop. A pool with no
-    /// default via, set or not, gives none.
-    func testANewBoardHasAViaRuleWithThePoolsDefaultVia() throws {
+    /// pool's default via, so a route has a via to drop; here that via tented.
+    /// A pool with no default via, set or not, gives none.
+    func testANewBoardHasAViaRuleWithThePoolsDefaultViaTented() throws {
         func viaRules(_ pool: HorizontalProjectPoolTemplate) throws -> [String: Any]? {
             let data = try XCTUnwrap(HorizontalProjectArchive.newProject(pool: pool).regularFileData(relativePath: "board.json"))
             let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -81,6 +81,10 @@ final class HorizontalProjectTemplateTests: XCTestCase {
 
         XCTAssertNil(try viaRules(HorizontalProjectPoolTemplate()))
         XCTAssertNil(try viaRules(HorizontalProjectPoolTemplate(defaultViaUUID: HorizontalProjectArchive.nullUUID)))
+
+        // horizon-pool's default via opens the mask; its tented sibling stands in.
+        let stock = try XCTUnwrap(viaRules(HorizontalProjectPoolTemplate(defaultViaUUID: HorizontalProjectArchive.horizonPoolCircularVia)))
+        XCTAssertEqual((stock.values.first as? [String: Any])?["padstack"] as? String, HorizontalProjectArchive.horizonPoolTentedCircularVia)
     }
 
     /// A layer's substrate is the dielectric below it, so the bottom copper

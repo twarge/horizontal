@@ -101,6 +101,23 @@ struct HorizontalRuleMatch: Hashable {
         }
     }
 
+    /// The match as RuleMatch::serialize writes it.
+    var json: JSONDictionary {
+        var json: JSONDictionary = [
+            "mode": mode.rawValue,
+            "net": net ?? Self.zeroUUID,
+            "net_class": netClass ?? Self.zeroUUID,
+            "net_name_regex": netNameRegex
+        ]
+        if !netClassRegex.isEmpty {
+            json["net_class_regex"] = netClassRegex
+        }
+        if !nets.isEmpty {
+            json["nets"] = nets.sorted()
+        }
+        return json
+    }
+
     func matches(netID: String?, netDetails: [String: HorizontalNetDetails]) -> Bool {
         let normalizedNet = netID?.lowercased()
         switch mode {
@@ -578,6 +595,32 @@ struct HorizontalRuleVia: Hashable {
             }
         }
     }
+
+    /// The via rule Horizon's `Project::create` gives a new board: every net,
+    /// the pool's default via, at RuleVia's 0.5 mm with a 0.2 mm hole. Its id
+    /// comes from the board's, so every load of one board gives it the same.
+    static func horizonDefault(boardID: String, padstackID: String) -> HorizontalRuleVia {
+        let namespace = UUID(uuidString: "7a86ae31-3baf-4703-a427-68cbadbafe4b")!
+        let id = UUID.horizonUUID5(namespace: namespace, name: Array(boardID.lowercased().utf8)).uuidString.lowercased()
+        return HorizontalRuleVia(id: id, json: [
+            "enabled": true,
+            "order": 0,
+            "match": ["mode": "all", "net": zeroUUID, "net_class": zeroUUID, "net_name_regex": ""],
+            "padstack": padstackID,
+            "parameter_set": ["via_diameter": 500_000, "hole_diameter": 200_000]
+        ])
+    }
+
+    /// The rule as RuleVia::serialize writes it.
+    var json: JSONDictionary {
+        [
+            "enabled": enabled,
+            "order": order,
+            "match": match.json,
+            "padstack": padstackID ?? Self.zeroUUID,
+            "parameter_set": parameterSet.mapValues { Int($0.rounded()) }
+        ]
+    }
 }
 
 /// The lookup engine. Each lookup returns the first
@@ -590,6 +633,11 @@ struct HorizontalBoardRules: Hashable {
     var planeRules: [HorizontalRulePlane]
     var thermalRules: [HorizontalRuleThermals]
     var viaRules: [HorizontalRuleVia]
+    /// The file has a `via` entry in its rules, even an empty one. Horizon
+    /// always writes one; a board without, written by a tool that left the
+    /// via rules out, is given Horizon's default one when it loads
+    /// (`HorizontalBoard.load`) and has it written with its next save.
+    var statesViaRules: Bool
     var netDetails: [String: HorizontalNetDetails]
 
     init(rules: JSONDictionary?, netDetails: [String: HorizontalNetDetails]) {
@@ -614,6 +662,7 @@ struct HorizontalBoardRules: Hashable {
             .sorted { $0.order < $1.order }
         // By id where two share an order, so the pick never depends on the
         // order the file's map comes back in.
+        statesViaRules = rules["via"] != nil
         viaRules = rules.dictionaryMap("via")
             .map { HorizontalRuleVia(id: $0.key, json: $0.value) }
             .sorted { ($0.order, $0.id) < ($1.order, $1.id) }

@@ -1,4 +1,5 @@
 import Foundation
+import HorizontalProjectIO
 import HorizontalPlaneClipper
 
 private struct HorizontalBoardPanelLoadResult {
@@ -505,10 +506,12 @@ struct HorizontalBoard {
     /// Padstack + default geometry for vias the track tool creates. Nil when
     /// the board has no via definition and no existing via to source one from.
     var viaTemplate: HorizontalBoardViaTemplate? = nil
-    /// The project pool's `default_via` padstack, nil for none: what Horizon
-    /// gives a new board's via rule, and so what a route's via falls back to
-    /// on a board written with no via rules (`BoardTrackRouting.routeVia`).
-    var poolDefaultViaPadstackID: String? = nil
+    /// The padstack a default via rule takes on this board, nil for none: the
+    /// project pool's `default_via`, tented
+    /// (`HorizontalProjectArchive.defaultViaPadstack`). The Rules editor gives a
+    /// new via rule it, and a board whose rules say nothing about vias is given
+    /// a rule with it when it loads.
+    var defaultViaPadstackID: String? = nil
     /// Named via definitions from the board rules, offered by the via
     /// inspector's Definition picker. Sorted by name.
     var viaDefinitions: [HorizontalViaDefinition] = []
@@ -836,7 +839,17 @@ struct HorizontalBoard {
                     result[item.key] = value
                 }
             }
-        loadedBoard.poolDefaultViaPadstackID = poolURL.flatMap(poolDefaultVia(poolURL:))
+        loadedBoard.defaultViaPadstackID = HorizontalProjectArchive.defaultViaPadstack(
+            poolDefaultVia: poolURL.flatMap(poolDefaultVia(poolURL:)))
+        // A board whose rules say nothing about vias, as Horizontal's template
+        // wrote them before it gave a new board Horizon's via rule, gets the
+        // one Horizon would have given it, so a route's vias are the rules'.
+        // The board's next save writes it (`patchUnstatedViaRules`); a board
+        // whose via rules were all removed states none, and keeps none.
+        if !loadedBoard.rules.statesViaRules, loadedBoard.rules.viaRules.isEmpty,
+           let padstack = loadedBoard.defaultViaPadstackID {
+            loadedBoard.rules.viaRules = [HorizontalRuleVia.horizonDefault(boardID: loadedBoard.uuid, padstackID: padstack)]
+        }
         return loadedBoard
     }
 
