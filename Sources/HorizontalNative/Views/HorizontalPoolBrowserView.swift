@@ -424,7 +424,7 @@ struct HorizontalPoolBrowserView: View {
         // page by the time it is right-clicked.
         .onChange(of: selectedItemID) { _, _ in
             if let selectedItem, selectedItem.category == .part {
-                HorizontalDigiKeyStockMonitor.shared.lookUp([HorizontalDigiKeyQuery(item: selectedItem)])
+                HorizontalDigiKeyStockMonitor.shared.lookUp([HorizontalPartQuery(item: selectedItem)])
             }
         }
         .onChange(of: viewedPoolID) { _, _ in
@@ -1250,27 +1250,28 @@ struct HorizontalPoolBrowserView: View {
     }
 
     /// A part's Open on DigiKey and the like, as the Parts pane has them,
-    /// through the same monitor and cache. The menu is built as it opens, so
-    /// it reads the monitor then rather than the browser observing every
-    /// answer (each would redraw a list of thousands); a part not asked about
-    /// yet — one right-clicked without being selected — is asked about now,
-    /// so the next menu opens DigiKey's page for it rather than its search.
+    /// through the same monitors. The menu is built as it opens, so it reads
+    /// the monitors then rather than the browser observing every answer
+    /// (each would redraw a list of thousands); a part not asked about yet —
+    /// one right-clicked without being selected — is asked about at DigiKey
+    /// now, so the next menu opens DigiKey's page for it rather than its
+    /// search. Mouser is never asked from here: its terms forbid fetching
+    /// ahead, and this pane shows no Mouser stock, so Open on Mouser is its
+    /// search unless the Parts pane holds an answer.
     @ViewBuilder
     private func distributorMenuItems(_ item: HorizontalPoolLibraryItem) -> some View {
         let monitor = HorizontalDigiKeyStockMonitor.shared
-        let query = HorizontalDigiKeyQuery(item: item)
+        let query = HorizontalPartQuery(item: item)
         let state = monitor.state(for: query)
         let _ = askDigiKeyIfUnasked(query, state)
         HorizontalPartDistributorMenuItems(
             links: HorizontalPartPageLink.links(mpn: query.mpn, manufacturer: query.manufacturer, digiKey: monitor),
-            digiKeyState: state
-        ) {
-            monitor.lookUp([query], force: true)
-        }
+            stockChecks: [HorizontalStockCheck.digiKey(state) { monitor.lookUp([query], force: true) }].compactMap { $0 }
+        )
     }
 
     /// After the menu is built, not while: the answer changes the monitor.
-    private func askDigiKeyIfUnasked(_ query: HorizontalDigiKeyQuery, _ state: HorizontalDigiKeyStockMonitor.CellState) {
+    private func askDigiKeyIfUnasked(_ query: HorizontalPartQuery, _ state: HorizontalDigiKeyStockMonitor.CellState) {
         guard state == .pending else { return }
         DispatchQueue.main.async {
             HorizontalDigiKeyStockMonitor.shared.lookUp([query])

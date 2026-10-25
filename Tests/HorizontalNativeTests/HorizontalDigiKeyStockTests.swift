@@ -96,11 +96,11 @@ final class HorizontalDigiKeyClientTests: XCTestCase {
     }
 
     func testManufacturersMatchWhenOneNameHoldsTheOther() {
-        XCTAssertTrue(HorizontalDigiKeyClient.manufacturersMatch("Murata", "Murata Electronics"))
-        XCTAssertTrue(HorizontalDigiKeyClient.manufacturersMatch("Maxim Integrated", "Analog Devices Inc./Maxim Integrated"))
-        XCTAssertTrue(HorizontalDigiKeyClient.manufacturersMatch("STMicroelectronics", "ST Microelectronics"))
-        XCTAssertFalse(HorizontalDigiKeyClient.manufacturersMatch("TI", "Texas Instruments"), "too short to match")
-        XCTAssertFalse(HorizontalDigiKeyClient.manufacturersMatch("Vishay", "Yageo"))
+        XCTAssertTrue(HorizontalPartQuery.manufacturersMatch("Murata", "Murata Electronics"))
+        XCTAssertTrue(HorizontalPartQuery.manufacturersMatch("Maxim Integrated", "Analog Devices Inc./Maxim Integrated"))
+        XCTAssertTrue(HorizontalPartQuery.manufacturersMatch("STMicroelectronics", "ST Microelectronics"))
+        XCTAssertFalse(HorizontalPartQuery.manufacturersMatch("TI", "Texas Instruments"), "too short to match")
+        XCTAssertFalse(HorizontalPartQuery.manufacturersMatch("Vishay", "Yageo"))
     }
 
     func testAnMPNRidesInThePathAsOneSegment() async {
@@ -385,8 +385,11 @@ final class HorizontalDigiKeyStockMonitorTests: XCTestCase {
             }
         }
         let monitor = HorizontalDigiKeyStockMonitor(defaults: try makeDefaults(), secrets: .memory(), cacheURL: nil, makeClient: server.client(credentials:))
+        // Mouser's own link is HorizontalMouserStockMonitorTests'.
+        let mouser = HorizontalMouserStockMonitor(defaults: try makeDefaults(), secrets: .memory())
+        mouser.isEnabled = false
         func links(_ mpn: String, _ manufacturer: String = "Texas Instruments") -> [HorizontalPartPageLink] {
-            HorizontalPartPageLink.links(mpn: mpn, manufacturer: manufacturer, digiKey: monitor)
+            HorizontalPartPageLink.links(mpn: mpn, manufacturer: manufacturer, digiKey: monitor, mouser: mouser)
         }
 
         let search = links(" LM358DR ")
@@ -399,7 +402,7 @@ final class HorizontalDigiKeyStockMonitorTests: XCTestCase {
         XCTAssertTrue(server.requests.isEmpty, "a link asks DigiKey nothing")
 
         try monitor.saveCredentials(clientID: "id", clientSecret: "secret")
-        monitor.lookUp([HorizontalDigiKeyQuery(mpn: "LM358DR", manufacturer: "Texas Instruments")])
+        monitor.lookUp([HorizontalPartQuery(mpn: "LM358DR", manufacturer: "Texas Instruments")])
         try await waitUntilIdle(monitor)
         let page = "https://www.digikey.com/en/products/detail/texas-instruments/LM358DR/555886"
         XCTAssertEqual(links("LM358DR").first?.url.absoluteString, page, "the page DigiKey answered with")
@@ -424,10 +427,10 @@ final class HorizontalDigiKeyStockMonitorTests: XCTestCase {
                 manufacturer: "Texas Instruments", mpn: mpn
             )
         }
-        XCTAssertEqual(HorizontalDigiKeyQuery(item: item(.part, name: "LM358DR", mpn: "LM358DR")).mpn, "LM358DR")
-        XCTAssertEqual(HorizontalDigiKeyQuery(item: item(.part, name: "10k", mpn: "")).mpn, "", "a value is no MPN")
-        XCTAssertEqual(HorizontalDigiKeyQuery(item: item(.package, name: "SOIC-8", mpn: "SOIC-8")).mpn, "")
-        XCTAssertEqual(HorizontalDigiKeyQuery(item: item(.part, name: "LM358DR", mpn: "LM358DR")).manufacturer, "Texas Instruments")
+        XCTAssertEqual(HorizontalPartQuery(item: item(.part, name: "LM358DR", mpn: "LM358DR")).mpn, "LM358DR")
+        XCTAssertEqual(HorizontalPartQuery(item: item(.part, name: "10k", mpn: "")).mpn, "", "a value is no MPN")
+        XCTAssertEqual(HorizontalPartQuery(item: item(.package, name: "SOIC-8", mpn: "SOIC-8")).mpn, "")
+        XCTAssertEqual(HorizontalPartQuery(item: item(.part, name: "LM358DR", mpn: "LM358DR")).manufacturer, "Texas Instruments")
 
         let base = HorizontalPoolLibraryItem(
             id: "base", uuid: "base", name: "LM358", detail: "", tags: "", category: .part, poolName: "Pool",
@@ -440,11 +443,11 @@ final class HorizontalDigiKeyStockMonitorTests: XCTestCase {
             partRecord: HorizontalPartRecord(json: ["type": "part", "uuid": "derived", "base": "base", "MPN": [true, ""], "manufacturer": [true, ""]])
         )
         let resolved = HorizontalPoolLibrary.resolvingInheritance([base, derived])
-        XCTAssertEqual(resolved.last.map(HorizontalDigiKeyQuery.init(item:))?.mpn, "LM358", "inherited through the base")
+        XCTAssertEqual(resolved.last.map(HorizontalPartQuery.init(item:))?.mpn, "LM358", "inherited through the base")
     }
 
     func testRemovingTheCredentialsForgetsTheSecret() throws {
-        let secrets = HorizontalDigiKeySecretStore.memory()
+        let secrets = HorizontalSecretStore.memory()
         let monitor = HorizontalDigiKeyStockMonitor(defaults: try makeDefaults(), secrets: secrets, cacheURL: nil)
         try monitor.saveCredentials(clientID: " id ", clientSecret: " secret ")
         XCTAssertEqual(monitor.clientID, "id")

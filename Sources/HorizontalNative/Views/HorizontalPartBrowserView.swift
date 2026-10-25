@@ -70,6 +70,9 @@ struct HorizontalPartBrowserView: View {
     var onSelectUses: ((HorizontalPoolPart.ID) -> Void)? = nil
     /// What DigiKey stocks of each part, for the DigiKey Stock column.
     @ObservedObject var digiKey: HorizontalDigiKeyStockMonitor = .shared
+    /// What Mouser stocks of the parts on screen, for the Mouser Stock
+    /// column.
+    @ObservedObject var mouser: HorizontalMouserStockMonitor = .shared
 
     @State private var searchScope: HorizontalPartSearchScope = .all
     @State private var searchText = ""
@@ -366,10 +369,15 @@ struct HorizontalPartBrowserView: View {
     }
 
     /// The sum of the columns' minimum widths (plus row insets): the least
-    /// width at which every column is still legible.
-    private static let minimumTableWidth: CGFloat = 1240
+    /// width at which every column is still legible. A distributor's stock
+    /// column counts while that distributor is on.
+    private var minimumTableWidth: CGFloat {
+        1140 + (digiKey.isEnabled ? Self.stockColumnMinimumWidth : 0) + (mouser.isEnabled ? Self.stockColumnMinimumWidth : 0)
+    }
 
+    private static let stockColumnMinimumWidth: CGFloat = 100
     private static let digiKeyStockColumnID = "digikeyStock"
+    private static let mouserStockColumnID = "mouserStock"
 
     /// The column is there while DigiKey is on in Settings, and shown unless
     /// hidden from the table's header menu.
@@ -379,7 +387,7 @@ struct HorizontalPartBrowserView: View {
 
     private var digiKeyLookupSignature: String {
         guard digiKey.isConfigured, showsDigiKeyStock else { return "" }
-        let keys = shownParts.map { HorizontalDigiKeyQuery(part: $0).key }.sorted()
+        let keys = shownParts.map { HorizontalPartQuery(part: $0).key }.sorted()
         return "\(digiKey.credentialsRevision)\u{1E}" + keys.joined(separator: "\u{1E}")
     }
 
@@ -392,7 +400,7 @@ struct HorizontalPartBrowserView: View {
             ScrollView(.horizontal) {
                 sortableTable
                     .frame(
-                        width: max(proxy.size.width, Self.minimumTableWidth),
+                        width: max(proxy.size.width, minimumTableWidth),
                         height: proxy.size.height
                     )
             }
@@ -485,8 +493,20 @@ struct HorizontalPartBrowserView: View {
                 TableColumn("DigiKey Stock") { part in
                     digiKeyStockCell(part)
                 }
-                .width(min: 100, ideal: 110)
+                .width(min: Self.stockColumnMinimumWidth, ideal: 110)
                 .customizationID(Self.digiKeyStockColumnID)
+            }
+
+            // Mouser's stock of the part's MPN, while Mouser is on: asked
+            // about only for the rows on screen, and held in memory only, as
+            // Mouser's API terms require. A column of its own, credited to
+            // Mouser, never mixed with another distributor's.
+            if mouser.isEnabled {
+                TableColumn("Mouser Stock") { part in
+                    mouserStockCell(part)
+                }
+                .width(min: Self.stockColumnMinimumWidth, ideal: 110)
+                .customizationID(Self.mouserStockColumnID)
             }
 
             TableColumn("Tags", value: \.tagList) { part in
@@ -557,9 +577,12 @@ struct HorizontalPartBrowserView: View {
         }
         #endif
         HorizontalPartDistributorMenuItems(
-            links: HorizontalPartPageLink.links(mpn: part.mpn, manufacturer: part.manufacturer, digiKey: digiKey),
-            digiKeyState: digiKey.state(for: part)
-        ) { digiKey.lookUp([part], force: true) }
+            links: HorizontalPartPageLink.links(mpn: part.mpn, manufacturer: part.manufacturer, digiKey: digiKey, mouser: mouser),
+            stockChecks: [
+                HorizontalStockCheck.digiKey(digiKey.state(for: part)) { digiKey.lookUp([part], force: true) },
+                HorizontalStockCheck.mouser(mouser.state(for: part)) { mouser.lookUp([HorizontalPartQuery(part: part)]) }
+            ].compactMap { $0 }
+        )
     }
 
     /// The pools a part can be opened in, each in a window of its own: the
@@ -618,6 +641,46 @@ struct HorizontalPartBrowserView: View {
                     place(part)
                 }
                 .help(state.help(for: part))
+        }
+    }
+
+    /// The part's stock at Mouser: a count, right-aligned, orange when none
+    /// is left or the part is winding down, and a link to the part's Mouser
+    /// page; its tooltip says what is on order and credits Mouser. The row
+    /// tells the monitor it shows the part for as long as it is up, which is
+    /// what has Mouser asked about it.
+    @ViewBuilder
+    private func mouserStockCell(_ part: HorizontalPoolPart) -> some View {
+        let state = mouser.state(for: part)
+        let query = HorizontalPartQuery(part: part)
+        let text = Text(state.title)
+            .monospacedDigit()
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: state.isNumeric ? .trailing : .leading)
+            .contentShape(Rectangle())
+        Group {
+            if let url = state.productURL {
+                Button { openURL(url) } label: {
+                    text.foregroundStyle(state.isWarning ? Color.orange : Color.accentColor)
+                }
+                .buttonStyle(.plain)
+                #if os(macOS)
+                .pointerStyle(.link)
+                #endif
+            } else {
+                text
+                    .foregroundStyle(state.isWarning ? Color.orange : state.isNumeric ? Color.primary : Color.secondary)
+                    .onTapGesture(count: 2) {
+                        place(part)
+                    }
+            }
+        }
+        .help(state.help(for: part))
+        .onAppear { mouser.show(query) }
+        .onDisappear { mouser.hide(query) }
+        .onChange(of: query) { old, new in
+            mouser.hide(old)
+            mouser.show(new)
         }
     }
 
@@ -741,31 +804,51 @@ struct HorizontalPartBrowserView: View {
 
 /// A part's distributor entries in its context menu, the Parts pane's and
 /// the Pools pane's alike: Open on each distributor Settings has on, for a
-/// part with an MPN (`HorizontalPartPageLink`), and DigiKey's stock check
-/// while DigiKey is set up; nothing otherwise. A link is there whether or
-/// not DigiKey has answered yet, so a menu, which can't change while it is
-/// open, never waits on one.
+/// part with an MPN (`HorizontalPartPageLink`), then a stock check for each
+/// distributor set up whose stock the pane shows; nothing otherwise. A link
+/// is there whether or not the distributor has answered yet, so a menu,
+/// which can't change while it is open, never waits on one.
 struct HorizontalPartDistributorMenuItems: View {
     var links: [HorizontalPartPageLink]
-    var digiKeyState: HorizontalDigiKeyStockMonitor.CellState
-    var checkDigiKey: () -> Void
-
-    private var canCheckDigiKey: Bool {
-        switch digiKeyState {
-        case .off, .noMPN, .notSetUp: false
-        default: true
-        }
-    }
+    var stockChecks: [HorizontalStockCheck] = []
 
     var body: some View {
-        if !links.isEmpty || canCheckDigiKey {
+        if !links.isEmpty || !stockChecks.isEmpty {
             Divider()
             ForEach(links) { link in
                 Link(link.title, destination: link.url)
             }
-            if canCheckDigiKey {
-                Button(digiKeyState.hasAnswer ? "Check DigiKey Stock Again" : "Check DigiKey Stock", action: checkDigiKey)
+            ForEach(stockChecks) { check in
+                Button(check.title, action: check.action)
             }
+        }
+    }
+}
+
+/// A part's Check <distributor> Stock menu item: there while the
+/// distributor is on and set up and the part has an MPN.
+struct HorizontalStockCheck: Identifiable {
+    var distributor: HorizontalDistributor
+    /// The distributor has answered for the part, so the item asks again.
+    var hasAnswer: Bool
+    var action: () -> Void
+
+    var id: HorizontalDistributor { distributor }
+    var title: String {
+        hasAnswer ? "Check \(distributor.name) Stock Again" : "Check \(distributor.name) Stock"
+    }
+
+    static func digiKey(_ state: HorizontalDigiKeyStockMonitor.CellState, action: @escaping () -> Void) -> HorizontalStockCheck? {
+        switch state {
+        case .off, .noMPN, .notSetUp: nil
+        default: HorizontalStockCheck(distributor: .digiKey, hasAnswer: state.hasAnswer, action: action)
+        }
+    }
+
+    static func mouser(_ state: HorizontalMouserStockMonitor.CellState, action: @escaping () -> Void) -> HorizontalStockCheck? {
+        switch state {
+        case .off, .noMPN, .notSetUp: nil
+        default: HorizontalStockCheck(distributor: .mouser, hasAnswer: state.hasAnswer, action: action)
         }
     }
 }
