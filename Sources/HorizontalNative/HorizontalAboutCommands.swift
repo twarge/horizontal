@@ -83,6 +83,11 @@ Copyright (C) 2000-2020, Intel Corporation. Copyright (C) 2009-2011, Willow Gara
 Licensed under the BSD 3-Clause License.
 The vector outlines originate with Dr. A. V. Hershey at the US National Bureau of Standards and are not subject to copyright.
 Full text: Contents/Resources/ThirdPartyLicenses/Hershey/LICENSE (in-tree copy: Vendor/Hersheyish/LICENSE)
+
+Horizon pool via padstacks
+"Circular via" by Lukas K. and "Circular via (tented)" by Lukas K. and fruchti, from the Horizon pool, compiled by the Horizon community. Shipped unchanged.
+Licensed under CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/legalcode), with an exception for the designs that use them.
+Full text and attribution: Contents/Resources/ThirdPartyLicenses/horizon-pool/LICENSE.md and README.md (in-tree copies: Sources/HorizontalProjectIO/Resources/horizon-pool/)
 """
 }
 #endif

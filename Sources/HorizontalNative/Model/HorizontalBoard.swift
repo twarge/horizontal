@@ -506,12 +506,12 @@ struct HorizontalBoard {
     /// Padstack + default geometry for vias the track tool creates. Nil when
     /// the board has no via definition and no existing via to source one from.
     var viaTemplate: HorizontalBoardViaTemplate? = nil
-    /// The padstack a default via rule takes on this board, nil for none: the
-    /// project pool's `default_via`, tented
+    /// The padstack a default via rule takes on this board: the project
+    /// pool's `default_via`, tented, else the tented via Horizontal ships
     /// (`HorizontalProjectArchive.defaultViaPadstack`). The Rules editor gives a
     /// new via rule it, and a board whose rules say nothing about vias is given
     /// a rule with it when it loads.
-    var defaultViaPadstackID: String? = nil
+    var defaultViaPadstackID = HorizontalProjectArchive.defaultViaPadstack(poolDefaultVia: nil)
     /// Named via definitions from the board rules, offered by the via
     /// inspector's Definition picker. Sorted by name.
     var viaDefinitions: [HorizontalViaDefinition] = []
@@ -846,9 +846,10 @@ struct HorizontalBoard {
         // one Horizon would have given it, so a route's vias are the rules'.
         // The board's next save writes it (`patchUnstatedViaRules`); a board
         // whose via rules were all removed states none, and keeps none.
-        if !loadedBoard.rules.statesViaRules, loadedBoard.rules.viaRules.isEmpty,
-           let padstack = loadedBoard.defaultViaPadstackID {
-            loadedBoard.rules.viaRules = [HorizontalRuleVia.horizonDefault(boardID: loadedBoard.uuid, padstackID: padstack)]
+        if !loadedBoard.rules.statesViaRules, loadedBoard.rules.viaRules.isEmpty {
+            loadedBoard.rules.viaRules = [
+                HorizontalRuleVia.horizonDefault(boardID: loadedBoard.uuid, padstackID: loadedBoard.defaultViaPadstackID)
+            ]
         }
         return loadedBoard
     }
@@ -2749,7 +2750,6 @@ struct HorizontalBoard {
             }
 
             if let padstackID = item.string("padstack"),
-               let poolURL,
                let padstackJSON = loadPoolPadstack(padstackID, poolURL: poolURL) {
                 let holes = padstackHoles(
                     padstackJSON,
@@ -2841,11 +2841,12 @@ struct HorizontalBoard {
     /// Derives a via's solder-mask openings the way Horizon's board expand
     /// does: run the via padstack's parameter program with the via's parameter
     /// set (injecting the rules' `via_solder_mask_expansion` when the via
-    /// doesn't carry one) and read the resulting mask-layer shapes back. When
-    /// the padstack can't be loaded (no pool), the openings fall back to plain
-    /// rule-expansion circles — the geometry every stock via padstack produces
-    /// — so a pool-less load still shows and exports honest mask openings. A
-    /// genuinely tented padstack (one with no mask shapes) yields nil.
+    /// doesn't carry one) and read the resulting mask-layer shapes back. A
+    /// tented padstack (one with no mask shapes) yields nil. horizon-pool's
+    /// vias load without a pool, from the copies Horizontal ships; when any
+    /// other padstack can't be loaded, the openings fall back to plain
+    /// rule-expansion circles on both sides, so a via whose padstack is
+    /// nowhere still shows and exports an opening rather than none.
     private static func viaMaskExpansions(
         padstackID: String?,
         parameterSet: JSONDictionary?,
@@ -2857,7 +2858,7 @@ struct HorizontalBoard {
         let ruleExpansion = parameterSet?.double("via_solder_mask_expansion")
             ?? boardParameterSet.double("via_solder_mask_expansion")
             ?? 100_000
-        guard let padstackID, let poolURL,
+        guard let padstackID,
               let padstackJSON = loadPoolPadstack(padstackID, poolURL: poolURL) else {
             return (ruleExpansion, ruleExpansion)
         }
@@ -4877,21 +4878,29 @@ struct HorizontalBoard {
         }
     }
 
-    private static func loadPoolPadstack(_ padstackID: String, poolURL: URL) -> JSONDictionary? {
+    /// The padstack from the project pool, else, for one of horizon-pool's
+    /// vias the pool hasn't cached yet, the copy Horizontal ships
+    /// (`HorizontalBuiltInPool`), which is the same file.
+    private static func loadPoolPadstack(_ padstackID: String, poolURL: URL?) -> JSONDictionary? {
         let padstackID = normalizedID(padstackID)
-        let candidateURLs = [
-            poolURL
-                .appendingPathComponent("padstacks")
-                .appendingPathComponent("cache")
-                .appendingPathComponent("\(padstackID).json"),
-            poolURL
-                .appendingPathComponent("padstacks")
-                .appendingPathComponent("\(padstackID).json")
-        ]
-        return candidateURLs.lazy.compactMap { url in
-            existingFileURL(url).flatMap { try? JSONHelper.loadDictionary(from: $0) }
-        }.first
-            ?? HorizontalProjectPoolIndex.url(.padstack, padstackID, poolURL: poolURL).flatMap { try? JSONHelper.loadDictionary(from: $0) }
+        if let poolURL {
+            let candidateURLs = [
+                poolURL
+                    .appendingPathComponent("padstacks")
+                    .appendingPathComponent("cache")
+                    .appendingPathComponent("\(padstackID).json"),
+                poolURL
+                    .appendingPathComponent("padstacks")
+                    .appendingPathComponent("\(padstackID).json")
+            ]
+            if let json = candidateURLs.lazy.compactMap({ url in
+                existingFileURL(url).flatMap { try? JSONHelper.loadDictionary(from: $0) }
+            }).first
+                ?? HorizontalProjectPoolIndex.url(.padstack, padstackID, poolURL: poolURL).flatMap({ try? JSONHelper.loadDictionary(from: $0) }) {
+                return json
+            }
+        }
+        return HorizontalBuiltInPool.padstackData(padstackID).flatMap { try? JSONHelper.loadDictionary(from: $0) }
     }
 
     private static func holeDiameter(for hole: JSONDictionary, parameterSet: JSONDictionary?) -> Double? {

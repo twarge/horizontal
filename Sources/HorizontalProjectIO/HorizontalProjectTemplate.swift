@@ -33,12 +33,21 @@ public extension HorizontalProjectArchive {
     /// The padstack a board's default via rule takes, where Horizon takes the
     /// pool's `default_via`: that via, tented. horizon-pool's default is its
     /// Circular via, so its tented Circular via stands in for it; a pool that
-    /// names another via keeps its own. Nil when the pool names none.
-    static func defaultViaPadstack(poolDefaultVia: String?) -> String? {
-        guard let via = poolDefaultVia?.lowercased(), !via.isEmpty, via != nullUUID else {
-            return nil
+    /// names another via keeps its own. Where no pool names one, as with no
+    /// pool installed, it is the tented Circular via Horizontal ships
+    /// (`HorizontalBuiltInPool`), the one horizon-pool would have given.
+    static func defaultViaPadstack(poolDefaultVia: String?) -> String {
+        guard let via = poolDefaultVia?.lowercased(), !via.isEmpty, via != nullUUID, via != horizonPoolCircularVia else {
+            return horizonPoolTentedCircularVia
         }
-        return via == horizonPoolCircularVia ? horizonPoolTentedCircularVia : via
+        return via
+    }
+
+    /// Where a project pool keeps its copy of a padstack taken from a pool,
+    /// relative to the pool: `ProjectPool::get_filename`'s cache, for a
+    /// padstack that belongs to no package.
+    static func cachedPadstackPath(_ uuid: String) -> String {
+        "padstacks/cache/\(uuid.lowercased()).json"
     }
 
     /// A project pool's `pool.json`, the keys `PoolInfo::save` writes.
@@ -76,9 +85,10 @@ public extension HorizontalProjectArchive {
     /// The `.gitignore` is Horizon's, so the pool database and the editors'
     /// sidecar files stay out of a repository the project is committed to.
     ///
-    /// `pool/pool.json` is the project pool, empty until a part placed from
-    /// the Pools pane is cached into it (Horizon's project pool layout); the
-    /// project file names it as `pool_directory` the way Horizon does.
+    /// `pool/pool.json` is the project pool, holding no more than the board's
+    /// default via until a part placed from the Pools pane is cached into it
+    /// (Horizon's project pool layout); the project file names it as
+    /// `pool_directory` the way Horizon does.
     static func newProject(named name: String = "Untitled", pool: HorizontalProjectPoolTemplate = HorizontalProjectPoolTemplate()) -> HorizontalProjectArchive {
         let safeName = name
             .replacingOccurrences(of: "/", with: "-")
@@ -174,11 +184,11 @@ public extension HorizontalProjectArchive {
 
         // Horizon's `Project::create` gives a new board one via rule, with the
         // pool's default via, so a route's `v` has a via to drop; here that
-        // via tented. RuleVia's own defaults: every net, a 0.5 mm via with a
-        // 0.2 mm hole.
-        var rules = [String: Any]()
-        if let via = defaultViaPadstack(poolDefaultVia: pool.defaultViaUUID) {
-            rules["via"] = [
+        // via tented, and with no pool the one Horizontal ships. RuleVia's own
+        // defaults: every net, a 0.5 mm via with a 0.2 mm hole.
+        let via = defaultViaPadstack(poolDefaultVia: pool.defaultViaUUID)
+        let rules: [String: Any] = [
+            "via": [
                 newID(): [
                     "enabled": true,
                     "order": 0,
@@ -192,6 +202,14 @@ public extension HorizontalProjectArchive {
                     "parameter_set": ["via_diameter": 500_000, "hole_diameter": 200_000]
                 ]
             ]
+        ]
+        // The project pool carries the via, as Horizon's caches an item the
+        // project takes from a pool, so the project needs no pool to open. A
+        // via Horizontal doesn't ship is cached from its pool when a board
+        // first saves with it (`HorizontalProjectJSONApplicator`).
+        var poolFiles: [String: HorizontalProjectArchiveNode] = ["pool.json": .regularFile(projectPoolData(pool))]
+        if let padstack = HorizontalBuiltInPool.padstackData(via) {
+            poolFiles["padstacks"] = .directory(["cache": .directory(["\(via).json": .regularFile(padstack)])])
         }
 
         let board: [String: Any] = [
@@ -243,9 +261,7 @@ public extension HorizontalProjectArchive {
                 "planes.json": .regularFile(jsonData(planes)),
                 // Horizon writes this with every new project (`Project::create`).
                 ".gitignore": .regularFile(HorizontalProjectGitignore.data),
-                projectPoolDirectoryName: .directory([
-                    "pool.json": .regularFile(projectPoolData(pool))
-                ])
+                projectPoolDirectoryName: .directory(poolFiles)
             ]),
             suggestedFilename: "\(safeName).horizontal"
         )

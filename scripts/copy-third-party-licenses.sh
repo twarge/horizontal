@@ -49,6 +49,12 @@ install_license RapidJSON   "${SRCROOT_DIR}/Vendor/RapidJSON/license.txt"
 install_license Clipper     "${SRCROOT_DIR}/Vendor/Clipper/License.txt"
 install_license earcut      "${SRCROOT_DIR}/Vendor/earcut/LICENSE"
 install_license Hershey     "${SRCROOT_DIR}/Vendor/Hersheyish/LICENSE"
+# The Horizon pool items the app ships (HorizontalBuiltInPool) carry their
+# licence and attribution in their own directory, inside the module's resource
+# bundle; the copies here are where the About panel points.
+HORIZON_POOL="${SRCROOT_DIR}/Sources/HorizontalProjectIO/Resources/horizon-pool"
+install_license horizon-pool "${HORIZON_POOL}/LICENSE.md"
+install_license horizon-pool "${HORIZON_POOL}/README.md"
 
 if [ "$missing" -gt 0 ] && [ "$CONFIG" != "Debug" ]; then
     echo "error: ${missing} third-party licence text(s) missing from a ${CONFIG} build; the About panel advertises them and OCCT's LGPL requires it"

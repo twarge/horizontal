@@ -233,6 +233,10 @@ final class HorizontalMCPFieldFindings44Tests: XCTestCase {
         try apply([["op": "ensure_component", "refdes": "U1", "part": chip.part],
                    ["op": "ensure_net", "name": "SYNC"], ["op": "ensure_net", "name": "GND"]], ["pool_items": chip.items])
         let sync = try XCTUnwrap((try result("get_net", ["name": "SYNC"]) as? JSONDictionary)?.string("id"))
+        // The rules here are the test's own, without the one Horizon gives a new board.
+        let template = try XCTUnwrap(try result("board_rules", ["kind": "via"]) as? JSONDictionary).dictionaryArray("rules")
+        XCTAssertEqual(template.count, 1)
+        try apply(template.compactMap { $0.string("id") }.map { ["op": "remove_rule", "kind": "via", "id": $0] })
 
         // 134: a whole rule in one op, ordered after the rules already there.
         let every = try apply([["op": "add_rule", "kind": "via", "fields": [
@@ -310,8 +314,11 @@ final class HorizontalMCPFieldFindings44Tests: XCTestCase {
             json["rules"] = rules
             json["vias"] = [:] as JSONDictionary
         }
-        let bare = try error([["op": "add_rule", "kind": "via"]])
+        // A new one starts with the board's default via, so a rule told none.
+        let bare = try error([["op": "add_rule", "kind": "via", "fields": ["padstack": ""]]])
         XCTAssertTrue(bare.contains("Via rule has no padstack"), bare)
+        let started = try apply([["op": "add_rule", "kind": "via"]])
+        XCTAssertEqual(changes(started).first?.dictionary("rule")?.string("padstack"), HorizontalProjectArchive.horizonPoolTentedCircularVia)
     }
     // MARK: - 115: where a pin ends on the sheet
 

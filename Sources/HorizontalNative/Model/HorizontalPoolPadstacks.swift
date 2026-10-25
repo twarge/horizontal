@@ -1,4 +1,5 @@
 import Foundation
+import HorizontalProjectIO
 
 /// A pool padstack the inspector pickers can offer: normalized UUID, display
 /// name, and Horizon padstack type ("via", "hole", "mechanical", "top", ...).
@@ -203,11 +204,26 @@ enum HorizontalPoolPadstacks {
         lock.unlock()
     }
 
+    /// The file a project pool that lacks this padstack would cache it from:
+    /// the discovered base pool's, else, for one of horizon-pool's vias, the
+    /// copy Horizontal ships (`HorizontalBuiltInPool`), the same file. Nil
+    /// when the project pool has it itself, under whatever name, or nothing
+    /// has it.
+    static func cacheSource(id: String, poolURL: URL) -> URL? {
+        let normalized = normalizedID(id)
+        guard let url = catalog(for: poolURL).urlsByID[normalized] else {
+            return HorizontalBuiltInPool.padstackURL(normalized)
+        }
+        let pool = poolURL.standardizedFileURL.path
+        return url.standardizedFileURL.path.hasPrefix(pool.hasSuffix("/") ? pool : pool + "/") ? nil : url
+    }
+
     /// Makes sure the project pool itself carries this padstack, copying it
-    /// verbatim from a discovered base pool into `padstacks/cache/<uuid>.json`
-    /// when it is missing — the same self-contained cache Horizon's pool
-    /// update maintains, so the project stays openable in Horizon and this
-    /// app's parser (which reads only the project pool) resolves it on reload.
+    /// verbatim from a discovered base pool, or the copy Horizontal ships of
+    /// one of horizon-pool's vias, into `padstacks/cache/<uuid>.json` when it
+    /// is missing — the same self-contained cache Horizon's pool update
+    /// maintains, so the project stays openable in Horizon and this app's
+    /// parser (which reads only the project pool) resolves it on reload.
     /// Returns false when the padstack exists nowhere reachable.
     @discardableResult
     static func ensureCached(id: String, poolURL: URL) -> Bool {
@@ -224,14 +240,13 @@ enum HorizontalPoolPadstacks {
             return true
         }
 
-        guard let sourceURL = catalog(for: poolURL).urlsByID[normalized],
-              let data = try? Data(contentsOf: sourceURL) else {
-            return false
-        }
         // A catalog hit inside the project pool with a non-UUID filename
         // (name-based pool files) also counts as present — don't duplicate it.
-        if sourceURL.standardizedFileURL.path.hasPrefix(poolURL.standardizedFileURL.path) {
-            return true
+        guard let sourceURL = cacheSource(id: normalized, poolURL: poolURL) else {
+            return catalog(for: poolURL).urlsByID[normalized] != nil
+        }
+        guard let data = try? Data(contentsOf: sourceURL) else {
+            return false
         }
         do {
             try FileManager.default.createDirectory(

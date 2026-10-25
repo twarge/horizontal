@@ -187,7 +187,63 @@ enum HorizontalProjectJSONApplicator {
         )
         patchBoardPanels(&json, panels: board.boardPanels)
 
-        return try saveJSON(json, relativePath: path, to: &archive)
+        let boardChanged = try saveJSON(json, relativePath: path, to: &archive)
+        let padstacksCached = cacheViaPadstacks(of: board, in: project, to: &archive)
+        return boardChanged || padstacksCached
+    }
+
+    /// The padstacks the board's vias and via rules name, cached into the
+    /// project pool where it has none, as Horizon's project pool caches an
+    /// item the moment the project takes it from a pool: from the pool that
+    /// has it, else, for one of horizon-pool's vias, the copy Horizontal ships.
+    /// The project then carries its vias, and opens in Horizon with no pool
+    /// installed. Written with the edit that uses them, they are undone with
+    /// it. A padstack nothing has is left out, and so is a pool the archive
+    /// can't hold; neither stops the board's own save. Returns whether any
+    /// was cached.
+    private static func cacheViaPadstacks(
+        of board: HorizontalBoard,
+        in project: HorizontalProject,
+        to archive: inout HorizontalProjectArchive
+    ) -> Bool {
+        let named = board.vias.compactMap(\.padstackID) + board.rules.viaRules.compactMap(\.padstackID)
+        let padstackIDs = Set(named.map(normalizedID)).subtracting(["", HorizontalProjectArchive.nullUUID])
+        guard !padstackIDs.isEmpty else {
+            return false
+        }
+        let poolDirectory = project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName
+        let poolURL = project.baseURL.appendingPathComponent(poolDirectory, isDirectory: true)
+        var cached = false
+        for padstackID in padstackIDs.sorted() {
+            let path = "\(poolDirectory)/\(HorizontalProjectArchive.cachedPadstackPath(padstackID))"
+            guard archive.regularFileData(relativePath: path) == nil,
+                  archive.regularFileData(relativePath: "\(poolDirectory)/padstacks/\(padstackID).json") == nil,
+                  let source = HorizontalPoolPadstacks.cacheSource(id: padstackID, poolURL: poolURL),
+                  let data = try? Data(contentsOf: source) else {
+                continue
+            }
+            do {
+                try ensureProjectPool(at: poolURL, directory: poolDirectory, in: &archive)
+                try archive.replaceRegularFileData(relativePath: path, with: data)
+                cached = true
+            } catch {
+                // A pool outside the project's folder, which the archive can't hold.
+            }
+        }
+        return cached
+    }
+
+    /// A project made before projects carried a pool gets one, so what is
+    /// cached for it has a pool to be in.
+    private static func ensureProjectPool(at poolURL: URL, directory: String, in archive: inout HorizontalProjectArchive) throws {
+        let manifest = "\(directory)/pool.json"
+        if archive.regularFileData(relativePath: manifest) == nil,
+           !FileManager.default.fileExists(atPath: poolURL.appendingPathComponent("pool.json").path) {
+            try archive.replaceRegularFileData(
+                relativePath: manifest,
+                with: HorizontalProjectArchive.projectPoolData(HorizontalProjectDocument.projectPoolTemplate())
+            )
+        }
     }
 
     static func boardRules(in project: HorizontalProject, from archive: HorizontalProjectArchive) throws -> JSONDictionary {
@@ -580,14 +636,7 @@ enum HorizontalProjectJSONApplicator {
             read: { url in poolPath(url, in: current).flatMap { current.regularFileData(relativePath: $0) } },
             list: HorizontalPoolCacheDestination.disk.list
         )
-        let manifest = "\(poolDirectory)/pool.json"
-        if archive.regularFileData(relativePath: manifest) == nil,
-           !FileManager.default.fileExists(atPath: poolURL.appendingPathComponent("pool.json").path) {
-            try archive.replaceRegularFileData(
-                relativePath: manifest,
-                with: HorizontalProjectArchive.projectPoolData(HorizontalProjectDocument.projectPoolTemplate())
-            )
-        }
+        try ensureProjectPool(at: poolURL, directory: poolDirectory, in: &archive)
         for file in try HorizontalPoolCacheImporter.planFrame(item, into: poolURL, destination: destination) {
             guard let path = poolPath(file.url, in: archive) else {
                 throw HorizontalProjectJSONApplyError.missingArchivePath(file.url)
