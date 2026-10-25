@@ -222,6 +222,18 @@ enum HorizontalCanvasInputCore {
         return nil
     }
 
+    /// How many grid steps an arrow moves the selection: one bare, a tenth
+    /// with Option, eight with Shift. Nil for any other modifiers, whose
+    /// arrows the canvas leaves to the rest of the app.
+    static func arrowGridSteps(_ modifiers: HorizontalCanvasInputModifiers) -> Double? {
+        switch modifiers {
+        case []: 1
+        case .option: 0.1
+        case .shift: 8
+        default: nil
+        }
+    }
+
     /// The ~25-key canvas-command table. Mirrors `MonitorView.canvasCommand`.
     /// The digit a key names, independent of modifiers and layout.
     ///

@@ -391,7 +391,7 @@ final class SchematicKeyboardMoveTests: XCTestCase {
         defer { window.close() }
         let handle = monitor.makeEventHandler()
         var moves: [HorizontalPoint] = []
-        monitor.onMoveSelectionByGrid = { direction, fine in moves.append(direction * (fine ? 0.1 : 1)) }
+        monitor.onMoveSelectionByGrid = { direction, steps in moves.append(direction * steps) }
         func event(_ code: UInt16, _ characters: String, modifiers: NSEvent.ModifierFlags = []) throws -> NSEvent {
             try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
                 timestamp: 0, windowNumber: window.windowNumber, context: nil,
@@ -403,6 +403,8 @@ final class SchematicKeyboardMoveTests: XCTestCase {
         XCTAssertEqual(moves, [.init(x: 0, y: 1), .init(x: 0, y: -1), .init(x: -1, y: 0), .init(x: 1, y: 0)])
         XCTAssertNil(handle(try event(126, "\u{f700}", modifiers: .option)))
         XCTAssertEqual(moves.last, .init(x: 0, y: 0.1))
+        XCTAssertNil(handle(try event(123, "\u{f702}", modifiers: .shift)), "Shift-arrow moves eight grid steps")
+        XCTAssertEqual(moves.last, .init(x: -8, y: 0))
         let unhandled = try event(0, "?")
         XCTAssertTrue(handle(unhandled) === unhandled)
         let modifiedArrow = try event(126, "\u{f700}", modifiers: .command)
@@ -412,7 +414,7 @@ final class SchematicKeyboardMoveTests: XCTestCase {
         XCTAssertTrue(window.makeFirstResponder(textView))
         let textArrow = try event(124, "\u{f703}")
         XCTAssertTrue(handle(textArrow) === textArrow, "Text fields retain normal cursor movement")
-        XCTAssertEqual(moves.count, 5)
+        XCTAssertEqual(moves.count, 6)
     }
 
     /// Billo, 2026-10-13: during a placement, typing "tps62172" or Delete in a
