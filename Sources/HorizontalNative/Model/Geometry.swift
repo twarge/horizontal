@@ -557,6 +557,20 @@ struct HorizontalBoardViaTemplate: Equatable {
     var fromRules = false
     /// The rule's whole parameter set, when the shape is a rule's.
     var parameterSet: [String: Double] = [:]
+    /// The solder-mask openings the padstack gives a via of this shape, as
+    /// `HorizontalMarker` keeps them; nil on a side it tents. Nil on both
+    /// until `HorizontalBoard.viaWithMaskOpenings` derives them.
+    var topMaskExpansion: Double? = nil
+    var bottomMaskExpansion: Double? = nil
+
+    /// The parameter set a via of this shape is written with: the rule's, at
+    /// the diameter and hole the template gives.
+    var viaParameterSet: [String: Double] {
+        var parameters = parameterSet
+        parameters["via_diameter"] = diameter
+        parameters["hole_diameter"] = holeDiameter
+        return parameters
+    }
 }
 
 /// A named via definition from the board rules (`rules.via_definitions`):

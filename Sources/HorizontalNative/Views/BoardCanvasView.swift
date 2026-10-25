@@ -4860,9 +4860,14 @@ struct BoardCanvasView: View {
             placesVia: state.placesVia
         )
         var draft = editedBoard ?? sourceBoard
+        // The via opens the mask where its padstack does, read here, once a
+        // click drops it, rather than with every preview that asks its shape.
+        let via = state.placesVia
+            ? routeVia(netID: netID).map { draft.viaWithMaskOpenings($0, poolURL: poolURL) }
+            : nil
         let laid = BoardTrackRouting.lay(
             specs, to: target, endsOnPad: endsOnPad,
-            via: state.placesVia ? routeVia(netID: netID) : nil,
+            via: via,
             from: head, on: &draft
         )
         guard laid.segments > 0 || laid.vias > 0 else {

@@ -484,8 +484,9 @@ enum BoardTrackRouting {
     }
 
     /// Drops `via` at `point` on `board`: a through via, its hole and the
-    /// junction they share, which connectivity unifies by position. Returns
-    /// the junction's id.
+    /// junction they share, which connectivity unifies by position. The via
+    /// opens the solder mask where the template says its padstack does
+    /// (`HorizontalBoard.viaWithMaskOpenings`). Returns the junction's id.
     @discardableResult
     static func dropVia(
         _ via: HorizontalBoardViaTemplate,
@@ -496,9 +497,6 @@ enum BoardTrackRouting {
     ) -> String {
         let junctionID = mergeJunctions(at: point, preferredID: preferredJunctionID, netID: netID, board: &board)
         let viaID = UUID().uuidString.lowercased()
-        var parameters = via.parameterSet
-        parameters["via_diameter"] = via.diameter
-        parameters["hole_diameter"] = via.holeDiameter
         board.vias.append(
             HorizontalMarker(
                 id: viaID,
@@ -513,7 +511,9 @@ enum BoardTrackRouting {
                 netSetID: netID,
                 padstackID: via.padstackID,
                 fromRules: via.fromRules,
-                parameterSet: parameters
+                parameterSet: via.viaParameterSet,
+                topMaskExpansion: via.topMaskExpansion,
+                bottomMaskExpansion: via.bottomMaskExpansion
             )
         )
         board.viaHoles.append(

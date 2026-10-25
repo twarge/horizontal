@@ -2855,12 +2855,15 @@ struct HorizontalBoard {
         boardParameterSet: JSONDictionary,
         cache: inout [String: (top: Double?, bottom: Double?)]
     ) -> (top: Double?, bottom: Double?) {
-        let ruleExpansion = parameterSet?.double("via_solder_mask_expansion")
-            ?? boardParameterSet.double("via_solder_mask_expansion")
-            ?? 100_000
+        let boardExpansion = boardParameterSet.double("via_solder_mask_expansion") ?? 100_000
         guard let padstackID,
               let padstackJSON = loadPoolPadstack(padstackID, poolURL: poolURL) else {
-            return (ruleExpansion, ruleExpansion)
+            return viaMaskExpansions(
+                padstackJSON: nil,
+                parameterSet: parameterSet ?? [:],
+                viaDiameter: viaDiameter,
+                boardMaskExpansion: boardExpansion
+            )
         }
 
         let cacheKey = normalizedID(padstackID)
@@ -2874,10 +2877,54 @@ struct HorizontalBoard {
             padstackJSON: padstackJSON,
             parameterSet: parameterSet ?? [:],
             viaDiameter: viaDiameter,
-            ruleMaskExpansion: ruleExpansion
+            boardMaskExpansion: boardExpansion
         )
         cache[cacheKey] = result
         return result
+    }
+
+    /// A via's openings as the board loads them (`parseVias`): its
+    /// padstack's, expanded with the via's own `via_solder_mask_expansion`
+    /// or else the rules' (`boardMaskExpansion`), and that expansion on both
+    /// sides where the padstack is nowhere (`padstackJSON` nil).
+    static func viaMaskExpansions(
+        padstackJSON: JSONDictionary?,
+        parameterSet: JSONDictionary,
+        viaDiameter: Double,
+        boardMaskExpansion: Double
+    ) -> (top: Double?, bottom: Double?) {
+        let ruleExpansion = parameterSet.double("via_solder_mask_expansion") ?? boardMaskExpansion
+        guard let padstackJSON else {
+            return (ruleExpansion, ruleExpansion)
+        }
+        return viaMaskExpansions(
+            padstackJSON: padstackJSON,
+            parameterSet: parameterSet,
+            viaDiameter: viaDiameter,
+            ruleMaskExpansion: ruleExpansion
+        )
+    }
+
+    /// `via` with the solder-mask openings its padstack gives a via of its
+    /// shape, derived as the board derives a loaded via's, so a via dropped
+    /// with it (`BoardTrackRouting.dropVia`) opens the mask on the canvas and
+    /// in the fabrication output, which are drawn from the board as edited,
+    /// as it will once the project is reopened. The padstack is read as the
+    /// board reads it after its next save (`viaPadstack`).
+    func viaWithMaskOpenings(_ via: HorizontalBoardViaTemplate, poolURL: URL?) -> HorizontalBoardViaTemplate {
+        let parameters = via.viaParameterSet.reduce(into: JSONDictionary()) { result, item in
+            result[item.key] = item.value
+        }
+        let expansions = Self.viaMaskExpansions(
+            padstackJSON: Self.viaPadstack(via.padstackID, poolURL: poolURL),
+            parameterSet: parameters,
+            viaDiameter: via.diameter,
+            boardMaskExpansion: ruleViaMaskExpansion
+        )
+        var via = via
+        via.topMaskExpansion = expansions.top
+        via.bottomMaskExpansion = expansions.bottom
+        return via
     }
 
     /// Core of the mask-opening derivation, shared by the parse and the
@@ -4882,25 +4929,43 @@ struct HorizontalBoard {
     /// vias the pool hasn't cached yet, the copy Horizontal ships
     /// (`HorizontalBuiltInPool`), which is the same file.
     private static func loadPoolPadstack(_ padstackID: String, poolURL: URL?) -> JSONDictionary? {
-        let padstackID = normalizedID(padstackID)
-        if let poolURL {
-            let candidateURLs = [
-                poolURL
-                    .appendingPathComponent("padstacks")
-                    .appendingPathComponent("cache")
-                    .appendingPathComponent("\(padstackID).json"),
-                poolURL
-                    .appendingPathComponent("padstacks")
-                    .appendingPathComponent("\(padstackID).json")
-            ]
-            if let json = candidateURLs.lazy.compactMap({ url in
-                existingFileURL(url).flatMap { try? JSONHelper.loadDictionary(from: $0) }
-            }).first
-                ?? HorizontalProjectPoolIndex.url(.padstack, padstackID, poolURL: poolURL).flatMap({ try? JSONHelper.loadDictionary(from: $0) }) {
-                return json
-            }
+        projectPoolPadstack(padstackID, poolURL: poolURL) ?? builtInPadstack(padstackID)
+    }
+
+    /// A via's padstack as the board reads it once the via is saved: the
+    /// project pool's, else the file the save caches there for it
+    /// (`HorizontalPoolPadstacks.cacheSource`), a base pool's or, for one of
+    /// horizon-pool's vias, the copy Horizontal ships.
+    static func viaPadstack(_ padstackID: String, poolURL: URL?) -> JSONDictionary? {
+        projectPoolPadstack(padstackID, poolURL: poolURL)
+            ?? poolURL
+                .flatMap { HorizontalPoolPadstacks.cacheSource(id: padstackID, poolURL: $0) }
+                .flatMap { try? JSONHelper.loadDictionary(from: $0) }
+            ?? builtInPadstack(padstackID)
+    }
+
+    private static func projectPoolPadstack(_ padstackID: String, poolURL: URL?) -> JSONDictionary? {
+        guard let poolURL else {
+            return nil
         }
-        return HorizontalBuiltInPool.padstackData(padstackID).flatMap { try? JSONHelper.loadDictionary(from: $0) }
+        let padstackID = normalizedID(padstackID)
+        let candidateURLs = [
+            poolURL
+                .appendingPathComponent("padstacks")
+                .appendingPathComponent("cache")
+                .appendingPathComponent("\(padstackID).json"),
+            poolURL
+                .appendingPathComponent("padstacks")
+                .appendingPathComponent("\(padstackID).json")
+        ]
+        return candidateURLs.lazy.compactMap({ url in
+            existingFileURL(url).flatMap { try? JSONHelper.loadDictionary(from: $0) }
+        }).first
+            ?? HorizontalProjectPoolIndex.url(.padstack, padstackID, poolURL: poolURL).flatMap({ try? JSONHelper.loadDictionary(from: $0) })
+    }
+
+    private static func builtInPadstack(_ padstackID: String) -> JSONDictionary? {
+        HorizontalBuiltInPool.padstackData(normalizedID(padstackID)).flatMap { try? JSONHelper.loadDictionary(from: $0) }
     }
 
     private static func holeDiameter(for hole: JSONDictionary, parameterSet: JSONDictionary?) -> Double? {
