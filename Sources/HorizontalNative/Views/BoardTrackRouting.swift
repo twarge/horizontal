@@ -399,10 +399,10 @@ enum BoardTrackRouting {
     /// the net, Horizon drops no via, and neither does this.
     ///
     /// A board whose rules say nothing about vias has Horizon's default via
-    /// rule by the time it loads, when its pool names a default via
-    /// (`HorizontalBoard.load`). One with neither gets a via of its own, the
-    /// shape its own vias or first via definition have (`template`), so that
-    /// it still gets one.
+    /// rule by the time it loads, with the pool's default via or the one
+    /// Horizontal ships (`HorizontalBoard.load`). Rules that say nothing of
+    /// vias and were never loaded with a board give a via of the board's own,
+    /// the shape its own vias or first via definition have (`template`).
     static func routeVia(
         netID: String?,
         rules: HorizontalBoardRules,

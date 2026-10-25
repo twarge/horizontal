@@ -69,3 +69,11 @@ The other bundled components — RapidJSON (MIT), mapbox/earcut.hpp (ISC), Clipp
 outlines themselves are the work of Dr A. V. Hershey at the US National Bureau
 of Standards and were never subject to copyright; `Vendor/Hersheyish` holds the
 generator and the pinned upstream sources.
+
+**Horizon pool items.** The app ships two padstacks from the
+[Horizon pool](https://github.com/horizon-eda/horizon-pool), its Circular via
+and Circular via (tented), so a new board has a via without a pool installed.
+They are horizon-pool's files, unchanged and under their own uuids, and stay
+under its licence, CC BY-SA 4.0 with an exception for designs, not Apache 2.0.
+`Sources/HorizontalProjectIO/Resources/horizon-pool` holds them, apart from the
+code, with that licence and their attribution.

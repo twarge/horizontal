@@ -674,6 +674,16 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual(viaJSON["from_rules"] as? Bool, true)
     }
 
+    /// A new board has the via rule Horizon gives every new board. A test of
+    /// rules of its own takes it out first, as the Rules editor would, and
+    /// leaves a board that states no via rules.
+    private func removeTheNewBoardsViaRule() throws {
+        let read = try XCTUnwrap(try result("board_rules", ["kind": "via"]) as? [String: Any])
+        let ids = (read["rules"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String }
+        XCTAssertEqual(ids.count, 1, "the new board's via rule")
+        _ = try apply(ids.map { ["op": "remove_rule", "kind": "via", "id": $0] })
+    }
+
     /// Rewrites the board file directly, for copper no op can write yet.
     private func editBoard(_ body: (inout JSONDictionary) throws -> Void) throws {
         let url = packageURL.appendingPathComponent("board.json")
@@ -1086,9 +1096,10 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual((try result("list_tracks") as? [String: Any])?["total"] as? Int, 0)
     }
 
-    /// A via needs a padstack. A board with no via to copy one from says so
-    /// rather than writing a via that references nothing.
+    /// A via needs a padstack. A board with no via rule and no via to copy
+    /// one from says so rather than writing a via that references nothing.
     func testViaNeedsAPadstackAndCarriesItsNet() throws {
+        try removeTheNewBoardsViaRule()
         try placedDivider()
         let bare = try call("apply", ["ops": [["op": "place_via", "x_mm": 15, "y_mm": 15, "net": "VCC"]]])
         let error = try XCTUnwrap(bare["error"] as? [String: Any])
@@ -1318,6 +1329,9 @@ final class HorizontalProjectEditorTests: XCTestCase {
     /// An agent that cannot see the clearance cannot respect it. The rules are
     /// handed over as the file states them, and a board with none says so.
     func testBoardRulesAreReadableAndSayWhenThereAreNone() throws {
+        let fresh = try XCTUnwrap(try result("board_rules") as? [String: Any])
+        XCTAssertEqual((fresh["rules"] as? [[String: Any]])?.map { $0["kind"] as? String }, ["via"], "Horizon's via rule for a new board")
+        try removeTheNewBoardsViaRule()
         let bare = try XCTUnwrap(try result("board_rules") as? [String: Any])
         XCTAssertEqual((bare["rules"] as? [[String: Any]])?.count, 0)
         XCTAssertTrue((bare["note"] as? String ?? "").contains("no rules"), "\(bare)")
@@ -1724,6 +1738,7 @@ final class HorizontalProjectEditorTests: XCTestCase {
     /// Rules are writable, and every write is checked by the app's own
     /// validator before it commits.
     func testRulesAreWrittenOnlyWhenTheyStayValid() throws {
+        try removeTheNewBoardsViaRule()
         let added = try apply([["op": "add_rule", "kind": "track_width"]])
         let change = try XCTUnwrap((added["changes"] as? [[String: Any]])?.first)
         XCTAssertEqual(change["created"] as? Bool, true)
@@ -1765,6 +1780,7 @@ final class HorizontalProjectEditorTests: XCTestCase {
     /// A rule the validator calls an error is refused, and nothing is written —
     /// a clearance rule written wrong would let check pass on a bad board.
     func testAnInvalidRuleIsRefused() throws {
+        try removeTheNewBoardsViaRule()
         _ = try apply([["op": "add_rule", "kind": "clearance_copper"]])
         let before = try XCTUnwrap(try result("board_rules") as? [String: Any])
         let refused = try call("apply", ["ops": [["op": "set_rule", "kind": "clearance_copper",

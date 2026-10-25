@@ -28,7 +28,10 @@ enum HorizontalPoolCacheUsage {
     /// - the BOM's concrete parts;
     /// - each sheet's frame;
     /// - each board package's alternate package, each via's padstack, each
-    ///   hole's padstack and each decal.
+    ///   hole's padstack and each decal;
+    /// - each via rule's padstack. Horizon's cleanup counts a via's alone, but
+    ///   the rule's is every via the rule gives, and the board's next save
+    ///   would only cache it again (`HorizontalProjectJSONApplicator`).
     static func roots(in archive: HorizontalProjectArchive, project: HorizontalProject) -> Set<HorizontalPoolItemReference> {
         var roots = Set<HorizontalPoolItemReference>()
         func add(_ type: String, _ uuid: String?) {
@@ -63,6 +66,9 @@ enum HorizontalPoolCacheUsage {
             }
             for decal in board.dictionaryMap("decals").values {
                 add("decal", decal.string("decal"))
+            }
+            for rule in (board.dictionary("rules")?.dictionaryMap("via") ?? [:]).values {
+                add("padstack", rule.string("padstack"))
             }
         }
         return roots

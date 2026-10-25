@@ -35,6 +35,12 @@ let package = Package(
         .target(
             name: "HorizontalProjectIO",
             path: "Sources/HorizontalProjectIO",
+            // Horizon pool items the app ships (`HorizontalBuiltInPool`):
+            // horizon-pool's own files under its licence, CC BY-SA 4.0, kept
+            // apart from the code with that licence and their attribution.
+            resources: [
+                .copy("Resources/horizon-pool")
+            ],
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]

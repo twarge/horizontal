@@ -803,11 +803,12 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(tools["pour_planes"].annotations.read_only_hint)
         self.assertIn("expected_revision", tools["pour_planes"].input_schema["properties"])
 
-        # A fresh board has no shape and no rules, and says so rather than
-        # implying it is ready.
+        # A fresh board has no shape, and of rules only the via rule Horizon
+        # gives every new board, with the tented via Horizontal ships, so a
+        # route has a via to drop.
         rules = (await self.call("board_rules", project_ref=self.ref))["data"]
-        self.assertEqual(rules["rules"], [])
-        self.assertIn("no rules", rules["note"])
+        self.assertEqual([rule["kind"] for rule in rules["rules"]], ["via"])
+        self.assertEqual(rules["rules"][0]["rule"]["padstack"], "8b6dee4b-af88-4c0f-b38b-c5364649e65e")
         self.assertEqual((await self.call("list_polygons", project_ref=self.ref))["data"], [])
         self.assertEqual((await self.call("list_planes", project_ref=self.ref))["data"], [])
 

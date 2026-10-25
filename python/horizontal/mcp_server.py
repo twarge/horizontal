@@ -615,7 +615,8 @@ def open_project(path: str, source: Literal["auto", "live", "disk"] = "auto") ->
 def new_project(path: str, name: str | None = None) -> dict[str, Any]:
     """Create a project from the new-document template as a .horizontal package and open it. path must not exist
     and must end in .horizontal. The project it makes has a pool, an empty top block, one schematic sheet and a
-    board with no outline — give it one before expecting fabrication output to mean anything."""
+    board with no outline — give it one before expecting fabrication output to mean anything. The board has the via
+    rule Horizon gives a new board, with horizon-pool's tented Circular via, which its pool carries."""
     project = _open_context_for(path, name)
     return project.summary
 

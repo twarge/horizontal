@@ -18,6 +18,7 @@ final class HorizontalProjectTemplateTests: XCTestCase {
                 "blocks.json",
                 "board.json",
                 "planes.json",
+                "pool/padstacks/cache/\(HorizontalProjectArchive.horizonPoolTentedCircularVia).json",
                 "pool/pool.json",
                 "top_block.json",
                 "top_schematic.json",
@@ -60,12 +61,16 @@ final class HorizontalProjectTemplateTests: XCTestCase {
 
     /// Horizon's `Project::create` gives a new board one via rule, with the
     /// pool's default via, so a route has a via to drop; here that via tented.
-    /// A pool with no default via, set or not, gives none.
+    /// A pool with no default via, set or not, gives the tented via
+    /// Horizontal ships, horizon-pool's own.
     func testANewBoardHasAViaRuleWithThePoolsDefaultViaTented() throws {
         func viaRules(_ pool: HorizontalProjectPoolTemplate) throws -> [String: Any]? {
             let data = try XCTUnwrap(HorizontalProjectArchive.newProject(pool: pool).regularFileData(relativePath: "board.json"))
             let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
             return (json["rules"] as? [String: Any])?["via"] as? [String: Any]
+        }
+        func padstack(_ rules: [String: Any]?) -> String? {
+            (rules?.values.first as? [String: Any])?["padstack"] as? String
         }
         let rules = try XCTUnwrap(viaRules(HorizontalProjectPoolTemplate(defaultViaUUID: "1c4d3f0a-8e7b-4a6e-9c3d-2b1a0f9e8d7c")))
         XCTAssertEqual(rules.count, 1)
@@ -79,12 +84,31 @@ final class HorizontalProjectTemplateTests: XCTestCase {
         XCTAssertEqual(parameters["via_diameter"] as? Int, 500_000)
         XCTAssertEqual(parameters["hole_diameter"] as? Int, 200_000)
 
-        XCTAssertNil(try viaRules(HorizontalProjectPoolTemplate()))
-        XCTAssertNil(try viaRules(HorizontalProjectPoolTemplate(defaultViaUUID: HorizontalProjectArchive.nullUUID)))
+        let tented = HorizontalProjectArchive.horizonPoolTentedCircularVia
+        XCTAssertEqual(padstack(try viaRules(HorizontalProjectPoolTemplate())), tented, "no pool")
+        XCTAssertEqual(padstack(try viaRules(HorizontalProjectPoolTemplate(defaultViaUUID: HorizontalProjectArchive.nullUUID))), tented)
+        XCTAssertEqual(try viaRules(HorizontalProjectPoolTemplate())?.count, 1)
 
         // horizon-pool's default via opens the mask; its tented sibling stands in.
-        let stock = try XCTUnwrap(viaRules(HorizontalProjectPoolTemplate(defaultViaUUID: HorizontalProjectArchive.horizonPoolCircularVia)))
-        XCTAssertEqual((stock.values.first as? [String: Any])?["padstack"] as? String, HorizontalProjectArchive.horizonPoolTentedCircularVia)
+        XCTAssertEqual(padstack(try viaRules(HorizontalProjectPoolTemplate(defaultViaUUID: HorizontalProjectArchive.horizonPoolCircularVia))), tented)
+    }
+
+    /// The project pool carries the tented via its board's rule names, the
+    /// file Horizontal ships byte for byte, where Horizon's project pool
+    /// caches a padstack it takes from a pool, so the project opens with no
+    /// pool installed. A via of another pool's is the pool's to give.
+    func testANewProjectsPoolCarriesTheTentedViaItsRuleNames() throws {
+        let tented = HorizontalProjectArchive.horizonPoolTentedCircularVia
+        for pool in [HorizontalProjectPoolTemplate(), HorizontalProjectPoolTemplate(defaultViaUUID: HorizontalProjectArchive.horizonPoolCircularVia)] {
+            let archive = HorizontalProjectArchive.newProject(pool: pool)
+            let cached = try XCTUnwrap(archive.regularFileData(relativePath: "pool/" + HorizontalProjectArchive.cachedPadstackPath(tented)))
+            XCTAssertEqual(cached, HorizontalBuiltInPool.padstackData(tented))
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: cached) as? [String: Any])
+            XCTAssertEqual(json["uuid"] as? String, tented)
+            XCTAssertEqual(json["padstack_type"] as? String, "via")
+        }
+        let other = HorizontalProjectArchive.newProject(pool: HorizontalProjectPoolTemplate(defaultViaUUID: "1c4d3f0a-8e7b-4a6e-9c3d-2b1a0f9e8d7c"))
+        XCTAssertFalse(other.regularFilePaths.contains { $0.hasPrefix("pool/padstacks/") })
     }
 
     /// A layer's substrate is the dielectric below it, so the bottom copper

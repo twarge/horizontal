@@ -319,6 +319,8 @@
 				"$(SRCROOT)/Vendor/Clipper/License.txt",
 				"$(SRCROOT)/Vendor/earcut/LICENSE",
 				"$(SRCROOT)/Vendor/Hersheyish/LICENSE",
+				"$(SRCROOT)/Sources/HorizontalProjectIO/Resources/horizon-pool/LICENSE.md",
+				"$(SRCROOT)/Sources/HorizontalProjectIO/Resources/horizon-pool/README.md",
 			);
 			name = "Copy Third-Party Licenses";
 			outputPaths = (
@@ -328,6 +330,8 @@
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdPartyLicenses/Clipper/License.txt",
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdPartyLicenses/earcut/LICENSE",
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdPartyLicenses/Hershey/LICENSE",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdPartyLicenses/horizon-pool/LICENSE.md",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdPartyLicenses/horizon-pool/README.md",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
