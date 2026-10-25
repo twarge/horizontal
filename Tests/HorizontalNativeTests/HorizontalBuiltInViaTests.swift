@@ -121,11 +121,14 @@ final class HorizontalBuiltInViaTests: XCTestCase {
             width: 200_000, layer: HorizontalBoardLayers.topCopper, placesVia: true)
         let laid = BoardTrackRouting.lay(
             BoardTrackRouting.route(from: start, to: target, horizontalFirst: true, cornerStyle: .ninety),
-            to: target, endsOnPad: false, via: via, from: head, on: &board)
+            to: target, endsOnPad: false, via: board.viaWithMaskOpenings(via, poolURL: url.appendingPathComponent("pool")),
+            from: head, on: &board)
         XCTAssertEqual(laid.vias, 1)
         let dropped = try XCTUnwrap(board.vias.first)
         XCTAssertEqual(dropped.position, target)
         XCTAssertTrue(dropped.fromRules)
+        XCTAssertNil(dropped.topMaskExpansion)
+        XCTAssertNil(dropped.bottomMaskExpansion)
         XCTAssertEqual(dropped.maskLayers, [], "the canvas draws no opening")
 
         var archive = try HorizontalProjectArchive.completeProject(from: url)
@@ -148,6 +151,67 @@ final class HorizontalBuiltInViaTests: XCTestCase {
         let layers = try odbLayers(of: saved)
         XCTAssertTrue(layers.isSuperset(of: ["signal_top", "signal_bottom"]), "\(layers)")
         XCTAssertTrue(layers.isDisjoint(with: ["mask_top", "mask_bottom"]), "\(layers)")
+    }
+
+    /// `v` on a board whose via rule names horizon-pool's untented Circular
+    /// via: the via it drops opens the mask at once, on the canvas and in
+    /// Gerber, which are drawn from the board as edited, as the board read
+    /// back after its save opens it: the hole and twice the rules' expansion
+    /// on each side. It dropped tented, as every new via did, until the
+    /// project was reopened.
+    func testVDropsAViaFromAStockViaRuleThatOpensTheMaskAtOnceAsAReloadDoes() throws {
+        let url = try newDocument { json in
+            var rules = json["rules"] as? [String: Any] ?? [:]
+            var vias = rules["via"] as? [String: Any] ?? [:]
+            for (id, rule) in vias {
+                var rule = rule as? [String: Any] ?? [:]
+                rule["padstack"] = self.stock
+                vias[id] = rule
+            }
+            rules["via"] = vias
+            json["rules"] = rules
+        }
+        let project = try HorizontalProject.load(from: url)
+        var board = try XCTUnwrap(project.board)
+        XCTAssertEqual(board.rules.viaRules.map(\.padstackID), [stock])
+        let via = try XCTUnwrap(board.routeVia(netID: nil))
+        XCTAssertEqual(via.padstackID, stock)
+        XCTAssertEqual(via.holeDiameter, 200_000)
+
+        let start = HorizontalPoint(x: 2_000_000, y: 2_000_000)
+        let target = HorizontalPoint(x: 6_000_000, y: 4_000_000)
+        let head = BoardTrackRouteHead(
+            anchor: start, anchorJunctionID: nil, anchorOnPad: false, netID: nil,
+            width: 200_000, layer: HorizontalBoardLayers.topCopper, placesVia: true)
+        let laid = BoardTrackRouting.lay(
+            BoardTrackRouting.route(from: start, to: target, horizontalFirst: true, cornerStyle: .ninety),
+            to: target, endsOnPad: false, via: board.viaWithMaskOpenings(via, poolURL: url.appendingPathComponent("pool")),
+            from: head, on: &board)
+        XCTAssertEqual(laid.vias, 1)
+        let dropped = try XCTUnwrap(board.vias.first)
+        XCTAssertEqual(dropped.position, target)
+        let masks = [HorizontalBoardLayers.topMask, HorizontalBoardLayers.bottomMask]
+        XCTAssertEqual(dropped.maskLayers, masks, "the canvas draws an opening on each side")
+        for layer in masks {
+            XCTAssertEqual(dropped.maskDiameter(on: layer) ?? .nan, 200_000 + 2 * 100_000, accuracy: 1, "its program's, not the via's and twice the expansion")
+        }
+
+        var archive = try HorizontalProjectArchive.completeProject(from: url)
+        XCTAssertTrue(try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &archive))
+        var saved = try HorizontalProject.loadSnapshot(of: archive)
+        saved.rebaseURLs(onto: project)
+        let read = try XCTUnwrap(saved.board?.vias.first)
+        XCTAssertEqual(read.padstackID, stock)
+        XCTAssertEqual(read.maskLayers, dropped.maskLayers, "as the board read back has it")
+        for layer in masks {
+            XCTAssertEqual(read.maskDiameter(on: layer) ?? .nan, dropped.maskDiameter(on: layer) ?? .nan, accuracy: 1)
+        }
+
+        let gerbers = try HorizontalGerberExportFixture.exportGerbers(board: board)
+        for layer in masks {
+            let mask = try XCTUnwrap(gerbers[layer], "the board as edited exports the opening")
+            XCTAssertTrue(mask.contains("G36*\nX\(Int64(target.x + 200_000))Y\(Int64(target.y))D02*"), mask)
+        }
     }
 
     /// The tented via the pool lacks, as a board written elsewhere names it:
@@ -244,5 +308,42 @@ final class HorizontalBuiltInViaTests: XCTestCase {
         XCTAssertTrue(try HorizontalProjectJSONApplicator.apply(board: try XCTUnwrap(loaded.board), in: loaded, to: &archive))
         XCTAssertEqual(cachedPadstack(custom, in: archive), customData)
         XCTAssertEqual(cachedPadstack(tented, in: archive), poolTentedData)
+    }
+
+    /// A via rule's padstack only a base pool has, which the board's next
+    /// save caches from it: a dropped via opens the mask as that padstack
+    /// says, as the board does once it reads the cached copy, not with the
+    /// rules' expansion on both sides it would fall back to with the project
+    /// pool alone.
+    func testADroppedViaReadsAPadstackOnlyABasePoolHasAsItsSaveCachesIt() throws {
+        let root = try temporaryRoot()
+        let pool = root.appendingPathComponent("horizon-pool", isDirectory: true)
+        try FileManager.default.createDirectory(at: pool.appendingPathComponent("padstacks"), withIntermediateDirectories: true)
+        try HorizontalHorizonJSONWriter.data(["type": "pool", "uuid": "bbbb", "name": "Pool", "pools_included": [String]()])
+            .write(to: pool.appendingPathComponent("pool.json"))
+        let custom = "5e2a7c1d-3b4f-4e6a-8d9c-0f1e2d3c4b5a"
+        var untented = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(HorizontalBuiltInPool.padstackData(stock))) as? [String: Any])
+        untented["uuid"] = custom
+        untented["name"] = "Custom via"
+        try HorizontalHorizonJSONWriter.data(untented).write(to: pool.appendingPathComponent("padstacks/custom.json"))
+
+        let project = root.appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let url = try newDocument(in: project)
+        let poolURL = url.appendingPathComponent("pool")
+        XCTAssertNotNil(HorizontalBoard.viaPadstack(custom, poolURL: poolURL), "the base pool's")
+
+        let board = try XCTUnwrap(try HorizontalProject.load(from: url).board)
+        let via = board.viaWithMaskOpenings(
+            HorizontalBoardViaTemplate(
+                padstackID: custom, diameter: 500_000, holeDiameter: 200_000, fromRules: true,
+                parameterSet: ["via_diameter": 500_000, "hole_diameter": 200_000]),
+            poolURL: poolURL)
+        let marker = HorizontalMarker(
+            id: "v", position: .zero, size: via.diameter, holeSize: via.holeDiameter, layer: nil,
+            connectedLayers: [HorizontalBoardLayers.topCopper, HorizontalBoardLayers.bottomCopper],
+            topMaskExpansion: via.topMaskExpansion, bottomMaskExpansion: via.bottomMaskExpansion)
+        XCTAssertEqual(marker.maskDiameter(on: HorizontalBoardLayers.topMask) ?? .nan, 200_000 + 2 * 100_000, accuracy: 1)
+        XCTAssertEqual(marker.maskDiameter(on: HorizontalBoardLayers.bottomMask) ?? .nan, 200_000 + 2 * 100_000, accuracy: 1)
     }
 }
