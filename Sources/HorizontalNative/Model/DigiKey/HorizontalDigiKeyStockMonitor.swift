@@ -251,6 +251,14 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
         return .pending
     }
 
+    /// The product page DigiKey answered with for the part, while DigiKey is
+    /// on: from an answer of any age, and with the credentials since removed,
+    /// since a page outlasts its stock count.
+    func productURL(for query: HorizontalDigiKeyQuery) -> URL? {
+        guard isEnabled, case .stocked(let stock)? = records[query.key]?.answer else { return nil }
+        return stock.productURL
+    }
+
     // MARK: Lookups
 
     /// Asks DigiKey about the parts it has no fresh answer for, or about

@@ -8852,8 +8852,8 @@ struct SchematicCanvasView: View {
         applyProjectEdit(operations, actionName: mark ? "Set All Unconnected Pins NC" : "Clear All NC Pins")
     }
 
-    /// What a symbol's component is, to copy or open: its value, its MPN
-    /// and its datasheet.
+    /// What a symbol's component is, to copy or open: its value, its MPN,
+    /// its datasheet, and its part's page at each distributor Settings has on.
     private func symbolInfoEntries(for ref: HorizontalSelectableRef) -> [HorizontalTargetItemMenuEntry] {
         guard ref.type == .schematicSymbol,
               let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }),
@@ -8870,6 +8870,9 @@ struct SchematicCanvasView: View {
         }
         if let datasheet = nonEmpty(component.datasheet), let url = datasheetURL(datasheet) {
             entries.append(.action(title: "Open Datasheet", .openURL(url)))
+        }
+        for link in HorizontalPartPageLink.links(mpn: component.mpn ?? "", manufacturer: component.manufacturer ?? "") {
+            entries.append(.action(title: link.title, .openURL(link.url)))
         }
         return entries
     }

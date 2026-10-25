@@ -556,7 +556,10 @@ struct HorizontalPartBrowserView: View {
             }
         }
         #endif
-        HorizontalDigiKeyMenuItems(state: digiKey.state(for: part)) { digiKey.lookUp([part], force: true) }
+        HorizontalPartDistributorMenuItems(
+            links: HorizontalPartPageLink.links(mpn: part.mpn, manufacturer: part.manufacturer, digiKey: digiKey),
+            digiKeyState: digiKey.state(for: part)
+        ) { digiKey.lookUp([part], force: true) }
     }
 
     /// The pools a part can be opened in, each in a window of its own: the
@@ -736,27 +739,33 @@ struct HorizontalPartBrowserView: View {
     }
 }
 
-/// A part's DigiKey entries in its context menu, the Parts pane's and the
-/// Pools pane's alike: Open on DigiKey once DigiKey has answered with the
-/// product's page, and a check, for a part with an MPN while DigiKey is on
-/// and set up; nothing otherwise. A menu can't change while it is open, so a
-/// part still being asked about says so rather than offering a link later.
-struct HorizontalDigiKeyMenuItems: View {
-    var state: HorizontalDigiKeyStockMonitor.CellState
-    var check: () -> Void
+/// A part's distributor entries in its context menu, the Parts pane's and
+/// the Pools pane's alike: Open on each distributor Settings has on, for a
+/// part with an MPN (`HorizontalPartPageLink`), and DigiKey's stock check
+/// while DigiKey is set up; nothing otherwise. A link is there whether or
+/// not DigiKey has answered yet, so a menu, which can't change while it is
+/// open, never waits on one.
+struct HorizontalPartDistributorMenuItems: View {
+    var links: [HorizontalPartPageLink]
+    var digiKeyState: HorizontalDigiKeyStockMonitor.CellState
+    var checkDigiKey: () -> Void
+
+    private var canCheckDigiKey: Bool {
+        switch digiKeyState {
+        case .off, .noMPN, .notSetUp: false
+        default: true
+        }
+    }
 
     var body: some View {
-        switch state {
-        case .off, .noMPN, .notSetUp:
-            EmptyView()
-        default:
+        if !links.isEmpty || canCheckDigiKey {
             Divider()
-            if let url = state.productURL {
-                Link("Open on DigiKey", destination: url)
-            } else if state == .checking || state == .pending {
-                Text("Asking DigiKey…")
+            ForEach(links) { link in
+                Link(link.title, destination: link.url)
             }
-            Button(state.hasAnswer ? "Check DigiKey Stock Again" : "Check DigiKey Stock", action: check)
+            if canCheckDigiKey {
+                Button(digiKeyState.hasAnswer ? "Check DigiKey Stock Again" : "Check DigiKey Stock", action: checkDigiKey)
+            }
         }
     }
 }
