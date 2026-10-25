@@ -1428,7 +1428,7 @@ struct HorizontalIPadProjectView: View {
                     }
                     TrackSettingsToolButton(presented: $boardToolSettingsPresented)
                         .popover(isPresented: $boardToolSettingsPresented, arrowEdge: .bottom) {
-                            HorizontalBoardToolSettingsView(settings: boardToolSettings, viaTemplate: board.viaTemplate)
+                            HorizontalBoardToolSettingsView(settings: boardToolSettings, viaTemplate: board.routeVia(netID: nil))
                                 .frame(minWidth: 320, minHeight: 320)
                         }
                     DrawingToolButtonGroup(primitives: HorizontalDrawingPrimitive.polygonRail) { primitive in

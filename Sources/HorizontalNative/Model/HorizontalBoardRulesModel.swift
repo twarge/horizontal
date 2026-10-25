@@ -550,6 +550,36 @@ struct HorizontalRuleThermals: Hashable {
     }
 }
 
+/// Mirrors RuleVia: the padstack, and the parameters (`via_diameter`,
+/// `hole_diameter`), that a via whose source is the rules takes on a net the
+/// rule matches.
+struct HorizontalRuleVia: Hashable {
+    var id: String
+    var enabled: Bool
+    var order: Int
+    var match: HorizontalRuleMatch
+    /// As the file spells it; nil for the null uuid, which names no padstack.
+    var padstackID: String?
+    var parameterSet: [String: Double]
+
+    private static let zeroUUID = "00000000-0000-0000-0000-000000000000"
+
+    init(id: String, json: JSONDictionary) {
+        self.id = id
+        enabled = json.bool("enabled") ?? true
+        order = json.int("order") ?? 0
+        match = HorizontalRuleMatch(json: json.dictionary("match"))
+        padstackID = json.string("padstack").flatMap { padstack in
+            padstack.isEmpty || padstack.lowercased() == Self.zeroUUID ? nil : padstack
+        }
+        parameterSet = (json.dictionary("parameter_set") ?? [:]).reduce(into: [String: Double]()) { result, item in
+            if let number = item.value as? NSNumber {
+                result[item.key] = number.doubleValue
+            }
+        }
+    }
+}
+
 /// The lookup engine. Each lookup returns the first
 /// enabled rule (rules pre-sorted ascending by `order`) whose match predicates
 /// and layer sentinel (10000 == any) pass, else a default fallback.
@@ -559,6 +589,7 @@ struct HorizontalBoardRules: Hashable {
     var clearanceCopperKeepoutRules: [HorizontalRuleClearanceCopperKeepout]
     var planeRules: [HorizontalRulePlane]
     var thermalRules: [HorizontalRuleThermals]
+    var viaRules: [HorizontalRuleVia]
     var netDetails: [String: HorizontalNetDetails]
 
     init(rules: JSONDictionary?, netDetails: [String: HorizontalNetDetails]) {
@@ -581,9 +612,21 @@ struct HorizontalBoardRules: Hashable {
             .sorted { $0.order < $1.order }
         thermalRules = parseGroup("thermals", HorizontalRuleThermals.init(json:))
             .sorted { $0.order < $1.order }
+        // By id where two share an order, so the pick never depends on the
+        // order the file's map comes back in.
+        viaRules = rules.dictionaryMap("via")
+            .map { HorizontalRuleVia(id: $0.key, json: $0.value) }
+            .sorted { ($0.order, $0.id) < ($1.order, $1.id) }
     }
 
     static let empty = HorizontalBoardRules(rules: nil, netDetails: [:])
+
+    /// Mirrors BoardRules::get_via_padstack_uuid and get_via_parameter_set:
+    /// the first enabled via rule whose match takes `net`. Its padstack may
+    /// be nil, and then a via on the net has none to take.
+    func via(net: String?) -> HorizontalRuleVia? {
+        viaRules.first { $0.enabled && $0.match.matches(netID: net, netDetails: netDetails) }
+    }
 
     private func layerMatches(_ ruleLayer: Int, _ layer: Int) -> Bool {
         ruleLayer == layer || ruleLayer == 10000

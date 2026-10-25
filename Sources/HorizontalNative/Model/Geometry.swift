@@ -552,6 +552,11 @@ struct HorizontalBoardViaTemplate: Equatable {
     var padstackID: String
     var diameter: Double
     var holeDiameter: Double
+    /// The shape is a via rule's, so a via given it keeps taking it from the
+    /// rules (Horizon `source: "rules"`); otherwise the via has it as its own.
+    var fromRules = false
+    /// The rule's whole parameter set, when the shape is a rule's.
+    var parameterSet: [String: Double] = [:]
 }
 
 /// A named via definition from the board rules (`rules.via_definitions`):

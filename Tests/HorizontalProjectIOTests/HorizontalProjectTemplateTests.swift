@@ -58,6 +58,31 @@ final class HorizontalProjectTemplateTests: XCTestCase {
         XCTAssertEqual(bare["default_via"] as? String, HorizontalProjectArchive.nullUUID)
     }
 
+    /// Horizon's `Project::create` gives a new board one via rule, with the
+    /// pool's default via, so a route has a via to drop. A pool with no
+    /// default via, set or not, gives none.
+    func testANewBoardHasAViaRuleWithThePoolsDefaultVia() throws {
+        func viaRules(_ pool: HorizontalProjectPoolTemplate) throws -> [String: Any]? {
+            let data = try XCTUnwrap(HorizontalProjectArchive.newProject(pool: pool).regularFileData(relativePath: "board.json"))
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            return (json["rules"] as? [String: Any])?["via"] as? [String: Any]
+        }
+        let rules = try XCTUnwrap(viaRules(HorizontalProjectPoolTemplate(defaultViaUUID: "1c4d3f0a-8e7b-4a6e-9c3d-2b1a0f9e8d7c")))
+        XCTAssertEqual(rules.count, 1)
+        let rule = try XCTUnwrap(rules.values.first as? [String: Any])
+        XCTAssertEqual(rule["padstack"] as? String, "1c4d3f0a-8e7b-4a6e-9c3d-2b1a0f9e8d7c")
+        XCTAssertEqual(rule["enabled"] as? Bool, true)
+        XCTAssertEqual(rule["order"] as? Int, 0)
+        XCTAssertEqual((rule["match"] as? [String: Any])?["mode"] as? String, "all")
+        XCTAssertEqual((rule["match"] as? [String: Any])?["net"] as? String, HorizontalProjectArchive.nullUUID)
+        let parameters = try XCTUnwrap(rule["parameter_set"] as? [String: Any])
+        XCTAssertEqual(parameters["via_diameter"] as? Int, 500_000)
+        XCTAssertEqual(parameters["hole_diameter"] as? Int, 200_000)
+
+        XCTAssertNil(try viaRules(HorizontalProjectPoolTemplate()))
+        XCTAssertNil(try viaRules(HorizontalProjectPoolTemplate(defaultViaUUID: HorizontalProjectArchive.nullUUID)))
+    }
+
     /// A layer's substrate is the dielectric below it, so the bottom copper
     /// has none; Horizon's own new board writes it that way.
     func testBottomCopperHasNoSubstrate() throws {

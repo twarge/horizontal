@@ -156,6 +156,27 @@ public extension HorizontalProjectArchive {
             "texts": [String: Any]()
         ]
 
+        // Horizon's `Project::create` gives a new board one via rule, with the
+        // pool's default via, so a route's `v` has a via to drop. RuleVia's
+        // own defaults: every net, a 0.5 mm via with a 0.2 mm hole.
+        var rules = [String: Any]()
+        if let via = pool.defaultViaUUID?.lowercased(), !via.isEmpty, via != nullUUID {
+            rules["via"] = [
+                newID(): [
+                    "enabled": true,
+                    "order": 0,
+                    "match": [
+                        "mode": "all",
+                        "net": nullUUID,
+                        "net_class": nullUUID,
+                        "net_name_regex": ""
+                    ],
+                    "padstack": via,
+                    "parameter_set": ["via_diameter": 500_000, "hole_diameter": 200_000]
+                ]
+            ]
+        }
+
         let board: [String: Any] = [
             "type": "board",
             "uuid": boardID,
@@ -169,7 +190,7 @@ public extension HorizontalProjectArchive {
                 "0": ["thickness": 35_000, "substrate_thickness": 1_600_000],
                 "-100": ["thickness": 35_000, "substrate_thickness": 0]
             ],
-            "rules": [String: Any](),
+            "rules": rules,
             "junctions": [String: Any](),
             "packages": [String: Any](),
             "tracks": [String: Any](),

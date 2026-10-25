@@ -34,12 +34,13 @@ final class HorizontalBoardToolSettings: ObservableObject {
         didSet { defaults.set(routerShove, forKey: Self.routerShoveKey) }
     }
 
-    /// Via diameter (nm). When nil, the board's via template diameter is used.
+    /// Via diameter (nm), which makes a route's via its own. When nil, the
+    /// route's via takes the via rules' (`HorizontalBoard.routeVia`).
     @Published var viaDiameter: Double? {
         didSet { persist(viaDiameter, forKey: Self.viaDiameterKey) }
     }
 
-    /// Via hole diameter (nm). When nil, the board's via template hole is used.
+    /// Via hole diameter (nm), as `viaDiameter`.
     @Published var viaHoleDiameter: Double? {
         didSet { persist(viaHoleDiameter, forKey: Self.viaHoleKey) }
     }

@@ -392,6 +392,184 @@ enum BoardTrackRouting {
             : HorizontalBoardLayers.topCopper
     }
 
+    /// The via a route drops on `netID`, shaped as Horizon's router shapes
+    /// one (`PNS_HORIZON_IFACE`): the padstack and parameters of the first
+    /// enabled via rule that takes the net, and the via keeps taking them
+    /// from the rules. Where that rule names no padstack, or no rule takes
+    /// the net, Horizon drops no via, and neither does this.
+    ///
+    /// A board with no via rules at all, as Horizontal's new-document template
+    /// wrote them until it gave a new board Horizon's, gets a via of its own
+    /// instead: the shape its own vias or first via definition have
+    /// (`template`), else the via rule Horizon would have given it, the
+    /// project pool's default via at RuleVia's 0.5 mm with a 0.2 mm hole.
+    static func routeVia(
+        netID: String?,
+        rules: HorizontalBoardRules,
+        template: HorizontalBoardViaTemplate?,
+        poolDefaultVia: String? = nil
+    ) -> HorizontalBoardViaTemplate? {
+        guard !rules.viaRules.isEmpty else {
+            return template ?? poolDefaultVia.map {
+                HorizontalBoardViaTemplate(padstackID: $0, diameter: 500_000, holeDiameter: 200_000)
+            }
+        }
+        guard let rule = rules.via(net: netID), let padstack = rule.padstackID else {
+            return nil
+        }
+        // A parameter the rule leaves out is RuleVia's own default.
+        return HorizontalBoardViaTemplate(
+            padstackID: padstack,
+            diameter: rule.parameterSet["via_diameter"] ?? 500_000,
+            holeDiameter: rule.parameterSet["hole_diameter"] ?? 200_000,
+            fromRules: true,
+            parameterSet: rule.parameterSet
+        )
+    }
+
+    // MARK: - Laying a route
+
+    /// One click of the route tool after the one that started the route: the
+    /// legs from the head to `target` (`specs`, in flow order) laid on
+    /// `layer`, with junctions at their vertices, and the via `v` armed
+    /// (`via`, when `head.placesVia`) dropped at their end, after which the
+    /// route goes on from it on the far layer. With no legs, a via drops at
+    /// the head itself. A route that ends on a pad (`endsOnPad`) connects to
+    /// it directly, with no junction, and drops no via in it.
+    static func lay(
+        _ specs: [BoardTrackSegmentSpec],
+        to target: HorizontalPoint,
+        endsOnPad: Bool,
+        via: HorizontalBoardViaTemplate?,
+        from head: BoardTrackRouteHead,
+        on board: inout HorizontalBoard
+    ) -> BoardTrackRouteStepResult {
+        var next = head
+        if !specs.isEmpty, !head.anchorOnPad {
+            mergeJunctions(at: head.anchor, preferredID: head.anchorJunctionID, netID: head.netID, board: &board)
+        }
+        var endJunctionID = head.anchorJunctionID
+        for spec in specs {
+            // A junction at the forward vertex, unless it is the pad it ends on.
+            let toIsPadTarget = endsOnPad && key(spec.to) == key(target)
+            var junctionID: String?
+            if !toIsPadTarget {
+                junctionID = mergeJunctions(at: spec.to, preferredID: nil, netID: head.netID, board: &board)
+            }
+            let ends = spec.renderEndpoints
+            board.tracks.append(
+                HorizontalSegment(
+                    id: UUID().uuidString.lowercased(),
+                    from: ends.from,
+                    to: ends.to,
+                    width: head.width,
+                    layer: head.layer,
+                    center: spec.center,
+                    netID: head.netID
+                )
+            )
+            endJunctionID = junctionID
+        }
+        if !specs.isEmpty {
+            next.anchor = target
+            next.anchorJunctionID = endJunctionID
+            next.anchorOnPad = endsOnPad
+        }
+        var vias = 0
+        if head.placesVia, let via, !endsOnPad, !next.anchorOnPad {
+            next.anchorJunctionID = dropVia(
+                via, at: next.anchor, netID: head.netID, preferredJunctionID: next.anchorJunctionID, on: &board)
+            next.layer = oppositeRoutingLayer(head.layer)
+            next.placesVia = false
+            vias = 1
+        }
+        return BoardTrackRouteStepResult(head: next, segments: specs.count, vias: vias)
+    }
+
+    /// Drops `via` at `point` on `board`: a through via, its hole and the
+    /// junction they share, which connectivity unifies by position. Returns
+    /// the junction's id.
+    @discardableResult
+    static func dropVia(
+        _ via: HorizontalBoardViaTemplate,
+        at point: HorizontalPoint,
+        netID: String?,
+        preferredJunctionID: String?,
+        on board: inout HorizontalBoard
+    ) -> String {
+        let junctionID = mergeJunctions(at: point, preferredID: preferredJunctionID, netID: netID, board: &board)
+        let viaID = UUID().uuidString.lowercased()
+        var parameters = via.parameterSet
+        parameters["via_diameter"] = via.diameter
+        parameters["hole_diameter"] = via.holeDiameter
+        board.vias.append(
+            HorizontalMarker(
+                id: viaID,
+                position: point,
+                size: via.diameter,
+                holeSize: via.holeDiameter,
+                layer: nil,
+                connectedLayers: throughViaLayers(copperLayerCount: board.copperLayerCount),
+                netID: netID,
+                // Track-tool vias are pinned (patchNewBoardVias writes net_set),
+                // so the model pins them too.
+                netSetID: netID,
+                padstackID: via.padstackID,
+                fromRules: via.fromRules,
+                parameterSet: parameters
+            )
+        )
+        board.viaHoles.append(
+            HorizontalHole(
+                id: "\(viaID)/hole",
+                position: point,
+                diameter: via.holeDiameter,
+                length: via.holeDiameter,
+                shape: .round,
+                plated: true,
+                netID: netID
+            )
+        )
+        return junctionID
+    }
+
+    /// The one junction at `point`: `preferredID` when the board has it, else
+    /// the first already there, else a new one, on that junction's net or
+    /// `netID`. Any others at the point are folded into it.
+    @discardableResult
+    static func mergeJunctions(
+        at point: HorizontalPoint,
+        preferredID: String?,
+        netID: String?,
+        board: inout HorizontalBoard
+    ) -> String {
+        let pointKey = key(point)
+        let matchingIDs = board.junctions
+            .filter { key($0.value) == pointKey }
+            .map(\.key)
+        let existingPreferredID = preferredID.flatMap { preferred in
+            board.junctions.keys.first { normalizedID($0) == normalizedID(preferred) }
+        }
+        let keepID = existingPreferredID ?? matchingIDs.first ?? preferredID ?? UUID().uuidString.lowercased()
+        let keepNetID = board.junctionNetIDs[keepID]
+            ?? netID
+            ?? matchingIDs.compactMap { board.junctionNetIDs[$0] }.first
+
+        board.junctions[keepID] = point
+        if let keepNetID {
+            board.junctionNetIDs[keepID] = keepNetID
+        } else {
+            board.junctionNetIDs.removeValue(forKey: keepID)
+        }
+
+        for junctionID in matchingIDs where normalizedID(junctionID) != normalizedID(keepID) {
+            board.junctions.removeValue(forKey: junctionID)
+            board.junctionNetIDs.removeValue(forKey: junctionID)
+        }
+
+        return keepID
+    }
+
     // MARK: - Geometry helpers
 
     static func pointLiesOnSegment(_ point: HorizontalPoint, _ segment: HorizontalSegment) -> Bool {
@@ -448,5 +626,40 @@ enum BoardTrackRouting {
 
     private static func key(_ point: HorizontalPoint) -> String {
         HorizontalCanvasModeSupport.pointKey(point)
+    }
+
+    private static func normalizedID(_ id: String) -> String {
+        HorizontalCanvasModeSupport.normalizedID(id)
+    }
+}
+
+/// Where a route in progress has got to: the point the next click lays from
+/// and what it lays with.
+struct BoardTrackRouteHead: Equatable {
+    var anchor: HorizontalPoint
+    var anchorJunctionID: String?
+    /// The anchor is a pad's center, which the route connects to directly,
+    /// with no junction.
+    var anchorOnPad: Bool
+    var netID: String?
+    var width: Double
+    var layer: Int
+    /// `v` armed a via for the next click to drop.
+    var placesVia: Bool
+}
+
+/// What one click laid: the head the route goes on from, and how many legs
+/// and vias it added.
+struct BoardTrackRouteStepResult: Equatable {
+    var head: BoardTrackRouteHead
+    var segments: Int
+    var vias: Int
+}
+
+extension HorizontalBoard {
+    /// The via a route drops on `netID`: see `BoardTrackRouting.routeVia`.
+    func routeVia(netID: String?) -> HorizontalBoardViaTemplate? {
+        BoardTrackRouting.routeVia(
+            netID: netID, rules: rules, template: viaTemplate, poolDefaultVia: poolDefaultViaPadstackID)
     }
 }

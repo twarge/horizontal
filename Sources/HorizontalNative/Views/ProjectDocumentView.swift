@@ -2448,7 +2448,7 @@ struct ProjectWorkspaceView: View {
                             .popover(isPresented: $boardToolSettingsPresented, arrowEdge: .bottom) {
                                 HorizontalBoardToolSettingsView(
                                     settings: boardToolSettings,
-                                    viaTemplate: project.board?.viaTemplate
+                                    viaTemplate: project.board?.routeVia(netID: nil)
                                 )
                             }
                         DrawingToolButtonGroup(primitives: HorizontalDrawingPrimitive.polygonRail) { primitive in

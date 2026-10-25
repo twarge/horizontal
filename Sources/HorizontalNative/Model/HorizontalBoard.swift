@@ -505,6 +505,10 @@ struct HorizontalBoard {
     /// Padstack + default geometry for vias the track tool creates. Nil when
     /// the board has no via definition and no existing via to source one from.
     var viaTemplate: HorizontalBoardViaTemplate? = nil
+    /// The project pool's `default_via` padstack, nil for none: what Horizon
+    /// gives a new board's via rule, and so what a route's via falls back to
+    /// on a board written with no via rules (`BoardTrackRouting.routeVia`).
+    var poolDefaultViaPadstackID: String? = nil
     /// Named via definitions from the board rules, offered by the via
     /// inspector's Definition picker. Sorted by name.
     var viaDefinitions: [HorizontalViaDefinition] = []
@@ -832,7 +836,19 @@ struct HorizontalBoard {
                     result[item.key] = value
                 }
             }
+        loadedBoard.poolDefaultViaPadstackID = poolURL.flatMap(poolDefaultVia(poolURL:))
         return loadedBoard
+    }
+
+    /// `default_via` from the pool's `pool.json`, unless it is the null uuid
+    /// Horizon writes for none.
+    private static func poolDefaultVia(poolURL: URL) -> String? {
+        let pool = try? JSONHelper.loadDictionary(from: poolURL.appendingPathComponent("pool.json"))
+        guard let via = pool?.string("default_via"), !via.isEmpty,
+              normalizedID(via) != "00000000-0000-0000-0000-000000000000" else {
+            return nil
+        }
+        return via
     }
 
     var totalSubstrateThickness: Double {
