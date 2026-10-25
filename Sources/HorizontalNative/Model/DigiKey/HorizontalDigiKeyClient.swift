@@ -442,34 +442,15 @@ actor HorizontalDigiKeyClient {
     /// whose MPN is the part's, from the part's manufacturer where one is,
     /// with the most stock in any packaging where several are.
     static func answer(for products: [Product], mpn: String, manufacturer: String) -> HorizontalDigiKeyAnswer {
-        let wanted = normalizedMPN(mpn)
-        let exact = products.filter { normalizedMPN($0.manufacturerProductNumber) == wanted }
+        let wanted = HorizontalPartQuery.normalizedMPN(mpn)
+        let exact = products.filter { HorizontalPartQuery.normalizedMPN($0.manufacturerProductNumber) == wanted }
         guard !exact.isEmpty else { return .notCarried }
-        let sameMaker = exact.filter { manufacturersMatch($0.manufacturer, manufacturer) }
+        let sameMaker = exact.filter { HorizontalPartQuery.manufacturersMatch($0.manufacturer, manufacturer) }
         let candidates = sameMaker.isEmpty ? exact : sameMaker
         let best = candidates.max { $0.mostStocked < $1.mostStocked }!
         var stock = best.stock
         stock.matchedByMPNOnly = sameMaker.isEmpty
         return .stocked(stock)
-    }
-
-    static func normalizedMPN(_ mpn: String) -> String {
-        mpn.uppercased().filter { !$0.isWhitespace }
-    }
-
-    static func normalizedManufacturer(_ name: String) -> String {
-        String(name.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
-    }
-
-    /// One name inside the other once case, spaces and punctuation are
-    /// gone: Murata and Murata Electronics, Maxim Integrated and DigiKey's
-    /// Analog Devices Inc./Maxim Integrated. Names shorter than three
-    /// letters (TI, ST) match nothing; the MPN chooses for them.
-    static func manufacturersMatch(_ a: String, _ b: String) -> Bool {
-        let x = normalizedManufacturer(a)
-        let y = normalizedManufacturer(b)
-        guard x.count >= 3, y.count >= 3 else { return false }
-        return x.contains(y) || y.contains(x)
     }
 
     // MARK: Wire format

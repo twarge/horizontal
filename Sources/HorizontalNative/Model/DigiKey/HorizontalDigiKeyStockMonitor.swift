@@ -1,107 +1,14 @@
 import Combine
 import Foundation
-import Security
 
-/// One part as DigiKey is asked about it: its MPN, and its manufacturer to
-/// choose between products that share the MPN.
-struct HorizontalDigiKeyQuery: Hashable, Sendable {
-    var mpn: String
-    var manufacturer: String
-
-    init(mpn: String, manufacturer: String) {
-        self.mpn = mpn.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.manufacturer = manufacturer.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    init(part: HorizontalPoolPart) {
-        self.init(mpn: part.mpn, manufacturer: part.manufacturer)
-    }
-
-    /// A part in the Pools pane, by its MPN (its base's, for a derived part
-    /// that inherits it). Any other kind of item has none.
-    init(item: HorizontalPoolLibraryItem) {
-        self.init(mpn: item.category == .part ? item.mpn : "", manufacturer: item.manufacturer)
-    }
-
-    var key: String {
-        HorizontalDigiKeyClient.normalizedMPN(mpn) + "\u{1F}" + HorizontalDigiKeyClient.normalizedManufacturer(manufacturer)
-    }
-}
-
-/// Where the DigiKey client secret is kept: the keychain, or memory in tests.
-struct HorizontalDigiKeySecretStore: Sendable {
-    var read: @Sendable () -> String?
-    var write: @Sendable (String?) throws -> Void
-    /// Whether a secret is stored, without reading it: on macOS reading a
-    /// keychain item can ask the user, looking one up does not.
-    var exists: @Sendable () -> Bool
-
-    static let keychain = HorizontalDigiKeySecretStore(
-        read: {
-            var query = keychainQuery()
-            query[kSecReturnData as String] = true
-            query[kSecMatchLimit as String] = kSecMatchLimitOne
-            var result: CFTypeRef?
-            guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data else {
-                return nil
-            }
-            return String(data: data, encoding: .utf8)
-        },
-        write: { secret in
-            // Deleted and added rather than updated, so the item's access
-            // belongs to the app writing it.
-            let deleted = SecItemDelete(keychainQuery() as CFDictionary)
-            guard deleted == errSecSuccess || deleted == errSecItemNotFound else {
-                throw KeychainError(status: deleted)
-            }
-            guard let secret, !secret.isEmpty else { return }
-            var item = keychainQuery()
-            item[kSecValueData as String] = Data(secret.utf8)
-            item[kSecAttrLabel as String] = "Horizontal DigiKey API client secret"
-            let added = SecItemAdd(item as CFDictionary, nil)
-            guard added == errSecSuccess else {
-                throw KeychainError(status: added)
-            }
-        },
-        exists: {
-            var query = keychainQuery()
-            query[kSecReturnAttributes as String] = true
-            query[kSecMatchLimit as String] = kSecMatchLimitOne
-            return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
-        }
+extension HorizontalSecretStore {
+    /// The DigiKey API client secret, in the keychain.
+    static let digiKeyClientSecret = HorizontalSecretStore.keychain(
+        service: "com.twarge.app.horizontal.digikey",
+        account: "client-secret",
+        label: "Horizontal DigiKey API client secret",
+        noun: "client secret"
     )
-
-    private static func keychainQuery() -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "com.twarge.app.horizontal.digikey",
-            kSecAttrAccount as String: "client-secret"
-        ]
-    }
-
-    /// A store that keeps the secret in memory, for tests.
-    static func memory(_ initial: String? = nil) -> HorizontalDigiKeySecretStore {
-        final class Box: @unchecked Sendable {
-            let lock = NSLock()
-            var value: String?
-            init(_ value: String?) { self.value = value }
-        }
-        let box = Box(initial)
-        return HorizontalDigiKeySecretStore(
-            read: { box.lock.withLock { box.value } },
-            write: { secret in box.lock.withLock { box.value = secret?.isEmpty == false ? secret : nil } },
-            exists: { box.lock.withLock { box.value != nil } }
-        )
-    }
-
-    struct KeychainError: LocalizedError {
-        var status: OSStatus
-
-        var errorDescription: String? {
-            let message = SecCopyErrorMessageString(status, nil) as String?
-            return "The keychain refused the client secret\(message.map { ": \($0)" } ?? " (\(status))")."
-        }
-    }
 }
 
 /// The Parts pane's DigiKey Stock column: each part's stock, asked of
@@ -195,7 +102,7 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
     }
 
     private let defaults: UserDefaults
-    private let secrets: HorizontalDigiKeySecretStore
+    private let secrets: HorizontalSecretStore
     private let cacheURL: URL?
     private let makeClient: (HorizontalDigiKeyClient.Credentials) -> HorizontalDigiKeyClient
     private var clientSecret: String?
@@ -208,7 +115,7 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
 
     init(
         defaults: UserDefaults = .standard,
-        secrets: HorizontalDigiKeySecretStore = .keychain,
+        secrets: HorizontalSecretStore = .digiKeyClientSecret,
         cacheURL: URL? = HorizontalDigiKeyStockMonitor.defaultCacheURL(),
         makeClient: @escaping (HorizontalDigiKeyClient.Credentials) -> HorizontalDigiKeyClient = { HorizontalDigiKeyClient(credentials: $0) }
     ) {
@@ -234,10 +141,10 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
     }
 
     func state(for part: HorizontalPoolPart) -> CellState {
-        state(for: HorizontalDigiKeyQuery(part: part))
+        state(for: HorizontalPartQuery(part: part))
     }
 
-    func state(for query: HorizontalDigiKeyQuery) -> CellState {
+    func state(for query: HorizontalPartQuery) -> CellState {
         guard isEnabled else { return .off }
         guard !query.mpn.isEmpty else { return .noMPN }
         guard isConfigured else { return .notSetUp }
@@ -254,7 +161,7 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
     /// The product page DigiKey answered with for the part, while DigiKey is
     /// on: from an answer of any age, and with the credentials since removed,
     /// since a page outlasts its stock count.
-    func productURL(for query: HorizontalDigiKeyQuery) -> URL? {
+    func productURL(for query: HorizontalPartQuery) -> URL? {
         guard isEnabled, case .stocked(let stock)? = records[query.key]?.answer else { return nil }
         return stock.productURL
     }
@@ -264,13 +171,13 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
     /// Asks DigiKey about the parts it has no fresh answer for, or about
     /// every one when forced. Parts already being asked about are left be.
     func lookUp(_ parts: [HorizontalPoolPart], force: Bool = false) {
-        lookUp(parts.map(HorizontalDigiKeyQuery.init(part:)), force: force)
+        lookUp(parts.map(HorizontalPartQuery.init(part:)), force: force)
     }
 
-    func lookUp(_ queries: [HorizontalDigiKeyQuery], force: Bool = false) {
+    func lookUp(_ queries: [HorizontalPartQuery], force: Bool = false) {
         guard isEnabled, isConfigured, isBlockLifted() else { return }
         let now = Date()
-        var batch: [String: HorizontalDigiKeyQuery] = [:]
+        var batch: [String: HorizontalPartQuery] = [:]
         for query in queries where !query.mpn.isEmpty {
             let key = query.key
             guard batch[key] == nil, !checking.contains(key) else { continue }
@@ -299,7 +206,7 @@ final class HorizontalDigiKeyStockMonitor: ObservableObject {
         }
     }
 
-    private func run(_ work: [(key: String, value: HorizontalDigiKeyQuery)], client: HorizontalDigiKeyClient) {
+    private func run(_ work: [(key: String, value: HorizontalPartQuery)], client: HorizontalDigiKeyClient) {
         checking.formUnion(work.map(\.key))
         let generation = generation
         let taskID = nextTaskID

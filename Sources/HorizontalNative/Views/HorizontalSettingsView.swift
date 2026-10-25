@@ -159,6 +159,8 @@ struct HorizontalSettingsView: View {
             HorizontalPoolsSettingsSection()
 
             HorizontalDigiKeySettingsSection()
+
+            HorizontalMouserSettingsSection()
         }
         .formStyle(.grouped)
         // The fixed size shapes the macOS Settings window; on iPad the form is
