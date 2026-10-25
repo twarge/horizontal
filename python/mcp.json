@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "horizontal": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--python",
+        "3.13",
+        "--frozen",
+        "--quiet",
+        "--project",
+        "${PLUGIN_ROOT}",
+        "horizontal-mcp"
+      ],
+      "env": {
+        "UV_PROJECT_ENVIRONMENT": "${PLUGIN_DATA}/venv"
+      }
+    }
+  }
+}

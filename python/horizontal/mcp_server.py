@@ -59,11 +59,16 @@ mcp = TypedMCPServer(
     name="horizontal",
     version=importlib.metadata.version("horizontal"),
     instructions=(
-        "Reads Horizon EDA projects (.hprj, .horizontal) through Horizontal's own model. "
-        "Call open_project first, or set HORIZONTAL_PROJECT; then query components, nets, the netlist, "
+        "Read and edit Horizon EDA projects (.hprj, .horizontal) through Horizontal. "
+        "Check connection_status, then live_state with the project path; failed container discovery "
+        "alone does not mean the app is unreachable. For an open document, call open_project with "
+        "source='live' and confirm data.source. Keep project_ref and revision. "
+        "Before edits, dry-run and commit with plan_digest, expected_revision and a fresh operation_id. "
+        "Resolve unknown outcomes with transaction_status before retrying. "
+        "Query components, nets, the netlist, "
         "the BOM, run checks, export fabrication files, and render sheets or the board as images. "
         "Edits cover the block, schematic symbols, wires and text, board placement and manual track and via "
-        "routing, and can pull parts in from the pools a project draws from. Nothing autoroutes. "
+        "routing, and can pull parts in from the pools a project draws from. "
         "Edit replies are compact — ids and counts per op — unless verbose is passed. A mutation whose reply is "
         "lost is looked up by its operation_id before an error is returned, so a TIMEOUT means the outcome "
         "really is unknown; transaction_status answers it later."

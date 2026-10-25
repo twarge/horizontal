@@ -1,6 +1,6 @@
 ---
 name: review
-description: Review a Horizon/Horizontal PCB design — a schematic, a circuit block such as a power supply, reference, current source or amplifier, or the board around it. Use when asked to review, audit, sanity-check or find problems in a hardware design, or to compare design choices (parts, values, topologies) with numbers.
+description: Review a board, schematic or circuit in the Horizontal app or a Horizon EDA project. Use for requests such as "review my board in Horizontal", hardware design audits, sanity checks, finding circuit or layout problems, or comparing parts, values and topologies with numbers.
 ---
 
 # Review a design
