@@ -322,7 +322,11 @@ final class HorizontalMouserStockMonitorTests: XCTestCase {
         let monitor = try makeMonitor(server)
         let short = HorizontalPartQuery(mpn: "R1", manufacturer: "")
         monitor.show(short)
-        try await settle()
+        // Until the row has stayed up for the gather delay the cell reads
+        // pending, and a busy CI runner can take longer than a fixed sleep.
+        for _ in 0..<500 where monitor.state(for: short) == .pending {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertTrue(server.requests.isEmpty)
         XCTAssertEqual(monitor.state(for: short), .failed("Mouser's part number search takes part numbers of 3 to 40 characters."))
     }
