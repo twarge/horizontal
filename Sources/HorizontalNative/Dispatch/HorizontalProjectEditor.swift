@@ -138,7 +138,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .setCustomValue: "Give a drawn symbol a custom value: text that its $VALUE text draws instead of the value, with ${value}, ${mpn}, ${mfr}, ${desc}, ${pkg} and ${p:<parametric column>} filled in from the component and its part, as Horizon's Edit Custom Value does — \"${value}\\n${mpn}\" shows the value over the MPN. \"\" or null clears it. get_component gives each symbol's custom_value and drawn_value."
         case .smash: "Horizon's Smash: a drawn symbol's texts — its refdes and value — become texts of its sheet that it owns, where it drew them, so place_text moves each on its own while they go on drawing what the component says. With board, the same for the silkscreen texts of its package on the board, which place_board_text moves. A symbol smashed already keeps its texts, and one whose texts are all gone is smashed afresh. The reply names the texts made."
         case .unsmash: "Horizon's Unsmash: delete the texts a smash gave a component's symbols (with board, its package), so they draw their own again. A symbol smashed with its texts gone, which draws no refdes or value, is put right this way too."
-        case .removeSymbol: "Take a component's gate off its sheet, with the net lines that ended on it and the wiring left serving nothing — what find_dangling would call new debris — unless keep_wiring. The component and its connections stay."
+        case .removeSymbol: "Take a component's gate off its sheet, as the app's delete and Horizon's do: the wires that ended on its pins end on junctions where the pins were, and its pins leave their nets and no-connect marks (removed.disconnected names them), so the gate placed again starts unconnected. The wiring that leaves serving nothing — what find_dangling would call new debris — goes too, unless keep_wiring. The component stays for its other gates."
         case .drawNetLine: "Draw a wire between pins, block ports or junctions on one logical net. Does not change block connectivity, except as Horizon's wire tool does: a pin or block port on no net is connected to the wire's net, and two such ends get a new net with no name (created_net in the reply). A junction with no net yet takes the wire's. Ends on two different nets are refused."
         case .placeJunction: "Create a schematic junction on a net, reusing a compatible or net-less junction at the same point. An id that names a junction already on a sheet moves it, and the wires, labels and power symbols on it go with it."
         case .setNetLineEndpoint: "Retarget one end of an existing wire, keeping its id and logical net."
@@ -332,7 +332,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
             return ["component": component, "gate": "Gate name, suffix or id; optional when the entity has one gate.",
                     "sheet": "Sheet index, name or uuid (optional; default every sheet).",
                     "texts_within_mm": "Also remove free text this close to the removed symbols when they are the nearest symbol to it (optional).",
-                    "keep_wiring": "Leave the wiring that served only these symbols, as remove_component does (default false: it goes with them)."]
+                    "keep_wiring": "Leave the wiring that served only these symbols, ending on junctions where their pins were, as the app's delete leaves it (default false: it goes with them)."]
         case .drawNetLine:
             return ["component": component, "pin": "Pin as for connect.", "gate": "The pin's gate, as for connect (optional).",
                     "to_component": "The other end's component.",
@@ -2958,26 +2958,73 @@ final class HorizontalProjectEditor {
         guard !doomed.isEmpty else {
             throw HorizontalDispatchError.notFound("No symbol for \(componentID) is on a sheet.")
         }
-        var lines = 0
+        // Horizon's disconnect_symbol, as the app's delete does: each wire
+        // ending on a pin of the symbol ends instead on a junction where the
+        // pin was, one per pin, on the wire's net.
+        var reEnded = 0, removedLines = 0
         for instance in doomed {
             try updateSheet(instance.sheet) { sheet in
+                let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block)
+                var netLines = sheet.dictionaryMap("net_lines")
+                var junctions = sheet.dictionaryMap("junctions")
+                var pinJunctions = [String: String]()
+                for (id, line) in sheet.dictionaryMap("net_lines") {
+                    var line = line
+                    var changed = false, stranded = false
+                    for end in ["from", "to"] {
+                        guard let endpoint = line.dictionary(end), let pin = endpoint.string("pin")?.lowercased(),
+                              pin.split(separator: "/").first.map(String.init) == instance.id.lowercased() else { continue }
+                        let junction: String
+                        if let existing = pinJunctions[pin] {
+                            junction = existing
+                        } else if let position = wireEndPosition(endpoint, sheet: sheet) {
+                            junction = UUID().uuidString.lowercased()
+                            var json: JSONDictionary = ["position": [Int(position.x.rounded()), Int(position.y.rounded())]]
+                            if let net = connectivity.net(at: endpoint) ?? line.string("net") { json["net"] = net }
+                            junctions[junction] = json
+                            pinJunctions[pin] = junction
+                        } else {
+                            // No drawing says where the pin was: the wire goes.
+                            stranded = true
+                            continue
+                        }
+                        line[end] = ["junc": junction, "pin": NSNull(), "port": NSNull(), "bus_ripper": NSNull()] as JSONDictionary
+                        changed = true
+                    }
+                    if stranded {
+                        netLines.removeValue(forKey: id)
+                        removedLines += 1
+                    } else if changed {
+                        netLines[id] = line
+                        reEnded += 1
+                    }
+                }
                 var symbols = sheet["symbols"] as? JSONDictionary ?? [:]
                 symbols.removeValue(forKey: instance.id)
                 sheet["symbols"] = symbols
-                var netLines = sheet["net_lines"] as? JSONDictionary ?? [:]
-                let before = netLines.count
-                netLines = netLines.filter { _, value in
-                    guard let line = value as? JSONDictionary else { return true }
-                    return !["from", "to"].contains { end in
-                        line.dictionary(end)?.string("pin")?.split(separator: "/").first
-                            .map { $0.lowercased() == instance.id.lowercased() } ?? false
-                    }
-                }
-                lines += before - netLines.count
                 sheet["net_lines"] = netLines
+                sheet["junctions"] = junctions
             }
         }
-        return ["symbols": doomed.count, "net_lines": lines]
+        // ...and its gate leaves every net and no-connect mark, so placed
+        // again it starts unconnected; the component stays for its other
+        // gates. A gate that isn't drawn keeps what it has.
+        let gates = Set(doomed.compactMap { $0.json.string("gate")?.lowercased() })
+        let connections = components()[componentID]?.dictionary("connections") ?? [:]
+        let leaving = connections.keys.filter { gates.contains(String($0.lowercased().split(separator: "/").first ?? "")) }
+        let disconnected = leaving.map { pinName($0.lowercased(), componentID: componentID) }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        if !leaving.isEmpty {
+            try updateComponent(componentID) { component in
+                var connections = component["connections"] as? JSONDictionary ?? [:]
+                for key in leaving { connections.removeValue(forKey: key) }
+                component["connections"] = connections
+            }
+            touchedPins.formUnion(leaving.map { "\(componentID)|\($0.lowercased())" })
+        }
+        var removed: JSONDictionary = ["symbols": doomed.count, "net_lines": reEnded + removedLines, "net_lines_re_ended": reEnded]
+        if !disconnected.isEmpty { removed["disconnected"] = disconnected }
+        return removed
     }
 
     /// The wire between two pins the block already ties to one net. Horizon

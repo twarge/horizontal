@@ -1057,9 +1057,10 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
         XCTAssertEqual(follows?.string("frame"), frame.uuid, "a new page uses the frame the last page has")
 
         _ = try placedMCU()
+        // Taken off its sheet, the gate leaves SWCLK, so the stub names it again.
         try apply([["op": "remove_symbol", "component": "U1"],
                    ["op": "place_symbol", "component": "U1", "sheet": "Follows", "x_mm": 100, "y_mm": 100],
-                   ["op": "terminate_pin", "component": "U1", "pin": "PA14"]])
+                   ["op": "terminate_pin", "component": "U1", "pin": "PA14", "net": "SWCLK"]])
         XCTAssertTrue(try error([["op": "remove_sheet", "sheet": "Follows"]]).contains("force"))
         let forced = try apply([["op": "remove_sheet", "sheet": "Follows", "force": true]])
         XCTAssertEqual(changes(forced).first?["unplaced_components"] as? [String], ["U1"])

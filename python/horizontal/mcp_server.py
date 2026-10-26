@@ -1403,7 +1403,7 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
     component and pin instead of a symbol instance, and get_component gives each drawn pin's end on the sheet.
     Cleanup: remove_net_line, remove_junction, prune_sheet, remove_sheet with force, and retire_net, which takes the
     net's labels, wires, junctions and planes with it; remove_symbol and remove_component take the wiring left
-    serving nothing unless keep_wiring. Drawing: terminate_pin runs a stub from a pin to a label or power symbol, and
+    serving nothing unless keep_wiring, and remove_symbol takes its gate off its nets, as the app's delete does. Drawing: terminate_pin runs a stub from a pin to a label or power symbol, and
     a label or power symbol placed on a wire splits it there. Moving: move_symbols moves parts by an offset or onto
     another sheet with the junctions, wires, labels and power symbols that belong only to them, stretching or cutting
     the rest; move_to_other_sheet, Horizon's Move to other sheet, takes items to another sheet with everything drawn

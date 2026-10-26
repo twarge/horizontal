@@ -195,13 +195,33 @@ highlight that outlived a page flip, a deleted gate that kept its nets).
   - Upstream erases them only when the sheet has wires, since its erase sits
     inside the wire loop; that reads as an oversight and isn't copied.
 
-## Not changed
+## Follow-up: remove_symbol does what the canvas does
 
-- **MCP `remove_symbol`** still keeps the component's connections, as its
-  description says. It also deletes the wires to the symbol rather than
-  re-ending them on junctions. Both differ from Horizon and from the canvas
-  now, but they are documented behaviour, so changing them is the user's
-  call.
+The user asked for this once the round was in (`13f2fb1`). `remove_symbol`
+kept the component's connections and deleted the wires to the symbol.
+
+- **Now it does what the canvas delete does, and Horizon's
+  `disconnect_symbol`:**
+  - **Wires:** each wire that ended on a pin of the symbol ends on a junction
+    where the pin was, one per pin, on the wire's net
+    (`removed.net_lines_re_ended`). Without `keep_wiring` the cleanup then
+    takes what serves nothing, as before. With it, the stubs stay on their
+    junctions, as the canvas leaves them.
+  - **Nets:** the gate leaves every net and no-connect mark
+    (`removed.disconnected`), so placed again it starts unconnected. A gate
+    the op doesn't remove, or one that isn't drawn, keeps what it has.
+  - **Copper:** the reply's warnings name pads with copper whose pins left
+    their nets, as `disconnect` does.
+- **Tests changed:**
+  - `HorizontalProjectEditorTests`: R2's pins are on no net after its symbol
+    goes, where the test expected the netlist untouched.
+  - `HorizontalMCPFieldFindings44Tests`: the cleanup now counts four wires
+    rather than two, since the two wires to R1's pins now stay on junctions
+    until it.
+  - `HorizontalMCPFieldFindingsTests`: terminate_pin names the net again
+    after the move.
+
+## Not changed
 - **`search_pool` on a live document** still reads the project pool from
   disk, so an item `pool_write` has just written appears there once the
   autosave lands, as it now does in the Pools pane. `get_pool_item` reads
