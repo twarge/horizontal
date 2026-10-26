@@ -394,9 +394,12 @@ final class HorizontalMCPFieldFindings44Tests: XCTestCase {
                   ["pool_items": resistor.items])
         let kept = try apply([["op": "remove_symbol", "component": "R1", "keep_wiring": true]], ["dry_run": true])
         XCTAssertNil(changes(kept).first?["wiring_removed"])
+        XCTAssertEqual(changes(kept).first?.dictionary("removed")?.int("net_lines_re_ended"), 2,
+                       "kept, the wires to R1's pins end on junctions where the pins were, as the app's delete leaves them")
         let removed = try apply([["op": "remove_symbol", "component": "R1"]])
         let wiring = try XCTUnwrap(changes(removed).first?.dictionary("wiring_removed"), "\(removed)")
-        XCTAssertEqual(wiring.int("net_lines"), 2, "the corner run, and the rail's half left with no pin at its end: \(wiring)")
+        XCTAssertEqual(wiring.int("net_lines"), 4,
+                       "the corner run from where A was, and the rail from where B was to R2.B, which no pin ends now: \(wiring)")
         XCTAssertEqual(wiring.int("net_labels"), 1)
         let dangling = try XCTUnwrap(try result("find_dangling") as? JSONDictionary)
         XCTAssertEqual(dangling.dictionary("totals")?.int("stubs"), 0, "\(dangling)")

@@ -443,11 +443,14 @@ final class HorizontalProjectEditorTests: XCTestCase {
         let removed = try apply([["op": "remove_symbol", "component": "R2"]])
         let change = try XCTUnwrap((removed["changes"] as? [[String: Any]])?.first)
         XCTAssertEqual((change["removed"] as? [String: Any])?["symbols"] as? Int, 1)
-        XCTAssertEqual((change["removed"] as? [String: Any])?["net_lines"] as? Int, 1,
-                       "a wire that ended on the symbol cannot outlive it")
+        XCTAssertEqual((change["removed"] as? [String: Any])?["net_lines_re_ended"] as? Int, 1,
+                       "a wire that ended on the symbol ends on a junction where its pin was")
+        XCTAssertEqual((change["removed"] as? [String: Any])?["disconnected"] as? [String], ["1", "2"])
+        XCTAssertNotNil(change["wiring_removed"], "and, serving nothing then, goes: \(change)")
         XCTAssertEqual(try symbols(try component("R2")).count, 0)
-        XCTAssertEqual(try pinNets(try component("R2")), ["1": "MID", "2": "GND"],
-                       "taking a symbol off a sheet leaves the netlist alone")
+        XCTAssertEqual(try pinNets(try component("R2")), ["1": "", "2": ""],
+                       "taking a gate off its sheet takes its pins off their nets, as the app's delete and Horizon's do")
+        XCTAssertEqual(try pinNets(try component("R1"))["2"], "MID", "the other end keeps its net")
     }
 
     private func texts(_ params: [String: Any] = [:]) throws -> [[String: Any]] {

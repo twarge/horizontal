@@ -478,6 +478,9 @@ class Smash(Input):
 
 
 class RemoveSymbol(ComponentOp):
+    """As the app's delete takes a symbol off: its wires end on junctions where its pins were, and its gate leaves
+    its nets and no-connect marks, so placed again it starts unconnected; keep_wiring keeps wiring left serving
+    nothing."""
     op: Literal["remove_symbol"]
     gate: str | None = None
     sheet: StrictStr | StrictInt | None = None
