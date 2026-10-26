@@ -40,10 +40,18 @@ enum HorizontalCanvasProjectEdit {
         var edited = archive
         // Remove footprints before the sheet writer removes the component
         // records needed to resolve them. Existing routing keeps junctions at
-        // the former pad positions, just as a board-side deletion does.
-        if blockSchematic?.block.isTop != false, project.board != nil, !removedComponents.isEmpty {
+        // the former pad positions, just as a board-side deletion does. A
+        // sub-block's component has a footprint for each instance of the
+        // block, under the flat uuid that instance gives it.
+        let footprints: [String]
+        if let block = blockSchematic?.block, !block.isTop {
+            footprints = project.flattenedBlock?.flatIDs(of: removedComponents, inBlock: block.uuid) ?? []
+        } else {
+            footprints = removedComponents.sorted()
+        }
+        if project.board != nil, !footprints.isEmpty {
             edited = try self.archive(
-                applying: removedComponents.sorted().map { ["op": "remove_placement", "component": $0] },
+                applying: footprints.map { ["op": "remove_placement", "component": $0] },
                 to: edited,
                 in: project
             ).archive

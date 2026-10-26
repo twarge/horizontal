@@ -20,6 +20,8 @@ struct HorizontalFlattenedBlock: @unchecked Sendable {
     /// Each component's instance path, its own uuid last: `[I1, C3]`. A top
     /// block component's path is its uuid alone.
     var componentPaths: [String: [String]]
+    /// The block each flat component is a component of, by flat uuid.
+    var componentBlocks: [String: String] = [:]
     /// The instance paths each net stands for, its own uuid last.
     var netPaths: [String: [[String]]]
     /// Nets that are a port marked not connected in some instance.
@@ -44,6 +46,17 @@ struct HorizontalFlattenedBlock: @unchecked Sendable {
             guard let path = componentPaths[id.lowercased()], let componentID = path.last else { return nil }
             return (id.lowercased(), componentID, component.string("refdes") ?? "", component.bool("nopopulate") ?? false)
         }
+    }
+
+    /// The flat uuids of block `blockID`'s components `componentIDs`, one for
+    /// each instance of the block however deep: what the board names their
+    /// packages by.
+    func flatIDs(of componentIDs: Set<String>, inBlock blockID: String) -> [String] {
+        let wanted = Set(componentIDs.map { $0.lowercased() })
+        return componentBlocks.compactMap { flatID, block in
+            guard block == blockID.lowercased(), let id = componentPaths[flatID]?.last, wanted.contains(id) else { return nil }
+            return flatID
+        }.sorted()
     }
 }
 
@@ -78,16 +91,18 @@ enum HorizontalBlockFlattener {
         context.flat = top
         context.flat["block_instances"] = JSONDictionary()
         context.flat["block_instance_mappings"] = JSONDictionary()
+        let topID = top.string("uuid")?.lowercased() ?? ""
         for id in top.dictionaryMap("components").keys {
             context.componentPaths[id.lowercased()] = [id.lowercased()]
+            context.componentBlocks[id.lowercased()] = topID
         }
         for id in top.dictionaryMap("nets").keys {
             context.netMap[[id.lowercased()]] = id.lowercased()
         }
         for (id, instance) in sorted(top.dictionaryMap("block_instances")) {
             context.mapPorts(of: instance, id: id, path: [])
-            if let block = instance.string("block").flatMap({ context.blocks[$0.lowercased()] }) {
-                context.visit(block, path: [id.lowercased()])
+            if let blockID = instance.string("block")?.lowercased(), let block = context.blocks[blockID] {
+                context.visit(block, id: blockID, path: [id.lowercased()])
             }
         }
 
@@ -117,6 +132,7 @@ enum HorizontalBlockFlattener {
             }
         }
         return HorizontalFlattenedBlock(json: context.flat, componentPaths: context.componentPaths,
+                                        componentBlocks: context.componentBlocks,
                                         netPaths: netPaths, noConnectNets: noConnect, instanceRefdes: instanceRefdes,
                                         instanceNoPopulate: instanceNoPopulate)
     }
@@ -150,6 +166,7 @@ enum HorizontalBlockFlattener {
         var netMap = [[String]: String]()
         var noConnectPaths = Set<[String]>()
         var componentPaths = [String: [String]]()
+        var componentBlocks = [String: String]()
 
         /// `update_net_map_for_instance`: each wired port of an instance is the
         /// net it is wired to, here; an NC port is noted.
@@ -208,7 +225,7 @@ enum HorizontalBlockFlattener {
             return (component.string("refdes") ?? "", component.bool("nopopulate") ?? false)
         }
 
-        mutating func visit(_ block: JSONDictionary, path: [String]) {
+        mutating func visit(_ block: JSONDictionary, id blockID: String, path: [String]) {
             guard path.count < HorizontalBlockFlattener.maximumDepth else { return }
             let name = pathName(path)
             var nets = flat["nets"] as? JSONDictionary ?? [:]
@@ -276,6 +293,7 @@ enum HorizontalBlockFlattener {
                 flatComponent["connections"] = connections
                 components[flatID] = flatComponent
                 componentPaths[flatID] = href
+                componentBlocks[flatID] = blockID
             }
             flat["components"] = components
 
@@ -306,8 +324,8 @@ enum HorizontalBlockFlattener {
 
             for (id, instance) in HorizontalBlockFlattener.sorted(block.dictionaryMap("block_instances")) {
                 mapPorts(of: instance, id: id, path: path)
-                if let child = instance.string("block").flatMap({ blocks[$0.lowercased()] }) {
-                    visit(child, path: path + [id.lowercased()])
+                if let childID = instance.string("block")?.lowercased(), let child = blocks[childID] {
+                    visit(child, id: childID, path: path + [id.lowercased()])
                 }
             }
         }
