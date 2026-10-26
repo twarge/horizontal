@@ -86,6 +86,13 @@ struct HorizontalPoolLibraryItem: Identifiable, Hashable, Sendable {
     /// A part's entity uuid (lowercased, empty when it has none), a derived
     /// part's taken from its base.
     var partEntityID: String = ""
+    /// A derived part's base part (lowercased, empty for one with none).
+    var partBaseID: String = ""
+    /// An entity's units (lowercased, each once, sorted), so where a unit is
+    /// used can be found without opening every entity.
+    var entityUnitIDs: [String] = []
+    /// A package's padstacks (lowercased, each once, sorted).
+    var packagePadstackIDs: [String] = []
     /// What a part's own file says. A scan reads each file alone, so a
     /// derived part's name, manufacturer, value, description, tags and
     /// package are its file's until `resolvingInheritance` works them out
@@ -108,6 +115,43 @@ struct HorizontalPoolLibraryItem: Identifiable, Hashable, Sendable {
     static func key(_ category: HorizontalPoolItemCategory, _ uuid: String) -> String {
         category.rawValue + "|" + uuid.lowercased()
     }
+
+    /// The items this one names, each once: a symbol's unit, an entity's
+    /// units, a part's base part, entity and package (inherited ones through
+    /// its base, once `resolvingInheritance` has run), a package's padstacks.
+    /// What uses an item is these read backwards
+    /// (`HorizontalPoolLibraryIndex.users(of:uuid:)`), as Horizon's pool
+    /// manager answers Where Used.
+    var references: [HorizontalPoolLibraryReference] {
+        var references = [HorizontalPoolLibraryReference]()
+        func add(_ category: HorizontalPoolItemCategory, _ uuid: String) {
+            let reference = HorizontalPoolLibraryReference(category: category, uuid: uuid.lowercased())
+            if !uuid.isEmpty, !references.contains(reference) { references.append(reference) }
+        }
+        switch category {
+        case .symbol:
+            add(.unit, symbolUnitID)
+        case .entity:
+            entityUnitIDs.forEach { add(.unit, $0) }
+        case .part:
+            add(.part, partBaseID)
+            add(.entity, partEntityID)
+            add(.package, packageID)
+        case .package:
+            packagePadstackIDs.forEach { add(.padstack, $0) }
+        case .unit, .padstack, .frame, .decal:
+            break
+        }
+        return references
+    }
+}
+
+/// A pool item one item names, by kind and uuid (lowercased).
+struct HorizontalPoolLibraryReference: Hashable, Sendable {
+    var category: HorizontalPoolItemCategory
+    var uuid: String
+
+    var key: String { HorizontalPoolLibraryItem.key(category, uuid) }
 }
 
 /// Cross-reference lookup over the browsed pools' items by kind and uuid, so
@@ -123,6 +167,9 @@ struct HorizontalPoolLibraryIndex: Sendable {
     private var orderedItems: [HorizontalPoolLibraryItem]
     /// Each unit's symbols (by lowercased unit uuid), sorted by name.
     private var symbolsByUnit: [String: [HorizontalPoolLibraryItem]]
+    /// The items naming each item (by `itemKey`), sorted by kind and name:
+    /// where each is used.
+    private var usersByKey: [String: [HorizontalPoolLibraryItem]]
     /// Every manufacturer the browsed pools name, sorted, for completions.
     let manufacturers: [String]
     /// Every tag the browsed pools use, sorted, for completions.
@@ -153,6 +200,13 @@ struct HorizontalPoolLibraryIndex: Sendable {
         self.symbolsByUnit = Dictionary(grouping: orderedItems.filter { $0.category == .symbol && !$0.symbolUnitID.isEmpty }) {
             $0.symbolUnitID
         }.mapValues(Self.sortedByName)
+        var usersByKey = [String: [HorizontalPoolLibraryItem]]()
+        for item in orderedItems {
+            for reference in item.references {
+                usersByKey[reference.key, default: []].append(item)
+            }
+        }
+        self.usersByKey = usersByKey.mapValues(Self.sortedByName)
         self.manufacturers = manufacturers.values.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
         self.tags = tags.values.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
@@ -167,6 +221,27 @@ struct HorizontalPoolLibraryIndex: Sendable {
     /// ORDER BY name`).
     func symbols(forUnit unitID: String) -> [HorizontalPoolLibraryItem] {
         symbolsByUnit[unitID.lowercased()] ?? []
+    }
+
+    /// The items naming one, of one kind or every kind, sorted by name —
+    /// Horizon's Where Used: a unit's symbols and entities, an entity's
+    /// parts, a part's derived parts, a package's parts, a padstack's
+    /// packages.
+    func users(
+        of category: HorizontalPoolItemCategory,
+        uuid: String,
+        kind: HorizontalPoolItemCategory? = nil
+    ) -> [HorizontalPoolLibraryItem] {
+        let users = usersByKey[Self.key(category, uuid)] ?? []
+        return kind.map { kind in users.filter { $0.category == kind } } ?? users
+    }
+
+    /// The entities that can draw a gate with a symbol: those using its unit.
+    func entities(drawnWithSymbol symbolID: String) -> [HorizontalPoolLibraryItem] {
+        guard let unitID = item(.symbol, uuid: symbolID)?.symbolUnitID, !unitID.isEmpty else {
+            return []
+        }
+        return users(of: .unit, uuid: unitID, kind: .entity)
     }
 
     private static func sortedByName(_ items: [HorizontalPoolLibraryItem]) -> [HorizontalPoolLibraryItem] {
@@ -212,7 +287,7 @@ enum HorizontalPoolLibrary {
 
     /// Directories that hold no pool JSON but plenty of files (3D models, git
     /// internals, Horizon's layer help): skipping them keeps the walk fast.
-    private static let skippedDirectoryNames: Set<String> = [
+    static let skippedDirectoryNames: Set<String> = [
         "3d_models", ".git", "layer_help", "tmp", "scripts", "versions",
     ]
 
@@ -262,6 +337,9 @@ enum HorizontalPoolLibrary {
         return items
     }
 
+    /// Forgets every pool's scan, and tells whatever shows pool items to
+    /// read them again: what wrote pool files calls this, so the Pools pane
+    /// shows a part an import, a copy or Place cached at once.
     static func invalidateCache() {
         lock.lock()
         cache.removeAll()
@@ -269,9 +347,63 @@ enum HorizontalPoolLibrary {
         nearbyLock.lock()
         nearbyMisses.removeAll()
         nearbyLock.unlock()
+        announcePoolsChanged(nil)
     }
 
     static func invalidateCache(for poolURL: URL) {
+        lock.lock()
+        cache.removeValue(forKey: canonicalURL(poolURL).path)
+        lock.unlock()
+        announcePoolsChanged([canonicalURL(poolURL)])
+    }
+
+    /// Posted when pool items may have changed: by `invalidateCache` and by
+    /// `HorizontalPoolWatcher` when something wrote a pool's files. Its
+    /// `poolURLsKey` holds the pools' canonical URLs; without it, every pool.
+    /// Posted on whatever thread changed them.
+    static let poolsDidChangeNotification = Notification.Name("HorizontalPoolsDidChange")
+    static let poolURLsKey = "HorizontalPoolURLs"
+
+    static func announcePoolsChanged(_ poolURLs: [URL]?) {
+        NotificationCenter.default.post(
+            name: poolsDidChangeNotification,
+            object: nil,
+            userInfo: poolURLs.map { [poolURLsKey: $0] }
+        )
+    }
+
+    /// Whether a `poolsDidChangeNotification` is about one of `poolURLs`.
+    static func notification(_ notification: Notification, concerns poolURLs: [URL]) -> Bool {
+        guard let changed = notification.userInfo?[poolURLsKey] as? [URL] else {
+            return true
+        }
+        let paths = Set(changed.map { canonicalURL($0).path })
+        return poolURLs.contains { paths.contains(canonicalURL($0).path) }
+    }
+
+    /// Reads a pool again whatever its scan holds, and keeps the new scan.
+    /// Whether it lists anything differently from the scan it replaces, so
+    /// a write that changed nothing — an autosave rewriting a project's pool
+    /// files as they were — moves nothing on screen.
+    static func rescan(poolURL: URL) -> Bool {
+        let poolURL = canonicalURL(poolURL)
+        let cacheKey = poolURL.path
+        lock.lock()
+        let cached = cache[cacheKey]
+        lock.unlock()
+        guard accessError(for: poolURL) == nil else {
+            invalidateCacheQuietly(for: poolURL)
+            return cached != nil
+        }
+        let name = cached?.first?.poolName ?? HorizontalPoolRegistryStore.poolInfo(at: poolURL).name
+        let items = scan(poolURL: poolURL, poolName: name)
+        lock.lock()
+        cache[cacheKey] = items
+        lock.unlock()
+        return items != cached
+    }
+
+    private static func invalidateCacheQuietly(for poolURL: URL) {
         lock.lock()
         cache.removeValue(forKey: canonicalURL(poolURL).path)
         lock.unlock()
@@ -356,6 +488,11 @@ enum HorizontalPoolLibrary {
                 packageID: category == .part ? (json.string("package")?.lowercased() ?? "") : "",
                 isBasePart: category == .part && HorizontalPartRecord(json: json).resolved(base: nil).isBasePart,
                 partEntityID: category == .part ? (json.string("entity")?.lowercased() ?? "") : "",
+                partBaseID: category == .part ? (json.string("base")?.lowercased() ?? "") : "",
+                entityUnitIDs: category == .entity ? Self.distinctIDs(json.dictionaryMap("gates").values.map { $0.string("unit") }) : [],
+                packagePadstackIDs: category == .package
+                    ? Self.distinctIDs(json.dictionaryMap("pads").values.map { $0.string("padstack") })
+                    : [],
                 partRecord: category == .part ? HorizontalPartRecord(json: json) : nil
             )
             if isCacheCopy {
@@ -368,6 +505,11 @@ enum HorizontalPoolLibrary {
         return itemsByKey.values.sorted {
             ($0.name.localizedLowercase, $0.uuid) < ($1.name.localizedLowercase, $1.uuid)
         }
+    }
+
+    /// The uuids named, lowercased, each once and sorted.
+    private static func distinctIDs(_ ids: [String?]) -> [String] {
+        Set(ids.compactMap { $0?.lowercased() }.filter { !$0.isEmpty }).sorted()
     }
 
     /// Part items as Horizon's pool database records them: a derived

@@ -32,6 +32,17 @@ class TransportTests(unittest.TestCase):
         self.assertTrue(transport.closed)
         self.assertEqual(caught.exception.structured()["outcome"], "indeterminate")
         self.assertEqual(caught.exception.structured()["details"]["operation_id"], "receipt")
+        # 155: what didn't answer, how long it was given, and what happens next.
+        self.assertIn("did not answer apply within", caught.exception.message)
+        self.assertIn("next call on this context reconnects", caught.exception.message)
+
+    def test_a_session_remembers_what_closed_its_connection(self):
+        transport, server = self.live()
+        session = Session(transport=transport)
+        session.engine = {"api": 2}
+        with self.assertRaises(HorizontalError): session.call("get_pool_item", uuid="x")
+        self.assertEqual(session.last_transport_error["code"], "TIMEOUT")
+        self.assertEqual(session.last_transport_error["method"], "get_pool_item")
 
     def test_lock_wait_is_bounded_and_does_not_send(self):
         transport, server = self.live()

@@ -157,7 +157,12 @@ struct HorizontalPartEditorView: View {
     /// Where `tables.json` is looked for, the part's own pool last so it
     /// overrides the pools it includes.
     var poolURLs: [URL] = []
+    /// What the part leads to and the parts derived from it; the entity,
+    /// package and base part are the references section's own rows.
+    var linkFields: [HorizontalPoolItemPreviewTable.Field] = []
     var commit: (HorizontalPoolPartItem, String) -> Void
+
+    @Environment(\.horizonPoolItemLinkActions) private var linkActions
 
     @State private var parametricTables: [HorizontalParametricTable] = []
 
@@ -278,8 +283,7 @@ struct HorizontalPartEditorView: View {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 8) {
             GridRow {
                 Text("Entity").gridColumnAlignment(.trailing)
-                Text(context?.entityName ?? part.entityID ?? "–")
-                    .lineLimit(1)
+                reference(.entity, part.entityID, name: context?.entityName, fallback: "–")
                 if !hasBase {
                     Button("Change…") {
                         picker = HorizontalPoolItemPickerRequest(purpose: .partEntity, category: .entity, title: "Entity")
@@ -289,8 +293,7 @@ struct HorizontalPartEditorView: View {
             }
             GridRow {
                 Text("Package").gridColumnAlignment(.trailing)
-                Text(context?.packageName ?? part.packageID ?? "–")
-                    .lineLimit(1)
+                reference(.package, part.packageID, name: context?.packageName, fallback: "–")
                 if !hasBase {
                     Button("Change…") {
                         picker = HorizontalPoolItemPickerRequest(purpose: .partPackage, category: .package, title: "Package")
@@ -300,9 +303,12 @@ struct HorizontalPartEditorView: View {
             }
             GridRow {
                 Text("Base part").gridColumnAlignment(.trailing)
-                Text(context?.baseName ?? part.baseID ?? "None")
-                    .lineLimit(1)
-                    .foregroundStyle(hasBase ? .primary : .secondary)
+                if hasBase {
+                    reference(.basePart, part.baseID, name: context?.baseName, fallback: "None")
+                } else {
+                    Text("None")
+                        .foregroundStyle(.secondary)
+                }
                 HStack {
                     Button(hasBase ? "Change…" : "Set…") {
                         picker = HorizontalPoolItemPickerRequest(
@@ -318,7 +324,22 @@ struct HorizontalPartEditorView: View {
                 }
                 .disabled(isReadOnly)
             }
+            HorizontalPoolItemLinkRows(
+                fields: linkFields.filter { ![.basePart, .entity, .package].contains($0.links.first?.role) },
+                actions: linkActions
+            )
         }
+    }
+
+    /// The entity, package or base part the part names, as a link that opens it.
+    private func reference(_ role: HorizontalPoolItemLink.Role, _ uuid: String?, name: String?, fallback: String) -> some View {
+        let uuid = uuid?.lowercased() ?? ""
+        return HorizontalPoolItemLinkButton(
+            link: HorizontalPoolItemLink(role: role, uuid: uuid, name: name ?? (uuid.isEmpty ? fallback : uuid),
+                                         isResolved: !uuid.isEmpty && index.item(role.category, uuid: uuid) != nil),
+            actions: linkActions
+        )
+        .lineLimit(1)
     }
 
     // MARK: - Tags, model

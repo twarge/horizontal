@@ -24,6 +24,17 @@ struct HorizontalPoolRevealRequest: Equatable {
     var category: HorizontalPoolItemCategory
     var uuid: String
     var search: String? = nil
+    /// Alternate Parts…: the parts that fit the components selected in the
+    /// window, with the banner that says so, even where it was closed for
+    /// them.
+    var showsAlternates = false
+
+    /// The parts that can replace the selected components'.
+    static var alternateParts: HorizontalPoolRevealRequest {
+        var request = HorizontalPoolRevealRequest(category: .part, uuid: "")
+        request.showsAlternates = true
+        return request
+    }
 
     init(category: HorizontalPoolItemCategory, uuid: String) {
         self.category = category
@@ -123,6 +134,9 @@ struct HorizontalPoolBrowserView: View {
     @ObservedObject private var poolUpdater = HorizontalPoolUpdater.shared
     @State private var addPoolFailurePath: String?
     @State private var scanGeneration = 0
+    /// A rescan asked for and not yet begun: requests a moment apart — a
+    /// write's own invalidation, then its save notice — make one rescan.
+    @State private var rescanPending = false
     @State private var showsPreview = true
     @State private var pendingReveal: HorizontalPoolRevealRequest?
     /// Asks the list to bring the selected row into view: a fresh token per
@@ -295,10 +309,13 @@ struct HorizontalPoolBrowserView: View {
 
     /// The search: every word is somewhere in the row, the pool column
     /// included, so "twinleaf tps62172" finds a part Twinleaf Pool holds even
-    /// where the row shows the project pool's copy.
+    /// where the row shows the project pool's copy. The uuids an item names
+    /// count too, so an entity's uuid among the parts lists the parts using
+    /// it, as a preview's "… more" link asks.
     static func matches(_ terms: [String], _ item: HorizontalPoolLibraryItem) -> Bool {
         guard !terms.isEmpty else { return true }
-        let haystack = [item.name, item.detail, item.manufacturer, item.tags, item.poolsLabel, item.uuid]
+        let haystack = ([item.name, item.detail, item.manufacturer, item.tags, item.poolsLabel, item.uuid]
+            + item.references.map(\.uuid))
             .joined(separator: "\n")
             .lowercased()
         return terms.allSatisfy(haystack.contains)
@@ -371,6 +388,24 @@ struct HorizontalPoolBrowserView: View {
         browsedPools.map(\.id).joined(separator: "|") + "|\(scanGeneration)"
     }
 
+    /// The pools to watch: the readable ones browsed.
+    private var watchKey: String {
+        browsedPools.filter(\.isReadable).map(\.id).joined(separator: "|")
+    }
+
+    /// Reads the pools again in a moment, once for every request until then.
+    private func requestRescan() {
+        guard !rescanPending else {
+            return
+        }
+        rescanPending = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(60))
+            rescanPending = false
+            scanGeneration += 1
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             browserToolbar
@@ -401,12 +436,29 @@ struct HorizontalPoolBrowserView: View {
         .task(id: scanKey) {
             await reloadItems()
         }
+        // The browsed pools are watched while the pane is up, so a pull, a
+        // pool_write's autosave or another app's edit shows here (item 152).
+        .task(id: watchKey) {
+            let lease = HorizontalPoolWatcher.shared.watch(browsedPools.filter(\.isReadable).map(\.url))
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3_600))
+            }
+            lease.release()
+        }
         // An item saved from its editor shows its new name and metadata here.
         .onReceive(
             NotificationCenter.default.publisher(for: HorizontalPoolLibrary.itemDidSaveNotification)
                 .receive(on: RunLoop.main)
         ) { _ in
-            scanGeneration += 1
+            requestRescan()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: HorizontalPoolLibrary.poolsDidChangeNotification)
+                .receive(on: RunLoop.main)
+        ) { notification in
+            if HorizontalPoolLibrary.notification(notification, concerns: browsedPools.map(\.url)) {
+                requestRescan()
+            }
         }
         .onAppear {
             if let revealRequest {
@@ -463,7 +515,6 @@ struct HorizontalPoolBrowserView: View {
         .onChange(of: poolUpdater.updatesCompleted) {
             // An update changed a pool's files: read its items again.
             HorizontalPoolLibrary.invalidateCache()
-            scanGeneration += 1
         }
         .sheet(isPresented: $isManagingPools) {
             HorizontalManagePoolsSheet()
@@ -472,7 +523,6 @@ struct HorizontalPoolBrowserView: View {
         // browsed as soon as it is.
         .onChange(of: registry.pools) { _, _ in
             HorizontalPoolLibrary.invalidateCache()
-            scanGeneration += 1
         }
         .fileImporter(isPresented: $isImportingPool, allowedContentTypes: [.folder]) { result in
             guard case .success(let url) = result else {
@@ -800,7 +850,7 @@ struct HorizontalPoolBrowserView: View {
             Button {
                 if let item { replace(item, replacement) }
             } label: {
-                toolbarLabel("Replace", systemImage: "arrow.triangle.2.circlepath", compact: compact)
+                toolbarLabel("Replace", systemImage: "rectangle.2.swap", compact: compact)
             }
             .buttonStyle(.borderedProminent)
             .disabled(refusal != nil)
@@ -1004,7 +1054,6 @@ struct HorizontalPoolBrowserView: View {
                 Button("Remove", role: .destructive) {
                     registry.removePool(registered)
                     HorizontalPoolLibrary.invalidateCache()
-                    scanGeneration += 1
                 }
             }
         } label: {
@@ -1417,7 +1466,7 @@ struct HorizontalPoolBrowserView: View {
     private var replacementBanner: some View {
         if category == .part, let replacement = activeReplacement {
             HStack(spacing: 8) {
-                Image(systemName: replacement.problem == nil ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle")
+                Image(systemName: replacement.problem == nil ? "rectangle.2.swap" : "exclamationmark.triangle")
                     .foregroundStyle(replacement.problem == nil ? Color.accentColor : Color.orange)
                 Text(replacement.problem
                      ?? "Only showing parts for entity \(entityName(of: replacement)), to replace \(replacement.refdesList).")
@@ -1490,7 +1539,6 @@ struct HorizontalPoolBrowserView: View {
     /// Pools > Rescan Pools: every pool read again from disk.
     private func rescanPools() {
         HorizontalPoolLibrary.invalidateCache()
-        scanGeneration += 1
     }
 
     /// The items this one leads to that the browsed pools have, for the
@@ -1703,7 +1751,7 @@ struct HorizontalPoolBrowserView: View {
             object: nil,
             userInfo: [HorizontalPoolLibrary.itemDidSavePayloadKey: payload]
         )
-        scanGeneration += 1
+        requestRescan()
         category = model.category
         let item = HorizontalPoolItemFactory.libraryItem(for: model, at: url, poolURL: pool.url, poolName: pool.name)
         selectedItemID = item.id
@@ -1744,7 +1792,6 @@ struct HorizontalPoolBrowserView: View {
         _ = url.startAccessingSecurityScopedResource()
         if registry.addPool(at: url) {
             HorizontalPoolLibrary.invalidateCache()
-            scanGeneration += 1
             #if os(macOS)
             HorizontalPoolWindowManager.shared.refreshTitle(for: url)
             #endif
@@ -1788,6 +1835,19 @@ struct HorizontalPoolBrowserView: View {
     /// the list to it, centred, however far down it is.
     private func applyPendingReveal() {
         guard let request = pendingReveal else {
+            return
+        }
+        if request.showsAlternates {
+            // The selection the request is about may reach partActions a
+            // moment later; adopting it then switches to the parts as well.
+            category = .part
+            searchText = ""
+            viewedPoolID = nil
+            dismissedReplacementKey = nil
+            updateVisibleRows()
+            adoptReplacement(switchingKind: true)
+            pendingReveal = nil
+            scrollToSelection(centered: true)
             return
         }
         if let search = request.search {

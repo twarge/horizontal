@@ -115,7 +115,7 @@ final class HorizontalLiveListener {
     private(set) var token: String?
     private var listener: NWListener?
     private var connections: [ObjectIdentifier: HorizontalLiveConnection] = [:]
-    private let queue = DispatchQueue(label: "com.twarge.horizontal.live-server")
+    private let queue = DispatchQueue(label: "com.twarge.horizontal.live-server", qos: .userInitiated)
 
     func start() {
         guard listener == nil else {
@@ -137,6 +137,9 @@ final class HorizontalLiveListener {
             }
         }
         listener.newConnectionHandler = { [weak self] connection in
+            // Before the hop to the main actor, which App Nap may be holding
+            // back: see HorizontalLiveActivity.
+            HorizontalLiveActivity.shared.connectionOpened()
             Task { @MainActor in
                 self?.accept(connection, token: token)
             }
@@ -152,6 +155,7 @@ final class HorizontalLiveListener {
         self.listener = nil
         for connection in connections.values {
             connection.cancel()
+            HorizontalLiveActivity.shared.connectionClosed()
         }
         connections.removeAll()
         port = nil
@@ -177,10 +181,18 @@ final class HorizontalLiveListener {
     }
 
     private func accept(_ connection: NWConnection, token: String) {
-        guard connections.count < 16 else { connection.cancel(); return }
+        guard listener != nil, connections.count < 16 else {
+            connection.cancel()
+            HorizontalLiveActivity.shared.connectionClosed()
+            return
+        }
         let live = HorizontalLiveConnection(connection: connection, token: token, queue: queue) { [weak self] finished in
             Task { @MainActor in
-                self?.connections.removeValue(forKey: ObjectIdentifier(finished))
+                // A connection reports failing and then being cancelled; it
+                // closes once.
+                if self?.connections.removeValue(forKey: ObjectIdentifier(finished)) != nil {
+                    HorizontalLiveActivity.shared.connectionClosed()
+                }
             }
         }
         connections[ObjectIdentifier(live)] = live
@@ -215,6 +227,51 @@ final class HorizontalLiveListener {
         var bytes = [UInt8](repeating: 0, count: 24)
         _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
         return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// Keeps the app out of App Nap while a live client is connected (item
+/// 155). Napping, the app runs at background priority, and on a loaded
+/// machine — Xcode building, tests running — a request waited 12–16 s for
+/// the main thread with the app idle at 0.4% CPU, until the client gave up
+/// and closed the connection, failing the calls queued behind it. The
+/// activity each request already took began only once the request was read,
+/// at nap priority. An MCP client holds its connection for the session, so
+/// this holds for as long as an agent works with the app, and lets go when
+/// the last connection closes. It keeps no thread busy, and allows idle
+/// system sleep.
+final class HorizontalLiveActivity: @unchecked Sendable {
+    static let shared = HorizontalLiveActivity()
+
+    private let lock = NSLock()
+    private var connections = 0
+    private var activity: NSObjectProtocol?
+
+    /// Whether the app is being kept awake for a client; for tests.
+    var isHeld: Bool {
+        lock.withLock { activity != nil }
+    }
+
+    func connectionOpened() {
+        lock.withLock {
+            connections += 1
+            if activity == nil {
+                activity = ProcessInfo.processInfo.beginActivity(
+                    options: .userInitiatedAllowingIdleSystemSleep,
+                    reason: "A client is connected to the live channel"
+                )
+            }
+        }
+    }
+
+    func connectionClosed() {
+        lock.withLock {
+            connections = max(0, connections - 1)
+            if connections == 0, let activity {
+                ProcessInfo.processInfo.endActivity(activity)
+                self.activity = nil
+            }
+        }
     }
 }
 

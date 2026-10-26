@@ -143,6 +143,41 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.call("list_nets", project_ref=frozen_ref))["data"], [])
         await self.call("release_analysis_snapshot", snapshot_ref=pinned["data"]["snapshot_ref"])
 
+    async def test_search_pool_follows_links_both_ways(self):
+        # 154: a unit's symbols were found only by grepping the pool on disk.
+        revision = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        unit, symbol, entity, gate = (str(uuid.uuid4()) for _ in range(4))
+        await self.call("pool_write", project_ref=self.ref, expected_revision=revision, operation_id="links", items=[
+            {"type": "unit", "uuid": unit, "name": "Opamp", "manufacturer": "", "pins": {}},
+            {"type": "symbol", "uuid": symbol, "name": "Opamp", "unit": unit, "junctions": {}, "lines": {}, "arcs": {},
+             "texts": {}, "polygons": {}, "pins": {}},
+            {"type": "entity", "uuid": entity, "name": "Opamp", "manufacturer": "", "prefix": "U", "tags": [],
+             "gates": {gate: {"name": "Main", "suffix": "", "swap_group": 0, "unit": unit}}}])
+        symbols = (await self.call("search_pool", project_ref=self.ref, kind="symbol", uses=unit))["data"]["items"]
+        self.assertEqual([row["uuid"] for row in symbols], [symbol])
+        self.assertEqual((symbols[0]["unit_id"], symbols[0]["unit"]), (unit, "Opamp"))
+        entities = (await self.call("search_pool", project_ref=self.ref, kind="entity", uses=unit[:8]))["data"]["items"]
+        self.assertEqual([row["uuid"] for row in entities], [entity])
+        self.assertEqual(entities[0]["unit_ids"], [unit])
+        named = (await self.call("search_pool", project_ref=self.ref, used_by=symbol, fields=["name"]))["data"]["items"]
+        self.assertEqual(named, [{"uuid": unit, "kind": "unit", "name": "Opamp"}])
+        short = await server.mcp.call_tool("search_pool", {"project_ref": self.ref, "uses": "abc"})
+        self.assertTrue(short.is_error)
+
+    async def test_a_closed_context_says_what_closed_it(self):
+        # 155: a context that timed out read connected false with no reason,
+        # though its next call reconnects on its own.
+        project = next(iter(server._projects.values()))
+        project.session.last_transport_error = {"code": "TIMEOUT", "method": "get_pool_item", "message": "slow", "at": "now"}
+        with patch.object(server, "_connected", return_value=False):
+            context = (await self.call("connection_status"))["data"]["contexts"][0]
+        self.assertFalse(context["connected"])
+        self.assertEqual(context["closed_by"]["code"], "TIMEOUT")
+        self.assertEqual(context["closed_by"]["method"], "get_pool_item")
+        self.assertIn("reconnects", context["closed_by"]["note"])
+        with patch.object(server, "_connected", return_value=True):
+            self.assertNotIn("closed_by", (await self.call("connection_status"))["data"]["contexts"][0])
+
     async def test_diagnostics_without_secret_values(self):
         result = await self.call("connection_status")
         self.assertEqual(result["data"]["required_native_api"], 2)
@@ -1026,6 +1061,8 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("dry_run", properties, name)
             self.assertIn("file_text", properties, name)
         self.assertIn("package", tools["search_pool"].input_schema["properties"])
+        self.assertIn("uses", tools["search_pool"].input_schema["properties"])
+        self.assertIn("used_by", tools["search_pool"].input_schema["properties"])
 
         revision = self.opened["data"]["revision"]
         await self.call("apply_ops", project_ref=self.ref, expected_revision=revision, operation_id=str(uuid.uuid4()),

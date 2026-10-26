@@ -310,6 +310,18 @@ def _connected(project: Project) -> bool:
     return alive() if callable(alive) else True
 
 
+def _context_status(ref: str, project: Project) -> dict[str, Any]:
+    connected = _connected(project)
+    row = {"project_ref": ref, "path": project.path, **project.last_metadata,
+           "transport": type(project.session.transport).__name__, "connected": connected,
+           "engine": project.session.engine,
+           "schema_matches": (project.session.engine or {}).get("ops_digest", _SCHEMA_DIGEST) == _SCHEMA_DIGEST}
+    if not connected:
+        closed_by = project.session.last_transport_error
+        row["closed_by"] = {**closed_by, "note": "The next call on this context reconnects."} if closed_by else None
+    return row
+
+
 def _drop_context(ref: str) -> None:
     project = _projects.pop(ref)
     _snapshots.pop(ref, None)
@@ -407,7 +419,10 @@ def connection_status() -> dict[str, Any]:
     engine's build says which app answered: bundle is the .app it runs from, so an installed copy and an Xcode build
     (DerivedData/…/Horizontal.app) can be told apart, with path its executable and bundle_version its build number.
     build.modified is when that binary was last written, which for an app run from Xcode is the last Run, not the last
-    build of new code, so none of this shows whether the app is current."""
+    build of new code, so none of this shows whether the app is current. A context that isn't connected gives
+    closed_by: what closed its connection (a TIMEOUT or a lost connection, on which method, when); its next call
+    reconnects on its own. A context's instance_id names its document's open in the app, and the live engine's names
+    the app's dispatcher, so the two differ by design."""
     attempts: list[dict[str, Any]] = []
     info = find_live(attempts)
     # The app's own discovery file is in its sandbox container; the holder
@@ -445,11 +460,7 @@ def connection_status() -> dict[str, Any]:
             binaries.append({"kind": kind, "path": str(path.resolve()), "size": stat.st_size, "modified_ns": stat.st_mtime_ns, "sha256": binary_hash})
     status["binaries"] = binaries
     status["hard_deadlines"] = os.environ.get("HORIZONTAL_ISOLATED") != "0"
-    status["contexts"] = [{"project_ref": id, "path": p.path, **p.last_metadata,
-                            "transport": type(p.session.transport).__name__, "connected": _connected(p),
-                            "engine": p.session.engine,
-                            "schema_matches": (p.session.engine or {}).get("ops_digest", _SCHEMA_DIGEST) == _SCHEMA_DIGEST}
-                           for id, p in _projects.items()]
+    status["contexts"] = [_context_status(id, p) for id, p in _projects.items()]
     warnings = _server_warnings()
     if status["live"].get("schema", {}).get("match") is False:
         warnings.append("The live app and this server's schema describe different ops: " + json.dumps(status["live"]["schema"]))
@@ -823,17 +834,23 @@ def list_parts(path: str | None = None, scope: Literal["project", "pools", "all"
 @_tool
 def search_pool(path: str | None = None, query: str | None = None, kind: str | None = None,
                 pool_path: str | None = None, limit: int = 50, package: str | None = None,
+                uses: Annotated[str | None, Field(description="Only items that name this one, by uuid or 8+ leading digits: a unit's symbols and entities, an entity's parts, a part's derived parts, a package's parts, a padstack's packages. With kind \"symbol\" and a unit's uuid, the symbols that draw it.")] = None,
+                used_by: Annotated[str | None, Field(description="Only the items this one names, by uuid or 8+ leading digits: a symbol's unit, an entity's units, a part's base part, entity and package, a package's padstacks.")] = None,
                 fields: Annotated[list[str] | None, Field(description="Only these keys of each item (uuid and kind always), e.g. [\"name\", \"pools\"].")] = None) -> dict[str, Any]:
     """Search every pool the project draws from — its own pool, the pools that pool includes, and the discovered base
     pools — for parts, entities, symbols, packages, padstacks, units, frames and decals. query is a case-insensitive
     substring of name, description, manufacturer, tags or uuid, or a value however it is written (10 µF, 10uF).
     package keeps only parts in that package, named as get_component gives it (C0402) or by uuid; a part row gives
     its package and package_id, a derived part's taken from its base. A part row has the keys a list_parts row has,
-    plus base_part on a part flagged as one. Every item's pools names each searched pool holding it, its own first.
+    plus base_part on a part flagged as one and base_id on a derived one. A symbol row gives its unit_id and unit, an
+    entity row its unit_ids, a package row its padstack_ids; uses and used_by follow those links either way, and
+    missing_links names what a used_by item names that no searched pool holds. Every item's pools names each
+    searched pool holding it, its own first.
     Items with in_project_pool false live in a base pool and need import_pool_part first. The pools list says which
     pools were searched, and names any that could not be read rather than reporting them as empty; missing_pools
     names any that a searched pool includes but this process couldn't find (see list_part_updates)."""
-    params = {k: v for k, v in {"query": query, "kind": kind, "pool_path": pool_path, "package": package}.items() if v is not None}
+    params = {k: v for k, v in {"query": query, "kind": kind, "pool_path": pool_path, "package": package,
+                                "uses": uses, "used_by": used_by}.items() if v is not None}
     found = _resolve(path).search_pool(limit=limit, **params)
     if fields and isinstance(found, dict):
         _check_fields(found.get("items", []), fields, {"uuid", "kind"})
@@ -1394,8 +1411,8 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
     set_no_connect marks unused pins;
     set_pin_alternate picks a pin's function (SPI1_SCK on PA5) from what get_component(alternates=true) lists;
     remap_part matches pins by name except where pin_map pairs them (by name, VSSA/VREF- → VSSA, or gate/pin),
-    folds gates onto a single-gate part, keeps every pad of the same package, maps other pads by name, and with
-    copper "drop" removes tracks on pads the new part lacks.
+    folds gates onto a single-gate part, keeps every pad of the same package, maps other pads by name, drops a
+    no-connect mark on a pin the new part lacks, and with copper "drop" removes tracks on pads the new part lacks.
     Refer to sheets by name or uuid in a batch that adds or reorders sheets — page numbers move.
 
     Board rules: add_rule takes fields and orders the rule after its kind's; set_rule merges objects key by key.

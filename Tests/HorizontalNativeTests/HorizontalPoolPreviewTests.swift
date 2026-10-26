@@ -358,16 +358,17 @@ final class HorizontalPoolPreviewTests: XCTestCase {
         // The context menu's "Show …" entries come from the same links.
         let entity = try item(.entity, "e-quad", in: items)
         let entityLinks = HorizontalPoolPreviewBuilder.links(for: entity, json: try JSONHelper.loadDictionary(from: entity.url), index: index)
-        XCTAssertEqual(entityLinks.map(\.role), [.unit, .unit, .symbol, .symbol, .symbol])
+        // What an item names comes first, then what names it (Where Used).
+        XCTAssertEqual(entityLinks.map(\.role), [.unit, .unit, .symbol, .symbol, .symbol, .part])
         let symbol = try item(.symbol, "s-op1", in: items)
         XCTAssertEqual(
             HorizontalPoolPreviewBuilder.links(for: symbol, json: try JSONHelper.loadDictionary(from: symbol.url), index: index).map(\.uuid),
-            ["u-op"], "a symbol leads to its unit, however its file spells the uuid"
+            ["u-op", "e-quad"], "a symbol leads to its unit, however its file spells the uuid, and to the entities that can draw it"
         )
         let package = try item(.package, "pkg1", in: items)
         XCTAssertEqual(
             HorizontalPoolPreviewBuilder.links(for: package, json: try JSONHelper.loadDictionary(from: package.url), index: index).map(\.name),
-            ["TH round"]
+            ["TH round", "BASE-1", "QUAD-1"], "its padstacks, then its parts"
         )
     }
 

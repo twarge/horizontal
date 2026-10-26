@@ -318,6 +318,15 @@ enum HorizontalDispatchPool {
         // carries what its entity says.
         let projectPool = urls.first?.standardizedFileURL.path
         let projectParts = Dictionary(entry.project.poolParts.map { ($0.id.lowercased(), $0) }) { first, _ in first }
+        // Built only when a link is followed or a symbol row names its unit.
+        var builtIndex: HorizontalPoolLibraryIndex?
+        func index() -> HorizontalPoolLibraryIndex {
+            if let builtIndex { return builtIndex }
+            let index = HorizontalPoolLibraryIndex(items: items)
+            builtIndex = index
+            return index
+        }
+        let linked = params["uses"] == nil && params["used_by"] == nil ? nil : try linkFilter(params, items: items, index: index())
 
         var seen = Set<String>()
         let matched = items
@@ -325,25 +334,116 @@ enum HorizontalDispatchPool {
             // The project pool is scanned first, so its copy of a uuid wins.
             .filter { seen.insert(key($0.category, $0.uuid)).inserted }
             .filter { wantedPackage.isEmpty || package($0)?.matches(wantedPackage) == true }
+            .filter { linked?.keys.contains($0.itemKey) ?? true }
             .sorted { ($0.name.localizedLowercase, $0.uuid) < ($1.name.localizedLowercase, $1.uuid) }
         var result: JSONDictionary = [
             "pools": pools,
             "total": matched.count,
             "truncated": matched.count > limit,
             "items": matched.prefix(limit).map { item -> JSONDictionary in
-                guard item.category == .part else {
-                    return itemJSON(item, inProject: inProject, holders: holders)
+                var row: JSONDictionary
+                if item.category == .part {
+                    let own = item.poolURL.standardizedFileURL.path == projectPool ? projectParts[item.uuid] : nil
+                    row = partRow(item, inProject: inProject, package: package(item), holders: holders, projectPart: own)
+                } else {
+                    row = itemJSON(item, inProject: inProject, holders: holders)
                 }
-                let own = item.poolURL.standardizedFileURL.path == projectPool ? projectParts[item.uuid] : nil
-                return partRow(item, inProject: inProject, package: package(item), holders: holders, projectPart: own)
+                return row.merging(linkKeys(item, index: item.category == .symbol ? index() : .empty)) { own, _ in own }
             }
         ]
+        if let missing = linked?.missing, !missing.isEmpty {
+            result["missing_links"] = missing
+        }
         // pool_path narrows the search on purpose, so what it leaves out isn't missing.
         let missing = (params.string("pool_path") ?? "").isEmpty ? HorizontalPoolLibrary.missingIncludedPools(among: urls) : []
         if !missing.isEmpty {
             result["missing_pools"] = missingPoolsJSON(missing)
         }
         return result
+    }
+
+    /// What a search_pool row names, so links can be followed without
+    /// opening the item: a symbol's unit_id and unit, an entity's unit_ids,
+    /// a derived part's base_id, a package's padstack_ids. A part row
+    /// already gives its entity_id and package_id.
+    private static func linkKeys(_ item: HorizontalPoolLibraryItem, index: HorizontalPoolLibraryIndex) -> JSONDictionary {
+        switch item.category {
+        case .symbol:
+            return ["unit_id": item.symbolUnitID.isEmpty ? NSNull() : item.symbolUnitID,
+                    "unit": index.name(.unit, uuid: item.symbolUnitID) ?? NSNull()]
+        case .entity:
+            return ["unit_ids": item.entityUnitIDs]
+        case .part:
+            return item.partBaseID.isEmpty ? [:] : ["base_id": item.partBaseID]
+        case .package:
+            return ["padstack_ids": item.packagePadstackIDs]
+        case .unit, .padstack, .frame, .decal:
+            return [:]
+        }
+    }
+
+    /// `uses` and `used_by` as the item keys they leave: the items naming
+    /// one item (Horizon's Where Used), and the items one names. Both given,
+    /// the items in both. `missing` is what the used_by item names that no
+    /// searched pool holds. Nil when neither is given.
+    private static func linkFilter(
+        _ params: JSONDictionary,
+        items: [HorizontalPoolLibraryItem],
+        index: HorizontalPoolLibraryIndex
+    ) throws -> (keys: Set<String>, missing: [JSONDictionary])? {
+        let uses = params.string("uses").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
+        let usedBy = params.string("used_by").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
+        guard uses != nil || usedBy != nil else {
+            return nil
+        }
+        var keys: Set<String>?
+        var missing = [JSONDictionary]()
+        if let uses {
+            let uuid = try linkedUUID(uses, parameter: "uses", items: items)
+            keys = Set(HorizontalPoolItemCategory.allCases.flatMap { index.users(of: $0, uuid: uuid) }.map(\.itemKey))
+        }
+        if let usedBy {
+            let uuid = try linkedUUID(usedBy, parameter: "used_by", items: items)
+            let named = HorizontalPoolItemCategory.allCases.compactMap { index.item($0, uuid: uuid) }
+            guard !named.isEmpty else {
+                throw HorizontalDispatchError.notFound("used_by: no searched pool holds an item \(uuid).")
+            }
+            var found = Set<String>()
+            for reference in Set(named.flatMap(\.references)).sorted(by: { $0.key < $1.key }) {
+                if index.item(reference.category, uuid: reference.uuid) != nil {
+                    found.insert(reference.key)
+                } else {
+                    missing.append(["kind": reference.category.rawValue, "uuid": reference.uuid])
+                }
+            }
+            keys = keys.map { $0.intersection(found) } ?? found
+        }
+        return (keys ?? [], missing)
+    }
+
+    /// A uuid, or eight or more of its leading digits ("…" allowed after
+    /// them) that begin one item's uuid, or one uuid an item names, alone.
+    private static func linkedUUID(_ value: String, parameter: String, items: [HorizontalPoolLibraryItem]) throws -> String {
+        var prefix = value.lowercased()
+        while prefix.hasSuffix("…") || prefix.hasSuffix(".") { prefix.removeLast() }
+        guard prefix.count < 36 else {
+            return prefix
+        }
+        guard prefix.count >= 8 else {
+            throw HorizontalDispatchError.invalidParams("\(parameter) takes a uuid, or eight or more of its leading digits.")
+        }
+        var candidates = Set<String>()
+        for item in items {
+            if item.uuid.hasPrefix(prefix) { candidates.insert(item.uuid) }
+            for reference in item.references where reference.uuid.hasPrefix(prefix) { candidates.insert(reference.uuid) }
+        }
+        guard candidates.count <= 1 else {
+            throw HorizontalDispatchError.ambiguous("\(parameter): \(prefix) begins \(candidates.count) uuids.", candidates: Array(candidates))
+        }
+        guard let uuid = candidates.first else {
+            throw HorizontalDispatchError.notFound("\(parameter): no searched pool has a uuid beginning \(prefix).")
+        }
+        return uuid
     }
 
     private static func matches(_ query: String, _ item: HorizontalPoolLibraryItem) -> Bool {

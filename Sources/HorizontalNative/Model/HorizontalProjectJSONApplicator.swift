@@ -320,6 +320,9 @@ enum HorizontalProjectJSONApplicator {
         )
 
         let smashedTextsBefore = smashedSymbolTextIDs(in: sheetJSON)
+        // The gates the sheet drew before the edit, read before the patches
+        // below take a deleted symbol out of it.
+        let gatesDrawnBefore = drawnGateKeys(in: sheetJSON)
 
         // A schematic's grid is fixed, and neither Horizon nor Horizontal
         // reads one from the file; earlier saves wrote it all the same.
@@ -346,16 +349,20 @@ enum HorizontalProjectJSONApplicator {
         // that sheet wires it. Writing that copy back put the pins of a net
         // segment moved on one sheet back on their old net when another
         // sheet was saved.
-        var drawnGates = sheet.drawnGateKeys
-        for symbol in sheetJSON.dictionaryMap("symbols").values {
-            if let componentID = symbol.string("component"), let gateID = symbol.string("gate") {
-                drawnGates.insert(normalizedID(componentID) + "/" + normalizedID(gateID))
-            }
-        }
+        let drawnGates = sheet.drawnGateKeys.union(gatesDrawnBefore)
+        // A gate whose symbol went, and that no sheet draws now, leaves its
+        // nets, as Horizon's delete disconnects a symbol (`disconnect_symbol`):
+        // the component stays for its other gates, and the gate placed again
+        // starts unconnected.
+        var sheetsAfter = sheets
+        sheetsAfter[sheetKey] = sheetJSON
+        let drawnAnywhere = sheetsAfter.values.compactMap { $0 as? JSONDictionary }
+            .reduce(into: Set<String>()) { $0.formUnion(drawnGateKeys(in: $1)) }
         try patchSchematicComponentConnections(
             sheet.componentInfo,
             removedConnections: sheet.removedConnections,
             gates: drawnGates,
+            undrawnGates: gatesDrawnBefore.subtracting(drawnAnywhere).subtracting(sheet.drawnGateKeys),
             schematicURL: schematicURL,
             project: project,
             archive: &archive
@@ -1179,15 +1186,24 @@ enum HorizontalProjectJSONApplicator {
         try saveJSON(json, relativePath: path, to: &archive)
     }
 
+    /// "component/gate" for each symbol a sheet's JSON draws.
+    private static func drawnGateKeys(in sheetJSON: JSONDictionary) -> Set<String> {
+        Set(sheetJSON.dictionaryMap("symbols").values.compactMap { symbol in
+            guard let componentID = symbol.string("component"), let gateID = symbol.string("gate") else { return nil }
+            return normalizedID(componentID) + "/" + normalizedID(gateID)
+        })
+    }
+
     private static func patchSchematicComponentConnections(
         _ componentInfo: [String: SchematicComponentInfo],
         removedConnections: [String: Set<String>],
         gates: Set<String>,
+        undrawnGates: Set<String> = [],
         schematicURL: URL,
         project: HorizontalProject,
         archive: inout HorizontalProjectArchive
     ) throws {
-        guard !componentInfo.isEmpty,
+        guard !componentInfo.isEmpty || !undrawnGates.isEmpty,
               let blockURL = blockURL(for: schematicURL, in: project) else {
             return
         }
@@ -1196,10 +1212,27 @@ enum HorizontalProjectJSONApplicator {
         var json = try loadJSON(relativePath: path, fallbackURL: blockURL, from: archive)
         var componentMap = json["components"] as? JSONDictionary ?? [:]
 
+        for key in undrawnGates {
+            let parts = key.split(separator: "/").map(String.init)
+            guard parts.count == 2, let componentKey = matchingKey(parts[0], in: componentMap),
+                  var componentJSON = componentMap[componentKey] as? JSONDictionary,
+                  var connections = componentJSON["connections"] as? JSONDictionary else {
+                continue
+            }
+            let before = connections.count
+            connections = connections.filter { normalizedID(String($0.key.split(separator: "/").first ?? "")) != parts[1] }
+            guard connections.count != before else { continue }
+            componentJSON["connections"] = connections
+            componentMap[componentKey] = componentJSON
+        }
+
         // "component/gate" for a component's gate/pin path.
+        // A gate drawn nowhere now is written from nothing: its connections
+        // went above, and a stale copy here mustn't bring them back.
         func isDrawn(_ componentID: String, _ gatePinPath: String) -> Bool {
             let gateID = gatePinPath.split(separator: "/").first.map(String.init) ?? gatePinPath
-            return gates.contains(normalizedID(componentID) + "/" + normalizedID(gateID))
+            let key = normalizedID(componentID) + "/" + normalizedID(gateID)
+            return gates.contains(key) && !undrawnGates.contains(key)
         }
         for (componentID, info) in componentInfo {
             guard let componentKey = matchingKey(componentID, in: componentMap),

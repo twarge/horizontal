@@ -494,6 +494,8 @@ struct BoardCanvasView: View {
     @StateObject private var undoTarget = HorizontalUndoTarget<HorizontalBoard>()
     @StateObject private var selectableCache = BoardSelectableCache()
     @Environment(\.colorScheme) private var colorScheme
+    /// The window's Pools pane, for Alternate Parts…; nil where there is none.
+    @Environment(\.horizonPoolRevealAction) private var poolRevealAction
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
 
     init(
@@ -882,10 +884,11 @@ struct BoardCanvasView: View {
             handlesSelectionDeletion: canDeleteSelection,
             undoManager: undoManager,
             ignoresCanvasMouseEvents: ignoresCanvasMouseEvents,
-            onCursorWorldPointChange: { point, worldUnitsPerPoint in
-                updateCursor(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+            onCursorWorldPointChange: { pointer, worldUnitsPerPoint in
+                updateCursor(at: pointer, worldUnitsPerPoint: worldUnitsPerPoint)
             },
-            onPrimaryClick: { point, worldUnitsPerPoint, clickAction, clickCount in
+            onPrimaryClick: { pointer, worldUnitsPerPoint, clickAction, clickCount in
+                let point = pointer.snapped
                 if packagePlacementState != nil {
                     commitPackagePlacement(at: point)
                     return
@@ -933,7 +936,7 @@ struct BoardCanvasView: View {
                     return
                 }
 
-                let hitRef = hitSelectable(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+                let hitRef = hitSelectable(at: pointer.raw, worldUnitsPerPoint: worldUnitsPerPoint)
                 #if os(macOS)
                 // Double-click a text → reopen the inline editor instead of just
                 // selecting it.
@@ -955,8 +958,8 @@ struct BoardCanvasView: View {
                 }
                 updateSelection(with: refs, action: action)
             },
-            targetMenuItems: { point, worldUnitsPerPoint in
-                targetMenuItems(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+            targetMenuItems: { pointer, worldUnitsPerPoint in
+                targetMenuItems(at: pointer.raw, worldUnitsPerPoint: worldUnitsPerPoint)
             },
             onTargetMenuSelection: { ref in
                 setSelectedObject(ref)
@@ -2637,8 +2640,10 @@ struct BoardCanvasView: View {
                     endDrawGraphicsInteraction()
                 } else if drawTrackState != nil {
                     cancelDrawTrack()
-                } else {
+                } else if moveState != nil {
                     cancelMove()
+                } else {
+                    clearSelectionAndHighlight()
                 }
             }
         )
@@ -2686,10 +2691,14 @@ struct BoardCanvasView: View {
                 handlers.showInProjectPoolManager = { revealSelectedPackage(.projectPool) }
             }
         }
+        if let poolRevealAction, !modeProfile.isPoolMode {
+            handlers.showAlternateParts = { poolRevealAction(.alternateParts) }
+        }
         return handlers
     }
 
-    private func updateCursor(at point: HorizontalPoint?, worldUnitsPerPoint: Double) {
+    private func updateCursor(at pointer: HorizontalCanvasPointer?, worldUnitsPerPoint: Double) {
+        let point = pointer?.snapped
         // Guard each @State write with an equality check. SwiftUI doesn't
         // dedupe @State assignments for Equatable types — every write triggers
         // a body re-render. During pan/zoom the cursor fires events at the
@@ -2784,7 +2793,7 @@ struct BoardCanvasView: View {
             return
         }
 
-        let newHover = hitSelectable(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+        let newHover = hitSelectable(at: pointer?.raw ?? point, worldUnitsPerPoint: worldUnitsPerPoint)
         if hoveredObject != newHover {
             hoveredObject = newHover
         }
@@ -2945,6 +2954,11 @@ struct BoardCanvasView: View {
             }
             for link in packagePartPageLinks(for: ref) {
                 entries.append(.action(title: link.title, .openURL(link.url)))
+            }
+            // The Pools pane on the parts that can replace the package's
+            // component's, as its Replace offers them.
+            if poolRevealAction != nil, !modeProfile.isPoolMode {
+                entries.append(.command(title: "Alternate Parts…", .showAlternateParts))
             }
         }
 
@@ -3288,6 +3302,24 @@ struct BoardCanvasView: View {
         return true
     }
 
+    /// Ends the window's highlight, wherever it came from.
+    private func clearHighlight() {
+        guard !highlightedNetIDs.isEmpty || !highlightedComponentIDs.isEmpty else {
+            return
+        }
+        onHighlightNetCommand([])
+        onHighlightComponentCommand([])
+    }
+
+    /// Escape with no tool active: Horizon empties the selection, and with
+    /// it the highlight.
+    private func clearSelectionAndHighlight() {
+        if !selectedObjects.isEmpty {
+            setSelectedObject(nil)
+        }
+        clearHighlight()
+    }
+
     private func setSelectedObject(_ ref: HorizontalSelectableRef?) {
         selectedObjects = ref.map { [$0] } ?? []
         selectedUnplacedObjectID = nil
@@ -3561,6 +3593,9 @@ struct BoardCanvasView: View {
     }
 
     private func updateSelection(with ref: HorizontalSelectableRef?, action: HorizontalSelectionClickAction) {
+        if HorizontalCanvasModeSupport.clearsHighlight(hitNothing: ref == nil, action: action) {
+            clearHighlight()
+        }
         guard let updated = HorizontalCanvasModeSupport.updatedSelection(
             current: selectedObjects,
             ref: ref,
@@ -3574,6 +3609,9 @@ struct BoardCanvasView: View {
     }
 
     private func updateSelection(with refs: [HorizontalSelectableRef], action: HorizontalSelectionClickAction) {
+        if HorizontalCanvasModeSupport.clearsHighlight(hitNothing: refs.isEmpty, action: action) {
+            clearHighlight()
+        }
         guard let updated = HorizontalCanvasModeSupport.updatedSelection(
             current: selectedObjects,
             refs: refs,

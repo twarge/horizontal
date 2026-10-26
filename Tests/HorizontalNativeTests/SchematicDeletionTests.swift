@@ -137,6 +137,68 @@ final class SchematicDeletionTests: XCTestCase {
         XCTAssertEqual(Set(try json("top_block.json", in: edited).dictionaryMap("components").values.compactMap { $0.string("refdes") }), ["R1", "R3"])
         XCTAssertEqual(reloaded.schematic?.sheets[0].symbols.count, 2)
         XCTAssertEqual(reloaded.schematic?.sheets[1].symbols.count, 0)
+        // The sheet's own copy of the connection was left in place here, and
+        // the save takes it off all the same: no sheet draws the gate now.
+        XCTAssertTrue(try connections(of: "R1", in: edited).isEmpty, "A deleted gate leaves its nets, as Horizon's disconnect_symbol has it")
+    }
+
+    /// Item 49's deleted gate: deleting one gate of a part whose other gate
+    /// stays took the gate back to the unplaced list still on its nets, so
+    /// placed again it came back wired to them. Horizon disconnects a symbol
+    /// before deleting it.
+    func testDeletingAGateOnTheCanvasTakesItsPinsOffTheirNets() async throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required for canvas presentation") }
+        let state = try fixture(otherGate: true)
+        XCTAssertEqual(try connections(of: "R1", in: state.archive).count, 1, "R1's first gate starts on SIG")
+        let defaults = UserDefaults(suiteName: "schematic-deletion-\(UUID().uuidString)")!
+        let hosted = NSHostingView(rootView: Canvas(state: state)
+            .environmentObject(HorizontalAppearanceSettings(defaults: defaults)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosted
+        window.orderFront(nil)
+        defer { window.close() }
+        let mounted = await settle { state.actions != nil }
+        XCTAssertTrue(mounted)
+
+        state.actions?.dispatch(.selectAll)
+        let selected = await settle {
+            state.actions?.canDeleteSelection == true && state.details.groups.flatMap(\.items).count >= 3
+        }
+        XCTAssertTrue(selected)
+        state.undo.beginUndoGrouping()
+        state.actions?.dispatch(.deleteSelection)
+        state.undo.endUndoGrouping()
+        let deleted = await settle { state.revision == 1 }
+        XCTAssertTrue(deleted)
+        XCTAssertNil(state.error)
+
+        let components = try json("top_block.json", in: state.archive).dictionaryMap("components")
+        XCTAssertTrue(components.values.contains { $0.string("refdes") == "R1" }, "R1 stays for the gate still drawn")
+        XCTAssertTrue(try connections(of: "R1", in: state.archive).isEmpty)
+        let r1 = try XCTUnwrap(state.project.schematic?.sheets[0].componentInfo.first { $0.value.refdes == "R1" }?.key)
+        for sheet in try XCTUnwrap(state.project.schematic?.sheets) {
+            XCTAssertTrue(sheet.componentInfo[r1]?.connections.isEmpty ?? true, "No sheet's copy keeps the deleted gate on SIG")
+        }
+        let unplaced = try XCTUnwrap(state.project.schematic?.sheets[1].unplacedObjects.first { $0.label.hasPrefix("R1") })
+        let placing = try XCTUnwrap(HorizontalSchematic.placingUnplacedSymbol(
+            unplaced, in: try XCTUnwrap(state.project.schematic?.sheets[1]), at: .zero,
+            poolURL: state.project.baseURL.appendingPathComponent(state.project.poolDirectory ?? "pool")
+        ))
+        XCTAssertFalse(placing.sheet.symbolPins.isEmpty)
+        XCTAssertTrue(placing.sheet.symbolPins.allSatisfy { $0.netID == nil }, "Placed again, the gate is on no net")
+
+        state.undo.undo()
+        let restored = await settle { state.revision == 2 }
+        XCTAssertTrue(restored)
+        XCTAssertEqual(try connections(of: "R1", in: state.archive).count, 1, "Undo puts the gate back on SIG")
+    }
+
+    /// A component's connections in the block, by gate/pin path.
+    private func connections(of refdes: String, in archive: HorizontalProjectArchive) throws -> JSONDictionary {
+        let component = try XCTUnwrap(try json("top_block.json", in: archive).dictionaryMap("components").values.first { $0.string("refdes") == refdes })
+        return component.dictionary("connections") ?? [:]
     }
 
     private func assertDeleted(_ project: HorizontalProject, file: StaticString = #filePath, line: UInt = #line) throws {

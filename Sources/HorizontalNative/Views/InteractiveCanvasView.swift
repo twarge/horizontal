@@ -115,6 +115,10 @@ enum HorizontalCanvasCommand {
     case editSymbolPinNames
     /// Schematic: Horizon's Edit Custom Value dialog for the selected symbol.
     case editCustomValue
+    /// The Pools pane, on the parts that can replace the selected
+    /// components' (their entity's): a symbol's or package's Alternate
+    /// Parts….
+    case showAlternateParts
     /// Schematic: mark every pin of the selected symbols' gates that is on
     /// no net as not connected (Horizon's "Set all unconnected pins NC").
     case setAllUnconnectedPinsNC
@@ -248,6 +252,28 @@ enum HorizontalTargetItemMenuEntry {
 struct HorizontalSnappedCursor {
     var point: HorizontalPoint
     var isTarget: Bool
+}
+
+/// Where the pointer is in the world, two ways: snapped to the grid and the
+/// snap targets, for what a tool puts down, and as it is, for what a click,
+/// a hover or a right-click hits. Horizon hit-tests the pointer, not its grid
+/// cursor; hit-testing the snapped point missed a wire at an angle, which runs
+/// between grid points, wherever the nearest grid point lay outside its hit
+/// box.
+struct HorizontalCanvasPointer: Equatable, Sendable {
+    var snapped: HorizontalPoint
+    var raw: HorizontalPoint
+
+    /// A pointer exactly on its snapped point, for callers with only one.
+    init(_ point: HorizontalPoint) {
+        snapped = point
+        raw = point
+    }
+
+    init(snapped: HorizontalPoint, raw: HorizontalPoint) {
+        self.snapped = snapped
+        self.raw = raw
+    }
 }
 
 private struct HorizontalSelectionDragPreview {
@@ -483,10 +509,10 @@ struct InteractiveCanvasView: View {
     var handlesSelectionDeletion = false
     var undoManager: UndoManager? = nil
     var ignoresCanvasMouseEvents = false
-    var onCursorWorldPointChange: (HorizontalPoint?, Double) -> Void = { _, _ in }
-    var onPrimaryClick: (HorizontalPoint, Double, HorizontalSelectionClickAction, Int) -> Void = { _, _, _, _ in }
+    var onCursorWorldPointChange: (HorizontalCanvasPointer?, Double) -> Void = { _, _ in }
+    var onPrimaryClick: (HorizontalCanvasPointer, Double, HorizontalSelectionClickAction, Int) -> Void = { _, _, _, _ in }
     var onAreaSelection: ([HorizontalSelectableRef], HorizontalSelectionClickAction) -> Void = { _, _ in }
-    var targetMenuItems: (HorizontalPoint, Double) -> [HorizontalSelectionTargetItem] = { _, _ in [] }
+    var targetMenuItems: (HorizontalCanvasPointer, Double) -> [HorizontalSelectionTargetItem] = { _, _ in [] }
     var onTargetMenuSelection: (HorizontalSelectableRef) -> Void = { _ in }
     /// Per-candidate action submenu for the disambiguation / context menu. Empty
     /// → the candidate is a plain "click to select" item (legacy behaviour).
@@ -979,7 +1005,7 @@ struct InteractiveCanvasView: View {
                                 return []
                             }
                             let transform = currentTransform(size: proxy.size, fitInsets: fitInsets)
-                            let worldPoint = snappedCursor(at: location, transform: transform).point
+                            let worldPoint = pointer(at: location, transform: transform)
                             let unitsPerPoint = worldUnitsPerScreenPoint(transform: transform, size: proxy.size)
                             return targetMenuItems(worldPoint, unitsPerPoint)
                         },
@@ -1466,7 +1492,7 @@ struct InteractiveCanvasView: View {
 
         let transform = currentTransform(size: size, fitInsets: fitInsets)
         onCursorWorldPointChange(
-            snappedCursor(at: location, transform: transform).point,
+            pointer(at: location, transform: transform),
             worldUnitsPerScreenPoint(transform: transform, size: size)
         )
     }
@@ -1501,7 +1527,7 @@ struct InteractiveCanvasView: View {
         fitInsets: HorizontalCanvasInsets
     ) {
         let transform = currentTransform(size: size, fitInsets: fitInsets)
-        let worldPoint = snappedCursor(at: canvasLocation, transform: transform).point
+        let worldPoint = pointer(at: canvasLocation, transform: transform)
         let unitsPerPoint = worldUnitsPerScreenPoint(transform: transform, size: size)
         let targets = targetMenuItems(worldPoint, unitsPerPoint)
         // The permanent Fit View / Copy Visible Bounds / Copy Coordinates items
@@ -1827,7 +1853,7 @@ struct InteractiveCanvasView: View {
             presentedWarning = warning
             return
         }
-        let worldPoint = snappedCursor(at: location, transform: transform).point
+        let worldPoint = pointer(at: location, transform: transform)
         let unitsPerPoint = worldUnitsPerScreenPoint(transform: transform, size: size)
         // The click-time disambiguation popup is macOS-only (NSMenu); on iOS
         // overlapping candidates are disambiguated by the long-press menu.
@@ -2153,6 +2179,12 @@ struct InteractiveCanvasView: View {
             return "\(millimeters.formatted(.number.precision(.fractionLength(1)))) mm"
         }
         return "\((millimeters * 1_000).formatted(.number.precision(.fractionLength(0)))) um"
+    }
+
+    /// The pointer at a view location: snapped for tools, as it is for
+    /// hit-testing.
+    private func pointer(at location: CGPoint, transform: HorizontalCanvasTransform) -> HorizontalCanvasPointer {
+        HorizontalCanvasPointer(snapped: snappedCursor(at: location, transform: transform).point, raw: transform.worldPoint(location))
     }
 
     private func snappedCursor(at location: CGPoint, transform: HorizontalCanvasTransform) -> HorizontalSnappedCursor {

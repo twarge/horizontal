@@ -10,8 +10,11 @@ struct HorizontalUnitEditorView: View {
     var isReadOnly: Bool
     /// For manufacturer completions.
     var index: HorizontalPoolLibraryIndex = .empty
+    /// The symbols that draw the unit and the entities using it.
+    var linkFields: [HorizontalPoolItemPreviewTable.Field] = []
     var commit: (HorizontalPoolUnit, String) -> Void
 
+    @Environment(\.horizonPoolItemLinkActions) private var linkActions
     @State private var selectedPinIDs = Set<String>()
     /// The pin table's columns as last arranged, for every window.
     @AppStorage("Horizontal.unitEditor.pinColumns")
@@ -36,6 +39,7 @@ struct HorizontalUnitEditorView: View {
                         commit(model, "Change Manufacturer")
                     }
                 }
+                HorizontalPoolItemLinkRows(fields: linkFields, actions: linkActions)
             }
             .frame(maxWidth: 520)
 
