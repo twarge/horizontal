@@ -109,7 +109,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     var summary: String {
         switch self {
         case .ensureComponent: "Create a block component if it does not exist; returns its id."
-        case .removeComponent: "Remove a component, its symbols, its board package, and the copper attached to it. The wiring that served only it goes too — wires that reach no pin once it is gone, with their labels and power symbols, and dead ends that ran to it — unless keep_wiring."
+        case .removeComponent: "Remove a component, its symbols, its board package (a sub-block's component, the package of every instance of it), and the copper attached to it. The wiring that served only it goes too — wires that reach no pin once it is gone, with their labels and power symbols, and dead ends that ran to it — unless keep_wiring."
         case .setValue: "Set a component's value. A part's own value is the one shown, and the apply_ops reply gives warnings when it hides the value set."
         case .setRefdes: "Set a component's reference designator."
         case .setPart: "Assign a pool part (and its entity) to a component; null clears the part."
@@ -156,7 +156,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .placeNetLabel: "Label a net on a sheet. A label is how a net is named on the page, and how one net spans several sheets. id naming a label that is there changes it in place — its orientation, size, off-sheet refs or place — as place_text changes a text."
         case .removeNetLabel: "Remove a net label from its sheet."
         case .addBlockInstance: "Use another block inside this one: one instance of it, with its own reference designator."
-        case .removeBlockInstance: "Remove a block instance and every symbol drawn for it."
+        case .removeBlockInstance: "Remove a block instance, every symbol drawn for it, and the board packages of the components it brought."
         case .connectBlockPort: "Connect a block instance's port to a net in the block that uses it. Ports are how a sub-block reaches the design around it."
         case .placeBlockSymbol: "Draw a block instance on a sheet, using the symbol that block defines for itself."
         case .removeBlockSymbol: "Take a block instance's symbol off its sheet. The instance stays."
@@ -196,7 +196,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .removeDimension: "Remove a dimension."
         case .setSheetIndex: "Move a schematic sheet to a page number, shifting the sheets between; swap exchanges it with the one there instead."
         case .placeComponent: "Place a component's package on the board, or move it if it is placed."
-        case .removePlacement: "Take a component's package off the board, keeping its copper as junctions."
+        case .removePlacement: "Take a component's package off the board, keeping its copper as junctions. A package whose component is in no block any more, which check reports, is named by its own id or the component id its refdes text draws."
         case .copyGroupLayout: "Copy the placement (and by default the routing) of one group's packages onto another group whose components carry the same tags."
         case .setProjectMeta: "Set the project's title-block values — project_title, project_name, rev, author and the rest — that $project_title and the like stand for on the sheets and the board. The schematic's own copies of a value change with it."
         case .setExportSettings: "Change the export settings Horizon EDA keeps in the project — Gerber, ODB, pick-and-place, STEP, board PDF, BOM, schematic PDF: file names, directories, options. export_settings shows them."
@@ -233,7 +233,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "texts_within_mm": "Also remove free text this close to the component's symbols when they are the nearest symbol to it — the notes that described the part (optional).",
                     "keep_wiring": "Leave the wiring that served only this part — the islands that reach no pin once it is gone, with their labels and power symbols, and the dead ends that ran to it (default false: they go with it)."]
         case .removePlacement:
-            return ["component": component]
+            return ["component": component + " For a package whose component is gone, the package's id or the component id it names."]
         case .setValue:
             return ["component": component, "value": "New value."]
         case .setRefdes:
@@ -843,7 +843,7 @@ final class HorizontalProjectEditor {
             change["component"] = id
             let notes = try textsNear(componentID: id, gateID: nil, sheet: nil, params)
             let before = try debris(onSheetsDrawing: id, gate: nil, keep: params.bool("keep_wiring") ?? false)
-            change["removed"] = removeComponent(id)
+            change["removed"] = try removeComponent(id)
             if !notes.isEmpty { change["texts_removed"] = try removeFreeTexts(notes) }
             if let wiring = try clearDebris(since: before) { change["wiring_removed"] = wiring }
         case .setValue:
@@ -1112,9 +1112,7 @@ final class HorizontalProjectEditor {
             change["component"] = id
             change["package"] = try placeComponent(id, params)
         case .removePlacement:
-            let id = try boardComponentID(params)
-            change["component"] = id
-            change["removed_packages"] = removeBoardPackages(componentID: id)
+            change.merge(try removePlacement(params)) { _, new in new }
         case .copyGroupLayout:
             let result = try copyGroupLayout(params)
             change.merge(result) { _, new in new }
@@ -1313,13 +1311,77 @@ final class HorizontalProjectEditor {
         return clearedConnections
     }
 
-    private func removeComponent(_ id: String) -> JSONDictionary {
+    private func removeComponent(_ id: String) throws -> JSONDictionary {
+        let placed = try boardComponentIDs(ofBlockComponents: [id])
         var all = block["components"] as? JSONDictionary ?? [:]
         all.removeValue(forKey: id)
         block["components"] = all
         let symbols = removeSchematicSymbols(componentID: id)
-        let packages = removeBoardPackages(componentID: id)
+        let packages = removeBoardPackages(componentIDs: Set(placed))
         return ["symbols": symbols, "packages": packages]
+    }
+
+    /// What the board names the packages of the edited block's components
+    /// by: a top block component itself, a sub-block's once for each
+    /// instance path that reaches the block, as Horizon's flattening derives
+    /// it.
+    private func boardComponentIDs(ofBlockComponents ids: [String]) throws -> [String] {
+        guard !isTopBlock else { return ids.map { $0.lowercased() } }
+        return try instancePaths().filter { $0.block.lowercased() == blockID.lowercased() }.flatMap { use in
+            ids.map { HorizontalBlockFlattener.flattenedID(use.path.split(separator: "/").map(String.init) + [$0.lowercased()]) }
+        }
+    }
+
+    /// Every component the board can place a package for: the top block's
+    /// own, and each instance's under its flat uuid.
+    private func designComponentIDs() throws -> Set<String> {
+        guard let top = knownBlocks.first(where: \.isTop) else { return [] }
+        var ids = Set(try blockFile(top.uuid).dictionaryMap("components").keys.map { $0.lowercased() })
+        for use in try instancePaths() {
+            let path = use.path.split(separator: "/").map(String.init)
+            for component in try blockFile(use.block).dictionaryMap("components").keys {
+                ids.insert(HorizontalBlockFlattener.flattenedID(path + [component.lowercased()]))
+            }
+        }
+        return ids
+    }
+
+    /// `remove_placement`: a component's package, or a package whose
+    /// component is in no block any more. Horizon EDA leaves such a package
+    /// out when it opens the board; it has no component to name it by, so it
+    /// is named by its own uuid or by the component uuid it still names,
+    /// which is what its refdes text draws.
+    private func removePlacement(_ params: JSONDictionary) throws -> JSONDictionary {
+        do {
+            let id = try boardComponentID(params)
+            return ["component": id, "removed_packages": removeBoardPackages(componentIDs: [id])]
+        } catch let error as HorizontalDispatchError where error.code == .notFound {
+            guard let package = try orphanPackageID(params.string("component") ?? "") else { throw error }
+            return ["package": package, "removed_packages": removeBoardPackages { id, _ in id == package }]
+        }
+    }
+
+    /// The board package, of those whose component is in no block, that
+    /// `reference` names by its uuid or its component's, whole or by eight
+    /// or more leading digits.
+    private func orphanPackageID(_ reference: String) throws -> String? {
+        let reference = reference.lowercased()
+        guard isTopBlock, let board = files["board"], !reference.isEmpty else { return nil }
+        let known = try designComponentIDs()
+        let orphans = board.dictionaryMap("packages").compactMap { id, package -> (package: String, component: String)? in
+            let component = package.string("component")?.lowercased() ?? ""
+            return known.contains(component) ? nil : (id.lowercased(), component)
+        }
+        if let exact = orphans.first(where: { $0.package == reference || $0.component == reference }) {
+            return exact.package
+        }
+        guard reference.count >= 8 else { return nil }
+        let matches = orphans.filter { $0.package.hasPrefix(reference) || $0.component.hasPrefix(reference) }
+        guard matches.count <= 1 else {
+            throw HorizontalDispatchError.ambiguous("\(matches.count) packages whose component is gone begin \(reference); use more of the uuid.",
+                                                    candidates: matches.map(\.package).sorted())
+        }
+        return matches.first?.package
     }
 
     /// The project's part list leaves out a part another derives from, so
@@ -4709,6 +4771,17 @@ final class HorizontalProjectEditor {
 
     private func removeBlockInstance(_ params: JSONDictionary) throws -> JSONDictionary {
         let id = try blockInstanceID(params)
+        // The components the instance brought, however deep, as the board
+        // names their packages, gathered while the paths through it still
+        // exist.
+        var placed = Set<String>()
+        for use in try instancePaths() {
+            let path = use.path.split(separator: "/").map(String.init)
+            guard path.contains(id.lowercased()) else { continue }
+            for component in try blockFile(use.block).dictionaryMap("components").keys {
+                placed.insert(HorizontalBlockFlattener.flattenedID(path + [component.lowercased()]))
+            }
+        }
         var instances = blockInstances()
         instances.removeValue(forKey: id)
         block["block_instances"] = instances
@@ -4716,6 +4789,8 @@ final class HorizontalProjectEditor {
         var change: JSONDictionary = ["block_instance": id, "symbols": symbols]
         let mappings = try removeInstanceMappings { $0.contains(id) }
         if mappings > 0 { change["instance_mappings_removed"] = mappings }
+        let packages = removeBoardPackages(componentIDs: placed)
+        if packages > 0 { change["packages"] = packages }
         return change
     }
 
@@ -7654,15 +7729,37 @@ final class HorizontalProjectEditor {
         ]
     }
 
-    /// Removes the board packages of a component. Tracks that ended on one of
-    /// its pads keep their copper: the pad end becomes a junction at the pad's
+    /// The key the board is held under. It is the top block's: "board" when
+    /// the editor edits the top block. An edit to a sub-block reads it beside
+    /// the block, under its own key, only so that removing a component or an
+    /// instance takes their packages off it; a board op there still finds no
+    /// "board" and refuses.
+    private func boardFileKey() -> String? {
+        if files["board"] != nil { return "board" }
+        guard !isTopBlock, let filename = project.boardFilename, !filename.isEmpty, (try? projectFile(filename)) != nil else {
+            return nil
+        }
+        return "file:" + filename
+    }
+
+    private func removeBoardPackages(componentIDs: Set<String>) -> Int {
+        guard !componentIDs.isEmpty else { return 0 }
+        let ids = Set(componentIDs.map { $0.lowercased() })
+        return removeBoardPackages { _, component in ids.contains(component) }
+    }
+
+    /// Removes the board packages `isDoomed` picks, by package and component
+    /// uuid, with their smashed texts. Tracks that ended on one of their pads
+    /// keep their copper: the pad end becomes a junction at the pad's
     /// position, the way Horizon's delete leaves a track when its pad goes.
-    private func removeBoardPackages(componentID: String) -> Int {
-        guard var board = files["board"] else {
+    private func removeBoardPackages(where isDoomed: (_ package: String, _ component: String) -> Bool) -> Int {
+        guard let boardKey = boardFileKey(), var board = files[boardKey] else {
             return 0
         }
         var packages = board["packages"] as? JSONDictionary ?? [:]
-        let doomed = packages.filter { ($0.value as? JSONDictionary)?.string("component")?.lowercased() == componentID }
+        let doomed = packages.filter {
+            isDoomed($0.key.lowercased(), (($0.value as? JSONDictionary)?.string("component") ?? "").lowercased())
+        }
         guard !doomed.isEmpty else {
             return 0
         }
@@ -7717,8 +7814,8 @@ final class HorizontalProjectEditor {
             texts = texts.filter { !doomedTextIDs.contains($0.key.lowercased()) }
             board["texts"] = texts
         }
-        files["board"] = board
-        dirty.insert("board")
+        files[boardKey] = board
+        dirty.insert(boardKey)
         return doomed.count
     }
 }

@@ -129,6 +129,17 @@ enum HorizontalDispatchChecks {
             for object in board.unplacedObjects {
                 messages.append(Message(level: "warning", category: "board", title: "Not placed on the board", detail: object.subtitle, refdes: object.label))
             }
+            // Horizon EDA leaves a package whose component is in no block out
+            // when it opens the board. Here it is still drawn, its refdes the
+            // component's uuid, and exported with its copper.
+            let designComponents = Set((index.instances.isEmpty ? Array(index.components.keys) : index.instances.map(\.id)).map { $0.lowercased() })
+            for package in board.packages {
+                let component = package.componentID?.lowercased() ?? ""
+                guard !designComponents.contains(component) else { continue }
+                let at = "(\(HorizontalDispatchJSON.mm(package.position.x)), \(HorizontalDispatchJSON.mm(package.position.y))) mm"
+                messages.append(Message(level: "error", category: "board", title: "Package for a component that no longer exists",
+                                        detail: "Package \(package.id) at \(at) names component \(component.isEmpty ? "none" : component), which is in no block; Horizon EDA leaves it out when it opens the board. remove_placement with the package id takes it off."))
+            }
             // Poured plane copper joins the pads and vias inside it, so what
             // is left on a plane net is a pad the fill does not reach (or an
             // unpoured plane). Those are reported apart from the rest so a
@@ -192,7 +203,7 @@ enum HorizontalDispatchChecks {
             "ok": (counts["error"] ?? 0) == 0,
             "counts": ["error": counts["error"] ?? 0, "warning": counts["warning"] ?? 0, "info": counts["info"] ?? 0],
             "messages": full ? messages.map(\.json) : grouped(messages),
-            "note": "Horizontal has no geometric design rule check yet; these are load diagnostics, rules validation, and connectivity facts, plus the components and board packages nothing has placed, the warnings the schematic canvas draws on each sheet, and copper that joins two nets — tracks and vias reaching pads of both, or a poured plane over a pad of another. Poured planes count as copper for the rats' nest."
+            "note": "Horizontal has no geometric design rule check yet; these are load diagnostics, rules validation, and connectivity facts, plus the components and board packages nothing has placed, packages whose component is gone, the warnings the schematic canvas draws on each sheet, and copper that joins two nets — tracks and vias reaching pads of both, or a poured plane over a pad of another. Poured planes count as copper for the rats' nest."
         ]
     }
 
