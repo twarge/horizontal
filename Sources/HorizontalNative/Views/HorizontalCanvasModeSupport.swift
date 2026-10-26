@@ -281,6 +281,7 @@ struct HorizontalCanvasCommandHandlerSet {
     var bendNetLine: (() -> Void)? = nil
     var editSymbolPinNames: (() -> Void)?
     var editCustomValue: (() -> Void)? = nil
+    var showAlternateParts: (() -> Void)? = nil
     var setAllUnconnectedPinsNC: (() -> Void)? = nil
     var clearAllNCPins: (() -> Void)? = nil
     var toggleNoPopulate: (() -> Void)? = nil
@@ -471,6 +472,8 @@ struct HorizontalCanvasCommandHandlerSet {
         case .editCustomValue:
             guard !isReadOnly else { return }
             editCustomValue?()
+        case .showAlternateParts:
+            showAlternateParts?()
         case .setAllUnconnectedPinsNC:
             guard !isReadOnly else { return }
             setAllUnconnectedPinsNC?()
@@ -630,6 +633,17 @@ enum HorizontalCanvasModeSupport {
         }
         return result
     }
+    /// Whether a click or rubber-band that hit nothing ends the window's
+    /// highlight: one that replaces the selection, as a selection change at
+    /// rest does in Horizon (`ImpBase` clears its highlights whenever the
+    /// selection changes with no tool active). The highlight can outlive
+    /// the selection — a sheet flip empties the selection and keeps it, an
+    /// MCP or voice highlight comes with none — so emptying an empty
+    /// selection still has to end it.
+    static func clearsHighlight(hitNothing: Bool, action: HorizontalSelectionClickAction) -> Bool {
+        hitNothing && action == .replace
+    }
+
 
     static func updatedSelection(
         current: [HorizontalSelectableRef],

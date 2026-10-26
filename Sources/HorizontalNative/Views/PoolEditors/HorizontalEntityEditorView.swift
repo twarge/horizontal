@@ -9,8 +9,11 @@ struct HorizontalEntityEditorView: View {
     var index: HorizontalPoolLibraryIndex
     var issues: [HorizontalPoolCheckIssue]
     var isReadOnly: Bool
+    /// The units the entity uses, their symbols, and the parts using it.
+    var linkFields: [HorizontalPoolItemPreviewTable.Field] = []
     var commit: (HorizontalPoolEntity, String) -> Void
 
+    @Environment(\.horizonPoolItemLinkActions) private var linkActions
     @State private var selectedGateIDs = Set<String>()
     @State private var picker: HorizontalPoolItemPickerRequest?
 
@@ -35,6 +38,7 @@ struct HorizontalEntityEditorView: View {
                         commit(model, "Change Tags")
                     }
                 }
+                HorizontalPoolItemLinkRows(fields: linkFields, actions: linkActions)
             }
             .frame(maxWidth: 520)
 

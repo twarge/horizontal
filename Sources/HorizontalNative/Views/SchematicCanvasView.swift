@@ -386,6 +386,8 @@ struct SchematicCanvasView: View {
     @StateObject private var undoTarget = HorizontalUndoTarget<HorizontalSchematicSheet>()
     @StateObject private var selectableCache = SchematicSelectableCache()
     @Environment(\.colorScheme) private var colorScheme
+    /// The window's Pools pane, for Alternate Parts…; nil where there is none.
+    @Environment(\.horizonPoolRevealAction) private var poolRevealAction
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
 
     init(
@@ -831,10 +833,11 @@ struct SchematicCanvasView: View {
             handlesSelectionDeletion: canDeleteSelection,
             undoManager: undoManager,
             ignoresCanvasMouseEvents: ignoresCanvasMouseEvents,
-            onCursorWorldPointChange: { point, worldUnitsPerPoint in
-                updateCursor(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+            onCursorWorldPointChange: { pointer, worldUnitsPerPoint in
+                updateCursor(at: pointer, worldUnitsPerPoint: worldUnitsPerPoint)
             },
-            onPrimaryClick: { point, worldUnitsPerPoint, clickAction, clickCount in
+            onPrimaryClick: { pointer, worldUnitsPerPoint, clickAction, clickCount in
+                let point = pointer.snapped
                 if resizeSymbolState != nil {
                     commitResizeSymbol()
                     return
@@ -877,7 +880,7 @@ struct SchematicCanvasView: View {
                     return
                 }
 
-                let hitRef = hitSelectable(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+                let hitRef = hitSelectable(at: pointer.raw, worldUnitsPerPoint: worldUnitsPerPoint)
                 // Double-click a block symbol → Horizon's Push into block.
                 if clickCount >= 2, let hitRef, hitRef.type == .schematicBlockSymbol,
                    let onOpenBlock, let blockSymbol = sheet.blockSymbol(hitRef.id) {
@@ -907,8 +910,8 @@ struct SchematicCanvasView: View {
                 }
                 updateSelection(with: refs, action: action)
             },
-            targetMenuItems: { point, worldUnitsPerPoint in
-                targetMenuItems(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+            targetMenuItems: { pointer, worldUnitsPerPoint in
+                targetMenuItems(at: pointer, worldUnitsPerPoint: worldUnitsPerPoint)
             },
             onTargetMenuSelection: { ref in
                 setSelectedObject(ref)
@@ -2393,6 +2396,24 @@ struct SchematicCanvasView: View {
         }
     }
 
+    /// Ends the window's highlight, wherever it came from.
+    private func clearHighlight() {
+        guard !highlightedNetIDs.isEmpty || !highlightedComponentIDs.isEmpty else {
+            return
+        }
+        onHighlightNetCommand([])
+        onHighlightComponentCommand([])
+    }
+
+    /// Escape with no tool active: Horizon empties the selection, and with
+    /// it the highlight.
+    private func clearSelectionAndHighlight() {
+        if !selectedObjects.isEmpty {
+            setSelectedObject(nil)
+        }
+        clearHighlight()
+    }
+
     private func setSelectedObject(_ ref: HorizontalSelectableRef?) {
         clearNetSegmentSelection()
         selectedObjects = ref.map { [$0] } ?? []
@@ -2412,6 +2433,9 @@ struct SchematicCanvasView: View {
     }
 
     private func updateSelection(with ref: HorizontalSelectableRef?, action: HorizontalSelectionClickAction) {
+        if HorizontalCanvasModeSupport.clearsHighlight(hitNothing: ref == nil, action: action) {
+            clearHighlight()
+        }
         guard let updated = HorizontalCanvasModeSupport.updatedSelection(
             current: selectedObjects,
             ref: ref,
@@ -2426,6 +2450,9 @@ struct SchematicCanvasView: View {
     }
 
     private func updateSelection(with refs: [HorizontalSelectableRef], action: HorizontalSelectionClickAction) {
+        if HorizontalCanvasModeSupport.clearsHighlight(hitNothing: refs.isEmpty, action: action) {
+            clearHighlight()
+        }
         guard let updated = HorizontalCanvasModeSupport.updatedSelection(
             current: selectedObjects,
             refs: refs,
@@ -4157,6 +4184,13 @@ struct SchematicCanvasView: View {
 
     private func deleteSchematicSymbol(_ symbolID: String, from sheet: inout HorizontalSchematicSheet) -> Bool {
         let normalizedSymbolID = normalizedID(symbolID)
+        // Its gate comes off its nets, as Horizon's delete disconnects a
+        // symbol first: a part's other gates keep the component, and the
+        // gate placed again would otherwise come back on the old nets.
+        if let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedSymbolID }),
+           let componentID = symbol.componentID, let gateID = symbol.gateID {
+            sheet.disconnectGate(componentID: componentID, gateID: gateID)
+        }
         // The texts a smash gave it go with it.
         let smashedTextIDs = sheet.smashedTextIDs(ownedBy: [normalizedSymbolID])
         var changed = removeAll(from: &sheet.symbols) { normalizedID($0.id) == normalizedSymbolID }
@@ -8454,8 +8488,10 @@ struct SchematicCanvasView: View {
                     // Horizon's Escape ends the tool and keeps the wires
                     // already laid; only the one following the cursor goes.
                     commitDrawNetLine()
-                } else {
+                } else if moveState != nil {
                     cancelMove()
+                } else {
+                    clearSelectionAndHighlight()
                 }
             }
         )
@@ -8501,6 +8537,9 @@ struct SchematicCanvasView: View {
             handlers.editSymbolPinNames = nil
             handlers.editCustomValue = nil
         }
+        if let poolRevealAction, !editorProfile.isPoolMode {
+            handlers.showAlternateParts = { poolRevealAction(.alternateParts) }
+        }
         if onRevealPoolSymbol != nil, selectedSymbolPoolID() != nil {
             handlers.showInPoolManager = { revealSelectedSymbol(.registeredPool) }
             handlers.showInProjectPoolManager = { revealSelectedSymbol(.projectPool) }
@@ -8531,7 +8570,8 @@ struct SchematicCanvasView: View {
         return handlers
     }
 
-    private func updateCursor(at point: HorizontalPoint?, worldUnitsPerPoint: Double) {
+    private func updateCursor(at pointer: HorizontalCanvasPointer?, worldUnitsPerPoint: Double) {
+        let point = pointer?.snapped
         if moveState?.tracksCursor == true {
             HorizontalMoveRateDiagnostics.mark(point == nil ? .cursorNil : .cursorEvent)
         }
@@ -8596,7 +8636,7 @@ struct SchematicCanvasView: View {
             return
         }
 
-        hoveredObject = hitSelectable(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+        hoveredObject = hitSelectable(at: pointer?.raw ?? point, worldUnitsPerPoint: worldUnitsPerPoint)
     }
 
     private func hitSelectable(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> HorizontalSelectableRef? {
@@ -8623,11 +8663,13 @@ struct SchematicCanvasView: View {
         return !Set(selectedObjects).isDisjoint(with: refs)
     }
 
-    private func targetMenuItems(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> [HorizontalSelectionTargetItem] {
-        contextMenuWorldPoint = point
+    private func targetMenuItems(at pointer: HorizontalCanvasPointer, worldUnitsPerPoint: Double) -> [HorizontalSelectionTargetItem] {
+        // Add Vertex bends a wire here, so on the grid; what the menu offers
+        // is what the pointer is over.
+        contextMenuWorldPoint = pointer.snapped
         return HorizontalCanvasModeSupport.targetMenuItems(
             scene: schematicSelectableScene(),
-            at: point,
+            at: pointer.raw,
             worldUnitsPerPoint: worldUnitsPerPoint,
             itemForRef: { hudItem(for: $0) }
         )
@@ -8666,6 +8708,7 @@ struct SchematicCanvasView: View {
             entries.append(.separator)
             entries.append(contentsOf: info)
         }
+        if let alternates = alternatePartsEntry(for: ref) { entries.append(alternates) }
         if onRevealPoolSymbol != nil, symbolPoolID(for: ref) != nil {
             entries.append(.separator)
             entries.append(.command(title: "Show in Pool Manager", .showInPoolManager))
@@ -8687,8 +8730,21 @@ struct SchematicCanvasView: View {
             entries.append(.separator)
             entries.append(contentsOf: info)
         }
+        if let alternates = alternatePartsEntry(for: ref) { entries.append(alternates) }
         return entries.count > 1 ? entries : []
         #endif
+    }
+
+    /// Alternate Parts…: the Pools pane on the parts that can replace the
+    /// symbol's component's, as its Replace offers them, for a symbol of a
+    /// component in a project window.
+    private func alternatePartsEntry(for ref: HorizontalSelectableRef) -> HorizontalTargetItemMenuEntry? {
+        guard poolRevealAction != nil, !editorProfile.isPoolMode, ref.type == .schematicSymbol,
+              let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }),
+              symbol.componentID != nil else {
+            return nil
+        }
+        return .command(title: "Alternate Parts…", .showAlternateParts)
     }
 
     /// Horizon's Push into block and Edit block symbol, for a block symbol.

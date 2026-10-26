@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import HorizontalProjectIO
 import SwiftUI
@@ -45,6 +46,10 @@ final class HorizontalPoolItemEditorSession: ObservableObject {
     var persist: ((Data) -> Void)?
 
     private let undoTarget = HorizontalUndoTarget<HorizontalPoolItemModel>()
+    /// The item's pools, watched while the editor is open, so its links
+    /// (the entities using a unit, a new symbol for it) follow the pools.
+    private var poolLease: HorizontalPoolWatcher.Lease?
+    private var poolChanges: AnyCancellable?
 
     init(itemURL: URL, poolURL: URL?, category: HorizontalPoolItemCategory, data: Data) throws {
         self.category = category
@@ -130,10 +135,23 @@ final class HorizontalPoolItemEditorSession: ObservableObject {
         isIndexing = true
         defer { isIndexing = false }
         let poolURLs = HorizontalPoolLibrary.editorPoolURLs(forPoolRoot: poolURL)
+        if poolLease == nil {
+            poolLease = HorizontalPoolWatcher.shared.watch(poolURLs)
+            poolChanges = NotificationCenter.default.publisher(for: HorizontalPoolLibrary.poolsDidChangeNotification)
+                .receive(on: RunLoop.main)
+                .sink { [weak self] notification in
+                    MainActor.assumeIsolated {
+                        guard let self, HorizontalPoolLibrary.notification(notification, concerns: poolURLs) else { return }
+                        Task { await self.rebuildIndex() }
+                    }
+                }
+        }
         let items = await Task.detached(priority: .userInitiated) {
-            poolURLs.flatMap { url in
+            // Through their bases, so a derived part counts among its
+            // entity's parts.
+            HorizontalPoolLibrary.resolvingInheritance(poolURLs.flatMap { url in
                 HorizontalPoolLibrary.items(inPool: url, poolName: HorizontalPoolRegistryStore.poolInfo(at: url).name)
-            }
+            })
         }.value
         index = HorizontalPoolLibraryIndex(items: items)
     }

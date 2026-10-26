@@ -8,6 +8,7 @@ import os
 import time
 import uuid
 from contextvars import ContextVar
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,9 @@ class Session:
         self.isolated = isolated
         self.generation = 0
         self.engine: dict[str, Any] | None = None
+        # What last closed the connection: a timeout or a lost connection,
+        # with the method and when, for connection_status to say.
+        self.last_transport_error: dict[str, Any] | None = None
         # The project a live session was found through. The app's discovery
         # file is in its sandbox container, so reconnecting has to look beside
         # the project again rather than only where the app writes.
@@ -75,7 +79,14 @@ class Session:
         if remaining <= 0: raise transport_error("TIMEOUT", "Request exceeded its total deadline.")
         request = {"jsonrpc": "2.0", "id": next(self._ids), "method": method, "params": params,
                    "deadline_unix_ms": (time.time() + remaining) * 1000}
-        response = self.transport.call(request)
+        try:
+            response = self.transport.call(request)
+        except HorizontalError as error:
+            code = error.structured()["code"]
+            if code in {"TIMEOUT", "CONNECTION_LOST"}:
+                self.last_transport_error = {"code": code, "method": method, "message": error.message,
+                                             "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+            raise
         if "error" in response:
             error = response["error"]
             raise HorizontalError(error.get("code", -32603), error.get("message", "Unknown error"), error.get("data"))
@@ -154,7 +165,7 @@ class Project:
             _request_deadline.reset(token)
 
     def _perform_call(self, method: str, **params: Any) -> Any:
-        reads = {"project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "list_texts", "list_symbols", "list_block_instances", "list_net_lines", "list_junctions", "list_net_labels", "list_power_symbols", "list_planes", "list_polygons", "list_holes", "list_keepouts", "list_board_texts", "list_dimensions", "list_buses", "list_net_ties", "list_tracks", "list_vias", "board_rules", "search_pool", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status", "find_dangling", "find_overlaps", "export_settings"}
+        reads = {"get_pool_item", "project_info", "project_files", "list_sheets", "list_components", "get_component", "list_nets", "get_net", "netlist", "bom", "list_parts", "list_texts", "list_symbols", "list_block_instances", "list_net_lines", "list_junctions", "list_net_labels", "list_power_symbols", "list_planes", "list_polygons", "list_holes", "list_keepouts", "list_board_texts", "list_dimensions", "list_buses", "list_net_ties", "list_tracks", "list_vias", "board_rules", "search_pool", "board_info", "check", "list_groups", "analysis_snapshot", "transaction_status", "find_dangling", "find_overlaps", "export_settings"}
         reads.add("list_part_updates")
         deadline = _request_deadline.get() or (time.monotonic() + self.session.transport.timeout)
         # A connection an earlier call lost is reopened before anything is
@@ -463,9 +474,12 @@ class Project:
         return self._call("list_parts", scope=scope)
 
     def search_pool(self, query: str | None = None, kind: str | None = None,
-                    pool_path: str | None = None, limit: int = 50, package: str | None = None) -> dict[str, Any]:
-        """Search every pool the project draws from, not just its own cache; package keeps parts in that package."""
-        params = {k: v for k, v in {"query": query, "kind": kind, "pool_path": pool_path, "package": package}.items() if v is not None}
+                    pool_path: str | None = None, limit: int = 50, package: str | None = None,
+                    uses: str | None = None, used_by: str | None = None) -> dict[str, Any]:
+        """Search every pool the project draws from, not just its own cache; package keeps parts in that package,
+        uses the items naming an item, used_by the items it names."""
+        params = {k: v for k, v in {"query": query, "kind": kind, "pool_path": pool_path, "package": package,
+                                    "uses": uses, "used_by": used_by}.items() if v is not None}
         return self._call("search_pool", limit=limit, **params)
 
     def pool_item(self, uuid: str, kind: str | None = None, pool_path: str | None = None) -> dict[str, Any]:

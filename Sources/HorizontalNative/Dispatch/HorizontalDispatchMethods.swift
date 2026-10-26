@@ -106,10 +106,12 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "search_pool",
-            summary: "Search every pool the project draws from — its own pool, the pools that pool includes, and the discovered base pools — for parts, entities, symbols, packages, padstacks, units, frames and decals. A part row gives its package and package_id, a derived part's taken from its base. Items outside the project pool need import_pool_part before a component can use them.",
+            summary: "Search every pool the project draws from — its own pool, the pools that pool includes, and the discovered base pools — for parts, entities, symbols, packages, padstacks, units, frames and decals. A part row gives its package and package_id, a derived part's taken from its base. Each row names what it uses: a symbol its unit_id and unit, an entity its unit_ids, a derived part its base_id, a package its padstack_ids, a part its entity_id and package_id; uses and used_by follow those links either way. Items outside the project pool need import_pool_part before a component can use them.",
             params: ["handle": "Project handle.", "query": "Case-insensitive substring of name, description, manufacturer, tags, uuid or a part's value (optional). Spacing and µ/u are ignored, and a quantity such as 2.2uF, 2u2 or 10k also matches parts whose value, description or parametric data state the same amount.",
                      "kind": "One of \(HorizontalPoolItemCategory.allCases.map(\.rawValue).joined(separator: ", ")) (optional).",
                      "package": "Only parts in this package, by its name in any case (C0402) or its uuid (optional). get_component gives a component's package.",
+                     "uses": "Only the items that name this one, by uuid or 8+ leading digits (optional): a unit's symbols and entities, an entity's parts, a part's derived parts, a package's parts, a padstack's packages. With kind symbol and a unit, the symbols that draw it; kind entity and a symbol's unit_id, the entities it can draw.",
+                     "used_by": "Only the items this one names, by uuid or 8+ leading digits (optional): a symbol's unit, an entity's units, a part's base part, entity and package, a package's padstacks. missing_links names any no searched pool holds.",
                      "pool_path": "Directory of one pool to search (optional). A pool the project already draws from narrows the search; any other pool directory is searched as well, which is how a worker process reaches a pool registered only in the app.",
                      "limit": "Maximum items to return; default 50, maximum 500."],
             handler: HorizontalDispatchPool.search

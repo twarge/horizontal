@@ -24,6 +24,17 @@ struct HorizontalPoolItemDocumentView: View {
         HorizontalPoolItemEditorContent(session: session, isReadOnly: isReadOnly, commit: commit)
             .navigationTitle(session.title)
             .navigationSubtitle(session.subtitle)
+            #if os(macOS)
+            // A link opens the item in a window of its own, as the Pools
+            // pane's Edit does.
+            .environment(\.horizonPoolOpenItemAction) { item in
+                NSDocumentController.shared.openDocument(withContentsOf: item.url, display: true) { _, _, error in
+                    if let error {
+                        NSLog("Horizontal: could not open \(item.url.path): \(error.localizedDescription)")
+                    }
+                }
+            }
+            #endif
             .task {
                 let binding = $document
                 session.persist = { data in
@@ -88,6 +99,7 @@ struct HorizontalPoolItemEditorContent: View {
     var commit: (HorizontalPoolItemModel, String) -> Void
 
     @Environment(\.undoManager) private var environmentUndoManager
+    @Environment(\.horizonPoolOpenItemAction) private var openItem
 
     var body: some View {
         Group {
@@ -112,7 +124,8 @@ struct HorizontalPoolItemEditorContent: View {
                         unit: unit,
                         issues: session.validationIssues,
                         isReadOnly: isReadOnly,
-                        index: session.index
+                        index: session.index,
+                        linkFields: session.linkFields
                     ) { commit(.unit($0), $1) }
                 }
             case .entity(let entity):
@@ -121,7 +134,8 @@ struct HorizontalPoolItemEditorContent: View {
                         entity: entity,
                         index: session.index,
                         issues: session.validationIssues,
-                        isReadOnly: isReadOnly
+                        isReadOnly: isReadOnly,
+                        linkFields: session.linkFields
                     ) { commit(.entity($0), $1) }
                 }
             case .part(let part):
@@ -130,11 +144,13 @@ struct HorizontalPoolItemEditorContent: View {
                     index: session.index,
                     issues: session.validationIssues,
                     isReadOnly: isReadOnly,
-                    poolURLs: HorizontalPoolLibrary.editorPoolURLs(forPoolRoot: session.poolURL).reversed()
+                    poolURLs: HorizontalPoolLibrary.editorPoolURLs(forPoolRoot: session.poolURL).reversed(),
+                    linkFields: session.linkFields
                 ) { commit(.part($0), $1) }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .environment(\.horizonPoolItemLinkActions, session.linkActions(open: openItem))
     }
 }
 
@@ -143,8 +159,29 @@ struct HorizontalPoolItemEditorContent: View {
 /// library pane's "Edit…" presents the editor over the project instead. The
 /// session writes straight to the item's file on each commit (the file is
 /// inside the open project package, or in a registered pool the app holds a
-/// bookmark for), with an undo manager of its own.
+/// bookmark for), with an undo manager of its own. An item a link opens is
+/// pushed onto the cover's stack, with a session and undo manager of its own.
 struct HorizontalPoolItemEditorCover: View {
+    let item: HorizontalPoolLibraryItem
+    var onDismiss: () -> Void
+
+    @State private var path = [HorizontalPoolLibraryItem]()
+
+    var body: some View {
+        NavigationStack(path: $path) {
+            HorizontalPoolItemEditorCoverPage(item: item, onDismiss: onDismiss)
+                .navigationDestination(for: HorizontalPoolLibraryItem.self) { item in
+                    HorizontalPoolItemEditorCoverPage(item: item, onDismiss: onDismiss)
+                }
+        }
+        .environment(\.horizonPoolOpenItemAction) { item in
+            path.append(item)
+        }
+    }
+}
+
+/// One item's editor on the iPad cover.
+private struct HorizontalPoolItemEditorCoverPage: View {
     let item: HorizontalPoolLibraryItem
     var onDismiss: () -> Void
 
@@ -158,32 +195,30 @@ struct HorizontalPoolItemEditorCover: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if let session {
-                    HorizontalPoolItemEditorContent(session: session, isReadOnly: isReadOnly, undoManager: undoManager) { model, actionName in
-                        session.commit(model, actionName: actionName, undoManager: undoManager, isReadOnly: isReadOnly)
-                    }
-                    .navigationTitle(session.title)
-                    .navigationSubtitle(session.subtitle)
-                } else if let loadError {
-                    ContentUnavailableView("Could Not Open Item", systemImage: "exclamationmark.triangle", description: Text(loadError))
-                } else {
-                    ProgressView()
+        Group {
+            if let session {
+                HorizontalPoolItemEditorContent(session: session, isReadOnly: isReadOnly, undoManager: undoManager) { model, actionName in
+                    session.commit(model, actionName: actionName, undoManager: undoManager, isReadOnly: isReadOnly)
                 }
+                .navigationTitle(session.title)
+                .navigationSubtitle(session.subtitle)
+            } else if let loadError {
+                ContentUnavailableView("Could Not Open Item", systemImage: "exclamationmark.triangle", description: Text(loadError))
+            } else {
+                ProgressView()
             }
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Undo", systemImage: "arrow.uturn.backward") {
-                        undoManager.undo()
-                    }
-                    .disabled(!undoManager.canUndo)
+        }
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Undo", systemImage: "arrow.uturn.backward") {
+                    undoManager.undo()
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
-                        onDismiss()
-                    }
+                .disabled(!undoManager.canUndo)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Done") {
+                    onDismiss()
                 }
             }
         }
@@ -229,6 +264,8 @@ struct HorizontalPoolItemHeaderForm: View {
     var isReadOnly: Bool
     var commit: (HorizontalPoolItemModel, String) -> Void
 
+    @Environment(\.horizonPoolItemLinkActions) private var linkActions
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .firstTextBaseline) {
@@ -244,6 +281,9 @@ struct HorizontalPoolItemHeaderForm: View {
 
             Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 10) {
                 fields
+                // A symbol's unit has its own row, with Change Unit….
+                HorizontalPoolItemLinkRows(fields: session.linkFields.filter { session.category != .symbol || $0.links.first?.role != .unit },
+                                           actions: linkActions)
             }
 
             if let error = session.lastError {

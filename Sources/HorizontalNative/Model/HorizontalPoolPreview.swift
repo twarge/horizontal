@@ -1,15 +1,18 @@
 import Foundation
 
-/// An item one pool item leads to: a part's base part, entity, units,
-/// symbols, package and the package's padstacks; an entity's units; a
-/// symbol's unit; a package's padstacks. The preview lists them as links and
-/// the browser's context menu as "Show …" entries, both taking the browser to
-/// the item, as Horizon's part preview has a go-to button beside its entity,
-/// gate, symbol and package.
+/// An item one pool item leads to, either way: what it names (a part's base
+/// part, entity, units, symbols, package and the package's padstacks; an
+/// entity's units and their symbols; a symbol's unit; a package's
+/// padstacks) and what names it, Horizon's Where Used (a symbol's or unit's
+/// entities, a unit's symbols, an entity's or package's parts, a part's
+/// derived parts, a padstack's packages). The preview and the item editors
+/// list them as links, and the browser's context menu as "Show …" entries, as
+/// Horizon's part preview has a go-to button beside its entity, gate, symbol
+/// and package.
 struct HorizontalPoolItemLink: Identifiable, Hashable, Sendable {
     /// What the item is to the one that names it, in the order the preview
     /// lists them: a part's own chain first, then what it draws with, then
-    /// what it is built on.
+    /// what it is built on, then what is built on it.
     enum Role: String, CaseIterable, Sendable {
         case basePart
         case entity
@@ -17,10 +20,12 @@ struct HorizontalPoolItemLink: Identifiable, Hashable, Sendable {
         case symbol
         case package
         case padstack
+        case part
+        case derivedPart
 
         var category: HorizontalPoolItemCategory {
             switch self {
-            case .basePart: .part
+            case .basePart, .part, .derivedPart: .part
             case .entity: .entity
             case .unit: .unit
             case .symbol: .symbol
@@ -33,11 +38,13 @@ struct HorizontalPoolItemLink: Identifiable, Hashable, Sendable {
         func label(count: Int) -> String {
             switch self {
             case .basePart: "Base part"
-            case .entity: "Entity"
+            case .entity: count == 1 ? "Entity" : "Entities"
             case .unit: count == 1 ? "Unit" : "Units"
             case .symbol: count == 1 ? "Symbol" : "Symbols"
-            case .package: "Package"
+            case .package: count == 1 ? "Package" : "Packages"
             case .padstack: count == 1 ? "Padstack" : "Padstacks"
+            case .part: count == 1 ? "Part" : "Parts"
+            case .derivedPart: count == 1 ? "Derived part" : "Derived parts"
             }
         }
 
@@ -50,6 +57,8 @@ struct HorizontalPoolItemLink: Identifiable, Hashable, Sendable {
             case .symbol: "Symbol"
             case .package: "Package"
             case .padstack: "Padstack"
+            case .part: "Part"
+            case .derivedPart: "Derived Part"
             }
         }
     }
@@ -78,6 +87,11 @@ struct HorizontalPoolItemPreviewTable: Sendable {
         /// A field naming other pool items: their links, which the preview
         /// shows instead of `value` (their names, for reading and copying).
         var links: [HorizontalPoolItemLink] = []
+        /// How many more there are than `links` shows, and the search that
+        /// lists them all: an entity in horizon-pool can have hundreds of
+        /// parts.
+        var moreLinks = 0
+        var moreSearch: HorizontalPoolSearch?
 
         var id: String { label }
     }
@@ -195,11 +209,15 @@ enum HorizontalPoolPreviewBuilder {
                 hiddenLayers: []
             )
         case .unit:
-            return .table(unitTable(json))
+            var table = unitTable(json)
+            table.fields += linkFields(links(for: item, json: json, index: index), owner: item)
+            return .table(table)
         case .entity:
-            return .table(entityTable(json, index: index))
+            var table = entityTable(json, index: index)
+            table.fields += linkFields(links(for: item, json: json, index: index), owner: item)
+            return .table(table)
         case .part:
-            return .part(partPreview(json, index: index))
+            return .part(partPreview(json, item: item, index: index))
         }
     }
 
@@ -240,13 +258,17 @@ enum HorizontalPoolPreviewBuilder {
     /// them; the ones past this say they aren't drawn.
     static let maximumPartSymbols = 48
 
-    private static func partPreview(_ json: JSONDictionary, index: HorizontalPoolLibraryIndex) -> HorizontalPoolPartPreview {
+    private static func partPreview(_ json: JSONDictionary, item: HorizontalPoolLibraryItem, index: HorizontalPoolLibraryIndex) -> HorizontalPoolPartPreview {
         let entityID = partReference("entity", in: json, index: index)
         let gates = entityID.flatMap { index.json(.entity, uuid: $0) }.map(entityGates) ?? []
         let packageItem = partReference("package", in: json, index: index).flatMap { index.item(.package, uuid: $0) }
         let packageJSON = packageItem.flatMap { try? JSONHelper.loadDictionary(from: $0.url) }
         var table = partTable(json, index: index)
-        table.fields += linkFields(partLinks(json, gates: gates, packageJSON: packageJSON, index: index))
+        table.fields += linkFields(
+            partLinks(json, gates: gates, packageJSON: packageJSON, index: index)
+                + userLinks(.derivedPart, index.users(of: .part, uuid: item.uuid, kind: .part)),
+            owner: item
+        )
         let geometry = packageItem.flatMap { item in
             packageJSON.map { packageGeometry($0, packageItem: item, index: index) }
         }
@@ -318,17 +340,30 @@ enum HorizontalPoolPreviewBuilder {
 
     // MARK: - Links
 
-    /// What an item leads to, for the context menu's "Show …" entries and
-    /// the part preview's links: a part's base part, entity, units, symbols,
-    /// package and padstacks (an inherited entity or package through its
-    /// base); an entity's units and their symbols; a symbol's unit; a
-    /// package's padstacks.
+    /// What an item leads to, for the context menu's "Show …" entries, the
+    /// preview's links and the item editors': first what it names — a part's
+    /// base part, entity, units, symbols, package and padstacks (an inherited
+    /// entity or package through its base); an entity's units and their
+    /// symbols; a symbol's unit; a package's padstacks — then what names it:
+    /// a symbol's and a unit's entities, a unit's symbols, an entity's and a
+    /// package's parts, a part's derived parts, a padstack's packages.
     static func links(
         for item: HorizontalPoolLibraryItem,
         json: JSONDictionary,
         index: HorizontalPoolLibraryIndex
     ) -> [HorizontalPoolItemLink] {
-        switch item.category {
+        links(category: item.category, uuid: item.uuid, json: json, index: index)
+    }
+
+    /// The same for an item as its JSON has it, which an editor's may not be
+    /// on disk yet.
+    static func links(
+        category: HorizontalPoolItemCategory,
+        uuid: String,
+        json: JSONDictionary,
+        index: HorizontalPoolLibraryIndex
+    ) -> [HorizontalPoolItemLink] {
+        switch category {
         case .part:
             let gates = partReference("entity", in: json, index: index)
                 .flatMap { index.json(.entity, uuid: $0) }
@@ -336,16 +371,41 @@ enum HorizontalPoolPreviewBuilder {
             let packageJSON = partReference("package", in: json, index: index)
                 .flatMap { index.json(.package, uuid: $0) }
             return partLinks(json, gates: gates, packageJSON: packageJSON, index: index)
+                + userLinks(.derivedPart, index.users(of: .part, uuid: uuid, kind: .part))
         case .entity:
             let gates = entityGates(json)
             return unitLinks(gates, index: index) + symbolLinks(gates, index: index)
+                + userLinks(.part, index.users(of: .entity, uuid: uuid, kind: .part))
         case .symbol:
-            return json.string("unit").map { [link(.unit, $0, index: index)] } ?? []
+            guard let unitID = json.string("unit")?.lowercased(), !unitID.isEmpty else {
+                return []
+            }
+            return [link(.unit, unitID, index: index)] + userLinks(.entity, index.users(of: .unit, uuid: unitID, kind: .entity))
+        case .unit:
+            return userLinks(.symbol, index.users(of: .unit, uuid: uuid, kind: .symbol))
+                + userLinks(.entity, index.users(of: .unit, uuid: uuid, kind: .entity))
         case .package:
-            return padstackLinks(json, index: index)
-        case .unit, .padstack, .frame, .decal:
+            return padstackLinks(json, index: index) + userLinks(.part, index.users(of: .package, uuid: uuid, kind: .part))
+        case .padstack:
+            return userLinks(.package, index.users(of: .padstack, uuid: uuid, kind: .package))
+        case .frame, .decal:
             return []
         }
+    }
+
+    /// The items naming one, as links: found by the index, so all resolve.
+    private static func userLinks(_ role: HorizontalPoolItemLink.Role, _ users: [HorizontalPoolLibraryItem]) -> [HorizontalPoolItemLink] {
+        users.map { HorizontalPoolItemLink(role: role, uuid: $0.uuid, name: $0.name, isResolved: true) }
+    }
+
+    /// The link fields a preview shows for a symbol, package or padstack,
+    /// under its drawing; a unit's, entity's and part's are in its table.
+    static func drawingLinkFields(for item: HorizontalPoolLibraryItem, index: HorizontalPoolLibraryIndex) -> [HorizontalPoolItemPreviewTable.Field] {
+        guard [.symbol, .package, .padstack].contains(item.category),
+              let json = try? JSONHelper.loadDictionary(from: item.url) else {
+            return []
+        }
+        return linkFields(links(for: item, json: json, index: index), owner: item)
     }
 
     private static func partLinks(
@@ -436,18 +496,50 @@ enum HorizontalPoolPreviewBuilder {
         return HorizontalPoolItemLink(role: role, uuid: uuid, name: item?.name ?? shortID(uuid), isResolved: item != nil)
     }
 
-    /// One field per kind, in `Role` order, its value the names.
-    private static func linkFields(_ links: [HorizontalPoolItemLink]) -> [HorizontalPoolItemPreviewTable.Field] {
+    /// Whether links of `role` are what names an item of `category`, rather
+    /// than what it names.
+    static func isWhereUsed(_ role: HorizontalPoolItemLink.Role, of category: HorizontalPoolItemCategory) -> Bool {
+        switch category {
+        case .symbol: role == .entity
+        case .unit: role == .symbol || role == .entity
+        case .entity, .package: role == .part
+        case .part: role == .derivedPart
+        case .padstack: role == .package
+        case .frame, .decal: false
+        }
+    }
+
+    /// The most links one field shows; the rest are a search away.
+    static let maximumLinksPerField = 24
+
+    /// One field per kind, in `Role` order, its value the names. Past
+    /// `maximumLinksPerField`, a field of what names `owner` ends with how
+    /// many more there are and the search that lists them: the owner's uuid
+    /// among that kind (the Pools pane's search matches the uuids an item
+    /// names).
+    static func linkFields(
+        _ links: [HorizontalPoolItemLink],
+        owner: HorizontalPoolLibraryItem? = nil
+    ) -> [HorizontalPoolItemPreviewTable.Field] {
         HorizontalPoolItemLink.Role.allCases.compactMap { role in
             let ofRole = links.filter { $0.role == role }
             guard !ofRole.isEmpty else {
                 return nil
             }
-            return HorizontalPoolItemPreviewTable.Field(
+            var field = HorizontalPoolItemPreviewTable.Field(
                 label: role.label(count: ofRole.count),
                 value: ofRole.map(\.name).joined(separator: ", "),
-                links: ofRole
+                links: Array(ofRole.prefix(maximumLinksPerField))
             )
+            if ofRole.count > maximumLinksPerField {
+                field.moreLinks = ofRole.count - maximumLinksPerField
+                if let owner, isWhereUsed(role, of: owner.category) {
+                    // A symbol's entities name its unit, not it.
+                    let named = owner.category == .symbol ? owner.symbolUnitID : owner.uuid
+                    field.moreSearch = named.isEmpty ? nil : HorizontalPoolSearch(category: role.category, term: named)
+                }
+            }
+            return field
         }
     }
 

@@ -33,6 +33,7 @@ struct HorizontalPoolSchematicEditorView: View {
     @State private var pinDisplayMode = HorizontalSymbolEditorPinDisplayMode.primary
     @State private var showsJunctionsAndHiddenNames = false
     @State private var unitPickerPresented = false
+    @Environment(\.horizonPoolItemLinkActions) private var linkActions
     /// nil = the editor; a view = Horizon's text placement preview for it.
     @State private var textPlacementView: HorizontalSymbolTextPlacementView?
 
@@ -292,9 +293,17 @@ struct HorizontalPoolSchematicEditorView: View {
         Text("Symbol")
             .font(.headline)
         HStack {
-            Text(session.index.name(.unit, uuid: symbol.unitID) ?? symbol.unitID)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            HorizontalPoolItemLinkButton(
+                link: HorizontalPoolItemLink(
+                    role: .unit,
+                    uuid: symbol.unitID.lowercased(),
+                    name: session.index.name(.unit, uuid: symbol.unitID) ?? symbol.unitID,
+                    isResolved: session.index.item(.unit, uuid: symbol.unitID) != nil
+                ),
+                actions: linkActions
+            )
+            .lineLimit(1)
+            .truncationMode(.middle)
             Spacer()
             Button("Change Unit…") {
                 unitPickerPresented = true

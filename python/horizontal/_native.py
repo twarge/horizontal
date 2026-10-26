@@ -358,6 +358,7 @@ class LiveTransport(Transport):
         deadline = _deadline(request, self.timeout)
         sent = False
         with _locked(self._lock, deadline):
+            budget = deadline - time.monotonic()
             try:
                 if self.closed:
                     raise ConnectionError("Live connection is closed")
@@ -379,8 +380,11 @@ class LiveTransport(Transport):
                 return _decode(line, request)
             except (OSError, ValueError) as error:
                 self.close()
-                raise transport_error("TIMEOUT" if isinstance(error, TimeoutError) else "CONNECTION_LOST",
-                                      str(error), request, "indeterminate" if sent else "not_sent") from error
+                timed_out = isinstance(error, TimeoutError)
+                message = (f"Horizontal did not answer {request.get('method')} within {max(0, budget):.0f} s ({error}). "
+                           "The connection is closed; the next call on this context reconnects." if timed_out else str(error))
+                raise transport_error("TIMEOUT" if timed_out else "CONNECTION_LOST",
+                                      message, request, "indeterminate" if sent else "not_sent") from error
 
     def alive(self) -> bool:
         """Whether the app is still at the other end, without sending anything.

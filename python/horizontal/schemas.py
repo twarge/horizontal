@@ -694,8 +694,10 @@ class SetPinAlternate(ComponentOp):
 
 class RemapPart(ComponentOp):
     """pin_map is optional: it pairs old pins with new ones, each named as connect names a pin (VSSA/VREF- → VSSA,
-    or gate/pin), and pins it leaves out are matched by gate and pin name. copper says what becomes of tracks on
-    pads the new part has nothing for: refuse (the default, naming them) or drop."""
+    or gate/pin), and pins it leaves out are matched by gate and pin name. Only a pin on a net needs a counterpart:
+    a no-connect mark or chosen alternate on a pin the new part lacks is dropped, and the reply names those pins
+    (no_connects_dropped, alternates_dropped). copper says what becomes of tracks on pads the new part has nothing
+    for: refuse (the default, naming them) or drop."""
     op: Literal["remap_part"]
     part: StrictStr
     pin_map: dict[StrictStr, StrictStr] | None = None

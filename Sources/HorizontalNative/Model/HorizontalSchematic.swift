@@ -4826,6 +4826,31 @@ extension HorizontalSchematicSheet {
         }
     }
 
+    /// Horizon's `Schematic::disconnect_symbol`, for a symbol being deleted:
+    /// its gate leaves every net and no-connect mark, so placed again it
+    /// starts unconnected rather than on the nets it had (a part's other
+    /// gates keep the component, and with it the connections). Each goes into
+    /// `removedConnections` for the save to take out of the block. Upstream
+    /// does this only when the sheet has wires — its erase sits inside the
+    /// wire loop — which reads as an oversight, and isn't copied.
+    mutating func disconnectGate(componentID: String, gateID: String) {
+        let normalizedID = HorizontalSchematic.normalizedID
+        let componentID = normalizedID(componentID)
+        let prefix = normalizedID(gateID) + "/"
+        guard var info = componentInfo[componentID] else {
+            return
+        }
+        let paths = info.connections.keys.filter { HorizontalSchematic.normalizedUUIDPath($0).hasPrefix(prefix) }
+        guard !paths.isEmpty else {
+            return
+        }
+        for path in paths {
+            info.connections.removeValue(forKey: path)
+            removedConnections[componentID, default: []].insert(HorizontalSchematic.normalizedUUIDPath(path))
+        }
+        componentInfo[componentID] = info
+    }
+
     /// Horizon's `Schematic::delete_net_line`: a pin leaves its net when the
     /// wire deleted was the last one ending on it, so it shows the open box
     /// of an unconnected pin again rather than staying on the net with

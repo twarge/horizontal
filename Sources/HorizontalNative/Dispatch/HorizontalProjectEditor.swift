@@ -3512,10 +3512,13 @@ final class HorizontalProjectEditor {
                 }
             }
         }
-        // Every pin something depends on must have come through one way or
-        // the other; name the ones that did not, rather than the first.
-        let needed = Set((component.dictionary("connections") ?? [:]).keys.map { $0.lowercased() })
-            .union((component.dictionary("alt_pins") ?? [:]).keys.map { $0.lowercased() })
+        // Every pin on a net must have come through one way or the other;
+        // name the ones that did not, rather than the first. A no-connect
+        // mark (a connection with no net) or a chosen alternate on a pin the
+        // new part lacks has nothing to keep, and is dropped as an unmapped
+        // pad is.
+        let needed = Set((component.dictionary("connections") ?? [:]).filter { ($0.value as? JSONDictionary)?.string("net") != nil }
+            .keys.map { $0.lowercased() })
         let unmapped = needed.subtracting(mapping.keys).sorted()
         guard unmapped.isEmpty else {
             throw HorizontalDispatchError.invalidParams(
@@ -3523,15 +3526,21 @@ final class HorizontalProjectEditor {
             )
         }
         var connections = JSONDictionary(), altPins = JSONDictionary()
+        var droppedNoConnects = [String](), droppedAlternates = [String]()
         for (key, value) in component.dictionary("connections") ?? [:] {
             guard let new = mapping[key.lowercased()] else {
-                throw HorizontalDispatchError.invalidParams("Connected pin \(key) has no mapping; nothing was changed.")
+                guard (value as? JSONDictionary)?.string("net") == nil else {
+                    throw HorizontalDispatchError.invalidParams("Connected pin \(key) has no mapping; nothing was changed.")
+                }
+                droppedNoConnects.append(pinName(key.lowercased(), componentID: componentID))
+                continue
             }
             connections[new] = value
         }
         for (key, value) in component.dictionary("alt_pins") ?? [:] {
             guard let new = mapping[key.lowercased()] else {
-                throw HorizontalDispatchError.invalidParams("Alternate pin \(key) has no mapping.")
+                droppedAlternates.append(pinName(key.lowercased(), componentID: componentID))
+                continue
             }
             altPins[new] = value
         }
@@ -3739,6 +3748,9 @@ final class HorizontalProjectEditor {
         if !sharedNames.isEmpty { change["paired_shared_names"] = sharedNames.sorted() }
         if samePackage > 0 { change["pads_kept"] = samePackage }
         if byName > 0 { change["pads_mapped_by_name"] = byName }
+        let byPinName: (String, String) -> Bool = { $0.localizedStandardCompare($1) == .orderedAscending }
+        if !droppedNoConnects.isEmpty { change["no_connects_dropped"] = droppedNoConnects.sorted(by: byPinName) }
+        if !droppedAlternates.isEmpty { change["alternates_dropped"] = droppedAlternates.sorted(by: byPinName) }
         if !droppedInstances.isEmpty {
             change["symbols_removed"] = droppedInstances.sorted()
             change["pins_to_wire"] = foldedPins.sorted { $0.localizedStandardCompare($1) == .orderedAscending }

@@ -14,6 +14,8 @@ struct HorizontalPoolItemPreviewView: View {
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
     @Environment(\.colorScheme) private var colorScheme
     @State private var preview: HorizontalPoolItemPreview?
+    /// A symbol's, package's or padstack's links, shown under its drawing.
+    @State private var drawingLinks: [HorizontalPoolItemPreviewTable.Field] = []
     @State private var loadedItemID: HorizontalPoolLibraryItem.ID?
     @State private var symbolQuarterTurns = 0
     @State private var symbolMirrored = false
@@ -52,14 +54,18 @@ struct HorizontalPoolItemPreviewView: View {
     private func previewContent(_ preview: HorizontalPoolItemPreview, item: HorizontalPoolLibraryItem) -> some View {
         switch preview {
         case .symbol(let artwork):
-            HorizontalSymbolPreviewCanvas(artwork: artwork, palette: schematicPalette)
-                .overlay(alignment: .topTrailing) {
-                    if item.category == .symbol {
-                        symbolControls
+            withDrawingLinks {
+                HorizontalSymbolPreviewCanvas(artwork: artwork, palette: schematicPalette)
+                    .overlay(alignment: .topTrailing) {
+                        if item.category == .symbol {
+                            symbolControls
+                        }
                     }
-                }
+            }
         case .board(let geometry, let hiddenLayers):
-            HorizontalBoardPreviewCanvas(geometry: geometry, hiddenLayers: hiddenLayers, palette: boardPalette)
+            withDrawingLinks {
+                HorizontalBoardPreviewCanvas(geometry: geometry, hiddenLayers: hiddenLayers, palette: boardPalette)
+            }
         case .table(let table):
             HorizontalPoolPreviewTableView(table: table, onReveal: onReveal)
         case .part(let part):
@@ -89,6 +95,30 @@ struct HorizontalPoolItemPreviewView: View {
             Text(message)
                 .foregroundStyle(.secondary)
                 .padding()
+        }
+    }
+
+    /// A drawing with its links under it: a symbol's unit and the entities
+    /// that can draw it, a package's padstacks and parts, a padstack's
+    /// packages.
+    @ViewBuilder
+    private func withDrawingLinks(@ViewBuilder _ drawing: () -> some View) -> some View {
+        VStack(spacing: 0) {
+            drawing()
+            if !drawingLinks.isEmpty {
+                Divider()
+                ScrollView {
+                    Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 4) {
+                        HorizontalPoolItemLinkRows(fields: drawingLinks, actions: HorizontalPoolPreviewTableView.revealActions(onReveal),
+                                                   secondaryLabels: true)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 120)
+                .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -133,13 +163,15 @@ struct HorizontalPoolItemPreviewView: View {
             angle: symbolQuarterTurns * 16_384,
             mirrored: symbolMirrored
         )
-        let result = await Task.detached(priority: .userInitiated) {
-            HorizontalPoolPreviewBuilder.preview(for: item, index: index, symbolTransform: transform)
+        let (result, links) = await Task.detached(priority: .userInitiated) {
+            (HorizontalPoolPreviewBuilder.preview(for: item, index: index, symbolTransform: transform),
+             HorizontalPoolPreviewBuilder.drawingLinkFields(for: item, index: index))
         }.value
         guard !Task.isCancelled else {
             return
         }
         preview = result
+        drawingLinks = links
         loadedItemID = item.id
     }
 }
@@ -488,7 +520,7 @@ enum HorizontalPoolPreviewDrawing {
 
 // MARK: - Tables
 
-private struct HorizontalPoolPreviewTableView: View {
+struct HorizontalPoolPreviewTableView: View {
     var table: HorizontalPoolItemPreviewTable
     var onReveal: ((HorizontalPoolRevealRequest) -> Void)?
 
@@ -541,11 +573,7 @@ private struct HorizontalPoolPreviewTableView: View {
     @ViewBuilder
     private func fieldValue(_ field: HorizontalPoolItemPreviewTable.Field) -> some View {
         if !field.links.isEmpty {
-            HorizontalPoolPreviewFlowLayout(spacing: 10, lineSpacing: 3) {
-                ForEach(field.links) { link in
-                    itemLink(link)
-                }
-            }
+            HorizontalPoolItemLinkFlow(field: field, actions: Self.revealActions(onReveal))
         } else if field.label == "Datasheet", let url = HorizontalDatasheetLink.url(field.value) {
             Link(HorizontalDatasheetLink.shortText(url), destination: url)
                 .lineLimit(1)
@@ -555,34 +583,15 @@ private struct HorizontalPoolPreviewTableView: View {
         }
     }
 
-    /// An item the part leads to, as the Parts pane draws its links: the
-    /// name in the accent colour, the pointing hand over it, and what tells
-    /// it apart after it. One no browsed pool has stays plain text.
-    @ViewBuilder
-    private func itemLink(_ link: HorizontalPoolItemLink) -> some View {
-        let note = link.note.isEmpty ? nil : Text(link.note).foregroundStyle(.secondary)
-        if link.isResolved, let onReveal {
-            Button {
-                onReveal(HorizontalPoolRevealRequest(category: link.category, uuid: link.uuid))
-            } label: {
-                HStack(spacing: 4) {
-                    Text(link.name)
-                        .foregroundStyle(Color.accentColor)
-                    note
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            #if os(macOS)
-            .pointerStyle(.link)
-            #endif
-            .help("Show the \(link.role.menuTitle.lowercased()) “\(link.name)” in the list")
-        } else {
-            HStack(spacing: 4) {
-                Text(link.name)
-                note
-            }
-            .help(link.isResolved ? "" : "No browsed pool has this \(link.role.menuTitle.lowercased()) (\(link.uuid)).")
+    /// Links that take the browser to their item, and "… more" to a search
+    /// listing them all.
+    static func revealActions(_ onReveal: ((HorizontalPoolRevealRequest) -> Void)?) -> HorizontalPoolItemLinkActions? {
+        onReveal.map { reveal in
+            HorizontalPoolItemLinkActions(
+                open: { reveal(HorizontalPoolRevealRequest(category: $0.category, uuid: $0.uuid)) },
+                showMore: { reveal(HorizontalPoolRevealRequest(search: $0)) },
+                help: { "Show " + HorizontalPoolItemLinkActions.describe($0) + " in the list" }
+            )
         }
     }
 }
@@ -590,7 +599,7 @@ private struct HorizontalPoolPreviewTableView: View {
 /// Lays its views out in rows, left to right, wrapping when the next one
 /// doesn't fit: a part's several units, symbols or padstacks in the one
 /// column a field's value has.
-private struct HorizontalPoolPreviewFlowLayout: Layout {
+struct HorizontalPoolPreviewFlowLayout: Layout {
     var spacing: CGFloat
     var lineSpacing: CGFloat
 
