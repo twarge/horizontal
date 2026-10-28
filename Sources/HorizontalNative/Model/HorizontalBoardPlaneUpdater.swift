@@ -50,7 +50,8 @@ enum HorizontalBoardPlaneUpdater {
     /// a caller running this off the main thread can drive a determinate
     /// indicator. It is called from whatever thread the pour runs on, once per
     /// plane — a plane is the only granularity available, since a single plane's
-    /// clipping is one opaque call into the clipper.
+    /// clipping is one opaque call into the clipper. The counts it gets only go
+    /// up, so it must return promptly: planes poured together wait on it.
     static func updateAllPlanes(
         in board: HorizontalBoard,
         onProgress: (@Sendable (Int, Int) -> Void)? = nil
