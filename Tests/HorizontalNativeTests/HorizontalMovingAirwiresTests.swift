@@ -142,6 +142,49 @@ final class HorizontalMovingAirwiresTests: XCTestCase {
         }
     }
 
+    /// A track's end junction is copper on the track's layer, so a fill of
+    /// its net joins it whether it stays put or is dragged in and out.
+    func testATrackEndDraggedThroughAFillIsJoinedWhileInside() {
+        var board = HorizontalGerberExportFixture.board()
+        addPad("s1", "p1", at: HorizontalPoint(x: 0, y: 0), net: "n", to: &board)
+        addPad("s2", "p1", at: HorizontalPoint(x: 10 * mm, y: 0), net: "n", to: &board)
+        addPad("m", "p1", at: HorizontalPoint(x: 0, y: 10 * mm), net: "n", to: &board)
+        let end = HorizontalPoint(x: 8 * mm, y: 0)
+        board.junctions = ["j": end]
+        board.junctionNetIDs = ["j": "n"]
+        board.tracks = [HorizontalSegment(id: "t1", from: HorizontalPoint(x: 0, y: 0), to: end, width: 0.2 * mm, layer: top, netID: "n")]
+        board.planes = [HorizontalPlane(
+            id: "plane", netID: "n", polygonID: "poly", layer: top,
+            priority: 0, fillStyle: "solid", minWidth: 200_000, keepOrphans: false,
+            fragments: [HorizontalPlaneFragment(paths: [square(around: HorizontalPoint(x: 10 * mm, y: 0), half: 3 * mm)], orphan: false)]
+        )]
+        board.regenerateAirwires()
+        XCTAssertEqual(board.airwires.count, 1, "s1 and s2 are one piece through t1 and the fill; only m needs joining")
+
+        let package = board.movingAirwires(packageIDs: ["m"], viaIDs: [], junctionIDs: [], segmentEnds: [:])
+        for offset in [HorizontalPoint(x: 0, y: 0), HorizontalPoint(x: 10 * mm, y: -10 * mm)] {
+            let airwires = package.airwires(offset: offset)
+            XCTAssertEqual(airwires.count, offset.x == 0 ? 1 : 0)
+            assertSameRatsNest(live: airwires, regenerated: moved(board, packageIDs: ["m"], segmentEnds: [:], by: offset).airwires, nets: ["n"])
+        }
+
+        let ends: [String: (from: Bool, to: Bool)] = ["t1": (false, true)]
+        let junction = board.movingAirwires(packageIDs: [], viaIDs: [], junctionIDs: ["j"], segmentEnds: ends)
+        for (offset, inside) in [
+            (HorizontalPoint(x: 0, y: 0), true),
+            (HorizontalPoint(x: -4 * mm, y: 0), false),
+            (HorizontalPoint(x: 0, y: 5 * mm), false),
+            (HorizontalPoint(x: 3 * mm, y: 1 * mm), true),
+        ] {
+            var expected = moved(board, packageIDs: [], segmentEnds: ends, by: offset)
+            expected.junctions["j"] = HorizontalPoint(x: end.x + offset.x, y: end.y + offset.y)
+            expected.regenerateAirwires()
+            let airwires = junction.airwires(offset: offset)
+            XCTAssertEqual(airwires.count, inside ? 1 : 2, "offset \(offset)")
+            assertSameRatsNest(live: airwires, regenerated: expected.airwires, nets: ["n"])
+        }
+    }
+
     /// R and T during a move (122) turn the moving copper, and its live rats'
     /// nest follows: each pad's airwire leaves from where the turn put it.
     func testFollowsAPackageTurnedOnTheWay() {
