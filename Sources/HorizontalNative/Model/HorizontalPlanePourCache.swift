@@ -63,13 +63,15 @@ final class PlaneTierResults: @unchecked Sendable {
     }
 
     /// Counts one finished plane and reports it. Progress is a count, so it can
-    /// be ordered by completion even while the results are not.
+    /// be ordered by completion even while the results are not. The report is
+    /// made under the lock: made after it, two planes finishing together could
+    /// report 3 before 2, and the pour's ring stepped back. The app's callbacks
+    /// only yield to a stream, so holding the lock through one costs nothing.
     func reportCompletion(_ onProgress: (@Sendable (Int, Int) -> Void)?, total: Int, base: Int) {
         lock.lock()
+        defer { lock.unlock() }
         finished += 1
-        let done = base + finished
-        lock.unlock()
-        onProgress?(done, total)
+        onProgress?(base + finished, total)
     }
 
     func ordered() -> [(plane: HorizontalPlane, signature: Int)] {
