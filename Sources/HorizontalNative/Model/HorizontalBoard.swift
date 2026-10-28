@@ -1848,8 +1848,10 @@ struct HorizontalBoard {
             nodesByNet[netID, default: []].append(BoardAirwireNode(point: point, layers: layers))
         }
 
+        let junctionLayers = airwireJunctionLayers(tracks: tracks)
         for (junctionID, point) in junctions {
-            add(point, netID: junctionNetIDs[junctionID])
+            let netID = junctionNetIDs[junctionID].map(normalizedID)
+            add(point, netID: netID, layers: netID.flatMap { junctionLayers[$0]?[pointKey(point)] })
         }
         for (padPath, point) in packagePadPositions {
             add(point, netID: packagePadNetIDs[padPath], layers: packagePadLayers[padPath] ?? [airwireAnyLayer])
@@ -5618,13 +5620,33 @@ struct HorizontalBoard {
     private struct BoardAirwireNode {
         var point: HorizontalPoint
         /// Copper layers the node has copper on, for plane connectivity: a
-        /// pad's pad-polygon layers, a via's connected layers. Nil for
-        /// junctions, which a plane never joins on its own.
+        /// pad's pad-polygon layers, a via's connected layers, the layers of
+        /// the tracks ending on a junction. Nil for a junction no track ends
+        /// on, which a plane never joins.
         var layers: Set<Int>? = nil
     }
 
     /// A via whose layers are unknown spans every layer.
     private static let airwireAnyLayer = Int.max
+
+    /// The layers of each junction, by net and point: those of the net's
+    /// tracks ending there, as Horizon's junction takes its layer from its
+    /// tracks. A track that ends inside a fill of its net, with no pad or
+    /// via there, is joined by the fill through that junction: on Cinnamon,
+    /// Inner 2 tracks ending in the N14V fill drew three airwires.
+    /// A track with no layer spans every layer, as connectivity has it.
+    private static func airwireJunctionLayers(tracks: [HorizontalSegment]) -> [String: [String: Set<Int>]] {
+        var layers = [String: [String: Set<Int>]]()
+        for track in tracks {
+            guard let netID = track.netID.map(normalizedID) else {
+                continue
+            }
+            let layer = track.layer ?? airwireAnyLayer
+            layers[netID, default: [:]][pointKey(track.from), default: []].insert(layer)
+            layers[netID, default: [:]][pointKey(track.to), default: []].insert(layer)
+        }
+        return layers
+    }
 
     private struct BoardAirwireCandidate {
         var from: Int
@@ -6548,8 +6570,15 @@ extension HorizontalBoard {
             }
             nodesByNet[netID, default: []].append(Node(point: point, layers: layers, moves: moves))
         }
+        let junctionLayers = Self.airwireJunctionLayers(tracks: tracks)
         for (junctionID, point) in junctions {
-            add(point, netID: junctionNetIDs[junctionID], layers: nil, moves: junctionIDs.contains(Self.normalizedID(junctionID)))
+            let netID = junctionNetIDs[junctionID].map(Self.normalizedID)
+            add(
+                point,
+                netID: netID,
+                layers: netID.flatMap { junctionLayers[$0]?[Self.pointKey(point)] },
+                moves: junctionIDs.contains(Self.normalizedID(junctionID))
+            )
         }
         for (padPath, point) in packagePadPositions {
             let packageID = padPath.split(separator: "/", maxSplits: 1).first.map { Self.normalizedID(String($0)) } ?? ""

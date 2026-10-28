@@ -87,6 +87,34 @@ final class BoardPlaneAirwireTests: XCTestCase {
         XCTAssertEqual(both.airwires.count, 0)
     }
 
+    /// A track from pad A whose far end lies in a fill over pad B, with no
+    /// pad or via there, is joined to B through its junction, which is
+    /// copper on the track's layer: Cinnamon's Inner 2 tracks ending in the
+    /// N14V fill drew airwires.
+    private func board(trackEndingAt end: HorizontalPoint, trackLayer: Int, planes: [HorizontalPlane]) -> HorizontalBoard {
+        var routed = board(planes: planes)
+        routed.junctions = ["j-end": end]
+        routed.junctionNetIDs = ["j-end": net]
+        routed.tracks = [HorizontalSegment(id: "t1", from: HorizontalPoint(x: 0, y: 0), to: end, width: 200_000, layer: trackLayer, netID: net)]
+        routed.regenerateAirwires()
+        return routed
+    }
+
+    func testATrackEndingInsideTheFillIsJoinedByIt() {
+        let end = HorizontalPoint(x: 7_000_000, y: 0)
+        let aroundB = square(around: HorizontalPoint(x: 9_000_000, y: 0), half: 3_000_000)
+        XCTAssertEqual(board(trackEndingAt: end, trackLayer: top, planes: []).airwires.count, 1)
+        XCTAssertEqual(board(trackEndingAt: end, trackLayer: top, planes: [plane(layer: top, paths: [aroundB])]).airwires.count, 0)
+    }
+
+    func testAFillOnAnotherLayerDoesNotReachTheTrackEnd() {
+        let end = HorizontalPoint(x: 7_000_000, y: 0)
+        let aroundB = square(around: HorizontalPoint(x: 9_000_000, y: 0), half: 3_000_000)
+        XCTAssertEqual(board(trackEndingAt: end, trackLayer: bottom, planes: [plane(layer: top, paths: [aroundB])]).airwires.count, 1)
+        let outsideTheFill = HorizontalPoint(x: 4_000_000, y: 0)
+        XCTAssertEqual(board(trackEndingAt: outsideTheFill, trackLayer: top, planes: [plane(layer: top, paths: [aroundB])]).airwires.count, 1)
+    }
+
     /// The airwire pass keys pads on `<board package>/<pad>`, read in place
     /// for the usual id and by splitting for the rest.
     func testPadPathsMatchTheSplitRule() {

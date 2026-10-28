@@ -104,9 +104,12 @@ that, and the two can disagree: on Sherlock the loader reports 628 airwires,
 the editor pass 450. `open_project` runs the editor pass so headless answers
 match what the app shows after any edit.
 
-Poured plane copper counts: a pad or via of the plane's net inside one of
-its fragments on that layer is joined to everything else in that fragment,
-so a ground pad under a ground fill has no airwire. What remains on a plane
+Poured plane copper counts: a pad, via or track end of the plane's net
+inside one of its fragments on that layer is joined to everything else in
+that fragment, so a ground pad under a ground fill has no airwire, and nor
+does a track that ends in the fill with no pad or via there. A track end
+is on the layers of the tracks that end on it, as Horizon's junction is.
+What remains on a plane
 net is a pad the fill does not reach or an unpoured plane; `check` reports
 those as informational, naming up to three airwires by their ends in natural
 order, and anything on a net without a plane as a warning.
