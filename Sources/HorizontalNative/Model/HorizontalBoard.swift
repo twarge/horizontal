@@ -496,6 +496,10 @@ struct HorizontalBoard {
     /// Dimension ids the editor has explicitly removed, for the same reason
     /// and with the same lifetime as `removedPolygonIDs`.
     var removedDimensionIDs: Set<String> = []
+    /// Via ids the editor has removed (deleted, or taken off by a route that
+    /// replaces them), for the same reason and with the same lifetime as
+    /// `removedPolygonIDs`: `patchVias` keeps entries the model lacks.
+    var removedViaIDs: Set<String> = []
     var planes: [HorizontalPlane]
     var keepouts: [HorizontalKeepout]
     var dimensions: [HorizontalDimension]

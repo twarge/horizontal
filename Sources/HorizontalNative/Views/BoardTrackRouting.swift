@@ -446,6 +446,7 @@ enum BoardTrackRouting {
             mergeJunctions(at: head.anchor, preferredID: head.anchorJunctionID, netID: head.netID, board: &board)
         }
         var endJunctionID = head.anchorJunctionID
+        var trackIDs = [String]()
         for spec in specs {
             // A junction at the forward vertex, unless it is the pad it ends on.
             let toIsPadTarget = endsOnPad && key(spec.to) == key(target)
@@ -454,9 +455,11 @@ enum BoardTrackRouting {
                 junctionID = mergeJunctions(at: spec.to, preferredID: nil, netID: head.netID, board: &board)
             }
             let ends = spec.renderEndpoints
+            let trackID = UUID().uuidString.lowercased()
+            trackIDs.append(trackID)
             board.tracks.append(
                 HorizontalSegment(
-                    id: UUID().uuidString.lowercased(),
+                    id: trackID,
                     from: ends.from,
                     to: ends.to,
                     width: head.width,
@@ -480,7 +483,7 @@ enum BoardTrackRouting {
             next.placesVia = false
             vias = 1
         }
-        return BoardTrackRouteStepResult(head: next, segments: specs.count, vias: vias)
+        return BoardTrackRouteStepResult(head: next, segments: specs.count, vias: vias, trackIDs: trackIDs)
     }
 
     /// Drops `via` at `point` on `board`: a through via, its hole and the
@@ -651,6 +654,8 @@ struct BoardTrackRouteStepResult: Equatable {
     var head: BoardTrackRouteHead
     var segments: Int
     var vias: Int
+    /// The ids of the tracks it laid, in flow order.
+    var trackIDs: [String] = []
 }
 
 extension HorizontalBoard {

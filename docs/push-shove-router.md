@@ -416,6 +416,26 @@ treatment the pour got:
    click lays nothing — it used to fall back to the plain elbow, which cut
    through everything and looked exactly like a router ignoring obstacles.
 
+   **Loop removal is back** (`BoardTrackLoops`, "Remove loops" in the tool
+   settings, on by default). The vendored engine replaced the copper a
+   reroute bypassed; this router only ever added copper, so rerouting a
+   section left the old one in place. Now a route that leaves its net's
+   copper and comes back to it replaces the plain chain between the two
+   points: tracks meeting two at a time, through nothing but a via that only
+   passes the chain to another layer (and stands in no plane's fill). A chain
+   with a branch, a pad or a plane connection inside it stays. The click
+   takes it off, vias and their holes included, and the board is drawn
+   without it while the cursor rests where that click would be made — both
+   through the same function, so the preview is what the click does. A click
+   that closes a loop — back on copper already joined to where the stretch
+   began, whether or not anything is replaced — ends the route, as a click on
+   a pad does, and drops no armed via; plane fills aren't followed in deciding
+   that. A route from or to the middle of a track cuts it there at a junction
+   first, where it used to end on the track without joining it. Removed vias
+   are flagged (`HorizontalBoard.removedViaIDs`) because the writer keeps a
+   via entry the model lacks. Delete on a via now flags it too: its entry used to stay in
+   the file, so the via came back on reload wherever a track still ended on it.
+
    **Still to do:** the shove itself (steps 4–5); removing the inert
    `#if canImport(HorizontalPushShoveRouter)` blocks that remain in
    `BoardCanvasView` from the vendored engine; and telling the user WHAT is in

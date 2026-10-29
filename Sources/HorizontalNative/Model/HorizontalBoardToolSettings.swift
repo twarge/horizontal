@@ -34,6 +34,13 @@ final class HorizontalBoardToolSettings: ObservableObject {
         didSet { defaults.set(routerShove, forKey: Self.routerShoveKey) }
     }
 
+    /// A route that leaves its net's copper and comes back to it replaces the
+    /// stretch between, as Horizon's router removes loops
+    /// (`BoardTrackLoops`). On unless turned off.
+    @Published var removeLoops: Bool {
+        didSet { defaults.set(removeLoops, forKey: Self.removeLoopsKey) }
+    }
+
     /// Via diameter (nm), which makes a route's via its own. When nil, the
     /// route's via takes the via rules' (`HorizontalBoard.routeVia`).
     @Published var viaDiameter: Double? {
@@ -54,6 +61,7 @@ final class HorizontalBoardToolSettings: ObservableObject {
             .flatMap(BoardTrackCornerStyle.init(rawValue:)) ?? .ninety
         routerMode = defaults.bool(forKey: Self.routerModeKey)
         routerShove = defaults.bool(forKey: Self.routerShoveKey)
+        removeLoops = defaults.object(forKey: Self.removeLoopsKey) as? Bool ?? true
         viaDiameter = Self.optionalDouble(defaults, forKey: Self.viaDiameterKey)
         viaHoleDiameter = Self.optionalDouble(defaults, forKey: Self.viaHoleKey)
     }
@@ -84,6 +92,7 @@ final class HorizontalBoardToolSettings: ObservableObject {
     private static let cornerStyleKey = "boardTool.cornerStyle"
     private static let routerModeKey = "boardTool.routerMode"
     private static let routerShoveKey = "boardTool.routerShove"
+    private static let removeLoopsKey = "boardTool.removeLoops"
     private static let viaDiameterKey = "boardTool.viaDiameterNM"
     private static let viaHoleKey = "boardTool.viaHoleDiameterNM"
 }
