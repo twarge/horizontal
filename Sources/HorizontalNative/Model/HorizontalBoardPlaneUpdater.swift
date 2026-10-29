@@ -589,21 +589,59 @@ enum HorizontalBoardPlaneUpdater {
 
     // MARK: - Obstacle geometry helpers
 
+    /// A track's, line's or net tie's copper as Horizon's patch draws it
+    /// (`Canvas::img_line`): the strip along it with a half circle round each
+    /// end, cut into 16 chords as `Polygon::remove_arcs` cuts an arc. Square
+    /// ends left a notch on the outside of every bend, which the clearance
+    /// only partly filled, so the fill came in closer there than the rule
+    /// allows, and the exported copper, drawn with round apertures, has round
+    /// ends. Horizon draws an arc as 64 round-ended chords; the strip along
+    /// its path with the same ends is the same copper to well under a micron.
     private static func segmentPath(_ segment: HorizontalSegment) -> [HorizontalPoint] {
         let halfWidth = max(segment.width / 2, 1)
-        let points = segment.pathPoints
-        guard points.count > 2 else {
-            let vector = segment.to - segment.from
-            let normal = HorizontalPoint(x: -vector.y, y: vector.x).normalized
-            let offset = normal * halfWidth
-            return [
-                segment.from + offset,
-                segment.to + offset,
-                segment.to - offset,
-                segment.from - offset
-            ]
+        var points = segment.pathPoints
+        if points.count < 2 {
+            points = [segment.from, segment.to]
         }
+        // A track of no length is a dot, as Horizon draws one.
+        guard (points[points.count - 1] - points[0]).normalized != .zero || points.count > 2 else {
+            return circlePath(center: points[0], diameter: 2 * halfWidth, segments: 2 * capChords)
+        }
+        let strip = stripPath(points, halfWidth: halfWidth)
+        let left = strip.left, right = strip.right
+        let endDirection = (points[points.count - 1] - points[points.count - 2]).normalized
+        let startDirection = (points[0] - points[1]).normalized
+        return left
+            + cap(around: points[points.count - 1], from: left[left.count - 1], heading: endDirection, halfWidth: halfWidth)
+            + right.reversed()
+            + cap(around: points[0], from: right[0], heading: startDirection, halfWidth: halfWidth)
+    }
 
+    /// Chords in each half circle at a track's end: `Polygon::remove_arcs`'s
+    /// default precision.
+    private static let capChords = 16
+
+    /// The points strictly inside the half circle round `center`, from `start`
+    /// (one side of the strip) through the point `heading` from the centre to
+    /// the other side.
+    private static func cap(
+        around center: HorizontalPoint,
+        from start: HorizontalPoint,
+        heading: HorizontalPoint,
+        halfWidth: Double
+    ) -> [HorizontalPoint] {
+        let side = (start - center).normalized
+        return (1..<capChords).map { index in
+            let angle = Double(index) / Double(capChords) * Double.pi
+            return center + side * (cos(angle) * halfWidth) + heading * (sin(angle) * halfWidth)
+        }
+    }
+
+    /// Both sides of the strip `halfWidth` either side of `points`, in order.
+    private static func stripPath(
+        _ points: [HorizontalPoint],
+        halfWidth: Double
+    ) -> (left: [HorizontalPoint], right: [HorizontalPoint]) {
         let normals = zip(points, points.dropFirst()).map { pair in
             let vector = pair.1 - pair.0
             return HorizontalPoint(x: -vector.y, y: vector.x).normalized
@@ -618,7 +656,7 @@ enum HorizontalBoardPlaneUpdater {
             left.append(points[index] + offset)
             right.append(points[index] - offset)
         }
-        return left + right.reversed()
+        return (left, right)
     }
 
     private static func circlePath(center: HorizontalPoint, diameter: Double, segments: Int = 32) -> [HorizontalPoint] {
