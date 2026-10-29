@@ -43,6 +43,10 @@ struct HorizontalBoardToolSettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+                Toggle("Remove loops", isOn: $settings.removeLoops)
+                Text("A route that rejoins its net replaces the track it bypasses.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Via") {

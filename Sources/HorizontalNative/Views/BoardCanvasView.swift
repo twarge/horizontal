@@ -325,10 +325,49 @@ struct BoardCanvasView: View {
         /// end of the route at the cursor, and the next click lays the route
         /// there, drops the via at its end and carries on on the far layer.
         var placesVia = false
+        /// Where the stretch being drawn left copper that was there before the
+        /// route; a click that reaches its net's copper again replaces what
+        /// joined the two (`BoardTrackLoops`).
+        var loopStart: BoardTrackLoopEnd?
+        /// The tracks the route has laid, which loop removal never takes.
+        var routeTrackIDs: Set<String> = []
 
         /// Whether the route has committed anything to the draft board yet
         /// (segments or vias) — gates finishing so an empty route is discarded.
         var hasDrawn: Bool { segmentCount > 0 || viaCount > 0 }
+    }
+
+    /// What a click at the cursor would do when it closes a loop
+    /// (`BoardTrackLoops`): end the route, and change the copper already there
+    /// when it replaces some — the tracks and vias it takes off, a track it
+    /// cuts among them, and the pieces of a cut track that stay. The legs it
+    /// lays are the route preview's own. Render-only.
+    private struct BoardRouteLoopPreview: Equatable {
+        var hiddenTrackIDs: Set<String>
+        var hiddenViaIDs: Set<String>
+        var pieces: [HorizontalSegment]
+        /// What it does to the copper, sorted, which keys the Metal scene.
+        var signature: [String]
+
+        var replacesCopper: Bool { !hiddenTrackIDs.isEmpty || !hiddenViaIDs.isEmpty }
+
+        static func == (lhs: Self, rhs: Self) -> Bool { lhs.signature == rhs.signature }
+
+        func applied(to board: HorizontalBoard) -> HorizontalBoard {
+            guard replacesCopper else {
+                return board
+            }
+            var result = board
+            result.tracks.removeAll { hiddenTrackIDs.contains($0.id) }
+            result.tracks.append(contentsOf: pieces)
+            if !hiddenViaIDs.isEmpty {
+                result.vias.removeAll { hiddenViaIDs.contains($0.id) }
+                result.viaHoles.removeAll { hole in
+                    hiddenViaIDs.contains(hole.id) || hiddenViaIDs.contains { hole.id.hasPrefix("\($0)/") }
+                }
+            }
+            return result
+        }
     }
 
     /// One undoable step of an in-progress route (the state before a click's
@@ -345,6 +384,8 @@ struct BoardCanvasView: View {
         var segmentCount: Int
         var viaCount: Int
         var placesVia: Bool
+        var loopStart: BoardTrackLoopEnd?
+        var routeTrackIDs: Set<String>
     }
 
     private typealias DrawGraphicsResult = HorizontalCanvasDrawGraphicsResult
@@ -441,12 +482,20 @@ struct BoardCanvasView: View {
     /// manual mode). A universal type so the preview renderers stay
     /// platform-agnostic; the session that produces it is macOS-only.
     @State private var pushShovePreviewSpecs: [BoardTrackSegmentSpec] = []
+    #if canImport(HorizontalPushShoveRouter)
     /// Existing tracks (by id) the previewing route will remove (track repair /
     /// shove) — hidden from the board render until commit.
     @State private var pushShoveRemovedSegmentIDs: Set<String> = []
-    #if canImport(HorizontalPushShoveRouter)
     @State private var pushShoveSession: BoardPushShoveSession?
     #endif
+    /// What a click at the cursor would do when it closes a loop
+    /// (`BoardTrackLoops`): the copper it would take off is drawn as gone, and
+    /// the armed via as not dropped, until the cursor moves on. Nil everywhere
+    /// else.
+    @State private var routeLoopPreview: BoardRouteLoopPreview?
+    /// What `routeLoopPreview` was last worked out for, so a cursor resting
+    /// on one point asks once.
+    @State private var routeLoopPreviewQuery: String?
     /// In-app copy buffer for board objects (Copy → Paste/Duplicate). Holds the
     /// harvested objects + their bounding-box min so Paste can land at the cursor.
     @State private var boardClipboard: [BoardClipboardItem] = []
@@ -664,14 +713,10 @@ struct BoardCanvasView: View {
            let moveState {
             return moveState.originalBoard
         }
-        var result = board
-        // Hide tracks the in-progress autoroute will remove, so the removal
-        // (track repair / shove) is previewed before commit. Render-only — `board`
+        // Draw the copper a click at the cursor would replace as gone, so the
+        // removal is previewed before it is made. Render-only — `board`
         // (selection, hit-testing) is unchanged.
-        if !pushShoveRemovedSegmentIDs.isEmpty {
-            result.tracks.removeAll { pushShoveRemovedSegmentIDs.contains(normalizedID($0.id)) }
-        }
-        return result
+        return routeLoopPreview?.applied(to: board) ?? board
     }
 
     private var theme: HorizontalCanvasPalette {
@@ -2787,6 +2832,7 @@ struct BoardCanvasView: View {
                 routerRefreshPreview(at: point)
             }
             #endif
+            refreshRouteLoopPreview()
             if hoveredObject != nil {
                 hoveredObject = nil
             }
@@ -4760,7 +4806,7 @@ struct BoardCanvasView: View {
         )
         trackRouteHistory = []
         pushShovePreviewSpecs = []
-        pushShoveRemovedSegmentIDs = []
+        clearRouteLoopPreview()
         drawGraphicsState = nil
         selectedObjects = []
         hoveredObject = nil
@@ -4795,6 +4841,8 @@ struct BoardCanvasView: View {
             if let bend = boardTrackBendMode(at: anchorPoint) {
                 state.bendMode = bend
             }
+            state.loopStart = BoardTrackLoops.start(
+                at: anchorPoint, layer: state.layer, onPad: state.anchorOnPad, in: editedBoard ?? sourceBoard)
             drawTrackState = state
             #if canImport(HorizontalPushShoveRouter)
             if isRouterMode {
@@ -4865,28 +4913,32 @@ struct BoardCanvasView: View {
         }
 
         // The armed via goes at the end of what this click lays. A click on a
-        // pad ends the route in the pad instead, and drops no via in it.
-        layRoute(specs, to: target, endsOnPad: endPad != nil, netID: netID, state: &state)
+        // pad ends the route in the pad instead, and drops no via in it; so
+        // does a click that closes a loop, back on copper already joined to
+        // where the stretch began (`BoardTrackLoops`).
+        let closesLoop = layRoute(specs, to: target, endsOnPad: endPad != nil, netID: netID, state: &state)
         state.cursor = target
         drawTrackState = state
 
-        if endPad != nil, state.segmentCount > 0 {
+        if endPad != nil || closesLoop, state.segmentCount > 0 {
             commitDrawTrack()
         }
     }
 
     /// Lays one click's worth of route on the draft board, with the via `v`
     /// armed (`BoardTrackRouting.lay`), and moves the route's head on. One
-    /// step for Backspace to take back, when it laid anything.
+    /// step for Backspace to take back, when it laid anything. Returns whether
+    /// it closed a loop, which ends the route.
+    @discardableResult
     private func layRoute(
         _ specs: [BoardTrackSegmentSpec],
         to target: HorizontalPoint,
         endsOnPad: Bool,
         netID: String?,
         state: inout DrawTrackState
-    ) {
+    ) -> Bool {
         guard let anchor = state.anchor else {
-            return
+            return false
         }
         let head = BoardTrackRouteHead(
             anchor: anchor,
@@ -4903,17 +4955,27 @@ struct BoardCanvasView: View {
         let via = state.placesVia
             ? routeVia(netID: netID).map { draft.viaWithMaskOpenings($0, poolURL: poolURL) }
             : nil
-        let laid = BoardTrackRouting.lay(
+        // A route that rejoins its net's copper replaces what joined the two
+        // points, as the preview showed while the cursor rested there.
+        let step = BoardTrackLoops.lay(
             specs, to: target, endsOnPad: endsOnPad,
             via: via,
-            from: head, on: &draft
+            from: head,
+            loopStart: state.loopStart,
+            routeTrackIDs: state.routeTrackIDs,
+            removesLoops: toolSettings.removeLoops,
+            on: &draft
         )
+        let laid = step.laid
         guard laid.segments > 0 || laid.vias > 0 else {
-            return
+            return false
         }
         pushTrackRouteStep(state)
         editedBoard = draft
         invalidateSelectableCache()
+        clearRouteLoopPreview()
+        state.loopStart = step.loopStart
+        state.routeTrackIDs = step.routeTrackIDs
 
         state.anchor = laid.head.anchor
         state.anchorJunctionID = laid.head.anchorJunctionID
@@ -4926,6 +4988,107 @@ struct BoardCanvasView: View {
         if laid.vias > 0 {
             followRouteLayer(state.layer)
         }
+        return step.closesLoop
+    }
+
+    /// Works out whether a click at the cursor would close a loop, and what
+    /// it would replace, and shows it (`routeLoopPreview`), once per point
+    /// the cursor rests on.
+    private func refreshRouteLoopPreview() {
+        guard let state = drawTrackState, state.loopStart != nil,
+              let anchor = state.anchor, let cursor = state.cursor else {
+            clearRouteLoopPreview()
+            return
+        }
+        let query = [
+            pointKey(cursor), pointKey(anchor), "\(state.layer)", "\(state.segmentCount)",
+            "\(state.viaCount)", "\(state.placesVia)", "\(trackRouteHistory.count)",
+            "\(toolSettings.removeLoops)"
+        ].joined(separator: "|")
+        guard query != routeLoopPreviewQuery else {
+            return
+        }
+        routeLoopPreviewQuery = query
+        let preview = loopPreview(for: state, anchor: anchor, cursor: cursor)
+        if preview != routeLoopPreview {
+            routeLoopPreview = preview
+        }
+    }
+
+    private func clearRouteLoopPreview() {
+        routeLoopPreviewQuery = nil
+        if routeLoopPreview != nil {
+            routeLoopPreview = nil
+        }
+    }
+
+    /// The click at `cursor` as `addDrawTrackPoint` would make it, made on a
+    /// copy of the board: what it changes of the copper there, or nil unless
+    /// it closes a loop.
+    private func loopPreview(
+        for state: DrawTrackState,
+        anchor: HorizontalPoint,
+        cursor: HorizontalPoint
+    ) -> BoardRouteLoopPreview? {
+        let current = board
+        // A click in a pad ends the route at its centre.
+        let endPad = boardPadReference(at: cursor, layer: state.layer)
+        let target = endPad?.center ?? cursor
+        guard pointKey(anchor) != pointKey(target),
+              endPad != nil
+                || BoardTrackLoops.reachesCopper(target, layer: state.layer, sparing: state.routeTrackIDs, in: current) else {
+            return nil
+        }
+        // A click on another net's copper lays nothing.
+        let endNet = boardNetID(at: cursor) ?? boardNetID(at: target)
+        if let endNet, let net = state.netID, normalizedID(endNet) != normalizedID(net) {
+            return nil
+        }
+        let netID = state.netID ?? endNet
+        let specs = trackSpecs(from: anchor, to: target, state: state, netID: netID)
+        guard !specs.isEmpty else {
+            return nil
+        }
+        let head = BoardTrackRouteHead(
+            anchor: anchor,
+            anchorJunctionID: state.anchorJunctionID,
+            anchorOnPad: state.anchorOnPad,
+            netID: netID,
+            width: state.width,
+            layer: state.layer,
+            placesVia: state.placesVia
+        )
+        var draft = current
+        let step = BoardTrackLoops.lay(
+            specs, to: target, endsOnPad: endPad != nil,
+            via: state.placesVia ? routeVia(netID: netID) : nil,
+            from: head,
+            loopStart: state.loopStart,
+            routeTrackIDs: state.routeTrackIDs,
+            removesLoops: toolSettings.removeLoops,
+            on: &draft
+        )
+        guard step.closesLoop else {
+            return nil
+        }
+        guard !step.removedTrackIDs.isEmpty || !step.removedViaIDs.isEmpty else {
+            return BoardRouteLoopPreview(hiddenTrackIDs: [], hiddenViaIDs: [], pieces: [], signature: [])
+        }
+        // What the click lays is the route preview's to draw; what is left
+        // is what it does to the copper already there.
+        let laid = Set(step.laid.trackIDs)
+        let existing = Set(current.tracks.map(\.id))
+        let hidden = existing.subtracting(draft.tracks.map(\.id))
+        let pieces = draft.tracks.filter { !existing.contains($0.id) && !laid.contains($0.id) }
+        // A cut track's pieces have new ids every time; their ends say the same.
+        let signature = hidden.sorted() + step.removedViaIDs.sorted()
+            + pieces.map { "\(pointKey($0.from))-\(pointKey($0.to))" }.sorted()
+        return BoardRouteLoopPreview(
+            hiddenTrackIDs: hidden,
+            hiddenViaIDs: Set(step.removedViaIDs),
+            pieces: pieces,
+            signature: signature
+        )
     }
 
     private func boardPadReference(at point: HorizontalPoint, layer: Int?) -> (path: String, center: HorizontalPoint)? {
@@ -4954,6 +5117,7 @@ struct BoardCanvasView: View {
         drawTrackState = nil
         trackRouterSession = nil
         trackRouteHistory = []
+        clearRouteLoopPreview()
         guard state.hasDrawn else {
             return
         }
@@ -4973,6 +5137,7 @@ struct BoardCanvasView: View {
         drawTrackState = nil
         trackRouterSession = nil
         trackRouteHistory = []
+        clearRouteLoopPreview()
         invalidateSelectableCache()
         publishSelectionContext()
     }
@@ -4991,7 +5156,9 @@ struct BoardCanvasView: View {
                 layer: state.layer,
                 segmentCount: state.segmentCount,
                 viaCount: state.viaCount,
-                placesVia: state.placesVia
+                placesVia: state.placesVia,
+                loopStart: state.loopStart,
+                routeTrackIDs: state.routeTrackIDs
             )
         )
     }
@@ -5015,8 +5182,10 @@ struct BoardCanvasView: View {
                 state.anchor = nil
                 state.anchorJunctionID = nil
                 state.anchorOnPad = false
+                state.loopStart = nil
                 drawTrackState = state
             }
+            refreshRouteLoopPreview()
             return
         }
         editedBoard = step.board
@@ -5030,11 +5199,14 @@ struct BoardCanvasView: View {
         state.segmentCount = step.segmentCount
         state.viaCount = step.viaCount
         state.placesVia = step.placesVia
+        state.loopStart = step.loopStart
+        state.routeTrackIDs = step.routeTrackIDs
         drawTrackState = state
         if state.layer != layerBefore {
             followRouteLayer(state.layer)
         }
         invalidateSelectableCache()
+        refreshRouteLoopPreview()
     }
 
     /// Orthogonal two-segment routing between anchor and point, with the corner
@@ -5139,9 +5311,11 @@ struct BoardCanvasView: View {
     /// The armed via's ring, outline then hole, where the next click drops it:
     /// on the end of the preview, or on the end of the route itself while the
     /// cursor rests there (see `addDrawTrackPoint`). Nil with no via armed,
-    /// and over a pad, where a click ends the route in the pad and drops none.
+    /// and over a pad or where a click closes a loop, which ends the route
+    /// there and drops none.
     private func armedViaPreviewRing(_ state: DrawTrackState, polylines: [[HorizontalPoint]]) -> [[HorizontalPoint]]? {
-        guard state.placesVia, let via = routeVia(netID: state.netID) else {
+        // A click that closes a loop ends the route there, and drops none.
+        guard state.placesVia, routeLoopPreview == nil, let via = routeVia(netID: state.netID) else {
             return nil
         }
         var head = polylines.last?.last
@@ -5751,7 +5925,12 @@ struct BoardCanvasView: View {
             case .boardArc:
                 changed = removeElement(from: &board.arcs, matching: ref) || changed
             case .via:
-                changed = removeElement(from: &board.vias, matching: ref) || changed
+                // patchVias keeps entries the model lacks, so the removal is
+                // flagged rather than inferred from absence.
+                if removeElement(from: &board.vias, matching: ref) {
+                    board.removedViaIDs.insert(ref.id)
+                    changed = true
+                }
                 let normalizedViaID = normalizedID(ref.id)
                 changed = removeAll(from: &board.viaHoles) {
                     normalizedID($0.id) == normalizedViaID || normalizedID($0.id).hasPrefix("\(normalizedViaID)/")
@@ -8667,7 +8846,7 @@ struct BoardCanvasView: View {
             counts: boardGeometryCounts(for: keyBoard),
             movePreview: canPatchBoardMoveInMetal ? nil : boardMovePreviewSignature,
             pastePreview: pastePreviewSignature,
-            routePreviewRemoved: pushShoveRemovedSegmentIDs.sorted(),
+            routePreviewRemoved: routeLoopPreview?.signature ?? [],
             renderLayers: renderLayers,
             silkscreenClipping: appearanceSettings.silkscreenClipping,
             silkscreenClipVersion: selectableCache.silkscreenClipVersion,

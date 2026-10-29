@@ -153,7 +153,7 @@ enum HorizontalProjectJSONApplicator {
         patchSegments(&json, key: "connection_lines", segments: board.connectionLines, supportsLayer: false)
         patchPolygons(&json, key: "polygons", polygons: board.polygons, removing: board.removedPolygonIDs)
         patchHoles(&json, key: "holes", holes: board.holes)
-        patchVias(&json, vias: board.vias)
+        patchVias(&json, vias: board.vias, removing: board.removedViaIDs)
         patchNewBoardVias(&json, vias: board.vias, junctions: board.junctions, padstackID: board.viaTemplate?.padstackID)
         patchUnstatedViaRules(&json, rules: board.rules)
         patchPlanes(&json, planes: board.planes)
@@ -1630,11 +1630,22 @@ enum HorizontalProjectJSONApplicator {
         return item
     }
 
-    private static func patchVias(_ json: inout JSONDictionary, vias: [HorizontalMarker]) {
+    private static func patchVias(
+        _ json: inout JSONDictionary,
+        vias: [HorizontalMarker],
+        removing removedIDs: Set<String> = []
+    ) {
         guard var map = json["vias"] as? JSONDictionary else {
             return
         }
-        // Preserve unknown source entries. See note in patchPolygons.
+        // Preserve unknown source entries; deletions come through `removedIDs`.
+        // See note in patchPolygons.
+        let kept = Set(vias.map { normalizedID($0.id) })
+        for id in removedIDs where !kept.contains(normalizedID(id)) {
+            if let itemKey = matchingKey(id, in: map) {
+                map.removeValue(forKey: itemKey)
+            }
+        }
 
         for via in vias {
             guard let itemKey = matchingKey(via.id, in: map),
