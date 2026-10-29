@@ -233,4 +233,74 @@ final class BoardPlanePourTests: XCTestCase {
         XCTAssertEqual(a.fragments.count, b.fragments.count)
         XCTAssertEqual(area(a), area(b), accuracy: 1)
     }
+
+    /// How close the fill comes to a track's centreline, from `points` along
+    /// it: the least distance from any edge of the fill within `radius` of
+    /// `near` to any of its legs.
+    private func closestApproach(
+        of plane: HorizontalPlane,
+        to points: [HorizontalPoint],
+        near: HorizontalPoint,
+        radius: Double
+    ) -> Double {
+        func distance(_ point: HorizontalPoint, _ a: HorizontalPoint, _ b: HorizontalPoint) -> Double {
+            let ab = b - a, ap = point - a
+            let length = ab.x * ab.x + ab.y * ab.y
+            let t = length > 0 ? max(0, min(1, (ap.x * ab.x + ap.y * ab.y) / length)) : 0
+            return hypot(ap.x - ab.x * t, ap.y - ab.y * t)
+        }
+        var closest = Double.infinity
+        let legs = Array(zip(points, points.dropFirst()))
+        for ring in plane.fragments.flatMap(\.paths) {
+            for (index, a) in ring.enumerated() {
+                let b = ring[(index + 1) % ring.count]
+                guard hypot(a.x - near.x, a.y - near.y) < radius || hypot(b.x - near.x, b.y - near.y) < radius else {
+                    continue
+                }
+                for (from, to) in legs {
+                    closest = min(closest, distance(a, from, to), distance(b, from, to),
+                                  distance(from, a, b), distance(to, a, b))
+                }
+            }
+        }
+        return closest
+    }
+
+    /// The fill keeps its clearance from a track all the way round, as
+    /// Horizon's does: round the outside of a bend and round a free end, where
+    /// the track's copper is round, as it is drawn and exported. The pour took
+    /// a track as a strip with square ends, which left a notch on the outside
+    /// of every bend that the clearance only partly filled (70 µm short at
+    /// this 90° bend), and brought the fill over the round end of a track
+    /// that stops in it, onto the other net's copper.
+    func testTheFillKeepsItsClearanceRoundBendsAndEnds() throws {
+        let width = 600_000.0
+        let corner = p(0, 0)
+        for bend in [p(5 * mm, 5 * mm), p(0, 5 * mm)] {
+            var board = makeBoard(
+                polygons: [outline(half: 12 * mm)],
+                planes: [plane("p1", half: 10 * mm, net: "gnd")],
+                packagePads: [anchor()]
+            )
+            let start = p(-5 * mm, 0)
+            board.junctions = ["start": start, "corner": corner, "end": bend]
+            board.tracks = [
+                HorizontalSegment(id: "in", from: start, to: corner, width: width, layer: 0, netID: "vcc"),
+                HorizontalSegment(id: "out", from: corner, to: bend, width: width, layer: 0, netID: "vcc"),
+            ]
+            let clearance = Double(board.rules.clearanceCopper(net1: "gnd", net2: "vcc", layer: 0).clearance(.track, .plane))
+            XCTAssertGreaterThan(clearance, 0)
+            let poured = try XCTUnwrap(HorizontalBoardPlaneUpdater.updateAllPlanes(in: board).planes.first)
+            XCTAssertFalse(poured.fragments.isEmpty)
+
+            // Within the chords of the round ends and the clipper's 2 µm arc
+            // tolerance.
+            let rule = width / 2 + clearance
+            for (place, point) in [("the bend", corner), ("the free end", start), ("the other free end", bend)] {
+                let approach = closestApproach(of: poured, to: [start, corner, bend], near: point, radius: 2 * mm)
+                XCTAssertGreaterThan(approach, rule - 5_000,
+                                     "\(place), bending to \(bend.x / mm), \(bend.y / mm) mm: the fill comes \((rule - approach) / 1000) µm too close")
+            }
+        }
+    }
 }
