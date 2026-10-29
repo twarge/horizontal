@@ -473,7 +473,7 @@ enum HorizontalBoardPlaneUpdater {
         let anchors = planeAnchors(for: plane, in: board)
         var fragments = fragments(from: rawFragments).map { fragment -> HorizontalPlaneFragment in
             var fragment = fragment
-            fragment.orphan = !anchors.contains { fragment.contains($0) }
+            fragment.orphan = !fragment.containsAny(of: anchors)
             return fragment
         }
         if !settings.keepOrphans {
@@ -877,11 +877,26 @@ private struct ThermalPad {
 }
 
 private extension HorizontalPlaneFragment {
-    func contains(_ point: HorizontalPoint) -> Bool {
-        guard let outer = paths.first, pointInPolygon(point, outer) else {
+    /// Whether any of `points` is in this fragment's copper: inside its
+    /// outline and in none of its holes.
+    ///
+    /// Every anchor of the plane's net is tested against every fragment, and
+    /// most fragments are small orphans the anchors are nowhere near: on
+    /// Jasmine's top ground plane, 2173 anchors against 174 orphans walked
+    /// 17.7 million vertices, 0.72 s of a 1.9 s pour in a debug build. The
+    /// fragment's containment index answers as the plain crossing test does,
+    /// but turns away a point outside a path's box at once and walks a long
+    /// path's edges only at the point's height. It is read once for all the
+    /// points, since it sits behind a lock. The airwire pass reads the same
+    /// index, so a kept fragment reaches it already built.
+    func containsAny(of points: [HorizontalPoint]) -> Bool {
+        guard !points.isEmpty, let outer = containmentPaths.first else {
             return false
         }
-        return !paths.dropFirst().contains { pointInPolygon(point, $0) }
+        let holes = containmentPaths.dropFirst()
+        return points.contains { point in
+            outer.contains(point) && !holes.contains { $0.contains(point) }
+        }
     }
 }
 
@@ -895,23 +910,6 @@ private extension HorizontalKeepout {
     func applies(toCopperLayer layer: Int) -> Bool {
         allCopperLayers || polygon.layer == layer
     }
-}
-
-private func pointInPolygon(_ point: HorizontalPoint, _ polygon: [HorizontalPoint]) -> Bool {
-    guard polygon.count >= 3 else { return false }
-    var isInside = false
-    var previous = polygon[polygon.count - 1]
-    for current in polygon {
-        let crossesY = (current.y > point.y) != (previous.y > point.y)
-        if crossesY {
-            let x = (previous.x - current.x) * (point.y - current.y) / (previous.y - current.y) + current.x
-            if point.x < x {
-                isInside.toggle()
-            }
-        }
-        previous = current
-    }
-    return isInside
 }
 
 private func normalizedID(_ id: String) -> String {
