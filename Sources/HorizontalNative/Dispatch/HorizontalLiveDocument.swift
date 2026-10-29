@@ -25,6 +25,9 @@ final class HorizontalLiveDocument {
     var title: String
     var currentProject: () -> HorizontalProject
     var revision: () -> String
+    /// Counts the pours the document has taken, which change its fills, its
+    /// airwires and its planes file and leave `revision` alone.
+    var planeFillRevision: () -> Int
     var archive: () -> HorizontalProjectArchive
     var isReadOnly: () -> Bool
     var selection: () -> HorizontalLiveSelection
@@ -85,6 +88,7 @@ final class HorizontalLiveDocument {
         self.title = title
         currentProject = { project }
         revision = { "0" }
+        planeFillRevision = { 0 }
         self.archive = { archive }
         isReadOnly = { false }
         selection = { HorizontalLiveSelection() }

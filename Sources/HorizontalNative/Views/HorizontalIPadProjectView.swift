@@ -34,10 +34,18 @@ struct HorizontalIPadProjectView: View {
     @State private var planePourRevision = 0
     @State private var boardNetlistSyncTask: Task<Void, Never>?
     @State private var boardNetlistSyncRequested = false
-    @State private var isPouringPlanes = false
-    @State private var planePourProgress: Double?
+    /// Pours the planes off the main thread, as on macOS.
+    @StateObject private var planePourScheduler = HorizontalPlanePourScheduler()
+    @AppStorage(HorizontalPlaneFillDefaults.updatesAutomaticallyKey) private var updatesPlanesAutomatically = false
     @State private var planesNeedUpdate = false
-    @State private var planePourCache = HorizontalPlanePourCache()
+    /// What the board's fills were poured from; nil until the board is first
+    /// seen, when the fills its files hold are taken to be its own.
+    @State private var pouredPlaneInputs: Int?
+    @State private var checkedPlaneInputsRevision: Int?
+    /// The newest pour's fills for the board canvas, counted by
+    /// `planeFillRevision`.
+    @State private var planeFillDelivery: HorizontalPlaneFillDelivery?
+    @State private var planeFillRevision = 0
     @State private var powerNetsPopoverPresented = false
     /// The first launch's offer of Horizon's default pool.
     @State private var isOfferingDefaultPool = false
@@ -351,6 +359,20 @@ struct HorizontalIPadProjectView: View {
         .task(id: "\(boardEditRevision):\(schematicEditRevision):\(project?.poolDirectory ?? ""):\(project != nil):\(isReadOnly)") {
             if let project { partLibrary.update(partLibraryInputs(for: project)) }
         }
+        .onAppear {
+            planePourScheduler.deliver = { applyPouredPlanes($0) }
+        }
+        // Every change to the board passes here; most asked for their pour
+        // already, and this catches the rest.
+        .onChange(of: boardEditRevision) { _, _ in
+            checkPlaneFills()
+        }
+        .onChange(of: updatesPlanesAutomatically) { _, _ in
+            checkPlaneFills(again: true)
+        }
+        .onChange(of: isReadOnly) { _, _ in
+            checkPlaneFills(again: true)
+        }
         // On a phone the navigator, the inspector and the export panel slide
         // up over the canvas instead of beside it; at the medium detent the
         // canvas behind stays live, so a selection can be inspected and changed.
@@ -643,7 +665,8 @@ struct HorizontalIPadProjectView: View {
                 HorizontalExportPanel(
                     project: project,
                     appearanceSettings: appearanceSettings,
-                    onClose: { rightPane = nil }
+                    onClose: { rightPane = nil },
+                    settledProject: settledProjectForExport
                 )
             }
         case nil:
@@ -1404,6 +1427,7 @@ struct HorizontalIPadProjectView: View {
                     drawingLayer: boardDrawingLayer,
                     syncRevision: boardSyncRevision,
                     planePourRevision: planePourRevision,
+                    planeFillDelivery: planeFillDelivery,
                     poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }
                 )
                 .overlay(alignment: .bottom) {
@@ -1439,9 +1463,10 @@ struct HorizontalIPadProjectView: View {
                     }
                     BoardUpdatePlanesToolButton(
                         action: updateAllBoardPlanes,
-                        isUpdating: isPouringPlanes,
-                        progress: planePourProgress,
-                        needsUpdate: planesNeedUpdate
+                        isUpdating: planePourScheduler.isPouring,
+                        progress: planePourScheduler.progress,
+                        needsUpdate: planesNeedUpdate,
+                        updatesAutomatically: $updatesPlanesAutomatically
                     )
                     .disabled(board.planes.isEmpty)
                     DrawDimensionToolButton {
@@ -1704,14 +1729,14 @@ struct HorizontalIPadProjectView: View {
     private func installLiveSnapshot(_ snapshot: HorizontalLiveSnapshot) {
         if let board = snapshot.project.board, let previous = project?.board,
            HorizontalBoardPlaneInputs.signature(of: board) != HorizontalBoardPlaneInputs.signature(of: previous) {
-            planePourCache = HorizontalPlanePourCache()
-            planesNeedUpdate = !board.planes.isEmpty
+            planePourScheduler.forgetCache()
         }
         document.archive = snapshot.archive
         project = snapshot.project
         boardEditRevision += 1
         boardSyncRevision += 1
         schematicEditRevision += 1
+        checkPlaneFills()
     }
 
     /// Horizon's Move to other sheet, as on macOS: one undoable edit, then
@@ -1843,6 +1868,11 @@ struct HorizontalIPadProjectView: View {
             return
         }
         guard var syncedBoard = reloaded.board, var updated = project else { return }
+        // A pour that landed while the snapshot loaded is in memory, and may
+        // not be in what the snapshot read.
+        if let currentBoard = updated.board {
+            syncedBoard.carryPlaneFills(from: currentBoard)
+        }
         syncedBoard.url = previousBoard.url
         if let poolURL = current.poolDirectory.map({ current.baseURL.appendingPathComponent($0) }) {
             syncedBoard.rebasePackageModelURLs(poolURL: poolURL)
@@ -1858,17 +1888,16 @@ struct HorizontalIPadProjectView: View {
     /// archive (DocumentGroup persists the binding). Mirrors the macOS path.
     private func applyEditedBoard(_ board: HorizontalBoard, writesPlaneCache: Bool = false) {
         guard var updated = project else { return }
-        // Does this edit invalidate the plane fills? A pour's own result never does.
-        let previousPlaneInputs = updated.board.map(HorizontalBoardPlaneInputs.signature)
         updated.board = board
         project = updated
         boardEditRevision += 1
+        // Does this edit invalidate the plane fills? A pour's own result never does.
         if writesPlaneCache {
+            pouredPlaneInputs = HorizontalBoardPlaneInputs.signature(of: board)
+            checkedPlaneInputsRevision = boardEditRevision
             planesNeedUpdate = false
-        } else if let previousPlaneInputs,
-                  !board.planes.isEmpty,
-                  HorizontalBoardPlaneInputs.signature(of: board) != previousPlaneInputs {
-            planesNeedUpdate = true
+        } else {
+            checkPlaneFills()
         }
         do {
             try HorizontalProjectJSONApplicator.apply(board: board, in: updated, to: &document.archive)
@@ -1882,64 +1911,92 @@ struct HorizontalIPadProjectView: View {
     /// Q, the rail button: pours every plane on the board. Mirrors the macOS
     /// workspace path minus undo, which this editor doesn't keep for board edits.
     private func updateAllBoardPlanes() {
+        guard !isReadOnly else { return }
         guard let board = project?.board, !board.planes.isEmpty else {
             // Nothing to pour, but Q still refreshes the silkscreen clip.
             planePourRevision += 1
             return
         }
-        Task {
-            await pourAllPlanes(board)
-        }
+        requestPlanePour(for: board, isManual: true)
     }
 
     /// A plane create/edit the canvas already applied to `editedBoard`: the
     /// definition is persisted first, so a discarded pour only costs the fill.
     private func applyBoardPlaneEdit(_ editedBoard: HorizontalBoard, actionName: String) {
         applyEditedBoard(editedBoard)
-        Task {
-            await pourAllPlanes(editedBoard)
+        if let board = project?.board, !board.planes.isEmpty {
+            requestPlanePour(for: board, isManual: true)
         }
     }
 
-    /// Pours every plane on `boardToPour`, the project's board as it stands,
-    /// off the main actor, and applies the result unless the board moved
-    /// meanwhile — editing stays live during a pour, and fills poured around
-    /// copper that has since moved would be wrong; the rail button then shows
-    /// the fills as stale and one press redoes the work.
-    private func pourAllPlanes(_ boardToPour: HorizontalBoard) async {
-        guard !isPouringPlanes else { return }
-        isPouringPlanes = true
-        let isDeterminate = boardToPour.planes.count > 1
-        planePourProgress = isDeterminate ? 0 : nil
-        let pouredInputs = HorizontalBoardPlaneInputs.signature(of: boardToPour)
-
-        let (progressUpdates, progress) = AsyncStream<Double>.makeStream()
-        let cache = planePourCache
-        let pour = Task.detached(priority: .userInitiated) {
-            let poured = HorizontalBoardPlaneUpdater.updateAllPlanes(
-                in: boardToPour, cache: cache
-            ) { completed, total in
-                progress.yield(total > 0 ? Double(completed) / Double(total) : 1)
-            }
-            progress.finish()
-            return poured
-        }
-        for await fraction in progressUpdates where isDeterminate {
-            planePourProgress = fraction
-        }
-        let (pouredBoard, updatedCache) = await pour.value
-        isPouringPlanes = false
-        planePourProgress = nil
-
-        guard project?.board.map(HorizontalBoardPlaneInputs.signature) == pouredInputs else {
-            planesNeedUpdate = true
+    /// Whether the fills still match the board, and, when the planes update
+    /// automatically, a pour when they don't. As on macOS: the funnels call
+    /// it at once, a `boardEditRevision` change none of them made calls it
+    /// when SwiftUI next updates, and `again` rechecks after a setting changes.
+    private func checkPlaneFills(again: Bool = false) {
+        guard again || checkedPlaneInputsRevision != boardEditRevision else { return }
+        checkedPlaneInputsRevision = boardEditRevision
+        guard let board = project?.board, !board.planes.isEmpty else {
+            planesNeedUpdate = false
             return
         }
-        planePourCache = updatedCache
-        applyEditedBoard(pouredBoard, writesPlaneCache: true)
-        boardSyncRevision += 1
-        planePourRevision += 1
-        selectionDetailsByPane[.board] = .empty
+        let inputs = HorizontalBoardPlaneInputs.signature(of: board)
+        guard let pouredPlaneInputs else {
+            // First sight of the board: the fills its files hold are its own.
+            self.pouredPlaneInputs = inputs
+            planesNeedUpdate = false
+            return
+        }
+        planesNeedUpdate = inputs != pouredPlaneInputs
+        if planesNeedUpdate, updatesPlanesAutomatically, !isReadOnly {
+            requestPlanePour(for: board, inputs: inputs)
+        }
+    }
+
+    private func requestPlanePour(for board: HorizontalBoard, inputs: Int? = nil, isManual: Bool = false) {
+        planePourScheduler.request(HorizontalPlanePourRequest(
+            board: board,
+            inputs: inputs ?? HorizontalBoardPlaneInputs.signature(of: board),
+            isManual: isManual,
+            makesPlanesFile: project?.planesFilename != nil,
+            knownFragmentKeys: planeFillDelivery?.fragmentKeys ?? []
+        ))
+    }
+
+    /// Takes a finished pour into the board if the board still has the copper
+    /// it was poured around: the fills and airwires change, the canvas takes
+    /// them in place, and the planes file the pour made goes in the archive.
+    private func applyPouredPlanes(_ result: HorizontalPlanePourResult) {
+        guard !isReadOnly, var updated = project, var board = updated.board else { return }
+        guard HorizontalBoardPlaneInputs.signature(of: board) == result.fills.inputs else {
+            // The board moved while this pour ran; see the macOS path.
+            checkPlaneFills(again: true)
+            return
+        }
+        board.takePlaneFills(result.fills)
+        updated.board = board
+        project = updated
+        pouredPlaneInputs = result.fills.inputs
+        planesNeedUpdate = false
+        if let data = result.planesFileData {
+            do {
+                _ = try HorizontalProjectJSONApplicator.applyPlaneCache(data: data, in: updated, to: &document.archive)
+            } catch {
+                loadError = "Couldn't save the plane fills: \(error.localizedDescription)"
+            }
+        }
+        planeFillRevision += 1
+        planeFillDelivery = HorizontalPlaneFillDelivery(revision: planeFillRevision, result: result)
+        if result.isManual {
+            planePourRevision += 1
+        }
+    }
+
+    /// The project once any pour asked for has landed, for an export, which
+    /// is made from the fills.
+    private func settledProjectForExport() async -> HorizontalProject? {
+        await planePourScheduler.settled()
+        return project
     }
 
     /// The board design-rules (DRC) editor + checks. macOS opens this in a separate
@@ -1988,7 +2045,8 @@ struct HorizontalIPadProjectView: View {
                 layerColors: appearanceSettings.boardSceneLayerColors,
                 materialColors: appearanceSettings.boardSceneMaterialColors,
                 silkscreenClipping: appearanceSettings.silkscreenClipping,
-                revision: boardEditRevision,
+                // Both only count up, so their sum changes with either.
+                revision: boardEditRevision + planeFillRevision,
                 highlightedComponentIDs: highlightedComponentIDs,
                 selectedComponentIDs: selectedComponentIDs,
                 onSelectComponent: { componentID, extend in
@@ -2037,6 +2095,9 @@ struct HorizontalIPadProjectView: View {
         do {
             let url = try projectURLForLoading()
             let loadedProject = try HorizontalProject.load(from: url)
+            // A new board: its files' fills are its own until it changes.
+            pouredPlaneInputs = nil
+            planePourScheduler.forgetCache()
             project = loadedProject
             boardEditRevision += 1
             visiblePanes = defaultVisiblePanes(for: loadedProject)
@@ -2408,6 +2469,9 @@ struct HorizontalExportPanel: View {
     let project: HorizontalProject
     let appearanceSettings: HorizontalAppearanceSettings
     var onClose: () -> Void = {}
+    /// The project once any pour asked for has landed, which an export waits
+    /// for; the panel's own copy when there is none.
+    var settledProject: (() async -> HorizontalProject?)?
 
     @State private var settings: HorizontalExportSettings
     @State private var status: HorizontalExportStatus?
@@ -2415,10 +2479,16 @@ struct HorizontalExportPanel: View {
     @State private var documentPickerPresented = false
     @State private var isExporting = false
 
-    init(project: HorizontalProject, appearanceSettings: HorizontalAppearanceSettings, onClose: @escaping () -> Void = {}) {
+    init(
+        project: HorizontalProject,
+        appearanceSettings: HorizontalAppearanceSettings,
+        onClose: @escaping () -> Void = {},
+        settledProject: (() async -> HorizontalProject?)? = nil
+    ) {
         self.project = project
         self.appearanceSettings = appearanceSettings
         self.onClose = onClose
+        self.settledProject = settledProject
         _settings = State(initialValue: HorizontalExportSettings(project: project))
     }
 
@@ -2474,15 +2544,17 @@ struct HorizontalExportPanel: View {
 
         var exportSettings = settings
         exportSettings.targetDirectory = tempRoot.path
-        // Snapshot the value-type inputs on the main actor, then run the (synchronous,
-        // CPU + file-IO heavy) export off-main so the spinner keeps animating.
-        let exportProject = project
+        isExporting = true
+        status = nil
+        // Fabrication outputs are made from the fills, so a pour asked for
+        // lands first. Then snapshot the value-type inputs on the main actor
+        // and run the (synchronous, CPU + file-IO heavy) export off-main so
+        // the spinner keeps animating.
+        let exportProject = await settledProject?() ?? project
         let schematicPalette = appearanceSettings.palette(for: .schematic, mode: .light)
         let boardPalette = appearanceSettings.palette(for: .board, mode: .light)
         let silkscreenClipping = appearanceSettings.silkscreenClipping
 
-        isExporting = true
-        status = nil
         let result = await Task.detached(priority: .userInitiated) {
             HorizontalExportBackend.export(
                 sections: sections,

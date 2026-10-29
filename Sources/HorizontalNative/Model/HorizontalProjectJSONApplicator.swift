@@ -268,10 +268,16 @@ enum HorizontalProjectJSONApplicator {
     /// Returns whether the plane cache's file changed.
     @discardableResult
     static func applyPlaneCache(board: HorizontalBoard, in project: HorizontalProject, to archive: inout HorizontalProjectArchive) throws -> Bool {
-        guard let planesFilename = project.planesFilename else {
+        guard project.planesFilename != nil else {
             return false
         }
+        return try applyPlaneCache(data: planeCacheData(board: board), in: project, to: &archive)
+    }
 
+    /// The planes file for `board`'s fills, as `applyPlaneCache` writes it.
+    /// Reads nothing but the board, so it can be made off the main thread:
+    /// on a large board it is tens of megabytes of JSON.
+    static func planeCacheData(board: HorizontalBoard) throws -> Data {
         let planeMap = board.planes
             .filter { !$0.id.contains("/") }
             .reduce(into: JSONDictionary()) { result, plane in
@@ -286,8 +292,21 @@ enum HorizontalProjectJSONApplicator {
                     }
                 ] as JSONDictionary
             }
+        return try HorizontalHorizonJSONWriter.data(["planes": planeMap])
+    }
 
-        return try saveJSON(["planes": planeMap], relativePath: planesFilename, to: &archive)
+    /// Puts a planes file made by `planeCacheData` in the archive. Returns
+    /// whether the archive changed; a project without a planes file keeps
+    /// its fills in memory only.
+    static func applyPlaneCache(data: Data, in project: HorizontalProject, to archive: inout HorizontalProjectArchive) throws -> Bool {
+        guard let planesFilename = project.planesFilename else {
+            return false
+        }
+        guard archive.regularFileData(relativePath: planesFilename) != data else {
+            return false
+        }
+        try archive.replaceRegularFileData(relativePath: planesFilename, with: data)
+        return true
     }
 
     static func apply(

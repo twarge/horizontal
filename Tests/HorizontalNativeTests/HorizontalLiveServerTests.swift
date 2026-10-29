@@ -98,6 +98,45 @@ final class HorizontalLiveServerTests: XCTestCase {
         XCTAssertEqual(handed.count, 1, "nothing was applied for the failure")
     }
 
+    /// A pour that lands between a client's dry run and its commit changes
+    /// nothing but the document's fills and planes file: the revision the
+    /// client holds still commits, reads see the new fills, and the dry run's
+    /// staged edit is committed with them rather than the fills from before.
+    func testAPourLeavesTheRevisionAClientHoldsGood() throws {
+        let document = try registerTemplateDocument()
+        var fills = 0
+        document.planeFillRevision = { fills }
+        let entry = try HorizontalDispatchSession.shared.entry(handle: handle!)
+        let planesFile = try XCTUnwrap(entry.project.planesFilename)
+        let before = entry.revision
+        func apply(_ extra: JSONDictionary) -> JSONDictionary {
+            var params: JSONDictionary = ["handle": handle!, "expected_revision": before, "operation_id": UUID().uuidString, "detail": "compact"]
+            params.merge(extra) { _, new in new }
+            return HorizontalDispatch.call(["jsonrpc": "2.0", "id": 1, "method": "apply", "params": params])
+        }
+        let ops: [JSONDictionary] = [["op": "ensure_net", "name": "A"]]
+        let dryRun = apply(["dry_run": true, "ops": ops])
+        let digest = try XCTUnwrap((dryRun["result"] as? JSONDictionary)?.string("plan_digest"), "\(dryRun)")
+
+        // The pour lands: the planes file changes, the document's own
+        // revision does not, and its count of pours does.
+        var poured = document.archive()
+        let pouredFills = Data("{\"planes\":{\"x\":{\"fragments\":[]}}}\n".utf8)
+        try poured.replaceRegularFileData(relativePath: planesFile, with: pouredFills)
+        document.archive = { poured }
+        fills += 1
+        HorizontalDispatchSession.shared.syncLiveEntries()
+
+        XCTAssertEqual(entry.revision, before, "the board is as the client read it")
+        XCTAssertEqual(entry.snapshot?.archive.regularFileData(relativePath: planesFile), pouredFills, "and reads see the new fills")
+        let committed = apply(["plan_digest": digest])
+        XCTAssertNil(committed["error"], "\(committed)")
+        let edited = try XCTUnwrap(applied.last?.0)
+        XCTAssertEqual(edited.regularFileData(relativePath: planesFile), pouredFills, "the edit is committed over the poured fills")
+        XCTAssertNotEqual(edited.regularFileData(relativePath: "top_block.json"), poured.regularFileData(relativePath: "top_block.json"),
+                          "and the edit is in it")
+    }
+
     func testTheChannelIsOffUntilItIsTurnedOn() throws {
         let suite = "horizontal-live-default-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -188,6 +227,38 @@ final class HorizontalLiveServerTests: XCTestCase {
 
         let version = try send(["jsonrpc": "2.0", "id": 2, "method": "version", "params": [:]], port: port, token: token)
         XCTAssertEqual((version["result"] as? [String: Any])?["api"] as? Int, HorizontalDispatch.apiVersion)
+    }
+
+    /// An export or a check that arrives while a pour is asked for or running
+    /// is answered once the pour has landed, with the fills it made; other
+    /// requests are answered meanwhile.
+    func testACheckWaitsForAPendingPour() throws {
+        _ = try registerTemplateDocument()
+        let (port, token) = try discovery()
+        let activity = HorizontalPlanePourActivity.shared
+        activity.begin()
+        var ended = false
+        defer { if !ended { activity.end() } }
+
+        let version = try send(["jsonrpc": "2.0", "id": 1, "method": "version", "params": [:]], port: port, token: token)
+        XCTAssertNotNil(version["result"], "a request that reads no fills does not wait")
+
+        let request: [String: Any] = ["jsonrpc": "2.0", "id": 2, "method": "check", "params": ["handle": handle!], "auth": token]
+        let client = LiveClient(port: port)
+        client.send(String(decoding: try JSONSerialization.data(withJSONObject: request), as: UTF8.self) + "\n")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        XCTAssertNil(client.response, "the check waits while the pour is pending")
+
+        activity.end()
+        ended = true
+        let deadline = Date().addingTimeInterval(10)
+        while client.response == nil, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        client.cancel()
+        let response = try XCTUnwrap(client.response, "and is answered once it lands")
+        let answer = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(response.utf8)) as? [String: Any])
+        XCTAssertNotNil(answer["result"], "\(answer)")
     }
 
     func testLiveDocumentIsListedReadHighlightedAndEdited() throws {

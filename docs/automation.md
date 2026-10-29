@@ -410,6 +410,19 @@ focused, so the edit used to land on a fallback manager that Undo never looks
 at, and an automation edit could not be taken back. And the document is marked
 as changed directly, so the window shows unsaved work and closing it asks.
 
+With Update Planes Automatically on (View menu, or the context menu of the
+board rail's plane button), the app pours the planes again in the background
+after every change to the board, an automation edit included, once edits have
+stopped for 0.3 s. The pour changes the fills, the airwires and the planes
+file, and nothing else: it is no undo step of its own, and the revision a
+client holds stays good across it, since the board is as it was read. A dry
+run made before the pour still commits, with the pour's planes file in place
+of the one it staged; one whose own edit rewrote the planes file is dropped,
+and is dry-run again. An `export` or a
+`check` that arrives while a pour is asked for or running waits for it, up to
+two minutes, and reads the fills it made. Off (the default), fills change only
+on Q, Update All Planes, a plane edit or `pour_planes`.
+
 ### How rules are stored, and why that matters to read them
 
 Horizon keys rules by kind. A kind that can hold several — `clearance_copper`,

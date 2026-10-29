@@ -70,6 +70,35 @@ enum HorizontalBoardPlaneUpdater {
         cache: HorizontalPlanePourCache,
         onProgress: (@Sendable (Int, Int) -> Void)? = nil
     ) -> (board: HorizontalBoard, cache: HorizontalPlanePourCache) {
+        let outcome = pour(in: board, cache: cache, onProgress: onProgress)
+        return (outcome.board, outcome.cache)
+    }
+
+    /// What `pour` made: the board with its fills, the cache to hand back, and
+    /// whether it got to the end.
+    struct Outcome {
+        var board: HorizontalBoard
+        var cache: HorizontalPlanePourCache
+        /// False when `isCancelled` stopped the pour. The board's fills are
+        /// then a mix of new and old and must not be shown; the cache still
+        /// holds every plane that finished, each under the inputs it was
+        /// poured from, so the next pour need not redo them.
+        var isComplete: Bool
+        /// The planes poured afresh rather than taken from the cache: the
+        /// only ones whose fills can have changed.
+        var pouredPlaneIDs: Set<String>
+    }
+
+    /// `updateAllPlanes`, stoppable: `isCancelled` is asked before each plane,
+    /// and once it says yes no further plane starts. A plane already being
+    /// poured runs to the end, since its clipping is one call into the
+    /// clipper, so the pour gives way within about one plane's time.
+    static func pour(
+        in board: HorizontalBoard,
+        cache: HorizontalPlanePourCache,
+        isCancelled: (@Sendable () -> Bool)? = nil,
+        onProgress: (@Sendable (Int, Int) -> Void)? = nil
+    ) -> Outcome {
         // Priority decides which plane yields to which where two would overlap,
         // so it has to be an ordering and not a preference: pour ascending, and
         // each tier's copper becomes an obstacle the next must clear. Two planes
@@ -82,18 +111,22 @@ enum HorizontalBoardPlaneUpdater {
         var accumulatedPlaneObstacles = [PlaneObstacle]()
         var updatedCache = cache
         updatedCache.retain(planeIDs: Set(board.planes.map(\.id)))
+        var pouredPlaneIDs = Set<String>()
         let total = board.planes.count
         var completed = 0
 
         for priority in priorities {
+            if isCancelled?() == true {
+                return Outcome(board: board, cache: updatedCache, isComplete: false, pouredPlaneIDs: pouredPlaneIDs)
+            }
             let tier = byPriority[priority] ?? []
             let completedBeforeTier = completed
             // One plane of this tier: reuse its fill, or pour it. Reads only
             // `board`, `cache` and the obstacles accumulated by EARLIER tiers,
             // and writes nothing shared — which is what makes the tier
-            // parallelisable below.
+            // parallelisable below. Nil when the pour was cancelled first.
             let obstacles = accumulatedPlaneObstacles
-            let pourOne: @Sendable (HorizontalPlane) -> (plane: HorizontalPlane, signature: Int) = { plane in
+            let pourOne: @Sendable (HorizontalPlane) -> PlaneTierResults.Outcome? = { plane in
                 // The obstacles matter to the fingerprint: an earlier tier's
                 // fill is an input to this one, so a plane can need re-pouring
                 // because a higher-priority plane above it moved, with nothing
@@ -103,9 +136,13 @@ enum HorizontalBoardPlaneUpdater {
                 if let reused = cache.fragments(for: plane.id, signature: signature) {
                     var unchanged = plane
                     unchanged.fragments = reused
-                    return (unchanged, signature)
+                    return PlaneTierResults.Outcome(plane: unchanged, signature: signature, poured: false)
                 }
-                return (update(plane, in: board, planeObstacles: obstacles), signature)
+                if isCancelled?() == true {
+                    return nil
+                }
+                return PlaneTierResults.Outcome(
+                    plane: update(plane, in: board, planeObstacles: obstacles), signature: signature, poured: true)
             }
 
             // Planes within a tier are independent, so pour them concurrently.
@@ -115,19 +152,24 @@ enum HorizontalBoardPlaneUpdater {
             //
             // Tiers themselves stay sequential: each one's fills are obstacles
             // for the next.
-            let outcomes: [(plane: HorizontalPlane, signature: Int)]
+            let outcomes: [PlaneTierResults.Outcome?]
             if tier.count > 1 {
                 let collector = PlaneTierResults(count: tier.count)
                 DispatchQueue.concurrentPerform(iterations: tier.count) { index in
-                    collector.store(pourOne(tier[index]), at: index)
+                    guard let outcome = pourOne(tier[index]) else {
+                        return
+                    }
+                    collector.store(outcome, at: index)
                     // Progress is reported as planes finish, so the count is
                     // ordered by completion even though the results are not.
                     collector.reportCompletion(onProgress, total: total, base: completedBeforeTier)
                 }
-                outcomes = collector.ordered()
+                outcomes = collector.slotsInOrder()
             } else {
                 outcomes = tier.map { plane in
-                    let outcome = pourOne(plane)
+                    guard let outcome = pourOne(plane) else {
+                        return nil
+                    }
                     completed += 1
                     onProgress?(completed, total)
                     return outcome
@@ -136,13 +178,21 @@ enum HorizontalBoardPlaneUpdater {
             if tier.count > 1 {
                 completed += tier.count
             }
-            for outcome in outcomes {
+            // What finished goes in the cache whether or not the rest did: each
+            // entry is the fill of the inputs it names, so it stays true.
+            for outcome in outcomes.compactMap({ $0 }) {
                 updatedCache.store(
                     planeID: outcome.plane.id,
                     signature: outcome.signature,
                     fragments: outcome.plane.fragments)
+                if outcome.poured {
+                    pouredPlaneIDs.insert(outcome.plane.id)
+                }
             }
-            let poured = outcomes.map(\.plane)
+            guard outcomes.allSatisfy({ $0 != nil }) else {
+                return Outcome(board: board, cache: updatedCache, isComplete: false, pouredPlaneIDs: pouredPlaneIDs)
+            }
+            let poured = outcomes.compactMap { $0?.plane }
             for plane in poured {
                 resultByID[plane.id] = plane
             }
@@ -173,7 +223,7 @@ enum HorizontalBoardPlaneUpdater {
 
         var updated = board
         updated.planes = board.planes.map { resultByID[$0.id] ?? zeroed($0) }
-        return (updated, updatedCache)
+        return Outcome(board: updated, cache: updatedCache, isComplete: true, pouredPlaneIDs: pouredPlaneIDs)
     }
 
     /// A fingerprint of everything `update` reads while pouring ONE plane.

@@ -604,6 +604,16 @@ func boardPlaneFragmentKey(
     )
 }
 
+/// One plane fragment as the triangles its fill is drawn with, uncoloured.
+/// What the canvas's background tessellation makes, and what a pour makes
+/// ahead of handing its fills over, so the two always agree.
+func boardPlaneFragmentTrianglePoints(_ fragment: HorizontalPlaneFragment) -> [BoardMetalTrianglePoints] {
+    let clear = HorizontalMetalRGBA(red: 0, green: 0, blue: 0, alpha: 0)
+    return HorizontalMetalTessellator.triangles(for: fragment.paths, color: clear).map {
+        BoardMetalTrianglePoints(a: $0.a, b: $0.b, c: $0.c)
+    }
+}
+
 // The subset of displayOptions and runtime state that determines which buckets
 // participate in the concatenated batch. Layer-override visibility is handled
 // separately via composite-group masking in the renderer, so it's not included.
@@ -967,11 +977,7 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
                 for index in 0..<count {
                     let entry = fragments[index]
                     group.addTask {
-                        let clear = HorizontalMetalRGBA(red: 0, green: 0, blue: 0, alpha: 0)
-                        let points = HorizontalMetalTessellator.triangles(for: entry.fragment.paths, color: clear).map {
-                            BoardMetalTrianglePoints(a: $0.a, b: $0.b, c: $0.c)
-                        }
-                        return (index, points)
+                        (index, boardPlaneFragmentTrianglePoints(entry.fragment))
                     }
                 }
                 var collected = Array<[BoardMetalTrianglePoints]>(repeating: [], count: count)
@@ -1208,6 +1214,21 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
     }
 
     /// Drops tessellated fills for fragments the board no longer has.
+    /// Takes a pour's fills without a rebuild of the scene: their triangles
+    /// join the tessellation cache, the triangles of fills no longer on the
+    /// board leave it, and the overlays drawn from the fills (net highlight,
+    /// selection) are made again on their next use.
+    func takePlaneFills(triangles: [BoardPlaneFragmentKey: [BoardMetalTrianglePoints]], keeping keys: Set<BoardPlaneFragmentKey>) {
+        for (key, points) in triangles {
+            planeFragmentTrianglePoints[key] = points
+        }
+        retainPlaneFragments(keys: keys)
+        metalHighlightKey = nil
+        metalHighlightValue = .empty
+        metalSelectionKey = nil
+        metalSelectionValue = .empty
+    }
+
     private func retainPlaneFragments(keys: Set<BoardPlaneFragmentKey>) {
         guard !keys.isEmpty else { return }
         planeFragmentTrianglePoints = planeFragmentTrianglePoints.filter { keys.contains($0.key) }

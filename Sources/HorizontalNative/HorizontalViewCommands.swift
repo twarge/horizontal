@@ -282,6 +282,7 @@ struct HorizontalViewCommands: Commands {
     @FocusedValue(\.horizonListenAction) private var listenAction
     @FocusedValue(\.horizonToggleRightSidebarAction) private var toggleRightSidebarAction
     @FocusedValue(\.horizonUpdateAllPlanesAction) private var updateAllPlanesAction
+    @AppStorage(HorizontalPlaneFillDefaults.updatesAutomaticallyKey) private var updatesPlanesAutomatically = false
     @FocusedValue(\.horizonCleanUpProjectPoolAction) private var cleanUpProjectPoolAction
     @FocusedValue(\.horizonPowerNetsAction) private var powerNetsAction
     @FocusedValue(\.horizonLeaveBlockAction) private var leaveBlockAction
@@ -666,6 +667,9 @@ struct HorizontalViewCommands: Commands {
                     updateAllPlanesAction?()
                 }
                 .disabled(updateAllPlanesAction == nil || boardAvailable != true)
+                // A preference, not an edit, so it is offered whether or not
+                // a board is open; it pours only boards that can be edited.
+                Toggle("Update Planes Automatically", isOn: $updatesPlanesAutomatically)
             }
 
             // Empties every plane's renderFragments so the board draws without

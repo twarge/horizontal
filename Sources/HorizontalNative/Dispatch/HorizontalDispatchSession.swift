@@ -94,6 +94,7 @@ final class HorizontalDispatchSession: @unchecked Sendable {
         let session = HorizontalDispatchSession()
         let copy = HorizontalDispatchProjectEntry(handle: handle, url: original.url, project: original.project, instanceID: original.instanceID)
         copy.snapshot = original.snapshot
+        copy.revisionSnapshotIDs = original.revisionSnapshotIDs
         copy.generation = original.generation
         copy.frozen = original.frozen
         copy.loadedAt = original.loadedAt
@@ -161,6 +162,7 @@ final class HorizontalDispatchSession: @unchecked Sendable {
                                                    endpoint: HorizontalLiveServer.endpoint())
             #endif
             entry.liveRevision = document.revision()
+            entry.livePlaneFillRevision = document.planeFillRevision()
             Self.takeLiveArchive(document.archive(), into: entry)
             session.nextHandle += 1
             session.entries[entry.handle] = entry
@@ -219,15 +221,32 @@ final class HorizontalDispatchSession: @unchecked Sendable {
                     continue
                 }
                 let revision = live.revision()
+                let planeFillRevision = live.planeFillRevision()
                 let archive = live.archive()
                 let snapshot = HorizontalDispatchSnapshot(archive: archive, baseURL: entry.project.baseURL)
                 guard revision != entry.liveRevision || snapshot.id != entry.liveArchiveID else {
                     continue
                 }
+                // A pour that landed while nothing else changed: the fills are
+                // derived from the board, and the board is as the client read
+                // it, so the revision it holds stays good, and so do its dry
+                // runs once they have the new fills too.
+                let fillsOnly = revision == entry.liveRevision && planeFillRevision != entry.livePlaneFillRevision
+                let reportedSnapshotID = entry.revisionSnapshotID
+                let previousSnapshot = entry.snapshot
                 entry.project = Self.withEditorConnectivity(live.currentProject())
                 entry.liveRevision = revision
+                entry.livePlaneFillRevision = planeFillRevision
                 Self.takeLiveArchive(archive, into: entry, snapshot: snapshot)
-                entry.generation += 1
+                if fillsOnly, let reportedSnapshotID, let previousSnapshot, let current = entry.snapshot {
+                    entry.revisionSnapshotIDs = [current.id: reportedSnapshotID]
+                    entry.stagedPlans = entry.stagedPlans.compactMap {
+                        Self.rebased($0, from: previousSnapshot, onto: current, fillsFrom: entry.project)
+                    }
+                } else {
+                    entry.revisionSnapshotIDs = [:]
+                    entry.generation += 1
+                }
                 entry.loadedAt = Date()
                 entry.invalidateIndex()
             }
@@ -236,6 +255,36 @@ final class HorizontalDispatchSession: @unchecked Sendable {
 }
 
 extension HorizontalDispatchSession {
+    /// A dry run staged before a pour, carried onto the files the pour left:
+    /// each file the pour changed goes into what the dry run staged, and the
+    /// staged board takes the new fills. Nil when the dry run changed one of
+    /// those files itself, since then the two cannot both stand.
+    static func rebased(
+        _ plan: HorizontalDispatchProjectEntry.StagedPlan,
+        from previous: HorizontalDispatchSnapshot,
+        onto current: HorizontalDispatchSnapshot,
+        fillsFrom project: HorizontalProject
+    ) -> HorizontalDispatchProjectEntry.StagedPlan? {
+        var archive = plan.after.archive
+        for path in Set(previous.files).union(current.files) {
+            let before = previous.archive.regularFileData(relativePath: path)
+            let after = current.archive.regularFileData(relativePath: path)
+            guard before != after else {
+                continue
+            }
+            guard let after, archive.regularFileData(relativePath: path) == before,
+                  (try? archive.replaceRegularFileData(relativePath: path, with: after)) != nil else {
+                return nil
+            }
+        }
+        var rebased = plan
+        rebased.after = HorizontalDispatchSnapshot(archive: archive, baseURL: plan.after.baseURL)
+        if let board = project.board {
+            rebased.staged.board?.carryPlaneFills(from: board)
+        }
+        return rebased
+    }
+
     /// Whether a live document's archive is its `.hprj` alone rather than the
     /// tree the manifest names.
     static func holdsProjectFileOnly(_ archive: HorizontalProjectArchive, url: URL) -> Bool {
@@ -321,7 +370,13 @@ final class HorizontalDispatchProjectEntry {
     /// editing files an editor is holding.
     var holder: HorizontalProjectHolder?
     var liveRevision = "0"
+    /// The live document's count of pours taken (`planeFillRevision`).
+    var livePlaneFillRevision = 0
     var snapshot: HorizontalDispatchSnapshot?
+    /// The snapshot id the revision names in place of the snapshot's own,
+    /// keyed by the snapshot's: after a pour changed nothing but a live
+    /// document's fills, its revision names the snapshot from before.
+    var revisionSnapshotIDs: [String: String] = [:]
     /// The id of the archive a live document last handed over, which the
     /// snapshot is not when that archive held the `.hprj` alone.
     var liveArchiveID: String?
@@ -366,7 +421,12 @@ final class HorizontalDispatchProjectEntry {
         var drawnAirwires: HorizontalDrawnAirwires?
     }
     var liveCanvas: LiveCanvas?
-    var revision: String { "\(instanceID):\(generation):\(snapshot?.id ?? "unknown")" }
+    var revision: String { "\(instanceID):\(generation):\(revisionSnapshotID ?? "unknown")" }
+    /// The snapshot the revision names: the snapshot's own id, unless only a
+    /// pour's fills have changed since the one it named before.
+    var revisionSnapshotID: String? {
+        snapshot.map { revisionSnapshotIDs[$0.id] ?? $0.id }
+    }
     var metadata: JSONDictionary {
         if let readMetadata { return readMetadata }
         return ["source": origin?.string("source") ?? (live == nil ? "disk" : "live"), "revision": revision,
