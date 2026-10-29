@@ -47,7 +47,8 @@ final class HorizontalPlaneClipperTests: XCTestCase {
         cutouts: [(path: [HorizontalClipperPoint], outset: Double, joinType: Int32, arc: Double)] = [],
         boardOutline: [[HorizontalClipperPoint]] = [],
         boardOutlineContract: Double = 0,
-        thermalPads: [(path: [HorizontalClipperPoint], gap: Double, spoke: Double, nSpokes: Int32, connect: Int32)] = [],
+        thermalPads: [(path: [HorizontalClipperPoint], gap: Double, spoke: Double, nSpokes: Int32, connect: Int32,
+                       centerX: Double, centerY: Double)] = [],
         fillStyle: Int32 = 0,
         hatchBorderWidth: Double = 500_000,
         hatchLineWidth: Double = 200_000,
@@ -64,7 +65,7 @@ final class HorizontalPlaneClipperTests: XCTestCase {
         var thermalArr = thermalPads.map { pad in
             HorizontalClipperThermalPad(
                 path: arena.path(pad.path),
-                placementX: 0, placementY: 0, placementAngle: 0, placementMirror: 0,
+                placementX: pad.centerX, placementY: pad.centerY, placementAngle: 0, placementMirror: 0,
                 connectStyle: pad.connect, gapWidth: pad.gap, spokeWidth: pad.spoke,
                 nSpokes: pad.nSpokes, spokeAngle: 0)
         }
@@ -188,12 +189,76 @@ final class HorizontalPlaneClipperTests: XCTestCase {
         let frags = pour(
             subject: square(centerX: 0, centerY: 0, half: 25 * mm),
             minWidth: 200_000,
-            thermalPads: [(pad, 300_000, 400_000, 4, 1)])
+            thermalPads: [(pad, 300_000, 400_000, 4, 1, 0, 0)])
         XCTAssertGreaterThanOrEqual(frags.count, 1)
         // The antipad gap should create a hole ring around the pad (spokes bridge it,
         // but with 4 spokes the antipad remains a ring with the pad island inside).
         let totalRings = frags.reduce(0) { $0 + $1.count }
         XCTAssertGreaterThan(totalRings, 1, "thermal relief should introduce extra rings (antipad)")
+    }
+
+    func testSpokesJoinThePourWhereTheyReachIt() {
+        // Each spoke is tested against the plane cut down to the spoke's own
+        // box, so this pours a round plane, whose eroded outline has thousands
+        // of vertices that wind round every pad without coming near most, over
+        // thermal pads spread across it, one with its outer spoke over the
+        // plane's edge, and a 3 × 3 cluster at 1.6 mm pitch. The cluster's
+        // antipads run together, so the middle pad's spokes end in its
+        // neighbours' antipads, where there is no copper to join, and it stays
+        // unjoined; a spoke judged to meet the plane there would be poured.
+        let radius = 20 * mm
+        let circle = (0..<4096).map { index -> HorizontalClipperPoint in
+            let angle = Double(index) / 4096 * 2 * Double.pi
+            return HorizontalClipperPoint(x: radius * cos(angle), y: radius * sin(angle))
+        }
+        let cluster = (x: 3 * mm, y: 3 * mm)
+        var centers = [(x: Double, y: Double, joined: Bool)]()
+        for i in -2...2 {
+            for j in -2...2 {
+                let x = Double(i) * 6 * mm, y = Double(j) * 6 * mm
+                if hypot(x - cluster.x, y - cluster.y) > 5 * mm {
+                    centers.append((x, y, true))
+                }
+            }
+        }
+        centers.append((19.2 * mm, 0, true))
+        for i in -1...1 {
+            for j in -1...1 {
+                centers.append((cluster.x + Double(i) * 1.6 * mm, cluster.y + Double(j) * 1.6 * mm, i != 0 || j != 0))
+            }
+        }
+
+        let frags = pour(
+            subject: circle,
+            minWidth: 200_000,
+            thermalPads: centers.map { (square(centerX: $0.x, centerY: $0.y, half: 0.5 * mm), 300_000, 400_000, 4, 1, $0.x, $0.y) })
+
+        func inside(_ x: Double, _ y: Double, _ ring: [HorizontalClipperPoint]) -> Bool {
+            var isInside = false
+            var previous = ring[ring.count - 1]
+            for current in ring {
+                if (current.y > y) != (previous.y > y),
+                   x < (previous.x - current.x) * (y - current.y) / (previous.y - current.y) + current.x {
+                    isInside.toggle()
+                }
+                previous = current
+            }
+            return isInside
+        }
+        func copper(_ x: Double, _ y: Double) -> Bool {
+            frags.contains { frag in
+                guard let outer = frag.first, inside(x, y, outer) else { return false }
+                return !frag.dropFirst().contains { inside(x, y, $0) }
+            }
+        }
+
+        for center in centers {
+            let label = "pad at (\(center.x / mm), \(center.y / mm)) mm"
+            // The spokes cross at the pad's centre, so it is copper when they join.
+            XCTAssertEqual(copper(center.x, center.y), center.joined, label)
+            // Off the spokes, inside the gap, there is none either way.
+            XCTAssertFalse(copper(center.x + 0.65 * mm, center.y + 0.65 * mm), "\(label): gap")
+        }
     }
 
     func testHatchIsSparserThanSolid() {
