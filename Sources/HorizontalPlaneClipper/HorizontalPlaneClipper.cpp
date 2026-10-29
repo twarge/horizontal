@@ -384,6 +384,142 @@ void build_thermal_spokes(const HorizontalClipperThermalPad &pad, double minWidt
     }
 }
 
+// An inclusive bounding box in clipper units.
+struct Bounds {
+    ClipperLib::cInt x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+};
+
+Bounds bounds_of(const ClipperLib::Path &path)
+{
+    Bounds b { path[0].X, path[0].Y, path[0].X, path[0].Y };
+    for (const auto &pt : path) {
+        b.x0 = std::min(b.x0, pt.X);
+        b.y0 = std::min(b.y0, pt.Y);
+        b.x1 = std::max(b.x1, pt.X);
+        b.y1 = std::max(b.y1, pt.Y);
+    }
+    return b;
+}
+
+Bounds bounds_of(const std::vector<Bounds> &bounds, const std::vector<size_t> &order, size_t begin, size_t end)
+{
+    Bounds b = bounds[order[begin]];
+    for (size_t i = begin + 1; i < end; i++) {
+        const auto &other = bounds[order[i]];
+        b.x0 = std::min(b.x0, other.x0);
+        b.y0 = std::min(b.y0, other.y0);
+        b.x1 = std::max(b.x1, other.x1);
+        b.y1 = std::max(b.y1, other.y1);
+    }
+    return b;
+}
+
+// `ring` with the same winding number at every point of `box`, from fewer
+// vertices when much of it lies outside.
+//
+// A run of consecutive vertices that all lie beyond one edge of the box, in the
+// open half-plane on its far side, is replaced by the straight edge from its
+// first vertex to its last. The run and that edge lie in the half-plane, which
+// is convex, so the loop they make winds round no point outside it: every point
+// of the box keeps its winding number, and so its filling under any rule. The
+// new edge lies beyond the box, and every edge that reaches the box is one of
+// the ring's own, so a boolean against something inside the box meets the same
+// edges at the same points. A ring that winds round the box without entering it
+// keeps the few vertices that take it round.
+ClipperLib::Path cut_to_box(const ClipperLib::Path &ring, const Bounds &box)
+{
+    const size_t n = ring.size();
+    std::vector<unsigned> beyond(n);
+    for (size_t i = 0; i < n; i++) {
+        const auto &p = ring[i];
+        beyond[i] = (p.X < box.x0 ? 1u : 0u) | (p.X > box.x1 ? 2u : 0u) | (p.Y < box.y0 ? 4u : 0u)
+                    | (p.Y > box.y1 ? 8u : 0u);
+    }
+    // Start where one run has to end, so that no run wraps past the start.
+    size_t start = 0;
+    for (size_t i = 0; i < n; i++) {
+        if ((beyond[(i + n - 1) % n] & beyond[i]) == 0) {
+            start = i;
+            break;
+        }
+    }
+
+    ClipperLib::Path result;
+    size_t first = 0;
+    while (first < n) {
+        unsigned common = beyond[(start + first) % n];
+        size_t last = first;
+        while (common != 0 && last + 1 < n && (common & beyond[(start + last + 1) % n]) != 0) {
+            common &= beyond[(start + last + 1) % n];
+            last++;
+        }
+        result.push_back(ring[(start + first) % n]);
+        if (last != first) {
+            result.push_back(ring[(start + last) % n]);
+        }
+        first = last + 1;
+    }
+    return result;
+}
+
+// The rings that reach `box`, each cut down to it. One that misses the box
+// winds round none of it, and one cut to fewer than three vertices encloses
+// nothing.
+ClipperLib::Paths cut_to_box(const ClipperLib::Paths &rings, const Bounds &box)
+{
+    ClipperLib::Paths result;
+    for (const auto &ring : rings) {
+        if (ring.size() < 3) {
+            continue;
+        }
+        const auto b = bounds_of(ring);
+        if (b.x1 < box.x0 || b.x0 > box.x1 || b.y1 < box.y0 || b.y0 > box.y1) {
+            continue;
+        }
+        auto cut = cut_to_box(ring, box);
+        if (cut.size() >= 3) {
+            result.push_back(std::move(cut));
+        }
+    }
+    return result;
+}
+
+// Marks in `meets` each spoke of `order[begin, end)` that meets the plane, given
+// `rings`, the plane cut down to `box`, the bounds of those spokes. Splits the
+// spokes in half along the longer side of the box and cuts the rings down to
+// each half's bounds, until one spoke is tested against what is left.
+void find_spokes_meeting(const ClipperLib::Paths &spokes, const std::vector<Bounds> &spokeBounds,
+                         std::vector<size_t> &order, size_t begin, size_t end, const Bounds &box,
+                         const ClipperLib::Paths &rings, std::vector<bool> &meets)
+{
+    if (rings.empty()) {
+        // Nothing of the plane is near them, so they meet nothing.
+        return;
+    }
+    if (end - begin == 1) {
+        ClipperLib::Clipper cl_test;
+        cl_test.AddPaths(rings, ClipperLib::ptSubject, true);
+        cl_test.AddPath(spokes[order[begin]], ClipperLib::ptClip, true);
+        ClipperLib::Paths test_result;
+        cl_test.Execute(ClipperLib::ctIntersection, test_result, ClipperLib::pftNonZero);
+        meets[order[begin]] = !test_result.empty();
+        return;
+    }
+
+    const bool alongX = box.x1 - box.x0 >= box.y1 - box.y0;
+    const size_t mid = begin + (end - begin) / 2;
+    std::nth_element(order.begin() + static_cast<std::ptrdiff_t>(begin), order.begin() + static_cast<std::ptrdiff_t>(mid),
+                     order.begin() + static_cast<std::ptrdiff_t>(end), [&](size_t a, size_t b) {
+                         const auto &ba = spokeBounds[a], &bb = spokeBounds[b];
+                         return alongX ? ba.x0 + ba.x1 < bb.x0 + bb.x1 : ba.y0 + ba.y1 < bb.y0 + bb.y1;
+                     });
+    for (const auto &half : { std::make_pair(begin, mid), std::make_pair(mid, end) }) {
+        const auto halfBox = bounds_of(spokeBounds, order, half.first, half.second);
+        find_spokes_meeting(spokes, spokeBounds, order, half.first, half.second, halfBox, cut_to_box(rings, halfBox),
+                            meets);
+    }
+}
+
 } // namespace
 
 HorizontalClipperFragmentList HorizontalClipperBuildPlaneFill(
@@ -583,75 +719,43 @@ HorizontalClipperFragmentList HorizontalClipperBuildPlaneFillEx(const Horizontal
             build_thermal_spokes(pad, mw, spokes);
         }
         if (!spokes.empty()) {
-            // Each spoke is kept only if it actually reaches the pour, and that
-            // test used to run a full boolean against the WHOLE plane — once per
-            // spoke. It was the dominant cost of the entire pour: a dense ground
-            // plane has hundreds of thermal pads, so thousands of spokes, each
-            // re-adding every contour of a plane that may carry thousands of
-            // cutouts.
+            // Each spoke is kept only if it actually reaches the pour. The test
+            // is a boolean of the spoke against the plane, and it is the
+            // dominant cost of the pour: a dense ground plane has hundreds of
+            // thermal pads, so thousands of spokes, and a boolean sweeps every
+            // edge it is given. Handing it only the contours whose bounding box
+            // meets the spoke is not enough, since a large fragment's outline
+            // meets them all: on Jasmine's top ground plane two outlines of over
+            // 6000 vertices each went into each of 3644 tests, which took 20 s
+            // in a debug build.
             //
-            // A plane contour whose bounding box misses the spoke cannot contain
-            // any point of it, so under non-zero filling it cannot change
-            // whether that spoke meets the pour. Testing against only the
-            // overlapping contours gives the same answer from a fraction of the
-            // geometry — this is a narrower input, not an approximation.
-            struct Bounds { ClipperLib::cInt x0, y0, x1, y1; };
-            auto boundsOf = [](const ClipperLib::Path &path) {
-                Bounds b { path[0].X, path[0].Y, path[0].X, path[0].Y };
-                for (const auto &pt : path) {
-                    b.x0 = std::min(b.x0, pt.X);
-                    b.y0 = std::min(b.y0, pt.Y);
-                    b.x1 = std::max(b.x1, pt.X);
-                    b.y1 = std::max(b.y1, pt.Y);
+            // So each test gets the plane cut down to the spoke's bounding box
+            // (cut_to_box), the same region inside the box and the same edges
+            // reaching it, from a few vertices. The cut is made level by level
+            // over the spokes split in halves, each level cutting what the one
+            // above left, so the large outlines are walked a dozen times rather
+            // than once per spoke.
+            std::vector<size_t> order;
+            std::vector<Bounds> spokeBounds(spokes.size());
+            for (size_t i = 0; i < spokes.size(); i++) {
+                if (!spokes[i].empty()) {
+                    spokeBounds[i] = bounds_of(spokes[i]);
+                    order.push_back(i);
                 }
-                return b;
-            };
-
-            std::vector<Bounds> planeBounds;
-            std::vector<bool> planeUsable;
-            planeBounds.reserve(plane_with_thermal_cutouts.size());
-            planeUsable.reserve(plane_with_thermal_cutouts.size());
-            for (const auto &path : plane_with_thermal_cutouts) {
-                if (path.empty()) {
-                    planeBounds.push_back(Bounds { 0, 0, 0, 0 });
-                    planeUsable.push_back(false);
-                } else {
-                    planeBounds.push_back(boundsOf(path));
-                    planeUsable.push_back(true);
-                }
+            }
+            std::vector<bool> meets(spokes.size(), false);
+            if (!order.empty()) {
+                const auto box = bounds_of(spokeBounds, order, 0, order.size());
+                find_spokes_meeting(spokes, spokeBounds, order, 0, order.size(), box,
+                                    cut_to_box(plane_with_thermal_cutouts, box), meets);
             }
 
             ClipperLib::Clipper cl_add;
             cl_add.AddPaths(plane_with_thermal_cutouts, ClipperLib::ptSubject, true);
             bool anySpoke = false;
-            ClipperLib::Paths nearby;
-            for (const auto &spoke : spokes) {
-                if (spoke.empty()) {
-                    continue;
-                }
-                const Bounds sb = boundsOf(spoke);
-                nearby.clear();
-                for (size_t i = 0; i < plane_with_thermal_cutouts.size(); i++) {
-                    if (!planeUsable[i]) {
-                        continue;
-                    }
-                    const Bounds &pb = planeBounds[i];
-                    if (pb.x1 < sb.x0 || pb.x0 > sb.x1 || pb.y1 < sb.y0 || pb.y0 > sb.y1) {
-                        continue;
-                    }
-                    nearby.push_back(plane_with_thermal_cutouts[i]);
-                }
-                if (nearby.empty()) {
-                    // Nothing of the plane is near it, so it meets nothing.
-                    continue;
-                }
-                ClipperLib::Clipper cl_test;
-                cl_test.AddPaths(nearby, ClipperLib::ptSubject, true);
-                cl_test.AddPath(spoke, ClipperLib::ptClip, true);
-                ClipperLib::Paths test_result;
-                cl_test.Execute(ClipperLib::ctIntersection, test_result, ClipperLib::pftNonZero);
-                if (!test_result.empty()) {
-                    cl_add.AddPath(spoke, ClipperLib::ptClip, true);
+            for (size_t i = 0; i < spokes.size(); i++) {
+                if (meets[i]) {
+                    cl_add.AddPath(spokes[i], ClipperLib::ptClip, true);
                     anySpoke = true;
                 }
             }
