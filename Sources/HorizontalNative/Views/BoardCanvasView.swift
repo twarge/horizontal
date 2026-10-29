@@ -451,6 +451,11 @@ struct BoardCanvasView: View {
     /// Bumped by the pane each time "Update All Planes" lands. The silkscreen
     /// clip is refreshed alongside the fills rather than on every edit.
     var planePourRevision: Int = 0
+    /// A pour's fills, newest last: taken into the board shown without
+    /// `syncRevision`'s reset, so a pour landing while you work stops
+    /// nothing. Held while a tool is in use, and dropped when the board no
+    /// longer has the copper they were poured around.
+    var planeFillDelivery: HorizontalPlaneFillDelivery? = nil
     /// Number keys pick the working copper layer; the pane owns the selection,
     /// so the canvas reports the request rather than applying it.
     var onSelectDrawingLayer: (Int) -> Void = { _ in }
@@ -514,6 +519,8 @@ struct BoardCanvasView: View {
     @State private var lastCursorWorldPoint: HorizontalPoint?
     @State private var selectableCacheRevision = 0
     @State private var metalSceneRevision = 0
+    /// The last `planeFillDelivery` taken or turned down.
+    @State private var takenPlaneFillRevision = 0
     #if os(macOS)
     @State private var editingTextState: EditTextState?
     /// Debounces the heavy live re-render (board mutation + connectivity recompute
@@ -580,6 +587,7 @@ struct BoardCanvasView: View {
         drawingLayer: Int = HorizontalBoardLayers.topCopper,
         syncRevision: Int = 0,
         planePourRevision: Int = 0,
+        planeFillDelivery: HorizontalPlaneFillDelivery? = nil,
         onSelectDrawingLayer: @escaping (Int) -> Void = { _ in },
         onSelectBoardLayerView: @escaping (HorizontalBoardLayerViewPreset) -> Void = { _ in },
         poolURL: URL? = nil,
@@ -620,6 +628,7 @@ struct BoardCanvasView: View {
         self.drawingLayer = drawingLayer
         self.syncRevision = syncRevision
         self.planePourRevision = planePourRevision
+        self.planeFillDelivery = planeFillDelivery
         self.onSelectDrawingLayer = onSelectDrawingLayer
         self.onSelectBoardLayerView = onSelectBoardLayerView
         self.poolURL = poolURL
@@ -1071,6 +1080,14 @@ struct BoardCanvasView: View {
         .onChange(of: syncRevision) { _, _ in
             adoptExternallyUpdatedBoard()
         }
+        .onChange(of: planeFillDelivery?.revision) { _, _ in
+            takePlaneFillDelivery()
+        }
+        .onChange(of: holdsPlaneFills) { _, holds in
+            if !holds {
+                takePlaneFillDelivery()
+            }
+        }
         .task(id: silkscreenClipTrigger) {
             refreshSilkscreenClips()
         }
@@ -1106,6 +1123,8 @@ struct BoardCanvasView: View {
             configureUndoTarget()
             onSelectionDetailsChange(selectionDetails)
             publishCanvasCommandActions()
+            // A canvas mounted after a pour starts from a board that has it.
+            takenPlaneFillRevision = planeFillDelivery?.revision ?? 0
         }
         .onDisappear {
             onSelectionDetailsChange(.empty)
@@ -4258,6 +4277,99 @@ struct BoardCanvasView: View {
         invalidateSelectableCache()
         // invalidateSelectableCache also rebuilds the Metal scene.
         publishSelectionContext()
+    }
+
+    /// Whether a tool is in use, with a board of its own to commit or to put
+    /// back on cancel. New fills wait until it is done: spliced in now, they
+    /// would be lost when it commits or cancels from its own copy, and a move
+    /// draws from that copy meanwhile anyway.
+    private var holdsPlaneFills: Bool {
+        var editingText = false
+        #if os(macOS)
+        editingText = editingTextState != nil
+        #endif
+        return moveState != nil || drawGraphicsState != nil || drawTrackState != nil
+            || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil
+            || packagePlacementState != nil || planeEditorState != nil || editingText
+    }
+
+    /// Takes the newest pour's fills into the board shown, if they are still
+    /// its fills. Only the plane batches of the scene are made again (and the
+    /// airwire batches when the fills joined or parted some copper); the
+    /// selectables, the snap index and every tool's state stay as they are.
+    private func takePlaneFillDelivery() {
+        guard let delivery = planeFillDelivery, delivery.revision != takenPlaneFillRevision,
+              modeProfile.mode == .board, !holdsPlaneFills else {
+            return
+        }
+        takenPlaneFillRevision = delivery.revision
+        let triangles = delivery.triangles
+        delivery.triangles = [:]
+        let base = editedBoard ?? sourceBoard
+        // The board has moved on since the pour began; a pour for the board
+        // as it is now is already on its way.
+        guard HorizontalBoardPlaneInputs.signature(of: base) == delivery.fills.inputs else {
+            return
+        }
+        let renderLayers = boardMetalRenderLayers()
+        let builtBuckets = selectableCache.elementBuckets(ifBuiltFor: metalElementBucketsCacheKey(renderLayers: renderLayers))
+        var filled = base
+        let airwiresChanged = filled.takePlaneFills(delivery.fills)
+        selectableCache.takePlaneFills(triangles: triangles, keeping: delivery.fragmentKeys)
+        // A fragment the pour took to be the canvas's already, and that it no
+        // longer has, is tessellated here, and the scene built again with it.
+        selectableCache.startBackgroundTessellation(planes: filled.planes)
+        editedBoard = filled
+        metalSceneRevision &+= 1
+        guard let builtBuckets else {
+            return
+        }
+        let addition = planeFillAddition(filled, withAirwires: airwiresChanged)
+        let additionBuckets = buildBoardMetalElementBuckets(renderLayers: renderLayers, partialBoard: addition)
+        let replaced: [ReferenceWritableKeyPath<BoardMetalElementBuckets, BoardMetalElementBatch>] = airwiresChanged
+            ? [\.planes, \.connectionLines, \.connectionLabels]
+            : [\.planes]
+        selectableCache.seedElementBuckets(
+            builtBuckets.merged(adding: additionBuckets, replacing: replaced),
+            for: metalElementBucketsCacheKey(renderLayers: renderLayers)
+        )
+    }
+
+    /// `board`'s planes alone, and its airwires and connection lines when
+    /// they are to be drawn again too: what a scene build over it emits is
+    /// exactly the batches a new pour replaces.
+    private func planeFillAddition(_ board: HorizontalBoard, withAirwires: Bool) -> HorizontalBoard {
+        var addition = board
+        addition.packages = []
+        addition.packagePads = []
+        addition.packageHoles = []
+        addition.packagePolygons = []
+        addition.packageLines = []
+        addition.packageArcs = []
+        addition.packageTexts = []
+        addition.packagePadPositions = [:]
+        addition.keepouts = []
+        addition.junctions = [:]
+        addition.junctionNetIDs = [:]
+        addition.tracks = []
+        addition.netTies = []
+        addition.lines = []
+        addition.arcs = []
+        addition.polygons = []
+        addition.dimensions = []
+        addition.decals = []
+        addition.holes = []
+        addition.vias = []
+        addition.viaHoles = []
+        addition.texts = []
+        addition.boardPanels = []
+        addition.pads = []
+        addition.padstackShapes = []
+        if !withAirwires {
+            addition.airwires = []
+            addition.connectionLines = []
+        }
+        return addition
     }
 
     private func selectDrawingLayer(_ layer: Int) {

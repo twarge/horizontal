@@ -17,19 +17,29 @@ struct HorizontalPlanePourCache: Sendable, Equatable {
     }
 
     private var entries: [String: Entry] = [:]
+    /// Each plane's fill before its latest, so Undo, which puts the board
+    /// back as it was a step ago, finds that fill rather than pouring it
+    /// again. Only an exact match on the inputs is ever served from here.
+    private var previousEntries: [String: Entry] = [:]
 
     init() {}
 
     /// The fill last poured for `planeID` from inputs matching `signature`, or
     /// nil when this plane has to be poured again.
     func fragments(for planeID: String, signature: Int) -> [HorizontalPlaneFragment]? {
-        guard let entry = entries[planeID], entry.signature == signature else {
-            return nil
+        if let entry = entries[planeID], entry.signature == signature {
+            return entry.fragments
         }
-        return entry.fragments
+        if let entry = previousEntries[planeID], entry.signature == signature {
+            return entry.fragments
+        }
+        return nil
     }
 
     mutating func store(planeID: String, signature: Int, fragments: [HorizontalPlaneFragment]) {
+        if let current = entries[planeID], current.signature != signature {
+            previousEntries[planeID] = current
+        }
         entries[planeID] = Entry(signature: signature, fragments: fragments)
     }
 
@@ -37,6 +47,7 @@ struct HorizontalPlanePourCache: Sendable, Equatable {
     /// alive in memory.
     mutating func retain(planeIDs: Set<String>) {
         entries = entries.filter { planeIDs.contains($0.key) }
+        previousEntries = previousEntries.filter { planeIDs.contains($0.key) }
     }
 
     var count: Int { entries.count }
@@ -48,15 +59,23 @@ struct HorizontalPlanePourCache: Sendable, Equatable {
 /// depend on which thread finished first: the same board must produce the same
 /// fills every time, not merely correct ones.
 final class PlaneTierResults: @unchecked Sendable {
+    /// One plane's fill, the inputs it was poured from, and whether it was
+    /// poured afresh (false: taken from the cache).
+    struct Outcome {
+        var plane: HorizontalPlane
+        var signature: Int
+        var poured: Bool
+    }
+
     private let lock = NSLock()
-    private var slots: [(plane: HorizontalPlane, signature: Int)?]
+    private var slots: [Outcome?]
     private var finished = 0
 
     init(count: Int) {
         slots = Array(repeating: nil, count: count)
     }
 
-    func store(_ outcome: (plane: HorizontalPlane, signature: Int), at index: Int) {
+    func store(_ outcome: Outcome, at index: Int) {
         lock.lock()
         defer { lock.unlock() }
         slots[index] = outcome
@@ -74,9 +93,10 @@ final class PlaneTierResults: @unchecked Sendable {
         onProgress?(base + finished, total)
     }
 
-    func ordered() -> [(plane: HorizontalPlane, signature: Int)] {
+    /// Every slot in tier order, nil where a cancelled pour left a plane out.
+    func slotsInOrder() -> [Outcome?] {
         lock.lock()
         defer { lock.unlock() }
-        return slots.compactMap { $0 }
+        return slots
     }
 }

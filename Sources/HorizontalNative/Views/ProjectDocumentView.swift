@@ -722,17 +722,25 @@ struct ProjectWorkspaceView: View {
     /// Horizon's info bar for a `.gitignore` missing its recommended lines,
     /// shown once when the document opens.
     @State private var gitignoreNeedsFixing = false
-    /// Gates the plane-pour indicator. Separate from `planePourProgress` because
-    /// that is nil both when idle and when a pour is deliberately indeterminate.
-    @State private var isPouringPlanes = false
-    @State private var planePourProgress: Double?
-    /// What each plane was last poured from, so a re-pour only redoes the planes
-    /// an edit could have changed.
-    @State private var planePourCache = HorizontalPlanePourCache()
+    /// Pours the planes off the main thread: on Q and plane edits, and after
+    /// every change when they update automatically.
+    @StateObject private var planePourScheduler = HorizontalPlanePourScheduler()
+    @AppStorage(HorizontalPlaneFillDefaults.updatesAutomaticallyKey) private var updatesPlanesAutomatically = false
     /// The board changed in a way that invalidates the current fills. Set from
     /// the edit funnel rather than recomputed while rendering, so the (whole
     /// board) fingerprint is taken once per edit instead of once per frame.
     @State private var planesNeedUpdate = false
+    /// What the board's fills were poured from
+    /// (`HorizontalBoardPlaneInputs.signature`): nil until the board is
+    /// first seen, when the fills its files hold are taken to be its own.
+    @State private var pouredPlaneInputs: Int?
+    /// The `boardEditRevision` whose fills were last checked, so a change
+    /// that asked for its pour directly is not checked again.
+    @State private var checkedPlaneInputsRevision: Int?
+    /// The newest pour's fills for the board canvas, which takes them in
+    /// without being reset. `planeFillRevision` counts them.
+    @State private var planeFillDelivery: HorizontalPlaneFillDelivery?
+    @State private var planeFillRevision = 0
     @State private var panesWithPointerInsideToolbar = Set<HorizontalPane>()
     /// True while the pointer is over the trailing inspector sidebar, which is
     /// overlaid on top of the canvas in a `ZStack`. The canvas reads board input
@@ -989,6 +997,17 @@ struct ProjectWorkspaceView: View {
         workspaceWithWindowObservers
             .onChange(of: boardSyncRevision, initial: true) { _, _ in
                 refreshRulesResults()
+            }
+            // Every change to the board passes here; most asked for their pour
+            // already, and this catches the rest.
+            .onChange(of: boardEditRevision) { _, _ in
+                checkPlaneFills()
+            }
+            .onChange(of: updatesPlanesAutomatically) { _, _ in
+                checkPlaneFills(again: true)
+            }
+            .onChange(of: isReadOnly) { _, _ in
+                checkPlaneFills(again: true)
             }
             .onChange(of: navigatorSelection) { previous, selection in
                 syncPanesForSelection(selection)
@@ -1466,6 +1485,8 @@ struct ProjectWorkspaceView: View {
 
     private func appear() {
         restoreFileViewStateIfNeeded()
+        planePourScheduler.deliver = { applyPouredPlanes($0) }
+        checkPlaneFills()
         registerLiveDocument()
         startFileWatcher()
         gitignoreNeedsFixing = !isReadOnly && document.archive.gitignoreNeedsFixing
@@ -1556,6 +1577,8 @@ struct ProjectWorkspaceView: View {
                 try reloaded.retainPoolModels(in: disk, reusing: project.poolModelFiles)
             }
             rebaseProjectURLs(&reloaded, onto: project)
+            // The files' fills are the board's own again, as when it opened.
+            pouredPlaneInputs = nil
             installLiveSnapshot(HorizontalLiveSnapshot(archive: disk, project: reloaded), installsArchive: !isReadOnly)
             HorizontalDocumentSaving.didReloadFromDisk(url: project.url)
             documentUndoManager?.removeAllActions()
@@ -1579,6 +1602,7 @@ struct ProjectWorkspaceView: View {
         let live = HorizontalLiveDocument(url: project.url, title: project.displayTitle, project: project, archive: document.archive)
         live.currentProject = { project }
         live.revision = { "\(boardEditRevision):\(boardSyncRevision):\(schematicEditRevision)" }
+        live.planeFillRevision = { planeFillRevision }
         live.archive = { document.archive }
         live.isReadOnly = { isReadOnly }
         live.selection = {
@@ -1880,8 +1904,7 @@ struct ProjectWorkspaceView: View {
     private func installLiveSnapshot(_ snapshot: HorizontalLiveSnapshot, installsArchive: Bool = true) {
         if let board = snapshot.project.board, let previous = project.board,
            HorizontalBoardPlaneInputs.signature(of: board) != HorizontalBoardPlaneInputs.signature(of: previous) {
-            planePourCache = HorizontalPlanePourCache()
-            planesNeedUpdate = !board.planes.isEmpty
+            planePourScheduler.forgetCache()
         }
         if installsArchive {
             document.archive = snapshot.archive
@@ -1892,6 +1915,10 @@ struct ProjectWorkspaceView: View {
         schematicEditRevision += 1
         schematicSyncRevision += 1
         selectionDetailsByPane = [:]
+        // At once rather than when SwiftUI next updates: an automation
+        // client's next request may be an export, which waits only for a
+        // pour that has been asked for.
+        checkPlaneFills()
     }
 
     private func rebaseProjectURLs(_ reloaded: inout HorizontalProject, onto current: HorizontalProject) {
@@ -1987,6 +2014,11 @@ struct ProjectWorkspaceView: View {
         guard !sections.isEmpty, !isExporting else {
             return
         }
+        isExporting = true
+        exportStatus = nil
+        // Fabrication outputs are made from the fills: a pour asked for and
+        // not yet landed would leave them describing copper that is gone.
+        await planePourScheduler.settled()
         // Snapshot the value-type inputs on the main actor, then run the (synchronous,
         // CPU + file-IO heavy) export off-main so the spinner keeps animating. The
         // security-scoped folder access granted above is process-wide, so the
@@ -1997,8 +2029,6 @@ struct ProjectWorkspaceView: View {
         let boardPalette = appearanceSettings.palette(for: .board, mode: .light)
         let silkscreenClipping = appearanceSettings.silkscreenClipping
 
-        isExporting = true
-        exportStatus = nil
         let result = await Task.detached(priority: .userInitiated) {
             HorizontalExportBackend.export(
                 sections: sections,
@@ -2381,6 +2411,7 @@ struct ProjectWorkspaceView: View {
                                 drawingLayer: boardDrawingLayer,
                                 syncRevision: boardSyncRevision,
                                 planePourRevision: planePourRevision,
+                                planeFillDelivery: planeFillDelivery,
                                 onSelectDrawingLayer: { selectOrSoloBoardLayer($0) },
                                 onSelectBoardLayerView: { applyBoardLayerViewPreset($0) },
                                 poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
@@ -2429,9 +2460,10 @@ struct ProjectWorkspaceView: View {
                     if !isReadOnly {
                         BoardUpdatePlanesToolButton(
                             action: updateAllBoardPlanes,
-                            isUpdating: isPouringPlanes,
-                            progress: planePourProgress,
-                            needsUpdate: planesNeedUpdate
+                            isUpdating: planePourScheduler.isPouring,
+                            progress: planePourScheduler.progress,
+                            needsUpdate: planesNeedUpdate,
+                            updatesAutomatically: $updatesPlanesAutomatically
                         )
                         .disabled(project.board?.planes.isEmpty != false)
                         BoardSyncToolButton(action: syncBoardWithSchematicData)
@@ -2490,7 +2522,9 @@ struct ProjectWorkspaceView: View {
                             materialColors: appearanceSettings.boardSceneMaterialColors,
                             ignoresSceneMouseEvents: panesWithPointerInsideToolbar.contains(.threeD),
                             silkscreenClipping: appearanceSettings.silkscreenClipping,
-                            revision: boardEditRevision,
+                            // Both only count up, so their sum changes with
+                            // either: an edit, or new fills from a pour.
+                            revision: boardEditRevision + planeFillRevision,
                             highlightedComponentIDs: highlightedComponentIDs,
                             selectedComponentIDs: selectedComponentIDs,
                             onSelectComponent: { componentID, extend in
@@ -2966,10 +3000,6 @@ struct ProjectWorkspaceView: View {
             return value
         }
 
-        // Does this edit invalidate the fills? Compared here, in the one funnel
-        // every board edit passes through, so the answer is computed once per
-        // edit. A pour's own result is the answer, not a question.
-        let previousPlaneInputs = project.board.map(HorizontalBoardPlaneInputs.signature)
         let previousPackageIDs = Set(project.board?.packages.map(\.id) ?? [])
         measure("assign project board") {
             project.board = board
@@ -2978,12 +3008,18 @@ struct ProjectWorkspaceView: View {
         if Set(board.packages.map(\.id)) != previousPackageIDs {
             scheduleBoardNetlistSync()
         }
+        // Does this edit invalidate the fills? Asked here, in the one funnel
+        // every board edit passes through, so the answer is computed once per
+        // edit. A board put back with its fills (Undo of a pour) brings its
+        // answer with it.
         if writesPlaneCache {
+            pouredPlaneInputs = HorizontalBoardPlaneInputs.signature(of: board)
+            checkedPlaneInputsRevision = boardEditRevision
             planesNeedUpdate = false
-        } else if let previousPlaneInputs,
-                  !board.planes.isEmpty,
-                  HorizontalBoardPlaneInputs.signature(of: board) != previousPlaneInputs {
-            planesNeedUpdate = true
+        } else {
+            measure("check plane fills") {
+                checkPlaneFills()
+            }
         }
         // Every assignment through the document binding is an undo step and an
         // edit to SwiftUI, so one that would change nothing isn't made.
@@ -3020,6 +3056,20 @@ struct ProjectWorkspaceView: View {
     /// top, and Undo took back the sync rather than the placement. Undoing the
     /// step before it restores the whole board, this included.
     private func applyFollowUpBoard(_ board: HorizontalBoard, writesPlaneCache: Bool = false) {
+        let changed = withoutUndoRegistration {
+            applyEditedBoard(board, writesPlaneCache: writesPlaneCache)
+        }
+        #if os(macOS)
+        // With nothing registered the document wouldn't know it changed.
+        if changed {
+            HorizontalDocumentSaving.markEdited(url: project.url)
+        }
+        #endif
+    }
+
+    /// Runs `body` with undo registration off on every undo manager a
+    /// document assignment could register with.
+    private func withoutUndoRegistration<T>(_ body: () -> T) -> T {
         var managers = [UndoManager]()
         #if os(macOS)
         if let manager = HorizontalDocumentSaving.undoManager(url: project.url) {
@@ -3030,14 +3080,8 @@ struct ProjectWorkspaceView: View {
             managers.append(manager)
         }
         managers.forEach { $0.disableUndoRegistration() }
-        let changed = applyEditedBoard(board, writesPlaneCache: writesPlaneCache)
-        managers.forEach { $0.enableUndoRegistration() }
-        #if os(macOS)
-        // With nothing registered the document wouldn't know it changed.
-        if changed {
-            HorizontalDocumentSaving.markEdited(url: project.url)
-        }
-        #endif
+        defer { managers.forEach { $0.enableUndoRegistration() } }
+        return body()
     }
 
     private func showBoardRulesWindow() {
@@ -3193,10 +3237,7 @@ struct ProjectWorkspaceView: View {
             planePourRevision += 1
             return
         }
-
-        Task {
-            await pourAllPlanes(board, registersUndo: true)
-        }
+        requestPlanePour(for: board, isManual: true, registersUndo: true)
     }
 
     /// Persists a plane create/edit the canvas already applied to `editedBoard`
@@ -3212,84 +3253,116 @@ struct ProjectWorkspaceView: View {
         }
         registerBoardPlaneEditUndo(previousBoard, actionName: actionName)
         applyEditedBoard(editedBoard)
-        Task {
-            await pourAllPlanes(editedBoard, registersUndo: false)
+        if let board = project.board, !board.planes.isEmpty {
+            requestPlanePour(for: board, isManual: true, registersUndo: false)
         }
     }
 
-    /// Which undo entry a pour registers. An enum rather than a closure so
-    /// nothing non-Sendable has to survive the `await` in `pourAllPlanes`.
-    /// Pours every plane off the main thread, publishing progress so the board
-    /// pane can show a determinate ring.
-    ///
-    /// This ran inline until it grew a progress indicator, which is what forced
-    /// the move: a pour is seconds of clipping on a dense board, and on the main
-    /// thread it froze the window — including any indicator it tried to draw.
-    ///
-    /// Progress arrives over an `AsyncStream` rather than a callback that writes
-    /// state directly. The pour runs on a detached task, so a closure writing
-    /// `planePourProgress` would be a main-actor write from a background thread;
-    /// yielding to a stream and consuming it here keeps every state write on the
-    /// main actor, where the `for await` loop already is.
-    /// Pours every plane on `boardToPour`, the project's board as it stands,
-    /// and applies the result unless the board moved meanwhile. `registersUndo`
-    /// names the step "Update All Planes"; a plane edit has registered its own.
-    private func pourAllPlanes(_ boardToPour: HorizontalBoard, registersUndo: Bool) async {
-        // A second pour would work from a stale snapshot and clobber the first.
-        // Reachable because Q stays live while the overlay covers only the canvas.
-        guard !isPouringPlanes else {
+    /// Whether the fills still match the board, and, when the planes update
+    /// automatically, a pour for the board when they don't. Every change to
+    /// the board ends here: the funnels call it at once, and a change to
+    /// `boardEditRevision` that none of them made calls it when SwiftUI
+    /// next updates. `again` checks a revision already checked, for a change
+    /// of setting rather than of board.
+    private func checkPlaneFills(again: Bool = false) {
+        guard again || checkedPlaneInputsRevision != boardEditRevision else {
             return
         }
-        isPouringPlanes = true
-        // A single plane can only ever report 0% then 100%, so a ring stuck at
-        // zero for the whole pour would read as hung. Spin instead.
-        let isDeterminate = boardToPour.planes.count > 1
-        planePourProgress = isDeterminate ? 0 : nil
+        checkedPlaneInputsRevision = boardEditRevision
+        guard let board = project.board, !board.planes.isEmpty else {
+            planesNeedUpdate = false
+            return
+        }
+        let inputs = HorizontalBoardPlaneInputs.signature(of: board)
+        guard let pouredPlaneInputs else {
+            // First sight of the board: the fills its files hold are its own.
+            // Opening a document must not pour it, which would mark it edited.
+            self.pouredPlaneInputs = inputs
+            planesNeedUpdate = false
+            return
+        }
+        planesNeedUpdate = inputs != pouredPlaneInputs
+        if planesNeedUpdate, updatesPlanesAutomatically, !isReadOnly {
+            requestPlanePour(for: board, inputs: inputs)
+        }
+    }
 
-        // What the pour is working from. If the board moves while it runs, the
-        // result describes copper that no longer exists.
-        let pouredInputs = HorizontalBoardPlaneInputs.signature(of: boardToPour)
+    private func requestPlanePour(for board: HorizontalBoard, inputs: Int? = nil, isManual: Bool = false, registersUndo: Bool = false) {
+        planePourScheduler.request(HorizontalPlanePourRequest(
+            board: board,
+            inputs: inputs ?? HorizontalBoardPlaneInputs.signature(of: board),
+            isManual: isManual,
+            registersUndo: registersUndo,
+            makesPlanesFile: project.planesFilename != nil,
+            knownFragmentKeys: planeFillDelivery?.fragmentKeys ?? []
+        ))
+    }
 
-        let (progressUpdates, progress) = AsyncStream<Double>.makeStream()
-        let cache = planePourCache
-        let pour = Task.detached(priority: .userInitiated) {
-            let poured = HorizontalBoardPlaneUpdater.updateAllPlanes(
-                in: boardToPour, cache: cache
-            ) { completed, total in
-                progress.yield(total > 0 ? Double(completed) / Double(total) : 1)
+    /// Takes a finished pour into the board, if the board still has the
+    /// copper it was poured around. Only the fills and the airwires change,
+    /// so the board canvas takes them in place (`planeFillDelivery`) rather
+    /// than being reset, and nothing else is written: the board's own file
+    /// holds no fill, and the planes file the pour made already. A pour has
+    /// no undo step of its own unless it is Q's; Undo of the edit it follows
+    /// puts the board back with the fills it had.
+    ///
+    /// The live channel's revision does not move: an automation client
+    /// planning against the board would otherwise find it changed by every
+    /// pour it set off.
+    private func applyPouredPlanes(_ result: HorizontalPlanePourResult) {
+        guard !isReadOnly, var board = project.board else {
+            return
+        }
+        guard HorizontalBoardPlaneInputs.signature(of: board) == result.fills.inputs else {
+            // The board moved while this pour ran. An automatic pour for it
+            // is already asked for; a manual one leaves the fills marked out
+            // of date, and one press of Q redoes the work.
+            checkPlaneFills(again: true)
+            return
+        }
+        let previousBoard = board
+        board.takePlaneFills(result.fills)
+        if result.registersUndo {
+            registerBoardPlaneUpdateUndo(previousBoard)
+        }
+        project.board = board
+        pouredPlaneInputs = result.fills.inputs
+        planesNeedUpdate = false
+        if let data = result.planesFileData {
+            writePlanesFile(data, registersUndo: result.registersUndo)
+        }
+        planeFillRevision += 1
+        planeFillDelivery = HorizontalPlaneFillDelivery(revision: planeFillRevision, result: result)
+        if result.isManual {
+            // Q doubles as the silkscreen re-clip; a pour after an edit does
+            // not, since the re-clip rebuilds the whole scene.
+            planePourRevision += 1
+        }
+    }
+
+    /// The planes file a pour made, into the archive. A step of its own only
+    /// for Q, whose undo registration this joins.
+    private func writePlanesFile(_ data: Data, registersUndo: Bool) {
+        var archive = document.archive
+        do {
+            guard try HorizontalProjectJSONApplicator.applyPlaneCache(data: data, in: project, to: &archive) else {
+                return
             }
-            progress.finish()
-            return poured
-        }
-
-        for await fraction in progressUpdates where isDeterminate {
-            planePourProgress = fraction
-        }
-        let (pouredBoard, updatedCache) = await pour.value
-
-        isPouringPlanes = false
-        planePourProgress = nil
-
-        // Editing stays live during a pour — nothing covers the canvas — so the
-        // board can have moved under it. Applying the result would silently
-        // clobber that edit, so drop it and leave the fills marked stale; the
-        // rail button already says so and one press redoes the work.
-        guard project.board.map(HorizontalBoardPlaneInputs.signature) == pouredInputs else {
-            planesNeedUpdate = true
+        } catch {
+            recordArchiveApplyFailure(error)
             return
         }
-
-        planePourCache = updatedCache
-
-        if registersUndo {
-            registerBoardPlaneUpdateUndo(boardToPour)
-            applyEditedBoard(pouredBoard, writesPlaneCache: true)
-        } else {
-            applyFollowUpBoard(pouredBoard, writesPlaneCache: true)
+        guard !registersUndo else {
+            document.archive = archive
+            return
         }
-        boardSyncRevision += 1
-        planePourRevision += 1
-        selectionDetailsByPane[.board] = .empty
+        withoutUndoRegistration {
+            document.archive = archive
+        }
+        #if os(macOS)
+        // With nothing registered the document wouldn't know it changed.
+        HorizontalDocumentSaving.markEdited(url: project.url)
+        #endif
     }
 
     /// Diagnostic: empties every plane's `fragments` so the board renders without
@@ -4065,6 +4138,11 @@ struct ProjectWorkspaceView: View {
         syncedBoard.url = previousBoard.url
         rebasePackageModelURLs(in: &syncedBoard)
         removePlanesWithDeletedNets(from: &syncedBoard)
+        // A pour that landed while the snapshot loaded is in memory, and may
+        // not be in what the snapshot read.
+        if let current = project.board {
+            syncedBoard.carryPlaneFills(from: current)
+        }
         applyFollowUpBoard(syncedBoard)
         // What the board was flattened from, for the BOM and the rest.
         project.flattenedBlock = reloaded.flattenedBlock

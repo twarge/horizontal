@@ -90,6 +90,20 @@ enum HorizontalLiveServer {
         return HorizontalDispatch.serialize(HorizontalDispatch.call(request), pretty: false)
     }
 
+    /// The requests that wait for a pending plane pour before they run.
+    nonisolated static let planeFillReaders: Set<String> = ["export", "check"]
+    /// How long such a request waits before it reads the fills as they are.
+    nonisolated static let planePourWaitLimit: TimeInterval = 120
+
+    nonisolated static func readsPlaneFills(line: String) -> Bool {
+        guard let data = line.data(using: .utf8),
+              let request = (try? JSONSerialization.jsonObject(with: data)) as? JSONDictionary,
+              let method = request["method"] as? String else {
+            return false
+        }
+        return planeFillReaders.contains(method)
+    }
+
     /// Capture on the main actor, then evaluate model-only queries on the
     /// connection queue. Rendering/export retain their audited main-actor path.
     static func prepareRead(line: String, expectedToken: String) -> (@Sendable () -> String)? {
@@ -353,6 +367,13 @@ final class HorizontalLiveConnection: @unchecked Sendable {
             let activity = ProcessInfo.processInfo.beginActivity(
                 options: .userInitiatedAllowingIdleSystemSleep, reason: "Answering a live channel request"
             )
+            // An export or a check reads the plane fills. One that comes in
+            // while a pour is asked for or running (the edit before it set
+            // one off) waits here, on this queue, for the pour to land on the
+            // main thread, and reads the fills the board has then.
+            if HorizontalLiveServer.readsPlaneFills(line: line) {
+                HorizontalPlanePourActivity.shared.waitUntilIdle(timeout: HorizontalLiveServer.planePourWaitLimit)
+            }
             let execute: @Sendable () -> String = DispatchQueue.main.sync {
                 MainActor.assumeIsolated {
                     if let read = HorizontalLiveServer.prepareRead(line: line, expectedToken: token) { return read }

@@ -368,10 +368,14 @@ struct BoardUpdatePlanesToolButton: View {
     var progress: Double?
     /// The board changed since the last pour, so the fills on screen are stale.
     var needsUpdate = false
+    /// Whether the planes are poured again after every change; offered from
+    /// the button's context menu (a long press on iPad).
+    var updatesAutomatically: Binding<Bool>?
 
     private var title: String {
         if isUpdating { return "Updating plane fills..." }
-        return needsUpdate ? "Plane fills are out of date" : "Update all plane fills"
+        if needsUpdate { return "Plane fills are out of date" }
+        return updatesAutomatically?.wrappedValue == true ? "Plane fills update automatically" : "Update all plane fills"
     }
 
     var body: some View {
@@ -395,6 +399,13 @@ struct BoardUpdatePlanesToolButton: View {
             .disabled(isUpdating)
             .help(title + (needsUpdate && !isUpdating ? " (Q)" : ""))
             .accessibilityLabel(title)
+            .contextMenu {
+                Button("Update All Planes", systemImage: "square.stack.3d.up.badge.automatic", action: action)
+                    .disabled(isUpdating)
+                if let updatesAutomatically {
+                    Toggle("Update Planes Automatically", isOn: updatesAutomatically)
+                }
+            }
         }
     }
 }
