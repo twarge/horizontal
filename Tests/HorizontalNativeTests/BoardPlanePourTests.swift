@@ -147,6 +147,35 @@ final class BoardPlanePourTests: XCTestCase {
         XCTAssertTrue(poured.fragments.isEmpty)
     }
 
+    /// A fragment is anchored by same-net copper in its fill, not by copper in
+    /// one of its holes. A foreign strip splits the plane in two; the left half
+    /// holds a ground pad, and the right half's only ground node is a junction
+    /// at the middle of a foreign pad, so in the hole the pad's clearance
+    /// punches: inside the half's box and its outline, but not its copper. The
+    /// right half is an orphan and goes.
+    func testAnAnchorInAHoleDoesNotAnchorTheFragment() throws {
+        let strip = HorizontalPolygon(
+            id: "strip",
+            vertices: [p(-500_000, -11 * mm), p(500_000, -11 * mm), p(500_000, 11 * mm), p(-500_000, 11 * mm)],
+            layer: 0,
+            netID: "vcc")
+        var board = makeBoard(
+            polygons: [outline(half: 12 * mm), strip],
+            planes: [plane("p1", half: 10 * mm, net: "gnd")],
+            packagePads: [
+                square("anchor", cx: -6 * mm, cy: 6 * mm, half: 500_000, net: "gnd"),
+                square("pad1", cx: 6 * mm, cy: 0, half: 1 * mm, net: "vcc"),
+            ]
+        )
+        board.junctions = ["j": p(6 * mm, 0)]
+        board.junctionNetIDs = ["j": "gnd"]
+
+        let poured = try XCTUnwrap(HorizontalBoardPlaneUpdater.updateAllPlanes(in: board).planes.first)
+        XCTAssertEqual(poured.fragments.count, 1, "only the anchored half is kept")
+        let outer = try XCTUnwrap(poured.fragments.first?.paths.first)
+        XCTAssertLessThan(HorizontalRect(points: outer).maxX, 0, "the kept half is the left one")
+    }
+
     /// Foreign copper must be cut out, or a pour would short to every pad it
     /// covers.
     func testForeignPadIsCutOut() throws {
