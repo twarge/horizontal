@@ -529,6 +529,11 @@ struct BoardSilkscreenClipTrigger: Equatable {
     var planePourRevision: Int
 }
 
+struct BoardTrackSnapTargetsKey: Hashable {
+    var selectables: BoardSelectableCacheKey
+    var layer: Int
+}
+
 struct BoardMetalElementBucketsCacheKey: Hashable {
     var boardID: String
     var revision: Int
@@ -757,6 +762,8 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
     let padOutlineUnionCache = HorizontalPadOutlineUnionCache()
     private var padLabelTextsKey: BoardAllSelectableCacheKey?
     private var padLabelTextsValue = [Int: [HorizontalText]]()
+    private var trackSnapTargetsKey: BoardTrackSnapTargetsKey?
+    private var trackSnapTargetsValue = [HorizontalPoint]()
     private var visibleRenderLayersKey: BoardSelectableCacheKey?
     private var visibleRenderLayersValue = [Int]()
     private var metalRenderLayersKey: BoardAllSelectableCacheKey?
@@ -863,6 +870,19 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         build: () -> [HorizontalPoint]
     ) -> [HorizontalPoint] {
         selectableSceneCache.snapTargets(key: key, build: build)
+    }
+
+    /// The track tool's snap targets, the copper on the layer it routes on
+    /// (`BoardTrackRouting.snapTargets`), built once per board and layer.
+    func trackSnapTargets(
+        key: BoardTrackSnapTargetsKey,
+        build: () -> [HorizontalPoint]
+    ) -> [HorizontalPoint] {
+        if trackSnapTargetsKey != key {
+            trackSnapTargetsValue = build()
+            trackSnapTargetsKey = key
+        }
+        return trackSnapTargetsValue
     }
 
     func metalHighlight(

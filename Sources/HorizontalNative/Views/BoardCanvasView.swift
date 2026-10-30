@@ -985,14 +985,17 @@ struct BoardCanvasView: View {
                     return
                 }
                 if drawTrackState != nil {
-                    addDrawTrackPoint(point)
-                    // Guard on segmentCount: commitDrawTrack tears down the
-                    // tool state before checking it, so an accidental
-                    // double-click on the start point would silently exit the
-                    // tool having drawn nothing.
+                    // A double-click ends the route where its first click
+                    // left it: the second lays nothing, so a cursor that
+                    // moved a grid step between them adds no stub. Not
+                    // before the route has drawn anything, so a double-click
+                    // on the start point doesn't end the tool having drawn
+                    // nothing.
                     if clickCount >= 2, drawTrackState?.hasDrawn == true {
                         commitDrawTrack()
+                        return
                     }
+                    addDrawTrackPoint(point)
                     return
                 }
 
@@ -2709,7 +2712,7 @@ struct BoardCanvasView: View {
                 } else if drawGraphicsState != nil {
                     endDrawGraphicsInteraction()
                 } else if drawTrackState != nil {
-                    cancelDrawTrack()
+                    endDrawTrack()
                 } else if moveState != nil {
                     cancelMove()
                 } else {
@@ -4947,16 +4950,18 @@ struct BoardCanvasView: View {
             }
             state.anchor = anchorPoint
             state.anchorJunctionID = board.junctions.first { pointKey($0.value) == pointKey(anchorPoint) }?.key
-            if let net = boardNetID(at: point) ?? boardNetID(at: anchorPoint) {
+            // The route takes its net, width and bend from copper on its own
+            // layer only, as it snaps only to that (`boardSnapTargets`).
+            if let net = boardNetID(at: point, layer: state.layer) ?? boardNetID(at: anchorPoint, layer: state.layer) {
                 state.netID = net
             }
             // An explicit width (set via `w`) wins; else continue at the width
             // of any track under the start point; else the net/board default.
             state.width = toolSettings.explicitTrackWidth
-                ?? BoardTrackRouting.trackWidth(at: anchorPoint, tracks: board.tracks)
+                ?? BoardTrackRouting.trackWidth(at: anchorPoint, layer: state.layer, tracks: board.tracks)
                 ?? defaultTrackWidth(forNet: state.netID)
             state.cursor = anchorPoint
-            if let bend = boardTrackBendMode(at: anchorPoint) {
+            if let bend = boardTrackBendMode(at: anchorPoint, layer: state.layer) {
                 state.bendMode = bend
             }
             state.loopStart = BoardTrackLoops.start(
@@ -5007,9 +5012,10 @@ struct BoardCanvasView: View {
         #endif
 
         // Net compatibility (mirrors Horizon): never weld two different nets
-        // together. If the end point already belongs to a different net, ignore
-        // the click and keep routing from the same anchor.
-        let endNet = boardNetID(at: point) ?? boardNetID(at: target)
+        // together. If the end point already belongs to a different net on
+        // the route's layer, ignore the click and keep routing from the same
+        // anchor; copper on another layer is crossed, not joined.
+        let endNet = boardNetID(at: point, layer: state.layer) ?? boardNetID(at: target, layer: state.layer)
         if let endNet,
            let trackNet = state.netID,
            normalizedID(endNet) != normalizedID(trackNet) {
@@ -5158,7 +5164,7 @@ struct BoardCanvasView: View {
             return nil
         }
         // A click on another net's copper lays nothing.
-        let endNet = boardNetID(at: cursor) ?? boardNetID(at: target)
+        let endNet = boardNetID(at: cursor, layer: state.layer) ?? boardNetID(at: target, layer: state.layer)
         if let endNet, let net = state.netID, normalizedID(endNet) != normalizedID(net) {
             return nil
         }
@@ -5214,7 +5220,8 @@ struct BoardCanvasView: View {
             at: point,
             layer: layer,
             packagePads: board.packagePads,
-            padPositions: board.packagePadPositions
+            padPositions: board.packagePadPositions,
+            packageHoles: board.packageHoles
         )
     }
 
@@ -5242,6 +5249,17 @@ struct BoardCanvasView: View {
         registerUndoSnapshot(state.originalBoard, actionName: "Draw Track")
         publishConnectivityResolvedEdit(board)
         publishSelectionContext()
+    }
+
+    /// Escape: keeps what the route's clicks laid, up to the last of them,
+    /// wherever it ends, and drops the rubber band to the cursor. A route that
+    /// has laid nothing is cancelled.
+    private func endDrawTrack() {
+        if drawTrackState?.hasDrawn == true {
+            commitDrawTrack()
+        } else {
+            cancelDrawTrack()
+        }
     }
 
     private func cancelDrawTrack() {
@@ -5330,18 +5348,20 @@ struct BoardCanvasView: View {
     /// Orthogonal two-segment routing between anchor and point, with the corner
     /// Seeds the corner posture from an existing track touching the start point,
     /// so a new branch continues in a sensible direction.
-    private func boardTrackBendMode(at point: HorizontalPoint) -> BoardTrackBendMode? {
-        BoardTrackRouting.bendModeHorizontalFirst(at: point, tracks: board.tracks)
+    private func boardTrackBendMode(at point: HorizontalPoint, layer: Int) -> BoardTrackBendMode? {
+        BoardTrackRouting.bendModeHorizontalFirst(at: point, tracks: board.tracks.filter { $0.layer == nil || $0.layer == layer })
             .map { $0 ? .xy : .yx }
     }
 
     /// Resolves the net of whatever copper sits under `point`: junction, via,
     /// track (endpoint or body), package pad, or pad hole. Position-based, like
-    /// the rest of Horizontal's connectivity model.
-    private func boardNetID(at point: HorizontalPoint) -> String? {
+    /// the rest of Horizontal's connectivity model: only the copper a route on
+    /// `layer` reaches.
+    private func boardNetID(at point: HorizontalPoint, layer: Int) -> String? {
         let snapshot = board
         return BoardTrackRouting.netID(
             at: point,
+            layer: layer,
             junctions: snapshot.junctions,
             junctionNetIDs: snapshot.junctionNetIDs,
             vias: snapshot.vias,
@@ -13017,6 +13037,15 @@ struct BoardCanvasView: View {
     private func boardSnapTargets() -> [HorizontalPoint] {
         if let moveSnapTargets = moveState?.snapTargets {
             return moveSnapTargets
+        }
+        // A route snaps only to copper on the layer it is drawn on, from its
+        // first click: a track begun on the bottom doesn't jump to a pad or
+        // track on the top.
+        if let layer = drawTrackState?.layer {
+            let key = BoardTrackSnapTargetsKey(selectables: selectableCacheKey, layer: layer)
+            return selectableCache.trackSnapTargets(key: key) {
+                BoardTrackRouting.snapTargets(on: layer, in: board)
+            }
         }
         return selectableCache.snapTargets(key: selectableCacheKey) {
             boardSelectableScene().snapTargets(pointKey: pointKey)

@@ -219,33 +219,137 @@ final class BoardTrackRoutingTests: XCTestCase {
         XCTAssertEqual(ref?.center, p(500, 500))
     }
 
-    func testPadReferenceRespectsLayerAndExactCenterFallback() {
-        let bottomPad = HorizontalPolygon(
-            id: "pkg1/pad/padB",
-            vertices: [p(0, 0), p(1000, 0), p(1000, 1000), p(0, 1000)],
-            layer: HorizontalBoardLayers.bottomCopper,
-            netID: "d1"
-        )
+    private let top = HorizontalBoardLayers.topCopper
+    private let bottom = HorizontalBoardLayers.bottomCopper
+
+    private func square(_ id: String, layer: Int?, net: String = "d1") -> HorizontalPolygon {
+        HorizontalPolygon(id: id, vertices: [p(0, 0), p(1000, 0), p(1000, 1000), p(0, 1000)], layer: layer, netID: net)
+    }
+
+    private func platedHole(at point: HorizontalPoint) -> HorizontalHole {
+        HorizontalHole(id: "pkg1/hole", position: point, diameter: 300, length: 300, shape: .round, plated: true, netID: "d1")
+    }
+
+    func testPadReferenceRespectsLayer() {
         let positions = ["pkg1/padb": p(500, 500)]
-        // Hit-testing a bottom-layer pad while routing on top copper misses…
-        XCTAssertNil(
-            BoardTrackRouting.padReference(
-                at: p(100, 900),
-                layer: HorizontalBoardLayers.topCopper,
-                packagePads: [bottomPad],
-                padPositions: positions
+        let bottomPad = square("pkg1/pad/padB", layer: bottom)
+        // Hit-testing a bottom-layer pad while routing on top copper misses,
+        // inside it or at its center: a route on the top doesn't start on or
+        // end in a pad on the bottom.
+        for point in [p(100, 900), p(500, 500)] {
+            XCTAssertNil(
+                BoardTrackRouting.padReference(at: point, layer: top, packagePads: [bottomPad], padPositions: positions)
             )
+        }
+        XCTAssertEqual(
+            BoardTrackRouting.padReference(at: p(500, 500), layer: bottom, packagePads: [bottomPad], padPositions: positions)?.path,
+            "pkg1/padb"
         )
-        // …but an exact center hit connects layer-agnostically (through-hole).
+    }
+
+    func testAThroughHolePadsCenterConnectsFromEveryLayer() {
+        let positions = ["pkg1/padb": p(500, 500)]
+        // Copper on both sides: either side connects at the center.
+        let sides = [square("pkg1/pad/padB", layer: top), square("pkg1/pad/padB/bottom", layer: bottom)]
+        for layer in [top, bottom] {
+            XCTAssertEqual(
+                BoardTrackRouting.padReference(at: p(500, 500), layer: layer, packagePads: sides, padPositions: positions)?.path,
+                "pkg1/padb"
+            )
+        }
+        // An inner layer it has no polygon on still reaches it through its
+        // plated hole.
+        XCTAssertNil(
+            BoardTrackRouting.padReference(at: p(500, 500), layer: -1, packagePads: sides, padPositions: positions)
+        )
         XCTAssertEqual(
             BoardTrackRouting.padReference(
-                at: p(500, 500),
-                layer: HorizontalBoardLayers.topCopper,
-                packagePads: [bottomPad],
-                padPositions: positions
+                at: p(500, 500), layer: -1, packagePads: sides, padPositions: positions,
+                packageHoles: [platedHole(at: p(500, 500))]
             )?.path,
             "pkg1/padb"
         )
+        // A pad with no copper polygons at all is taken to have copper.
+        XCTAssertEqual(
+            BoardTrackRouting.padReference(at: p(500, 500), layer: top, packagePads: [], padPositions: positions)?.path,
+            "pkg1/padb"
+        )
+    }
+
+    func testNetAndWidthComeFromCopperOnTheRoutesLayer() {
+        let topTrack = HorizontalSegment(id: "t", from: p(0, 0), to: p(1000, 0), width: 350_000, layer: top, netID: "clk")
+        func net(at point: HorizontalPoint, layer: Int?, vias: [HorizontalMarker] = [], pads: [HorizontalPolygon] = []) -> String? {
+            BoardTrackRouting.netID(
+                at: point, layer: layer, junctions: ["j": p(1000, 0)], junctionNetIDs: ["j": "clk"],
+                vias: vias, tracks: [topTrack], packagePads: pads, packageHoles: []
+            )
+        }
+        XCTAssertEqual(net(at: p(1000, 0), layer: nil), "clk", "any layer, as before")
+        XCTAssertEqual(net(at: p(1000, 0), layer: top), "clk")
+        XCTAssertNil(net(at: p(1000, 0), layer: bottom), "its end and junction are on the top only")
+        XCTAssertNil(net(at: p(500, 0), layer: bottom), "a bottom route crosses under it")
+
+        let via = HorizontalMarker(id: "v", position: p(1000, 0), size: 600_000, layer: nil, netID: "clk")
+        XCTAssertEqual(net(at: p(1000, 0), layer: bottom, vias: [via]), "clk", "a via with no listed layers spans them all")
+        var blind = via
+        blind.connectedLayers = [top, -1]
+        XCTAssertNil(net(at: p(1000, 0), layer: bottom, vias: [blind]))
+
+        let topPad = square("pkg/pad/a", layer: top, net: "d0")
+        XCTAssertEqual(net(at: p(500, 500), layer: top, pads: [topPad]), "d0")
+        XCTAssertNil(net(at: p(500, 500), layer: bottom, pads: [topPad]))
+
+        XCTAssertEqual(BoardTrackRouting.trackWidth(at: p(500, 0), layer: top, tracks: [topTrack]), 350_000)
+        XCTAssertNil(BoardTrackRouting.trackWidth(at: p(500, 0), layer: bottom, tracks: [topTrack]))
+    }
+
+    func testARouteSnapsOnlyToCopperOnItsLayer() {
+        var board = HorizontalBoard(
+            url: URL(fileURLWithPath: "/tmp/snap.hprj"), uuid: "b", name: "snap",
+            grid: .boardDefault,
+            colors: HorizontalBoardColors(silkscreen: nil, solderMask: nil, substrate: nil),
+            stackupLayers: [], userLayers: [], junctions: [:], junctionNetIDs: [:], netDetails: [:],
+            tracks: [], netTies: [], lines: [], arcs: [], connectionLines: [], airwires: [],
+            polygons: [], planes: [], keepouts: [], dimensions: [], decals: [], holes: [],
+            vias: [], viaHoles: [], packages: [], packagePads: [], packageHoles: [],
+            packagePolygons: [], packageLines: [], packageArcs: [], packageTexts: [], texts: [],
+            boardPanels: [], physicalBounds: .empty, bounds: .empty
+        )
+        board.tracks = [
+            HorizontalSegment(id: "top", from: p(0, 0), to: p(1000, 0), width: 200, layer: top, netID: nil),
+            HorizontalSegment(id: "bottom", from: p(0, 5000), to: p(1000, 5000), width: 200, layer: bottom, netID: nil),
+        ]
+        board.vias = [HorizontalMarker(id: "v", position: p(3000, 3000), size: 600, layer: nil, netID: nil)]
+        // An SMD pad on the top, a through-hole pad with copper on both sides,
+        // and its mask opening, which is not copper.
+        board.packagePads = [
+            HorizontalPolygon(id: "pkg/pad/smd", vertices: [p(9000, 0), p(9100, 0), p(9100, 100)], layer: top, netID: nil),
+            HorizontalPolygon(id: "pkg/pad/tht", vertices: [p(8000, 0), p(8100, 0), p(8100, 100)], layer: top, netID: nil),
+            HorizontalPolygon(id: "pkg/pad/tht/b", vertices: [p(8000, 0), p(8100, 0), p(8100, 100)], layer: bottom, netID: nil),
+            HorizontalPolygon(
+                id: "pkg/pad/smd/mask", vertices: [p(9000, 0), p(9100, 0), p(9100, 100)],
+                layer: HorizontalBoardLayers.bottomMask, netID: nil),
+        ]
+        board.packagePadPositions = ["pkg/smd": p(9050, 50), "pkg/tht": p(8050, 50)]
+
+        let onBottom = Set(BoardTrackRouting.snapTargets(on: bottom, in: board).map(key))
+        XCTAssertEqual(onBottom, Set([p(0, 5000), p(1000, 5000), p(3000, 3000), p(8050, 50)].map(key)))
+        let onTop = Set(BoardTrackRouting.snapTargets(on: top, in: board).map(key))
+        XCTAssertEqual(onTop, Set([p(0, 0), p(1000, 0), p(3000, 3000), p(8050, 50), p(9050, 50)].map(key)))
+    }
+
+    func testADoubleClickTakesTheSystemsInterval() {
+        let first = Date(timeIntervalSinceReferenceDate: 0)
+        let second = first.addingTimeInterval(0.42)
+        // 0.42 s apart is a double-click at macOS's default 0.5 s, where the
+        // canvas's fixed 0.35 s took it for two clicks.
+        XCTAssertTrue(HorizontalCanvasInputCore.isDoubleClick(
+            at: CGPoint(x: 10, y: 10), time: second, after: CGPoint(x: 12, y: 9), at: first, interval: 0.5))
+        XCTAssertFalse(HorizontalCanvasInputCore.isDoubleClick(
+            at: CGPoint(x: 10, y: 10), time: second, after: CGPoint(x: 12, y: 9), at: first, interval: 0.35))
+        XCTAssertFalse(HorizontalCanvasInputCore.isDoubleClick(
+            at: CGPoint(x: 40, y: 10), time: second, after: CGPoint(x: 12, y: 9), at: first, interval: 0.5),
+            "too far from the first")
     }
 
     // MARK: - Arc corner style
