@@ -150,6 +150,12 @@ struct BoardCanvasView: View {
     // as the old group-0 main-pass draw did, no matter how dim the copper slider
     // makes the layers.
     private static let holesMetalCompositeGroup = 1_900_000
+    // Every via's diameter in green (`viaDiameterFill`), drawn once per via
+    // above every copper layer it spans, whichever is on top, and below its
+    // hole. Its alpha is baked into the vertex colours: a disc's fan
+    // triangles never overlap, and its edge is opaque. So the group itself
+    // composites at 1 and keeps the inline fast path.
+    private static let viaDiameterMetalCompositeGroup = 1_800_000
     private static let emitsGeneratedBoardLabelsInMetal = true
     // Zoom-out cull for the GENERATED overlay labels (pad names, via net names,
     // track/net-tie net names): once a label's glyphs shrink below this many
@@ -5410,22 +5416,39 @@ struct BoardCanvasView: View {
                 )
             )
         }
-        if let ring = armedViaPreviewRing(state, polylines: polylines) {
-            var path = Path()
-            for contour in ring {
-                path.addLines(contour.map(transform.point))
-                path.closeSubpath()
+        // Over the route, as a placed via is drawn: its diameter in green, its
+        // hole, then the green edge.
+        if let armed = armedViaPreview(state, polylines: polylines) {
+            func disc(_ diameter: Double) -> Path {
+                let center = transform.point(armed.head)
+                let radius = transform.length(diameter) / 2
+                return Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
             }
-            context.fill(path, with: .color(color), style: FillStyle(eoFill: true, antialiased: true))
+            let outline = disc(armed.via.diameter)
+            let hole = disc(armed.via.holeDiameter)
+            context.fill(outline, with: .color(Self.viaDiameterFill))
+            context.fill(hole, with: .color(theme.background.opacity(0.95)))
+            context.stroke(hole, with: .color(theme.hole.opacity(0.7)), lineWidth: transform.strokeWidth(0, minimum: 0.75))
+            context.stroke(outline, with: .color(Self.viaDiameterEdge), lineWidth: transform.strokeWidth(0, minimum: 1))
         }
     }
 
-    /// The armed via's ring, outline then hole, where the next click drops it:
-    /// on the end of the preview, or on the end of the route itself while the
-    /// cursor rests there (see `addDrawTrackPoint`). Nil with no via armed,
-    /// and over a pad or where a click closes a loop, which ends the route
-    /// there and drops none.
-    private func armedViaPreviewRing(_ state: DrawTrackState, polylines: [[HorizontalPoint]]) -> [[HorizontalPoint]]? {
+    /// A via's diameter is drawn green over its copper, placed or armed on a
+    /// route, so it stands out from the tracks it joins: a translucent disc
+    /// with a solid edge. The edge is opaque so the segments of a placed via's
+    /// outline don't darken where they meet.
+    static let viaDiameterFill = Color(red: 0.2, green: 1, blue: 0.35).opacity(0.45)
+    static let viaDiameterEdge = Color(red: 0.2, green: 1, blue: 0.35)
+
+    /// Where the next click drops the armed via, and its shape: on the end of
+    /// the preview, or on the end of the route itself while the cursor rests
+    /// there (see `addDrawTrackPoint`). Nil with no via armed, and over a pad
+    /// or where a click closes a loop, which ends the route there and drops
+    /// none.
+    private func armedViaPreview(
+        _ state: DrawTrackState,
+        polylines: [[HorizontalPoint]]
+    ) -> (head: HorizontalPoint, via: HorizontalBoardViaTemplate)? {
         // A click that closes a loop ends the route there, and drops none.
         guard state.placesVia, routeLoopPreview == nil, let via = routeVia(netID: state.netID) else {
             return nil
@@ -5438,8 +5461,7 @@ struct BoardCanvasView: View {
         guard let head, boardPadReference(at: head, layer: state.layer) == nil else {
             return nil
         }
-        let place = HorizontalPlacementTransform(shift: head, angle: 0, mirrored: false)
-        return [place.circle(diameter: via.diameter, segments: 32), place.circle(diameter: via.holeDiameter, segments: 32)]
+        return (head, via)
     }
 
     /// `c`: cycle the track corner style (90° ↔ 45°) while routing, else flip
@@ -10649,6 +10671,41 @@ struct BoardCanvasView: View {
             }
         }
 
+        // Via diameters, green over the copper of each via that shows any on
+        // a visible layer; the holes go over them.
+        profile("via diameters") {
+            let copperLayers = Set(renderLayers.filter(HorizontalBoardLayers.isCopper))
+            let fill = HorizontalMetalRGBA(Self.viaDiameterFill)
+            let edge = HorizontalMetalRGBA(Self.viaDiameterEdge)
+            for via in board.vias {
+                let layers = renderedViaLayers(for: via).filter(copperLayers.contains)
+                guard !layers.isEmpty else {
+                    continue
+                }
+                let owner = selectableRef(id: via.id, type: .via)
+                let points = viaCirclePointsByID[via.id]
+                    ?? circlePoints(center: via.position, radius: via.size / 2, segments: 24)
+                if layers.contains(where: layerUsesFill) {
+                    appendFilledCircle(
+                        center: via.position,
+                        radius: via.size / 2,
+                        color: fill,
+                        points: points,
+                        compositeGroup: Self.viaDiameterMetalCompositeGroup,
+                        owner: owner,
+                        to: \.vias
+                    )
+                }
+                appendClosedPolyline(
+                    points,
+                    color: edge,
+                    compositeGroup: Self.viaDiameterMetalCompositeGroup,
+                    owner: owner,
+                    to: \.vias
+                )
+            }
+        }
+
         // ============================================================
         // Holes (outlines + fills)
         // ============================================================
@@ -12775,13 +12832,9 @@ struct BoardCanvasView: View {
         // width on the active layer, following the cursor between clicks, with
         // the via `v` armed on its end. Drawn solid (not dashed) so it reads as
         // a ghost of the finished track.
-        var triangles = [HorizontalMetalTrianglePrimitive]()
         if let track = drawTrackState {
             let color = HorizontalMetalRGBA(layerColor(for: track.layer).opacity(0.5))
             let polylines = trackPreviewPolylines(track)
-            if let ring = armedViaPreviewRing(track, polylines: polylines) {
-                triangles = HorizontalMetalTessellator.fragmentTriangles(ring, color: color)
-            }
             for routePoints in polylines {
                 for pair in zip(routePoints, routePoints.dropFirst()) where pointKey(pair.0) != pointKey(pair.1) {
                     lines.append(
@@ -12794,6 +12847,28 @@ struct BoardCanvasView: View {
                         )
                     )
                 }
+            }
+            // The armed via over the route, as a placed via is drawn: its
+            // diameter in green, its hole, then the green edge. The overlay
+            // draws every triangle before every line, so each is a line, one
+            // micron long, which the line shader draws as a disc of its width
+            // (or the disc's rim, outlineOnly), and none of the track shows
+            // through.
+            if let armed = armedViaPreview(track, polylines: polylines) {
+                func disc(_ diameter: Double, _ color: Color, outlineOnly: Bool = false) -> HorizontalMetalLinePrimitive {
+                    HorizontalMetalLinePrimitive(
+                        from: armed.head,
+                        to: armed.head + HorizontalPoint(x: 1_000, y: 0),
+                        color: HorizontalMetalRGBA(color),
+                        width: diameter,
+                        minimumWidth: 0,
+                        outlineOnly: outlineOnly
+                    )
+                }
+                lines.append(disc(armed.via.diameter, Self.viaDiameterFill))
+                lines.append(disc(armed.via.holeDiameter, theme.background.opacity(0.95)))
+                lines.append(disc(armed.via.holeDiameter, theme.hole.opacity(0.7), outlineOnly: true))
+                lines.append(disc(armed.via.diameter, Self.viaDiameterEdge, outlineOnly: true))
             }
         }
 
@@ -12818,14 +12893,13 @@ struct BoardCanvasView: View {
             }
         }
 
-        guard !lines.isEmpty || !triangles.isEmpty else {
+        guard !lines.isEmpty else {
             return .empty
         }
-        // One key for both, as the overlay keys the preview by its line key.
-        let key = lines.hashValue &* 31 &+ triangles.hashValue
+        let key = lines.hashValue
         return BoardMetalLineBatch(
-            triangleKey: key,
-            triangles: triangles,
+            triangleKey: 0,
+            triangles: [],
             lineKey: key,
             lines: lines,
             handleKey: 0,
@@ -13369,6 +13443,9 @@ struct BoardCanvasView: View {
         // discarded; empty batches are dropped, so inserting it unconditionally is
         // free when no holes are present.
         groups.insert(Self.holesMetalCompositeGroup)
+        // And the via diameters, which follow their copper's visibility when
+        // the buckets are built.
+        groups.insert(Self.viaDiameterMetalCompositeGroup)
         return groups
     }
 
