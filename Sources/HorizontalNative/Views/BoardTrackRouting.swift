@@ -254,9 +254,13 @@ enum BoardTrackRouting {
 
     /// Resolves the net of whatever copper sits under `point`: junction, via,
     /// track (endpoint or body), package pad, or pad hole. Position-based, like
-    /// the rest of Horizontal's connectivity model.
+    /// the rest of Horizontal's connectivity model. Given a `layer`, only the
+    /// copper a route on it reaches counts, as connectivity joins copper layer
+    /// by layer: its tracks and pads, the vias that span it and plated holes.
+    /// A junction, which has no layer, is then left to the copper at it.
     static func netID(
         at point: HorizontalPoint,
+        layer: Int? = nil,
         junctions: [String: HorizontalPoint],
         junctionNetIDs: [String: String],
         vias: [HorizontalMarker],
@@ -266,21 +270,25 @@ enum BoardTrackRouting {
     ) -> String? {
         let pointKey = key(point)
 
-        if let junctionID = junctions.first(where: { key($0.value) == pointKey })?.key,
+        if layer == nil,
+           let junctionID = junctions.first(where: { key($0.value) == pointKey })?.key,
            let net = junctionNetIDs[junctionID] {
             return net
         }
         for via in vias where via.netID != nil && key(via.position) == pointKey {
+            if let layer, !viaReaches(via, layer: layer) {
+                continue
+            }
             return via.netID
         }
-        for track in tracks where track.netID != nil {
+        for track in tracks where track.netID != nil && isOn(track.layer, layer) {
             if key(track.from) == pointKey
                 || key(track.to) == pointKey
                 || pointLiesOnSegment(point, track) {
                 return track.netID
             }
         }
-        for pad in packagePads where pad.netID != nil {
+        for pad in packagePads where pad.netID != nil && isOn(pad.layer, layer) {
             if pointInPolygon(point, pad.renderVertices(arcPrecision: 24)) {
                 return pad.netID
             }
@@ -294,17 +302,22 @@ enum BoardTrackRouting {
     /// A direct pad connection target under `point`: the serializable pad path
     /// ("package_uuid/pad_uuid", as Track::Connection::serialize
     /// emits) plus the pad center to snap the track endpoint to. Pad polygons
-    /// on other copper layers are skipped (nil-layer polygons match any), but
-    /// an exact center hit matches layer-agnostically so through-hole pads
-    /// connect from either side.
+    /// on other copper layers are skipped (nil-layer polygons match any). An
+    /// exact center hit connects a pad with copper on `layer`
+    /// (`padHasCopper`), so a through-hole pad connects from either side and
+    /// a pad on the other side not at all.
     static func padReference(
         at point: HorizontalPoint,
         layer: Int?,
         packagePads: [HorizontalPolygon],
-        padPositions: [String: HorizontalPoint]
+        padPositions: [String: HorizontalPoint],
+        packageHoles: [HorizontalHole] = []
     ) -> (path: String, center: HorizontalPoint)? {
         let pointKey = key(point)
-        if let exact = padPositions.first(where: { key($0.value) == pointKey }) {
+        if let exact = padPositions.first(where: { key($0.value) == pointKey }),
+           layer.map({
+               padHasCopper(path: exact.key, center: exact.value, on: $0, packagePads: packagePads, packageHoles: packageHoles)
+           }) ?? true {
             return (exact.key, exact.value)
         }
         for pad in packagePads {
@@ -319,6 +332,98 @@ enum BoardTrackRouting {
             return (path, center)
         }
         return nil
+    }
+
+    /// Whether the pad at `path` has copper on `layer`: a copper polygon of it
+    /// there (or one with no layer), or a plated hole at its center, which
+    /// reaches every layer. A pad with no copper polygons at all is taken to
+    /// have, as nothing says otherwise.
+    static func padHasCopper(
+        path: String,
+        center: HorizontalPoint,
+        on layer: Int,
+        packagePads: [HorizontalPolygon],
+        packageHoles: [HorizontalHole]
+    ) -> Bool {
+        let path = normalizedID(path)
+        var hasCopper = false
+        for pad in packagePads where padPath(forPolygonID: pad.id) == path {
+            guard let padLayer = pad.layer else {
+                return true
+            }
+            guard HorizontalBoardLayers.isCopper(padLayer) else {
+                continue
+            }
+            if padLayer == layer {
+                return true
+            }
+            hasCopper = true
+        }
+        let centerKey = key(center)
+        if packageHoles.contains(where: { $0.plated && key($0.position) == centerKey }) {
+            return true
+        }
+        return !hasCopper
+    }
+
+    /// Whether `via` has copper on `layer`. One that lists no copper layers
+    /// spans them all, as connectivity takes it.
+    static func viaReaches(_ via: HorizontalMarker, layer: Int) -> Bool {
+        let listed = via.connectedLayers.filter(HorizontalBoardLayers.isCopper)
+        return listed.isEmpty || listed.contains(layer)
+    }
+
+    /// Where the cursor snaps while a route is drawn on `layer`: the copper on
+    /// it a route can join. The ends of its tracks and net ties, the vias
+    /// that reach it, the centres of pads with copper on it, and plated
+    /// holes. Nothing only on another layer: as Horizon's router does, a
+    /// route starts and goes on from copper on its own layer.
+    static func snapTargets(on layer: Int, in board: HorizontalBoard) -> [HorizontalPoint] {
+        var seen = Set<String>()
+        var targets = [HorizontalPoint]()
+        func add(_ point: HorizontalPoint) {
+            if seen.insert(key(point)).inserted {
+                targets.append(point)
+            }
+        }
+        for segment in board.tracks + board.netTies where isOn(segment.layer, layer) {
+            add(segment.from)
+            add(segment.to)
+        }
+        for via in board.vias where viaReaches(via, layer: layer) {
+            add(via.position)
+        }
+        // Which pads have copper on the layer, from one pass over their
+        // polygons rather than one per pad.
+        var reaches = Set<String>()
+        var hasCopper = Set<String>()
+        for pad in board.packagePads {
+            guard let path = padPath(forPolygonID: pad.id) else {
+                continue
+            }
+            guard let padLayer = pad.layer else {
+                reaches.insert(path)
+                continue
+            }
+            guard HorizontalBoardLayers.isCopper(padLayer) else {
+                continue
+            }
+            hasCopper.insert(path)
+            if padLayer == layer {
+                reaches.insert(path)
+            }
+        }
+        let platedHoles = Set((board.packageHoles + board.holes).filter(\.plated).map { key($0.position) })
+        for (path, center) in board.packagePadPositions.sorted(by: { $0.key < $1.key }) {
+            let path = normalizedID(path)
+            if reaches.contains(path) || !hasCopper.contains(path) || platedHoles.contains(key(center)) {
+                add(center)
+            }
+        }
+        for hole in board.holes where hole.plated {
+            add(hole.position)
+        }
+        return targets
     }
 
     /// Converts a pad polygon id ("{packageID}/pad/{padID}[/suffix…]") to the
@@ -337,9 +442,9 @@ enum BoardTrackRouting {
     /// The width of an existing track touching `point` (endpoint or body), if
     /// any. Lets a new track branch inherit the width of the track it starts on,
     /// matching "continue at the same width" behavior.
-    static func trackWidth(at point: HorizontalPoint, tracks: [HorizontalSegment]) -> Double? {
+    static func trackWidth(at point: HorizontalPoint, layer: Int? = nil, tracks: [HorizontalSegment]) -> Double? {
         let pointKey = key(point)
-        for track in tracks where track.width > 0 {
+        for track in tracks where track.width > 0 && isOn(track.layer, layer) {
             if key(track.from) == pointKey
                 || key(track.to) == pointKey
                 || pointLiesOnSegment(point, track) {
@@ -626,6 +731,15 @@ enum BoardTrackRouting {
 
     private static func key(_ point: HorizontalPoint) -> String {
         HorizontalCanvasModeSupport.pointKey(point)
+    }
+
+    /// Whether copper on `itemLayer` is on `layer`: any copper when no layer
+    /// is asked for, and copper with no layer of its own on every one.
+    private static func isOn(_ itemLayer: Int?, _ layer: Int?) -> Bool {
+        guard let layer, let itemLayer else {
+            return true
+        }
+        return itemLayer == layer
     }
 
     private static func normalizedID(_ id: String) -> String {

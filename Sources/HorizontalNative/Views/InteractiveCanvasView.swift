@@ -2437,6 +2437,16 @@ struct HorizontalCanvasInputView: View {
     @State private var lastTapTime = Date.distantPast
     @State private var lastTapLocation = CGPoint.zero
 
+    /// The system's double-click interval on macOS (0.5 s by default, the
+    /// user's in Settings), 0.35 s for a double tap on iOS.
+    static var doubleClickInterval: TimeInterval {
+        #if os(macOS)
+        NSEvent.doubleClickInterval
+        #else
+        0.35
+        #endif
+    }
+
     var body: some View {
         GeometryReader { proxy in
             canvas(size: proxy.size)
@@ -2541,12 +2551,15 @@ struct HorizontalCanvasInputView: View {
             }
     }
 
-    /// Single/double-click detection (SwiftUI drags carry no click count).
+    /// Single/double-click detection (SwiftUI drags carry no click count),
+    /// with the system's double-click interval: a fixed 0.35 s took a
+    /// double-click at macOS's default speed for two single clicks.
     private func fireTap(at location: CGPoint, size: CGSize, action: HorizontalSelectionClickAction) {
         let now = Date()
-        let isDouble = now.timeIntervalSince(lastTapTime) < 0.35
-            && abs(location.x - lastTapLocation.x) < 16
-            && abs(location.y - lastTapLocation.y) < 16
+        let isDouble = HorizontalCanvasInputCore.isDoubleClick(
+            at: location, time: now, after: lastTapLocation, at: lastTapTime,
+            interval: Self.doubleClickInterval
+        )
         let clickCount = isDouble ? 2 : 1
         lastTapTime = isDouble ? .distantPast : now
         lastTapLocation = location
@@ -3024,9 +3037,10 @@ struct HorizontalMultitouchView: UIViewRepresentable {
             view.becomeFirstResponder()
             let location = recognizer.location(in: view)
             let now = Date()
-            let isDouble = now.timeIntervalSince(lastTapTime) < 0.35
-                && abs(location.x - lastTapLocation.x) < 16
-                && abs(location.y - lastTapLocation.y) < 16
+            let isDouble = HorizontalCanvasInputCore.isDoubleClick(
+                at: location, time: now, after: lastTapLocation, at: lastTapTime,
+                interval: HorizontalCanvasInputView.doubleClickInterval
+            )
             lastTapTime = isDouble ? .distantPast : now
             lastTapLocation = location
             onTap(location, view.bounds.size, modifiers(from: recognizer.modifierFlags), isDouble ? 2 : 1)

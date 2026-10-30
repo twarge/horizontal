@@ -137,6 +137,24 @@ struct HorizontalPrimaryDragState {
 /// both the macOS monitor and the SwiftUI layer call the identical logic.
 enum HorizontalCanvasInputCore {
 
+    // MARK: - Double-clicks
+
+    /// Whether a click at `location` at `time` is the second of a
+    /// double-click after one at `previousLocation` at `previousTime`: within
+    /// `interval` (the system's double-click interval, which the platform view
+    /// reads) and 16 points of it.
+    static func isDoubleClick(
+        at location: CGPoint,
+        time: Date,
+        after previousLocation: CGPoint,
+        at previousTime: Date,
+        interval: TimeInterval
+    ) -> Bool {
+        time.timeIntervalSince(previousTime) < interval
+            && abs(location.x - previousLocation.x) < 16
+            && abs(location.y - previousLocation.y) < 16
+    }
+
     // MARK: - Grid snapping
 
     /// Snaps a world point onto the grid.
