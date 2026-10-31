@@ -47,6 +47,10 @@ struct HorizontalBoardToolSettingsView: View {
                 Text("A route that rejoins its net replaces the track it bypasses.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                Toggle("Start on copper only", isOn: $settings.startsOnCopper)
+                Text("A route starts on a pad, track or via. ⌘-click to start anywhere.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Via") {

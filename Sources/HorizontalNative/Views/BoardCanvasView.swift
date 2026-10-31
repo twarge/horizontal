@@ -995,7 +995,9 @@ struct BoardCanvasView: View {
                         commitDrawTrack()
                         return
                     }
-                    addDrawTrackPoint(point)
+                    // ⌘-click starts a route anywhere, where the tool would
+                    // start one only on copper (`startsOnCopper`).
+                    addDrawTrackPoint(point, raw: pointer.raw, startsAnywhere: clickAction == .toggle)
                     return
                 }
 
@@ -1469,13 +1471,19 @@ struct BoardCanvasView: View {
             if isRouterMode {
                 let kind = toolSettings.routerShove ? "shove" : "walkaround"
                 if state.anchor == nil {
-                    return "Autoroute \(kind) (\(layerName), \(widthMM) mm): click to start   W width   Esc cancels"
+                    let start = toolSettings.startsOnCopper
+                        ? "click a pad, track or via to start, ⌘-click anywhere"
+                        : "click to start"
+                    return "Autoroute \(kind) (\(layerName), \(widthMM) mm): \(start)   W width   Esc cancels"
                 }
                 let viaHint = canToggleVia ? "   V via" : ""
                 return "Autoroute \(kind) (\(layerName), \(widthMM) mm): click to route   / posture\(viaHint)   ⌫ back   Return/double-click finishes   Esc cancels"
             }
             if state.anchor == nil {
-                return "Track (\(layerName), \(widthMM) mm): click to start   W width   Esc cancels"
+                let start = toolSettings.startsOnCopper
+                    ? "click a pad, track or via to start, ⌘-click anywhere"
+                    : "click to start"
+                return "Track (\(layerName), \(widthMM) mm): \(start)   W width   Esc cancels"
             }
             let undoHint = trackRouteHistory.isEmpty ? "" : "   ⌫ back"
             // Horizon's tip says where an armed via's shape comes from.
@@ -4948,13 +4956,26 @@ struct BoardCanvasView: View {
         publishSelectionContext()
     }
 
-    private func addDrawTrackPoint(_ point: HorizontalPoint) {
+    private func addDrawTrackPoint(_ point: HorizontalPoint, raw: HorizontalPoint? = nil, startsAnywhere: Bool = false) {
         guard !isReadOnly,
               var state = drawTrackState else {
             return
         }
 
         if state.anchor == nil {
+            var point = point
+            // Set to start only on copper, a click off it starts nothing; the
+            // status line says where to click.
+            if toolSettings.startsOnCopper, !startsAnywhere {
+                let layer = state.layer
+                guard let start = BoardTrackRouting.copperStart(
+                    at: point, raw: raw, layer: layer, in: board,
+                    onPad: { boardPadReference(at: $0, layer: layer) != nil }
+                ) else {
+                    return
+                }
+                point = start
+            }
             // Starting on a pad snaps the anchor to the pad center and
             // connects directly — no junction is placed on the pad.
             var anchorPoint = point

@@ -366,6 +366,78 @@ enum BoardTrackRouting {
         return !hasCopper
     }
 
+    /// Where a route clicked to start at `point` on `layer` begins when it must
+    /// begin on copper (`HorizontalBoardToolSettings.startsOnCopper`), or nil
+    /// where there is none there: the point itself in a pad on the layer
+    /// (`onPad`), from whose centre the route then starts; the centre of a via
+    /// there that reaches the layer; the end of a track on the layer within
+    /// half its width; or the nearest point of the middle of one the click is
+    /// on, which the route's first click cuts it at (`BoardTrackLoops.split`).
+    /// `point` is asked first, then `raw`, the pointer before it was snapped,
+    /// so a click on a track the grid snaps off it still starts there.
+    static func copperStart(
+        at point: HorizontalPoint,
+        raw: HorizontalPoint?,
+        layer: Int,
+        in board: HorizontalBoard,
+        onPad: (HorizontalPoint) -> Bool
+    ) -> HorizontalPoint? {
+        for candidate in [point] + (raw.map { [$0] } ?? []) {
+            if onPad(candidate) {
+                return candidate
+            }
+            for via in board.vias where via.spansCopperLayer(layer)
+                && (candidate - via.position).length <= max(via.size / 2, 1) {
+                return via.position
+            }
+            let tracks = board.tracks.filter { isOn($0.layer, layer) }
+            for track in tracks {
+                let reach = max(track.width / 2, 1)
+                for end in [track.from, track.to] where (candidate - end).length <= reach {
+                    return end
+                }
+            }
+            for track in tracks where track.center == nil {
+                if let onTrack = pointOnTrack(near: candidate, track) {
+                    return onTrack
+                }
+            }
+        }
+        return nil
+    }
+
+    /// The point of `track`'s centreline nearest `point`, when `point` is on
+    /// its copper (within half its width): one with whole-nanometre
+    /// coordinates, which is what the file holds, exactly on the line, so
+    /// `pointLiesOnSegment` takes it and a cut there stays on the track. Such
+    /// points fall every (dx, dy) / gcd(dx, dy) along a track whose ends are
+    /// whole, every nanometre on a straight or 45° one.
+    static func pointOnTrack(near point: HorizontalPoint, _ track: HorizontalSegment) -> HorizontalPoint? {
+        let from = (x: Int64(track.from.x.rounded()), y: Int64(track.from.y.rounded()))
+        let to = (x: Int64(track.to.x.rounded()), y: Int64(track.to.y.rounded()))
+        let dx = to.x - from.x, dy = to.y - from.y
+        let lengthSquared = Double(dx) * Double(dx) + Double(dy) * Double(dy)
+        guard lengthSquared > 0 else {
+            return nil
+        }
+        let t = ((point.x - Double(from.x)) * Double(dx) + (point.y - Double(from.y)) * Double(dy)) / lengthSquared
+        let nearest = HorizontalPoint(x: Double(from.x) + t * Double(dx), y: Double(from.y) + t * Double(dy))
+        guard (0...1).contains(t), (point - nearest).length <= max(track.width / 2, 1) else {
+            return nil
+        }
+        var a = abs(dx), b = abs(dy)
+        while b != 0 { (a, b) = (b, a % b) }
+        let steps = a
+        let step = Int64((t * Double(steps)).rounded())
+        let onLine = HorizontalPoint(
+            x: Double(from.x + step * (dx / steps)),
+            y: Double(from.y + step * (dy / steps))
+        )
+        // A track at an odd angle can have whole points only far apart, or at
+        // its ends alone: none near the click is no start on it.
+        return (point - onLine).length <= max(track.width / 2, 1) ? onLine : nil
+    }
+
     /// Where the cursor snaps while a route is drawn on `layer`: the copper on
     /// it a route can join. The ends of its tracks and net ties, the vias
     /// that reach it, the centres of pads with copper on it, and plated

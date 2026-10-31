@@ -436,6 +436,18 @@ treatment the pour got:
    via entry the model lacks. Delete on a via now flags it too: its entry used to stay in
    the file, so the via came back on reload wherever a track still ended on it.
 
+   **A route starts on copper** ("Start on copper only" in the tool settings,
+   on by default; `BoardTrackRouting.copperStart`). Its first click starts it
+   only on copper of its layer: in a pad, from the pad's centre; within a via
+   that reaches the layer, from the via's centre; within half a track's width
+   of its end, from the end; on a straight track's copper, from the nearest
+   point of its centreline with whole-nanometre coordinates exactly on the
+   line, where the route's first click cuts it. A fractional point would be
+   written as a decimal Horizon can't read, and a rounded one off the line
+   wouldn't join the track, so on a track at an odd angle with no such point
+   near the click it doesn't start. A click anywhere else starts nothing, and
+   ⌘-click starts a route anywhere.
+
    **Still to do:** the shove itself (steps 4–5); removing the inert
    `#if canImport(HorizontalPushShoveRouter)` blocks that remain in
    `BoardCanvasView` from the vendored engine; and telling the user WHAT is in

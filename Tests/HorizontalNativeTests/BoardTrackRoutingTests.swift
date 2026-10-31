@@ -338,6 +338,69 @@ final class BoardTrackRoutingTests: XCTestCase {
         XCTAssertEqual(onTop, Set([p(0, 0), p(1000, 0), p(3000, 3000), p(8050, 50), p(9050, 50)].map(key)))
     }
 
+    // MARK: - Starting on copper
+
+    private func emptyBoard() -> HorizontalBoard {
+        HorizontalBoard(
+            url: URL(fileURLWithPath: "/tmp/start.hprj"), uuid: "b", name: "start",
+            grid: .boardDefault,
+            colors: HorizontalBoardColors(silkscreen: nil, solderMask: nil, substrate: nil),
+            stackupLayers: [], userLayers: [], junctions: [:], junctionNetIDs: [:], netDetails: [:],
+            tracks: [], netTies: [], lines: [], arcs: [], connectionLines: [], airwires: [],
+            polygons: [], planes: [], keepouts: [], dimensions: [], decals: [], holes: [],
+            vias: [], viaHoles: [], packages: [], packagePads: [], packageHoles: [],
+            packagePolygons: [], packageLines: [], packageArcs: [], packageTexts: [], texts: [],
+            boardPanels: [], physicalBounds: .empty, bounds: .empty
+        )
+    }
+
+    private func start(_ point: HorizontalPoint, raw: HorizontalPoint? = nil, layer: Int? = nil,
+                       in board: HorizontalBoard, pads: [HorizontalPoint] = []) -> HorizontalPoint? {
+        BoardTrackRouting.copperStart(at: point, raw: raw, layer: layer ?? top, in: board) { candidate in
+            pads.contains { key($0) == key(candidate) }
+        }
+    }
+
+    func testARouteStartsOnlyOnCopperOnItsLayer() {
+        var board = emptyBoard()
+        board.tracks = [
+            HorizontalSegment(id: "top", from: p(0, 0), to: p(10_000_000, 0), width: 400_000, layer: top),
+            HorizontalSegment(id: "bottom", from: p(0, 5_000_000), to: p(10_000_000, 5_000_000), width: 400_000, layer: bottom),
+        ]
+        board.vias = [HorizontalMarker(id: "v", position: p(20_000_000, 0), size: 600_000, layer: nil, netID: nil)]
+
+        XCTAssertNil(start(p(5_000_000, 3_000_000), in: board), "nothing there")
+        XCTAssertEqual(start(p(30_000_000, 30_000_000), in: board, pads: [p(30_000_000, 30_000_000)]), p(30_000_000, 30_000_000),
+                       "a pad, whose centre the route then starts from")
+        XCTAssertEqual(start(p(20_100_000, 200_000), in: board), p(20_000_000, 0), "within the via, at its centre")
+        XCTAssertEqual(start(p(150_000, 100_000), in: board), p(0, 0), "within reach of a track's end, at the end")
+        XCTAssertEqual(start(p(4_000_123, 150_000), in: board), p(4_000_123, 0), "on its middle, on its centreline")
+        XCTAssertNil(start(p(4_000_000, 5_100_000), in: board), "a track on the other layer is no start")
+        XCTAssertEqual(start(p(4_000_000, 5_100_000), layer: bottom, in: board), p(4_000_000, 5_000_000))
+        XCTAssertNil(start(p(4_000_000, 300_000), in: board), "beside it, off its copper")
+        // The grid can snap a click on a track off it; the click itself counts.
+        XCTAssertEqual(start(p(4_000_000, 1_000_000), raw: p(4_100_000, 50_000), in: board), p(4_100_000, 0))
+    }
+
+    /// The start on a track's middle has whole coordinates exactly on the
+    /// line, so the route's cut there stays on the track, and the file can
+    /// hold it.
+    func testAStartOnATracksMiddleIsAWholePointOnItsLine() throws {
+        let diagonal = HorizontalSegment(id: "d", from: p(0, 0), to: p(10_000_000, 10_000_000), width: 400_000, layer: top)
+        let onDiagonal = try XCTUnwrap(BoardTrackRouting.pointOnTrack(near: p(3_000_100, 3_000_000), diagonal))
+        XCTAssertEqual(onDiagonal, p(3_000_050, 3_000_050))
+        XCTAssertTrue(BoardTrackRouting.pointLiesOnSegment(onDiagonal, diagonal))
+
+        // At an odd angle the whole points can be far apart: none near the
+        // click is no start on it, rather than one at a far end.
+        let odd = HorizontalSegment(id: "o", from: p(0, 0), to: p(3_000_001, 7_000_000), width: 400_000, layer: top)
+        XCTAssertNil(BoardTrackRouting.pointOnTrack(near: p(1_500_000, 3_500_000), odd))
+        let steep = HorizontalSegment(id: "s", from: p(0, 0), to: p(3_000_000, 7_000_000), width: 400_000, layer: top)
+        let onSteep = try XCTUnwrap(BoardTrackRouting.pointOnTrack(near: p(1_500_000, 3_500_000), steep))
+        XCTAssertTrue(BoardTrackRouting.pointLiesOnSegment(onSteep, steep))
+        XCTAssertEqual(onSteep.x.rounded(), onSteep.x)
+    }
+
     func testADoubleClickTakesTheSystemsInterval() {
         let first = Date(timeIntervalSinceReferenceDate: 0)
         let second = first.addingTimeInterval(0.42)

@@ -41,6 +41,13 @@ final class HorizontalBoardToolSettings: ObservableObject {
         didSet { defaults.set(removeLoops, forKey: Self.removeLoopsKey) }
     }
 
+    /// A route starts only on copper on its layer: a pad, a track or a via
+    /// (`BoardTrackRouting.copperStart`). ⌘-click starts one anywhere. On
+    /// unless turned off.
+    @Published var startsOnCopper: Bool {
+        didSet { defaults.set(startsOnCopper, forKey: Self.startsOnCopperKey) }
+    }
+
     /// Via diameter (nm), which makes a route's via its own. When nil, the
     /// route's via takes the via rules' (`HorizontalBoard.routeVia`).
     @Published var viaDiameter: Double? {
@@ -62,6 +69,7 @@ final class HorizontalBoardToolSettings: ObservableObject {
         routerMode = defaults.bool(forKey: Self.routerModeKey)
         routerShove = defaults.bool(forKey: Self.routerShoveKey)
         removeLoops = defaults.object(forKey: Self.removeLoopsKey) as? Bool ?? true
+        startsOnCopper = defaults.object(forKey: Self.startsOnCopperKey) as? Bool ?? true
         viaDiameter = Self.optionalDouble(defaults, forKey: Self.viaDiameterKey)
         viaHoleDiameter = Self.optionalDouble(defaults, forKey: Self.viaHoleKey)
     }
@@ -93,6 +101,7 @@ final class HorizontalBoardToolSettings: ObservableObject {
     private static let routerModeKey = "boardTool.routerMode"
     private static let routerShoveKey = "boardTool.routerShove"
     private static let removeLoopsKey = "boardTool.removeLoops"
+    private static let startsOnCopperKey = "boardTool.startsOnCopper"
     private static let viaDiameterKey = "boardTool.viaDiameterNM"
     private static let viaHoleKey = "boardTool.viaHoleDiameterNM"
 }
