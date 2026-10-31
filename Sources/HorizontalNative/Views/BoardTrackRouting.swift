@@ -638,6 +638,97 @@ enum BoardTrackRouting {
         return junctionID
     }
 
+    /// Puts the ends of what was just pasted onto `board` on junctions, which
+    /// the writer names a new track's, via's, line's or arc's ends by: a copy
+    /// lands where its original's junctions aren't, and one with an end on no
+    /// junction or pad isn't written at all, so a paste in the open was lost
+    /// on save. A track or net tie end goes on a junction there its layer can
+    /// join (`HorizontalBoard.junctionIDs(at:joining:)`), else on a new one,
+    /// which the copies ending there on that layer share; a track end on a
+    /// pad's centre stays on the pad. A via joins every junction at its point,
+    /// as one dropped there does. A line or arc end, or an arc's centre,
+    /// takes any junction at its point, else a new one.
+    static func attachJunctions(
+        tracks trackIDs: Set<String>,
+        netTies netTieIDs: Set<String> = [],
+        lines lineIDs: Set<String> = [],
+        arcs arcIDs: Set<String> = [],
+        vias viaIDs: Set<String> = [],
+        on board: inout HorizontalBoard
+    ) {
+        var byKey = [String: [String]]()
+        func reindex() {
+            byKey = [:]
+            for (id, point) in board.junctions.sorted(by: { $0.key < $1.key }) {
+                byKey[key(point), default: []].append(id)
+            }
+        }
+        func newJunction(at point: HorizontalPoint, netID: String?) -> String {
+            let id = UUID().uuidString.lowercased()
+            board.junctions[id] = point
+            if let netID {
+                board.junctionNetIDs[id] = netID
+            }
+            byKey[key(point), default: []].append(id)
+            return id
+        }
+        reindex()
+
+        // A via first: folding the junctions at its point re-points their ends.
+        for via in board.vias where viaIDs.contains(via.id) {
+            if byKey[key(via.position)] == nil {
+                _ = newJunction(at: via.position, netID: via.netID)
+            } else {
+                mergeJunctions(at: via.position, preferredID: nil, netID: via.netID, board: &board)
+                reindex()
+            }
+        }
+
+        var layers = board.junctionLayers()
+        let viaSpans = board.vias.reduce(into: [String: [HorizontalMarker]]()) { $0[key($1.position), default: []].append($1) }
+        let padCenters = Set(board.packagePadPositions.values.map(key))
+        func junction(at point: HorizontalPoint, layer: Int?, netID: String?) -> String {
+            let pointKey = key(point)
+            let here = byKey[pointKey] ?? []
+            let chosen: String?
+            if let layer, viaSpans[pointKey]?.contains(where: { $0.spansCopperLayer(layer) }) != true {
+                chosen = here.first { layers[$0.lowercased()]?.contains(layer) == true }
+                    ?? here.first { layers[$0.lowercased()] == nil }
+            } else {
+                chosen = here.first
+            }
+            let id = chosen ?? newJunction(at: point, netID: netID)
+            if let layer {
+                layers[id.lowercased(), default: []].insert(layer)
+            }
+            return id
+        }
+
+        for index in board.tracks.indices where trackIDs.contains(board.tracks[index].id) {
+            let track = board.tracks[index]
+            if !padCenters.contains(key(track.from)) {
+                board.tracks[index].fromJunctionID = junction(at: track.from, layer: track.layer, netID: track.netID)
+            }
+            if !padCenters.contains(key(track.to)) {
+                board.tracks[index].toJunctionID = junction(at: track.to, layer: track.layer, netID: track.netID)
+            }
+        }
+        for index in board.netTies.indices where netTieIDs.contains(board.netTies[index].id) {
+            let tie = board.netTies[index]
+            board.netTies[index].fromJunctionID = junction(at: tie.from, layer: tie.layer, netID: tie.netID)
+            board.netTies[index].toJunctionID = junction(at: tie.to, layer: tie.layer, netID: tie.netID)
+        }
+        for line in board.lines where lineIDs.contains(line.id) {
+            _ = junction(at: line.from, layer: nil, netID: nil)
+            _ = junction(at: line.to, layer: nil, netID: nil)
+        }
+        for arc in board.arcs where arcIDs.contains(arc.id) {
+            for point in [arc.from, arc.to, arc.center] {
+                _ = junction(at: point, layer: nil, netID: nil)
+            }
+        }
+    }
+
     /// The one junction at `point` for copper on `layer`: `preferredID` when
     /// the board has it, else the first already there that copper on the
     /// layer can join (`HorizontalBoard.junctionIDs(at:joining:)`), else a new
