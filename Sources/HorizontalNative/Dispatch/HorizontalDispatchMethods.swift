@@ -3254,13 +3254,16 @@ enum HorizontalDispatchMethods {
                 "from_rules": item.bool("from_rules") ?? false,
                 "net_pinned": item.string("net_set") != nil
             ]
-            // Horizon gives a via its rule's padstack and parameters when it
-            // opens the board; until then a file's via that takes its shape
-            // from the rules and holds no parameters is drawn at a guess.
+            // Horizon gives a via its rule's padstack and parameters when its
+            // rules are applied, not when it opens the board: until then a
+            // via that takes its shape from the rules but leaves a size out of
+            // its parameters is drawn, as here, with its padstack's default.
             let fromRules = item.string("source") == "rules" || (item.string("source") == nil && item.bool("from_rules") == true)
-            if fromRules, (item.dictionary("parameter_set") ?? [:]).isEmpty {
+            let stated = item.dictionary("parameter_set") ?? [:]
+            let missing = ["via_diameter", "hole_diameter"].filter { stated[$0] == nil }
+            if fromRules, !missing.isEmpty {
                 json["unresolved"] = true
-                json["note"] = "It takes its shape from the via rules but holds no parameters, so its size here is a default; place_via fills them from the rule that matches its net."
+                json["note"] = "It takes its shape from the via rules but its parameters leave out \(missing.joined(separator: " and ")), so it has its padstack's default there, as Horizon draws it until the rules are applied; a change to the via rules gives it the parameters of the rule that matches its net."
             }
             if let via {
                 json["x_mm"] = HorizontalDispatchJSON.mm(via.position.x)

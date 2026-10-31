@@ -669,11 +669,13 @@ struct HorizontalBoard {
             viasMap: json.dictionaryMap("vias"),
             viaDefinitions: viaDefinitions
         )
+        let viaPadstackDefaults = viaPadstackDefaults(for: json.dictionaryMap("vias"), poolURL: poolURL)
         var ownVias = parseVias(
             from: json.dictionaryMap("vias"),
             junctions: junctions,
             junctionNetIDs: junctionNetIDs,
             viaDefinitions: viaDefinitions,
+            padstackDefaults: viaPadstackDefaults,
             nInnerLayers: nInnerLayers,
             poolURL: poolURL,
             boardParameterSet: boardParameterSet
@@ -682,7 +684,8 @@ struct HorizontalBoard {
             from: json.dictionaryMap("vias"),
             junctions: junctions,
             junctionNetIDs: junctionNetIDs,
-            viaDefinitions: viaDefinitions
+            viaDefinitions: viaDefinitions,
+            padstackDefaults: viaPadstackDefaults
         )
         let boardConnectivity = BoardLoadTimer.measure("HorizontalBoard.load — resolveBoardConnectivity") {
             resolveBoardConnectivity(
@@ -2806,6 +2809,7 @@ struct HorizontalBoard {
         junctions: [String: HorizontalPoint],
         junctionNetIDs: [String: String],
         viaDefinitions: [String: JSONDictionary],
+        padstackDefaults: [String: JSONDictionary] = [:],
         nInnerLayers: Int,
         poolURL: URL?,
         boardParameterSet: JSONDictionary
@@ -2818,7 +2822,10 @@ struct HorizontalBoard {
             }
 
             let parameterSet = viaParameterSet(for: item, viaDefinitions: viaDefinitions)
-            let size = parameterSet?.double("via_diameter") ?? 450_000
+            // Its sizes as Horizon draws them: what its parameter set leaves
+            // out, its padstack's defaults give (`viaEffectiveParameters`).
+            let effective = viaEffectiveParameters(parameterSet, item: item, padstackDefaults: padstackDefaults)
+            let size = effective?.double("via_diameter") ?? 450_000
             let maskExpansions = viaMaskExpansions(
                 padstackID: item.string("padstack"),
                 parameterSet: parameterSet,
@@ -2831,7 +2838,7 @@ struct HorizontalBoard {
                 id: id,
                 position: position,
                 size: size,
-                holeSize: parameterSet?.double("hole_diameter"),
+                holeSize: effective?.double("hole_diameter"),
                 layer: nil,
                 connectedLayers: viaConnectedLayers(
                     for: item,
@@ -3015,10 +3022,12 @@ struct HorizontalBoard {
         from map: [String: JSONDictionary],
         junctions: [String: HorizontalPoint],
         junctionNetIDs: [String: String],
-        viaDefinitions: [String: JSONDictionary]
+        viaDefinitions: [String: JSONDictionary],
+        padstackDefaults: [String: JSONDictionary] = [:]
     ) -> [HorizontalHole] {
         map.compactMap { id, item in
-            let parameterSet = viaParameterSet(for: item, viaDefinitions: viaDefinitions)
+            let parameterSet = viaEffectiveParameters(
+                viaParameterSet(for: item, viaDefinitions: viaDefinitions), item: item, padstackDefaults: padstackDefaults)
             guard let junctionID = item.string("junction"),
                   let position = junctions[junctionID],
                   let diameter = parameterSet?.double("hole_diameter") else {
@@ -3077,6 +3086,40 @@ struct HorizontalBoard {
             .reduce(into: [String: JSONDictionary]()) { result, item in
                 result[normalizedID(item.key)] = item.value
             } ?? [:]
+    }
+
+    /// The default `parameter_set` of each padstack the board's vias name,
+    /// by lowercased id, read once for the load.
+    private static func viaPadstackDefaults(for vias: [String: JSONDictionary], poolURL: URL?) -> [String: JSONDictionary] {
+        var defaults = [String: JSONDictionary]()
+        for padstackID in Set(vias.values.compactMap { $0.string("padstack") }) {
+            if let parameters = loadPoolPadstack(padstackID, poolURL: poolURL)?.dictionary("parameter_set") {
+                defaults[normalizedID(padstackID)] = parameters
+            }
+        }
+        return defaults
+    }
+
+    /// A via's parameters as Horizon draws it: its padstack's defaults, with
+    /// what its own parameter set gives over them (`Padstack::apply_parameter_set`).
+    /// A via whose set leaves out its hole, as a rule-shaped one written
+    /// with only a diameter can, gets the padstack's hole, where it had none
+    /// and so no drill on the canvas or in the drill file. Horizon gives such
+    /// a via its rule's parameters only when the rules are applied, not when
+    /// it opens the board.
+    private static func viaEffectiveParameters(
+        _ parameterSet: JSONDictionary?,
+        item: JSONDictionary,
+        padstackDefaults: [String: JSONDictionary]
+    ) -> JSONDictionary? {
+        guard let padstackID = item.string("padstack"),
+              var effective = padstackDefaults[normalizedID(padstackID)] else {
+            return parameterSet
+        }
+        for (key, value) in parameterSet ?? [:] {
+            effective[key] = value
+        }
+        return effective.isEmpty ? nil : effective
     }
 
     private static func viaParameterSet(
