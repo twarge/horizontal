@@ -161,13 +161,16 @@ enum BoardTrackLoops {
             return nil
         }
         let track = board.tracks[index]
-        let junctionID = BoardTrackRouting.mergeJunctions(at: point, preferredID: nil, netID: track.netID, board: &board)
+        let junctionID = BoardTrackRouting.mergeJunctions(
+            at: point, preferredID: nil, netID: track.netID, layer: layer, board: &board)
         var first = track
         first.id = UUID().uuidString.lowercased()
         first.to = point
+        first.toJunctionID = junctionID
         var second = track
         second.id = UUID().uuidString.lowercased()
         second.from = point
+        second.fromJunctionID = junctionID
         board.tracks.replaceSubrange(index...index, with: [first, second])
         return (junctionID, track.id)
     }

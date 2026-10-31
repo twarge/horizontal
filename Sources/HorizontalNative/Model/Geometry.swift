@@ -362,6 +362,12 @@ struct HorizontalSegment: Identifiable, Hashable {
     var netID: String? = nil
     var schematicFrom: HorizontalSchematicEndpoint? = nil
     var schematicTo: HorizontalSchematicEndpoint? = nil
+    /// A board track's or net tie's ends as the file names them: the junction
+    /// each is on, nil on a pad or where nothing says. A track on the top and
+    /// one on the bottom can end at one point on junctions of their own,
+    /// which the position alone can't tell apart (`HorizontalBoard+TrackJunctions`).
+    var fromJunctionID: String? = nil
+    var toJunctionID: String? = nil
 }
 
 extension HorizontalSegment {

@@ -69,26 +69,42 @@ enum HorizontalBoardConnectivity {
         // board line, arc, via or net-tie still meets it. Deleting a track must
         // therefore remove the junctions it leaves orphaned, or the file
         // accumulates junctions that join nothing.
-        var occupied = Set<String>()
-        for t in tracks { occupied.insert(pointKey(t.from)); occupied.insert(pointKey(t.to)) }
-        for v in vias { occupied.insert(pointKey(v.position)) }
-        for l in board.lines { occupied.insert(pointKey(l.from)); occupied.insert(pointKey(l.to)) }
+        // What holds a junction by its position alone (a via, a line, an arc,
+        // an end that names no junction there) keeps every junction at that
+        // point. A track or net tie end that names its junction keeps that one
+        // only: a point can hold one per layer (`HorizontalBoard+TrackJunctions`),
+        // and the other goes with the copper that was on it.
+        var heldByPosition = Set<String>()
+        var named = Set<String>()
+        let junctionKeys = Dictionary(
+            board.junctions.map { ($0.key.lowercased(), pointKey($0.value)) }, uniquingKeysWith: { first, _ in first })
+        for segment in tracks + board.netTies {
+            for (point, id) in [(segment.from, segment.fromJunctionID), (segment.to, segment.toJunctionID)] {
+                if let id, junctionKeys[id.lowercased()] == pointKey(point) {
+                    named.insert(id.lowercased())
+                } else {
+                    heldByPosition.insert(pointKey(point))
+                }
+            }
+        }
+        for v in vias { heldByPosition.insert(pointKey(v.position)) }
+        for l in board.lines { heldByPosition.insert(pointKey(l.from)); heldByPosition.insert(pointKey(l.to)) }
         // An arc references THREE junctions — its endpoints and its centre — so
         // the centre counts as occupied even though no copper passes through it.
         // Every junction an object references is kept, or a drawn or converted
         // arc loses its centre on the next recompute and cannot be written back.
         for a in board.arcs {
-            occupied.insert(pointKey(a.from))
-            occupied.insert(pointKey(a.to))
-            occupied.insert(pointKey(a.center))
+            heldByPosition.insert(pointKey(a.from))
+            heldByPosition.insert(pointKey(a.to))
+            heldByPosition.insert(pointKey(a.center))
         }
-        for nt in board.netTies { occupied.insert(pointKey(nt.from)); occupied.insert(pointKey(nt.to)) }
+        let layersByJunction = board.junctionLayers()
 
         var junctions = board.junctions
         var junctionNetIDs = board.junctionNetIDs
         for (id, point) in board.junctions {
             let key = pointKey(point)
-            guard occupied.contains(key) else {
+            guard heldByPosition.contains(key) || named.contains(id.lowercased()) else {
                 junctions.removeValue(forKey: id)
                 junctionNetIDs.removeValue(forKey: id)
                 continue
@@ -97,8 +113,12 @@ enum HorizontalBoardConnectivity {
             // A junction carries no layer, so it takes the net of the copper at
             // its coordinate — but only when every layer there agrees, since a
             // junction sitting where two nets cross on different layers belongs
-            // to neither.
-            let netsHere = Set(copperLayers.compactMap {
+            // to neither. One only the tracks that name it hold takes the net
+            // of their layers.
+            let layers = heldByPosition.contains(key)
+                ? copperLayers
+                : layersByJunction[id.lowercased()].map { Array($0) } ?? copperLayers
+            let netsHere = Set(layers.compactMap {
                 netForKey[HorizontalCopperConnectivity.node(point, layer: $0)]
             })
             if netsHere.count == 1, let net = netsHere.first {

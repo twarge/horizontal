@@ -3604,10 +3604,13 @@ struct BoardCanvasView: View {
             switch item {
             case .track(var t):
                 t.id = newID(); t.from = shift(t.from); t.to = shift(t.to); t.center = t.center.map(shift)
+                // The original's junctions aren't where the copy lands.
+                t.fromJunctionID = nil; t.toJunctionID = nil
                 board.tracks.append(t)
                 refs.append(HorizontalSelectableRef(id: t.id, type: .track, layer: t.layer))
             case .netTie(var t):
                 t.id = newID(); t.from = shift(t.from); t.to = shift(t.to); t.center = t.center.map(shift)
+                t.fromJunctionID = nil; t.toJunctionID = nil
                 board.netTies.append(t)
                 refs.append(HorizontalSelectableRef(id: t.id, type: .boardNetTie, layer: t.layer))
             case .line(var l):
@@ -4949,7 +4952,9 @@ struct BoardCanvasView: View {
                 state.anchorOnPad = true
             }
             state.anchor = anchorPoint
-            state.anchorJunctionID = board.junctions.first { pointKey($0.value) == pointKey(anchorPoint) }?.key
+            // Not a junction only copper on the other layer is on: the route
+            // gets one of its own there.
+            state.anchorJunctionID = BoardTrackRouting.junctionID(at: anchorPoint, layer: state.layer, in: board)
             // The route takes its net, width and bend from copper on its own
             // layer only, as it snaps only to that (`boardSnapTargets`).
             if let net = boardNetID(at: point, layer: state.layer) ?? boardNetID(at: anchorPoint, layer: state.layer) {
