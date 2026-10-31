@@ -3666,6 +3666,17 @@ struct BoardCanvasView: View {
                 refs.append(HorizontalSelectableRef(id: shape.id, type: .padstackShape, layer: shape.layer))
             }
         }
+        // The copies' ends go on junctions where they land, or the writer
+        // leaves them out of the file. Not for the placement ghost, which is
+        // only drawn.
+        if idPrefix == nil, modeProfile.mode == .board {
+            func ids(_ type: HorizontalObjectType) -> Set<String> {
+                Set(refs.filter { $0.type == type }.map(\.id))
+            }
+            BoardTrackRouting.attachJunctions(
+                tracks: ids(.track), netTies: ids(.boardNetTie), lines: ids(.boardLine), arcs: ids(.boardArc),
+                vias: ids(.via), on: &board)
+        }
         return refs
     }
 
