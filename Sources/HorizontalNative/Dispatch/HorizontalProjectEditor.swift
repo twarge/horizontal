@@ -6825,7 +6825,95 @@ final class HorizontalProjectEditor {
         return (placed.key, padID, net)
     }
 
-    private func resolveTrackEnd(_ params: JSONDictionary, key: String) throws -> TrackEnd {
+    /// What ends on each junction in the board's file, by lowercased id: the
+    /// layers of the tracks and net ties on it, and whether a via is.
+    private func junctionUse(in board: JSONDictionary) -> [String: (layers: Set<Int>, via: Bool)] {
+        var use = [String: (layers: Set<Int>, via: Bool)]()
+        for (_, value) in board["tracks"] as? JSONDictionary ?? [:] {
+            guard let track = value as? JSONDictionary, let layer = track.int("layer") else { continue }
+            for end in ["from", "to"] {
+                if let junction = track.dictionary(end)?.string("junc")?.lowercased() {
+                    use[junction, default: ([], false)].layers.insert(layer)
+                }
+            }
+        }
+        for (_, value) in board["net_ties"] as? JSONDictionary ?? [:] {
+            guard let tie = value as? JSONDictionary, let layer = tie.int("layer") else { continue }
+            for end in ["from", "to"] {
+                if let junction = tie.string(end)?.lowercased() {
+                    use[junction, default: ([], false)].layers.insert(layer)
+                }
+            }
+        }
+        for (_, value) in board["vias"] as? JSONDictionary ?? [:] {
+            if let junction = (value as? JSONDictionary)?.string("junction")?.lowercased() {
+                use[junction, default: ([], false)].via = true
+            }
+        }
+        return use
+    }
+
+    /// The junctions at `point` a track on `layer` can end on, as the board
+    /// editor has them (`HorizontalBoard.junctionIDs(at:joining:)`): every one
+    /// there when a via is on one; else those tracks on the layer end on, then
+    /// those nothing ends on. Never one only copper on another layer ends on:
+    /// one junction would join the two where no via does.
+    private func junctionsJoining(at point: [Int], layer: Int, in board: JSONDictionary) -> [String] {
+        let junctions = board["junctions"] as? JSONDictionary ?? [:]
+        let here = junctions.filter { ($0.value as? JSONDictionary)?["position"] as? [Int] == point }.map(\.key).sorted()
+        let use = junctionUse(in: board)
+        if here.contains(where: { use[$0.lowercased()]?.via == true }) {
+            return here
+        }
+        let named = here.filter { use[$0.lowercased()]?.layers.contains(layer) == true }
+        let unnamed = here.filter { use[$0.lowercased()]?.layers.isEmpty ?? true }
+        return named + unnamed
+    }
+
+    /// Folds every junction at `point` into `kept`, as a via there joins the
+    /// copper on all of them: what ends on another moves to it, and the
+    /// others go.
+    private func foldJunctions(at point: [Int], into kept: String) throws {
+        try updateBoard { board in
+            var junctions = board["junctions"] as? JSONDictionary ?? [:]
+            let folded = Set(junctions.filter {
+                ($0.value as? JSONDictionary)?["position"] as? [Int] == point && $0.key.lowercased() != kept.lowercased()
+            }.map { $0.key.lowercased() })
+            guard !folded.isEmpty else { return }
+            func repoint(_ key: String, ends: [String], connection: Bool) {
+                guard var map = board[key] as? JSONDictionary else { return }
+                for (id, value) in map {
+                    guard var item = value as? JSONDictionary else { continue }
+                    var changed = false
+                    for end in ends {
+                        let named = connection ? item.dictionary(end)?.string("junc") : item.string(end)
+                        guard let named, folded.contains(named.lowercased()) else { continue }
+                        if connection {
+                            var endpoint = item.dictionary(end) ?? [:]
+                            endpoint["junc"] = kept
+                            item[end] = endpoint
+                        } else {
+                            item[end] = kept
+                        }
+                        changed = true
+                    }
+                    if changed { map[id] = item }
+                }
+                board[key] = map
+            }
+            repoint("tracks", ends: ["from", "to"], connection: true)
+            repoint("net_ties", ends: ["from", "to"], connection: false)
+            repoint("vias", ends: ["junction"], connection: false)
+            repoint("lines", ends: ["from", "to"], connection: false)
+            repoint("arcs", ends: ["from", "to", "center"], connection: false)
+            for id in junctions.keys where folded.contains(id.lowercased()) {
+                junctions.removeValue(forKey: id)
+            }
+            board["junctions"] = junctions
+        }
+    }
+
+    private func resolveTrackEnd(_ params: JSONDictionary, key: String, layer: Int) throws -> TrackEnd {
         guard let endpoint = params[key] as? JSONDictionary else {
             throw HorizontalDispatchError.invalidParams("place_track needs \"\(key)\".")
         }
@@ -6842,9 +6930,18 @@ final class HorizontalProjectEditor {
             return TrackEnd(json: ["junc": NSNull(), "pad": "\(resolved.package)/\(resolved.pad)"], net: resolved.net)
         }
         if let junction = endpoint.string("junction")?.lowercased() {
-            let junctions = try board()["junctions"] as? JSONDictionary ?? [:]
+            let boardJSON = try board()
+            let junctions = boardJSON["junctions"] as? JSONDictionary ?? [:]
             guard let match = junctions.first(where: { $0.key.lowercased() == junction }) else {
                 throw HorizontalDispatchError.notFound("No junction \(junction) on the board.")
+            }
+            // A junction joins what ends on it, so one only tracks on another
+            // layer end on would join this track to them where no via does.
+            if let use = junctionUse(in: boardJSON)[junction], !use.via, !use.layers.isEmpty, !use.layers.contains(layer) {
+                let layers = use.layers.sorted().map(String.init).joined(separator: ", ")
+                throw HorizontalDispatchError.invalidParams(
+                    "Junction \(match.key) joins only tracks on layer \(layers), so a track on layer \(layer) can't end on it without a via. Place a via there first, or give the point ({\"x_mm\", \"y_mm\"}) for a junction of its own."
+                )
             }
             return TrackEnd(json: ["junc": match.key, "pad": NSNull()],
                             net: (match.value as? JSONDictionary)?.string("net")?.lowercased())
@@ -6855,12 +6952,14 @@ final class HorizontalProjectEditor {
             )
         }
         let point = [Self.nanometres(x), Self.nanometres(y)]
-        // A junction already at that exact point is the one to join, not a
-        // second one on top of it.
-        let junctions = try board()["junctions"] as? JSONDictionary ?? [:]
-        if let existing = junctions.first(where: { ($0.value as? JSONDictionary)?["position"] as? [Int] == point }) {
-            return TrackEnd(json: ["junc": existing.key, "pad": NSNull()],
-                            net: (existing.value as? JSONDictionary)?.string("net")?.lowercased())
+        // A junction already at that exact point that copper on the layer can
+        // join is the one to join, not a second one on top of it; one only
+        // another layer's tracks end on stays theirs.
+        let boardJSON = try board()
+        let junctions = boardJSON["junctions"] as? JSONDictionary ?? [:]
+        if let existing = junctionsJoining(at: point, layer: layer, in: boardJSON).first {
+            return TrackEnd(json: ["junc": existing, "pad": NSNull()],
+                            net: (junctions[existing] as? JSONDictionary)?.string("net")?.lowercased())
         }
         let id = UUID().uuidString.lowercased()
         return TrackEnd(json: ["junc": id, "pad": NSNull()], net: nil, newJunction: (id, point))
@@ -6884,8 +6983,8 @@ final class HorizontalProjectEditor {
         if let given = params.double("width_mm"), given <= 0 {
             throw HorizontalDispatchError.invalidParams("width_mm must be above zero.")
         }
-        let from = try resolveTrackEnd(params, key: "from")
-        let to = try resolveTrackEnd(params, key: "to")
+        let from = try resolveTrackEnd(params, key: "from", layer: layer)
+        let to = try resolveTrackEnd(params, key: "to", layer: layer)
         var centre: [Int]?
         if let arc = params["arc_center"] as? JSONDictionary {
             guard let x = arc.double("x_mm"), let y = arc.double("y_mm") else {
@@ -6991,8 +7090,8 @@ final class HorizontalProjectEditor {
             for index in 1..<path.count {
                 let a = path[index - 1], b = path[index]
                 guard a != b else { continue }
-                let from = try previous ?? endpointJSON(at: a, net: net)
-                let to = try endpointJSON(at: b, net: net)
+                let from = try previous ?? endpointJSON(at: a, net: net, layer: layer)
+                let to = try endpointJSON(at: b, net: net, layer: layer)
                 let id = UUID().uuidString.lowercased()
                 try updateBoard { board in
                     var tracks = board["tracks"] as? JSONDictionary ?? [:]
@@ -7008,17 +7107,17 @@ final class HorizontalProjectEditor {
     }
 
     /// A track end at a point: the pad whose centre it is, else a junction —
-    /// reusing one already there so consecutive segments share their bend.
-    private func endpointJSON(at point: HorizontalPoint, net: String) throws -> JSONDictionary {
+    /// reusing one already there that copper on `layer` can join, so
+    /// consecutive segments share their bend.
+    private func endpointJSON(at point: HorizontalPoint, net: String, layer: Int) throws -> JSONDictionary {
         let key = [Int(point.x.rounded()), Int(point.y.rounded())]
         if let pad = project.board?.packagePadPositions.first(where: {
             Int($0.value.x.rounded()) == key[0] && Int($0.value.y.rounded()) == key[1]
         }) {
             return ["junc": NSNull(), "pad": pad.key]
         }
-        let junctions = try board()["junctions"] as? JSONDictionary ?? [:]
-        if let existing = junctions.first(where: { ($0.value as? JSONDictionary)?["position"] as? [Int] == key }) {
-            return ["junc": existing.key, "pad": NSNull()]
+        if let existing = try junctionsJoining(at: key, layer: layer, in: board()).first {
+            return ["junc": existing, "pad": NSNull()]
         }
         let id = UUID().uuidString.lowercased()
         try writeJunction(id, point: key, net: net)
@@ -7216,6 +7315,8 @@ final class HorizontalProjectEditor {
             junction = UUID().uuidString.lowercased()
         }
         try writeJunction(junction, point: point, net: net)
+        // The via joins the copper on every junction there.
+        try foldJunctions(at: point, into: junction)
         let id = UUID().uuidString.lowercased()
         let source = shape.string("source") ?? "rules"
         let parameters = shape.dictionary("parameter_set") ?? [:]

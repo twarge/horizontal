@@ -141,13 +141,10 @@ enum HorizontalProjectJSONApplicator {
         patchPlacements(&json, key: "packages", placements: board.packages, boardPackages: true)
         removeConnectionLinesReferencingPackages(&json, packageIDs: removedPackageIDs)
         patchSegments(&json, key: "tracks", segments: board.tracks, supportsLayer: true, supportsArcCenter: true)
-        patchNewBoardTracks(
-            &json,
-            tracks: board.tracks,
-            junctions: board.junctions,
-            padPositions: board.packagePadPositions
-        )
+        patchJunctionEnds(&json, key: "tracks", segments: board.tracks, junctions: board.junctions)
+        patchNewBoardTracks(&json, board: board)
         patchSegments(&json, key: "net_ties", segments: board.netTies, supportsLayer: true)
+        patchJunctionEnds(&json, key: "net_ties", segments: board.netTies, junctions: board.junctions)
         patchBoardDrawingLines(&json, lines: board.lines, junctions: board.junctions)
         patchBoardDrawingArcs(&json, arcs: board.arcs, junctions: board.junctions)
         patchSegments(&json, key: "connection_lines", segments: board.connectionLines, supportsLayer: false)
@@ -1335,22 +1332,22 @@ enum HorizontalProjectJSONApplicator {
     /// here we emit `from`/`to` as junction references (mirroring
     /// `patchBoardDrawingLines`) plus the track's net, width and layer. The new
     /// junctions themselves are written by `patchJunctions`.
-    private static func patchNewBoardTracks(
-        _ json: inout JSONDictionary,
-        tracks: [HorizontalSegment],
-        junctions: [String: HorizontalPoint],
-        padPositions: [String: HorizontalPoint] = [:]
-    ) {
+    private static func patchNewBoardTracks(_ json: inout JSONDictionary, board: HorizontalBoard) {
         var map = json["tracks"] as? JSONDictionary ?? [:]
+        let junctionLayers = board.junctionLayers()
+        func endpoint(_ point: HorizontalPoint, junctionID: String?, layer: Int?) -> JSONDictionary? {
+            boardTrackEndpoint(
+                at: point, junctionID: junctionID, layer: layer, board: board, junctionLayers: junctionLayers)
+        }
         // Own-board geometry has plain UUID ids; panel-instance copies are
         // prefixed "panelID/…" — never serialize those into the host board.
-        for track in tracks where !track.id.contains("/") {
+        for track in board.tracks where !track.id.contains("/") {
             // Skip tracks that already round-trip through patchSegments.
             guard matchingKey(track.id, in: map) == nil else {
                 continue
             }
-            guard let fromEndpoint = boardTrackEndpoint(at: track.from, junctions: junctions, padPositions: padPositions),
-                  let toEndpoint = boardTrackEndpoint(at: track.to, junctions: junctions, padPositions: padPositions) else {
+            guard let fromEndpoint = endpoint(track.from, junctionID: track.fromJunctionID, layer: track.layer),
+                  let toEndpoint = endpoint(track.to, junctionID: track.toJunctionID, layer: track.layer) else {
                 continue
             }
 
@@ -1386,22 +1383,95 @@ enum HorizontalProjectJSONApplicator {
     }
 
     /// Resolves a drawn track endpoint to its serialized connection: a junction
-    /// reference when a junction sits at the point, else a direct pad reference
-    /// when the point is a retained pad center (the draw tool snaps pad
-    /// endpoints to pad centers and skips junction creation there).
+    /// reference when a junction sits at the point (`trackEndJunction`), else
+    /// a direct pad reference when the point is a retained pad center (the
+    /// draw tool snaps pad endpoints to pad centers and skips junction
+    /// creation there).
     private static func boardTrackEndpoint(
         at point: HorizontalPoint,
-        junctions: [String: HorizontalPoint],
-        padPositions: [String: HorizontalPoint]
+        junctionID: String?,
+        layer: Int?,
+        board: HorizontalBoard,
+        junctionLayers: [String: Set<Int>]
     ) -> JSONDictionary? {
-        if let junctionID = junctionID(at: point, in: junctions) {
+        if let junctionID = trackEndJunction(
+            at: point, named: junctionID, layer: layer, board: board, junctionLayers: junctionLayers) {
             return boardJunctionEndpoint(junctionID)
         }
         let key = jsonPointKey(point)
-        if let padPath = padPositions.first(where: { jsonPointKey($0.value) == key })?.key {
+        if let padPath = board.packagePadPositions.first(where: { jsonPointKey($0.value) == key })?.key {
             return ["junc": NSNull(), "pad": padPath]
         }
         return nil
+    }
+
+    /// The junction a track end at `point` on `layer` goes on: the one the
+    /// model names, when it is there; else one copper on the layer can join,
+    /// never one only another layer's copper is on while there is another
+    /// (`HorizontalBoard.junctionIDs(at:joining:)`); else, rather than lose
+    /// the track, any junction there.
+    private static func trackEndJunction(
+        at point: HorizontalPoint,
+        named junctionID: String?,
+        layer: Int?,
+        board: HorizontalBoard,
+        junctionLayers: [String: Set<Int>]
+    ) -> String? {
+        let key = jsonPointKey(point)
+        if let junctionID,
+           let named = board.junctions.first(where: { $0.key.lowercased() == junctionID.lowercased() }),
+           jsonPointKey(named.value) == key {
+            return named.key
+        }
+        return board.junctionIDs(at: point, joining: layer, layers: junctionLayers).first
+            ?? Self.junctionID(at: point, in: board.junctions)
+    }
+
+    /// Points an existing track's or net tie's ends at the junctions the
+    /// model names, where they differ from the file's: when a via joins the
+    /// junctions at a point into one, the tracks on the others go on it.
+    /// `patchSegments` leaves an entry's ends as the file has them, and these
+    /// are rewritten only for a junction that is there, at the end's point.
+    private static func patchJunctionEnds(
+        _ json: inout JSONDictionary,
+        key: String,
+        segments: [HorizontalSegment],
+        junctions: [String: HorizontalPoint]
+    ) {
+        guard var map = json[key] as? JSONDictionary else {
+            return
+        }
+        // Net ties name a junction outright; tracks as a connection.
+        let namesJunctionOutright = key == "net_ties"
+        var changed = false
+        for segment in segments where !segment.id.contains("/") {
+            guard let entryKey = matchingKey(segment.id, in: map),
+                  var item = map[entryKey] as? JSONDictionary else {
+                continue
+            }
+            for (end, point, named) in [
+                ("from", segment.from, segment.fromJunctionID), ("to", segment.to, segment.toJunctionID)
+            ] {
+                guard let named,
+                      let junction = junctions.first(where: { $0.key.lowercased() == named.lowercased() }),
+                      jsonPointKey(junction.value) == jsonPointKey(point) else {
+                    continue
+                }
+                let current = namesJunctionOutright ? item.string(end) : item.dictionary(end)?.string("junc")
+                guard current?.lowercased() != junction.key.lowercased() else {
+                    continue
+                }
+                if !namesJunctionOutright, item.dictionary(end)?.string("pad") != nil {
+                    continue
+                }
+                item[end] = namesJunctionOutright ? junction.key : boardJunctionEndpoint(junction.key)
+                changed = true
+            }
+            map[entryKey] = item
+        }
+        if changed {
+            json[key] = map
+        }
     }
 
     /// Writes full entries for interactively placed vias. `patchVias` only

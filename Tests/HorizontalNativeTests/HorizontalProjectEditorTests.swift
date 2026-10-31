@@ -777,6 +777,46 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual((try result("list_tracks") as? [String: Any])?["total"] as? Int, 0)
     }
 
+    /// A track on the bottom ending at a point where only a top track ends
+    /// gets a junction of its own: one junction would join the two where no
+    /// via does. Naming the top track's junction for it is refused, and a via
+    /// placed there folds the two into one that both tracks end on.
+    func testTracksOnTwoLayersAtOnePointJoinOnlyThroughAVia() throws {
+        try placedDivider()
+        let routed = try apply([
+            ["op": "place_track", "from": ["component": "R1", "pad": "1"], "to": ["x_mm": 20, "y_mm": 20],
+             "layer": 0, "width_mm": 0.25],
+            ["op": "place_track", "from": ["x_mm": 20, "y_mm": 20], "to": ["component": "R2", "pad": "1"],
+             "layer": -100, "width_mm": 0.25]
+        ])
+        let changes = try XCTUnwrap(routed["changes"] as? [[String: Any]])
+        let topJunction = try XCTUnwrap((changes[0]["junctions_created"] as? [String])?.first)
+        let bottomJunction = try XCTUnwrap((changes[1]["junctions_created"] as? [String])?.first,
+                                           "the bottom track gets a junction of its own at the top track's end")
+        XCTAssertNotEqual(topJunction, bottomJunction)
+
+        let refused = try call("apply", ["ops": [
+            ["op": "place_track", "from": ["junction": topJunction], "to": ["x_mm": 20, "y_mm": 30],
+             "layer": -100, "width_mm": 0.25, "net": "VCC"]
+        ]])
+        let error = try XCTUnwrap(refused["error"] as? [String: Any], "a bottom track on the top's junction")
+        XCTAssertTrue((error["message"] as? String)?.contains("without a via") == true, "\(error)")
+
+        _ = try apply([["op": "place_via", "x_mm": 20, "y_mm": 20, "net": "VCC"]])
+        let board = try JSONHelper.loadDictionary(from: packageURL.appendingPathComponent("board.json"))
+        let atPoint = (board["junctions"] as? JSONDictionary ?? [:]).filter {
+            ($0.value as? JSONDictionary)?["position"] as? [Int] == [20_000_000, 20_000_000]
+        }
+        XCTAssertEqual(atPoint.count, 1, "the via joins the two junctions into one")
+        let kept = try XCTUnwrap(atPoint.keys.first)
+        let tracks = board["tracks"] as? JSONDictionary ?? [:]
+        let ends = [changes[0]["track"], changes[1]["track"]].compactMap { id -> String? in
+            guard let id = id as? String, let track = tracks[id] as? JSONDictionary else { return nil }
+            return ["from", "to"].compactMap { track.dictionary($0)?.string("junc") }.first
+        }
+        XCTAssertEqual(ends, [kept, kept], "both tracks end on the via's junction")
+    }
+
     /// Horizon stores no net on a board junction. Read from such a file, the
     /// loader left a track ending at a bend joining nothing, so the app drew an
     /// airwire over every routed connection that bends — on Billo, 328 where

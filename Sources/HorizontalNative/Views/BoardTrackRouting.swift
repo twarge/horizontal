@@ -276,7 +276,7 @@ enum BoardTrackRouting {
             return net
         }
         for via in vias where via.netID != nil && key(via.position) == pointKey {
-            if let layer, !viaReaches(via, layer: layer) {
+            if let layer, !via.spansCopperLayer(layer) {
                 continue
             }
             return via.netID
@@ -366,13 +366,6 @@ enum BoardTrackRouting {
         return !hasCopper
     }
 
-    /// Whether `via` has copper on `layer`. One that lists no copper layers
-    /// spans them all, as connectivity takes it.
-    static func viaReaches(_ via: HorizontalMarker, layer: Int) -> Bool {
-        let listed = via.connectedLayers.filter(HorizontalBoardLayers.isCopper)
-        return listed.isEmpty || listed.contains(layer)
-    }
-
     /// Where the cursor snaps while a route is drawn on `layer`: the copper on
     /// it a route can join. The ends of its tracks and net ties, the vias
     /// that reach it, the centres of pads with copper on it, and plated
@@ -390,7 +383,7 @@ enum BoardTrackRouting {
             add(segment.from)
             add(segment.to)
         }
-        for via in board.vias where viaReaches(via, layer: layer) {
+        for via in board.vias where via.spansCopperLayer(layer) {
             add(via.position)
         }
         // Which pads have copper on the layer, from one pass over their
@@ -547,19 +540,24 @@ enum BoardTrackRouting {
         on board: inout HorizontalBoard
     ) -> BoardTrackRouteStepResult {
         var next = head
-        if !specs.isEmpty, !head.anchorOnPad {
-            mergeJunctions(at: head.anchor, preferredID: head.anchorJunctionID, netID: head.netID, board: &board)
-        }
+        // Each leg's ends go on junctions of the route's layer: one only copper
+        // on another layer is on stays that copper's (`mergeJunctions`).
         var endJunctionID = head.anchorJunctionID
+        if !specs.isEmpty, !head.anchorOnPad {
+            endJunctionID = mergeJunctions(
+                at: head.anchor, preferredID: head.anchorJunctionID, netID: head.netID, layer: head.layer, board: &board)
+        }
         var trackIDs = [String]()
         for spec in specs {
             // A junction at the forward vertex, unless it is the pad it ends on.
             let toIsPadTarget = endsOnPad && key(spec.to) == key(target)
             var junctionID: String?
             if !toIsPadTarget {
-                junctionID = mergeJunctions(at: spec.to, preferredID: nil, netID: head.netID, board: &board)
+                junctionID = mergeJunctions(at: spec.to, preferredID: nil, netID: head.netID, layer: head.layer, board: &board)
             }
+            // An arc may be drawn from its far end; its junctions go with it.
             let ends = spec.renderEndpoints
+            let flowsForward = key(ends.from) == key(spec.from)
             let trackID = UUID().uuidString.lowercased()
             trackIDs.append(trackID)
             board.tracks.append(
@@ -570,7 +568,9 @@ enum BoardTrackRouting {
                     width: head.width,
                     layer: head.layer,
                     center: spec.center,
-                    netID: head.netID
+                    netID: head.netID,
+                    fromJunctionID: flowsForward ? endJunctionID : junctionID,
+                    toJunctionID: flowsForward ? junctionID : endJunctionID
                 )
             )
             endJunctionID = junctionID
@@ -638,20 +638,23 @@ enum BoardTrackRouting {
         return junctionID
     }
 
-    /// The one junction at `point`: `preferredID` when the board has it, else
-    /// the first already there, else a new one, on that junction's net or
-    /// `netID`. Any others at the point are folded into it.
+    /// The one junction at `point` for copper on `layer`: `preferredID` when
+    /// the board has it, else the first already there that copper on the
+    /// layer can join (`HorizontalBoard.junctionIDs(at:joining:)`), else a new
+    /// one, on that junction's net or `netID`. Any others it can join are
+    /// folded into it, their tracks' ends with them; a junction only another
+    /// layer's copper is on is left alone, as no via joins the two. With no
+    /// `layer`, as for a via, which joins them all, every junction there is
+    /// folded in.
     @discardableResult
     static func mergeJunctions(
         at point: HorizontalPoint,
         preferredID: String?,
         netID: String?,
+        layer: Int? = nil,
         board: inout HorizontalBoard
     ) -> String {
-        let pointKey = key(point)
-        let matchingIDs = board.junctions
-            .filter { key($0.value) == pointKey }
-            .map(\.key)
+        let matchingIDs = board.junctionIDs(at: point, joining: layer)
         let existingPreferredID = preferredID.flatMap { preferred in
             board.junctions.keys.first { normalizedID($0) == normalizedID(preferred) }
         }
@@ -667,12 +670,21 @@ enum BoardTrackRouting {
             board.junctionNetIDs.removeValue(forKey: keepID)
         }
 
+        var folded = Set<String>()
         for junctionID in matchingIDs where normalizedID(junctionID) != normalizedID(keepID) {
             board.junctions.removeValue(forKey: junctionID)
             board.junctionNetIDs.removeValue(forKey: junctionID)
+            folded.insert(junctionID)
         }
+        board.repointJunctionEnds(from: folded, to: keepID)
 
         return keepID
+    }
+
+    /// The junction a route on `layer` starts from at `point`, if there is
+    /// one it can join: never one that only copper on another layer is on.
+    static func junctionID(at point: HorizontalPoint, layer: Int, in board: HorizontalBoard) -> String? {
+        board.junctionIDs(at: point, joining: layer).first
     }
 
     // MARK: - Geometry helpers

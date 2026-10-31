@@ -1564,6 +1564,11 @@ struct HorizontalBoard {
                 return nil
             }
 
+            // The junction each end is on, as the file names it: a point can
+            // hold one per layer (`HorizontalBoard+TrackJunctions`).
+            func junctionID(_ end: String) -> String? {
+                item.dictionary(end)?.string("junc").flatMap { junctions[$0] == nil ? nil : $0 }
+            }
             return HorizontalSegment(
                 id: id,
                 from: from,
@@ -1573,7 +1578,9 @@ struct HorizontalBoard {
                 center: item.point("center"),
                 netID: item.string("net").map(normalizedID)
                     ?? endpointNetID(item.dictionary("from"), junctionNetIDs: junctionNetIDs, packagePadNetIDs: packagePadNetIDs)
-                    ?? endpointNetID(item.dictionary("to"), junctionNetIDs: junctionNetIDs, packagePadNetIDs: packagePadNetIDs)
+                    ?? endpointNetID(item.dictionary("to"), junctionNetIDs: junctionNetIDs, packagePadNetIDs: packagePadNetIDs),
+                fromJunctionID: junctionID("from"),
+                toJunctionID: junctionID("to")
             )
         }
     }
@@ -2206,7 +2213,9 @@ struct HorizontalBoard {
                 layer: item.int("layer"),
                 netID: item.string("net").map(normalizedID)
                     ?? junctionNetIDs[fromID]
-                    ?? junctionNetIDs[toID]
+                    ?? junctionNetIDs[toID],
+                fromJunctionID: fromID,
+                toJunctionID: toID
             )
         }
     }
