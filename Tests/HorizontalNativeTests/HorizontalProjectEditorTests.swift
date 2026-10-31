@@ -857,6 +857,47 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertTrue((entry["note"] as? String)?.contains("hole_diameter") == true, "\(entry)")
     }
 
+    /// The rules window's Apply for the via rules, through the archive and a
+    /// reload as the app does it: a rule-shaped via whose parameters left out
+    /// its hole gets the rule's parameters, and so the rule's hole and drill.
+    func testApplyingTheViaRulesGivesARuleShapedViaItsRulesHole() throws {
+        try placedDivider()
+        let placed = try apply([["op": "place_via", "x_mm": 20, "y_mm": 20, "net": "VCC"]])
+        let viaID = try XCTUnwrap((placed["changes"] as? [[String: Any]])?.first?["via"] as? String)
+
+        let boardURL = packageURL.appendingPathComponent("board.json")
+        var board = try JSONHelper.loadDictionary(from: boardURL)
+        var vias = try XCTUnwrap(board["vias"] as? JSONDictionary)
+        var via = try XCTUnwrap(vias[viaID] as? JSONDictionary)
+        via["parameter_set"] = ["via_diameter": 450_000]
+        vias[viaID] = via
+        board["vias"] = vias
+        try JSONSerialization.data(withJSONObject: board, options: [.sortedKeys]).write(to: boardURL)
+        let rule = try XCTUnwrap(
+            HorizontalViaRules.rule(net: nil, in: try XCTUnwrap(board["rules"] as? JSONDictionary), netDetails: [:])?.rule)
+        let ruleHole = try XCTUnwrap(rule.dictionary("parameter_set")?.double("hole_diameter"))
+
+        let project = try HorizontalProject.load(from: packageURL)
+        let loaded = try XCTUnwrap(project.board)
+        var archive = try HorizontalProjectArchive.completeProject(from: packageURL)
+        let changed = try HorizontalProjectJSONApplicator.applyViaRules(
+            in: project, to: &archive, viaNets: loaded.viaNetsForRules, netDetails: loaded.netDetails)
+        XCTAssertEqual(changed.map { $0.lowercased() }, [viaID.lowercased()])
+
+        var reloaded = try HorizontalProject.loadSnapshot(of: archive)
+        reloaded.rebaseURLs(onto: project)
+        let applied = try XCTUnwrap(reloaded.board)
+        let marker = try XCTUnwrap(applied.vias.first { $0.id.lowercased() == viaID.lowercased() })
+        XCTAssertEqual(marker.holeSize, ruleHole)
+        XCTAssertEqual(marker.parameterSet["hole_diameter"], ruleHole, "written into its parameters, as Horizon's Apply does")
+        XCTAssertTrue(marker.fromRules)
+        XCTAssertEqual(applied.viaHoles.first { $0.id.lowercased() == "\(viaID.lowercased())/hole" }?.diameter, ruleHole)
+
+        let again = try HorizontalProjectJSONApplicator.applyViaRules(
+            in: reloaded, to: &archive, viaNets: applied.viaNetsForRules, netDetails: applied.netDetails)
+        XCTAssertTrue(again.isEmpty, "applied twice, it changes nothing the second time")
+    }
+
     /// Horizon stores no net on a board junction. Read from such a file, the
     /// loader left a track ending at a bend joining nothing, so the app drew an
     /// airwire over every routed connection that bends — on Board A, 328 where

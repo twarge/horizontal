@@ -2013,7 +2013,8 @@ struct HorizontalIPadProjectView: View {
                 initialRules: (try? HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive)) ?? [:],
                 isReadOnly: isReadOnly,
                 onRulesChange: { applyEditedBoardRules($0) },
-                onChecksRun: { _ in }
+                onChecksRun: { _ in },
+                onApplyRules: { applyBoardRules($0) }
             )
             .navigationTitle("Board Rules")
             .navigationBarTitleDisplayMode(.inline)
@@ -2022,6 +2023,26 @@ struct HorizontalIPadProjectView: View {
                     Button("Done") { rulesSheetPresented = false }
                 }
             }
+        }
+    }
+
+    /// The rules sheet's Apply, for the via rules: as `ProjectDocumentView`'s,
+    /// one undoable edit through the archive and a reload.
+    private func applyBoardRules(_ kind: HorizontalBoardRuleKind) -> String {
+        guard kind == .via, let project, let board = project.board else {
+            return "Horizontal doesn't apply these rules yet."
+        }
+        do {
+            var archive = document.archive
+            let changed = try HorizontalProjectJSONApplicator.applyViaRules(
+                in: project, to: &archive, viaNets: board.viaNetsForRules, netDetails: board.netDetails)
+            guard !changed.isEmpty else {
+                return "Every via that takes its shape from the rules already has it."
+            }
+            try applyArchiveEdit(archive, to: project, actionName: "Apply Via Rules")
+            return changed.count == 1 ? "Applied the via rules to 1 via." : "Applied the via rules to \(changed.count) vias."
+        } catch {
+            return "Couldn't apply the via rules: \(error.localizedDescription)"
         }
     }
 
