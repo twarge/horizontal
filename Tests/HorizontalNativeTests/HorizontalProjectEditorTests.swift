@@ -817,6 +817,46 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual(ends, [kept, kept], "both tracks end on the via's junction")
     }
 
+    /// A via that takes its shape from the rules but whose parameters leave
+    /// out its hole, as three of Weevling's did, is drawn as Horizon draws it:
+    /// with its padstack's default hole, so it has a drill on the canvas and in
+    /// the drill file. Before, it loaded with no hole at all.
+    func testAViaWhoseParametersLeaveOutItsHoleGetsItsPadstacksHole() throws {
+        try placedDivider()
+        let placed = try apply([["op": "place_via", "x_mm": 20, "y_mm": 20, "net": "VCC"]])
+        let viaID = try XCTUnwrap((placed["changes"] as? [[String: Any]])?.first?["via"] as? String)
+
+        let boardURL = packageURL.appendingPathComponent("board.json")
+        var board = try JSONHelper.loadDictionary(from: boardURL)
+        var vias = try XCTUnwrap(board["vias"] as? JSONDictionary)
+        var via = try XCTUnwrap(vias[viaID] as? JSONDictionary)
+        let padstackID = try XCTUnwrap(via.string("padstack"))
+        via["source"] = "rules"
+        via["from_rules"] = true
+        via["parameter_set"] = ["via_diameter": 450_000]
+        vias[viaID] = via
+        board["vias"] = vias
+        try JSONSerialization.data(withJSONObject: board, options: [.sortedKeys]).write(to: boardURL)
+
+        let loaded = try XCTUnwrap(try HorizontalProject.load(from: packageURL).board)
+        let defaultHole = try XCTUnwrap(
+            HorizontalBoard.viaPadstack(padstackID, poolURL: packageURL.appendingPathComponent("pool"))?
+                .dictionary("parameter_set")?.double("hole_diameter"))
+        let marker = try XCTUnwrap(loaded.vias.first { $0.id.lowercased() == viaID.lowercased() })
+        XCTAssertEqual(marker.size, 450_000, "its own diameter stands")
+        XCTAssertEqual(marker.holeSize, defaultHole, "the padstack gives the hole it leaves out")
+        XCTAssertEqual(marker.parameterSet, ["via_diameter": 450_000], "and the file's parameters are kept as they are")
+        XCTAssertEqual(loaded.viaHoles.first { $0.id.lowercased() == "\(viaID.lowercased())/hole" }?.diameter, defaultHole,
+                       "a drill to draw and export")
+
+        _ = try result("reload_project")
+        let listed = try XCTUnwrap((try result("list_vias") as? [String: Any])?["vias"] as? [[String: Any]])
+        let entry = try XCTUnwrap(listed.first { ($0["id"] as? String)?.lowercased() == viaID.lowercased() })
+        XCTAssertEqual(entry["hole_mm"] as? Double, defaultHole / 1_000_000)
+        XCTAssertEqual(entry["unresolved"] as? Bool, true)
+        XCTAssertTrue((entry["note"] as? String)?.contains("hole_diameter") == true, "\(entry)")
+    }
+
     /// Horizon stores no net on a board junction. Read from such a file, the
     /// loader left a track ending at a bend joining nothing, so the app drew an
     /// airwire over every routed connection that bends — on Billo, 328 where

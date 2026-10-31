@@ -1178,7 +1178,8 @@ def list_vias(path: str | None = None, net: str | None = None, limit: int = 200,
     """Vias on the board: net, position, the layers each spans, and whether its shape comes from a padstack, a
     board via definition or the via rules. net_pinned marks a via whose net was set outright rather than
     inherited through the copper that reaches it. unresolved marks one that takes its shape from the via rules
-    but holds no parameters, so its size is a default until Horizon re-derives it."""
+    but whose parameters leave out its diameter or hole, so it has its padstack's default there, as Horizon draws
+    it until the rules are applied."""
     params = {k: v for k, v in {"net": net, "component": component}.items() if v is not None}
     return _resolve(path).vias(limit=limit, **params)
 
