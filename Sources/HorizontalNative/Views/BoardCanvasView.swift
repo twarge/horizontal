@@ -7932,13 +7932,22 @@ struct BoardCanvasView: View {
     }
 
     /// Re-derives the via's drill object (rendered and selectable on its own)
-    /// from the marker's hole size after a parameter edit.
+    /// from the marker's hole size after a parameter edit. A via read with no
+    /// hole diameter has no drill object, which the loader makes only from
+    /// one; it gets one here, where it went on drawing no hole until the
+    /// board was opened again.
     private func syncViaHole(for via: HorizontalMarker, board: inout HorizontalBoard) {
         guard let holeSize = via.holeSize else {
             return
         }
         let holeID = normalizedID(via.id) + "/hole"
         guard let index = board.viaHoles.firstIndex(where: { normalizedID($0.id) == holeID }) else {
+            guard holeSize > 0 else {
+                return
+            }
+            board.viaHoles.append(HorizontalHole(
+                id: "\(via.id)/hole", position: via.position, diameter: holeSize, length: holeSize,
+                shape: .round, plated: true, netID: via.netID))
             return
         }
         board.viaHoles[index].diameter = holeSize
