@@ -19,7 +19,8 @@ final class HorizontalBoardRulesWindowController: NSObject, NSWindowDelegate {
         initialRules: JSONDictionary,
         isReadOnly: Bool,
         onRulesChange: @escaping (JSONDictionary) -> Void,
-        onChecksRun: @escaping (HorizontalBoardRulesResultState) -> Void
+        onChecksRun: @escaping (HorizontalBoardRulesResultState) -> Void,
+        onApplyRules: ((HorizontalBoardRuleKind) -> String)? = nil
     ) {
         let rootView = HorizontalBoardRulesWindow(
             projectName: projectName,
@@ -28,7 +29,8 @@ final class HorizontalBoardRulesWindowController: NSObject, NSWindowDelegate {
             initialRules: initialRules,
             isReadOnly: isReadOnly,
             onRulesChange: onRulesChange,
-            onChecksRun: onChecksRun
+            onChecksRun: onChecksRun,
+            onApplyRules: onApplyRules
         )
 
         if let hostingController {
@@ -62,6 +64,9 @@ struct HorizontalBoardRulesWindow: View {
     var isReadOnly: Bool
     var onRulesChange: (JSONDictionary) -> Void
     var onChecksRun: (HorizontalBoardRulesResultState) -> Void
+    /// Applies a kind's rules to the board, as Horizon's Apply does, and says
+    /// what it did; nil where the host can't.
+    var onApplyRules: ((HorizontalBoardRuleKind) -> String)?
 
     @State private var rules: JSONDictionary
     @State private var selectedKind: HorizontalBoardRuleKind = .clearanceCopper
@@ -77,7 +82,8 @@ struct HorizontalBoardRulesWindow: View {
         initialRules: JSONDictionary,
         isReadOnly: Bool,
         onRulesChange: @escaping (JSONDictionary) -> Void,
-        onChecksRun: @escaping (HorizontalBoardRulesResultState) -> Void
+        onChecksRun: @escaping (HorizontalBoardRulesResultState) -> Void,
+        onApplyRules: ((HorizontalBoardRuleKind) -> String)? = nil
     ) {
         self.projectName = projectName
         self.board = board
@@ -86,6 +92,7 @@ struct HorizontalBoardRulesWindow: View {
         self.isReadOnly = isReadOnly
         self.onRulesChange = onRulesChange
         self.onChecksRun = onChecksRun
+        self.onApplyRules = onApplyRules
         _rules = State(initialValue: initialRules)
     }
 
@@ -158,6 +165,16 @@ struct HorizontalBoardRulesWindow: View {
                 selectedTab = .checks
             }
             .disabled(!selectedKind.canCheck && !selectedKind.needsMatchAll)
+
+            // Horizon's Apply: the board's objects that take their shape
+            // from these rules get it again from the rules as they now stand.
+            if selectedKind.appliesInHorizontal, let onApplyRules {
+                Button("Apply") {
+                    statusMessage = onApplyRules(selectedKind)
+                }
+                .disabled(isReadOnly)
+                .help(selectedKind.applyHelp)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -555,6 +572,21 @@ enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
              .clearanceSilkscreenExposedCopper, .heightRestrictions, .holeSize, .thermals,
              .diffpair, .netTies, .layerPair, .preflightChecks, .boardConnectivity:
             return false
+        }
+    }
+
+    /// Whether Horizontal applies this kind's rules to the board, as the
+    /// Apply button does. Horizon applies every kind `canApply` names.
+    var appliesInHorizontal: Bool {
+        self == .via
+    }
+
+    var applyHelp: String {
+        switch self {
+        case .via:
+            return "Give every via that takes its shape from the rules the padstack and parameters of the rule that matches its net."
+        default:
+            return "Apply these rules to the board."
         }
     }
 

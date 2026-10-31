@@ -262,6 +262,37 @@ enum HorizontalProjectJSONApplicator {
         try saveJSON(json, relativePath: path, to: &archive)
     }
 
+    /// The via rules applied to the board in `archive`, as Horizon's rules
+    /// window applies them (`HorizontalViaRules`): each via that takes its
+    /// shape from the rules gets the padstack and parameters of the rule that
+    /// matches its net, from `viaNets` (lowercased via id to net, as the
+    /// board's connectivity has it). Returns the vias it changed; a reload
+    /// gives them their new size, drill and mask openings.
+    @discardableResult
+    static func applyViaRules(
+        in project: HorizontalProject,
+        to archive: inout HorizontalProjectArchive,
+        viaNets: [String: String],
+        netDetails: [String: HorizontalNetDetails]
+    ) throws -> [String] {
+        guard let board = project.board else {
+            return []
+        }
+        let path = try archivePath(for: board.url, project: project, archive: archive)
+        var json = try loadJSON(relativePath: path, fallbackURL: board.url, from: archive)
+        let applied = HorizontalViaRules.applied(
+            to: json.dictionaryMap("vias"), rules: json.dictionary("rules") ?? [:], netDetails: netDetails
+        ) { id, via in
+            via.string("net_set")?.lowercased() ?? viaNets[id.lowercased()]
+        }
+        guard !applied.changed.isEmpty else {
+            return []
+        }
+        json["vias"] = applied.vias
+        try saveJSON(json, relativePath: path, to: &archive)
+        return applied.changed
+    }
+
     /// Returns whether the plane cache's file changed.
     @discardableResult
     static func applyPlaneCache(board: HorizontalBoard, in project: HorizontalProject, to archive: inout HorizontalProjectArchive) throws -> Bool {

@@ -7206,12 +7206,7 @@ final class HorizontalProjectEditor {
     /// whose match takes the net, as Horizon's BoardRules looks it up for a via
     /// whose source is the rules. Its id comes with it.
     private func viaRule(net: String?) throws -> (id: String, rule: JSONDictionary)? {
-        let family = (try board()["rules"] as? JSONDictionary ?? [:]).dictionaryMap("via")
-        let details = ruleNetDetails()
-        return family.filter { $0.value.bool("enabled") ?? true }
-            .sorted { ($0.value.int("order") ?? 0, $0.key) < ($1.value.int("order") ?? 0, $1.key) }
-            .first { HorizontalRuleMatch(json: $0.value.dictionary("match")).matches(netID: net?.lowercased(), netDetails: details) }
-            .map { ($0.key, $0.value) }
+        HorizontalViaRules.rule(net: net, in: try board()["rules"] as? JSONDictionary ?? [:], netDetails: ruleNetDetails())
     }
 
     /// What a new via takes its shape from, as Horizon's via sources have it:
@@ -7266,32 +7261,24 @@ final class HorizontalProjectEditor {
 
     /// Vias that take their shape from the via rules, given the padstack and
     /// parameters of the rule that now matches their net, after the rules
-    /// change: what Horizon gives them when it opens the board, so the file
+    /// change: what Horizon gives them when its rules are applied, so the file
     /// and everything read from it agree. Counted in the reply.
     private func rederiveRuleVias() throws -> JSONDictionary {
         guard isTopBlock, files["board"] != nil else { return [:] }
         let loaded = Dictionary((project.board?.vias ?? []).map { ($0.id.lowercased(), $0.netID?.lowercased()) }, uniquingKeysWith: { first, _ in first })
         let junctions = try board().dictionaryMap("junctions")
-        var vias = try board().dictionaryMap("vias")
-        var changed = [String]()
-        for (id, var via) in vias {
-            let source = via.string("source") ?? ((via.bool("from_rules") ?? true) ? "rules" : "local")
-            guard source == "rules" else { continue }
-            let net = via.string("net_set")?.lowercased()
+        let applied = HorizontalViaRules.applied(
+            to: try board().dictionaryMap("vias"),
+            rules: try board()["rules"] as? JSONDictionary ?? [:],
+            netDetails: ruleNetDetails()
+        ) { id, via in
+            via.string("net_set")?.lowercased()
                 ?? via.string("junction").flatMap { key in junctions.first { $0.key.lowercased() == key.lowercased() }?.value.string("net")?.lowercased() }
                 ?? loaded[id.lowercased()] ?? nil
-            guard let rule = try viaRule(net: net)?.rule, let padstack = rule.string("padstack"), !padstack.isEmpty, padstack != Self.nullUUID else { continue }
-            let parameters = rule.dictionary("parameter_set") ?? [:]
-            guard via.string("padstack")?.lowercased() != padstack.lowercased()
-                    || !NSDictionary(dictionary: via.dictionary("parameter_set") ?? [:]).isEqual(to: parameters) else { continue }
-            via["padstack"] = padstack
-            via["parameter_set"] = parameters
-            vias[id] = via
-            changed.append(id)
         }
-        guard !changed.isEmpty else { return [:] }
-        try updateBoard { $0["vias"] = vias }
-        return ["vias_rederived": changed.count]
+        guard !applied.changed.isEmpty else { return [:] }
+        try updateBoard { $0["vias"] = applied.vias }
+        return ["vias_rederived": applied.changed.count]
     }
 
     private func placeVia(_ params: JSONDictionary) throws -> JSONDictionary {

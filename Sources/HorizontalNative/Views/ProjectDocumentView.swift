@@ -3099,7 +3099,8 @@ struct ProjectWorkspaceView: View {
                 initialRules: rules,
                 isReadOnly: isReadOnly,
                 onRulesChange: applyEditedBoardRules,
-                onChecksRun: presentBoardRulesResults
+                onChecksRun: presentBoardRulesResults,
+                onApplyRules: applyBoardRules
             )
         } catch {
             recordDiagnostic("Could not load board rules: \(error.localizedDescription)")
@@ -3121,6 +3122,30 @@ struct ProjectWorkspaceView: View {
             recordArchiveApplyFailure(error)
         }
         refreshRulesResults()
+    }
+
+    /// The rules window's Apply, for the via rules: every via that takes its
+    /// shape from the rules gets the padstack and parameters of the rule that
+    /// matches its net, as Horizon's Apply gives them. One undoable edit,
+    /// through the archive and a reload, which gives the vias their new size,
+    /// drill and mask openings. Says what it did, for the window to show.
+    private func applyBoardRules(_ kind: HorizontalBoardRuleKind) -> String {
+        guard kind == .via, let board = project.board else {
+            return "Horizontal doesn't apply these rules yet."
+        }
+        do {
+            var archive = document.archive
+            let changed = try HorizontalProjectJSONApplicator.applyViaRules(
+                in: project, to: &archive, viaNets: board.viaNetsForRules, netDetails: board.netDetails)
+            guard !changed.isEmpty else {
+                return "Every via that takes its shape from the rules already has it."
+            }
+            try applyLiveArchive(archive, actionName: "Apply Via Rules")
+            return changed.count == 1 ? "Applied the via rules to 1 via." : "Applied the via rules to \(changed.count) vias."
+        } catch {
+            recordArchiveApplyFailure(error)
+            return "Couldn't apply the via rules: \(error.localizedDescription)"
+        }
     }
 
     /// The rules checks over every kind, as the board's rules now stand, so
