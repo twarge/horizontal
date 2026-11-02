@@ -274,15 +274,17 @@ final class HorizontalRouteInspectorModel: ObservableObject {
                     let brief = rule.id.isEmpty
                         ? "no rule"
                         : "\(names.match(rule.match1)) / \(names.match(rule.match2))"
-                    return (Double(rule.clearance(.track, item.kind.patchType)), "copper clearance \(brief)")
+                    return (Double(rule.clearance(.track, item.kind.patchType)), Double(rule.routingOffset),
+                            "copper clearance \(brief)")
                 case .hole, .boardEdge:
                     let rule = rules.clearanceCopperOther(net: net, layer: input.layer)
                     let brief = rule.id.isEmpty ? "no rule" : names.match(rule.match)
                     return (Double(rule.clearance(copper: .track, nonCopper: item.kind.patchType)),
-                            "copper–other clearance \(brief)")
+                            Double(rule.routingOffset), "copper–other clearance \(brief)")
                 case .keepout(let keepoutClass):
                     let rule = rules.clearanceCopperKeepout(net: net, keepoutClass: keepoutClass)
-                    return (Double(rule.clearance(.track)), rule.id.isEmpty ? "no keepout rule" : "keepout clearance")
+                    return (Double(rule.clearance(.track)), Double(rule.routingOffset),
+                            rule.id.isEmpty ? "no keepout rule" : "keepout clearance")
                 }
             }
             nearest = nearest.map { measurement in
@@ -362,7 +364,7 @@ private struct HorizontalRouteInspectorContent: View {
         case custom
     }
 
-    private let labelWidth: CGFloat = 76
+    private let labelWidth: CGFloat = 96
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -400,9 +402,6 @@ private struct HorizontalRouteInspectorContent: View {
                     .controlSize(.small)
                     .focusable(false)
                 }
-            }
-            if state.hasStarted, state.via.canDrop {
-                caption("V drops a via and goes on on the other side.")
             }
             row("Net") {
                 if let netName = state.netName {
@@ -567,6 +566,15 @@ private struct HorizontalRouteInspectorContent: View {
                 }
             }
             if let diameter = via.diameter, let hole = via.holeDiameter {
+                if via.isCustom {
+                    if let text = ruleViaText(via) {
+                        caption(text)
+                    }
+                } else if let brief = via.ruleBrief {
+                    caption("Via rule \(brief)")
+                } else {
+                    caption("The board's own via: its rules state no via rule.")
+                }
                 row("Diameter") {
                     millimetreField(diameter, help: viaFieldHelp(via)) { value in
                         commitVia(via, diameter: value, holeDiameter: hole)
@@ -577,20 +585,11 @@ private struct HorizontalRouteInspectorContent: View {
                         commitVia(via, diameter: diameter, holeDiameter: value)
                     }
                 }
-                if via.isCustom {
-                    caption("A via of the tool's own size, for this route and the next; it keeps it, rather than "
-                        + "taking the rules'." + ruleViaText(via))
-                } else if let brief = via.ruleBrief {
-                    caption("Via rule \(brief): the next via it drops keeps taking its shape from the rules.")
-                } else {
-                    caption("The board's own via: its rules state no via rule.")
-                }
                 if hole >= diameter {
                     Label("The hole is as wide as the via.", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
-                caption(via.isArmed ? "The next click drops it there." : "V arms it at the end of the route.")
             } else {
                 if let brief = via.ruleBrief {
                     caption("Via rule \(brief) names no padstack, so V drops no via.")
@@ -616,11 +615,11 @@ private struct HorizontalRouteInspectorContent: View {
         }
     }
 
-    private func ruleViaText(_ via: HorizontalRouteInspectorState.Via) -> String {
+    private func ruleViaText(_ via: HorizontalRouteInspectorState.Via) -> String? {
         guard let diameter = via.ruleDiameter, let hole = via.ruleHoleDiameter else {
-            return ""
+            return nil
         }
-        return " The rules would give \(Self.mm(diameter)) / \(Self.mm(hole)) mm."
+        return "The rules would give \(Self.mm(diameter)) / \(Self.mm(hole)) mm."
     }
 
     private func viaFieldHelp(_ via: HorizontalRouteInspectorState.Via) -> String {
@@ -647,12 +646,15 @@ private struct HorizontalRouteInspectorContent: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("Clearance")
             ruleCaption("Copper", state.spacing.copperRule, kind: .clearanceCopper)
+            routingOffsetRow("Routing offset", state.spacing.copperRule, table: .copper, kept: "its clearances")
             ForEach(state.spacing.rows.filter { $0.table == .copper }) { clearanceRow($0) }
             ForEach(state.spacing.otherCopperRules) { other in
                 caption("\(other.rule.brief) takes \(other.netCount == 1 ? "1 net" : "\(other.netCount) nets") instead, "
                     + "up to \(HorizontalRouteInspectorState.millimetres(other.widest)).")
             }
             ruleCaption("Copper – other", state.spacing.otherRule, kind: .clearanceCopperOther)
+            routingOffsetRow("Routing offset", state.spacing.otherRule, table: .copperOther,
+                             kept: "the board edge and hole clearances")
             ForEach(state.spacing.rows.filter { $0.table == .copperOther }) { clearanceRow($0) }
             let keepouts = state.spacing.rows.filter {
                 if case .keepout = $0.table { return true }
@@ -677,6 +679,24 @@ private struct HorizontalRouteInspectorContent: View {
                 }
                 .routeInspectorLinkStyle()
                 .font(.caption)
+            }
+        }
+    }
+
+    /// A clearance rule's routing offset: what the router keeps beyond the
+    /// clearances the rule gives (`kept`), which the rules check doesn't ask.
+    private func routingOffsetRow(
+        _ label: String,
+        _ rule: HorizontalRouteSpacing.Rule,
+        table: HorizontalRouteSpacing.Table,
+        kept: String
+    ) -> some View {
+        row(label) {
+            millimetreField(rule.routingOffset, help: rule.id == nil
+                ? "Routing offset: what the router keeps beyond \(kept). Adds a clearance rule for every net with it"
+                : "Routing offset of the clearance rule \(rule.brief): what the router keeps beyond \(kept)"
+            ) { value in
+                onCommand(.editRule(.routingOffset(table: table, ruleID: rule.id, value)))
             }
         }
     }
@@ -719,7 +739,7 @@ private struct HorizontalRouteInspectorContent: View {
 
     private func nearestRow(_ measurement: HorizontalRouteClearanceProbe.Measurement) -> some View {
         let violates = measurement.margin < 0
-        let tight = !violates && measurement.margin < 50_000
+        let tight = measurement.isInsideRoutingOffset
         let color: Color = violates ? .red : (tight ? .orange : .green)
         return HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: violates ? "exclamationmark.triangle.fill" : "checkmark.circle")
@@ -729,11 +749,9 @@ private struct HorizontalRouteInspectorContent: View {
                 Text(measurement.label)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(measurement.gap <= 0
-                     ? "Touches; needs \(HorizontalRouteInspectorState.millimetres(measurement.required))"
-                     : "Needs \(HorizontalRouteInspectorState.millimetres(measurement.required))")
+                Text(nearestNote(measurement))
                     .font(.caption)
-                    .foregroundStyle(violates ? .red : .secondary)
+                    .foregroundStyle(violates ? .red : (tight ? .orange : .secondary))
             }
             Spacer(minLength: 4)
             Text(measurement.gap <= 0 ? "0" : HorizontalRouteInspectorState.millimetres(measurement.gap))
@@ -742,6 +760,18 @@ private struct HorizontalRouteInspectorContent: View {
         }
         .help("\(measurement.label): \(HorizontalRouteInspectorState.millimetres(max(measurement.gap, 0))) apart, "
             + "\(HorizontalRouteInspectorState.millimetres(measurement.required)) asked by the \(measurement.rule)")
+    }
+
+    private func nearestNote(_ measurement: HorizontalRouteClearanceProbe.Measurement) -> String {
+        let needs = HorizontalRouteInspectorState.millimetres(measurement.required)
+        if measurement.gap <= 0 {
+            return "Touches; needs \(needs)"
+        }
+        if measurement.isInsideRoutingOffset {
+            let router = HorizontalRouteInspectorState.millimetres(measurement.required + measurement.routingOffset)
+            return "Needs \(needs); inside the routing offset (\(router))"
+        }
+        return "Needs \(needs)"
     }
 
     // MARK: Pieces

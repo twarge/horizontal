@@ -258,14 +258,21 @@ struct HorizontalRuleClearanceCopper: Hashable {
     var match1: HorizontalRuleMatch
     var match2: HorizontalRuleMatch
     var clearances: [Int]
+    /// What Horizon's router keeps beyond the clearance, so a route doesn't
+    /// sit at the minimum the rules check allows. The rules check itself
+    /// ignores it.
+    var routingOffset: Int
 
     static let defaultClearance = 100_000
+    /// RuleClearanceCopper's, and what a file that leaves it out has.
+    static let defaultRoutingOffset = 50_000
 
     init(id: String = "", json: JSONDictionary) {
         self.id = id
         enabled = json.bool("enabled") ?? true
         order = json.int("order") ?? 0
         layer = json.int("layer") ?? 10000
+        routingOffset = json.int("routing_offset") ?? Self.defaultRoutingOffset
         match1 = HorizontalRuleMatch(json: json.dictionary("match_1"))
         match2 = HorizontalRuleMatch(json: json.dictionary("match_2"))
         var table = [Int](repeating: Self.defaultClearance, count: HorizontalPatchType.count * HorizontalPatchType.count)
@@ -292,6 +299,7 @@ struct HorizontalRuleClearanceCopper: Hashable {
         match1 = HorizontalRuleMatch(json: nil)
         match2 = HorizontalRuleMatch(json: nil)
         clearances = [Int](repeating: Self.defaultClearance, count: HorizontalPatchType.count * HorizontalPatchType.count)
+        routingOffset = Self.defaultRoutingOffset
     }
 
     private static func index(_ a: HorizontalPatchType, _ b: HorizontalPatchType) -> Int {
@@ -317,6 +325,8 @@ struct HorizontalRuleClearanceCopperOther: Hashable {
     var layer: Int
     var match: HorizontalRuleMatch
     var clearances: [Pair: Int]
+    /// As RuleClearanceCopper's (`HorizontalRuleClearanceCopper.routingOffset`).
+    var routingOffset: Int
 
     struct Pair: Hashable {
         var copper: HorizontalPatchType
@@ -330,6 +340,7 @@ struct HorizontalRuleClearanceCopperOther: Hashable {
         enabled = json.bool("enabled") ?? true
         order = json.int("order") ?? 0
         layer = json.int("layer") ?? 10000
+        routingOffset = json.int("routing_offset") ?? HorizontalRuleClearanceCopper.defaultRoutingOffset
         match = HorizontalRuleMatch(json: json.dictionary("match"))
         var map = [Pair: Int]()
         for entry in json.dictionaryArray("clearances") {
@@ -352,6 +363,7 @@ struct HorizontalRuleClearanceCopperOther: Hashable {
         layer = 10000
         match = HorizontalRuleMatch(json: nil)
         clearances = [:]
+        routingOffset = HorizontalRuleClearanceCopper.defaultRoutingOffset
     }
 
     func clearance(copper ptCopper: HorizontalPatchType, nonCopper ptNonCopper: HorizontalPatchType) -> Int {
@@ -372,11 +384,14 @@ struct HorizontalRuleClearanceCopperKeepout: Hashable {
     var match: HorizontalRuleMatch
     var matchKeepout: HorizontalRuleMatchKeepout
     var clearances: [HorizontalPatchType: Int]
+    /// As RuleClearanceCopper's (`HorizontalRuleClearanceCopper.routingOffset`).
+    var routingOffset: Int
 
     init(id: String = "", json: JSONDictionary) {
         self.id = id
         enabled = json.bool("enabled") ?? true
         order = json.int("order") ?? 0
+        routingOffset = json.int("routing_offset") ?? HorizontalRuleClearanceCopper.defaultRoutingOffset
         match = HorizontalRuleMatch(json: json.dictionary("match"))
         matchKeepout = HorizontalRuleMatchKeepout(json: json.dictionary("match_keepout"))
         var map = [HorizontalPatchType: Int]()
@@ -397,6 +412,7 @@ struct HorizontalRuleClearanceCopperKeepout: Hashable {
         match = HorizontalRuleMatch(json: nil)
         matchKeepout = HorizontalRuleMatchKeepout(json: nil)
         clearances = [:]
+        routingOffset = 0
     }
 
     func clearance(_ pt: HorizontalPatchType) -> Int {

@@ -18,7 +18,9 @@ final class HorizontalBoardTrackRouterSession {
         let world = HorizontalRouterWorld.extract(from: board)
         self.world = world
         self.index = HorizontalRouterIndex(world: world)
-        self.clearances = HorizontalRouterClearances(world: world, rules: board.rules)
+        // The router keeps each rule's routing offset beyond its clearance,
+        // as Horizon's does.
+        self.clearances = HorizontalRouterClearances(world: world, rules: board.rules, includesRoutingOffset: true)
     }
 
     /// The router's dense code for a board net id, or −1 for no net.

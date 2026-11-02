@@ -74,14 +74,20 @@ struct HorizontalRouterClearances {
 
     private let rules: HorizontalBoardRules
     private let netIDForCode: [Int: String]
+    /// Add each rule's routing offset, as Horizon's router does
+    /// (PNS_HORIZON_RULE_RESOLVER::Clearance), so a route keeps more than the
+    /// rules check asks. Off, the clearance is the rules' own, as the rules
+    /// check measures it.
+    let includesRoutingOffset: Bool
 
-    init(rules: HorizontalBoardRules, netIDForCode: [Int: String]) {
+    init(rules: HorizontalBoardRules, netIDForCode: [Int: String], includesRoutingOffset: Bool = false) {
         self.rules = rules
         self.netIDForCode = netIDForCode
+        self.includesRoutingOffset = includesRoutingOffset
     }
 
-    init(world: HorizontalRouterWorld, rules: HorizontalBoardRules) {
-        self.init(rules: rules, netIDForCode: world.netIDForCode)
+    init(world: HorizontalRouterWorld, rules: HorizontalBoardRules, includesRoutingOffset: Bool = false) {
+        self.init(rules: rules, netIDForCode: world.netIDForCode, includesRoutingOffset: includesRoutingOffset)
     }
 
     private func netID(_ code: Int) -> String? {
@@ -104,31 +110,31 @@ struct HorizontalRouterClearances {
             return 0
         }
 
+        func offset(_ routingOffset: Int) -> Double {
+            includesRoutingOffset ? Double(routingOffset) : 0
+        }
+
         // A keepout carries its own table, keyed by class rather than by net.
+        // With no rule for it Horizon's router keeps nothing, offset included.
         if case .keepout(let keepoutClass) = a {
-            return Double(rules
-                .clearanceCopperKeepout(net: netID(bNet), keepoutClass: keepoutClass)
-                .clearance(b.patchType))
+            let rule = rules.clearanceCopperKeepout(net: netID(bNet), keepoutClass: keepoutClass)
+            return Double(rule.clearance(b.patchType)) + offset(rule.routingOffset)
         }
         if case .keepout(let keepoutClass) = b {
-            return Double(rules
-                .clearanceCopperKeepout(net: netID(aNet), keepoutClass: keepoutClass)
-                .clearance(a.patchType))
+            let rule = rules.clearanceCopperKeepout(net: netID(aNet), keepoutClass: keepoutClass)
+            return Double(rule.clearance(a.patchType)) + offset(rule.routingOffset)
         }
 
         switch (a.isCopper, b.isCopper) {
         case (true, true):
-            return Double(rules
-                .clearanceCopper(net1: netID(aNet), net2: netID(bNet), layer: layer)
-                .clearance(a.patchType, b.patchType))
+            let rule = rules.clearanceCopper(net1: netID(aNet), net2: netID(bNet), layer: layer)
+            return Double(rule.clearance(a.patchType, b.patchType)) + offset(rule.routingOffset)
         case (true, false):
-            return Double(rules
-                .clearanceCopperOther(net: netID(aNet), layer: layer)
-                .clearance(copper: a.patchType, nonCopper: b.patchType))
+            let rule = rules.clearanceCopperOther(net: netID(aNet), layer: layer)
+            return Double(rule.clearance(copper: a.patchType, nonCopper: b.patchType)) + offset(rule.routingOffset)
         case (false, true):
-            return Double(rules
-                .clearanceCopperOther(net: netID(bNet), layer: layer)
-                .clearance(copper: b.patchType, nonCopper: a.patchType))
+            let rule = rules.clearanceCopperOther(net: netID(bNet), layer: layer)
+            return Double(rule.clearance(copper: b.patchType, nonCopper: a.patchType)) + offset(rule.routingOffset)
         case (false, false):
             // Neither is copper, so no copper rule governs the pair and the
             // router has no business keeping them apart.

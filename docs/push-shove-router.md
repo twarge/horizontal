@@ -69,6 +69,20 @@ violation invariant, and samples its pads in a sorted order — the board hands
 them back in dictionary order, which differs from one process to the next,
 and a sample that differs run to run turns every number into noise.
 
+**The router keeps the routing offset (November 2026).** Horizon's router
+keeps each clearance rule's `routing_offset` beyond its clearance
+(PNS_HORIZON_RULE_RESOLVER::Clearance), so a route doesn't sit at the minimum
+the rules check allows; the rules check asks only the clearance. This one now
+does too (`HorizontalRouterClearances.includesRoutingOffset`, on in the track
+tool's session, off for anything that measures against the rules), with a
+file that leaves the offset out given RuleClearanceCopper's 0.05 mm and a
+keepout no rule takes given nothing. On Board B, whose copper rule's
+offset is 0.025 mm and copper-to-other's 0.05 mm, the same 125 sampled pairs
+now complete 38% of the time, against 53% at the bare clearance, still with
+no violation: the board is dense enough that the margin closes channels. A
+board that wants the old behaviour sets the offset to 0, in the route
+inspector or the rules window.
+
 The walkaround (`HorizontalRouteWalkaround`) stays in the tree. The finder no
 longer calls it, but it is tested, it is the piece a shove is built from, and
 its tangent-selection lesson below still stands.
@@ -491,7 +505,8 @@ treatment the pour got:
    between them (`HorizontalRouteClearanceProbe`). Its fields change the
    rules: the width the matching track width rule's default on the layer (or a
    new rule taking every net where none does), its range the rule's, each
-   clearance its rule's entry (a new catch-all rule where none matches), and
+   clearance its rule's entry (a new catch-all rule where none matches), each
+   clearance rule's routing offset, and
    the via's diameter and hole the matching via rule's parameters (a new via
    rule with the board's default via where none takes the net)
    (`HorizontalRouteRuleEditing`). Width and via each have Rules / Custom:

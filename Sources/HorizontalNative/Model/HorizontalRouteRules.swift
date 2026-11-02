@@ -229,6 +229,9 @@ struct HorizontalRouteSpacing: Equatable {
     struct Rule: Equatable {
         var id: String?
         var brief: String
+        /// What Horizon's router keeps beyond the rule's clearances: the
+        /// rule's, or with no rule the fallback's (0.05 mm; none for a keepout).
+        var routingOffset: Double = 0
     }
 
     struct Row: Identifiable, Equatable {
@@ -284,11 +287,12 @@ struct HorizontalRouteSpacing: Equatable {
     ) -> HorizontalRouteSpacing {
         func copperBrief(_ rule: HorizontalRuleClearanceCopper) -> Rule {
             guard !rule.id.isEmpty else {
-                return Rule(id: nil, brief: "No rule — Horizon's 0.1 mm")
+                return Rule(id: nil, brief: "No rule — Horizon's 0.1 mm", routingOffset: Double(rule.routingOffset))
             }
             return Rule(
                 id: rule.id,
-                brief: "\(names.match(rule.match1)) / \(names.match(rule.match2)) · \(HorizontalRouteRuleNames.layer(rule.layer))")
+                brief: "\(names.match(rule.match1)) / \(names.match(rule.match2)) · \(HorizontalRouteRuleNames.layer(rule.layer))",
+                routingOffset: Double(rule.routingOffset))
         }
 
         // Which copper rule each other net gets with this one, by rule id ("" is
@@ -319,8 +323,9 @@ struct HorizontalRouteSpacing: Equatable {
 
         let other = rules.clearanceCopperOther(net: net, layer: layer)
         let otherRule = other.id.isEmpty
-            ? Rule(id: nil, brief: "No rule — Horizon's 0.1 mm")
-            : Rule(id: other.id, brief: "\(names.match(other.match)) · \(HorizontalRouteRuleNames.layer(other.layer))")
+            ? Rule(id: nil, brief: "No rule — Horizon's 0.1 mm", routingOffset: Double(other.routingOffset))
+            : Rule(id: other.id, brief: "\(names.match(other.match)) · \(HorizontalRouteRuleNames.layer(other.layer))",
+                   routingOffset: Double(other.routingOffset))
 
         var rows = copperTypes.map { type in
             Row(table: .copper, other: type, title: type.routeTitle,
@@ -334,7 +339,7 @@ struct HorizontalRouteSpacing: Equatable {
             let rule = rules.clearanceCopperKeepout(net: net, keepoutClass: keepoutClass)
             let source = rule.id.isEmpty
                 ? Rule(id: nil, brief: "No rule — no clearance")
-                : Rule(id: rule.id, brief: "\(names.match(rule.match)) / keepouts")
+                : Rule(id: rule.id, brief: "\(names.match(rule.match)) / keepouts", routingOffset: Double(rule.routingOffset))
             rows.append(Row(
                 table: .keepout(keepoutClass), other: .track,
                 title: keepoutClass.isEmpty ? "Keepout" : "Keepout \(keepoutClass)",
@@ -372,6 +377,10 @@ enum HorizontalRouteRuleEdit: Equatable {
     /// A copper keepout clearance rule's entry for one kind of copper. With
     /// no rule, a new one for keepouts of `keepoutClass`.
     case keepoutClearance(ruleID: String?, keepoutClass: String, copper: HorizontalPatchType, Double)
+    /// A copper or copper-to-other clearance rule's routing offset. With no
+    /// rule, a new one that takes every net on every layer, after the
+    /// others, whose clearances are the fallback's.
+    case routingOffset(table: HorizontalRouteSpacing.Table, ruleID: String?, Double)
     /// A via rule's `via_diameter` and `hole_diameter`. The rule as the board
     /// has it, since a board whose file states no via rule is given Horizon's
     /// at load, which the file doesn't have yet.
@@ -388,7 +397,7 @@ enum HorizontalRouteRuleEdit: Equatable {
         case .viaParameters: "Change Via Rule"
         case .addViaRule: "Add Via Rule"
         case .copperClearance(let ruleID, _, _, _), .copperOtherClearance(let ruleID, _, _, _),
-             .keepoutClearance(let ruleID, _, _, _):
+             .keepoutClearance(let ruleID, _, _, _), .routingOffset(_, let ruleID, _):
             ruleID == nil ? "Add Clearance Rule" : "Change Clearance Rule"
         }
     }
@@ -548,6 +557,53 @@ enum HorizontalRouteRuleEditing {
                 ] as JSONDictionary
             }
             rules["clearance_copper_keepout"] = family
+
+        case .routingOffset(let table, let ruleID, let value):
+            guard let value = clearanceValue(value) else {
+                return nil
+            }
+            let familyKey: String
+            switch table {
+            case .copper: familyKey = "clearance_copper"
+            case .copperOther: familyKey = "clearance_copper_other"
+            case .keepout: familyKey = "clearance_copper_keepout"
+            }
+            var family = rules[familyKey] as? JSONDictionary ?? [:]
+            if let ruleID {
+                guard let key = family.keys.first(where: { $0.lowercased() == ruleID.lowercased() }),
+                      var rule = family[key] as? JSONDictionary,
+                      rule.int("routing_offset") != value else {
+                    return nil
+                }
+                rule["routing_offset"] = value
+                family[key] = rule
+            } else {
+                var rule: JSONDictionary = [
+                    "enabled": true,
+                    "order": nextOrder(in: family),
+                    "routing_offset": value,
+                    "clearances": [] as [Any]
+                ]
+                switch table {
+                case .copper:
+                    rule["match_1"] = matchAll
+                    rule["match_2"] = matchAll
+                    rule["layer"] = anyLayer
+                case .copperOther:
+                    rule["match"] = matchAll
+                    rule["layer"] = anyLayer
+                case .keepout(let keepoutClass):
+                    rule["match"] = matchAll
+                    rule["match_keepout"] = [
+                        "mode": keepoutClass.isEmpty ? "all" : "keepout_class",
+                        "component": nullUUID,
+                        "keepout_class": keepoutClass
+                    ] as JSONDictionary
+                    rule["clearances"] = JSONDictionary()
+                }
+                family[newRuleID()] = rule
+            }
+            rules[familyKey] = family
 
         case .viaParameters(let rule, let diameter, let holeDiameter):
             guard diameter > 0, holeDiameter > 0 else {
