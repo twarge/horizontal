@@ -508,25 +508,38 @@ enum BoardTrackRouting {
     /// any. Lets a new track branch inherit the width of the track it starts on,
     /// matching "continue at the same width" behavior.
     static func trackWidth(at point: HorizontalPoint, layer: Int? = nil, tracks: [HorizontalSegment]) -> Double? {
+        track(at: point, layer: layer, tracks: tracks)?.width
+    }
+
+    /// The existing track touching `point` (endpoint or body), if any: the
+    /// one whose width a route starting there continues.
+    static func track(at point: HorizontalPoint, layer: Int? = nil, tracks: [HorizontalSegment]) -> HorizontalSegment? {
         let pointKey = key(point)
         for track in tracks where track.width > 0 && isOn(track.layer, layer) {
             if key(track.from) == pointKey
                 || key(track.to) == pointKey
                 || pointLiesOnSegment(point, track) {
-                return track.width
+                return track
             }
         }
         return nil
     }
 
-    /// Default width for a freshly drawn track: the most common width already in
-    /// use on the same net, else the board's most common track width, else
-    /// `fallback`. (Horizontal does not model per-net-class default widths.)
+    /// Default width for a freshly drawn track where no track width rule
+    /// takes its net (`HorizontalRouteWidth.fromRules`): the most common
+    /// width already in use on the same net, else the board's most common
+    /// track width, else `fallback`.
     static func defaultWidth(
         tracks: [HorizontalSegment],
         net netID: String?,
         fallback: Double = defaultTrackWidth
     ) -> Double {
+        commonWidth(tracks: tracks, net: netID) ?? fallback
+    }
+
+    /// The most common width on the net's tracks, else on the board's; nil
+    /// on a board with no tracks.
+    static func commonWidth(tracks: [HorizontalSegment], net netID: String?) -> Double? {
         if let netID {
             let netWidths = tracks
                 .filter { $0.netID.map(HorizontalCanvasModeSupport.normalizedID)
@@ -536,10 +549,7 @@ enum BoardTrackRouting {
                 return width
             }
         }
-        if let width = mostCommonWidth(tracks.map(\.width)) {
-            return width
-        }
-        return fallback
+        return mostCommonWidth(tracks.map(\.width))
     }
 
     // MARK: - Vias

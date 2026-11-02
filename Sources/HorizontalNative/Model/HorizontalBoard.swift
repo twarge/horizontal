@@ -861,6 +861,33 @@ struct HorizontalBoard {
         return loadedBoard
     }
 
+    /// The board's rules as `json` states them, taken in without a reload:
+    /// the typed rules (with the via rule a board stating none is given, as
+    /// `load` gives it), the via definitions, and the rules' parameters. What
+    /// the rules shaped as the board loaded — the mask openings of pads and
+    /// vias — waits for the next.
+    mutating func takeRules(_ json: JSONDictionary) {
+        rules = HorizontalBoardRules(rules: json, netDetails: netDetails)
+        if !rules.statesViaRules, rules.viaRules.isEmpty {
+            rules.viaRules = [HorizontalRuleVia.horizonDefault(boardID: uuid, padstackID: defaultViaPadstackID)]
+        }
+        viaDefinitions = Self.viaDefinitionModels(from: Self.parseViaDefinitions(from: json))
+        ruleViaMaskExpansion = Self.boardRuleParameterSet(from: json).double("via_solder_mask_expansion") ?? 100_000
+        ruleParameters = (json.dictionary("parameters") ?? [:]).reduce(into: [String: Int]()) { result, item in
+            if let value = (item.value as? NSNumber)?.intValue {
+                result[item.key] = value
+            }
+        }
+    }
+
+    /// The rules `board` has, which `takeRules(_:)` gave it.
+    mutating func takeRules(of board: HorizontalBoard) {
+        rules = board.rules
+        viaDefinitions = board.viaDefinitions
+        ruleViaMaskExpansion = board.ruleViaMaskExpansion
+        ruleParameters = board.ruleParameters
+    }
+
     /// `default_via` from the pool's `pool.json`, unless it is the null uuid
     /// Horizon writes for none.
     private static func poolDefaultVia(poolURL: URL) -> String? {

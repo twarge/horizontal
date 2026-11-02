@@ -1,0 +1,809 @@
+import Foundation
+import SwiftUI
+
+/// What the route inspector shows while a track is being routed: the layer
+/// and net, the width and where it comes from, the clearance kept from each
+/// kind of thing and the rule it comes from, and how close the route is to
+/// what it passes.
+struct HorizontalRouteInspectorState: Equatable {
+    struct LayerOption: Identifiable, Equatable {
+        var id: Int
+        var title: String
+    }
+
+    /// The track width rule that takes the route's net, on its layer.
+    struct WidthRule: Equatable {
+        var id: String
+        var brief: String
+        var layer: Int
+        var widths: HorizontalRuleTrackWidth.Widths
+    }
+
+    /// The via V drops on the route, and the via rule that would shape it.
+    struct Via: Equatable {
+        /// Its size, nil where V drops none: no via rule takes the net, or
+        /// the one that does names no padstack.
+        var diameter: Double?
+        var holeDiameter: Double?
+        /// The tool settings give it a size of its own.
+        var isCustom: Bool
+        var isArmed: Bool
+        /// The first enabled via rule that takes the route's net.
+        var rule: HorizontalRuleVia?
+        var ruleBrief: String?
+        /// The size the rule gives, where it gives one.
+        var ruleDiameter: Double?
+        var ruleHoleDiameter: Double?
+        /// The padstack a new via rule takes: the board's default via.
+        var defaultPadstackID: String
+
+        var canDrop: Bool { diameter != nil }
+    }
+
+    var hasStarted: Bool
+    var isRouterMode: Bool
+    var layer: Int
+    var layerOptions: [LayerOption]
+    var netName: String?
+    var netClassName: String?
+    var width: Double
+    var widthSource: HorizontalRouteWidthSource
+    var widthRule: WidthRule?
+    /// What the rules would give, where the width isn't theirs.
+    var ruleWidth: Double
+    var spacing: HorizontalRouteSpacing
+    var nearest: [HorizontalRouteClearanceProbe.Measurement]
+    var nearestRadius: Double
+    var via: Via
+
+    var layerName: String {
+        layerOptions.first { $0.id == layer }?.title ?? HorizontalBoardLayers.name(for: layer)
+    }
+
+    /// Where the width comes from, in a sentence.
+    var widthSourceText: String {
+        switch widthSource {
+        case .custom:
+            return "A custom width, set with W or here, for this route and the next."
+        case .track:
+            return "The width of the track the route started on, which it continues."
+        case .rule:
+            if let widthRule {
+                return "Track width rule \(widthRule.brief), on \(layerName)."
+            }
+            return "A track width rule, on \(layerName)."
+        case .existingTracks:
+            return "No track width rule takes this net: the width most of its tracks have."
+        case .fallback:
+            return "No track width rule takes this net: RuleTrackWidth's 0.2 mm."
+        }
+    }
+
+    /// A width outside the range the rule allows.
+    var widthWarning: String? {
+        guard let widthRule else {
+            return nil
+        }
+        if width < widthRule.widths.min {
+            return "Narrower than the rule's \(Self.millimetres(widthRule.widths.min)) minimum."
+        }
+        if width > widthRule.widths.max {
+            return "Wider than the rule's \(Self.millimetres(widthRule.widths.max)) maximum."
+        }
+        return nil
+    }
+
+    static func millimetres(_ nanometres: Double) -> String {
+        (nanometres / 1_000_000).formatted(.number.precision(.fractionLength(3))) + " mm"
+    }
+}
+
+/// Everything the inspector's state is made from, gathered by the canvas.
+struct HorizontalRouteInspectorInput {
+    var board: HorizontalBoard
+    var netClasses: [HorizontalNetClass]
+    var layer: Int
+    var netID: String?
+    var width: Double
+    var widthSource: HorizontalRouteWidthSource
+    var hasStarted: Bool
+    var isRouterMode: Bool
+    /// The route as previewed, as polylines; a single point before it starts.
+    var route: [[HorizontalPoint]]
+    /// Where the route meets copper it is meant to: its start, and while it
+    /// has no net the copper its next click would join.
+    var connecting: [HorizontalPoint]
+    /// The via V drops, as the canvas shapes it (`routeVia`), nil for none.
+    var via: HorizontalBoardViaTemplate?
+    var viaArmed: Bool
+    /// The tool settings give the via a size of its own.
+    var customVia: Bool
+    /// Counts changes to the board's rules, so what is worked out from them
+    /// is worked out again.
+    var rulesRevision: Int
+}
+
+/// A change the inspector asks of whoever shows it.
+enum HorizontalRouteInspectorCommand: Equatable {
+    /// The layer a route that hasn't started yet goes on.
+    case selectLayer(Int)
+    /// The width from the rules again, rather than a custom one or the
+    /// width of the track the route started on.
+    case useRuleWidth
+    /// A custom width, for this route and the next.
+    case useCustomWidth(Double)
+    /// The via the via rules give again, rather than one of the tool's size.
+    case useRuleVia
+    /// A via of this size, for this route and the next.
+    case useCustomVia(diameter: Double, holeDiameter: Double)
+    case editRule(HorizontalRouteRuleEdit)
+    /// Open the board's rules at a rule.
+    case showRules(HorizontalBoardRuleKind, ruleID: String?)
+}
+
+/// The canvas's part of `HorizontalRouteInspectorCommand.useRuleWidth`: give
+/// the route in progress the rules' width.
+struct HorizontalRouteWidthCommand: Equatable {
+    var id = UUID()
+}
+
+/// Shared by the board canvas, which feeds it, and the sidebar, which shows
+/// it. The canvas holds it without observing it and the host holds it in
+/// plain state, so a cursor move redraws the inspector alone.
+@MainActor
+final class HorizontalRouteInspectorModel: ObservableObject {
+    @Published private(set) var state: HorizontalRouteInspectorState?
+    /// The track tool is in use; the host shows the inspector while it is.
+    @Published private(set) var isRouting = false
+
+    private var probe: HorizontalRouteClearanceProbe?
+    private var spacingCache: (key: String, spacing: HorizontalRouteSpacing)?
+    private var pending: HorizontalRouteInspectorInput?
+    private var flushTask: Task<Void, Never>?
+    private var lastFlush = Date.distantPast
+    /// At most this often: the cursor moves far faster than anyone reads.
+    private let interval: TimeInterval
+
+    init(interval: TimeInterval = 1.0 / 30.0) {
+        self.interval = interval
+    }
+
+    /// The track tool started on `board`: what a route is measured against is
+    /// the board as it is now.
+    func beginRoute(on board: HorizontalBoard) {
+        probe = HorizontalRouteClearanceProbe(board: board)
+        spacingCache = nil
+        if !isRouting {
+            isRouting = true
+        }
+    }
+
+    /// The track tool ended.
+    func endRoute() {
+        flushTask?.cancel()
+        flushTask = nil
+        pending = nil
+        probe = nil
+        spacingCache = nil
+        if state != nil {
+            state = nil
+        }
+        if isRouting {
+            isRouting = false
+        }
+    }
+
+    func update(_ input: HorizontalRouteInspectorInput) {
+        guard isRouting else {
+            return
+        }
+        pending = input
+        guard flushTask == nil else {
+            return
+        }
+        let wait = max(0, interval - Date().timeIntervalSince(lastFlush))
+        flushTask = Task { @MainActor [weak self] in
+            if wait > 0 {
+                try? await Task.sleep(for: .seconds(wait))
+            }
+            guard !Task.isCancelled else { return }
+            self?.flush()
+        }
+    }
+
+    /// Works the pending input out now, rather than at the next tick.
+    func flush() {
+        flushTask = nil
+        guard let input = pending, isRouting else {
+            return
+        }
+        pending = nil
+        lastFlush = Date()
+        let next = makeState(input)
+        if next != state {
+            state = next
+        }
+    }
+
+    func makeState(_ input: HorizontalRouteInspectorInput) -> HorizontalRouteInspectorState {
+        let board = input.board
+        let rules = board.rules
+        let names = HorizontalRouteRuleNames(netDetails: board.netDetails, netClasses: input.netClasses)
+        let net = input.netID?.lowercased()
+        let details = net.flatMap { board.netDetails[$0] }
+
+        let layers = board.stackupLayers.map(\.layer).filter(HorizontalBoardLayers.isCopper).sorted(by: >)
+        let layerOptions = (layers.isEmpty ? [HorizontalBoardLayers.topCopper, HorizontalBoardLayers.bottomCopper] : layers)
+            .map { HorizontalRouteInspectorState.LayerOption(id: $0, title: HorizontalBoardLayers.name(for: $0)) }
+
+        let widthRule = rules.trackWidth(net: net, layer: input.layer).map {
+            HorizontalRouteInspectorState.WidthRule(
+                id: $0.rule.id, brief: names.match($0.rule.match), layer: input.layer, widths: $0.widths)
+        }
+        let ruleWidth = HorizontalRouteWidth.fromRules(net: net, layer: input.layer, rules: rules, tracks: board.tracks).width
+
+        let keepoutClasses = Array(Set(board.keepouts
+            .filter { $0.copperPatchTypes.isEmpty || $0.copperPatchTypes.contains("track") }
+            .map(\.keepoutClass))).sorted()
+        let spacingKey = "\(net ?? "-")|\(input.layer)|\(input.rulesRevision)|\(keepoutClasses)"
+        let spacing: HorizontalRouteSpacing
+        if let cached = spacingCache, cached.key == spacingKey {
+            spacing = cached.spacing
+        } else {
+            let otherNets: [String?] = board.netDetails.keys.map { $0.lowercased() }.filter { $0 != net }.sorted() + [nil]
+            spacing = HorizontalRouteSpacing.make(
+                net: net, layer: input.layer, rules: rules, otherNets: otherNets,
+                keepoutClasses: keepoutClasses, names: names)
+            spacingCache = (spacingKey, spacing)
+        }
+
+        let widest = spacing.rows.map(\.clearance).max() ?? 0
+        let radius = max(1_000_000, 4 * widest)
+        var nearest = [HorizontalRouteClearanceProbe.Measurement]()
+        if let probe, !input.route.isEmpty {
+            var copperRules = [String: HorizontalRuleClearanceCopper]()
+            nearest = probe.nearest(
+                route: input.route, width: input.width, layer: input.layer, net: net,
+                connecting: input.connecting, radius: radius
+            ) { item in
+                switch item.kind {
+                case .track, .pad, .padThroughHole, .via:
+                    let key = item.netID ?? ""
+                    let rule = copperRules[key] ?? rules.clearanceCopper(net1: net, net2: item.netID, layer: input.layer)
+                    copperRules[key] = rule
+                    let brief = rule.id.isEmpty
+                        ? "no rule"
+                        : "\(names.match(rule.match1)) / \(names.match(rule.match2))"
+                    return (Double(rule.clearance(.track, item.kind.patchType)), "copper clearance \(brief)")
+                case .hole, .boardEdge:
+                    let rule = rules.clearanceCopperOther(net: net, layer: input.layer)
+                    let brief = rule.id.isEmpty ? "no rule" : names.match(rule.match)
+                    return (Double(rule.clearance(copper: .track, nonCopper: item.kind.patchType)),
+                            "copper–other clearance \(brief)")
+                case .keepout(let keepoutClass):
+                    let rule = rules.clearanceCopperKeepout(net: net, keepoutClass: keepoutClass)
+                    return (Double(rule.clearance(.track)), rule.id.isEmpty ? "no keepout rule" : "keepout clearance")
+                }
+            }
+            nearest = nearest.map { measurement in
+                var measurement = measurement
+                if let netID = measurement.netID, let name = board.netDetails[netID]?.name, !name.isEmpty {
+                    measurement.label += " · \(name)"
+                }
+                return measurement
+            }
+        }
+
+        return HorizontalRouteInspectorState(
+            hasStarted: input.hasStarted,
+            isRouterMode: input.isRouterMode,
+            layer: input.layer,
+            layerOptions: layerOptions,
+            netName: details.map { $0.name.isEmpty ? String($0.id.prefix(8)) : $0.name } ?? input.netID.map { String($0.prefix(8)) },
+            netClassName: details?.netClassName,
+            width: input.width,
+            widthSource: input.widthSource,
+            widthRule: widthRule,
+            ruleWidth: ruleWidth,
+            spacing: spacing,
+            nearest: nearest,
+            nearestRadius: radius,
+            via: viaState(input, names: names)
+        )
+    }
+
+    private func viaState(_ input: HorizontalRouteInspectorInput, names: HorizontalRouteRuleNames) -> HorizontalRouteInspectorState.Via {
+        let board = input.board
+        let net = input.netID?.lowercased()
+        let rule = board.rules.via(net: net)
+        let ruled = BoardTrackRouting.routeVia(netID: net, rules: board.rules, template: board.viaTemplate)
+        return HorizontalRouteInspectorState.Via(
+            diameter: input.via?.diameter,
+            holeDiameter: input.via?.holeDiameter,
+            isCustom: input.customVia && input.via != nil,
+            isArmed: input.viaArmed,
+            rule: rule,
+            ruleBrief: rule.map { names.match($0.match) },
+            ruleDiameter: ruled?.diameter,
+            ruleHoleDiameter: ruled?.holeDiameter,
+            defaultPadstackID: board.defaultViaPadstackID
+        )
+    }
+}
+
+/// The route inspector: the sidebar's content while a track is routed.
+struct HorizontalRouteInspectorView: View {
+    @ObservedObject var model: HorizontalRouteInspectorModel
+    var isReadOnly: Bool
+    /// Whether the host can open the board's rules at a rule.
+    var canShowRules = true
+    var onCommand: (HorizontalRouteInspectorCommand) -> Void
+
+    var body: some View {
+        if let state = model.state {
+            HorizontalRouteInspectorContent(
+                state: state, isReadOnly: isReadOnly, canShowRules: canShowRules, onCommand: onCommand)
+        } else {
+            Label("Starting the route…", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct HorizontalRouteInspectorContent: View {
+    var state: HorizontalRouteInspectorState
+    var isReadOnly: Bool
+    var canShowRules: Bool
+    var onCommand: (HorizontalRouteInspectorCommand) -> Void
+
+    private enum WidthMode: Hashable {
+        case rules
+        case track
+        case custom
+    }
+
+    private let labelWidth: CGFloat = 76
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            routeSection
+            Divider()
+            widthSection
+            Divider()
+            viaSection
+            Divider()
+            clearanceSection
+            Divider()
+            nearestSection
+        }
+        .font(.callout)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: Layer and net
+
+    private var routeSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            row("Layer") {
+                if state.hasStarted || isReadOnly || state.layerOptions.count < 2 {
+                    Text(state.layerName)
+                } else {
+                    Picker("Layer", selection: Binding(
+                        get: { state.layer },
+                        set: { onCommand(.selectLayer($0)) }
+                    )) {
+                        ForEach(state.layerOptions) { option in
+                            Text(option.title).tag(option.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .focusable(false)
+                }
+            }
+            if state.hasStarted, state.via.canDrop {
+                caption("V drops a via and goes on on the other side.")
+            }
+            row("Net") {
+                if let netName = state.netName {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(netName)
+                            .fontWeight(.medium)
+                        if let netClassName = state.netClassName {
+                            Text("Net class \(netClassName)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    Text(state.hasStarted ? "No net" : "The net of what it starts on")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    // MARK: Width
+
+    private var widthMode: WidthMode {
+        switch state.widthSource {
+        case .custom: .custom
+        case .track: .track
+        case .rule, .existingTracks, .fallback: .rules
+        }
+    }
+
+    private var widthSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                sectionTitle("Width")
+                Spacer()
+                Picker("Width from", selection: Binding(
+                    get: { widthMode },
+                    set: { mode in
+                        switch mode {
+                        case .rules: onCommand(.useRuleWidth)
+                        case .custom: onCommand(.useCustomWidth(state.width))
+                        case .track: break
+                        }
+                    }
+                )) {
+                    Text("Rules").tag(WidthMode.rules)
+                    if widthMode == .track {
+                        Text("Track").tag(WidthMode.track)
+                    }
+                    Text("Custom").tag(WidthMode.custom)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
+                .disabled(isReadOnly)
+                .help("Where the route's width comes from: the track width rules, or a width of your own")
+            }
+            row("Width") {
+                millimetreField(state.width, help: widthFieldHelp) { width in
+                    commitWidth(width)
+                }
+            }
+            caption(state.widthSourceText)
+            if let rule = state.widthRule, widthMode == .rules {
+                row("Minimum") {
+                    millimetreField(rule.widths.min, help: "The least width the rule allows on \(state.layerName)") { min in
+                        var widths = rule.widths
+                        widths.min = min
+                        onCommand(.editRule(.trackWidth(ruleID: rule.id, layer: rule.layer, widths: widths)))
+                    }
+                }
+                row("Maximum") {
+                    millimetreField(rule.widths.max, help: "The greatest width the rule allows on \(state.layerName)") { max in
+                        var widths = rule.widths
+                        widths.max = max
+                        onCommand(.editRule(.trackWidth(ruleID: rule.id, layer: rule.layer, widths: widths)))
+                    }
+                }
+            } else if widthMode != .rules {
+                caption("The rules would give \(HorizontalRouteInspectorState.millimetres(state.ruleWidth)).")
+            }
+            if let warning = state.widthWarning {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if state.widthRule == nil, widthMode == .rules, !isReadOnly {
+                Button("Add a Track Width Rule") {
+                    onCommand(.editRule(.addTrackWidthRule(layer: state.layer, width: state.width)))
+                }
+                .controlSize(.small)
+                .help("Add a track width rule that takes every net, with this width on \(state.layerName)")
+            }
+            if canShowRules {
+                Button("Show Track Width Rules…") {
+                    onCommand(.showRules(.trackWidth, ruleID: state.widthRule?.id))
+                }
+                .routeInspectorLinkStyle()
+                .font(.caption)
+            }
+        }
+    }
+
+    private var widthFieldHelp: String {
+        switch widthMode {
+        case .rules:
+            state.widthRule == nil
+                ? "Adds a track width rule with this width"
+                : "Changes the default width of the track width rule on \(state.layerName)"
+        case .track, .custom:
+            "Sets a custom width for this route and the next"
+        }
+    }
+
+    private func commitWidth(_ width: Double) {
+        guard width > 0 else {
+            return
+        }
+        switch widthMode {
+        case .rules:
+            if let rule = state.widthRule {
+                var widths = rule.widths
+                widths.def = width
+                onCommand(.editRule(.trackWidth(ruleID: rule.id, layer: rule.layer, widths: widths)))
+            } else {
+                onCommand(.editRule(.addTrackWidthRule(layer: state.layer, width: width)))
+            }
+        case .track, .custom:
+            onCommand(.useCustomWidth(width))
+        }
+    }
+
+    // MARK: Via
+
+    private var viaSection: some View {
+        let via = state.via
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                sectionTitle(via.isArmed ? "Via (armed)" : "Via")
+                Spacer()
+                if via.canDrop {
+                    Picker("Via from", selection: Binding(
+                        get: { via.isCustom },
+                        set: { custom in
+                            if custom, let diameter = via.diameter, let hole = via.holeDiameter {
+                                onCommand(.useCustomVia(diameter: diameter, holeDiameter: hole))
+                            } else if !custom {
+                                onCommand(.useRuleVia)
+                            }
+                        }
+                    )) {
+                        Text("Rules").tag(false)
+                        Text("Custom").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .fixedSize()
+                    .disabled(isReadOnly)
+                    .help("Where the route's via gets its size: the via rules, or a size of your own")
+                }
+            }
+            if let diameter = via.diameter, let hole = via.holeDiameter {
+                row("Diameter") {
+                    millimetreField(diameter, help: viaFieldHelp(via)) { value in
+                        commitVia(via, diameter: value, holeDiameter: hole)
+                    }
+                }
+                row("Hole") {
+                    millimetreField(hole, help: viaFieldHelp(via)) { value in
+                        commitVia(via, diameter: diameter, holeDiameter: value)
+                    }
+                }
+                if via.isCustom {
+                    caption("A via of the tool's own size, for this route and the next; it keeps it, rather than "
+                        + "taking the rules'." + ruleViaText(via))
+                } else if let brief = via.ruleBrief {
+                    caption("Via rule \(brief): the next via it drops keeps taking its shape from the rules.")
+                } else {
+                    caption("The board's own via: its rules state no via rule.")
+                }
+                if hole >= diameter {
+                    Label("The hole is as wide as the via.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                caption(via.isArmed ? "The next click drops it there." : "V arms it at the end of the route.")
+            } else {
+                if let brief = via.ruleBrief {
+                    caption("Via rule \(brief) names no padstack, so V drops no via.")
+                } else {
+                    caption("No via rule takes this net, so V drops no via.")
+                    if !isReadOnly {
+                        Button("Add a Via Rule") {
+                            onCommand(.editRule(.addViaRule(
+                                padstackID: via.defaultPadstackID, diameter: 500_000, holeDiameter: 200_000)))
+                        }
+                        .controlSize(.small)
+                        .help("Add a via rule that takes every net, with the board's default via at 0.5 mm with a 0.2 mm hole")
+                    }
+                }
+            }
+            if canShowRules {
+                Button("Show Via Rules…") {
+                    onCommand(.showRules(.via, ruleID: via.rule?.id))
+                }
+                .routeInspectorLinkStyle()
+                .font(.caption)
+            }
+        }
+    }
+
+    private func ruleViaText(_ via: HorizontalRouteInspectorState.Via) -> String {
+        guard let diameter = via.ruleDiameter, let hole = via.ruleHoleDiameter else {
+            return ""
+        }
+        return " The rules would give \(Self.mm(diameter)) / \(Self.mm(hole)) mm."
+    }
+
+    private func viaFieldHelp(_ via: HorizontalRouteInspectorState.Via) -> String {
+        if via.isCustom || via.rule == nil {
+            return "Sets the size of the route's via, for this route and the next"
+        }
+        return "Changes the via rule \(via.ruleBrief ?? "")"
+    }
+
+    private func commitVia(_ via: HorizontalRouteInspectorState.Via, diameter: Double, holeDiameter: Double) {
+        guard diameter > 0, holeDiameter > 0 else {
+            return
+        }
+        if !via.isCustom, let rule = via.rule {
+            onCommand(.editRule(.viaParameters(rule: rule, diameter: diameter, holeDiameter: holeDiameter)))
+        } else {
+            onCommand(.useCustomVia(diameter: diameter, holeDiameter: holeDiameter))
+        }
+    }
+
+    // MARK: Clearance
+
+    private var clearanceSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("Clearance")
+            ruleCaption("Copper", state.spacing.copperRule, kind: .clearanceCopper)
+            ForEach(state.spacing.rows.filter { $0.table == .copper }) { clearanceRow($0) }
+            ForEach(state.spacing.otherCopperRules) { other in
+                caption("\(other.rule.brief) takes \(other.netCount == 1 ? "1 net" : "\(other.netCount) nets") instead, "
+                    + "up to \(HorizontalRouteInspectorState.millimetres(other.widest)).")
+            }
+            ruleCaption("Copper – other", state.spacing.otherRule, kind: .clearanceCopperOther)
+            ForEach(state.spacing.rows.filter { $0.table == .copperOther }) { clearanceRow($0) }
+            let keepouts = state.spacing.rows.filter {
+                if case .keepout = $0.table { return true }
+                return false
+            }
+            if !keepouts.isEmpty {
+                ForEach(keepouts) { clearanceRow($0) }
+            }
+        }
+    }
+
+    private func ruleCaption(_ title: String, _ rule: HorizontalRouteSpacing.Rule, kind: HorizontalBoardRuleKind) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text("\(title): \(rule.brief)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            if canShowRules {
+                Button("Show…") {
+                    onCommand(.showRules(kind, ruleID: rule.id))
+                }
+                .routeInspectorLinkStyle()
+                .font(.caption)
+            }
+        }
+    }
+
+    private func clearanceRow(_ row: HorizontalRouteSpacing.Row) -> some View {
+        self.row(row.title) {
+            millimetreField(row.clearance, help: rowHelp(row)) { value in
+                switch row.table {
+                case .copper:
+                    onCommand(.editRule(.copperClearance(ruleID: row.rule.id, .track, row.other, value)))
+                case .copperOther:
+                    onCommand(.editRule(.copperOtherClearance(ruleID: row.rule.id, copper: .track, nonCopper: row.other, value)))
+                case .keepout(let keepoutClass):
+                    onCommand(.editRule(.keepoutClearance(ruleID: row.rule.id, keepoutClass: keepoutClass, copper: .track, value)))
+                }
+            }
+        }
+    }
+
+    private func rowHelp(_ row: HorizontalRouteSpacing.Row) -> String {
+        row.rule.id == nil
+            ? "Adds a clearance rule for every net, with this clearance from a track to: \(row.title)"
+            : "Changes the clearance rule \(row.rule.brief), from a track to: \(row.title)"
+    }
+
+    // MARK: Nearest
+
+    private var nearestSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("Nearest")
+            if state.nearest.isEmpty {
+                caption("Nothing within \(HorizontalRouteInspectorState.millimetres(state.nearestRadius)) on \(state.layerName).")
+            } else {
+                ForEach(state.nearest) { measurement in
+                    nearestRow(measurement)
+                }
+            }
+        }
+    }
+
+    private func nearestRow(_ measurement: HorizontalRouteClearanceProbe.Measurement) -> some View {
+        let violates = measurement.margin < 0
+        let tight = !violates && measurement.margin < 50_000
+        let color: Color = violates ? .red : (tight ? .orange : .green)
+        return HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: violates ? "exclamationmark.triangle.fill" : "checkmark.circle")
+                .foregroundStyle(color)
+                .imageScale(.small)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(measurement.label)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(measurement.gap <= 0
+                     ? "Touches; needs \(HorizontalRouteInspectorState.millimetres(measurement.required))"
+                     : "Needs \(HorizontalRouteInspectorState.millimetres(measurement.required))")
+                    .font(.caption)
+                    .foregroundStyle(violates ? .red : .secondary)
+            }
+            Spacer(minLength: 4)
+            Text(measurement.gap <= 0 ? "0" : HorizontalRouteInspectorState.millimetres(measurement.gap))
+                .monospacedDigit()
+                .foregroundStyle(violates ? .red : .primary)
+        }
+        .help("\(measurement.label): \(HorizontalRouteInspectorState.millimetres(max(measurement.gap, 0))) apart, "
+            + "\(HorizontalRouteInspectorState.millimetres(measurement.required)) asked by the \(measurement.rule)")
+    }
+
+    // MARK: Pieces
+
+    private func row<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .foregroundStyle(.secondary)
+                .frame(width: labelWidth, alignment: .leading)
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.subheadline.weight(.semibold))
+    }
+
+    /// A note under a row. It wraps: one row holds the whole inspector, and
+    /// a sidebar list measures a row before it lays it out narrower.
+    private func caption(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(nil)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func millimetreField(_ nanometres: Double, help: String, onCommit: @escaping (Double) -> Void) -> some View {
+        HStack(spacing: 4) {
+            NumericPropertyField(
+                value: nanometres / 1_000_000,
+                fractionDigits: 3,
+                font: .callout.monospacedDigit()
+            ) { millimetres in
+                guard millimetres.isFinite, millimetres >= 0 else { return }
+                onCommit((millimetres * 1_000_000).rounded())
+            }
+            .frame(width: 76)
+            .disabled(isReadOnly)
+            Text("mm")
+                .foregroundStyle(.secondary)
+        }
+        .help(help)
+    }
+
+    private static func mm(_ nanometres: Double) -> String {
+        (nanometres / 1_000_000).formatted(.number.precision(.fractionLength(2...3)))
+    }
+}
+
+private extension View {
+    /// A button that reads as a link in the sidebar.
+    @ViewBuilder
+    func routeInspectorLinkStyle() -> some View {
+        #if os(macOS)
+        buttonStyle(.link)
+        #else
+        buttonStyle(.borderless)
+        #endif
+    }
+}

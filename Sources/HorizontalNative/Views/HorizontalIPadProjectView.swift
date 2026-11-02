@@ -91,6 +91,20 @@ struct HorizontalIPadProjectView: View {
     @State private var schematicDrawNetLineCommand: HorizontalDrawNetLineCommand?
     @State private var schematicCanvasActions: HorizontalCanvasCommandActions?
     @State private var rulesSheetPresented = false
+    /// The rule the rules sheet opens at, as the route inspector asks.
+    @State private var rulesFocus: HorizontalBoardRuleFocus?
+    /// Fed by the board canvas while a track is routed, and shown in the
+    /// inspector; plain state, as on macOS.
+    @State private var routeInspector = HorizontalRouteInspectorModel()
+    @State private var routeWidthCommand: HorizontalRouteWidthCommand?
+    @State private var boardRulesRevision = 0
+    /// Routing opened the inspector, and closes it when the route ends.
+    @State private var inspectorOpenedForRoute = false
+    @State private var seesRouting = false
+    /// Closes it a moment after a route ends, so it doesn't close and open
+    /// again between one route and the next.
+    @State private var inspectorCloseTask: Task<Void, Never>?
+    @StateObject private var boardRulesUndoTarget = HorizontalUndoTarget<JSONDictionary>()
     // The right-side slide-over (the iPad analogue of the macOS workspace's right
     // sidebar) shows one pane at a time — the selection inspector or the export panel.
     @State private var rightPane: HorizontalIPadRightPane?
@@ -149,6 +163,17 @@ struct HorizontalIPadProjectView: View {
         } else {
             projectBody
                 .environment(\.horizonPoolRevealAction, revealInPools)
+                .modifier(RouteInspectorPresentation(
+                    model: routeInspector,
+                    onRoutingChange: routingChanged,
+                    rightPane: rightPane,
+                    onRightPaneChange: { pane in
+                        // Changed by hand while routing: it stays as it was left.
+                        if inspectorOpenedForRoute, pane != .inspector {
+                            inspectorOpenedForRoute = false
+                        }
+                    }
+                ))
                 // The first project the app opens offers Horizon's default
                 // pool, once, as the Mac does at its first launch.
                 .task {
@@ -698,29 +723,35 @@ struct HorizontalIPadProjectView: View {
             .padding(.horizontal)
             .padding(.vertical, 12)
             Divider()
-            if let inspectedPane, let details = selectionDetailsByPane[inspectedPane] {
-                ScrollView {
-                    HorizontalSelectionPopoverView(
-                        state: details,
-                        foregroundColor: .primary,
-                        backgroundColor: .clear,
-                        chrome: .sidebar,
-                        onChange: { change in
-                            selectionPropertyChangeCommands[inspectedPane] =
-                                HorizontalSelectionPropertyChangeCommand(change: change)
-                        }
+            RouteInspectorSwitch(
+                model: routeInspector,
+                isReadOnly: isReadOnly,
+                onCommand: handleRouteInspectorCommand
+            ) {
+                if let inspectedPane, let details = selectionDetailsByPane[inspectedPane] {
+                    ScrollView {
+                        HorizontalSelectionPopoverView(
+                            state: details,
+                            foregroundColor: .primary,
+                            backgroundColor: .clear,
+                            chrome: .sidebar,
+                            onChange: { change in
+                                selectionPropertyChangeCommands[inspectedPane] =
+                                    HorizontalSelectionPropertyChangeCommand(change: change)
+                            }
+                        )
+                        .padding(.horizontal)
+                        .padding(.vertical, 12)
+                    }
+                } else {
+                    Spacer()
+                    ContentUnavailableView(
+                        "No Selection",
+                        systemImage: "cursorarrow.rays",
+                        description: Text("Select an object on the canvas to inspect and edit it.")
                     )
-                    .padding(.horizontal)
-                    .padding(.vertical, 12)
+                    Spacer()
                 }
-            } else {
-                Spacer()
-                ContentUnavailableView(
-                    "No Selection",
-                    systemImage: "cursorarrow.rays",
-                    description: Text("Select an object on the canvas to inspect and edit it.")
-                )
-                Spacer()
             }
         }
     }
@@ -1422,6 +1453,9 @@ struct HorizontalIPadProjectView: View {
                     selectionPropertyChangeCommand: selectionPropertyChangeCommands[.board],
                     drawingToolCommand: boardDrawingToolCommand,
                     drawTrackCommand: boardDrawTrackCommand,
+                    routeWidthCommand: routeWidthCommand,
+                    routeInspector: routeInspector,
+                    rulesRevision: boardRulesRevision,
                     onShowToolSettings: { boardToolSettingsPresented = true },
                     toolSettings: boardToolSettings,
                     drawingLayer: boardDrawingLayer,
@@ -2014,7 +2048,9 @@ struct HorizontalIPadProjectView: View {
                 isReadOnly: isReadOnly,
                 onRulesChange: { applyEditedBoardRules($0) },
                 onChecksRun: { _ in },
-                onApplyRules: { applyBoardRules($0) }
+                onApplyRules: { applyBoardRules($0) },
+                rulesRevision: boardRulesRevision,
+                focus: rulesFocus
             )
             .navigationTitle("Board Rules")
             .navigationBarTitleDisplayMode(.inline)
@@ -2049,9 +2085,111 @@ struct HorizontalIPadProjectView: View {
     private func applyEditedBoardRules(_ rules: JSONDictionary) {
         guard let project else { return }
         do {
-            try HorizontalProjectJSONApplicator.apply(boardRules: rules, in: project, to: &document.archive)
+            let previous = try HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive)
+            try installBoardRules(rules)
+            registerBoardRulesUndo(from: previous, actionName: "Change Board Rules")
         } catch {
             loadError = "Couldn't save board rules: \(error.localizedDescription)"
+        }
+    }
+
+    /// A change the route inspector makes to the rules: as on macOS, one
+    /// undoable edit without a reload, so the route in progress carries on.
+    private func applyRouteRuleEdit(_ edit: HorizontalRouteRuleEdit) {
+        guard !isReadOnly, let project, let board = project.board else { return }
+        do {
+            let previous = try HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive)
+            let copperLayers = board.stackupLayers.map(\.layer).filter(HorizontalBoardLayers.isCopper)
+            guard let rules = HorizontalRouteRuleEditing.applying(edit, to: previous, copperLayers: copperLayers) else {
+                return
+            }
+            try installBoardRules(rules)
+            registerBoardRulesUndo(from: previous, actionName: edit.actionName)
+        } catch {
+            loadError = "Couldn't change the board rules: \(error.localizedDescription)"
+        }
+    }
+
+    /// The board's rules as `rules`, in the archive and in the board without
+    /// a reload, which would cancel what the canvas is doing.
+    private func installBoardRules(_ rules: JSONDictionary) throws {
+        guard var updated = project else { return }
+        var archive = document.archive
+        try HorizontalProjectJSONApplicator.apply(boardRules: rules, in: updated, to: &archive)
+        document.archive = archive
+        updated.board?.takeRules(rules)
+        project = updated
+        boardRulesRevision += 1
+        boardEditRevision += 1
+        checkPlaneFills()
+    }
+
+    private func registerBoardRulesUndo(from previous: JSONDictionary, actionName: String) {
+        boardRulesUndoTarget.configure(
+            currentValue: {
+                guard let project else { return [:] }
+                return (try? HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive)) ?? [:]
+            },
+            restoreValue: { rules in
+                do {
+                    try installBoardRules(rules)
+                } catch {
+                    loadError = "Couldn't change the board rules: \(error.localizedDescription)"
+                }
+            }
+        )
+        boardRulesUndoTarget.registerUndo(from: previous, actionName: actionName, undoManager: documentUndoManager)
+    }
+
+    private func handleRouteInspectorCommand(_ command: HorizontalRouteInspectorCommand) {
+        switch command {
+        case .selectLayer(let layer):
+            boardDrawingLayer = layer
+        case .useRuleWidth:
+            boardToolSettings.explicitTrackWidth = nil
+            routeWidthCommand = HorizontalRouteWidthCommand()
+        case .useCustomWidth(let width):
+            guard width > 0 else { return }
+            boardToolSettings.explicitTrackWidth = width
+        case .useRuleVia:
+            boardToolSettings.viaDiameter = nil
+            boardToolSettings.viaHoleDiameter = nil
+        case .useCustomVia(let diameter, let holeDiameter):
+            guard diameter > 0, holeDiameter > 0 else { return }
+            boardToolSettings.viaDiameter = diameter
+            boardToolSettings.viaHoleDiameter = holeDiameter
+        case .editRule(let edit):
+            applyRouteRuleEdit(edit)
+        case .showRules(let kind, let ruleID):
+            rulesFocus = HorizontalBoardRuleFocus(kind: kind, ruleID: ruleID)
+            rulesSheetPresented = true
+        }
+    }
+
+    /// The track tool started or ended. On a regular width the inspector
+    /// opens for the route, unless the tool settings say not to, and closes
+    /// again when it ends; a compact width keeps the canvas whole.
+    private func routingChanged(_ isRouting: Bool) {
+        if isRouting {
+            guard !seesRouting else { return }
+            seesRouting = true
+            inspectorCloseTask?.cancel()
+            inspectorCloseTask = nil
+            guard !inspectorOpenedForRoute, boardToolSettings.showsRouteInspector, !isCompact, rightPane == nil else { return }
+            inspectorOpenedForRoute = true
+            rightPane = .inspector
+        } else {
+            seesRouting = false
+            guard inspectorOpenedForRoute else { return }
+            inspectorCloseTask?.cancel()
+            inspectorCloseTask = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled, !routeInspector.isRouting, inspectedPane == nil, inspectorOpenedForRoute else { return }
+                inspectorOpenedForRoute = false
+                if rightPane == .inspector {
+                    rightPane = nil
+                }
+            }
         }
     }
 
@@ -2629,6 +2767,42 @@ struct HorizontalDocumentExporter: UIViewControllerRepresentable {
 
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
             onFinish()
+        }
+    }
+}
+
+/// Opens and closes the inspector as routing starts and ends, off the
+/// project view's own chain of modifiers.
+private struct RouteInspectorPresentation: ViewModifier {
+    let model: HorizontalRouteInspectorModel
+    var onRoutingChange: (Bool) -> Void
+    var rightPane: HorizontalIPadRightPane?
+    var onRightPaneChange: (HorizontalIPadRightPane?) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(model.$isRouting.removeDuplicates()) { onRoutingChange($0) }
+            .onChange(of: rightPane) { _, pane in onRightPaneChange(pane) }
+    }
+}
+
+/// The inspector's content: the route inspector while a track is routed,
+/// the selection otherwise. It observes the model so the host need not.
+private struct RouteInspectorSwitch<Selection: View>: View {
+    @ObservedObject var model: HorizontalRouteInspectorModel
+    var isReadOnly: Bool
+    var onCommand: (HorizontalRouteInspectorCommand) -> Void
+    @ViewBuilder var selection: Selection
+
+    var body: some View {
+        if model.isRouting {
+            ScrollView {
+                HorizontalRouteInspectorView(model: model, isReadOnly: isReadOnly, onCommand: onCommand)
+                    .padding(.horizontal)
+                    .padding(.vertical, 12)
+            }
+        } else {
+            selection
         }
     }
 }

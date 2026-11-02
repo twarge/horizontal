@@ -250,6 +250,8 @@ struct HorizontalRuleMatchComponent: Hashable {
 
 /// Symmetric 11x11 copper-copper clearance table.
 struct HorizontalRuleClearanceCopper: Hashable {
+    /// The rule's key in the file; empty for the fallback, which no rule is.
+    var id = ""
     var enabled: Bool
     var order: Int
     var layer: Int
@@ -259,7 +261,8 @@ struct HorizontalRuleClearanceCopper: Hashable {
 
     static let defaultClearance = 100_000
 
-    init(json: JSONDictionary) {
+    init(id: String = "", json: JSONDictionary) {
+        self.id = id
         enabled = json.bool("enabled") ?? true
         order = json.int("order") ?? 0
         layer = json.int("layer") ?? 10000
@@ -307,6 +310,8 @@ struct HorizontalRuleClearanceCopper: Hashable {
 
 /// Ordered (copper, non-copper) clearance map.
 struct HorizontalRuleClearanceCopperOther: Hashable {
+    /// The rule's key in the file; empty for the fallback, which no rule is.
+    var id = ""
     var enabled: Bool
     var order: Int
     var layer: Int
@@ -320,7 +325,8 @@ struct HorizontalRuleClearanceCopperOther: Hashable {
 
     static let defaultClearance = 100_000
 
-    init(json: JSONDictionary) {
+    init(id: String = "", json: JSONDictionary) {
+        self.id = id
         enabled = json.bool("enabled") ?? true
         order = json.int("order") ?? 0
         layer = json.int("layer") ?? 10000
@@ -359,13 +365,16 @@ struct HorizontalRuleClearanceCopperOther: Hashable {
 /// Keepout clearance map. The
 /// JSON `clearances` is an object {patchTypeString: Int} OR null; default 0.
 struct HorizontalRuleClearanceCopperKeepout: Hashable {
+    /// The rule's key in the file; empty for the fallback, which no rule is.
+    var id = ""
     var enabled: Bool
     var order: Int
     var match: HorizontalRuleMatch
     var matchKeepout: HorizontalRuleMatchKeepout
     var clearances: [HorizontalPatchType: Int]
 
-    init(json: JSONDictionary) {
+    init(id: String = "", json: JSONDictionary) {
+        self.id = id
         enabled = json.bool("enabled") ?? true
         order = json.int("order") ?? 0
         match = HorizontalRuleMatch(json: json.dictionary("match"))
@@ -393,6 +402,64 @@ struct HorizontalRuleClearanceCopperKeepout: Hashable {
     func clearance(_ pt: HorizontalPatchType) -> Int {
         let pt = pt == .netTie ? .track : pt
         return clearances[pt] ?? 0
+    }
+}
+
+/// Mirrors RuleTrackWidth: a match, and for each copper layer the least,
+/// greatest and default width of a track on a net it matches.
+struct HorizontalRuleTrackWidth: Hashable {
+    /// RuleTrackWidth::Widths, in nanometres.
+    struct Widths: Hashable {
+        var min: Double
+        var max: Double
+        var def: Double
+
+        /// RuleTrackWidth::Widths' own: what a layer the file leaves out has,
+        /// since Horizon gives a rule one for every copper layer when it
+        /// opens a board (BoardRules::update_for_board).
+        static let horizonDefault = Widths(min: 100_000, max: 10_000_000, def: 200_000)
+
+        init(min: Double, max: Double, def: Double) {
+            self.min = min
+            self.max = max
+            self.def = def
+        }
+
+        init(json: JSONDictionary) {
+            min = json.double("min") ?? Self.horizonDefault.min
+            max = json.double("max") ?? Self.horizonDefault.max
+            def = json.double("def") ?? Self.horizonDefault.def
+        }
+
+        /// As Widths::serialize writes them.
+        var json: JSONDictionary {
+            ["min": Int(min.rounded()), "max": Int(max.rounded()), "def": Int(def.rounded())]
+        }
+    }
+
+    var id: String
+    var enabled: Bool
+    var order: Int
+    var match: HorizontalRuleMatch
+    /// By layer, as the file states them.
+    var widths: [Int: Widths]
+
+    init(id: String, json: JSONDictionary) {
+        self.id = id
+        enabled = json.bool("enabled") ?? true
+        order = json.int("order") ?? 0
+        match = HorizontalRuleMatch(json: json.dictionary("match"))
+        widths = (json.dictionary("widths") ?? [:]).reduce(into: [Int: Widths]()) { result, item in
+            if let layer = Int(item.key), let widths = item.value as? JSONDictionary {
+                result[layer] = Widths(json: widths)
+            }
+        }
+    }
+
+    /// The widths on `layer`: the file's, or Horizon's default for a layer it
+    /// leaves out.
+    func widths(on layer: Int) -> Widths {
+        widths[layer] ?? .horizonDefault
     }
 }
 
@@ -633,6 +700,7 @@ struct HorizontalBoardRules: Hashable {
     var planeRules: [HorizontalRulePlane]
     var thermalRules: [HorizontalRuleThermals]
     var viaRules: [HorizontalRuleVia]
+    var trackWidthRules: [HorizontalRuleTrackWidth]
     /// The file has a `via` entry in its rules, even an empty one. Horizon
     /// always writes one; a board without, written by a tool that left the
     /// via rules out, is given Horizon's default one when it loads
@@ -650,22 +718,30 @@ struct HorizontalBoardRules: Hashable {
                 .map(make)
         }
 
-        clearanceCopperRules = parseGroup("clearance_copper", HorizontalRuleClearanceCopper.init(json:))
-            .sorted { $0.order < $1.order }
-        clearanceCopperOtherRules = parseGroup("clearance_copper_other", HorizontalRuleClearanceCopperOther.init(json:))
-            .sorted { $0.order < $1.order }
-        clearanceCopperKeepoutRules = parseGroup("clearance_copper_keepout", HorizontalRuleClearanceCopperKeepout.init(json:))
-            .sorted { $0.order < $1.order }
+        // Rules that share an order go by id, as Horizon's do (its rules are
+        // a map keyed by uuid), so the pick never depends on the order the
+        // file's map comes back in.
+        func parseKeyedGroup<T>(_ key: String, _ make: (String, JSONDictionary) -> T, order: (T) -> Int) -> [T] {
+            rules.dictionaryMap(key)
+                .sorted { $0.key < $1.key }
+                .map { make($0.key, $0.value) }
+                .enumerated()
+                .sorted { (order($0.element), $0.offset) < (order($1.element), $1.offset) }
+                .map(\.element)
+        }
+
+        clearanceCopperRules = parseKeyedGroup("clearance_copper", HorizontalRuleClearanceCopper.init(id:json:), order: \.order)
+        clearanceCopperOtherRules = parseKeyedGroup(
+            "clearance_copper_other", HorizontalRuleClearanceCopperOther.init(id:json:), order: \.order)
+        clearanceCopperKeepoutRules = parseKeyedGroup(
+            "clearance_copper_keepout", HorizontalRuleClearanceCopperKeepout.init(id:json:), order: \.order)
         planeRules = parseGroup("plane", HorizontalRulePlane.init(json:))
             .sorted { $0.order < $1.order }
         thermalRules = parseGroup("thermals", HorizontalRuleThermals.init(json:))
             .sorted { $0.order < $1.order }
-        // By id where two share an order, so the pick never depends on the
-        // order the file's map comes back in.
         statesViaRules = rules["via"] != nil
-        viaRules = rules.dictionaryMap("via")
-            .map { HorizontalRuleVia(id: $0.key, json: $0.value) }
-            .sorted { ($0.order, $0.id) < ($1.order, $1.id) }
+        viaRules = parseKeyedGroup("via", HorizontalRuleVia.init(id:json:), order: \.order)
+        trackWidthRules = parseKeyedGroup("track_width", HorizontalRuleTrackWidth.init(id:json:), order: \.order)
     }
 
     static let empty = HorizontalBoardRules(rules: nil, netDetails: [:])
@@ -675,6 +751,16 @@ struct HorizontalBoardRules: Hashable {
     /// be nil, and then a via on the net has none to take.
     func via(net: String?) -> HorizontalRuleVia? {
         viaRules.first { $0.enabled && $0.match.matches(netID: net, netDetails: netDetails) }
+    }
+
+    /// Mirrors BoardRules::get_default_track_width: the first enabled track
+    /// width rule by order whose match takes `net`, with its widths on
+    /// `layer`. Nil where no rule takes the net, where Horizon's answer is 0.
+    func trackWidth(net: String?, layer: Int) -> (rule: HorizontalRuleTrackWidth, widths: HorizontalRuleTrackWidth.Widths)? {
+        guard let rule = trackWidthRules.first(where: { $0.enabled && $0.match.matches(netID: net, netDetails: netDetails) }) else {
+            return nil
+        }
+        return (rule, rule.widths(on: layer))
     }
 
     private func layerMatches(_ ruleLayer: Int, _ layer: Int) -> Bool {

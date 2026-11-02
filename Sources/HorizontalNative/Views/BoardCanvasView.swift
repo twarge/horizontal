@@ -321,6 +321,10 @@ struct BoardCanvasView: View {
         var anchorOnPad = false
         var netID: String?
         var width: Double
+        /// Where `width` comes from (`HorizontalRouteWidth`): whether it
+        /// follows the route onto another layer or net, or a change to the
+        /// rules, and what the route inspector says of it.
+        var widthSource: HorizontalRouteWidthSource
         var layer: Int
         var cursor: HorizontalPoint?
         var bendMode: BoardTrackBendMode = .xy
@@ -341,6 +345,26 @@ struct BoardCanvasView: View {
         /// Whether the route has committed anything to the draft board yet
         /// (segments or vias) — gates finishing so an empty route is discarded.
         var hasDrawn: Bool { segmentCount > 0 || viaCount > 0 }
+    }
+
+    /// What the route inspector shows of a route, compared on every pass.
+    private struct BoardRouteInspectorSignature: Hashable {
+        var layer: Int
+        var netID: String?
+        var width: Double
+        var widthSource: HorizontalRouteWidthSource
+        var anchor: HorizontalPoint?
+        var cursor: HorizontalPoint?
+        var bendMode: Bool
+        var cornerStyle: String
+        var placesVia: Bool
+        var segmentCount: Int
+        var viaCount: Int
+        var history: Int
+        var rulesRevision: Int
+        var previewCount: Int
+        var viaDiameter: Double?
+        var viaHoleDiameter: Double?
     }
 
     /// What a click at the cursor would do when it closes a loop
@@ -386,6 +410,7 @@ struct BoardCanvasView: View {
         var anchorOnPad: Bool
         var netID: String?
         var width: Double
+        var widthSource: HorizontalRouteWidthSource
         var layer: Int
         var segmentCount: Int
         var viaCount: Int
@@ -448,6 +473,18 @@ struct BoardCanvasView: View {
     var selectionPropertyChangeCommand: HorizontalSelectionPropertyChangeCommand?
     var drawingToolCommand: HorizontalDrawingToolCommand?
     var drawTrackCommand: HorizontalDrawTrackCommand?
+    /// The route inspector's "Rules" width: the route in progress takes the
+    /// rules' width again, even one continuing a track's.
+    var routeWidthCommand: HorizontalRouteWidthCommand?
+    /// Fed while a track is routed, for the sidebar to show; nil where the
+    /// host shows no route inspector. Held, not observed: a cursor move
+    /// redraws the inspector, not the canvas.
+    var routeInspector: HorizontalRouteInspectorModel? = nil
+    /// Bumped by the host when the board's rules change without a reload
+    /// (the route inspector, the rules window, their undo): the canvas takes
+    /// the board's new rules into what it is editing, and a route whose width
+    /// is the rules' takes their new one.
+    var rulesRevision: Int = 0
     var onShowToolSettings: () -> Void = {}
     var drawingLayer: Int = HorizontalBoardLayers.topCopper
     /// Bumped by the pane when the board changes underneath the canvas — a plane
@@ -588,6 +625,9 @@ struct BoardCanvasView: View {
         selectionPropertyChangeCommand: HorizontalSelectionPropertyChangeCommand? = nil,
         drawingToolCommand: HorizontalDrawingToolCommand? = nil,
         drawTrackCommand: HorizontalDrawTrackCommand? = nil,
+        routeWidthCommand: HorizontalRouteWidthCommand? = nil,
+        routeInspector: HorizontalRouteInspectorModel? = nil,
+        rulesRevision: Int = 0,
         onShowToolSettings: @escaping () -> Void = {},
         toolSettings: HorizontalBoardToolSettings,
         drawingLayer: Int = HorizontalBoardLayers.topCopper,
@@ -629,6 +669,9 @@ struct BoardCanvasView: View {
         self.selectionPropertyChangeCommand = selectionPropertyChangeCommand
         self.drawingToolCommand = drawingToolCommand
         self.drawTrackCommand = drawTrackCommand
+        self.routeWidthCommand = routeWidthCommand
+        self.routeInspector = routeInspector
+        self.rulesRevision = rulesRevision
         self.onShowToolSettings = onShowToolSettings
         self.toolSettings = toolSettings
         self.drawingLayer = drawingLayer
@@ -893,7 +936,7 @@ struct BoardCanvasView: View {
         }
         let _ = HorizontalMoveCommitDiagnostics.reportPostCommitBody(timings: postCommitBodyTimings)
 
-        return InteractiveCanvasView(
+        let canvas = InteractiveCanvasView(
             bounds: board.bounds,
             viewport: $viewport,
             backgroundColor: theme.background,
@@ -1140,6 +1183,7 @@ struct BoardCanvasView: View {
         .onDisappear {
             onSelectionDetailsChange(.empty)
             onCanvasCommandActionsChange(nil)
+            routeInspector?.endRoute()
         }
         .horizonCanvasPrompt($promptRequest)
         .overlay { inlineTextEditorOverlay }
@@ -1172,6 +1216,40 @@ struct BoardCanvasView: View {
                 cancelMove()
             }
         }
+        return tracksRoute(canvas)
+    }
+
+    /// The route tool's upkeep, kept out of `body`'s one expression, which
+    /// is already as long as the type checker takes: the inspector fed as the
+    /// route goes, and the route given a new width when the rules, the custom
+    /// width or the layer change under it.
+    private func tracksRoute<Content: View>(_ content: Content) -> some View {
+        content
+            .onChange(of: drawTrackState == nil) { _, ended in
+                if ended {
+                    routeInspector?.endRoute()
+                } else if let state = drawTrackState {
+                    routeInspector?.beginRoute(on: state.originalBoard)
+                    publishRouteInspector()
+                }
+            }
+            .onChange(of: routeInspectorSignature) { _, _ in
+                publishRouteInspector()
+            }
+            .onChange(of: rulesRevision) { _, _ in
+                adoptBoardRules()
+            }
+            .onChange(of: toolSettings.explicitTrackWidth) { _, width in
+                takeExplicitTrackWidth(width)
+            }
+            .onChange(of: routeWidthCommand?.id) { _, _ in
+                if routeWidthCommand != nil {
+                    useRuleTrackWidth()
+                }
+            }
+            .onChange(of: drawingLayer) { _, layer in
+                moveUnstartedRoute(to: layer)
+            }
     }
 
     /// macOS inline text-placement editor: a transparent 1pt anchor positioned at
@@ -4937,12 +5015,16 @@ struct BoardCanvasView: View {
         // actually connects to (see publishConnectivityResolvedEdit). A track
         // touching no pad stays net-less (orange).
         let startNet = selectedNetIDs.first
+        let width = HorizontalRouteWidth.start(
+            explicit: toolSettings.explicitTrackWidth, startTrack: nil,
+            net: startNet, layer: layer, rules: board.rules, tracks: board.tracks)
         drawTrackState = DrawTrackState(
             originalBoard: board,
             anchor: nil,
             anchorJunctionID: nil,
             netID: nil,
-            width: toolSettings.explicitTrackWidth ?? defaultTrackWidth(forNet: startNet),
+            width: width.width,
+            widthSource: width.source,
             layer: layer,
             cursor: lastCursorWorldPoint,
             cornerStyle: toolSettings.cornerStyle
@@ -4993,10 +5075,13 @@ struct BoardCanvasView: View {
                 state.netID = net
             }
             // An explicit width (set via `w`) wins; else continue at the width
-            // of any track under the start point; else the net/board default.
-            state.width = toolSettings.explicitTrackWidth
-                ?? BoardTrackRouting.trackWidth(at: anchorPoint, layer: state.layer, tracks: board.tracks)
-                ?? defaultTrackWidth(forNet: state.netID)
+            // of any track under the start point; else the rules' for the net.
+            let width = HorizontalRouteWidth.start(
+                explicit: toolSettings.explicitTrackWidth,
+                startTrack: BoardTrackRouting.track(at: anchorPoint, layer: state.layer, tracks: board.tracks),
+                net: state.netID, layer: state.layer, rules: board.rules, tracks: board.tracks)
+            state.width = width.width
+            state.widthSource = width.source
             state.cursor = anchorPoint
             if let bend = boardTrackBendMode(at: anchorPoint, layer: state.layer) {
                 state.bendMode = bend
@@ -5141,11 +5226,17 @@ struct BoardCanvasView: View {
         state.anchor = laid.head.anchor
         state.anchorJunctionID = laid.head.anchorJunctionID
         state.anchorOnPad = laid.head.anchorOnPad
+        let movedOn = state.netID != netID || state.layer != laid.head.layer
         state.netID = netID
         state.layer = laid.head.layer
         state.placesVia = laid.head.placesVia
         state.segmentCount += laid.segments
         state.viaCount += laid.vias
+        // A route whose width is the rules' takes the rules' width on the
+        // layer a via took it to, and for the net it joined.
+        if movedOn {
+            refreshRouteWidth(&state)
+        }
         if laid.vias > 0 {
             followRouteLayer(state.layer)
         }
@@ -5326,6 +5417,7 @@ struct BoardCanvasView: View {
                 anchorOnPad: state.anchorOnPad,
                 netID: state.netID,
                 width: state.width,
+                widthSource: state.widthSource,
                 layer: state.layer,
                 segmentCount: state.segmentCount,
                 viaCount: state.viaCount,
@@ -5368,6 +5460,7 @@ struct BoardCanvasView: View {
         state.anchorOnPad = step.anchorOnPad
         state.netID = step.netID
         state.width = step.width
+        state.widthSource = step.widthSource
         state.layer = step.layer
         state.segmentCount = step.segmentCount
         state.viaCount = step.viaCount
@@ -5408,11 +5501,135 @@ struct BoardCanvasView: View {
         )
     }
 
-    /// Default width for a freshly drawn track: the most common width already in
-    /// use on the same net, else the board's most common track width, else
-    /// 0.2 mm. (Horizontal does not model per-net-class default widths.)
-    private func defaultTrackWidth(forNet netID: String?) -> Double {
-        BoardTrackRouting.defaultWidth(tracks: board.tracks, net: netID)
+    /// The width the rules give the route where it now is, unless a custom
+    /// width or the track it continues pins it (`force` takes the rules'
+    /// even then).
+    private func refreshRouteWidth(_ state: inout DrawTrackState, force: Bool = false) {
+        guard force || state.widthSource.followsRules else {
+            return
+        }
+        let width = HorizontalRouteWidth.fromRules(
+            net: state.netID, layer: state.layer, rules: board.rules, tracks: board.tracks)
+        state.width = width.width
+        state.widthSource = width.source
+    }
+
+    /// A custom width set with W, in the tool settings or the inspector
+    /// becomes the route's; one cleared gives it the rules' again.
+    private func takeExplicitTrackWidth(_ width: Double?) {
+        guard var state = drawTrackState else {
+            return
+        }
+        if let width, width > 0 {
+            guard state.width != width || state.widthSource != .custom else {
+                return
+            }
+            state.width = width
+            state.widthSource = .custom
+        } else if state.widthSource == .custom {
+            refreshRouteWidth(&state, force: true)
+        } else {
+            return
+        }
+        drawTrackState = state
+    }
+
+    /// The inspector's Rules: the route takes the rules' width, even one
+    /// that continued a track's.
+    private func useRuleTrackWidth() {
+        guard var state = drawTrackState else {
+            return
+        }
+        refreshRouteWidth(&state, force: true)
+        drawTrackState = state
+    }
+
+    /// A route not yet started goes on the layer the pane picks, and takes
+    /// that layer's width from the rules. One started stays on its own until
+    /// a via takes it across.
+    private func moveUnstartedRoute(to layer: Int) {
+        guard var state = drawTrackState, state.anchor == nil,
+              HorizontalBoardLayers.isCopper(layer), state.layer != layer else {
+            return
+        }
+        state.layer = layer
+        refreshRouteWidth(&state)
+        drawTrackState = state
+    }
+
+    /// The board's rules changed without a reload: everything the canvas
+    /// holds a board in takes the new ones, so what it commits or puts back
+    /// keeps them, and a route whose width is the rules' takes their new one.
+    private func adoptBoardRules() {
+        let source = sourceBoard
+        if editedBoard != nil {
+            editedBoard?.takeRules(of: source)
+        }
+        for index in trackRouteHistory.indices {
+            trackRouteHistory[index].board?.takeRules(of: source)
+        }
+        if var state = drawTrackState {
+            state.originalBoard.takeRules(of: source)
+            refreshRouteWidth(&state)
+            drawTrackState = state
+            if trackRouterSession != nil {
+                trackRouterSession = HorizontalBoardTrackRouterSession(board: board)
+            }
+        }
+        publishRouteInspector()
+    }
+
+    /// What the route inspector is worked out from, cheaply compared on
+    /// every pass so it is fed only when something it shows has changed.
+    private var routeInspectorSignature: BoardRouteInspectorSignature? {
+        guard routeInspector != nil, let state = drawTrackState else {
+            return nil
+        }
+        return BoardRouteInspectorSignature(
+            layer: state.layer, netID: state.netID, width: state.width, widthSource: state.widthSource,
+            anchor: state.anchor, cursor: state.cursor, bendMode: state.bendMode == .xy,
+            cornerStyle: state.cornerStyle.rawValue, placesVia: state.placesVia,
+            segmentCount: state.segmentCount, viaCount: state.viaCount, history: trackRouteHistory.count,
+            rulesRevision: rulesRevision, previewCount: pushShovePreviewSpecs.count,
+            viaDiameter: toolSettings.viaDiameter, viaHoleDiameter: toolSettings.viaHoleDiameter)
+    }
+
+    private func publishRouteInspector() {
+        guard let routeInspector, let state = drawTrackState else {
+            return
+        }
+        var route = trackPreviewPolylines(state)
+        if route.isEmpty {
+            if let point = state.anchor ?? state.cursor {
+                route = [[point]]
+            }
+        }
+        // The copper the route is meant to touch: where it starts and, while
+        // it has no net, what its next click joins; before it starts, the
+        // cursor is both.
+        var connecting = [HorizontalPoint]()
+        if let anchor = state.anchor {
+            connecting.append(anchor)
+        }
+        if state.netID == nil, let cursor = state.cursor {
+            connecting.append(cursor)
+        }
+        routeInspector.update(HorizontalRouteInspectorInput(
+            board: board,
+            netClasses: netClasses,
+            layer: state.layer,
+            netID: state.netID,
+            width: state.width,
+            widthSource: state.widthSource,
+            hasStarted: state.anchor != nil,
+            isRouterMode: isRouterMode,
+            route: route,
+            connecting: connecting,
+            via: routeVia(netID: state.netID),
+            viaArmed: state.placesVia,
+            customVia: toolSettings.viaDiameter != nil || toolSettings.viaHoleDiameter != nil,
+            rulesRevision: rulesRevision
+        ))
     }
 
     /// Preview polylines for the in-progress route. The manual tool is a single
@@ -5641,10 +5858,7 @@ struct BoardCanvasView: View {
 
     private func applyTrackWidth(_ widthNM: Double) {
         toolSettings.explicitTrackWidth = widthNM
-        if var state = drawTrackState {
-            state.width = widthNM
-            drawTrackState = state
-        }
+        takeExplicitTrackWidth(widthNM)
     }
 
     private func finalizedGraphicsResult(for state: DrawGraphicsState) -> DrawGraphicsResult? {
