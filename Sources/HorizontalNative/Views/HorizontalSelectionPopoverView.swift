@@ -1061,16 +1061,21 @@ struct HorizontalSelectionPopoverView: View {
 
 /// A numeric text field backed by a local string buffer. Unlike
 /// `TextField(value:format:)`, the displayed text is only re-synced from the
-/// model when the field is NOT focused, so a re-render mid-edit (which the board
-/// canvas triggers frequently) can't wipe a half-typed value — the bug where a
-/// width starting at 0 could never be changed. Commits on Return or focus loss.
-private struct NumericPropertyField: View {
+/// model while the field holds nothing typed, so a re-render mid-edit (which the
+/// board canvas triggers frequently) can't wipe a half-typed value — the bug where
+/// a width starting at 0 could never be changed. Commits on Return or focus loss,
+/// and only what was typed: a field that kept the old value while the model
+/// changed under it (an undo, the route inspector's rules) would otherwise put
+/// the old value back when it lost focus.
+struct NumericPropertyField: View {
     let value: Double
     let fractionDigits: Int
     let font: Font
     let onCommit: (Double) -> Void
 
     @State private var text: String = ""
+    /// The text as the model's value last set it; anything else was typed.
+    @State private var syncedText: String = ""
     /// The last value pushed to the model, so the Return path (onSubmit) and the
     /// focus-loss path don't both fire `onCommit` for the same value.
     @State private var lastCommitted: Double = .nan
@@ -1082,13 +1087,13 @@ private struct NumericPropertyField: View {
             .font(font)
             .focused($focused)
             .onAppear {
-                text = Self.format(value, fractionDigits)
+                sync(value)
                 lastCommitted = value
             }
             .onChange(of: value) { _, newValue in
                 lastCommitted = newValue
-                if !focused {
-                    text = Self.format(newValue, fractionDigits)
+                if !focused || text == syncedText {
+                    sync(newValue)
                 }
             }
             .onChange(of: focused) { _, isFocused in
@@ -1104,14 +1109,22 @@ private struct NumericPropertyField: View {
             }
     }
 
+    private func sync(_ value: Double) {
+        text = Self.format(value, fractionDigits)
+        syncedText = text
+    }
+
     private func commit() {
+        guard text != syncedText else {
+            return
+        }
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard let parsed = Double(trimmed), parsed.isFinite else {
             // Reject invalid input by restoring the model value.
-            text = Self.format(value, fractionDigits)
+            sync(value)
             return
         }
-        text = Self.format(parsed, fractionDigits)
+        sync(parsed)
         if parsed != lastCommitted {
             lastCommitted = parsed
             onCommit(parsed)

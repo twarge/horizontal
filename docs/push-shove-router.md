@@ -448,6 +448,47 @@ treatment the pour got:
    near the click it doesn't start. A click anywhere else starts nothing, and
    ⌘-click starts a route anywhere.
 
+   **A route's width is the rules'** (`HorizontalRouteWidth`), as Horizon's
+   router takes it: a custom width (W, the tool settings) wins; else the width
+   of the track the route starts on, which it continues; else the default of
+   the first enabled track width rule by order that takes the route's net, on
+   its layer (BoardRules::get_default_track_width), where a layer the rule
+   leaves out has RuleTrackWidth's 0.2 mm (BoardRules::update_for_board). Only
+   with no rule taking the net does it fall back to the width most of the
+   net's tracks have, as it always did before the rules were read. A width
+   from the rules follows the route onto the layer a via takes it to and the
+   net it joins, and follows a change to the rules.
+
+   **The route inspector** (`HorizontalRouteInspectorView`) is the sidebar
+   while the track tool is in use, opening for the route unless "Show the
+   route inspector" in the tool settings is off, and closing a few seconds
+   after the last route ends. It shows the route's layer (a picker before the
+   route starts), its net and net class, the width and where it
+   comes from, the via V drops and where its size comes from, the clearance
+   a track keeps from tracks, pads, through-hole
+   pads, vias, planes, the board edge, unplated holes and keepouts with the
+   rule each comes from (`HorizontalRouteSpacing`: the copper rule is the one
+   most other nets get with this one, and the others are listed with how many
+   nets they take), and the nearest thing of each kind to the route preview,
+   measured copper to copper on the real shapes, with what the rules ask
+   between them (`HorizontalRouteClearanceProbe`). Its fields change the
+   rules: the width the matching track width rule's default on the layer (or a
+   new rule taking every net where none does), its range the rule's, each
+   clearance its rule's entry (a new catch-all rule where none matches), and
+   the via's diameter and hole the matching via rule's parameters (a new via
+   rule with the board's default via where none takes the net)
+   (`HorizontalRouteRuleEditing`). Width and via each have Rules / Custom:
+   Custom is the tool settings' own size (W, or the via size in the settings),
+   for this route and the next; Rules clears it, and gives a route that
+   continued a track's width the rules' instead. A via dropped from the rules
+   keeps taking its shape from them (`from_rules`), as Horizon's router places
+   one; a custom one is its own. Each change is one undoable step, written
+   to the archive and taken into the board without a reload
+   (`HorizontalBoard.takeRules`), so the route in progress carries on with
+   them; the canvas takes them into the boards it holds on `rulesRevision`.
+   The rules window's own edits now go the same way, so the board in memory
+   no longer keeps the rules it loaded with until it is opened again.
+
    **Still to do:** the shove itself (steps 4–5); removing the inert
    `#if canImport(HorizontalPushShoveRouter)` blocks that remain in
    `BoardCanvasView` from the vendored engine; and telling the user WHAT is in

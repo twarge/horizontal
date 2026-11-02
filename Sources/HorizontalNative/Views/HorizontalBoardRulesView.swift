@@ -20,7 +20,8 @@ final class HorizontalBoardRulesWindowController: NSObject, NSWindowDelegate {
         isReadOnly: Bool,
         onRulesChange: @escaping (JSONDictionary) -> Void,
         onChecksRun: @escaping (HorizontalBoardRulesResultState) -> Void,
-        onApplyRules: ((HorizontalBoardRuleKind) -> String)? = nil
+        onApplyRules: ((HorizontalBoardRuleKind) -> String)? = nil,
+        focus: HorizontalBoardRuleFocus? = nil
     ) {
         let rootView = HorizontalBoardRulesWindow(
             projectName: projectName,
@@ -30,7 +31,9 @@ final class HorizontalBoardRulesWindowController: NSObject, NSWindowDelegate {
             isReadOnly: isReadOnly,
             onRulesChange: onRulesChange,
             onChecksRun: onChecksRun,
-            onApplyRules: onApplyRules
+            onApplyRules: onApplyRules,
+            rulesRevision: (hostingController?.rootView.rulesRevision ?? 0) + 1,
+            focus: focus
         )
 
         if let hostingController {
@@ -53,8 +56,29 @@ final class HorizontalBoardRulesWindowController: NSObject, NSWindowDelegate {
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
+
+    /// The board's rules changed from somewhere else, the route inspector or
+    /// an undo: an open window shows them, keeping what it has selected.
+    func refresh(rules: JSONDictionary, board: HorizontalBoard?) {
+        guard let hostingController, window?.isVisible == true else {
+            return
+        }
+        var rootView = hostingController.rootView
+        rootView.initialRules = rules
+        rootView.board = board
+        rootView.rulesRevision += 1
+        hostingController.rootView = rootView
+    }
 }
 #endif
+
+/// A rule for the rules window to show: a kind, and one rule of a kind that
+/// holds several.
+struct HorizontalBoardRuleFocus: Equatable {
+    var id = UUID()
+    var kind: HorizontalBoardRuleKind
+    var ruleID: String?
+}
 
 struct HorizontalBoardRulesWindow: View {
     var projectName: String
@@ -67,6 +91,11 @@ struct HorizontalBoardRulesWindow: View {
     /// Applies a kind's rules to the board, as Horizon's Apply does, and says
     /// what it did; nil where the host can't.
     var onApplyRules: ((HorizontalBoardRuleKind) -> String)?
+    /// Bumped when the rules change from outside the window: it takes
+    /// `initialRules` again.
+    var rulesRevision = 0
+    /// A rule to show, as the route inspector asks for one.
+    var focus: HorizontalBoardRuleFocus?
 
     @State private var rules: JSONDictionary
     @State private var selectedKind: HorizontalBoardRuleKind = .clearanceCopper
@@ -83,7 +112,9 @@ struct HorizontalBoardRulesWindow: View {
         isReadOnly: Bool,
         onRulesChange: @escaping (JSONDictionary) -> Void,
         onChecksRun: @escaping (HorizontalBoardRulesResultState) -> Void,
-        onApplyRules: ((HorizontalBoardRuleKind) -> String)? = nil
+        onApplyRules: ((HorizontalBoardRuleKind) -> String)? = nil,
+        rulesRevision: Int = 0,
+        focus: HorizontalBoardRuleFocus? = nil
     ) {
         self.projectName = projectName
         self.board = board
@@ -93,7 +124,13 @@ struct HorizontalBoardRulesWindow: View {
         self.onRulesChange = onRulesChange
         self.onChecksRun = onChecksRun
         self.onApplyRules = onApplyRules
+        self.rulesRevision = rulesRevision
+        self.focus = focus
         _rules = State(initialValue: initialRules)
+        if let focus {
+            _selectedKind = State(initialValue: focus.kind)
+            _selectedRuleID = State(initialValue: focus.ruleID)
+        }
     }
 
     var body: some View {
@@ -123,6 +160,17 @@ struct HorizontalBoardRulesWindow: View {
         .onAppear {
             ensureSelection()
             runStructuralChecks()
+        }
+        .onChange(of: rulesRevision) { _, _ in
+            rules = initialRules
+            ensureSelection()
+            runStructuralChecks()
+        }
+        .onChange(of: focus?.id) { _, _ in
+            guard let focus else { return }
+            selectedKind = focus.kind
+            selectedRuleID = focus.ruleID
+            ensureSelection()
         }
         .onChange(of: selectedKind) { _, _ in
             ensureSelection()

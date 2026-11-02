@@ -635,6 +635,24 @@ struct ProjectWorkspaceView: View {
     @State private var schematicDrawNetLineCommand: HorizontalDrawNetLineCommand?
     @State private var boardDrawingToolCommand: HorizontalDrawingToolCommand?
     @State private var boardDrawTrackCommand: HorizontalDrawTrackCommand?
+    /// Fed by the board canvas while a track is routed, and shown in the
+    /// sidebar. Plain state, not observed here, so a cursor move redraws the
+    /// sidebar and not the window.
+    @State private var routeInspector = HorizontalRouteInspectorModel()
+    @State private var routeWidthCommand: HorizontalRouteWidthCommand?
+    /// Bumped when the board's rules change without a reload, for the canvas.
+    @State private var boardRulesRevision = 0
+    /// What the sidebar showed before routing opened the route inspector,
+    /// put back when the route ends; nil when routing didn't open it, or the
+    /// sidebar was changed by hand since.
+    @State private var sidebarBeforeRouting: SidebarBeforeRouting?
+    /// Routing's start was seen, so the sidebar opens once per route even
+    /// when the start is reported again.
+    @State private var seesRouting = false
+    /// Puts the sidebar back a moment after a route ends, so it doesn't
+    /// close and open again between one route and the next.
+    @State private var sidebarRestoreTask: Task<Void, Never>?
+    @StateObject private var boardRulesUndoTarget = HorizontalUndoTarget<JSONDictionary>()
     @StateObject private var boardToolSettings = HorizontalBoardToolSettings()
     @State private var boardToolSettingsPresented = false
     @State private var boardDrawingLayer = HorizontalBoardLayers.topCopper
@@ -902,10 +920,25 @@ struct ProjectWorkspaceView: View {
             }
     }
 
+    /// The route inspector opens the sidebar while a track is routed, and
+    /// puts back what it showed when the route ends.
+    private var workspaceWithRouteInspector: some View {
+        workspaceWithBoardSceneActions
+            .onReceive(routeInspector.$isRouting.removeDuplicates()) { isRouting in
+                routingChanged(isRouting)
+            }
+            .onChange(of: rightSidebarPane) { _, pane in
+                // Changed by hand while routing: it stays as it was left.
+                if sidebarBeforeRouting != nil, pane != .selection {
+                    sidebarBeforeRouting = nil
+                }
+            }
+    }
+
     /// The parts review: kept current as the design and its pools change,
     /// and the updates sheet the Parts pane and the info bar open.
     private var workspaceWithPartLibrary: some View {
-        workspaceWithBoardSceneActions
+        workspaceWithRouteInspector
             .task(id: "\(boardEditRevision):\(schematicEditRevision):\(project.poolDirectory ?? ""):\(isReadOnly)") {
                 partLibrary.update(partLibraryInputs)
             }
@@ -1276,6 +1309,7 @@ struct ProjectWorkspaceView: View {
             SelectionSidebarView(
                 sections: selectionSidebarSections,
                 netSegmentSelection: schematicNetSegmentSelection,
+                routeInspector: routeInspector,
                 safeAreaInsets: safeAreaInsets,
                 foregroundColor: .primary,
                 backgroundColor: sidebarTheme.overlayBackground,
@@ -1283,7 +1317,8 @@ struct ProjectWorkspaceView: View {
                 onChange: applySelectionPropertyChange,
                 onNetSegmentSelectionCommand: { command in
                     schematicNetSegmentSelectionCommand = command
-                }
+                },
+                onRouteInspectorCommand: handleRouteInspectorCommand
             )
         case .export:
             HorizontalExportSidebarView(
@@ -2406,6 +2441,9 @@ struct ProjectWorkspaceView: View {
                                 selectionPropertyChangeCommand: selectionPropertyChangeCommands[.board],
                                 drawingToolCommand: boardDrawingToolCommand,
                                 drawTrackCommand: boardDrawTrackCommand,
+                                routeWidthCommand: routeWidthCommand,
+                                routeInspector: routeInspector,
+                                rulesRevision: boardRulesRevision,
                                 onShowToolSettings: { boardToolSettingsPresented = true },
                                 toolSettings: boardToolSettings,
                                 drawingLayer: boardDrawingLayer,
@@ -3085,6 +3123,11 @@ struct ProjectWorkspaceView: View {
     }
 
     private func showBoardRulesWindow() {
+        showBoardRulesWindow(focus: nil)
+    }
+
+    /// The rules window, at `focus` when there is one.
+    private func showBoardRulesWindow(focus: HorizontalBoardRuleFocus?) {
         guard project.board != nil else {
             return
         }
@@ -3100,7 +3143,8 @@ struct ProjectWorkspaceView: View {
                 isReadOnly: isReadOnly,
                 onRulesChange: applyEditedBoardRules,
                 onChecksRun: presentBoardRulesResults,
-                onApplyRules: applyBoardRules
+                onApplyRules: applyBoardRules,
+                focus: focus
             )
         } catch {
             recordDiagnostic("Could not load board rules: \(error.localizedDescription)")
@@ -3117,11 +3161,137 @@ struct ProjectWorkspaceView: View {
             return
         }
         do {
-            try HorizontalProjectJSONApplicator.apply(boardRules: rules, in: project, to: &document.archive)
+            let previous = try HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive)
+            // The window shows what it sent already; telling it again would
+            // reset a field being typed in.
+            try installBoardRules(rules, refreshesWindow: false)
+            registerBoardRulesUndo(from: previous, actionName: "Change Board Rules")
         } catch {
             recordArchiveApplyFailure(error)
         }
+    }
+
+    /// A change the route inspector makes to the rules. One undoable edit,
+    /// made without a reload so the route in progress carries on with them.
+    private func applyRouteRuleEdit(_ edit: HorizontalRouteRuleEdit) {
+        guard !isReadOnly, let board = project.board else {
+            return
+        }
+        do {
+            let previous = try HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive)
+            let copperLayers = board.stackupLayers.map(\.layer).filter(HorizontalBoardLayers.isCopper)
+            guard let rules = HorizontalRouteRuleEditing.applying(edit, to: previous, copperLayers: copperLayers) else {
+                return
+            }
+            try installBoardRules(rules, refreshesWindow: true)
+            registerBoardRulesUndo(from: previous, actionName: edit.actionName)
+        } catch {
+            recordArchiveApplyFailure(error)
+        }
+    }
+
+    /// The board's rules as `rules`: in the archive, and in the board without
+    /// a reload, which would cancel whatever the canvas is doing. The canvas
+    /// takes them into the board it is editing (`boardRulesRevision`), the
+    /// fills are checked against them and the results sidebar runs them.
+    private func installBoardRules(_ rules: JSONDictionary, refreshesWindow: Bool) throws {
+        var archive = document.archive
+        try HorizontalProjectJSONApplicator.apply(boardRules: rules, in: project, to: &archive)
+        // The undo step is registerBoardRulesUndo's, which puts the board's
+        // rules back too; the document binding's own would leave them.
+        withoutUndoRegistration {
+            document.archive = archive
+        }
+        #if os(macOS)
+        HorizontalDocumentSaving.markEdited(url: project.url)
+        #endif
+        project.board?.takeRules(rules)
+        boardRulesRevision += 1
+        boardEditRevision += 1
         refreshRulesResults()
+        if refreshesWindow {
+            boardRulesWindowController?.refresh(rules: rules, board: project.board)
+        }
+    }
+
+    private func registerBoardRulesUndo(from previous: JSONDictionary, actionName: String) {
+        boardRulesUndoTarget.configure(
+            currentValue: {
+                (try? HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive)) ?? [:]
+            },
+            restoreValue: { rules in
+                do {
+                    try installBoardRules(rules, refreshesWindow: true)
+                } catch {
+                    recordArchiveApplyFailure(error)
+                }
+            }
+        )
+        // The document's own undo manager, as applyLiveArchive's: the view's
+        // environment one is a fallback whenever the app isn't frontmost,
+        // where the Edit menu never looks.
+        var undoManager = activeUndoManager
+        #if os(macOS)
+        undoManager = HorizontalDocumentSaving.undoManager(url: project.url) ?? undoManager
+        #endif
+        boardRulesUndoTarget.registerUndo(from: previous, actionName: actionName, undoManager: undoManager)
+    }
+
+    private func handleRouteInspectorCommand(_ command: HorizontalRouteInspectorCommand) {
+        switch command {
+        case .selectLayer(let layer):
+            if boardDrawingLayer != layer {
+                selectOrSoloBoardLayer(layer)
+            }
+        case .useRuleWidth:
+            boardToolSettings.explicitTrackWidth = nil
+            routeWidthCommand = HorizontalRouteWidthCommand()
+        case .useCustomWidth(let width):
+            guard width > 0 else { return }
+            boardToolSettings.explicitTrackWidth = width
+        case .useRuleVia:
+            boardToolSettings.viaDiameter = nil
+            boardToolSettings.viaHoleDiameter = nil
+        case .useCustomVia(let diameter, let holeDiameter):
+            guard diameter > 0, holeDiameter > 0 else { return }
+            boardToolSettings.viaDiameter = diameter
+            boardToolSettings.viaHoleDiameter = holeDiameter
+        case .editRule(let edit):
+            applyRouteRuleEdit(edit)
+        case .showRules(let kind, let ruleID):
+            showBoardRulesWindow(focus: HorizontalBoardRuleFocus(kind: kind, ruleID: ruleID))
+        }
+    }
+
+    /// The track tool started or ended: the route inspector opens the
+    /// sidebar, unless the tool settings say not to, and the sidebar goes
+    /// back to what it was when the route ends.
+    private func routingChanged(_ isRouting: Bool) {
+        if isRouting {
+            guard !seesRouting else { return }
+            seesRouting = true
+            sidebarRestoreTask?.cancel()
+            sidebarRestoreTask = nil
+            guard sidebarBeforeRouting == nil, boardToolSettings.showsRouteInspector,
+                  rightSidebarPane != .selection else { return }
+            sidebarBeforeRouting = SidebarBeforeRouting(pane: rightSidebarPane)
+            rightSidebarPane = .selection
+        } else {
+            seesRouting = false
+            guard sidebarBeforeRouting != nil else { return }
+            sidebarRestoreTask?.cancel()
+            sidebarRestoreTask = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(3))
+                // Not while a route is under way again, or once the sidebar
+                // has a selection to show.
+                guard !Task.isCancelled, !routeInspector.isRouting, selectionSidebarSections.isEmpty,
+                      let before = sidebarBeforeRouting else { return }
+                sidebarBeforeRouting = nil
+                if rightSidebarPane == .selection {
+                    rightSidebarPane = before.pane
+                }
+            }
+        }
     }
 
     /// The rules window's Apply, for the via rules: every via that takes its
@@ -5080,6 +5250,11 @@ struct ProjectMetadataRow: Identifiable, Equatable {
     }
 }
 
+/// What the sidebar showed before routing opened the route inspector.
+private struct SidebarBeforeRouting: Equatable {
+    var pane: HorizontalWorkspaceRightSidebar?
+}
+
 private struct SelectionSidebarSection: Identifiable {
     var pane: HorizontalPane
     var state: HorizontalSelectionDetailState
@@ -5358,22 +5533,36 @@ private struct HorizontalNetSegmentSelectionSidebarView: View {
 private struct SelectionSidebarView: View {
     var sections: [SelectionSidebarSection]
     var netSegmentSelection: HorizontalNetSegmentSelectionSidebarState?
+    @ObservedObject var routeInspector: HorizontalRouteInspectorModel
     var safeAreaInsets: EdgeInsets
     var foregroundColor: Color
     var backgroundColor: Color
     var isReadOnly: Bool
     var onChange: (HorizontalSelectionPropertyChange, HorizontalPane) -> Void
     var onNetSegmentSelectionCommand: (HorizontalNetSegmentSelectionCommand) -> Void
+    var onRouteInspectorCommand: (HorizontalRouteInspectorCommand) -> Void
 
     var body: some View {
         ScrollViewReader { scrollProxy in
             List {
+                if routeInspector.isRouting {
+                    Section("Track Route") {
+                        HorizontalRouteInspectorView(
+                            model: routeInspector,
+                            isReadOnly: isReadOnly,
+                            onCommand: onRouteInspectorCommand
+                        )
+                        .padding(.vertical, 4)
+                    }
+                }
                 if sections.isEmpty && netSegmentSelection == nil {
-                    Section("Selection") {
-                        Label("No selection", systemImage: "scope")
-                            .font(.body)
-                            .foregroundStyle(.secondary)
-                            .padding(.vertical, 4)
+                    if !routeInspector.isRouting {
+                        Section("Selection") {
+                            Label("No selection", systemImage: "scope")
+                                .font(.body)
+                                .foregroundStyle(.secondary)
+                                .padding(.vertical, 4)
+                        }
                     }
                 } else {
                     if let netSegmentSelection {

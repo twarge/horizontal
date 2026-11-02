@@ -27,7 +27,15 @@ struct HorizontalBoardToolSettingsView: View {
                             .frame(width: 80)
                             .multilineTextAlignment(.trailing)
                     }
+                } else {
+                    Text("A route takes the width of the track it starts on, else the track width rules'.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
+                Toggle("Show the route inspector", isOn: $settings.showsRouteInspector)
+                Text("While a track is routed, the sidebar shows its layer, net, width and clearances, the rules they come from, and how close it is to what it passes.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             // Unguarded since the router became Horizontal's own: it is pure
