@@ -119,8 +119,24 @@ order, and anything on a net without a plane as a warning.
 Load diagnostics, the rules editor's structural validation of the board
 rules, unannotated and duplicate reference designators, components without a
 part, single-pin and pinless nets, gates with no symbol on any sheet, packages
-not placed, and unrouted connections. There is no geometric design rule check
-in Horizontal yet, so none here either.
+not placed, and unrouted connections.
+
+It runs Horizon's copper clearance checks too, as the rules window's Run
+Checks and the rules results sidebar do (`HorizontalBoardClearanceCheck`):
+copper of two nets — tracks, net ties, pads, through-hole pads, vias, plated
+holes and planes' fills — closer on a layer they share than the
+`clearance_copper` rule for the two nets and kinds allows, and copper closer
+to an unplated hole or the board edge than `clearance_copper_other` allows, or
+outside the board. Copper on no net is checked against copper on a net, not
+against other copper on none, and a net tie isn't checked against the nets it
+ties, as in Horizon. Distances are measured on the copper itself; copper at
+exactly the clearance passes. The routing offset is the router's margin and is
+not checked. Each finding is one `clearance` error per pair of objects:
+`first` and `second` (`type`, `id`, `label`, `net_id`, `net_name`), the
+`layer` the numbers are for and every `layers` it is too close on,
+`distance_mm`, `clearance_mm`, the `rule` (`kind`, `id`, null for none and
+Horizon's 0.1 mm, and `brief`), and `x_mm`/`y_mm` between the nearest points.
+Copper text and lines on copper layers aren't checked yet.
 
 It also gives the warnings the schematic canvas draws — Horizon's sheet
 warnings: Label missing, Pin connected to net, Power sym missing, Pin on Line,

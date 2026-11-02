@@ -689,6 +689,8 @@ struct ProjectWorkspaceView: View {
     @State private var isKeyboardInControl = false
     @State private var rightSidebarPane: HorizontalWorkspaceRightSidebar?
     @State private var rulesResultsState: HorizontalBoardRulesResultState?
+    /// The copper clearance check the results sidebar is waiting on.
+    @State private var clearanceCheckTask: Task<Void, Never>?
     @State private var exportSettings: HorizontalExportSettings
     @State private var exportStatus: HorizontalExportStatus?
     @State private var isExporting = false
@@ -1035,6 +1037,11 @@ struct ProjectWorkspaceView: View {
             // already, and this catches the rest.
             .onChange(of: boardEditRevision) { _, _ in
                 checkPlaneFills()
+                scheduleClearanceCheck()
+            }
+            // A pour's fills are copper too.
+            .onChange(of: planeFillRevision) { _, _ in
+                scheduleClearanceCheck()
             }
             .onChange(of: updatesPlanesAutomatically) { _, _ in
                 checkPlaneFills(again: true)
@@ -1333,7 +1340,12 @@ struct ProjectWorkspaceView: View {
         case .rulesResults:
             HorizontalRulesResultsSidebarView(
                 result: rulesResultsState,
-                safeAreaInsets: safeAreaInsets
+                safeAreaInsets: safeAreaInsets,
+                onRunChecks: refreshRulesResults,
+                onShowFinding: showClearanceFinding,
+                onShowRule: { finding in
+                    showBoardRulesWindow(focus: HorizontalBoardRuleFocus(kind: finding.ruleKind, ruleID: finding.ruleID))
+                }
             )
         }
     }
@@ -1465,11 +1477,11 @@ struct ProjectWorkspaceView: View {
     }
 
     private var rulesResultsHelp: String {
-        guard let result = rulesResultsState, !result.messages.isEmpty else {
+        guard let result = rulesResultsState, result.badgeCount > 0 else {
             return rulesResultsSidebarToggleTitle
         }
-        let errors = result.messages.filter { $0.level == .error }.count
-        let warnings = result.messages.count - errors
+        let errors = result.messages.filter { $0.level == .error }.count + (result.clearanceFindings?.count ?? 0)
+        let warnings = result.messages.count - result.messages.filter { $0.level == .error }.count
         let found = [errors > 0 ? "\(errors) error\(errors == 1 ? "" : "s")" : nil,
                      warnings > 0 ? "\(warnings) warning\(warnings == 1 ? "" : "s")" : nil].compactMap { $0 }
         return "\(rulesResultsSidebarToggleTitle) — the last rules check found \(found.joined(separator: " and "))"
@@ -1734,20 +1746,8 @@ struct ProjectWorkspaceView: View {
             visiblePanes.insert(.board)
         }
         live.showBoardSide = { side in
-            // Framing a part on the far side: a sided view turns over to it,
-            // keeping its mode (silkscreen stays silkscreen); the all-layers
-            // view belongs to no side and stays.
-            guard let current = boardDisplayOptions.visibleSide, current != side else {
-                return
-            }
-            let mode: HorizontalBoardLayerPreset = !boardDisplayOptions.pads && boardDisplayOptions.packages ? .silkscreen
-                : (!boardDisplayOptions.packages ? .routing : .placement)
-            boardDisplayOptions.applyLayerPreset(mode.resolved(for: side))
-            if boardViewport.mirrored {
-                // Seen from below and turning to the top: stop mirroring.
-                boardViewport.mirrored = side == .bottom
-            }
-            boardDrawingLayer = side.copperLayer
+            // Framing a part on the far side: a sided view turns over to it.
+            showBoardSide(side)
         }
         live.zoomBy = { pane, factor in
             let candidates: [HorizontalPane?] = [pane, activeCanvasCommandPane, .board, .schematic, .threeD]
@@ -3144,6 +3144,16 @@ struct ProjectWorkspaceView: View {
                 onRulesChange: applyEditedBoardRules,
                 onChecksRun: presentBoardRulesResults,
                 onApplyRules: applyBoardRules,
+                checkClearance: { rules in
+                    // The board as it stands now, which the window's own copy
+                    // isn't once the board has been edited since it opened.
+                    guard let board = project.board else { return nil }
+                    return await HorizontalBoardClearanceCheck.findings(
+                        board: board,
+                        rules: HorizontalBoardRules(rules: rules, netDetails: board.netDetails),
+                        tiedNets: HorizontalBoardClearanceCheck.tiedNets(of: project))
+                },
+                onShowFinding: showClearanceFinding,
                 focus: focus
             )
         } catch {
@@ -3152,8 +3162,60 @@ struct ProjectWorkspaceView: View {
     }
 
     private func presentBoardRulesResults(_ result: HorizontalBoardRulesResultState) {
+        // The window's run is the one to show; a check started for the
+        // sidebar's own would replace its findings.
+        clearanceCheckTask?.cancel()
+        clearanceCheckTask = nil
         rulesResultsState = result
         rightSidebarPane = .rulesResults
+    }
+
+    /// Where a clearance finding is: the board framed on it, with the nets
+    /// and parts of both sides highlighted, turned to its side when the view
+    /// shows one side and the finding is on the other's copper only. A net
+    /// with a plane lights up most of the board, so it is highlighted only
+    /// where the plane is one of the two, or both nets have one.
+    private func showClearanceFinding(_ finding: HorizontalClearanceFinding) {
+        let planeNets = Set(project.board?.planes.compactMap { $0.netID?.lowercased() } ?? [])
+        let nets = [finding.first.netID, finding.second.netID].compactMap { $0 }
+        let showsPlane = finding.first.type == .plane || finding.second.type == .plane
+        let quiet = nets.filter { !planeNets.contains($0) }
+        highlightSelectedNet(Set(showsPlane || quiet.isEmpty ? nets : quiet))
+        highlightSelectedComponents(Set([finding.first.componentID, finding.second.componentID].compactMap { $0 }))
+        if let side = boardDisplayOptions.visibleSide {
+            let layers = Set(finding.layers)
+            if !layers.contains(side.copperLayer), layers.contains(side.other.copperLayer) {
+                showBoardSide(side.other)
+            }
+        }
+        let region = finding.region
+        if visiblePanes.contains(.board), let frame = canvasCommandActionsByPane[.board]?.frameWorldRect {
+            frame(region)
+            return
+        }
+        // The board pane comes up first, and is framed once it has.
+        visiblePanes.insert(.board)
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            canvasCommandActionsByPane[.board]?.frameWorldRect?(region)
+        }
+    }
+
+    /// Turns a sided board view over to `side`, keeping its mode
+    /// (silkscreen stays silkscreen); the all-layers view belongs to no side
+    /// and stays.
+    private func showBoardSide(_ side: HorizontalBoardSide) {
+        guard let current = boardDisplayOptions.visibleSide, current != side else {
+            return
+        }
+        let mode: HorizontalBoardLayerPreset = !boardDisplayOptions.pads && boardDisplayOptions.packages ? .silkscreen
+            : (!boardDisplayOptions.packages ? .routing : .placement)
+        boardDisplayOptions.applyLayerPreset(mode.resolved(for: side))
+        if boardViewport.mirrored {
+            // Seen from below and turning to the top: stop mirroring.
+            boardViewport.mirrored = side == .bottom
+        }
+        boardDrawingLayer = side.copperLayer
     }
 
     private func applyEditedBoardRules(_ rules: JSONDictionary) {
@@ -3351,6 +3413,8 @@ struct ProjectWorkspaceView: View {
     /// run in the rules window first.
     private func refreshRulesResults() {
         guard project.board != nil, let rules = try? HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive) else {
+            clearanceCheckTask?.cancel()
+            clearanceCheckTask = nil
             rulesResultsState = nil
             return
         }
@@ -3358,8 +3422,41 @@ struct ProjectWorkspaceView: View {
         rulesResultsState = HorizontalBoardRulesResultState(
             ruleTitle: "All Rules",
             messages: HorizontalBoardRulesValidator.validateAll(rules: rules, context: context),
-            checkedAt: Date()
+            checkedAt: Date(),
+            clearanceFindings: rulesResultsState?.clearanceKind == nil ? rulesResultsState?.clearanceFindings : nil
         )
+        scheduleClearanceCheck()
+    }
+
+    /// The copper clearance checks, in the background, on the board as it
+    /// stands, for the results sidebar and its badge: every finding, or the
+    /// kind's the rules window's last Run Checks showed. An edit often comes
+    /// with others, so the check waits for them to settle; a later one
+    /// cancels it. The last findings stay up until the new ones are in.
+    private func scheduleClearanceCheck() {
+        clearanceCheckTask?.cancel()
+        // A run of the rules window's for a kind the check doesn't cover
+        // has no findings to keep up to date.
+        guard let board = project.board, let state = rulesResultsState,
+              state.clearanceKind == nil || state.clearanceFindings != nil else {
+            clearanceCheckTask = nil
+            return
+        }
+        let kind = state.clearanceKind
+        rulesResultsState?.isCheckingClearance = true
+        let tiedNets = HorizontalBoardClearanceCheck.tiedNets(of: project)
+        clearanceCheckTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled,
+                  let findings = await HorizontalBoardClearanceCheck.findings(board: board, tiedNets: tiedNets),
+                  !Task.isCancelled else {
+                return
+            }
+            rulesResultsState?.clearanceFindings = kind.flatMap { HorizontalBoardClearanceCheck.findings(findings, for: $0) } ?? findings
+            rulesResultsState?.isCheckingClearance = false
+            rulesResultsState?.checkedAt = Date()
+            clearanceCheckTask = nil
+        }
     }
 
     /// A title-block value edited in the information panel goes through the
@@ -5652,17 +5749,37 @@ private struct SelectionSidebarView: View {
 private struct HorizontalRulesResultsSidebarView: View {
     var result: HorizontalBoardRulesResultState?
     var safeAreaInsets: EdgeInsets
+    /// Runs every rules check again on the board as it stands.
+    var onRunChecks: () -> Void = {}
+    /// Shows where a clearance finding is on the board.
+    var onShowFinding: (HorizontalClearanceFinding) -> Void = { _ in }
+    /// Opens the rules window at the rule a finding is against.
+    var onShowRule: (HorizontalClearanceFinding) -> Void = { _ in }
 
     var body: some View {
         List {
             Section("Rules Results") {
                 if let result {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(result.ruleTitle)
-                            .fontWeight(.semibold)
-                        Text(result.checkedAt, format: .dateTime.month().day().hour().minute().second())
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(result.ruleTitle)
+                                .fontWeight(.semibold)
+                            Text(result.checkedAt, format: .dateTime.month().day().hour().minute().second())
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if result.isCheckingClearance {
+                            ProgressView()
+                                .controlSize(.small)
+                                .help("Checking the board's copper against the clearance rules")
+                        }
+                        Button(action: onRunChecks) {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Run the rules checks again")
+                        .accessibilityLabel("Run Checks")
                     }
                     .padding(.vertical, 4)
                 } else {
@@ -5674,7 +5791,7 @@ private struct HorizontalRulesResultsSidebarView: View {
             }
 
             if let result {
-                Section("Results") {
+                Section("Rules") {
                     if result.messages.isEmpty {
                         Label("No structural issues", systemImage: "checkmark.seal")
                             .foregroundStyle(.green)
@@ -5694,6 +5811,28 @@ private struct HorizontalRulesResultsSidebarView: View {
                                 }
                             }
                             .padding(.vertical, 4)
+                        }
+                    }
+                }
+                if let findings = result.clearanceFindings {
+                    Section(findings.isEmpty ? "Clearance" : "Clearance (\(findings.count))") {
+                        if findings.isEmpty {
+                            Label("No copper closer than the rules allow", systemImage: "checkmark.seal")
+                                .foregroundStyle(.green)
+                                .padding(.vertical, 4)
+                        } else {
+                            ForEach(findings) { finding in
+                                HorizontalClearanceFindingRow(finding: finding, onShow: onShowFinding)
+                                    .padding(.vertical, 4)
+                                    .contextMenu {
+                                        Button("Show on Board") {
+                                            onShowFinding(finding)
+                                        }
+                                        Button(finding.ruleID == nil ? "Show Rules" : "Show Rule") {
+                                            onShowRule(finding)
+                                        }
+                                    }
+                            }
                         }
                     }
                 }
