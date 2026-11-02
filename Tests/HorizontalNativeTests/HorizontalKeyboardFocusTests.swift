@@ -121,6 +121,65 @@ final class HorizontalKeyboardFocusTests: XCTestCase {
         }
     }
 
+    private func upArrow(in window: NSWindow) throws -> NSEvent {
+        try key(String(UnicodeScalar(NSUpArrowFunctionKey)!), keyCode: 126, in: window)
+    }
+
+    private func rightClick(at point: NSPoint, in window: NSWindow) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [],
+            timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            eventNumber: 0, clickCount: 1, pressure: 1))
+    }
+
+    /// With the board and the schematic both open, a click on the schematic
+    /// gives its pane the keyboard but leaves the board's canvas first
+    /// responder, as a right-click, a click that took the keyboard from a
+    /// field, or Tab made it. Up moved the board's selection: the board's
+    /// monitor took every key while its canvas was first responder, whichever
+    /// pane had the keyboard. The pane with the keyboard takes them now.
+    func testTheKeyboardFocusedPaneTakesTheArrowsFromACanvasLeftFirstResponder() throws {
+        _ = NSApplication.shared
+        let board = TrackpadCanvasMonitor.MonitorView(frame: NSRect(x: 0, y: 0, width: 200, height: 300))
+        let schematic = TrackpadCanvasMonitor.MonitorView(frame: NSRect(x: 200, y: 0, width: 200, height: 300))
+        let window = window(with: [board, schematic])
+        defer { window.close() }
+        enum Pane { case board, schematic }
+        var focused = Pane.board
+        var nudged = [Pane]()
+        board.onRequestKeyboardFocus = { focused = .board }
+        schematic.onRequestKeyboardFocus = { focused = .schematic }
+        board.onMoveSelectionByGrid = { _, _ in nudged.append(.board) }
+        schematic.onMoveSelectionByGrid = { _, _ in nudged.append(.schematic) }
+        // What SwiftUI's update does with the focused pane.
+        func update() {
+            board.hasKeyboardFocus = focused == .board
+            schematic.hasKeyboardFocus = focused == .schematic
+        }
+        let handlers = [board.makeEventHandler(), schematic.makeEventHandler()]
+        // The window's local monitors, in turn, until one takes the event.
+        func send(_ event: NSEvent) {
+            for handle in handlers where handle(event) == nil { return }
+        }
+
+        update()
+        send(try rightClick(at: NSPoint(x: 100, y: 150), in: window))
+        XCTAssertTrue(window.firstResponder === board)
+        update()
+        send(try click(at: NSPoint(x: 300, y: 150), in: window))
+        XCTAssertEqual(focused, .schematic)
+        XCTAssertTrue(window.firstResponder === board, "a click on a canvas takes the keyboard only from a field or list")
+        update()
+        send(try upArrow(in: window))
+        XCTAssertEqual(nudged, [.schematic], "Up is the schematic's")
+
+        // A right-click on the board gives it the keys at once, before its
+        // pane's focus comes back round.
+        send(try rightClick(at: NSPoint(x: 100, y: 150), in: window))
+        XCTAssertEqual(focused, .board)
+        send(try upArrow(in: window))
+        XCTAssertEqual(nudged, [.schematic, .board])
+    }
+
     /// The same for a SwiftUI `Table`, which is what the Pools pane shows: it
     /// is an `NSTableView` underneath, so the canvas leaves it its keys.
     func testASwiftUITableIsAListThatTakesItsOwnKeys() async throws {

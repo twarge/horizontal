@@ -406,7 +406,13 @@ enum HorizontalCanvasInputCore {
     /// - a list, and selected text otherwise, keep their keys unless an
     ///   interaction in progress (a placement started from a pane) wants
     ///   them;
-    /// - the canvas takes the keys while it or its pane has the keyboard.
+    /// - otherwise the canvas takes the keys while its pane has the
+    ///   keyboard, the pane its keyboard badge is on, or an interaction in
+    ///   progress wants them. Being the window's first responder isn't
+    ///   enough: a click on another canvas leaves this one first responder
+    ///   (only a field or list gives the keyboard up to a click), and with
+    ///   the board and the schematic both open the board took Up and moved
+    ///   its selection while the schematic had the keyboard.
     static func canvasTakesKey(
         _ event: HorizontalCanvasKeyEvent,
         responder: HorizontalKeyboardResponder,
@@ -425,9 +431,7 @@ enum HorizontalCanvasInputCore {
             return interaction
         case .list:
             return interaction
-        case .canvas:
-            return true
-        case .other:
+        case .canvas, .other:
             return paneHasKeyboard || interaction
         }
     }

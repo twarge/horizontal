@@ -3573,11 +3573,13 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
                     guard let self, self.handlesInteractionKeys, self.isOtherControlActive || !self.hasKeyboardFocus,
                           let window = self.window else { return }
                     window.makeFirstResponder(self)
-                    self.onRequestKeyboardFocus?()
+                    self.requestKeyboardFocus()
                 }
             }
         }
         var supportsTrackVias = false
+        /// The pane this canvas is in has the keyboard (its badge is on), so
+        /// its key monitor takes the keys no field, list or text keeps.
         var hasKeyboardFocus = true
         var onRequestKeyboardFocus: (() -> Void)?
         var samplesCursorContinuously = false {
@@ -3725,10 +3727,12 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
                 // table, the navigator) keeps its keys (128), selected text
                 // its Copy and Select All, a field every key; otherwise only
                 // the keyboard-focused pane's canvas takes them (set by
-                // clicking a pane), so ⌘A doesn't select in every pane. An
-                // interaction in progress takes its own, and the
-                // first-responder check covers the moment after a right-click
-                // before the focus state comes back round.
+                // clicking a pane), so ⌘A doesn't select in every pane, and
+                // a canvas left first responder by a click on another pane's
+                // canvas takes none. An interaction in progress takes its
+                // own. A click sets the pane's focus here at once, so the
+                // keys after a right-click work before the state comes back
+                // round.
                 guard HorizontalCanvasInputCore.canvasTakesKey(
                     keyEvent(from: event),
                     responder: keyboardResponder,
@@ -3781,7 +3785,7 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
                 // A click within this pane gives it keyboard focus (after the
                 // ignoresCanvasMouseEvents guard above, so sidebar clicks don't steal it).
                 if event.type == .leftMouseDown {
-                    onRequestKeyboardFocus?()
+                    requestKeyboardFocus()
                     takeFocusFromOtherControl(clickedAt: event.locationInWindow)
                 }
                 lastSampledCanvasLocation = canvasLocation
@@ -3789,7 +3793,7 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
                 return event
             }
             if event.type == .rightMouseDown {
-                onRequestKeyboardFocus?()
+                requestKeyboardFocus()
                 window.makeFirstResponder(self)
                 onSecondaryClick?(canvasLocation, bounds.size, location, self)
                 return nil
@@ -4019,6 +4023,14 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
 
         private func arrowDirection(from event: NSEvent) -> HorizontalPoint? {
             HorizontalCanvasInputCore.arrowDirection(keyEvent(from: event))
+        }
+
+        /// Gives this canvas's pane the keyboard. The pane's state comes back
+        /// round through SwiftUI's next update, so the flag is set here too,
+        /// for the moment in between, as after a right-click.
+        private func requestKeyboardFocus() {
+            hasKeyboardFocus = true
+            onRequestKeyboardFocus?()
         }
 
         /// What has the window's keyboard, this canvas among the choices.
