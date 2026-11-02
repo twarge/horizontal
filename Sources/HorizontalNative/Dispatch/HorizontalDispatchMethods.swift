@@ -331,7 +331,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "check",
-            summary: "Run the checks Horizontal has: load diagnostics, rules validation, annotation, single-pin nets, unplaced parts, unrouted connections, copper joining two nets, and the warnings the schematic canvas draws on every sheet of every block (Label missing, Pin connected to net, Power sym missing and the rest), each with its sheet, position in mm, what the canvas says and the net or part it is about. More than three findings with one title come back as one message naming them all.",
+            summary: "Run the checks Horizontal has: load diagnostics, rules validation, annotation, single-pin nets, unplaced parts, unrouted connections, copper joining two nets, Horizon's copper clearance checks (copper of two nets, or copper and an unplated hole or the board edge, closer than the clearance rules allow: both objects, the layers, distance_mm, clearance_mm, the rule, and x_mm and y_mm), and the warnings the schematic canvas draws on every sheet of every block (Label missing, Pin connected to net, Power sym missing and the rest), each with its sheet, position in mm, what the canvas says and the net or part it is about. More than three findings with one title come back as one message naming them all.",
             params: ["handle": "Project handle.",
                      "full": "List every finding as its own message instead of grouping repeats (default false)."],
             handler: { session, params in

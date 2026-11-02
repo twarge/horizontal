@@ -1225,7 +1225,11 @@ def board_info(path: str | None = None) -> dict[str, Any]:
 def check(path: str | None = None, full: bool = False) -> dict[str, Any]:
     """Run the checks Horizontal has: load diagnostics, rules validation, annotation, single-pin nets, components with
     no symbol on any sheet, unplaced packages, unrouted connections, copper that joins two nets (tracks and vias
-    reaching pads of both, a poured plane over a pad of another), and the warnings the schematic canvas draws on
+    reaching pads of both, a poured plane over a pad of another), Horizon's copper clearance checks — copper of two
+    nets, or copper and an unplated hole or the board edge, closer than the clearance rules allow, each an error in
+    category clearance naming first and second (type, id, label, net), the layer and layers, distance_mm,
+    clearance_mm, the rule (kind, id, brief) and x_mm and y_mm; the routing offset is the router's margin and isn't
+    checked — and the warnings the schematic canvas draws on
     every sheet of every block — Label missing, Pin connected to net, Power sym missing and the rest — each with its
     sheet and sheet_name, x_mm and y_mm, the canvas's message, and the net, refdes and pin it is about; one about a
     stretch of wiring names its wires in net_lines. More than three findings with one title come back as one message
