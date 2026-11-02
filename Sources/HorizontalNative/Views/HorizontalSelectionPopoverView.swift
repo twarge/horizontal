@@ -61,6 +61,9 @@ enum HorizontalSelectionPropertyEditor: Equatable {
     case angle
     case layer([HorizontalSelectionPropertyOption])
     case choice([HorizontalSelectionPropertyOption])
+    /// A choice among a few, shown side by side: where a value comes from,
+    /// the rules or the object's own (Rules / Custom).
+    case segmented([HorizontalSelectionPropertyOption])
     case pinFunctions(HorizontalPinFunctionsEditor)
     case readOnly
 }
@@ -899,6 +902,17 @@ struct HorizontalSelectionPopoverView: View {
             }
             .labelsHidden()
             .controlSize(.small)
+            .focusable(false)
+        case .segmented(let options):
+            Picker("", selection: choiceBinding(for: property, group: group, item: item)) {
+                ForEach(options) { option in
+                    Text(option.title).tag(option.id)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .fixedSize()
             .focusable(false)
         case .pinFunctions, .readOnly:
             EmptyView()

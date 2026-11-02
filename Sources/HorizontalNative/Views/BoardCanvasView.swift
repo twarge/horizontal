@@ -2138,7 +2138,9 @@ struct BoardCanvasView: View {
                     value: String(plane.priority),
                     options: (0...20).map { HorizontalSelectionPropertyOption(id: String($0), title: String($0)) }
                 ),
-                editableBoolProperty("fromRules", "From rules", plane.fromRules),
+                HorizontalSelectionProperty(
+                    id: "fromRules", label: "Settings from", editor: .segmented(Self.ruleSourceOptions),
+                    value: .choice(plane.fromRules ? "rules" : "custom")),
                 editableChoiceProperty(
                     "fill",
                     "Fill",
@@ -2266,8 +2268,25 @@ struct BoardCanvasView: View {
             readOnlyProperty("name", "Net", net?.name ?? netDisplayName(segment.netID)),
             layerProperty,
             widthProperty,
-            includesNetClass ? editableNetClassProperty(for: segment.netID) : nil,
         ].compactMap { $0 }
+        // A track's or net tie's width is the track width rule's or its own
+        // (Horizon's width_from_rules), and the rule says what it would be.
+        if editable, includesNetClass {
+            properties.append(HorizontalSelectionProperty(
+                id: "widthSource", label: "Width from", editor: .segmented(Self.ruleSourceOptions),
+                value: .choice(segment.widthFromRules ? "rules" : "custom")))
+            if let layer = segment.layer, let rule = board.rules.trackWidth(net: segment.netID, layer: layer) {
+                let brief = HorizontalRouteRuleNames(netDetails: board.netDetails, netClasses: netClasses).match(rule.rule.match)
+                if let ruleProperty = readOnlyProperty("widthRule", "Rule", "\(brief) · \(lengthString(rule.widths.def))") {
+                    properties.append(ruleProperty)
+                }
+            } else if let noRule = readOnlyProperty("widthRule", "Rule", "No track width rule takes this net") {
+                properties.append(noRule)
+            }
+        }
+        if includesNetClass, let netClass = editableNetClassProperty(for: segment.netID) {
+            properties.append(netClass)
+        }
         if let radius = segment.arc?.radius,
            let radiusProperty = readOnlyProperty("radius", "Radius", lengthString(radius)) {
             properties.append(radiusProperty)
@@ -2320,6 +2339,12 @@ struct BoardCanvasView: View {
             editableBoolProperty("allowUpsideDown", "Allow upside-down", text.allowUpsideDown),
         ].compactMap { $0 }
     }
+
+    /// Where a value comes from: the rules, or the object's own.
+    private static let ruleSourceOptions = [
+        HorizontalSelectionPropertyOption(id: "rules", title: "Rules"),
+        HorizontalSelectionPropertyOption(id: "custom", title: "Custom"),
+    ]
 
     private func readOnlyProperty(_ id: String, _ label: String, _ value: String?) -> HorizontalSelectionProperty? {
         guard let value = nonEmpty(value) else {
@@ -2443,17 +2468,18 @@ struct BoardCanvasView: View {
         ].compactMap { $0 }
 
         var sourceOptions = [
-            HorizontalSelectionPropertyOption(id: "rules", title: "From rules"),
+            HorizontalSelectionPropertyOption(id: "rules", title: "Rules"),
             HorizontalSelectionPropertyOption(id: "local", title: "Custom"),
         ]
         if !board.viaDefinitions.isEmpty || via.definitionID != nil {
             sourceOptions.insert(
-                HorizontalSelectionPropertyOption(id: "definition", title: "Via definition"),
+                HorizontalSelectionPropertyOption(id: "definition", title: "Definition"),
                 at: 1
             )
         }
         let source = via.fromRules ? "rules" : (via.definitionID != nil ? "definition" : "local")
-        properties.append(editableChoiceProperty("viaSource", "Source", value: source, options: sourceOptions))
+        properties.append(HorizontalSelectionProperty(
+            id: "viaSource", label: "Shape from", editor: .segmented(sourceOptions), value: .choice(source)))
 
         if source == "definition", let definitionID = via.definitionID {
             var definitionOptions = board.viaDefinitions.map {
@@ -5074,14 +5100,21 @@ struct BoardCanvasView: View {
             if let net = boardNetID(at: point, layer: state.layer) ?? boardNetID(at: anchorPoint, layer: state.layer) {
                 state.netID = net
             }
-            // An explicit width (set via `w`) wins; else continue at the width
-            // of any track under the start point; else the rules' for the net.
+            // On a pad the rules' width; on a track the track's (or the
+            // rules', where the track's is theirs); anywhere else a custom
+            // width (W) when one is set. A route that starts on copper clears
+            // the custom width, as Horizon's router keeps one for its route.
+            let startTrack = BoardTrackRouting.track(at: anchorPoint, layer: state.layer, tracks: board.tracks)
             let width = HorizontalRouteWidth.start(
                 explicit: toolSettings.explicitTrackWidth,
-                startTrack: BoardTrackRouting.track(at: anchorPoint, layer: state.layer, tracks: board.tracks),
+                onPad: state.anchorOnPad,
+                startTrack: startTrack,
                 net: state.netID, layer: state.layer, rules: board.rules, tracks: board.tracks)
             state.width = width.width
             state.widthSource = width.source
+            if state.anchorOnPad || startTrack != nil, toolSettings.explicitTrackWidth != nil {
+                toolSettings.explicitTrackWidth = nil
+            }
             state.cursor = anchorPoint
             if let bend = boardTrackBendMode(at: anchorPoint, layer: state.layer) {
                 state.bendMode = bend
@@ -5193,7 +5226,8 @@ struct BoardCanvasView: View {
             netID: netID,
             width: state.width,
             layer: state.layer,
-            placesVia: state.placesVia
+            placesVia: state.placesVia,
+            widthFromRules: state.widthSource.isRule
         )
         var draft = editedBoard ?? sourceBoard
         // The via opens the mask where its padstack does, read here, once a
@@ -6283,10 +6317,11 @@ struct BoardCanvasView: View {
         publishSelectionContext()
     }
 
-    /// Removes a selected junction when it's orphaned (no track / via / line /
-    /// arc / net-tie still meets it). Connected junctions are left alone — you
-    /// delete the copper, not the node — and a delete commit re-runs connectivity
-    /// (`vacuum`) to clear any junctions the removed copper orphaned.
+    /// Removes a selected junction once nothing meets it any more: the tracks,
+    /// net ties, lines and arcs that end on it go with it
+    /// (`expandedBoardDeleteRefs`), as Horizon's delete takes them, and a via
+    /// standing on it keeps it. A delete commit re-runs connectivity (`vacuum`)
+    /// to clear any junctions the removed copper orphaned.
     private func deleteOrphanJunction(_ id: String, from board: inout HorizontalBoard) -> Bool {
         let target = normalizedID(id)
         guard let key = board.junctions.keys.first(where: { normalizedID($0) == target }),
@@ -6312,7 +6347,10 @@ struct BoardCanvasView: View {
         // Fixed packages can't be deleted — filter them (and their connection
         // lines, added by the expansion) before expanding the delete set.
         let deletable = uniqueRefs(selectedObjects).filter { !isFixedPackage($0, in: board) }
-        let refs = expandedBoardDeleteRefs(from: deletable, in: board)
+        // Junctions last, once what ends on them is gone.
+        let refs = expandedBoardDeleteRefs(from: deletable, in: board).sorted {
+            ($0.type == .junction ? 1 : 0) < ($1.type == .junction ? 1 : 0)
+        }
 
         for ref in refs {
             switch ref.type {
@@ -6395,8 +6433,11 @@ struct BoardCanvasView: View {
 
         refs.forEach(append)
 
+        let junctionLayers = refs.contains { $0.type == .junction } ? board.junctionLayers() : [:]
         for ref in refs {
             switch ref.type {
+            case .junction:
+                board.refsEnding(onJunction: ref.id, layers: junctionLayers).forEach(append)
             case .boardPackage:
                 let anchorKeys = packageConnectionAnchorKeys(packageID: ref.id, in: board)
                 for connectionLine in board.connectionLines
@@ -7854,9 +7895,11 @@ struct BoardCanvasView: View {
 
         switch ref.type {
         case .track:
-            updateSegment(&board.tracks, ref: ref, propertyID: propertyID, value: value)
+            let rules = board.rules
+            updateSegment(&board.tracks, ref: ref, propertyID: propertyID, value: value, rules: rules)
         case .boardNetTie:
-            updateSegment(&board.netTies, ref: ref, propertyID: propertyID, value: value)
+            let rules = board.rules
+            updateSegment(&board.netTies, ref: ref, propertyID: propertyID, value: value, rules: rules)
         case .boardLine:
             updateSegment(&board.lines, ref: ref, propertyID: propertyID, value: value)
         case .boardArc:
@@ -7941,11 +7984,13 @@ struct BoardCanvasView: View {
         }
     }
 
+    /// `rules` are the board's, for a track's or net tie's width from them.
     private func updateSegment(
         _ segments: inout [HorizontalSegment],
         ref: HorizontalSelectableRef,
         propertyID: String,
-        value: HorizontalSelectionPropertyValue
+        value: HorizontalSelectionPropertyValue,
+        rules: HorizontalBoardRules? = nil
     ) {
         guard let index = segments.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
             return
@@ -7954,6 +7999,17 @@ struct BoardCanvasView: View {
         switch (propertyID, value) {
         case ("width", .length(let width)):
             segments[index].width = max(width, 0)
+            // A width typed in is the track's own, as in Horizon, where one
+            // from the rules can't be set.
+            segments[index].widthFromRules = false
+        case ("widthSource", .choice(let source)):
+            segments[index].widthFromRules = source == "rules"
+            // From the rules: the width the rule gives it now, as the rules
+            // window's Apply would. With no rule to give one it keeps its own.
+            if source == "rules", let rules, let layer = segments[index].layer,
+               let rule = rules.trackWidth(net: segments[index].netID, layer: layer), rule.widths.def > 0 {
+                segments[index].width = rule.widths.def
+            }
         case ("layer", .layer(let layer)):
             segments[index].layer = layer
         default:
@@ -8297,6 +8353,8 @@ struct BoardCanvasView: View {
             board.planes[index].netID = normalizedID(netID)
         case ("fromRules", .bool(let on)):
             board.planes[index].fromRules = on
+        case ("fromRules", .choice(let source)):
+            board.planes[index].fromRules = source == "rules"
         case ("fill", .choice(let style)):
             board.planes[index].settings.fillStyle = (style == "hatch") ? .hatch : .solid
             board.planes[index].fillStyle = style

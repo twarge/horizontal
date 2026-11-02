@@ -28,7 +28,7 @@ struct HorizontalBoardToolSettingsView: View {
                             .multilineTextAlignment(.trailing)
                     }
                 } else {
-                    Text("A route takes the width of the track it starts on, else the track width rules'.")
+                    Text("A route on a pad takes the track width rules' width, and one on a track the track's.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

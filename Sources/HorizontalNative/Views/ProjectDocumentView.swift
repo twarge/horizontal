@@ -3300,6 +3300,9 @@ struct ProjectWorkspaceView: View {
     /// through the archive and a reload, which gives the vias their new size,
     /// drill and mask openings. Says what it did, for the window to show.
     private func applyBoardRules(_ kind: HorizontalBoardRuleKind) -> String {
+        if kind == .trackWidth {
+            return applyTrackWidthRules()
+        }
         guard kind == .via, let board = project.board else {
             return "Horizontal doesn't apply these rules yet."
         }
@@ -3315,6 +3318,31 @@ struct ProjectWorkspaceView: View {
         } catch {
             recordArchiveApplyFailure(error)
             return "Couldn't apply the via rules: \(error.localizedDescription)"
+        }
+    }
+
+    /// The rules window's Apply, for the track width rules: every track and
+    /// net tie whose width is the rules' takes the rule's default width
+    /// (`HorizontalTrackWidthRules`). One undoable edit, through the archive
+    /// and a reload, as the via rules' Apply.
+    private func applyTrackWidthRules() -> String {
+        guard var board = project.board else {
+            return "There is no board to apply the rules to."
+        }
+        let changed = HorizontalTrackWidthRules.apply(to: &board)
+        guard !changed.isEmpty else {
+            return "Every track whose width is from the rules already has it."
+        }
+        do {
+            var archive = document.archive
+            try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &archive)
+            try applyLiveArchive(archive, actionName: "Apply Track Width Rules")
+            return changed.count == 1
+                ? "Applied the track width rules to 1 track."
+                : "Applied the track width rules to \(changed.count) tracks."
+        } catch {
+            recordArchiveApplyFailure(error)
+            return "Couldn't apply the track width rules: \(error.localizedDescription)"
         }
     }
 

@@ -626,13 +626,15 @@ enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
     /// Whether Horizontal applies this kind's rules to the board, as the
     /// Apply button does. Horizon applies every kind `canApply` names.
     var appliesInHorizontal: Bool {
-        self == .via
+        self == .via || self == .trackWidth
     }
 
     var applyHelp: String {
         switch self {
         case .via:
             return "Give every via that takes its shape from the rules the padstack and parameters of the rule that matches its net."
+        case .trackWidth:
+            return "Give every track and net tie whose width is from the rules the default width of the rule that matches its net, on its layer."
         default:
             return "Apply these rules to the board."
         }

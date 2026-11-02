@@ -1610,7 +1610,8 @@ struct HorizontalBoard {
                     ?? endpointNetID(item.dictionary("from"), junctionNetIDs: junctionNetIDs, packagePadNetIDs: packagePadNetIDs)
                     ?? endpointNetID(item.dictionary("to"), junctionNetIDs: junctionNetIDs, packagePadNetIDs: packagePadNetIDs),
                 fromJunctionID: junctionID("from"),
-                toJunctionID: junctionID("to")
+                toJunctionID: junctionID("to"),
+                widthFromRules: item.bool("width_from_net_class") ?? true
             )
         }
     }
@@ -2245,7 +2246,8 @@ struct HorizontalBoard {
                     ?? junctionNetIDs[fromID]
                     ?? junctionNetIDs[toID],
                 fromJunctionID: fromID,
-                toJunctionID: toID
+                toJunctionID: toID,
+                widthFromRules: item.bool("width_from_rules") ?? true
             )
         }
     }
