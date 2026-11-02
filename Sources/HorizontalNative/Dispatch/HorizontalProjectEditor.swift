@@ -529,7 +529,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .placeTrack:
             let endpoint = "One of {\"component\", \"pad\"}, {\"junction\"} or {\"x_mm\", \"y_mm\"}. A point becomes a junction."
             return ["from": endpoint, "to": endpoint, "layer": "Copper layer number; 0 is the top. board_info lists them.",
-                    "width_mm": "Track width. Optional only when the board states a track_width rule for the net's class on that layer.",
+                    "width_mm": "Track width. Optional only when a track_width rule takes the net: the first enabled one by order gives its width on that layer, 0.2 mm on a layer it leaves out.",
                     "arc_center": "{\"x_mm\", \"y_mm\"} to curve the segment around that point instead of running straight (optional).",
                     "net": "Net name or id (optional; taken from the ends when they name one)."]
         case .removeTrack:
@@ -7023,8 +7023,8 @@ final class HorizontalProjectEditor {
             throw HorizontalDispatchError.invalidParams("Neither end names a net, so pass \"net\".")
         }
 
-        // A width the board's rules state for this net class on this layer is
-        // not a guess; without one there is nothing to fall back on but a
+        // A width the board's rules give this net on this layer is not a
+        // guess; without one there is nothing to fall back on but a
         // number nobody chose, so the caller has to say.
         let ruled = ruledTrackWidth(net: net, layer: layer)
         guard let widthMM = params.double("width_mm") ?? ruled else {
@@ -7038,12 +7038,15 @@ final class HorizontalProjectEditor {
             }
         }
         let id = UUID().uuidString.lowercased()
+        let fromRules = params.double("width_mm") == nil
         try updateBoard { board in
             var tracks = board["tracks"] as? JSONDictionary ?? [:]
-            // Field set and defaults mirror Track::serialize, including pinning
-            // width_from_net_class false so the width given here is the width used.
+            // Field set and defaults mirror Track::serialize. A width the rules
+            // gave is marked as theirs (width_from_net_class, Horizon's
+            // width_from_rules), as Horizon's router marks a width that isn't
+            // explicit; a width given here is pinned, so it is the width used.
             var track: JSONDictionary = ["from": from.json, "to": to.json, "width": Self.nanometres(widthMM),
-                                         "layer": layer, "width_from_net_class": false, "locked": false, "net": net]
+                                         "layer": layer, "width_from_net_class": fromRules, "locked": false, "net": net]
             // A curved track keeps its centre as a coordinate, not a junction.
             if let centre { track["center"] = centre }
             tracks[id] = track
@@ -7052,38 +7055,28 @@ final class HorizontalProjectEditor {
         var change: JSONDictionary = ["track": id, "net": net, "layer": layer, "width_mm": widthMM,
                                       "curved": centre != nil,
                                       "junctions_created": [from, to].compactMap { $0.newJunction?.id }]
-        if params.double("width_mm") == nil { change["width_from"] = "track_width rule" }
+        if fromRules { change["width_from"] = "track_width rule" }
         return change
     }
 
-    /// The default width the board's `track_width` rules state for a net's
-    /// class on a layer, in millimetres, or nil when they state none.
+    /// The default width the board's `track_width` rules give a track on
+    /// `net` on `layer`, in millimetres, as the track tool takes it
+    /// (BoardRules::get_default_track_width): the first enabled rule by order
+    /// whose match takes the net, with RuleTrackWidth's 0.2 mm on a layer the
+    /// rule leaves out. Nil when no rule takes the net. The rules and nets
+    /// are this batch's, so a rule or net class an earlier op changed counts.
     private func ruledTrackWidth(net: String, layer: Int) -> Double? {
-        guard let family = (try? board())?.dictionary("rules")?.dictionary("track_width") else { return nil }
-        let netClass = nets()[net]?.string("net_class")?.lowercased()
-        var best: Double?
-        for (_, value) in family {
-            guard let rule = value as? JSONDictionary, rule.bool("enabled") ?? true else { continue }
-            let match = rule.dictionary("match")
-            let mode = match?.string("mode") ?? "all"
-            switch mode {
-            case "all": break
-            case "net_class":
-                guard let netClass, match?.string("net_class")?.lowercased() == netClass else { continue }
-            default: continue
-            }
-            guard let width = rule.dictionary("widths")?.dictionary(String(layer))?.double("def") else { continue }
-            // A rule naming this net class beats one that matches everything.
-            if mode == "net_class" { return width / 1_000_000 }
-            best = best ?? width / 1_000_000
-        }
-        return best
+        let rules = HorizontalBoardRules(rules: (try? board())?.dictionary("rules"), netDetails: ruleNetDetails())
+        guard let width = rules.trackWidth(net: net, layer: layer)?.widths.def, width > 0 else { return nil }
+        return width / 1_000_000
     }
 
     /// Writes routed polylines as tracks, joining their bends with junctions.
     /// Used by `autoroute`, which has already had every path checked clear.
-    /// Returns how many segments were written.
-    func writeRoutedPaths(_ paths: [[HorizontalPoint]], net: String, layer: Int, widthMM: Double) throws -> Int {
+    /// `widthFromRules` marks a width the track width rules gave, as
+    /// `place_track` does. Returns how many segments were written.
+    func writeRoutedPaths(_ paths: [[HorizontalPoint]], net: String, layer: Int, widthMM: Double,
+                          widthFromRules: Bool = false) throws -> Int {
         var written = 0
         for path in paths where path.count > 1 {
             var previous: JSONDictionary?
@@ -7096,7 +7089,7 @@ final class HorizontalProjectEditor {
                 try updateBoard { board in
                     var tracks = board["tracks"] as? JSONDictionary ?? [:]
                     tracks[id] = ["from": from, "to": to, "width": Self.nanometres(widthMM),
-                                  "layer": layer, "width_from_net_class": false, "locked": false, "net": net]
+                                  "layer": layer, "width_from_net_class": widthFromRules, "locked": false, "net": net]
                     board["tracks"] = tracks
                 }
                 previous = to

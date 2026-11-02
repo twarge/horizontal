@@ -284,10 +284,17 @@ placed here is straight.
 Two refusals are worth knowing about. A track joins its ends, so ends on
 different nets would tie those nets together: that is refused rather than
 written, and an explicit `net` that disagrees with the ends is refused too.
-And nothing guesses a width: `width_mm` may be left out only when the board
-states a `track_width` rule covering that net's class on that layer, in which
-case the change says `width_from: "track_width rule"`. A board with no such
-rule insists on an explicit width rather than inventing a plausible one.
+And nothing guesses a width: `width_mm` may be left out only when a
+`track_width` rule takes the net, in which case the change says
+`width_from: "track_width rule"`. The width is the one the app's track tool
+takes, as Horizon's `BoardRules::get_default_track_width` does: the first
+enabled rule by order whose match takes the net (by net, class, name or class
+regex, or all), with its default on that layer, and 0.2 mm on a layer the rule
+leaves out. `autoroute` takes its width the same way. A track whose width the
+rules gave is written with `width_from_net_class` true (Horizon's
+`Track::width_from_rules`), as Horizon's router writes a width that isn't
+explicit, and one given `width_mm` with it false. A board with no rule taking
+the net insists on an explicit width rather than inventing a plausible one.
 
 On the schematic the ops cover components, wires, free text, net labels, power
 symbols, buses with their labels and rippers, net ties, blocks with their

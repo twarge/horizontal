@@ -1149,7 +1149,7 @@ class PlaceTrack(Input):
     from_: TrackEnd = Field(alias="from")
     to: TrackEnd
     layer: StrictInt
-    # Optional only when the board states a track_width rule that covers it.
+    # Optional only when a track_width rule takes the net.
     width_mm: float | None = None
     net: str | None = None
     arc_center: Vertex | None = None

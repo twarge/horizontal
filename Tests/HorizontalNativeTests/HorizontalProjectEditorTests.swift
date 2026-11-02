@@ -96,7 +96,7 @@ final class HorizontalProjectEditorTests: XCTestCase {
         if method != "open_project" && method != "list_ops" {
             params["handle"] = handle
         }
-        if ["apply", "pour_planes"].contains(method) {
+        if ["apply", "pour_planes", "autoroute"].contains(method) {
             params["expected_revision"] = try HorizontalDispatchSession.shared.perform { try $0.entry(handle: handle).revision }
             params["operation_id"] = UUID().uuidString
         }
@@ -1505,10 +1505,119 @@ final class HorizontalProjectEditorTests: XCTestCase {
         let change = try XCTUnwrap((routed["changes"] as? [[String: Any]])?.first)
         XCTAssertEqual(change["width_mm"] as? Double, 0.3)
         XCTAssertEqual(change["width_from"] as? String, "track_width rule")
+        // A width the rules gave is marked as theirs, as Horizon's router
+        // marks a width that isn't explicit (Track::width_from_rules); one
+        // given is pinned.
+        let ruledID = try XCTUnwrap(change["track"] as? String)
+        let given = try apply([["op": "place_track", "from": ["component": "R1", "pad": "2"],
+                                "to": ["x_mm": 15, "y_mm": 20], "layer": 0, "width_mm": 0.25]])
+        let givenChange = try XCTUnwrap((given["changes"] as? [[String: Any]])?.first)
+        XCTAssertNil(givenChange["width_from"])
+        let givenID = try XCTUnwrap(givenChange["track"] as? String)
+        func tracks() throws -> [String: [String: Any]] {
+            try XCTUnwrap(try JSONHelper.loadDictionary(from: packageURL.appendingPathComponent("board.json"))["tracks"] as? [String: [String: Any]])
+        }
+        XCTAssertEqual(try tracks()[ruledID]?["width_from_net_class"] as? Bool, true)
+        XCTAssertEqual(try tracks()[givenID]?["width_from_net_class"] as? Bool, false)
 
-        // A rule for another layer does not answer for this one.
-        XCTAssertNotNil(try call("apply", ["ops": [["op": "place_track", "from": ["component": "R1", "pad": "2"],
-                                                    "to": ["x_mm": 25, "y_mm": 25], "layer": -100]]])["error"])
+        // autoroute marks the tracks it writes the same way.
+        let before = Set(try tracks().keys)
+        let autorouted = try XCTUnwrap(try result("autoroute", ["net": "VCC", "layer": 0]) as? [String: Any])
+        XCTAssertEqual(autorouted["width_mm"] as? Double, 0.3)
+        XCTAssertEqual(autorouted["width_from"] as? String, "track_width rule")
+        XCTAssertGreaterThan(autorouted["segments"] as? Int ?? 0, 0, "\(autorouted)")
+        let written = try tracks().filter { !before.contains($0.key) }
+        XCTAssertFalse(written.isEmpty)
+        XCTAssertTrue(written.values.allSatisfy { $0["width_from_net_class"] as? Bool == true }, "\(written)")
+
+        // A layer the rule leaves out has RuleTrackWidth's own 0.2 mm, as
+        // Horizon gives a rule a width on every copper layer.
+        let bottom = try apply([["op": "place_track", "from": ["x_mm": 25, "y_mm": 25], "to": ["x_mm": 26, "y_mm": 25],
+                                 "layer": -100, "net": "GND"]], dryRun: true)
+        XCTAssertEqual((bottom["changes"] as? [[String: Any]])?.first?["width_mm"] as? Double, 0.2, "\(bottom)")
+    }
+
+    /// The width place_track and autoroute take from the rules is the width
+    /// the track tool takes for the same net and layer: the first enabled
+    /// rule by order whose match takes the net (whatever its mode), with
+    /// 0.2 mm on a layer that rule leaves out.
+    func testRuledTrackWidthIsTheTrackToolsForEveryMatchAndOrder() throws {
+        try placedDivider()
+        _ = try apply([["op": "connect", "component": "R2", "pin": "2", "net": "GND"]])
+        let netClass = try XCTUnwrap(try XCTUnwrap(try XCTUnwrap(try result("board_rules") as? [String: Any])["net_classes"] as? [[String: Any]]).first)
+        let classID = try XCTUnwrap(netClass["id"] as? String)
+        let className = try XCTUnwrap(netClass["name"] as? String)
+
+        func rule(_ order: Int, _ match: [String: Any], _ widths: [String: Double]) -> [String: Any] {
+            ["enabled": true, "order": order, "match": match,
+             "widths": widths.mapValues { ["min": 100_000, "def": $0, "max": 1_000_000] }]
+        }
+        func setRules(_ rules: [String: [String: Any]]) throws {
+            try editBoard { $0["rules"] = ["track_width": rules] }
+        }
+        /// The width each of place_track, autoroute and the track tool gives
+        /// `net` on `layer`, in millimetres; nil where one refuses.
+        func widths(_ net: String, layer: Int) throws -> [Double?] {
+            let placed = try call("apply", ["ops": [["op": "place_track", "from": ["x_mm": 50, "y_mm": 50],
+                                                     "to": ["x_mm": 51, "y_mm": 50], "layer": layer, "net": net]],
+                                            "dry_run": true])
+            let routed = try call("autoroute", ["net": net, "layer": layer, "dry_run": true])
+            let netID = try XCTUnwrap(try XCTUnwrap(try result("get_net", ["name": net]) as? [String: Any])["id"] as? String)
+            let board = try XCTUnwrap(try HorizontalDispatchSession.shared.perform { try $0.entry(handle: handle).project.board })
+            let tool = HorizontalRouteWidth.fromRules(net: netID, layer: layer, rules: board.rules, tracks: board.tracks)
+            var toolWidth: Double?
+            if case .rule = tool.source { toolWidth = tool.width / 1_000_000 }
+            return [
+                ((placed["result"] as? [String: Any])?["changes"] as? [[String: Any]])?.first?["width_mm"] as? Double,
+                (routed["result"] as? [String: Any])?["width_mm"] as? Double,
+                toolWidth
+            ]
+        }
+
+        // By order, not by mode: an `all` rule ahead of a net class rule wins.
+        try setRules(["b-class": rule(1, ["mode": "net_class", "net_class": classID], ["0": 300_000]),
+                      "a-all": rule(0, ["mode": "all"], ["0": 150_000])])
+        XCTAssertEqual(try widths("VCC", layer: 0), [0.15, 0.15, 0.15])
+        try setRules(["b-class": rule(0, ["mode": "net_class", "net_class": classID], ["0": 300_000]),
+                      "a-all": rule(1, ["mode": "all"], ["0": 150_000])])
+        XCTAssertEqual(try widths("VCC", layer: 0), [0.3, 0.3, 0.3])
+
+        // The first rule leaves layer 0 out: it still answers, with 0.2 mm,
+        // rather than the next rule that states the layer.
+        try setRules(["first": rule(0, ["mode": "all"], ["-100": 400_000]),
+                      "second": rule(1, ["mode": "all"], ["0": 300_000])])
+        XCTAssertEqual(try widths("VCC", layer: 0), [0.2, 0.2, 0.2])
+        XCTAssertEqual(try widths("VCC", layer: -100), [0.4, 0.4, 0.4])
+
+        // A disabled rule is passed over.
+        try setRules(["first": rule(0, ["mode": "all"], ["0": 400_000]).merging(["enabled": false]) { $1 },
+                      "second": rule(1, ["mode": "all"], ["0": 300_000])])
+        XCTAssertEqual(try widths("VCC", layer: 0), [0.3, 0.3, 0.3])
+
+        // Net name and net class regexes match by the net's name and its
+        // class's name.
+        try setRules(["name": rule(0, ["mode": "net_name_regex", "net_name_regex": "^VC+$"], ["0": 500_000]),
+                      "class": rule(1, ["mode": "net_class_regex", "net_class_regex": "^\(className.prefix(2))"], ["0": 350_000])])
+        XCTAssertEqual(try widths("VCC", layer: 0), [0.5, 0.5, 0.5])
+        XCTAssertEqual(try widths("GND", layer: 0), [0.35, 0.35, 0.35])
+
+        // A net no rule takes has no ruled width, and both paths say so.
+        try setRules(["name": rule(0, ["mode": "net_name_regex", "net_name_regex": "^VCC$"], ["0": 500_000])])
+        XCTAssertEqual(try widths("GND", layer: 0), [nil, nil, nil])
+        let refused = try call("apply", ["ops": [["op": "place_track", "from": ["x_mm": 50, "y_mm": 50],
+                                                  "to": ["x_mm": 51, "y_mm": 50], "layer": 0, "net": "GND"]],
+                                         "dry_run": true])
+        XCTAssertTrue(((refused["error"] as? [String: Any])?["message"] as? String ?? "").contains("no track_width rule"), "\(refused)")
+        let unrouted = try call("autoroute", ["net": "GND", "layer": 0, "dry_run": true])
+        XCTAssertTrue(((unrouted["error"] as? [String: Any])?["message"] as? String ?? "").contains("no track_width rule"), "\(unrouted)")
+
+        // A rule an earlier op in the batch adds counts for place_track.
+        let batch = try apply([
+            ["op": "add_rule", "kind": "track_width", "fields": ["match": ["mode": "net_name_regex", "net_name_regex": "^GND$"],
+                                                                 "widths": ["0": ["min": 100_000, "def": 450_000, "max": 1_000_000]]]],
+            ["op": "place_track", "from": ["x_mm": 50, "y_mm": 50], "to": ["x_mm": 51, "y_mm": 50], "layer": 0, "net": "GND"]
+        ], dryRun: true)
+        XCTAssertEqual((batch["changes"] as? [[String: Any]])?.last?["width_mm"] as? Double, 0.45, "\(batch)")
     }
 
     func testNetClassesAreCreatedAndRenamed() throws {

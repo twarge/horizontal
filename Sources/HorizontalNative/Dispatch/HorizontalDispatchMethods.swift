@@ -231,7 +231,7 @@ enum HorizontalDispatchMethods {
             summary: "Try to route a net's airwires automatically, on one layer. Each airwire is searched for a clear 45° path around everything already on the layer; nothing is moved and no via is placed, so on a dense board some airwires have no such path. What it does complete is checked clear before it is written; what it cannot is reported, with what blocked it, and left as an airwire for place_track.",
             params: ["handle": "Project handle.", "net": "Net name or id to route.",
                      "layer": "Copper layer number (optional; default 0, the top).",
-                     "width_mm": "Track width (optional; the net class's track_width rule, else required).",
+                     "width_mm": "Track width (optional; the first track_width rule by order that takes the net, on the layer, else required).",
                      "max_routes": "Stop after this many airwires; default 20, maximum 200.",
                      "expected_revision": "The revision this was planned against.",
                      "operation_id": "Caller-chosen id for this mutation.", "dry_run": "Report without writing (default false)."],
@@ -2811,7 +2811,7 @@ enum HorizontalDispatchMethods {
                 "\(entry.index.net(id: netID)?.name ?? netID) has no airwires on the board; there is nothing to route."
             )
         }
-        guard let width = params.double("width_mm") ?? ruledWidth(entry, netID: netID, layer: layer) else {
+        guard let width = params.double("width_mm") ?? ruledWidth(board, netID: netID, layer: layer) else {
             throw HorizontalDispatchError.invalidParams(
                 "autoroute needs \"width_mm\": this board states no track_width rule for that net class on layer \(layer)."
             )
@@ -2832,40 +2832,36 @@ enum HorizontalDispatchMethods {
             }
         }
 
+        let widthFromRules = params.double("width_mm") == nil
         return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params) { store in
             var written = 0
             if !routed.isEmpty {
                 let editor = try HorizontalProjectEditor(project: entry.project, store: store, snapshot: entry.snapshot)
-                written = try editor.writeRoutedPaths(routed, net: netID, layer: layer, widthMM: width)
+                written = try editor.writeRoutedPaths(routed, net: netID, layer: layer, widthMM: width,
+                                                      widthFromRules: widthFromRules)
                 _ = try editor.write()
             }
-            return ["applied": written, "routed": routed.count, "segments": written, "undo_name": "Autoroute",
-                    "attempted": airwires.count, "failed": failures.count, "unrouted": failures,
-                    "width_mm": width, "layer": layer,
-                    "note": failures.isEmpty
-                        ? "Every airwire tried was routed."
-                        : "\(failures.count) of \(airwires.count) could not be routed and remain airwires; place_track draws those by hand."]
+            var result: JSONDictionary = [
+                "applied": written, "routed": routed.count, "segments": written, "undo_name": "Autoroute",
+                "attempted": airwires.count, "failed": failures.count, "unrouted": failures,
+                "width_mm": width, "layer": layer,
+                "note": failures.isEmpty
+                    ? "Every airwire tried was routed."
+                    : "\(failures.count) of \(airwires.count) could not be routed and remain airwires; place_track draws those by hand."]
+            if widthFromRules { result["width_from"] = "track_width rule" }
+            return result
         }
     }
 
-    /// The width a `track_width` rule states for a net's class on a layer.
-    private static func ruledWidth(_ entry: HorizontalDispatchProjectEntry, netID: String, layer: Int) -> Double? {
-        guard let family = (try? boardJSON(entry))?.dictionary("rules")?.dictionary("track_width") else { return nil }
-        let netClass = blockJSON(entry)?.dictionaryMap("nets")
-            .first { $0.key.lowercased() == netID }?.value.string("net_class")?.lowercased()
-        var fallback: Double?
-        for (_, value) in family {
-            guard let rule = value as? JSONDictionary, rule.bool("enabled") ?? true,
-                  let width = rule.dictionary("widths")?.dictionary(String(layer))?.double("def") else { continue }
-            let match = rule.dictionary("match")
-            switch match?.string("mode") ?? "all" {
-            case "all": fallback = fallback ?? width / 1_000_000
-            case "net_class":
-                if let netClass, match?.string("net_class")?.lowercased() == netClass { return width / 1_000_000 }
-            default: continue
-            }
-        }
-        return fallback
+    /// The default width the board's `track_width` rules give a track on a
+    /// net on a layer, in millimetres, from the board's own typed rules, as
+    /// the track tool takes it (BoardRules::get_default_track_width): the
+    /// first enabled rule by order whose match takes the net, with
+    /// RuleTrackWidth's 0.2 mm on a layer the rule leaves out. Nil when no
+    /// rule takes the net.
+    private static func ruledWidth(_ board: HorizontalBoard, netID: String, layer: Int) -> Double? {
+        guard let width = board.rules.trackWidth(net: netID, layer: layer)?.widths.def, width > 0 else { return nil }
+        return width / 1_000_000
     }
 
     @Sendable private static func listBoardTexts(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
