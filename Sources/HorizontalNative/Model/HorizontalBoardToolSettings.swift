@@ -1,8 +1,8 @@
 import Combine
 import Foundation
 
-/// Persistent defaults for the board track-drawing tool, edited via the
-/// settings popover (`S`) and the in-route keys (`w`, `c`). Backed by
+/// Persistent defaults for the board track-drawing tool, edited in the route
+/// inspector and with the in-route keys (`w`, `c`). Backed by
 /// UserDefaults so choices survive across routes and launches. Widths are
 /// stored in the board's internal nanometers.
 @MainActor
@@ -12,7 +12,7 @@ final class HorizontalBoardToolSettings: ObservableObject {
 
     /// Explicit track width (nm). When nil, a route continues the width of
     /// the track it starts on, else takes the track width rules'
-    /// (`HorizontalRouteWidth`). Set by `w`, the popover and the inspector.
+    /// (`HorizontalRouteWidth`). Set by `w` and the inspector.
     @Published var explicitTrackWidth: Double? {
         didSet { persist(explicitTrackWidth, forKey: Self.trackWidthKey) }
     }
@@ -49,12 +49,6 @@ final class HorizontalBoardToolSettings: ObservableObject {
         didSet { defaults.set(startsOnCopper, forKey: Self.startsOnCopperKey) }
     }
 
-    /// The sidebar shows the route inspector while a track is routed,
-    /// opening while the route lasts if it is closed. On unless turned off.
-    @Published var showsRouteInspector: Bool {
-        didSet { defaults.set(showsRouteInspector, forKey: Self.showsRouteInspectorKey) }
-    }
-
     /// Via diameter (nm), which makes a route's via its own. When nil, the
     /// route's via takes the via rules' (`HorizontalBoard.routeVia`).
     @Published var viaDiameter: Double? {
@@ -77,7 +71,6 @@ final class HorizontalBoardToolSettings: ObservableObject {
         routerShove = defaults.bool(forKey: Self.routerShoveKey)
         removeLoops = defaults.object(forKey: Self.removeLoopsKey) as? Bool ?? true
         startsOnCopper = defaults.object(forKey: Self.startsOnCopperKey) as? Bool ?? true
-        showsRouteInspector = defaults.object(forKey: Self.showsRouteInspectorKey) as? Bool ?? true
         viaDiameter = Self.optionalDouble(defaults, forKey: Self.viaDiameterKey)
         viaHoleDiameter = Self.optionalDouble(defaults, forKey: Self.viaHoleKey)
     }
@@ -110,7 +103,6 @@ final class HorizontalBoardToolSettings: ObservableObject {
     private static let routerShoveKey = "boardTool.routerShove"
     private static let removeLoopsKey = "boardTool.removeLoops"
     private static let startsOnCopperKey = "boardTool.startsOnCopper"
-    private static let showsRouteInspectorKey = "boardTool.showsRouteInspector"
     private static let viaDiameterKey = "boardTool.viaDiameterNM"
     private static let viaHoleKey = "boardTool.viaHoleDiameterNM"
 }

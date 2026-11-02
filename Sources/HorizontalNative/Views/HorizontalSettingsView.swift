@@ -6,6 +6,7 @@ import AppKit
 struct HorizontalSettingsView: View {
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
     @State private var confirmingEditingUnlock = false
+    @AppStorage(HorizontalPlaneFillDefaults.updatesAutomaticallyKey) private var updatesPlanesAutomatically = false
 
     var body: some View {
         Form {
@@ -44,6 +45,12 @@ struct HorizontalSettingsView: View {
                     "Swap View Controls and Unplaced References",
                     isOn: appearanceSettings.swapViewControlsAndUnplacedReferencesBinding()
                 )
+            }
+
+            // The board rail's Update Planes button hides while this is on,
+            // and its context menu was the iPad's only other way back.
+            Section("Board") {
+                Toggle("Update Planes Automatically", isOn: $updatesPlanesAutomatically)
             }
 
             // Off is the standard chrome on both platforms: the system toolbar

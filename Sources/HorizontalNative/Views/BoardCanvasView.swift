@@ -1242,6 +1242,18 @@ struct BoardCanvasView: View {
             .onChange(of: toolSettings.explicitTrackWidth) { _, width in
                 takeExplicitTrackWidth(width)
             }
+            // The inspector's corner style and Route around reach the route
+            // under way, as C does.
+            .onChange(of: toolSettings.cornerStyle) { _, style in
+                guard var state = drawTrackState, state.cornerStyle != style else { return }
+                state.cornerStyle = style
+                drawTrackState = state
+            }
+            .onChange(of: toolSettings.routerMode) { _, routes in
+                guard drawTrackState != nil else { return }
+                trackRouterSession = routes ? HorizontalBoardTrackRouterSession(board: board) : nil
+                pushShovePreviewSpecs = []
+            }
             .onChange(of: routeWidthCommand?.id) { _, _ in
                 if routeWidthCommand != nil {
                     useRuleTrackWidth()
@@ -2788,7 +2800,9 @@ struct BoardCanvasView: View {
             flipTrackPosture: drawTrackState != nil ? { flipTrackPosture() } : nil,
             enterTrackWidth: drawTrackState != nil ? { enterTrackWidth() } : nil,
             toggleVia: canToggleVia ? { toggleVia() } : nil,
-            showToolSettings: { onShowToolSettings() },
+            // The settings are the route inspector's, which is there while
+            // the track tool is.
+            showToolSettings: drawTrackState != nil ? { onShowToolSettings() } : nil,
             editSymbolPinNames: nil,
             toggleRectanglePlacementMode: toggleRectanglePlacementMode,
             moveSelectionBy: moveSelectionByGrid,

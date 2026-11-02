@@ -620,7 +620,7 @@ struct HorizontalViewCommands: Commands {
                 }
                 .disabled(canvasCommandActions?.canToggleVia != true)
 
-                Button("Track Settings…") {
+                Button("Show Track Settings") {
                     canvasCommandActions?.dispatch(.showToolSettings)
                 }
                 .disabled(canvasCommandActions?.canShowToolSettings != true)

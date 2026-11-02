@@ -582,6 +582,7 @@ struct InteractiveCanvasView: View {
     @State private var primaryDragIntent: PrimaryDragIntent?
     @State private var gridDivisor = 1
     @State private var pointerInsideSelectionPopover = false
+    @State private var pointerInsideUnplacedObjectColumn = false
     @State private var hoveredWarningIDs: Set<String> = []
     @State private var presentedWarning: HorizontalCanvasWarning?
     /// Current keyboard modifiers, published by the macOS NSEvent flags monitor so
@@ -986,7 +987,8 @@ struct InteractiveCanvasView: View {
                         supportsTrackVias: supportsTrackVias,
                         hasKeyboardFocus: hasKeyboardFocus,
                         onRequestKeyboardFocus: onRequestKeyboardFocus,
-                        ignoresCanvasMouseEvents: ignoresCanvasMouseEvents || pointerInsideSelectionPopover || !hoveredWarningIDs.isEmpty,
+                        ignoresCanvasMouseEvents: ignoresCanvasMouseEvents || pointerInsideSelectionPopover
+                            || pointerInsideUnplacedObjectColumn || !hoveredWarningIDs.isEmpty,
                         mouseExclusionInsets: mouseExclusionInsets
                     )
                     .allowsHitTesting(false)
@@ -1162,10 +1164,10 @@ struct InteractiveCanvasView: View {
                         selectedID: selectedUnplacedObjectID,
                         foregroundColor: foregroundColor,
                         backgroundColor: overlayBackgroundColor,
-                        labelSide: placesUnplacedObjectsOnTrailingEdge ? .leading : .trailing,
+                        onHover: { pointerInsideUnplacedObjectColumn = $0 },
                         onSelect: onUnplacedObjectSelection
                     )
-                    .padding(.top, overlayInsets.top + 42)
+                    .padding(.top, overlayInsets.top)
                     .padding(unplacedObjectColumnHorizontalEdge, unplacedObjectColumnHorizontalPadding(overlayInsets))
                     .padding(.bottom, overlayInsets.bottom)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: unplacedObjectColumnAlignment)
@@ -2340,68 +2342,121 @@ private struct HorizontalHoverPopoverView: View {
     }
 }
 
+/// The components (or a symbol's pins) left to place, in a panel along the
+/// canvas edge: as tall as its rows, up to the canvas between its safe areas,
+/// and scrolled past that. A row gives the reference designator and the value,
+/// the part's (its MPN where it has none) as Horizon shows it; a pin, which has
+/// no component, gives its direction.
 private struct HorizontalUnplacedObjectColumn: View {
     var objects: [HorizontalUnplacedObject]
     var selectedID: String?
     var foregroundColor: Color
     var backgroundColor: Color
-    var labelSide = HorizontalRailHelpLabelSide.trailing
+    /// The pointer is over the panel. The canvas's event monitor sees the
+    /// scroll wheel first and pans with it, so it has to be told to leave the
+    /// panel its events.
+    var onHover: (Bool) -> Void = { _ in }
     var onSelect: (HorizontalUnplacedObject) -> Void
 
-    @State private var isRailHovered = false
+    @ScaledMetric(relativeTo: .caption) private var rowHeight: CGFloat = Self.baseRowHeight
+    @State private var hoveredID: String?
+
+    #if os(macOS)
+    private static let baseRowHeight: CGFloat = 24
+    #else
+    private static let baseRowHeight: CGFloat = 30
+    #endif
+    private static let width: CGFloat = 184
+    private static let labelWidth: CGFloat = 46
+    private static let rowSpacing: CGFloat = 1
+    private static let inset: CGFloat = 5
+    private static let cornerRadius: CGFloat = 8
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            // A lazy stack takes the whole width it is offered, and hovering
-            // widens the column to make room for the labels: centred, the
-            // buttons slid across to the middle of the wider column.
-            LazyVStack(alignment: labelSide == .trailing ? .leading : .trailing, spacing: 6) {
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: Self.rowSpacing) {
                 ForEach(objects) { object in
-                    HorizontalRailHelpLabel(title: helpText(for: object), labelOffset: 54) {
-                        Button {
-                            onSelect(object)
-                        } label: {
-                            Text(object.label)
-                                .font(.caption.weight(.semibold).monospacedDigit())
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.62)
-                                .foregroundStyle(foregroundColor.opacity(selectedID == object.id ? 0.96 : 0.78))
-                                .frame(width: 44, height: 28)
-                                .background {
-                                    RoundedRectangle(cornerRadius: 7)
-                                        .fill(backgroundColor.opacity(selectedID == object.id ? 0.96 : 0.74))
-                                }
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 7)
-                                        .stroke(
-                                            foregroundColor.opacity(selectedID == object.id ? 0.42 : 0.18),
-                                            lineWidth: selectedID == object.id ? 1.1 : 0.7
-                                        )
-                                }
-                        }
-                        .buttonStyle(.plain)
-                        .help(helpText(for: object))
-                    }
+                    row(for: object)
                 }
             }
-            .padding(.vertical, 6)
-            .padding(.horizontal, 5)
+            .padding(Self.inset)
         }
-        .frame(
-            width: isRailHovered ? 240 : 54,
-            alignment: labelSide == .trailing ? .leading : .trailing
-        )
-        .frame(maxHeight: 320)
-        .environment(\.horizonRailHelpLabelsVisible, isRailHovered)
-        .environment(\.horizonRailHelpLabelSide, labelSide)
-        .contentShape(Rectangle())
-        .onHover { isRailHovered = $0 }
-        .animation(.easeInOut(duration: 0.14), value: isRailHovered)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(width: Self.width)
+        // A scroll view takes all the height it is offered: held to its rows,
+        // the panel is no taller than they are, and the canvas's height (less
+        // its safe areas) caps it, past which it scrolls.
+        .frame(maxHeight: contentHeight)
+        .background {
+            RoundedRectangle(cornerRadius: Self.cornerRadius)
+                .fill(backgroundColor)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius))
+        .overlay {
+            RoundedRectangle(cornerRadius: Self.cornerRadius)
+                .stroke(foregroundColor.opacity(0.16), lineWidth: 0.7)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        .onHover(perform: onHover)
+        // The last row placed with the pointer resting on the panel takes the
+        // panel away without a hover end, which would leave the canvas deaf.
+        .onDisappear { onHover(false) }
     }
 
-    private func helpText(for object: HorizontalUnplacedObject) -> String {
-        let subtitle = object.subtitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        return subtitle.isEmpty ? object.label : "\(object.label) \(subtitle)"
+    private var contentHeight: CGFloat {
+        let count = CGFloat(objects.count)
+        return count * rowHeight + max(count - 1, 0) * Self.rowSpacing + 2 * Self.inset
+    }
+
+    private func row(for object: HorizontalUnplacedObject) -> some View {
+        let isSelected = selectedID == object.id
+        let isHovered = hoveredID == object.id
+        return Button {
+            onSelect(object)
+        } label: {
+            HStack(spacing: 6) {
+                Text(object.label)
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.62)
+                    .foregroundStyle(foregroundColor.opacity(isSelected ? 0.96 : 0.82))
+                    .frame(width: Self.labelWidth, alignment: .leading)
+                Text(value(for: object))
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(foregroundColor.opacity(isSelected ? 0.78 : 0.6))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 6)
+            .frame(height: rowHeight)
+            .background {
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(foregroundColor.opacity(isSelected ? 0.14 : isHovered ? 0.07 : 0))
+            }
+            .overlay {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(foregroundColor.opacity(0.32), lineWidth: 0.8)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in
+            if inside {
+                hoveredID = object.id
+            } else if hoveredID == object.id {
+                hoveredID = nil
+            }
+        }
+    }
+
+    private func value(for object: HorizontalUnplacedObject) -> String {
+        guard let details = object.details else {
+            return object.subtitle
+        }
+        return details.value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

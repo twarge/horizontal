@@ -328,32 +328,6 @@ struct SelectionToolPanel: View {
     }
 }
 
-struct BoardSyncToolButton: View {
-    var action: () -> Void
-
-    var body: some View {
-        HorizontalRailHelpLabel(title: "Reload board netlist from schematic") {
-            Button(action: action) {
-                Image(systemName: "arrow.triangle.2.circlepath")
-            }
-            .help("Reload board netlist from schematic")
-        }
-    }
-}
-
-struct BoardRulesToolButton: View {
-    var action: () -> Void
-
-    var body: some View {
-        HorizontalRailHelpLabel(title: "Board rules") {
-            Button(action: action) {
-                Image(systemName: "checklist.checked")
-            }
-            .help("Board rules")
-        }
-    }
-}
-
 /// The rail's plane control: pours the fills, reports that they are out of date,
 /// and shows the pour's progress in place of its own icon.
 ///
@@ -369,13 +343,14 @@ struct BoardUpdatePlanesToolButton: View {
     /// The board changed since the last pour, so the fills on screen are stale.
     var needsUpdate = false
     /// Whether the planes are poured again after every change; offered from
-    /// the button's context menu (a long press on iPad).
+    /// the button's context menu (a long press on iPad). The rail leaves the
+    /// button out while it is on.
     var updatesAutomatically: Binding<Bool>?
 
     private var title: String {
         if isUpdating { return "Updating plane fills..." }
         if needsUpdate { return "Plane fills are out of date" }
-        return updatesAutomatically?.wrappedValue == true ? "Plane fills update automatically" : "Update all plane fills"
+        return "Update all plane fills"
     }
 
     var body: some View {
@@ -727,21 +702,6 @@ struct DrawPlaneToolButton: View {
                 Image(systemName: "square.dashed")
             }
             .help("Draw a copper plane")
-        }
-    }
-}
-
-struct TrackSettingsToolButton: View {
-    @Binding var presented: Bool
-
-    var body: some View {
-        HorizontalRailHelpLabel(title: "Track settings") {
-            Button {
-                presented.toggle()
-            } label: {
-                Image(systemName: "slider.horizontal.3")
-            }
-            .help("Track tool settings (S)")
         }
     }
 }
