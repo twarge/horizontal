@@ -371,9 +371,9 @@ final class HorizontalRouteRulesTests: XCTestCase {
             connecting: [p(0, 0)], radius: 2 * mm
         ) { item in
             switch item.kind {
-            case .pad: (0.6 * mm, "pads")
-            case .boardEdge: (0.3 * mm, "edge")
-            default: (0.15 * mm, "copper")
+            case .pad: (0.6 * mm, 0, "pads")
+            case .boardEdge: (0.3 * mm, 0, "edge")
+            default: (0.15 * mm, 0, "copper")
             }
         }
         let byID = Dictionary(uniqueKeysWithValues: measured.map { ($0.objectID, $0) })
@@ -404,7 +404,7 @@ final class HorizontalRouteRulesTests: XCTestCase {
         let measured = probe([near, tight, crossing]).nearest(
             route: [[p(0, 0), p(5, 0)]], width: 0.1 * mm, layer: top, net: "x", connecting: [], radius: 2 * mm
         ) { item in
-            (item.id == "tight" ? 1.0 * mm : 0.1 * mm, "rule")
+            (item.id == "tight" ? 1.0 * mm : 0.1 * mm, 0, "rule")
         }
         // "near" is closer, but "tight" asks for more than it has.
         let tracks = measured.filter { $0.kind == .track }
@@ -412,6 +412,61 @@ final class HorizontalRouteRulesTests: XCTestCase {
         let via = try XCTUnwrap(measured.first { $0.kind == .via })
         XCTAssertLessThanOrEqual(via.gap, 0)
         XCTAssertEqual(measured.first?.objectID, "tight")
+    }
+
+    func testCopperInsideTheRoutingOffsetIsLegalButFlagged() throws {
+        let mm = 1_000_000.0
+        func p(_ x: Double, _ y: Double) -> HorizontalPoint { HorizontalPoint(x: x * mm, y: y * mm) }
+        // 0.2 mm apart, copper to copper: the rules ask 0.15, the router 0.15 + 0.1.
+        let track = item(.track, "t", net: "a", layer: top,
+                         shape: .path([p(0, 0.3), p(5, 0.3)], halfWidth: 0.05 * mm), points: [p(0, 0.3), p(5, 0.3)])
+        let measured = try XCTUnwrap(probe([track]).nearest(
+            route: [[p(0, 0), p(5, 0)]], width: 0.1 * mm, layer: top, net: "x", connecting: [], radius: 2 * mm
+        ) { _ in (0.15 * mm, 0.1 * mm, "rule") }.first)
+        XCTAssertEqual(measured.gap, 0.2 * mm, accuracy: 1)
+        XCTAssertGreaterThan(measured.margin, 0)
+        XCTAssertTrue(measured.isInsideRoutingOffset)
+    }
+
+    func testTheRulesReadTheirRoutingOffsetAndTheRouterKeepsIt() throws {
+        var json = clearanceRules
+        var copper = try XCTUnwrap(json["clearance_copper"] as? JSONDictionary)
+        var rule = try XCTUnwrap(copper["default"] as? JSONDictionary)
+        rule["routing_offset"] = 80_000
+        copper["default"] = rule
+        json["clearance_copper"] = copper
+        let rules = HorizontalBoardRules(rules: json, netDetails: netDetails)
+        XCTAssertEqual(rules.clearanceCopper(net1: "gnd", net2: "sig", layer: top).routingOffset, 80_000)
+        // Left out of the file: RuleClearanceCopper's 0.05 mm, the fallback's too.
+        XCTAssertEqual(rules.clearanceCopperOther(net: "gnd", layer: top).routingOffset, 50_000)
+        XCTAssertEqual(HorizontalBoardRules.empty.clearanceCopper(net1: nil, net2: nil, layer: top).routingOffset, 50_000)
+
+        let codes = [0: "gnd", 1: "sig"]
+        let check = HorizontalRouterClearances(rules: rules, netIDForCode: codes)
+        let router = HorizontalRouterClearances(rules: rules, netIDForCode: codes, includesRoutingOffset: true)
+        XCTAssertEqual(check.clearance(.track, net: 0, .track, net: 1, on: top), 150_000, "the rules check's number")
+        XCTAssertEqual(router.clearance(.track, net: 0, .track, net: 1, on: top), 230_000, "plus the routing offset")
+        XCTAssertEqual(router.clearance(.track, net: 0, .boardEdge, net: -1, on: top), 350_000)
+        XCTAssertEqual(router.clearance(.track, net: 0, .track, net: 0, on: top), 0, "its own net still touches")
+        XCTAssertEqual(router.clearance(.track, net: 0, .keepout("shield"), net: -1, on: top), 0,
+                       "no keepout rule: Horizon's router keeps nothing")
+
+        let names = HorizontalRouteRuleNames(netDetails: netDetails, netClasses: [])
+        let spacing = HorizontalRouteSpacing.make(
+            net: "gnd", layer: top, rules: rules, otherNets: ["sig"], keepoutClasses: [], names: names)
+        XCTAssertEqual(spacing.copperRule.routingOffset, 80_000)
+        XCTAssertEqual(spacing.otherRule.routingOffset, 50_000)
+
+        let edited = try XCTUnwrap(HorizontalRouteRuleEditing.applying(
+            .routingOffset(table: .copperOther, ruleID: "edge", 20_000), to: json, copperLayers: [top]))
+        XCTAssertEqual(HorizontalBoardRules(rules: edited, netDetails: [:]).clearanceCopperOther(net: "gnd", layer: top).routingOffset,
+                       20_000)
+        let made = try XCTUnwrap(HorizontalRouteRuleEditing.applying(
+            .routingOffset(table: .copper, ruleID: nil, 0), to: [:], copperLayers: [top], newRuleID: { "made" }))
+        let madeRule = HorizontalBoardRules(rules: made, netDetails: [:]).clearanceCopper(net1: "a", net2: "b", layer: top)
+        XCTAssertEqual(madeRule.id, "made")
+        XCTAssertEqual(madeRule.routingOffset, 0)
+        XCTAssertEqual(madeRule.clearance(.track, .track), 100_000, "the fallback's clearances")
     }
 
     func testTheProbeFindsABoardsPadsByOwnerAndThroughHolePadsByTheirHole() {

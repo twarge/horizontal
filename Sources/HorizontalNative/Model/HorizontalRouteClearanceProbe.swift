@@ -75,10 +75,14 @@ final class HorizontalRouteClearanceProbe {
         var gap: Double
         /// What the rules ask between the two.
         var required: Double
+        /// What Horizon's router keeps beyond that: the rule's routing offset.
+        var routingOffset: Double = 0
         /// The rule that asks it.
         var rule: String
 
         var margin: Double { gap - required }
+        /// Legal, but closer than the router would lay it.
+        var isInsideRoutingOffset: Bool { margin >= 0 && margin < routingOffset }
         var id: String { objectID }
     }
 
@@ -239,7 +243,8 @@ final class HorizontalRouteClearanceProbe {
     /// whatever lies under one of `connecting` — the copper the route starts
     /// from and, while it has no net, what its next click would join — which
     /// it touches by design. `required` gives the clearance the rules ask
-    /// between the route and an object, and the rule that asks it.
+    /// between the route and an object, the routing offset the router keeps
+    /// beyond it, and the rule that asks it.
     func nearest(
         route: [[HorizontalPoint]],
         width: Double,
@@ -247,7 +252,7 @@ final class HorizontalRouteClearanceProbe {
         net: String?,
         connecting: [HorizontalPoint],
         radius: Double,
-        required: (Item) -> (clearance: Double, rule: String)
+        required: (Item) -> (clearance: Double, routingOffset: Double, rule: String)
     ) -> [Measurement] {
         let points = route.flatMap { $0 }
         guard !points.isEmpty, !items.isEmpty else {
@@ -281,7 +286,7 @@ final class HorizontalRouteClearanceProbe {
             let rule = required(item)
             let measurement = Measurement(
                 kind: item.kind, objectID: item.id, label: item.label, netID: item.netID,
-                gap: gap, required: rule.clearance, rule: rule.rule)
+                gap: gap, required: rule.clearance, routingOffset: rule.routingOffset, rule: rule.rule)
             if let current = best[item.kind] {
                 guard measurement.margin < current.margin
                         || (measurement.margin == current.margin && measurement.objectID < current.objectID) else {
