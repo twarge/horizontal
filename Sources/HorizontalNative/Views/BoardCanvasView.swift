@@ -153,8 +153,8 @@ struct BoardCanvasView: View {
     // Every via's diameter in green (`viaDiameterFill`), drawn once per via
     // above every copper layer it spans, whichever is on top, and below its
     // hole. Its alpha is baked into the vertex colours: a disc's fan
-    // triangles never overlap, and its edge is opaque. So the group itself
-    // composites at 1 and keeps the inline fast path.
+    // triangles never overlap. So the group itself composites at 1 and keeps
+    // the inline fast path.
     private static let viaDiameterMetalCompositeGroup = 1_800_000
     private static let emitsGeneratedBoardLabelsInMetal = true
     // Zoom-out cull for the GENERATED overlay labels (pad names, via net names,
@@ -5473,8 +5473,8 @@ struct BoardCanvasView: View {
                 )
             )
         }
-        // Over the route, as a placed via is drawn: its diameter in green, its
-        // hole, then the green edge.
+        // Over the route, as a placed via is drawn: its diameter in green,
+        // then its hole.
         if let armed = armedViaPreview(state, polylines: polylines) {
             func disc(_ diameter: Double) -> Path {
                 let center = transform.point(armed.head)
@@ -5486,16 +5486,13 @@ struct BoardCanvasView: View {
             context.fill(outline, with: .color(Self.viaDiameterFill))
             context.fill(hole, with: .color(theme.background.opacity(0.95)))
             context.stroke(hole, with: .color(theme.hole.opacity(0.7)), lineWidth: transform.strokeWidth(0, minimum: 0.75))
-            context.stroke(outline, with: .color(Self.viaDiameterEdge), lineWidth: transform.strokeWidth(0, minimum: 1))
         }
     }
 
     /// A via's diameter is drawn green over its copper, placed or armed on a
-    /// route, so it stands out from the tracks it joins: a translucent disc
-    /// with a solid edge. The edge is opaque so the segments of a placed via's
-    /// outline don't darken where they meet.
+    /// route, so it stands out from the tracks it joins: a translucent disc,
+    /// with no edge.
     static let viaDiameterFill = Color(red: 0.2, green: 1, blue: 0.35).opacity(0.45)
-    static let viaDiameterEdge = Color(red: 0.2, green: 1, blue: 0.35)
 
     /// Where the next click drops the armed via, and its shape: on the end of
     /// the preview, or on the end of the route itself while the cursor rests
@@ -10737,34 +10734,24 @@ struct BoardCanvasView: View {
             }
         }
 
-        // Via diameters, green over the copper of each via that shows any on
-        // a visible layer; the holes go over them.
+        // Via diameters, green over the copper of each via that shows any
+        // filled on a visible layer; the holes go over them.
         profile("via diameters") {
             let copperLayers = Set(renderLayers.filter(HorizontalBoardLayers.isCopper))
             let fill = HorizontalMetalRGBA(Self.viaDiameterFill)
-            let edge = HorizontalMetalRGBA(Self.viaDiameterEdge)
             for via in board.vias {
                 let layers = renderedViaLayers(for: via).filter(copperLayers.contains)
-                guard !layers.isEmpty else {
+                guard layers.contains(where: layerUsesFill) else {
                     continue
                 }
                 let owner = selectableRef(id: via.id, type: .via)
                 let points = viaCirclePointsByID[via.id]
                     ?? circlePoints(center: via.position, radius: via.size / 2, segments: 24)
-                if layers.contains(where: layerUsesFill) {
-                    appendFilledCircle(
-                        center: via.position,
-                        radius: via.size / 2,
-                        color: fill,
-                        points: points,
-                        compositeGroup: Self.viaDiameterMetalCompositeGroup,
-                        owner: owner,
-                        to: \.vias
-                    )
-                }
-                appendClosedPolyline(
-                    points,
-                    color: edge,
+                appendFilledCircle(
+                    center: via.position,
+                    radius: via.size / 2,
+                    color: fill,
+                    points: points,
                     compositeGroup: Self.viaDiameterMetalCompositeGroup,
                     owner: owner,
                     to: \.vias
@@ -12915,11 +12902,10 @@ struct BoardCanvasView: View {
                 }
             }
             // The armed via over the route, as a placed via is drawn: its
-            // diameter in green, its hole, then the green edge. The overlay
-            // draws every triangle before every line, so each is a line, one
-            // micron long, which the line shader draws as a disc of its width
-            // (or the disc's rim, outlineOnly), and none of the track shows
-            // through.
+            // diameter in green, then its hole. The overlay draws every
+            // triangle before every line, so each is a line, one micron long,
+            // which the line shader draws as a disc of its width (or the
+            // disc's rim, outlineOnly), and none of the track shows through.
             if let armed = armedViaPreview(track, polylines: polylines) {
                 func disc(_ diameter: Double, _ color: Color, outlineOnly: Bool = false) -> HorizontalMetalLinePrimitive {
                     HorizontalMetalLinePrimitive(
@@ -12934,7 +12920,6 @@ struct BoardCanvasView: View {
                 lines.append(disc(armed.via.diameter, Self.viaDiameterFill))
                 lines.append(disc(armed.via.holeDiameter, theme.background.opacity(0.95)))
                 lines.append(disc(armed.via.holeDiameter, theme.hole.opacity(0.7), outlineOnly: true))
-                lines.append(disc(armed.via.diameter, Self.viaDiameterEdge, outlineOnly: true))
             }
         }
 
