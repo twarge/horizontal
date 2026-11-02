@@ -2065,6 +2065,22 @@ struct HorizontalIPadProjectView: View {
     /// The rules sheet's Apply, for the via rules: as `ProjectDocumentView`'s,
     /// one undoable edit through the archive and a reload.
     private func applyBoardRules(_ kind: HorizontalBoardRuleKind) -> String {
+        if kind == .trackWidth, let project, var board = project.board {
+            let changed = HorizontalTrackWidthRules.apply(to: &board)
+            guard !changed.isEmpty else {
+                return "Every track whose width is from the rules already has it."
+            }
+            do {
+                var archive = document.archive
+                try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &archive)
+                try applyArchiveEdit(archive, to: project, actionName: "Apply Track Width Rules")
+                return changed.count == 1
+                    ? "Applied the track width rules to 1 track."
+                    : "Applied the track width rules to \(changed.count) tracks."
+            } catch {
+                return "Couldn't apply the track width rules: \(error.localizedDescription)"
+            }
+        }
         guard kind == .via, let project, let board = project.board else {
             return "Horizontal doesn't apply these rules yet."
         }

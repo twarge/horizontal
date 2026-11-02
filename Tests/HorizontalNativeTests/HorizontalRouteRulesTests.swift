@@ -77,17 +77,29 @@ final class HorizontalRouteRulesTests: XCTestCase {
 
     // MARK: - Where the width comes from
 
-    func testARouteWidthIsCustomThenTheTrackItStartsOnThenTheRules() {
+    func testARouteOnAPadTakesTheRulesAndOnATrackTheTracks() {
         let rules = HorizontalBoardRules(rules: trackWidthRules, netDetails: netDetails)
         let track = HorizontalSegment(
             id: "t", from: .zero, to: HorizontalPoint(x: 1_000_000, y: 0), width: 330_000, layer: top, netID: "vcc")
+        var ruledTrack = track
+        ruledTrack.widthFromRules = true
 
+        // On a pad, the rules', a custom width or not.
+        XCTAssertEqual(
+            HorizontalRouteWidth.start(explicit: 420_000, onPad: true, startTrack: nil, net: "vcc", layer: top,
+                                       rules: rules, tracks: [track]),
+            .init(width: 500_000, source: .rule(id: "power")))
+        // On a track, the track's; on one whose width is the rules', theirs.
         XCTAssertEqual(
             HorizontalRouteWidth.start(explicit: 420_000, startTrack: track, net: "vcc", layer: top, rules: rules, tracks: [track]),
-            .init(width: 420_000, source: .custom))
-        XCTAssertEqual(
-            HorizontalRouteWidth.start(explicit: nil, startTrack: track, net: "vcc", layer: top, rules: rules, tracks: [track]),
             .init(width: 330_000, source: .track(id: "t")))
+        XCTAssertEqual(
+            HorizontalRouteWidth.start(explicit: nil, startTrack: ruledTrack, net: "vcc", layer: top, rules: rules, tracks: [track]),
+            .init(width: 500_000, source: .rule(id: "power")))
+        // Anywhere else a custom width, then the rules'.
+        XCTAssertEqual(
+            HorizontalRouteWidth.start(explicit: 420_000, startTrack: nil, net: "vcc", layer: top, rules: rules, tracks: [track]),
+            .init(width: 420_000, source: .custom))
         XCTAssertEqual(
             HorizontalRouteWidth.start(explicit: nil, startTrack: nil, net: "vcc", layer: top, rules: rules, tracks: [track]),
             .init(width: 500_000, source: .rule(id: "power")))

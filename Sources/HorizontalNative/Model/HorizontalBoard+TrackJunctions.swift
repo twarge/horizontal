@@ -46,6 +46,39 @@ extension HorizontalBoard {
         return named + unnamed
     }
 
+    /// What ends on junction `id`, which Horizon's delete takes with it: the
+    /// tracks and net ties with an end naming it, or an end naming none at its
+    /// point that the layer rule gives it (`junctionIDs(at:joining:)`), and
+    /// the lines and arcs with an end (or an arc's centre) at its point.
+    func refsEnding(onJunction id: String, layers: [String: Set<Int>]? = nil) -> [HorizontalSelectableRef] {
+        let target = id.lowercased()
+        guard let point = junctions.first(where: { $0.key.lowercased() == target })?.value else {
+            return []
+        }
+        let layers = layers ?? junctionLayers()
+        let key = Self.junctionPointKey(point)
+        func endsOnIt(_ segment: HorizontalSegment) -> Bool {
+            for (end, junction) in [(segment.from, segment.fromJunctionID), (segment.to, segment.toJunctionID)] {
+                if let junction {
+                    if junction.lowercased() == target { return true }
+                } else if Self.junctionPointKey(end) == key,
+                          junctionIDs(at: point, joining: segment.layer, layers: layers).contains(where: { $0.lowercased() == target }) {
+                    return true
+                }
+            }
+            return false
+        }
+        var refs = tracks.filter(endsOnIt).map { HorizontalSelectableRef(id: $0.id, type: .track) }
+        refs += netTies.filter(endsOnIt).map { HorizontalSelectableRef(id: $0.id, type: .boardNetTie) }
+        refs += lines
+            .filter { Self.junctionPointKey($0.from) == key || Self.junctionPointKey($0.to) == key }
+            .map { HorizontalSelectableRef(id: $0.id, type: .boardLine) }
+        refs += arcs
+            .filter { [$0.from, $0.to, $0.center].contains { Self.junctionPointKey($0) == key } }
+            .map { HorizontalSelectableRef(id: $0.id, type: .boardArc) }
+        return refs
+    }
+
     /// Points the track and net tie ends that name a junction in `folded` at
     /// `kept` instead, as junctions at one point are folded into one.
     mutating func repointJunctionEnds(from folded: Set<String>, to kept: String) {

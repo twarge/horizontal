@@ -64,7 +64,7 @@ struct HorizontalRouteInspectorState: Equatable {
     var widthSourceText: String {
         switch widthSource {
         case .custom:
-            return "A custom width, set with W or here, for this route and the next."
+            return "A custom width, set with W or here. A route that starts on a pad or a track takes the rules' or the track's again."
         case .track:
             return "The width of the track the route started on, which it continues."
         case .rule:

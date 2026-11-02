@@ -24,6 +24,12 @@ enum HorizontalRouteWidthSource: Hashable {
     /// Nothing to go on: 0.2 mm, RuleTrackWidth's own default.
     case fallback
 
+    /// Whether the width is a track width rule's, so the tracks the route
+    /// lays take it from the rules (`HorizontalSegment.widthFromRules`).
+    var isRule: Bool {
+        if case .rule = self { true } else { false }
+    }
+
     /// Whether the width is the rules' to give, so that a route moving to
     /// another layer or net, or a change to the rules, gives it again.
     var followsRules: Bool {
@@ -59,23 +65,61 @@ enum HorizontalRouteWidth {
         return Resolution(width: BoardTrackRouting.defaultTrackWidth, source: .fallback)
     }
 
-    /// A route's width as it starts: a custom width when one is set; else the
-    /// width of the track it starts on; else the rules' (`fromRules`).
+    /// A route's width as it starts. On a pad, the rules' (`fromRules`); on a
+    /// track, the track's, or the rules' for a track whose width is theirs,
+    /// as Horizon's router inherits a track's width and whether it is
+    /// explicit; anywhere else a custom width when one is set, else the rules'.
     static func start(
         explicit: Double?,
+        onPad: Bool = false,
         startTrack: HorizontalSegment?,
         net: String?,
         layer: Int,
         rules: HorizontalBoardRules,
         tracks: [HorizontalSegment]
     ) -> Resolution {
+        if onPad {
+            return fromRules(net: net, layer: layer, rules: rules, tracks: tracks)
+        }
+        if let startTrack, startTrack.width > 0 {
+            if startTrack.widthFromRules, rules.trackWidth(net: net, layer: layer) != nil {
+                return fromRules(net: net, layer: layer, rules: rules, tracks: tracks)
+            }
+            return Resolution(width: startTrack.width, source: .track(id: startTrack.id))
+        }
         if let explicit, explicit > 0 {
             return Resolution(width: explicit, source: .custom)
         }
-        if let startTrack, startTrack.width > 0 {
-            return Resolution(width: startTrack.width, source: .track(id: startTrack.id))
-        }
         return fromRules(net: net, layer: layer, rules: rules, tracks: tracks)
+    }
+}
+
+/// Horizon's Apply for the track width rules (`BoardRules::apply` for
+/// `RuleID::TRACK_WIDTH`): every track and net tie whose width is the rules'
+/// (`HorizontalSegment.widthFromRules`), on a net, takes the default width of
+/// the first enabled rule by order that takes its net, on its layer.
+enum HorizontalTrackWidthRules {
+    /// Applies them to `board`, and returns the ids of the tracks and net ties
+    /// it changed. Where no rule takes the net Horizon gives the track a width
+    /// of 0, which no fabricator makes; this leaves it as it is.
+    @discardableResult
+    static func apply(to board: inout HorizontalBoard) -> [String] {
+        var changed = [String]()
+        func apply(_ segments: inout [HorizontalSegment]) {
+            for index in segments.indices {
+                let segment = segments[index]
+                guard segment.widthFromRules, let net = segment.netID, let layer = segment.layer,
+                      let rule = board.rules.trackWidth(net: net, layer: layer), rule.widths.def > 0,
+                      segment.width != rule.widths.def else {
+                    continue
+                }
+                segments[index].width = rule.widths.def
+                changed.append(segment.id)
+            }
+        }
+        apply(&board.tracks)
+        apply(&board.netTies)
+        return changed
     }
 }
 

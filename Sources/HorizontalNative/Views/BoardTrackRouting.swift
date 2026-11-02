@@ -652,7 +652,8 @@ enum BoardTrackRouting {
                     center: spec.center,
                     netID: head.netID,
                     fromJunctionID: flowsForward ? endJunctionID : junctionID,
-                    toJunctionID: flowsForward ? junctionID : endJunctionID
+                    toJunctionID: flowsForward ? junctionID : endJunctionID,
+                    widthFromRules: head.widthFromRules
                 )
             )
             endJunctionID = junctionID
@@ -945,6 +946,9 @@ struct BoardTrackRouteHead: Equatable {
     var layer: Int
     /// `v` armed a via for the next click to drop.
     var placesVia: Bool
+    /// The width is the track width rule's: the tracks laid take it from the
+    /// rules, as Horizon's router lays a width it didn't make explicit.
+    var widthFromRules = false
 }
 
 /// What one click laid: the head the route goes on from, and how many legs

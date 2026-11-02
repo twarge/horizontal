@@ -140,10 +140,12 @@ enum HorizontalProjectJSONApplicator {
         patchJunctions(&json, points: board.junctions, netIDs: board.junctionNetIDs)
         patchPlacements(&json, key: "packages", placements: board.packages, boardPackages: true)
         removeConnectionLinesReferencingPackages(&json, packageIDs: removedPackageIDs)
-        patchSegments(&json, key: "tracks", segments: board.tracks, supportsLayer: true, supportsArcCenter: true)
+        patchSegments(&json, key: "tracks", segments: board.tracks, supportsLayer: true, supportsArcCenter: true,
+                      widthFromRulesKey: "width_from_net_class")
         patchJunctionEnds(&json, key: "tracks", segments: board.tracks, junctions: board.junctions)
         patchNewBoardTracks(&json, board: board)
-        patchSegments(&json, key: "net_ties", segments: board.netTies, supportsLayer: true)
+        patchSegments(&json, key: "net_ties", segments: board.netTies, supportsLayer: true,
+                      widthFromRulesKey: "width_from_rules")
         patchJunctionEnds(&json, key: "net_ties", segments: board.netTies, junctions: board.junctions)
         patchBoardDrawingLines(&json, lines: board.lines, junctions: board.junctions)
         patchBoardDrawingArcs(&json, arcs: board.arcs, junctions: board.junctions)
@@ -1324,7 +1326,8 @@ enum HorizontalProjectJSONApplicator {
         segments: [HorizontalSegment],
         idPrefix: String? = nil,
         supportsLayer: Bool,
-        supportsArcCenter: Bool = false
+        supportsArcCenter: Bool = false,
+        widthFromRulesKey: String? = nil
     ) {
         guard var map = json[key] as? JSONDictionary else {
             return
@@ -1343,6 +1346,11 @@ enum HorizontalProjectJSONApplicator {
             }
             if supportsLayer, let layer = segment.layer {
                 item["layer"] = layer
+            }
+            // Horizon reads a flag the file leaves out as true, so it is
+            // written only where the file states it or the model says false.
+            if let widthFromRulesKey, item[widthFromRulesKey] != nil || !segment.widthFromRules {
+                item[widthFromRulesKey] = segment.widthFromRules
             }
             if supportsArcCenter {
                 if let center = segment.center {
@@ -1383,14 +1391,16 @@ enum HorizontalProjectJSONApplicator {
             }
 
             // Field set + defaults mirror Track::serialize. Notably
-            // `width_from_net_class` defaults to true on load, which would make
-            // Horizon ignore our explicit width — so we pin it false.
+            // `width_from_net_class` defaults to true on load, and a track
+            // with it takes the rules' width when they are applied, so it is
+            // written as the track has it: true only for a width the route
+            // took from the rules.
             var item: JSONDictionary = [
                 "from": fromEndpoint,
                 "to": toEndpoint,
                 "width": jsonNumber(track.width),
                 "layer": track.layer ?? HorizontalBoardLayers.topCopper,
-                "width_from_net_class": false,
+                "width_from_net_class": track.widthFromRules,
                 "locked": false
             ]
             // Curved track: the arc center is a coordinate (Horizon stores it as

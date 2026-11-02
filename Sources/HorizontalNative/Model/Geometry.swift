@@ -368,6 +368,12 @@ struct HorizontalSegment: Identifiable, Hashable {
     /// which the position alone can't tell apart (`HorizontalBoard+TrackJunctions`).
     var fromJunctionID: String? = nil
     var toJunctionID: String? = nil
+    /// Horizon's `width_from_rules` (a track's `width_from_net_class`, a net
+    /// tie's `width_from_rules`): the width is the track width rule's, which
+    /// the rules window's Apply gives it again. True where the file leaves it
+    /// out, as Horizon reads it; false on what Horizontal draws at a width of
+    /// its own.
+    var widthFromRules: Bool = false
 }
 
 extension HorizontalSegment {

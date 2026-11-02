@@ -449,15 +449,32 @@ treatment the pour got:
    ⌘-click starts a route anywhere.
 
    **A route's width is the rules'** (`HorizontalRouteWidth`), as Horizon's
-   router takes it: a custom width (W, the tool settings) wins; else the width
-   of the track the route starts on, which it continues; else the default of
-   the first enabled track width rule by order that takes the route's net, on
-   its layer (BoardRules::get_default_track_width), where a layer the rule
-   leaves out has RuleTrackWidth's 0.2 mm (BoardRules::update_for_board). Only
-   with no rule taking the net does it fall back to the width most of the
-   net's tracks have, as it always did before the rules were read. A width
-   from the rules follows the route onto the layer a via takes it to and the
-   net it joins, and follows a change to the rules.
+   router takes it. A route that starts on a pad takes the default of the
+   first enabled track width rule by order that takes its net, on its layer
+   (BoardRules::get_default_track_width), where a layer the rule leaves out
+   has RuleTrackWidth's 0.2 mm (BoardRules::update_for_board). One that starts
+   on a track continues the track's width, or takes the rules' where the
+   track's is theirs, as Horizon's router inherits a track's width and whether
+   it is explicit. Either clears a custom width (W, the tool settings), which
+   otherwise gives the width of a route started anywhere else. Only with no
+   rule taking the net does the width fall back to the one most of the net's
+   tracks have, as it always did before the rules were read. A width from the
+   rules follows the route onto the layer a via takes it to and the net it
+   joins, and follows a change to the rules; the tracks it lays take their
+   width from the rules (`width_from_net_class`), as the router's do in
+   Horizon, and the others have their own.
+
+   **Each track's width is the rules' or its own** (`HorizontalSegment.widthFromRules`,
+   Horizon's `width_from_rules`: a track's `width_from_net_class`, a net tie's
+   `width_from_rules`, true where the file leaves it out). The selection
+   inspector's Width from: Rules gives a track or net tie the matching rule's
+   width and the flag, and a width typed in makes it its own. The rules
+   window's Apply now applies the track width rules too
+   (`HorizontalTrackWidthRules`, BoardRules::apply for TRACK_WIDTH): every track
+   and net tie whose width is the rules', on a net, takes its rule's default
+   on its layer, except where no rule takes the net, where Horizon's 0 is
+   left alone. A via's Shape from and a plane's Settings from use the same
+   Rules / Custom picker.
 
    **The route inspector** (`HorizontalRouteInspectorView`) is the sidebar
    while the track tool is in use, opening for the route unless "Show the
@@ -478,9 +495,9 @@ treatment the pour got:
    the via's diameter and hole the matching via rule's parameters (a new via
    rule with the board's default via where none takes the net)
    (`HorizontalRouteRuleEditing`). Width and via each have Rules / Custom:
-   Custom is the tool settings' own size (W, or the via size in the settings),
-   for this route and the next; Rules clears it, and gives a route that
-   continued a track's width the rules' instead. A via dropped from the rules
+   Custom is the tool settings' own size (W, or the via size in the settings);
+   Rules clears it, and gives a route that continued a track's width the
+   rules' instead. A via dropped from the rules
    keeps taking its shape from them (`from_rules`), as Horizon's router places
    one; a custom one is its own. Each change is one undoable step, written
    to the archive and taken into the board without a reload
