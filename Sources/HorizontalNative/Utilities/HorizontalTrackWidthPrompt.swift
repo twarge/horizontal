@@ -12,7 +12,8 @@ enum HorizontalTrackWidthPrompt {
     static func run(
         title: String = "Track Width",
         message: String = "Enter the track width in millimeters.",
-        currentWidthNM: Double
+        currentWidthNM: Double,
+        allowsZero: Bool = false
     ) -> Double? {
         let alert = NSAlert()
         alert.messageText = title
@@ -32,7 +33,7 @@ enum HorizontalTrackWidthPrompt {
             return nil
         }
         let text = field.stringValue.trimmingCharacters(in: .whitespaces)
-        guard let mm = Double(text), mm.isFinite, mm > 0 else {
+        guard let mm = Double(text), mm.isFinite, mm > 0 || (allowsZero && mm == 0) else {
             return nil
         }
         return (mm * nmPerMM).rounded()

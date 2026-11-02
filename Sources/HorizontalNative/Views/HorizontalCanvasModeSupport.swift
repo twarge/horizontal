@@ -312,6 +312,8 @@ struct HorizontalCanvasCommandHandlerSet {
     var hasPlacementInteraction: Bool = false
     /// A polygon corner is being rounded off: E flips the arc.
     var hasRoundOffVertexInteraction: Bool = false
+    /// Round off vertex would adjust a corner rounded off before.
+    var roundOffVertexAdjustsRounding: Bool = false
     var commitInteraction: () -> Void
     var cancelInteraction: () -> Void
 
@@ -586,6 +588,7 @@ struct HorizontalCanvasCommandHandlerSet {
             canUpdateAllPlanes: writable && updateAllPlanes != nil,
             hasPlacementInteraction: hasPlacementInteraction,
             hasRoundOffVertexInteraction: hasRoundOffVertexInteraction,
+            roundOffVertexAdjustsRounding: roundOffVertexAdjustsRounding,
             dispatch: dispatch
         )
     }

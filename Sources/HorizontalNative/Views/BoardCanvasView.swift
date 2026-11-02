@@ -81,7 +81,9 @@ private struct PackagePlacementState {
 }
 
 /// Horizon's `ToolRoundOffVertex` in flight: the corner's rounding, the
-/// arc direction (E flips it) and the radius the cursor last set.
+/// arc direction (E flips it) and the radius the cursor last set. A corner
+/// rounded off before starts at its arc's radius and direction, and keeps
+/// them until the cursor moves.
 private struct RoundOffVertexState {
     var polygonID: String
     var rounding: HorizontalPolygonRounding
@@ -92,9 +94,15 @@ private struct RoundOffVertexState {
     init(polygonID: String, rounding: HorizontalPolygonRounding, cursor: HorizontalPoint) {
         self.polygonID = polygonID
         self.rounding = rounding
-        self.reverse = rounding.reverse
-        self.radius = rounding.radius(for: cursor)
+        self.reverse = rounding.existing?.reverse ?? rounding.reverse
+        self.radius = rounding.existing?.radius ?? rounding.radius(for: cursor)
         self.cursor = cursor
+    }
+
+    /// Whether the corner was rounded off before, so a zero radius makes it
+    /// sharp rather than leaving it as it was.
+    var adjustsRounding: Bool {
+        rounding.existing != nil
     }
 
     var vertexIndex: Int {
@@ -103,6 +111,19 @@ private struct RoundOffVertexState {
 
     var clampedRadius: Double {
         rounding.clamped(radius)
+    }
+
+    /// Whether the radius is too small for an arc, so the corner is sharp.
+    var isSharp: Bool {
+        clampedRadius < HorizontalPolygonRounding.minimumRadius
+    }
+
+    /// Whether committing would leave the corner as it was.
+    var isUnchanged: Bool {
+        guard let existing = rounding.existing else {
+            return isSharp
+        }
+        return abs(clampedRadius - existing.radius) < 0.5 && reverse == existing.reverse
     }
 
     func polygon() -> HorizontalPolygon {
@@ -1611,6 +1632,10 @@ struct BoardCanvasView: View {
         }
         if let state = roundOffVertexState {
             let radiusMM = String(format: "%.3f", state.clampedRadius / 1_000_000)
+            if state.adjustsRounding {
+                let radius = state.isSharp ? "sharp" : "radius \(radiusMM) mm"
+                return "Adjust rounding (\(radius)): click sets the radius, at the corner it goes sharp   E flips the arc   Return enters a radius   Esc cancels"
+            }
             return "Round off vertex (radius \(radiusMM) mm): click sets the radius   E flips the arc   Return enters a radius   Esc cancels"
         }
         return nil
@@ -2808,6 +2833,7 @@ struct BoardCanvasView: View {
             moveSelectionBy: moveSelectionByGrid,
             hasPlacementInteraction: poolPlacementState != nil,
             hasRoundOffVertexInteraction: roundOffVertexState != nil,
+            roundOffVertexAdjustsRounding: canRoundOffVertex && roundOffVertexAdjustsRounding,
             commitInteraction: {
                 if packagePlacementState != nil {
                     commitPackagePlacement(at: lastCursorWorldPoint)
@@ -3118,8 +3144,8 @@ struct BoardCanvasView: View {
         if writable, isConvertiblePolygon(ref) {
             entries.append(.command(title: "Convert to Line Loop", .convertPolygonToLineLoop))
         }
-        if writable, ref.type == .polygonVertex, roundOffVertexState(for: ref) != nil {
-            entries.append(.command(title: "Round Off Vertex", .roundOffVertex))
+        if writable, let state = roundOffVertexState(for: ref) {
+            entries.append(.command(title: state.adjustsRounding ? "Adjust Rounding" : "Round Off Vertex", .roundOffVertex))
         }
         if writable, ref.type == .boardLine || ref.type == .boardArc || ref.type == .junction {
             entries.append(.command(title: "Convert to Polygon", .convertLineLoopToPolygon))
@@ -16367,13 +16393,28 @@ extension BoardCanvasView {
     // MARK: Round off vertex
 
     /// The one selected polygon vertex the tool would round, when exactly
-    /// one is selected (other selected objects are ignored, as upstream).
+    /// one is selected (other selected objects are ignored, as upstream),
+    /// or with no vertex the one selected arc centre, whose rounded corner
+    /// it adjusts.
     private var roundOffVertexCandidate: HorizontalSelectableRef? {
         let vertexRefs = selectedObjects.filter { $0.type == .polygonVertex }
-        guard vertexRefs.count == 1 else {
+        if vertexRefs.count == 1 {
+            return vertexRefs[0]
+        }
+        let arcCenterRefs = selectedObjects.filter { $0.type == .polygonArcCenter }
+        guard vertexRefs.isEmpty, arcCenterRefs.count == 1 else {
             return nil
         }
-        return vertexRefs[0]
+        return arcCenterRefs[0]
+    }
+
+    /// Whether the tool would adjust a corner rounded off before rather than
+    /// round a sharp one, for the menu's title.
+    private var roundOffVertexAdjustsRounding: Bool {
+        guard let ref = roundOffVertexCandidate else {
+            return false
+        }
+        return roundOffVertexState(for: ref)?.adjustsRounding == true
     }
 
     private var canRoundOffVertex: Bool {
@@ -16386,17 +16427,25 @@ extension BoardCanvasView {
     }
 
     /// The rounding for the corner `ref` names, or nil when it cannot be
-    /// rounded: package-owned polygons, a vertex that already starts an arc
-    /// or follows one, and collinear (or folded) edges.
+    /// rounded: package-owned polygons, an arc that isn't a rounded corner
+    /// (tangent to the straight edges either side), and collinear (or
+    /// folded) edges. A vertex of a rounded corner, or its arc's centre,
+    /// adjusts that rounding.
     private func roundOffVertexState(for ref: HorizontalSelectableRef) -> RoundOffVertexState? {
-        guard ref.type == .polygonVertex, !normalizedID(ref.id).contains("/") else {
+        guard ref.type == .polygonVertex || ref.type == .polygonArcCenter, !normalizedID(ref.id).contains("/") else {
             return nil
         }
         let stableBoard = editedBoard ?? sourceBoard
         let polygonID = normalizedID(ref.id)
         guard let polygon = stableBoard.polygons.first(where: { normalizedID($0.id) == polygonID }),
-              !polygon.id.contains("/"),
-              let rounding = HorizontalPolygonRounding(polygon: polygon, vertexIndex: ref.vertex) else {
+              !polygon.id.contains("/") else {
+            return nil
+        }
+        let rounding = ref.type == .polygonArcCenter
+            ? HorizontalPolygonRounding(roundedCornerOf: polygon, arcStart: ref.vertex)
+            : HorizontalPolygonRounding(polygon: polygon, vertexIndex: ref.vertex)
+                ?? HorizontalPolygonRounding.roundedCorner(of: polygon, vertexIndex: ref.vertex)
+        guard let rounding else {
             return nil
         }
         return RoundOffVertexState(polygonID: polygon.id, rounding: rounding, cursor: lastCursorWorldPoint ?? rounding.corner)
@@ -16415,8 +16464,10 @@ extension BoardCanvasView {
     }
 
     /// Rounds the corner at the radius under `point` (or the last one set),
-    /// leaving the new arc's start vertex selected. A zero radius changes
-    /// nothing and just ends the tool.
+    /// leaving the new arc's start vertex selected. On a sharp corner a zero
+    /// radius changes nothing and just ends the tool; on a corner rounded
+    /// off before it takes the arc out, leaving the corner sharp and
+    /// selected.
     private func commitRoundOffVertex(at point: HorizontalPoint?) {
         guard var state = roundOffVertexState else {
             return
@@ -16424,7 +16475,7 @@ extension BoardCanvasView {
         if let point {
             state.update(cursor: point)
         }
-        guard state.clampedRadius >= 1 else {
+        guard !state.isUnchanged else {
             cancelRoundOffVertex()
             return
         }
@@ -16437,11 +16488,13 @@ extension BoardCanvasView {
         }
         draft.polygons[index] = state.polygon()
         roundOffVertexState = nil
-        registerUndoSnapshot(previous, actionName: "Round Off Vertex")
+        let actionName = !state.adjustsRounding ? "Round Off Vertex" : state.isSharp ? "Remove Rounding" : "Adjust Rounding"
+        registerUndoSnapshot(previous, actionName: actionName)
         invalidateSelectableCache()
         publishConnectivityResolvedEdit(draft)
+        let vertex = state.rounding.vertexIndex(roundedAt: state.clampedRadius)
         selectedObjects = [
-            HorizontalSelectableRef(id: state.polygonID, type: .polygonVertex, vertex: state.vertexIndex, layer: draft.polygons[index].layer)
+            HorizontalSelectableRef(id: state.polygonID, type: .polygonVertex, vertex: vertex, layer: draft.polygons[index].layer)
         ]
         hoveredObject = nil
         publishSelectionContext()
@@ -16449,28 +16502,31 @@ extension BoardCanvasView {
     }
 
     /// Return during the tool: type the radius (clamped to what fits) and
-    /// commit with it.
+    /// commit with it. On a corner rounded off before, 0 makes it sharp.
     private func enterRoundOffVertexRadius() {
         guard let state = roundOffVertexState else {
             return
         }
         let nmPerMM = 1_000_000.0
         let maxMM = String(format: "%.3f", state.rounding.maxRadius / nmPerMM)
+        let allowsZero = state.adjustsRounding
         #if os(macOS)
+        let sharpNote = allowsZero ? " 0 makes the corner sharp." : ""
         guard let chosen = HorizontalTrackWidthPrompt.run(
             title: "Arc Radius",
-            message: "Enter the arc radius in millimeters (up to \(maxMM) mm).",
-            currentWidthNM: state.clampedRadius
+            message: "Enter the arc radius in millimeters (up to \(maxMM) mm).\(sharpNote)",
+            currentWidthNM: state.clampedRadius,
+            allowsZero: allowsZero
         ) else {
             return
         }
         applyRoundOffVertexRadius(chosen)
         #else
         promptRequest = HorizontalCanvasPromptRequest(
-            title: "Arc Radius (up to \(maxMM) mm)",
+            title: allowsZero ? "Arc Radius (up to \(maxMM) mm, 0 for sharp)" : "Arc Radius (up to \(maxMM) mm)",
             confirmTitle: "Set",
             content: .number(seed: state.clampedRadius / nmPerMM, unit: "mm") { mm in
-                guard let mm, mm.isFinite, mm > 0 else { return }
+                guard let mm, mm.isFinite, mm > 0 || (allowsZero && mm == 0) else { return }
                 applyRoundOffVertexRadius((mm * nmPerMM).rounded())
             }
         )

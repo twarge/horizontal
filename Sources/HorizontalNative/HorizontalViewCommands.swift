@@ -107,6 +107,7 @@ struct HorizontalCanvasCommandActions {
     var canUpdateAllPlanes: Bool = false
     var hasPlacementInteraction: Bool = false
     var hasRoundOffVertexInteraction: Bool = false
+    var roundOffVertexAdjustsRounding: Bool = false
     /// The world rectangle the canvas currently shows, for the live channel.
     var visibleWorldBounds: (() -> HorizontalRect?)? = nil
     /// The airwires a board canvas's scene draws, for the live channel.
@@ -528,7 +529,7 @@ struct HorizontalViewCommands: Commands {
                 }
                 .disabled(canvasCommandActions?.canDrawPlane != true)
 
-                Button("Round Off Vertex") {
+                Button(canvasCommandActions?.roundOffVertexAdjustsRounding == true ? "Adjust Rounding" : "Round Off Vertex") {
                     canvasCommandActions?.dispatch(.roundOffVertex)
                 }
                 .disabled(canvasCommandActions?.canRoundOffVertex != true)
