@@ -162,7 +162,9 @@ final class HorizontalCanvasInputCoreTests: XCTestCase {
         XCTAssertFalse(takes(rotate, .list))
         XCTAssertTrue(takes(rotate, .list, interaction: true))
         XCTAssertFalse(takes(rotate, .textInput, interaction: true))
-        XCTAssertTrue(takes(rotate, .canvas, paneHasKeyboard: false), "the canvas itself first responder")
+        XCTAssertTrue(takes(rotate, .canvas), "the canvas first responder, its pane with the keyboard")
+        XCTAssertFalse(takes(rotate, .canvas, paneHasKeyboard: false), "first responder, but another pane has the keyboard")
+        XCTAssertTrue(takes(rotate, .canvas, paneHasKeyboard: false, interaction: true))
         XCTAssertTrue(takes(rotate, .other, paneHasKeyboard: false, interaction: true))
 
         XCTAssertTrue(HorizontalKeyboardResponder.selectableText.isControl)
