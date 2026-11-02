@@ -654,7 +654,6 @@ struct ProjectWorkspaceView: View {
     @State private var sidebarRestoreTask: Task<Void, Never>?
     @StateObject private var boardRulesUndoTarget = HorizontalUndoTarget<JSONDictionary>()
     @StateObject private var boardToolSettings = HorizontalBoardToolSettings()
-    @State private var boardToolSettingsPresented = false
     @State private var boardDrawingLayer = HorizontalBoardLayers.topCopper
     /// Set while a single layer is soloed (the working layer's number pressed a
     /// second time). Nil is the normal, un-soloed state.
@@ -1317,6 +1316,7 @@ struct ProjectWorkspaceView: View {
                 sections: selectionSidebarSections,
                 netSegmentSelection: schematicNetSegmentSelection,
                 routeInspector: routeInspector,
+                toolSettings: boardToolSettings,
                 safeAreaInsets: safeAreaInsets,
                 foregroundColor: .primary,
                 backgroundColor: sidebarTheme.overlayBackground,
@@ -1342,6 +1342,7 @@ struct ProjectWorkspaceView: View {
                 result: rulesResultsState,
                 safeAreaInsets: safeAreaInsets,
                 onRunChecks: refreshRulesResults,
+                onOpenRules: { showBoardRulesWindow() },
                 onShowFinding: showClearanceFinding,
                 onShowRule: { finding in
                     showBoardRulesWindow(focus: HorizontalBoardRuleFocus(kind: finding.ruleKind, ruleID: finding.ruleID))
@@ -2444,7 +2445,7 @@ struct ProjectWorkspaceView: View {
                                 routeWidthCommand: routeWidthCommand,
                                 routeInspector: routeInspector,
                                 rulesRevision: boardRulesRevision,
-                                onShowToolSettings: { boardToolSettingsPresented = true },
+                                onShowToolSettings: { rightSidebarPane = .selection },
                                 toolSettings: boardToolSettings,
                                 drawingLayer: boardDrawingLayer,
                                 syncRevision: boardSyncRevision,
@@ -2489,13 +2490,14 @@ struct ProjectWorkspaceView: View {
                         }
                     )
                     .disabled(project.board == nil)
-                    BoardRulesToolButton(action: showBoardRulesWindow)
-                        .disabled(project.board == nil)
-                    // Pouring and the netlist sync both rewrite the board, so
-                    // they go with the drawing tools below rather than staying
-                    // as dimmed buttons. The stackup and rules buttons above
-                    // stay: locked, they are how the board is read.
-                    if !isReadOnly {
+                    // Pouring rewrites the board, so it goes with the drawing
+                    // tools rather than staying as a dimmed button; the
+                    // stackup above stays, as locked it is how the board is
+                    // read. Pouring automatically leaves the button nothing to
+                    // do, and the menu turns it off again. The rules open from
+                    // the rules results sidebar and the Board menu, and the
+                    // netlist follows the schematic on its own.
+                    if !isReadOnly, !updatesPlanesAutomatically {
                         BoardUpdatePlanesToolButton(
                             action: updateAllBoardPlanes,
                             isUpdating: planePourScheduler.isPouring,
@@ -2504,8 +2506,6 @@ struct ProjectWorkspaceView: View {
                             updatesAutomatically: $updatesPlanesAutomatically
                         )
                         .disabled(project.board?.planes.isEmpty != false)
-                        BoardSyncToolButton(action: syncBoardWithSchematicData)
-                            .disabled(project.board == nil)
                     }
                     SelectionToolButton(settings: $selectionToolSettings)
                     if !isReadOnly {
@@ -2513,14 +2513,6 @@ struct ProjectWorkspaceView: View {
                             boardDrawTrackCommand = HorizontalDrawTrackCommand()
                         }
                         .disabled(project.board == nil)
-                        TrackSettingsToolButton(presented: $boardToolSettingsPresented)
-                            .disabled(project.board == nil)
-                            .popover(isPresented: $boardToolSettingsPresented, arrowEdge: .bottom) {
-                                HorizontalBoardToolSettingsView(
-                                    settings: boardToolSettings,
-                                    viaTemplate: project.board?.routeVia(netID: nil)
-                                )
-                            }
                         DrawingToolButtonGroup(primitives: HorizontalDrawingPrimitive.polygonRail) { primitive in
                             boardDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
                         }
@@ -3326,16 +3318,14 @@ struct ProjectWorkspaceView: View {
     }
 
     /// The track tool started or ended: the route inspector opens the
-    /// sidebar, unless the tool settings say not to, and the sidebar goes
-    /// back to what it was when the route ends.
+    /// sidebar, and the sidebar goes back to what it was when the route ends.
     private func routingChanged(_ isRouting: Bool) {
         if isRouting {
             guard !seesRouting else { return }
             seesRouting = true
             sidebarRestoreTask?.cancel()
             sidebarRestoreTask = nil
-            guard sidebarBeforeRouting == nil, boardToolSettings.showsRouteInspector,
-                  rightSidebarPane != .selection else { return }
+            guard sidebarBeforeRouting == nil, rightSidebarPane != .selection else { return }
             sidebarBeforeRouting = SidebarBeforeRouting(pane: rightSidebarPane)
             rightSidebarPane = .selection
         } else {
@@ -3503,12 +3493,6 @@ struct ProjectWorkspaceView: View {
         } else {
             canvasCommandActionsByPane[.schematic]?.dispatch(.placePowerSymbol)
         }
-    }
-
-    /// The rail's Sync button: the netlist reload now, without waiting for
-    /// further schematic edits to settle.
-    private func syncBoardWithSchematicData() {
-        scheduleBoardNetlistSync()
     }
 
     /// Board options with the working layer stamped in, so the layer selected in
@@ -5659,6 +5643,7 @@ private struct SelectionSidebarView: View {
     var sections: [SelectionSidebarSection]
     var netSegmentSelection: HorizontalNetSegmentSelectionSidebarState?
     @ObservedObject var routeInspector: HorizontalRouteInspectorModel
+    var toolSettings: HorizontalBoardToolSettings
     var safeAreaInsets: EdgeInsets
     var foregroundColor: Color
     var backgroundColor: Color
@@ -5674,6 +5659,7 @@ private struct SelectionSidebarView: View {
                     Section("Track Route") {
                         HorizontalRouteInspectorView(
                             model: routeInspector,
+                            toolSettings: toolSettings,
                             isReadOnly: isReadOnly,
                             onCommand: onRouteInspectorCommand
                         )
@@ -5751,6 +5737,8 @@ private struct HorizontalRulesResultsSidebarView: View {
     var safeAreaInsets: EdgeInsets
     /// Runs every rules check again on the board as it stands.
     var onRunChecks: () -> Void = {}
+    /// Opens the board's rules window.
+    var onOpenRules: () -> Void = {}
     /// Shows where a clearance finding is on the board.
     var onShowFinding: (HorizontalClearanceFinding) -> Void = { _ in }
     /// Opens the rules window at the rule a finding is against.
@@ -5788,6 +5776,9 @@ private struct HorizontalRulesResultsSidebarView: View {
                         .foregroundStyle(.secondary)
                         .padding(.vertical, 4)
                 }
+                Button("Open Rules…", action: onOpenRules)
+                    .controlSize(.small)
+                    .help("Open the board's rules")
             }
 
             if let result {

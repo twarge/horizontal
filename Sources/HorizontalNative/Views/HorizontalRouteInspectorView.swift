@@ -333,22 +333,68 @@ final class HorizontalRouteInspectorModel: ObservableObject {
     }
 }
 
-/// The route inspector: the sidebar's content while a track is routed.
+/// The route inspector: the sidebar's content while a track is routed, with
+/// the track tool's own settings at the top.
 struct HorizontalRouteInspectorView: View {
     @ObservedObject var model: HorizontalRouteInspectorModel
+    var toolSettings: HorizontalBoardToolSettings
     var isReadOnly: Bool
     /// Whether the host can open the board's rules at a rule.
     var canShowRules = true
     var onCommand: (HorizontalRouteInspectorCommand) -> Void
 
     var body: some View {
-        if let state = model.state {
-            HorizontalRouteInspectorContent(
-                state: state, isReadOnly: isReadOnly, canShowRules: canShowRules, onCommand: onCommand)
-        } else {
-            Label("Starting the route…", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 14) {
+            HorizontalRouteToolSettingsSection(settings: toolSettings)
+            Divider()
+            if let state = model.state {
+                HorizontalRouteInspectorContent(
+                    state: state, isReadOnly: isReadOnly, canShowRules: canShowRules, onCommand: onCommand)
+            } else {
+                Label("Starting the route…", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                    .foregroundStyle(.secondary)
+            }
         }
+    }
+}
+
+/// The track tool's settings, which hold for this route and the next. They
+/// were the rail's Track Settings popover; the width and via it also had are
+/// the inspector's Rules / Custom below.
+private struct HorizontalRouteToolSettingsSection: View {
+    @ObservedObject var settings: HorizontalBoardToolSettings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Corner style")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Picker("Corner style", selection: $settings.cornerStyle) {
+                    ForEach(BoardTrackCornerStyle.allCases) { style in
+                        Text(style.label).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
+                .focusable(false)
+            }
+            // A click here leaves the keys with the canvas, where the route's
+            // C, V, W and Esc go.
+            Toggle("Route around obstacles", isOn: $settings.routerMode)
+                .focusable(false)
+            Toggle("Remove loops", isOn: $settings.removeLoops)
+                .focusable(false)
+            Toggle("Start on copper only", isOn: $settings.startsOnCopper)
+                .focusable(false)
+        }
+        #if os(macOS)
+        .toggleStyle(.checkbox)
+        #endif
+        .font(.callout)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

@@ -450,7 +450,7 @@ treatment the pour got:
    via entry the model lacks. Delete on a via now flags it too: its entry used to stay in
    the file, so the via came back on reload wherever a track still ended on it.
 
-   **A route starts on copper** ("Start on copper only" in the tool settings,
+   **A route starts on copper** ("Start on copper only" in the route inspector,
    on by default; `BoardTrackRouting.copperStart`). Its first click starts it
    only on copper of its layer: in a pad, from the pad's centre; within a via
    that reaches the layer, from the via's centre; within half a track's width
@@ -491,9 +491,12 @@ treatment the pour got:
    Rules / Custom picker.
 
    **The route inspector** (`HorizontalRouteInspectorView`) is the sidebar
-   while the track tool is in use, opening for the route unless "Show the
-   route inspector" in the tool settings is off, and closing a few seconds
-   after the last route ends. It shows the route's layer (a picker before the
+   while the track tool is in use, opening for the route and closing a few
+   seconds after the last route ends. The track tool's settings are at its
+   top: the corner style, Route around obstacles, Remove loops and Start on
+   copper only, which a route under way follows (they were the rail's Track
+   Settings popover; S and View ▸ Show Track Settings open the sidebar on
+   them while the tool is in use). It shows the route's layer (a picker before the
    route starts), its net and net class, the width and where it
    comes from, the via V drops and where its size comes from, the clearance
    a track keeps from tracks, pads, through-hole

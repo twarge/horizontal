@@ -76,9 +76,9 @@ struct HorizontalIPadProjectView: View {
     @State private var isLoading = false
 
     // Board track-tool (autorouter) state for iPad: entering the tool, the
-    // tool-settings popover, the published command surface, and the layer.
+    // published command surface, and the layer. The tool's settings are the
+    // route inspector's.
     @State private var boardDrawTrackCommand: HorizontalDrawTrackCommand?
-    @State private var boardToolSettingsPresented = false
     @State private var boardCanvasActions: HorizontalCanvasCommandActions?
     @State private var boardDrawingLayer = HorizontalBoardLayers.topCopper
     @State private var boardDrawingToolCommand: HorizontalDrawingToolCommand?
@@ -725,6 +725,7 @@ struct HorizontalIPadProjectView: View {
             Divider()
             RouteInspectorSwitch(
                 model: routeInspector,
+                toolSettings: boardToolSettings,
                 isReadOnly: isReadOnly,
                 onCommand: handleRouteInspectorCommand
             ) {
@@ -1456,7 +1457,7 @@ struct HorizontalIPadProjectView: View {
                     routeWidthCommand: routeWidthCommand,
                     routeInspector: routeInspector,
                     rulesRevision: boardRulesRevision,
-                    onShowToolSettings: { boardToolSettingsPresented = true },
+                    onShowToolSettings: { rightPane = .inspector },
                     toolSettings: boardToolSettings,
                     drawingLayer: boardDrawingLayer,
                     syncRevision: boardSyncRevision,
@@ -1484,25 +1485,24 @@ struct HorizontalIPadProjectView: View {
                     DrawTrackToolButton {
                         boardDrawTrackCommand = HorizontalDrawTrackCommand()
                     }
-                    TrackSettingsToolButton(presented: $boardToolSettingsPresented)
-                        .popover(isPresented: $boardToolSettingsPresented, arrowEdge: .bottom) {
-                            HorizontalBoardToolSettingsView(settings: boardToolSettings, viaTemplate: board.routeVia(netID: nil))
-                                .frame(minWidth: 320, minHeight: 320)
-                        }
                     DrawingToolButtonGroup(primitives: HorizontalDrawingPrimitive.polygonRail) { primitive in
                         boardDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
                     }
                     DrawPlaneToolButton {
                         boardCanvasActions?.dispatch(.drawPlane)
                     }
-                    BoardUpdatePlanesToolButton(
-                        action: updateAllBoardPlanes,
-                        isUpdating: planePourScheduler.isPouring,
-                        progress: planePourScheduler.progress,
-                        needsUpdate: planesNeedUpdate,
-                        updatesAutomatically: $updatesPlanesAutomatically
-                    )
-                    .disabled(board.planes.isEmpty)
+                    // Pouring automatically leaves the button nothing to do;
+                    // Settings turns it off again.
+                    if !updatesPlanesAutomatically {
+                        BoardUpdatePlanesToolButton(
+                            action: updateAllBoardPlanes,
+                            isUpdating: planePourScheduler.isPouring,
+                            progress: planePourScheduler.progress,
+                            needsUpdate: planesNeedUpdate,
+                            updatesAutomatically: $updatesPlanesAutomatically
+                        )
+                        .disabled(board.planes.isEmpty)
+                    }
                     DrawDimensionToolButton {
                         boardCanvasActions?.dispatch(.drawDimension)
                     }
@@ -2191,7 +2191,7 @@ struct HorizontalIPadProjectView: View {
             seesRouting = true
             inspectorCloseTask?.cancel()
             inspectorCloseTask = nil
-            guard !inspectorOpenedForRoute, boardToolSettings.showsRouteInspector, !isCompact, rightPane == nil else { return }
+            guard !inspectorOpenedForRoute, !isCompact, rightPane == nil else { return }
             inspectorOpenedForRoute = true
             rightPane = .inspector
         } else {
@@ -2806,6 +2806,7 @@ private struct RouteInspectorPresentation: ViewModifier {
 /// the selection otherwise. It observes the model so the host need not.
 private struct RouteInspectorSwitch<Selection: View>: View {
     @ObservedObject var model: HorizontalRouteInspectorModel
+    var toolSettings: HorizontalBoardToolSettings
     var isReadOnly: Bool
     var onCommand: (HorizontalRouteInspectorCommand) -> Void
     @ViewBuilder var selection: Selection
@@ -2813,7 +2814,8 @@ private struct RouteInspectorSwitch<Selection: View>: View {
     var body: some View {
         if model.isRouting {
             ScrollView {
-                HorizontalRouteInspectorView(model: model, isReadOnly: isReadOnly, onCommand: onCommand)
+                HorizontalRouteInspectorView(
+                    model: model, toolSettings: toolSettings, isReadOnly: isReadOnly, onCommand: onCommand)
                     .padding(.horizontal)
                     .padding(.vertical, 12)
             }
