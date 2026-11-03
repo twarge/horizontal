@@ -171,13 +171,21 @@ struct HorizontalSettingsView: View {
             HorizontalMouserSettingsSection()
         }
         .formStyle(.grouped)
-        // The fixed size shapes the macOS Settings window; on iPad the form is
-        // presented in a sheet and should fill whatever size the sheet provides.
+        // The macOS Settings window (HorizontalSettingsWindow) resizes down to
+        // the minimum, where the colour matrix's four columns still fit and the
+        // form scrolls; on iPad the form is presented in a sheet and should
+        // fill whatever size the sheet provides.
         #if os(macOS)
-        .frame(width: 680)
-        .frame(minHeight: 640)
+        .frame(
+            minWidth: Self.minimumSize.width, maxWidth: .infinity,
+            minHeight: Self.minimumSize.height, maxHeight: .infinity
+        )
         #endif
     }
+
+    #if os(macOS)
+    static let minimumSize = CGSize(width: 680, height: 360)
+    #endif
 
     private var transparentToolbarDescription: String {
         #if os(macOS)
