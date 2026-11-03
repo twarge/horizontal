@@ -1539,7 +1539,8 @@ struct HorizontalIPadProjectView: View {
                 pane: .board,
                 safeAreaInsets: safeAreaInsets,
                 showsInfoButton: false,
-                isKeyboardFocused: focusedPane == .board
+                isKeyboardFocused: focusedPane == .board,
+                showsScaleBar: boardDisplayOptions.scaleBar
             ) {
                 BoardCanvasView(
                     board: board,
