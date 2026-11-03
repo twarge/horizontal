@@ -130,7 +130,7 @@ struct ProjectNavigatorView: View {
 
                         if blockMatches || !isSearching {
                             NavigatorRow(
-                                icon: schematic.block.isTop ? "target" : "cube",
+                                icon: schematic.block.isTop ? "document.on.document" : "cube",
                                 title: navigatorTitle(for: schematic.block),
                                 detail: blockDetail(for: schematic)
                             )
@@ -300,9 +300,11 @@ struct ProjectNavigatorView: View {
         Set(project.schematics.flatMap { $0.schematic.sheets.flatMap { $0.blockSymbols.map(\.blockID) } })
     }
 
-    private func blockDetail(for schematic: HorizontalProjectSchematic) -> String {
+    /// The top block's row is the schematic itself and needs no second line:
+    /// its file's name says nothing the title doesn't.
+    private func blockDetail(for schematic: HorizontalProjectSchematic) -> String? {
         guard !schematic.block.isTop else {
-            return schematic.schematicFilename
+            return nil
         }
         let count = project.schematics.reduce(0) { total, other in
             total + other.schematic.sheets.reduce(0) { $0 + $1.blockSymbols.filter { $0.blockID == schematic.block.uuid.lowercased() }.count }
