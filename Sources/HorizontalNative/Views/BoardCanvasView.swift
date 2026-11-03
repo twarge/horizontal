@@ -4804,13 +4804,15 @@ struct BoardCanvasView: View {
     /// drawn. With it on, the route bends around existing copper instead —
     /// nothing is shoved, so everything already on the board stays put.
     ///
-    /// With it on and no clear route to be had, this returns NOTHING: the
-    /// preview disappears and a click lays no copper. The router's partial
-    /// path collides with whatever stopped it, and the plain elbow this used
-    /// to fall back to collides with everything in between — either one on
-    /// screen looks like the router ignoring obstacles, and either one
-    /// committed is copper that violates the board's own rules. An empty
-    /// preview says what is true: there is no way through from here.
+    /// With it on and no legal route to `to`, the legs stop at the nearest
+    /// point a legal route reaches (`HorizontalRouteFinder.approach`): the
+    /// edge of the clearance round the pad or track the cursor is over, or as
+    /// near an enclosed cursor as the route gets. They never go nearer
+    /// anything than the rules allow — a route drawn into what it should
+    /// avoid looks like the router ignoring obstacles, and laid is copper
+    /// that breaks the board's own rules. So the last leg can end short of
+    /// `to`, and a click lays what the preview shows; nothing at all when the
+    /// route can go nowhere towards it.
     private func trackSpecs(
         from: HorizontalPoint,
         to: HorizontalPoint,
@@ -4818,11 +4820,10 @@ struct BoardCanvasView: View {
         netID: String?
     ) -> [BoardTrackSegmentSpec] {
         if toolSettings.routerMode, let session = trackRouterSession {
-            let result = session.route(
+            let approach = session.approach(
                 from: from, to: to, layer: state.layer, netID: netID,
                 width: state.width, diagonalFirst: state.bendMode == .xy)
-            guard result.isComplete else { return [] }
-            return BoardTrackRouting.specs(alongPath: result.points)
+            return BoardTrackRouting.specs(alongPath: approach.points)
         }
         return BoardTrackRouting.route(
             from: from, to: to,
@@ -5291,14 +5292,23 @@ struct BoardCanvasView: View {
         // Net compatibility (mirrors Horizon): never weld two different nets
         // together. If the end point already belongs to a different net on
         // the route's layer, ignore the click and keep routing from the same
-        // anchor; copper on another layer is crossed, not joined.
+        // anchor; copper on another layer is crossed, not joined. Routing
+        // around obstacles, the route stops at that copper's clearance, as
+        // the preview shows it, aimed at the cursor rather than the pad's
+        // centre, and the click lays that.
         let endNet = boardNetID(at: point, layer: state.layer) ?? boardNetID(at: target, layer: state.layer)
+        var routeTarget = target
+        var routeEndPad = endPad
         if let endNet,
            let trackNet = state.netID,
            normalizedID(endNet) != normalizedID(trackNet) {
-            state.cursor = point
-            drawTrackState = state
-            return
+            guard toolSettings.routerMode, trackRouterSession != nil else {
+                state.cursor = point
+                drawTrackState = state
+                return
+            }
+            routeTarget = point
+            routeEndPad = nil
         }
         let netID = state.netID ?? endNet
 
@@ -5306,22 +5316,27 @@ struct BoardCanvasView: View {
         // diagonal, or a tangent quarter-arc. Each leg becomes a track segment
         // (arc legs carry a center); junctions sit at the route vertices.
         let specs = trackSpecs(
-            from: anchor, to: target, state: state, netID: netID)
-        guard !specs.isEmpty else {
-            state.cursor = target
+            from: anchor, to: routeTarget, state: state, netID: netID)
+        guard let routeEnd = specs.last?.to else {
+            state.cursor = routeTarget
             drawTrackState = state
             return
         }
+        // The router stops short of a target it can't legally reach: then the
+        // click lays the route to where it stopped, which is in no pad.
+        let arrives = pointKey(routeEnd) == pointKey(routeTarget)
+        let endsOnPad = arrives && routeEndPad != nil
 
         // The armed via goes at the end of what this click lays. A click on a
         // pad ends the route in the pad instead, and drops no via in it; so
         // does a click that closes a loop, back on copper already joined to
         // where the stretch began (`BoardTrackLoops`).
-        let closesLoop = layRoute(specs, to: target, endsOnPad: endPad != nil, netID: netID, state: &state)
-        state.cursor = target
+        let closesLoop = layRoute(
+            specs, to: arrives ? routeTarget : routeEnd, endsOnPad: endsOnPad, netID: netID, state: &state)
+        state.cursor = routeTarget
         drawTrackState = state
 
-        if endPad != nil || closesLoop, state.segmentCount > 0 {
+        if endsOnPad || closesLoop, state.segmentCount > 0 {
             commitDrawTrack()
         }
     }
@@ -5453,8 +5468,9 @@ struct BoardCanvasView: View {
             return nil
         }
         let netID = state.netID ?? endNet
+        // A route the router stopped short of the copper closes nothing.
         let specs = trackSpecs(from: anchor, to: target, state: state, netID: netID)
-        guard !specs.isEmpty else {
+        guard let end = specs.last?.to, pointKey(end) == pointKey(target) else {
             return nil
         }
         let head = BoardTrackRouteHead(
