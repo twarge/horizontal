@@ -132,7 +132,6 @@ struct HorizontalPoolCanvasEditorView: View {
             safeAreaInsets: EdgeInsets(),
             showsInfoButton: false,
             isKeyboardFocused: true,
-            showsScaleBar: displayOptions.scaleBar,
             onToolbarHover: { pointerInsideToolbar = $0 }
         ) {
             if let board {

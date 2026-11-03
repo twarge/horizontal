@@ -579,6 +579,8 @@ struct InteractiveCanvasView: View {
     /// otherwise the canvas leaves Tab alone.
     var switchesPanes = false
 
+    /// Room left at the scale bar's start for a pane's keyboard-focus badge.
+    @Environment(\.horizonScaleBarLeadingClearance) private var scaleBarLeadingClearance
     /// The cursor crosshair + coordinate readout live in `CursorReadoutLayer`, fed
     /// through this holder so a pointer move re-renders only that small layer, not
     /// this ~500-line body. (@State holds the reference but does NOT observe it.)
@@ -2078,10 +2080,7 @@ struct InteractiveCanvasView: View {
             return
         }
 
-        let origin = CGPoint(
-            x: overlayInsets.leading,
-            y: max(overlayInsets.top + 18, size.height - overlayInsets.bottom)
-        )
+        let origin = scaleBarOrigin(size: size, overlayInsets: overlayInsets)
         var path = Path()
         path.move(to: origin)
         path.addLine(to: CGPoint(x: origin.x + screenLength, y: origin.y))
@@ -2127,13 +2126,19 @@ struct InteractiveCanvasView: View {
             return nil
         }
 
-        let origin = CGPoint(
-            x: overlayInsets.leading,
-            y: max(overlayInsets.top + 18, size.height - overlayInsets.bottom)
-        )
+        let origin = scaleBarOrigin(size: size, overlayInsets: overlayInsets)
         return (
             scaleLabel(for: worldLength),
             CGPoint(x: origin.x, y: origin.y - 20)
+        )
+    }
+
+    /// The scale bar's left end, in the lower left: past the keyboard-focus
+    /// badge a pane draws in that corner.
+    private func scaleBarOrigin(size: CGSize, overlayInsets: EdgeInsets) -> CGPoint {
+        CGPoint(
+            x: overlayInsets.leading + scaleBarLeadingClearance,
+            y: max(overlayInsets.top + 18, size.height - overlayInsets.bottom)
         )
     }
 
@@ -2178,10 +2183,7 @@ struct InteractiveCanvasView: View {
             return []
         }
 
-        let origin = CGPoint(
-            x: overlayInsets.leading,
-            y: max(overlayInsets.top + 18, size.height - overlayInsets.bottom)
-        )
+        let origin = scaleBarOrigin(size: size, overlayInsets: overlayInsets)
         let color = HorizontalMetalRGBA(foregroundColor.opacity(0.52))
         return [
             HorizontalMetalScreenLinePrimitive(
