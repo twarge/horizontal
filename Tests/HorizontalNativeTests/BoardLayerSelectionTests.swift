@@ -121,8 +121,82 @@ final class BoardLayerSelectionTests: XCTestCase {
 
         XCTAssertNotEqual(placement, silkscreen)
         XCTAssertNotEqual(placement, bottomPlacement)
-        XCTAssertTrue(placement.pads, "placement shows pads")
-        XCTAssertFalse(silkscreen.pads, "silkscreen does not")
+        XCTAssertTrue(placement.isLayerVisible(HorizontalBoardLayers.topCopper), "placement shows top copper")
+        XCTAssertFalse(silkscreen.isLayerVisible(HorizontalBoardLayers.topCopper), "silkscreen does not")
+    }
+
+    /// The Objects switches start on, and no view preset sets them: a
+    /// view is its layers, and what the user switched off stays off.
+    func testPresetsLeaveObjectSwitchesAlone() {
+        let objects: [WritableKeyPath<BoardDisplayOptions, Bool>] = [
+            \.trackLabels, \.vias, \.viaLabels, \.pads, \.padLabels, \.holes, \.packages,
+            \.text, \.keepouts, \.dimensions, \.connectionLines, \.connectionLabels, \.decals
+        ]
+        let defaults = BoardDisplayOptions()
+        for object in objects {
+            XCTAssertTrue(defaults[keyPath: object], "\(object) defaults on")
+        }
+
+        var mixed = BoardDisplayOptions()
+        for (index, object) in objects.enumerated() {
+            mixed[keyPath: object] = index.isMultiple(of: 2)
+        }
+        let presets: [(String, (inout BoardDisplayOptions) -> Void)] = [
+            ("top silkscreen", { $0.topSilkscreenView() }),
+            ("bottom silkscreen", { $0.bottomSilkscreenView() }),
+            ("top placement", { $0.topPlacementView() }),
+            ("bottom placement", { $0.bottomPlacementView() }),
+            ("top routing", { $0.topRoutingView() }),
+            ("bottom routing", { $0.bottomRoutingView() }),
+            ("all", { $0.showAll() }),
+            ("clean", { $0.cleanView() }),
+            ("copper only", { $0.copperOnly() }),
+            ("routing only", { $0.routingOnly() }),
+            ("assembly", { $0.assemblyOnly() }),
+            ("fabrication", { $0.fabricationOnly() }),
+            ("mechanical", { $0.mechanicalOnly() }),
+            ("footprints", { $0.footprintsOnly() })
+        ]
+        for (name, apply) in presets {
+            var options = mixed
+            apply(&options)
+            for object in objects {
+                XCTAssertEqual(options[keyPath: object], mixed[keyPath: object], "\(name) changed \(object)")
+            }
+        }
+    }
+
+    /// Turning the board over keeps the view's mode, read from its layers
+    /// now that the views no longer differ in their objects.
+    func testVisibleViewModeComesFromTheLayers() {
+        var options = BoardDisplayOptions()
+        options.topSilkscreenView()
+        XCTAssertEqual(options.visibleViewMode(on: .top), .silkscreen)
+        options.topPlacementView()
+        XCTAssertEqual(options.visibleViewMode(on: .top), .placement)
+        options.topRoutingView()
+        XCTAssertEqual(options.visibleViewMode(on: .top), .routing)
+        options.bottomSilkscreenView()
+        XCTAssertEqual(options.visibleViewMode(on: .bottom), .silkscreen)
+        options.bottomRoutingView()
+        XCTAssertEqual(options.visibleViewMode(on: .bottom), .routing)
+        options.bottomPlacementView()
+        XCTAssertEqual(options.visibleViewMode(on: .bottom), .placement)
+    }
+
+    /// A silkscreen view puts the tools on that side's silkscreen; the other
+    /// sided views on its copper, and the side-less ones nowhere in particular.
+    func testPresetDrawingLayers() {
+        XCTAssertEqual(HorizontalBoardLayerPreset.topSilkscreen.drawingLayer, HorizontalBoardLayers.topSilkscreen)
+        XCTAssertEqual(HorizontalBoardLayerPreset.bottomSilkscreen.drawingLayer, HorizontalBoardLayers.bottomSilkscreen)
+        XCTAssertEqual(HorizontalBoardLayerPreset.topPlacement.drawingLayer, HorizontalBoardLayers.topCopper)
+        XCTAssertEqual(HorizontalBoardLayerPreset.bottomRouting.drawingLayer, HorizontalBoardLayers.bottomCopper)
+        XCTAssertEqual(HorizontalBoardLayerPreset.bottomView.drawingLayer, HorizontalBoardLayers.bottomCopper)
+        XCTAssertEqual(
+            HorizontalBoardLayerPreset.silkscreen.resolved(for: .bottom).drawingLayer,
+            HorizontalBoardLayers.bottomSilkscreen
+        )
+        XCTAssertNil(HorizontalBoardLayerPreset.all.drawingLayer)
     }
 
     func testPlainDigitDecodesToSelectLayer() {
