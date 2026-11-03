@@ -182,12 +182,16 @@ struct BoardCanvasView: View {
     // as the old group-0 main-pass draw did, no matter how dim the copper slider
     // makes the layers.
     private static let holesMetalCompositeGroup = 1_900_000
-    // Every via's diameter in green (`viaDiameterFill`), drawn once per via
-    // above every copper layer it spans, whichever is on top, and below its
-    // hole. Its alpha is baked into the vertex colours: a disc's fan
-    // triangles never overlap. So the group itself composites at 1 and keeps
-    // the inline fast path.
+    // Every via's diameter in solid green (`viaDiameterFill`), drawn once per
+    // via above every copper layer it spans, whichever is on top, and below
+    // its hole. Its colour is baked into the vertex colours, so the group
+    // itself composites at 1 and keeps the inline fast path.
     private static let viaDiameterMetalCompositeGroup = 1_800_000
+    // A highlight's dim, under the highlighted copper the top overlay draws
+    // over it in their layers' groups: below every group, the board body's
+    // (1) included. Exempt from the layer opacity, as the dim's strength is
+    // the highlight mode's.
+    private static let highlightDimMetalCompositeGroup = -1
     private static let emitsGeneratedBoardLabelsInMetal = true
     // Zoom-out cull for the GENERATED overlay labels (pad names, via net names,
     // track/net-tie net names): once a label's glyphs shrink below this many
@@ -964,7 +968,12 @@ struct BoardCanvasView: View {
         let metalBufferPatches = measureBody("move patches") {
             measuredBoardMetalMovePatches(lineBatch: metalLineBatch)
         }
-        let metalHighlightBatch = measureBody("highlight batch") { boardMetalHighlightBatch() }
+        let visibleCompositeGroups = measureBody("visible composite groups") {
+            visibleMetalCompositeGroups(for: visibleLayers)
+        }
+        let metalHighlightBatch = measureBody("highlight batch") {
+            boardMetalHighlightBatch(renderLayers: metalRenderLayers, visibleCompositeGroups: visibleCompositeGroups)
+        }
         let metalDimBatch = measureBody("dim batch") {
             boardMetalDimBatch(
             hasMetalHighlight: !metalHighlightBatch.lines.isEmpty || !metalHighlightBatch.triangles.isEmpty
@@ -988,9 +997,11 @@ struct BoardCanvasView: View {
             (metalHighlightBatch.handleKey &* 31 &+ metalSelectionBatch.handleKey) &* 31 &+ metalPreviewBatch.handleKey
         }
         let metalTopOverlayBufferPatches = measureBody("selection move patches") {
+            // The direct line buffer holds only the ungrouped lines, so the
+            // selection's start there counts only the highlight's ungrouped ones.
             measuredBoardMetalSelectionMovePatches(
                 baseSelectionBatch: metalSelectionBatch,
-                lineStart: metalHighlightBatch.lines.count,
+                lineStart: metalHighlightBatch.lines.reduce(0) { $0 + ($1.compositeGroup == 0 ? 1 : 0) },
                 handleStart: metalHighlightBatch.handles.count
             )
         }
@@ -1018,7 +1029,7 @@ struct BoardCanvasView: View {
             metalOverlayAnchoredRectKey: metalLineBatch.anchoredRectKey,
             metalOverlayBufferPatches: metalBufferPatches,
             metalOverlayBufferPatchKey: metalBufferPatches.hashValue,
-            metalOverlayVisibleCompositeGroups: visibleMetalCompositeGroups(for: visibleLayers),
+            metalOverlayVisibleCompositeGroups: visibleCompositeGroups,
             metalOverlayLayerOpacityExemptGroups: [Self.textOverlayMetalCompositeGroup, Self.holesMetalCompositeGroup],
             metalTopOverlayTriangles: metalTopOverlayTriangles,
             metalTopOverlayTriangleKey: metalTopOverlayKey,
@@ -1026,8 +1037,18 @@ struct BoardCanvasView: View {
             metalTopOverlayLineKey: metalTopOverlayKey,
             metalTopOverlayHandles: metalTopOverlayHandles,
             metalTopOverlayHandleKey: metalTopOverlayHandleKey,
+            metalTopOverlayAnchoredRects: metalHighlightBatch.anchoredRects,
+            metalTopOverlayAnchoredRectKey: metalHighlightBatch.anchoredRectKey,
             metalTopOverlayBufferPatches: metalTopOverlayBufferPatches,
             metalTopOverlayBufferPatchKey: metalTopOverlayBufferPatches.hashValue,
+            // The highlighted copper is composited in its layers' groups at
+            // the layers' opacity, as the board's overlay composites it.
+            metalTopOverlayLayerOpacity: layerOpacity,
+            metalTopOverlayLayerOpacityExemptGroups: [
+                Self.highlightDimMetalCompositeGroup,
+                Self.textOverlayMetalCompositeGroup,
+                Self.holesMetalCompositeGroup
+            ],
             metalLoadProfileID: board2DProfileID,
             cursorSize: appearanceSettings.canvasCursorSize,
             snapTargets: boardSnapTargets(),
@@ -5855,9 +5876,9 @@ struct BoardCanvasView: View {
     }
 
     /// A via's diameter is drawn green over its copper, placed or armed on a
-    /// route, so it stands out from the tracks it joins: a translucent disc,
-    /// with no edge.
-    static let viaDiameterFill = Color(red: 0.2, green: 1, blue: 0.35).opacity(0.45)
+    /// route, so it stands out from the tracks it joins: a solid disc, with no
+    /// edge.
+    static let viaDiameterFill = Color(red: 0.2, green: 1, blue: 0.35)
 
     /// Where the next click drops the armed via, and its shape: on the end of
     /// the preview, or on the end of the route itself while the cursor rests
@@ -12462,370 +12483,80 @@ struct BoardCanvasView: View {
         return patches
     }
 
-    private func boardMetalHighlightBatch() -> BoardMetalLineBatch {
+    /// The highlighted nets and components drawn again over the dimmed board,
+    /// as the board draws them: the scene build over just what is highlighted
+    /// (`BoardHighlightSubset`), in its layers' composite groups and on the
+    /// layers the board shows, so a highlight only dims the rest. With the
+    /// highlight mode at As is nothing dims, and they are drawn lighter, as
+    /// Horizon's Highlight mode lightens them.
+    private func boardMetalHighlightBatch(renderLayers: [Int], visibleCompositeGroups: Set<Int>) -> BoardMetalLineBatch {
         guard drawsBoardLinesInMetal, hasActiveHighlight else {
             return .empty
         }
 
-        let highlightColor = HorizontalMetalRGBA(theme.junction)
-        let highlightOuterColor = HorizontalMetalRGBA(theme.junction.opacity(0.94))
-        let highlightPolygonFillColor = HorizontalMetalRGBA(theme.junction.opacity(0.28))
-        let highlightPolygonStrokeColor = HorizontalMetalRGBA(theme.junction.opacity(0.96))
-        let highlightPlaneFillColor = HorizontalMetalRGBA(theme.junction.opacity(0.18))
-        let highlightPlaneStrokeColor = HorizontalMetalRGBA(theme.junction.opacity(0.78))
-        let highlightHoleColor = HorizontalMetalRGBA(theme.junction.opacity(0.95))
-        let highlightMarkerStrokeColor = HorizontalMetalRGBA(theme.junction.opacity(0.98))
-        let highlightTextColor = HorizontalMetalRGBA(theme.junction.opacity(0.96))
-        let backgroundColor = HorizontalMetalRGBA(theme.background.opacity(0.55))
-        let shownHighlightNetIDs = shownHighlightNetIDs
+        let netIDs = shownHighlightNetIDs
+        let componentIDs = Set(highlightedComponentIDs.map { $0.lowercased() })
+        let bucketsKey = metalElementBucketsCacheKey(renderLayers: renderLayers)
+        let signature = metalVisibilitySignature()
+        let lightens = displayOptions.highlightMode == "as_is"
         let key = BoardMetalHighlightCacheKey(
-            selectableKey: selectableCacheKey,
-            highlightedNetIDs: shownHighlightNetIDs.sorted(),
-            highlightedComponentIDs: highlightedComponentIDs.sorted(),
-            highlightColor: highlightColor,
-            backgroundColor: backgroundColor,
-            layerOpacity: layerOpacity,
-            minimumLabelSize: minimumLabelSize
+            bucketsKey: bucketsKey,
+            visibilitySignature: signature,
+            visibleCompositeGroups: visibleCompositeGroups,
+            highlightedNetIDs: netIDs.sorted(),
+            highlightedComponentIDs: componentIDs.sorted(),
+            lightens: lightens
         )
-        let boardSnapshot = board
-        let displayOptionsSnapshot = displayOptions
-        let pointsByPackage = boardPackageGeometryPoints()
 
         return selectableCache.metalHighlight(key: key) {
-            var lines = [HorizontalMetalLinePrimitive]()
-            var triangles = [HorizontalMetalTrianglePrimitive]()
-            let highlightedNetIDs = shownHighlightNetIDs
-            let highlightedComponentIDSet = Set(highlightedComponentIDs.map { $0.lowercased() })
-
-            func matches(_ netID: String?) -> Bool {
-                guard let netID else {
-                    return false
-                }
-                return highlightedNetIDs.contains(netID.lowercased())
+            let subset = BoardHighlightSubset.board(boardForMetalBuckets, netIDs: netIDs, componentIDs: componentIDs)
+            let scene = concatenateMetalBuckets(
+                buildBoardMetalElementBuckets(renderLayers: renderLayers, partialBoard: subset),
+                signature: signature,
+                bucketsKey: bucketsKey,
+                includesResidentMoveMetadata: false
+            )
+            // The board's overlay hides a layer by leaving its composite group
+            // out; the top overlay draws every group it is given.
+            func shown(_ group: Int) -> Bool {
+                group == 0 || visibleCompositeGroups.contains(group)
             }
-
-            func matchesComponent(_ componentID: String?) -> Bool {
-                guard let componentID else {
-                    return false
+            // Lighter, as Horizon's highlight_lighten; the drill holes, the
+            // background seen through the board, stay as they are.
+            func drawn(_ color: HorizontalMetalRGBA, group: Int) -> HorizontalMetalRGBA {
+                guard lightens, group != Self.holesMetalCompositeGroup else {
+                    return color
                 }
-                return highlightedComponentIDSet.contains(componentID.lowercased())
-            }
-
-            func appendLine(
-                from: HorizontalPoint,
-                to: HorizontalPoint,
-                color: HorizontalMetalRGBA,
-                width: Double = 0,
-                minimumWidth: Float,
-                dash: (Float, Float)? = nil,
-                dashPhase: Double = 0
-            ) {
-                lines.append(
-                    HorizontalMetalLinePrimitive(
-                        from: from,
-                        to: to,
-                        color: color,
-                        width: width,
-                        minimumWidth: minimumWidth,
-                        dashLength: dash?.0 ?? 0,
-                        dashGap: dash?.1 ?? 0,
-                        dashPhase: dashPhase
-                    )
+                return HorizontalMetalRGBA(
+                    red: min(color.red + 0.3, 1),
+                    green: min(color.green + 0.3, 1),
+                    blue: min(color.blue + 0.3, 1),
+                    alpha: color.alpha
                 )
             }
-
-            func appendPolyline(
-                _ points: [HorizontalPoint],
-                color: HorizontalMetalRGBA,
-                width: Double = 0,
-                minimumWidth: Float,
-                dash: (Float, Float)? = nil
-            ) {
-                guard points.count >= 2 else {
-                    return
-                }
-                let phases = dash == nil ? [] : HorizontalMetalLinePrimitive.dashPhases(along: points)
-                for (index, pair) in zip(points, points.dropFirst()).enumerated() {
-                    appendLine(
-                        from: pair.0, to: pair.1, color: color, width: width, minimumWidth: minimumWidth,
-                        dash: dash, dashPhase: phases.isEmpty ? 0 : phases[index]
-                    )
-                }
-            }
-
-            func appendClosedPolyline(
-                _ points: [HorizontalPoint],
-                color: HorizontalMetalRGBA,
-                minimumWidth: Float,
-                dash: (Float, Float)? = nil
-            ) {
-                guard let first = points.first else {
-                    return
-                }
-                appendPolyline(points + [first], color: color, minimumWidth: minimumWidth, dash: dash)
-            }
-
-            func appendHighlightedPolyline(
-                _ points: [HorizontalPoint],
-                width: Double = 0,
-                minimumWidth: Float,
-                dash: (Float, Float)? = nil
-            ) {
-                appendPolyline(points, color: highlightOuterColor, width: width, minimumWidth: minimumWidth, dash: dash)
-                appendPolyline(points, color: backgroundColor, width: width, minimumWidth: 1.0, dash: dash)
-            }
-
-            func appendHighlightedSegment(_ segment: HorizontalSegment, dashed: Bool = false) {
-                appendHighlightedPolyline(
-                    [segment.from, segment.to],
-                    width: segment.width,
-                    minimumWidth: 3.2,
-                    dash: dashed ? (7, 4) : nil
-                )
-            }
-
-            func appendHighlightedArc(_ arc: HorizontalArc) {
-                appendHighlightedPolyline(arc.polyline(precision: 48), width: arc.width, minimumWidth: 3.2)
-            }
-
-            func appendHighlightedPolygon(_ polygon: HorizontalPolygon) {
-                triangles.append(contentsOf: HorizontalMetalTessellator.triangles(
-                    for: polygon.renderVertices(arcPrecision: 24),
-                    color: highlightPolygonFillColor
-                ))
-                appendClosedPolyline(polygon.renderVertices(arcPrecision: 24), color: highlightPolygonStrokeColor, minimumWidth: 2.2)
-            }
-
-            func appendHighlightedPadFragment(_ pad: HorizontalPadOutlineFragment) {
-                triangles.append(contentsOf: HorizontalMetalTessellator.triangles(
-                    for: pad.paths,
-                    color: highlightPolygonFillColor
-                ))
-                for path in pad.paths {
-                    appendClosedPolyline(path, color: highlightPolygonStrokeColor, minimumWidth: 2.2)
-                }
-            }
-
-            func appendHighlightedHole(_ hole: HorizontalHole) {
-                appendClosedPolyline(
-                    hole.outlinePoints(precision: 32),
-                    color: highlightHoleColor,
-                    minimumWidth: 1.8
-                )
-            }
-
-            func appendHighlightedMarker(_ marker: HorizontalMarker) {
-                let radius = marker.size / 2 + 250_000
-                triangles.append(contentsOf: HorizontalMetalTessellator.circle(
-                    center: marker.position,
-                    radius: radius,
-                    color: highlightPolygonFillColor,
-                    segments: 48
-                ))
-                appendClosedPolyline(
-                    (0..<48).map { index in
-                        let angle = Double(index) / 48 * Double.pi * 2
-                        return HorizontalPoint(
-                            x: marker.position.x + cos(angle) * radius,
-                            y: marker.position.y + sin(angle) * radius
-                        )
-                    },
-                    color: highlightMarkerStrokeColor,
-                    minimumWidth: 2.0
-                )
-            }
-
-            func appendHighlightedText(_ text: HorizontalText) {
-                for segment in HorizontalOutlineTextRenderer.outlineSegments(for: text) {
-                    appendLine(
-                        from: segment.0,
-                        to: segment.1,
-                        color: highlightTextColor,
-                        width: text.width,
-                        minimumWidth: 1.1
-                    )
-                }
-            }
-
-            func visibleViaLayersLocal(for via: HorizontalMarker) -> [Int] {
-                let layers = via.connectedLayers.isEmpty
-                    ? [via.layer ?? HorizontalBoardLayers.topCopper]
-                    : via.connectedLayers
-                return layers
-                    .filter { displayOptionsSnapshot.isLayerVisible($0) }
-                    .sorted()
-            }
-
-            func isBodyLayer(_ layer: Int?) -> Bool {
-                guard let layer else {
-                    return false
-                }
-                return HorizontalBoardLayers.isOutline(layer)
-            }
-
-            func packageIDPrefix(for geometryID: String) -> String? {
-                let separators: Set<String> = ["arc", "hole", "keepout", "line", "pad", "polygon", "text"]
-                let components = geometryID.lowercased().split(separator: "/").map(String.init)
-                guard let separatorIndex = components.firstIndex(where: { separators.contains($0) }),
-                      separatorIndex > components.startIndex else {
+            let triangles = scene.triangles.compactMap { triangle -> HorizontalMetalTrianglePrimitive? in
+                guard shown(triangle.compositeGroup) else {
                     return nil
                 }
-                return components[..<separatorIndex].joined(separator: "/")
+                var triangle = triangle
+                triangle.color = drawn(triangle.color, group: triangle.compositeGroup)
+                return triangle
             }
-
-            func belongsToPackage(_ geometryID: String, packageID: String) -> Bool {
-                packageIDPrefix(for: geometryID).map { $0 == packageID } ?? false
+            let lines = scene.lines.compactMap { line -> HorizontalMetalLinePrimitive? in
+                guard shown(line.compositeGroup) else {
+                    return nil
+                }
+                var line = line
+                line.color = drawn(line.color, group: line.compositeGroup)
+                return line
             }
-
-            func appendHighlightedPackage(_ package: HorizontalPlacement) {
-                let packageID = package.id.lowercased()
-                let packagePoints = pointsByPackage[packageID] ?? []
-                let selectable = HorizontalSelectable.bounds(
-                    ref: HorizontalSelectableRef(id: package.id, type: .boardPackage),
-                    points: packagePoints,
-                    fallbackCenter: package.position,
-                    fallbackSize: 2_000_000
-                )
-                triangles.append(contentsOf: HorizontalMetalTessellator.triangles(for: selectable.corners, color: highlightPolygonFillColor))
-                appendClosedPolyline(selectable.corners, color: highlightMarkerStrokeColor, minimumWidth: 2.0)
-
-                if displayOptionsSnapshot.packages {
-                    for polygon in boardSnapshot.packagePolygons where displayOptionsSnapshot.isLayerVisible(polygon.layer) && belongsToPackage(polygon.id, packageID: packageID) {
-                        appendHighlightedPolygon(polygon)
-                    }
-                    for line in boardSnapshot.packageLines where displayOptionsSnapshot.isLayerVisible(line.layer) && belongsToPackage(line.id, packageID: packageID) {
-                        appendHighlightedSegment(line)
-                    }
-                    for arc in boardSnapshot.packageArcs where displayOptionsSnapshot.isLayerVisible(arc.layer) && belongsToPackage(arc.id, packageID: packageID) {
-                        appendHighlightedArc(arc)
-                    }
-                    for text in boardSnapshot.packageTexts where displayOptionsSnapshot.isLayerVisible(text.layer) && belongsToPackage(text.id, packageID: packageID) {
-                        appendHighlightedText(text)
-                    }
-                    if displayOptionsSnapshot.keepouts {
-                        for keepout in boardSnapshot.keepouts where displayOptionsSnapshot.isLayerVisible(keepout.polygon.layer) && belongsToPackage(keepout.id, packageID: packageID) {
-                            appendHighlightedPolygon(keepout.polygon)
-                        }
-                    }
+            let anchoredRects = scene.anchoredRects.compactMap { rect -> HorizontalMetalAnchoredRectPrimitive? in
+                guard shown(rect.compositeGroup) else {
+                    return nil
                 }
-
-                if displayOptionsSnapshot.pads {
-                    let pads = boardSnapshot.packagePads.filter {
-                        displayOptionsSnapshot.isLayerVisible($0.layer) && belongsToPackage($0.id, packageID: packageID)
-                    }
-                    for pad in horizonPadOutlineFragments(pads) {
-                        appendHighlightedPadFragment(pad)
-                    }
-                }
-
-                if displayOptionsSnapshot.holes {
-                    for hole in boardSnapshot.packageHoles where belongsToPackage(hole.id, packageID: packageID) {
-                        appendHighlightedHole(hole)
-                    }
-                }
-
-                if displayOptionsSnapshot.text && !displayOptionsSnapshot.packages {
-                    for text in boardSnapshot.packageTexts where displayOptionsSnapshot.isLayerVisible(text.layer) && belongsToPackage(text.id, packageID: packageID) {
-                        appendHighlightedText(text)
-                    }
-                    if displayOptionsSnapshot.keepouts {
-                        for keepout in boardSnapshot.keepouts where displayOptionsSnapshot.isLayerVisible(keepout.polygon.layer) && belongsToPackage(keepout.id, packageID: packageID) {
-                            appendHighlightedPolygon(keepout.polygon)
-                        }
-                    }
-                }
-            }
-
-            if displayOptionsSnapshot.packages || displayOptionsSnapshot.pads || displayOptionsSnapshot.holes || displayOptionsSnapshot.text {
-                for package in boardSnapshot.packages where matchesComponent(package.componentID) {
-                    appendHighlightedPackage(package)
-                }
-            }
-
-            for plane in boardSnapshot.planes where displayOptionsSnapshot.isLayerVisible(plane.layer) && matches(plane.netID) {
-                for (fragmentIndex, fragment) in plane.renderFragments.enumerated() {
-                    let fragmentKey = boardPlaneFragmentKey(
-                        planeID: plane.id,
-                        fragmentIndex: fragmentIndex,
-                        fragment: fragment
-                    )
-                    triangles.append(contentsOf: metalTriangles(for: fragment, fragmentKey: fragmentKey, color: highlightPlaneFillColor))
-                    for path in fragment.paths {
-                        appendClosedPolyline(path, color: highlightPlaneStrokeColor, minimumWidth: 1.5)
-                    }
-                }
-            }
-
-            for polygon in boardSnapshot.polygons where displayOptionsSnapshot.isLayerVisible(polygon.layer) && !isBodyLayer(polygon.layer) && matches(polygon.netID) {
-                appendHighlightedPolygon(polygon)
-            }
-
-            for line in boardSnapshot.lines where displayOptionsSnapshot.isLayerVisible(line.layer) && matches(line.netID) {
-                appendHighlightedSegment(line)
-            }
-
-            for arc in boardSnapshot.arcs where displayOptionsSnapshot.isLayerVisible(arc.layer) && matches(arc.netID) {
-                appendHighlightedArc(arc)
-            }
-
-            for track in boardSnapshot.tracks where displayOptionsSnapshot.isLayerVisible(track.layer) && matches(track.netID) {
-                if let arc = track.arc {
-                    appendHighlightedArc(arc)
-                } else {
-                    appendHighlightedSegment(track)
-                }
-            }
-
-            for netTie in boardSnapshot.netTies where displayOptionsSnapshot.isLayerVisible(netTie.layer) && matches(netTie.netID) {
-                appendHighlightedSegment(netTie)
-            }
-
-            if displayOptionsSnapshot.connectionLines {
-                for connectionLine in boardSnapshot.connectionLines where matches(connectionLine.netID) {
-                    appendHighlightedSegment(connectionLine, dashed: true)
-                }
-                for airwire in boardSnapshot.airwires where matches(airwire.netID) {
-                    appendHighlightedSegment(airwire, dashed: true)
-                }
-            }
-
-            if displayOptionsSnapshot.pads {
-                let pads = boardSnapshot.packagePads.filter {
-                    displayOptionsSnapshot.isLayerVisible($0.layer) && matches($0.netID)
-                }
-                for pad in horizonPadOutlineFragments(pads) {
-                    appendHighlightedPadFragment(pad)
-                }
-
-                if displayOptionsSnapshot.holes {
-                    for hole in boardSnapshot.packageHoles where matches(hole.netID) {
-                        appendHighlightedHole(hole)
-                    }
-                }
-            }
-
-            if displayOptionsSnapshot.vias {
-                for via in boardSnapshot.vias where !visibleViaLayersLocal(for: via).isEmpty && matches(via.netID) {
-                    appendHighlightedMarker(via)
-                }
-
-                if displayOptionsSnapshot.holes {
-                    for hole in boardSnapshot.viaHoles where matches(hole.netID) {
-                        appendHighlightedHole(hole)
-                    }
-                }
-            }
-
-            if displayOptionsSnapshot.holes {
-                for hole in boardSnapshot.holes where matches(hole.netID) {
-                    appendHighlightedHole(hole)
-                }
-            }
-
-            if displayOptionsSnapshot.text {
-                for text in (boardSnapshot.texts + boardSnapshot.packageTexts) where displayOptionsSnapshot.isLayerVisible(text.layer) && matches(text.netID) {
-                    appendHighlightedText(text)
-                }
+                var rect = rect
+                rect.color = drawn(rect.color, group: rect.compositeGroup)
+                return rect
             }
 
             let batchKey = key.hashValue
@@ -12836,12 +12567,16 @@ struct BoardCanvasView: View {
                 lines: lines,
                 handleKey: 0,
                 handles: [],
-                anchoredRectKey: 0,
-                anchoredRects: []
+                anchoredRectKey: batchKey,
+                anchoredRects: anchoredRects
             )
         }
     }
 
+    /// The background laid over the whole board under a highlight, which the
+    /// highlight batch draws over again. It is in a composite group of its own
+    /// that sorts below every other (`highlightDimMetalCompositeGroup`), since
+    /// the top overlay draws its groups before its ungrouped primitives.
     private func boardMetalDimBatch(hasMetalHighlight: Bool) -> BoardMetalLineBatch {
         guard drawsBoardLinesInMetal,
               hasMetalHighlight,
@@ -12859,7 +12594,11 @@ struct BoardCanvasView: View {
             HorizontalPoint(x: board.bounds.maxX, y: board.bounds.maxY),
             HorizontalPoint(x: board.bounds.minX, y: board.bounds.maxY)
         ]
-        let triangles = HorizontalMetalTessellator.triangles(for: vertices, color: color)
+        let triangles = HorizontalMetalTessellator.triangles(for: vertices, color: color).map { triangle in
+            var triangle = triangle
+            triangle.compositeGroup = Self.highlightDimMetalCompositeGroup
+            return triangle
+        }
         let key = shownHighlightNetIDs.hashValue
             &* 31
             &+ highlightedComponentIDs.hashValue

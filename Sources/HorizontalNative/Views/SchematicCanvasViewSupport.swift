@@ -122,16 +122,95 @@ let schematicPowerSymbolGeometrySeparators: Set<String> = [
     "text"
 ]
 
+/// The highlight is the sheet's own scene build over just what is
+/// highlighted, so it is keyed by the scene's key (`lineKey`, the hash of
+/// its colours, display options and revisions) and what is highlighted.
 struct SchematicMetalHighlightCacheKey: Hashable {
     var selectableKey: SchematicSelectableCacheKey
+    var sceneKey: Int
     var highlightedNetIDs: [String]
     var highlightedComponentIDs: [String]
-    var highlightColor: HorizontalMetalRGBA
-    var symbolColor: HorizontalMetalRGBA
-    var pinColor: HorizontalMetalRGBA
-    var pinAnnotationColor: HorizontalMetalRGBA
-    var backgroundColor: HorizontalMetalRGBA
-    var drawsWireHops: Bool = false
+}
+
+typealias SchematicMetalLineScene = (
+    [HorizontalMetalLinePrimitive],
+    [HorizontalSelectableRef: [SchematicMetalPrimitiveSpan]],
+    [HorizontalSelectableRef: [HorizontalMetalLinePrimitive]]
+)
+
+typealias SchematicMetalTriangleScene = (
+    [HorizontalMetalTrianglePrimitive],
+    [HorizontalSelectableRef: [SchematicMetalPrimitiveSpan]],
+    [HorizontalSelectableRef: [HorizontalMetalTrianglePrimitive]]
+)
+
+/// What a highlight draws again over the dimmed sheet: the highlighted nets'
+/// wires, labels, junctions, power symbols, net ties, bus rippers, block
+/// ports and the symbols' pins on them, and the highlighted components'
+/// symbols whole with their smashed texts, as a sheet of its own that the
+/// scene build draws as it draws the sheet. So a highlight changes nothing
+/// it shows; it dims the rest. Ids are compared lowercased.
+enum SchematicHighlightSubset {
+    static func sheet(
+        _ sheet: HorizontalSchematicSheet,
+        netIDs: Set<String>,
+        componentIDs: Set<String>
+    ) -> HorizontalSchematicSheet {
+        func onNet(_ netID: String?) -> Bool {
+            guard let netID else {
+                return false
+            }
+            return netIDs.contains(netID.lowercased())
+        }
+
+        var subset = sheet
+        subset.symbols = sheet.symbols.filter { symbol in
+            symbol.componentID.map { componentIDs.contains($0.lowercased()) } ?? false
+        }
+        let symbolIDs = Set(subset.symbols.map { $0.id.lowercased() })
+        func inSymbol(_ geometryID: String) -> Bool {
+            guard !symbolIDs.isEmpty,
+                  let symbolID = schematicMetalSymbolID(forGeometryID: geometryID) else {
+                return false
+            }
+            return symbolIDs.contains(symbolID)
+        }
+        let smashedTextIDs = Set(subset.symbols.flatMap(\.smashedTextIDs).map { $0.lowercased() })
+
+        subset.symbolLines = sheet.symbolLines.filter { inSymbol($0.id) }
+        subset.symbolPolygons = sheet.symbolPolygons.filter { inSymbol($0.id) }
+        subset.symbolTexts = sheet.symbolTexts.filter { inSymbol($0.id) }
+        subset.symbolPins = sheet.symbolPins.filter { onNet($0.netID) || inSymbol($0.id) }
+        subset.symbolPinCircles = sheet.symbolPinCircles.filter { onNet($0.netID) || inSymbol($0.id) }
+        subset.noPopulateMarks = sheet.noPopulateMarks.filter { symbolIDs.contains($0.symbolID.lowercased()) }
+        subset.texts = sheet.texts.filter { smashedTextIDs.contains($0.id.lowercased()) }
+        subset.netLines = sheet.netLines.filter { onNet($0.netID) }
+        subset.netLabels = sheet.netLabels.filter { onNet($0.netID) }
+        let junctionNetIDs = Dictionary(
+            sheet.junctionNetIDs.map { ($0.key.lowercased(), $0.value) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        subset.junctions = sheet.junctions.filter { onNet(junctionNetIDs[$0.key.lowercased()]) }
+        subset.netTies = sheet.netTies.filter { $0.netIDs.contains(where: onNet) }
+        subset.busRipperLines = sheet.busRipperLines.filter { onNet($0.netID) }
+        subset.busRipperTexts = sheet.busRipperTexts.filter { onNet($0.netID) }
+        subset.busLabels = []
+        subset.blockSymbolPorts = sheet.blockSymbolPorts.filter { onNet($0.netID) }
+        subset.blockSymbolLines = []
+        subset.blockSymbolTexts = []
+        subset.powerSymbols = sheet.powerSymbols.filter { onNet($0.netID) }
+        subset.powerSymbolLines = sheet.powerSymbolLines.filter { onNet($0.netID) }
+        subset.powerSymbolCircles = sheet.powerSymbolCircles.filter { onNet($0.netID) }
+        subset.powerSymbolTexts = sheet.powerSymbolTexts.filter { onNet($0.netID) }
+        subset.frameLines = []
+        subset.framePolygons = []
+        subset.frameTexts = []
+        subset.drawingLines = []
+        subset.drawingArcs = []
+        subset.drawingPolygons = []
+        subset.editablePins = []
+        return subset
+    }
 }
 
 struct SchematicMetalSelectionCacheKey: Hashable {
