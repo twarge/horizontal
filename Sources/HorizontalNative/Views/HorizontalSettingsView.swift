@@ -147,6 +147,9 @@ struct HorizontalSettingsView: View {
                 ForEach(lineWidthKinds) { kind in
                     lineWidthRow(kind)
                 }
+                ForEach(HorizontalLineWidthRole.allCases) { role in
+                    lineWidthRow(role)
+                }
             }
 
             Section("Reset") {
@@ -302,27 +305,22 @@ struct HorizontalSettingsView: View {
     }
 
     private func lineWidthRow(_ kind: HorizontalCanvasKind) -> some View {
-        HStack(spacing: 12) {
-            Text(kind.title)
-                .frame(width: 170, alignment: .leading)
-            Slider(
-                value: appearanceSettings.minimumLineWidthBinding(for: kind),
-                in: 0.5...4.0,
-                step: 0.1
-            )
-            Text(
-                appearanceSettings
-                    .minimumLineWidthBinding(for: kind)
-                    .wrappedValue
-                    .formatted(.number.precision(.fractionLength(1))) + " px"
-            )
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
-            .frame(width: 52, alignment: .trailing)
-            Button("Reset") {
-                appearanceSettings.resetMinimumLineWidth(kind: kind)
-            }
-            .buttonStyle(.bordered)
+        lineWidthSliderRow(
+            kind.title,
+            width: appearanceSettings.minimumLineWidthBinding(for: kind),
+            in: 0.5...4.0
+        ) {
+            appearanceSettings.resetMinimumLineWidth(kind: kind)
+        }
+    }
+
+    private func lineWidthRow(_ role: HorizontalLineWidthRole) -> some View {
+        lineWidthSliderRow(
+            role.title,
+            width: appearanceSettings.lineWidthBinding(for: role),
+            in: HorizontalLineWidthRole.range
+        ) {
+            appearanceSettings.resetLineWidth(role: role)
         }
     }
 
@@ -351,27 +349,31 @@ struct HorizontalSettingsView: View {
     }
 
     private func gridLineWidthRow() -> some View {
+        lineWidthSliderRow(
+            "Grid marks",
+            width: appearanceSettings.gridLineWidthBinding(),
+            in: 0.5...4.0
+        ) {
+            appearanceSettings.resetGridLineWidth()
+        }
+    }
+
+    private func lineWidthSliderRow(
+        _ title: String,
+        width: Binding<Double>,
+        in range: ClosedRange<Double>,
+        reset: @escaping () -> Void
+    ) -> some View {
         HStack(spacing: 12) {
-            Text("Grid marks")
+            Text(title)
                 .frame(width: 170, alignment: .leading)
-            Slider(
-                value: appearanceSettings.gridLineWidthBinding(),
-                in: 0.5...4.0,
-                step: 0.1
-            )
-            Text(
-                appearanceSettings
-                    .gridLineWidthBinding()
-                    .wrappedValue
-                    .formatted(.number.precision(.fractionLength(1))) + " px"
-            )
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
-            .frame(width: 52, alignment: .trailing)
-            Button("Reset") {
-                appearanceSettings.resetGridLineWidth()
-            }
-            .buttonStyle(.bordered)
+            Slider(value: width, in: range, step: 0.1)
+            Text(width.wrappedValue.formatted(.number.precision(.fractionLength(1))) + " px")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 52, alignment: .trailing)
+            Button("Reset", action: reset)
+                .buttonStyle(.bordered)
         }
     }
 

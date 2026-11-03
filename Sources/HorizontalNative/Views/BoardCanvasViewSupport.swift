@@ -175,6 +175,8 @@ struct BoardMetalSelectionCacheKey: Hashable {
     /// labels are legible.
     var minimumLabelSize: Double
     var handleShape: HorizontalSelectionHandleShape
+    /// Settings' width for a smashed text's line to its package.
+    var smashedConnectionLineMinimumWidth: Float
 }
 
 struct BoardMovePreviewCacheKey: Hashable {
@@ -703,6 +705,9 @@ struct BoardMetalElementBucketsCacheKey: Hashable {
     var connectionLineColor: HorizontalMetalRGBA
     var connectionLineDashColor: HorizontalMetalRGBA
     var airwireColor: HorizontalMetalRGBA
+    /// Settings' width for airwires and connection lines, baked into their
+    /// primitives, so a change rebuilds.
+    var connectionLineMinimumWidth: Float
     var holeFillColor: HorizontalMetalRGBA
     var platedHoleStrokeColor: HorizontalMetalRGBA
     var unplatedHoleStrokeColor: HorizontalMetalRGBA
