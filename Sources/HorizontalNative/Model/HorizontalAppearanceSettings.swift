@@ -226,7 +226,7 @@ struct HorizontalCanvasPalette {
             return color
         }
         if HorizontalBoardLayers.isCopper(layer), layer != HorizontalBoardLayers.topCopper, layer != HorizontalBoardLayers.bottomCopper {
-            return layerColors[HorizontalBoardLayers.in1Copper] ?? Color(red: 1, green: 1, blue: 0)
+            return layerColors[HorizontalBoardLayers.in1Copper] ?? Self.innerCopper(HorizontalBoardLayers.in1Copper)
         }
         if HorizontalBoardLayers.isUser(layer) {
             return layerColors[HorizontalBoardLayers.user1] ?? Color(red: 0.25, green: 1, blue: 1)
@@ -337,14 +337,14 @@ struct HorizontalCanvasPalette {
         // a green on green.
         HorizontalBoardLayers.topMask: rgb(0.7, 0.3, 0.9),
         HorizontalBoardLayers.topCopper: rgb(1, 0, 0),
-        HorizontalBoardLayers.in1Copper: rgb(1, 1, 0),
-        HorizontalBoardLayers.in2Copper: rgb(1, 1, 0),
-        HorizontalBoardLayers.in3Copper: rgb(1, 1, 0),
-        HorizontalBoardLayers.in4Copper: rgb(1, 1, 0),
-        HorizontalBoardLayers.in5Copper: rgb(1, 1, 0),
-        HorizontalBoardLayers.in6Copper: rgb(1, 1, 0),
-        HorizontalBoardLayers.in7Copper: rgb(1, 1, 0),
-        HorizontalBoardLayers.in8Copper: rgb(1, 1, 0),
+        HorizontalBoardLayers.in1Copper: innerCopper(HorizontalBoardLayers.in1Copper),
+        HorizontalBoardLayers.in2Copper: innerCopper(HorizontalBoardLayers.in2Copper),
+        HorizontalBoardLayers.in3Copper: innerCopper(HorizontalBoardLayers.in3Copper),
+        HorizontalBoardLayers.in4Copper: innerCopper(HorizontalBoardLayers.in4Copper),
+        HorizontalBoardLayers.in5Copper: innerCopper(HorizontalBoardLayers.in5Copper),
+        HorizontalBoardLayers.in6Copper: innerCopper(HorizontalBoardLayers.in6Copper),
+        HorizontalBoardLayers.in7Copper: innerCopper(HorizontalBoardLayers.in7Copper),
+        HorizontalBoardLayers.in8Copper: innerCopper(HorizontalBoardLayers.in8Copper),
         HorizontalBoardLayers.bottomCopper: rgb(0, 0.5, 0),
         HorizontalBoardLayers.bottomMask: rgb(0.3, 0.7, 1),
         HorizontalBoardLayers.bottomSilkscreen: rgb(0.9, 0.9, 0.9),
@@ -366,6 +366,11 @@ struct HorizontalCanvasPalette {
 
     static func rgb(_ red: Double, _ green: Double, _ blue: Double) -> Color {
         Color(red: red, green: green, blue: blue)
+    }
+
+    private static func innerCopper(_ layer: Int) -> Color {
+        let color = HorizontalDefaultTheme.innerCopperRGB(for: layer)
+        return rgb(color.red, color.green, color.blue)
     }
 }
 
