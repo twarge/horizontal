@@ -11231,7 +11231,9 @@ struct BoardCanvasView: View {
         // isolate their impact on board-view interaction latency.
         if Self.emitsGeneratedBoardLabelsInMetal {
             profile("via labels") {
-                for via in board.vias {
+                // Only over copper that shows: hiding a layer changes the
+                // render layers, which rebuilds these buckets.
+                for via in board.vias where displayOptions.showsCopper(of: via) {
                     if let label = viaLabelText(via) {
                         appendText(label, color: textOverlayColor, minimumWidth: 0.7, compositeGroup: Self.textOverlayMetalCompositeGroup, compositeOpacity: Self.textOverlayMetalCompositeOpacity, owner: selectableRef(id: via.id, type: .via), to: \.viaLabels)
                     }
@@ -12177,8 +12179,11 @@ struct BoardCanvasView: View {
                         compositeGroup: metalCompositeGroup(for: layer)
                     )
                 }
+                // The rings above on hidden layers go with their composite
+                // groups; the label's overlay group is always drawn.
                 if Self.emitsGeneratedBoardLabelsInMetal,
                    displayOptions.viaLabels,
+                   displayOptions.showsCopper(of: via),
                    let label = viaLabelText(via),
                    isGeneratedLabelLegible(label) {
                     appendText(label, color: HorizontalMetalRGBA(theme.textOverlay), minimumWidth: 0.7, compositeGroup: Self.textOverlayMetalCompositeGroup)

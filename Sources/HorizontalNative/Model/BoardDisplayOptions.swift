@@ -410,6 +410,13 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         isLayerVisible(HorizontalBoardLayers.outline)
     }
 
+    /// Whether any of a via's copper shows. The canvas draws a via's ring on
+    /// its copper layers that show, and its net name only with a ring: a view
+    /// with none of them, a silkscreen view say, leaves the label out too.
+    func showsCopper(of via: HorizontalMarker) -> Bool {
+        via.copperLayers.contains { isLayerVisible($0) }
+    }
+
     func isLayerVisible(_ layer: Int?) -> Bool {
         guard let layer else {
             return true
