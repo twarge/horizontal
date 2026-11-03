@@ -514,9 +514,13 @@ struct BoardCanvasView: View {
     var routeInspector: HorizontalRouteInspectorModel? = nil
     /// Bumped by the host when the board's rules change without a reload
     /// (the route inspector, the rules window, their undo): the canvas takes
-    /// the board's new rules into what it is editing, and a route whose width
-    /// is the rules' takes their new one.
+    /// the board's new rules into what it is editing and applies them, and a
+    /// route whose width is the rules' takes their new one.
     var rulesRevision: Int = 0
+    /// Bumped with `rulesRevision` when applying the new rules changed the
+    /// host's board — a track's width, a via's shape — which the canvas then
+    /// draws again.
+    var rulesShapeRevision: Int = 0
     var onShowToolSettings: () -> Void = {}
     var drawingLayer: Int = HorizontalBoardLayers.topCopper
     /// Bumped by the pane when the board changes underneath the canvas — a plane
@@ -661,6 +665,7 @@ struct BoardCanvasView: View {
         routeWidthCommand: HorizontalRouteWidthCommand? = nil,
         routeInspector: HorizontalRouteInspectorModel? = nil,
         rulesRevision: Int = 0,
+        rulesShapeRevision: Int = 0,
         onShowToolSettings: @escaping () -> Void = {},
         toolSettings: HorizontalBoardToolSettings,
         drawingLayer: Int = HorizontalBoardLayers.topCopper,
@@ -705,6 +710,7 @@ struct BoardCanvasView: View {
         self.routeWidthCommand = routeWidthCommand
         self.routeInspector = routeInspector
         self.rulesRevision = rulesRevision
+        self.rulesShapeRevision = rulesShapeRevision
         self.onShowToolSettings = onShowToolSettings
         self.toolSettings = toolSettings
         self.drawingLayer = drawingLayer
@@ -1297,6 +1303,12 @@ struct BoardCanvasView: View {
             .onChange(of: rulesRevision) { _, _ in
                 adoptBoardRules()
             }
+            .onChange(of: rulesShapeRevision) { _, _ in
+                // The board drawn is the host's: what applying the rules
+                // changed in it is drawn again.
+                metalSceneRevision &+= 1
+                invalidateSelectableCache()
+            }
             .onChange(of: toolSettings.explicitTrackWidth) { _, width in
                 takeExplicitTrackWidth(width)
             }
@@ -1402,6 +1414,7 @@ struct BoardCanvasView: View {
                             nets: sortedPlaneNetOptions(),
                             layerName: layerName(for: state.layer),
                             draft: state.draft,
+                            ruleSettings: planeRuleSettings(layer: state.layer),
                             canDelete: { if case .edit = state.purpose { return true } else { return false } }(),
                             onConfirm: { confirmPlaneEditor($0) },
                             onDelete: { deletePlaneFromEditor() },
@@ -1423,6 +1436,7 @@ struct BoardCanvasView: View {
                         nets: sortedPlaneNetOptions(),
                         layerName: layerName(for: state.layer),
                         draft: state.draft,
+                        ruleSettings: planeRuleSettings(layer: state.layer),
                         canDelete: { if case .edit = state.purpose { return true } else { return false } }(),
                         onConfirm: { confirmPlaneEditor($0) },
                         onDelete: { deletePlaneFromEditor() },
@@ -1431,6 +1445,15 @@ struct BoardCanvasView: View {
                 }
             }
         #endif
+    }
+
+    /// The settings the plane rules give a plane on a net, on `layer`, for
+    /// the plane editor to show while the plane's settings are the rules'.
+    private func planeRuleSettings(layer: Int?) -> (String?) -> HorizontalPlaneSettings {
+        let rules = board.rules
+        return { net in
+            rules.planeSettings(net: net?.lowercased(), layer: layer ?? 10000)
+        }
     }
 
     private var planeEditorPresented: Binding<Bool> {
@@ -5670,18 +5693,31 @@ struct BoardCanvasView: View {
     }
 
     /// The board's rules changed without a reload: everything the canvas
-    /// holds a board in takes the new ones, so what it commits or puts back
-    /// keeps them, and a route whose width is the rules' takes their new one.
+    /// holds a board in takes the new ones and has them applied, as the
+    /// document has applied them to its board, so what it commits or puts
+    /// back keeps them, and a route whose width is the rules' takes their
+    /// new one.
     private func adoptBoardRules() {
         let source = sourceBoard
-        if editedBoard != nil {
-            editedBoard?.takeRules(of: source)
+        if var edited = editedBoard {
+            edited.takeRules(of: source)
+            let ruled = !HorizontalBoardRuleApplication.apply(to: &edited, poolURL: poolURL).isEmpty
+            editedBoard = edited
+            if ruled {
+                metalSceneRevision &+= 1
+                invalidateSelectableCache()
+            }
         }
         for index in trackRouteHistory.indices {
             trackRouteHistory[index].board?.takeRules(of: source)
+            if var board = trackRouteHistory[index].board {
+                HorizontalBoardRuleApplication.apply(to: &board, poolURL: poolURL)
+                trackRouteHistory[index].board = board
+            }
         }
         if var state = drawTrackState {
             state.originalBoard.takeRules(of: source)
+            HorizontalBoardRuleApplication.apply(to: &state.originalBoard, poolURL: poolURL)
             refreshRouteWidth(&state)
             drawTrackState = state
             if trackRouterSession != nil {
@@ -6053,7 +6089,9 @@ struct BoardCanvasView: View {
         var draft = editedBoard ?? sourceBoard
         for polygon in polygons {
             draft.polygons.append(polygon)
-            draft.planes.append(HorizontalPlane(polygon: polygon, draft: planeDraft))
+            var plane = HorizontalPlane(polygon: polygon, draft: planeDraft)
+            HorizontalBoardRuleApplication.applySettings(to: &plane, rules: draft.rules)
+            draft.planes.append(plane)
         }
 
         drawGraphicsState = nil
@@ -6143,7 +6181,8 @@ struct BoardCanvasView: View {
                   planeBackedByPolygon(polygon.id, in: board) == nil else {
                 return
             }
-            let plane = HorizontalPlane(polygon: polygon, draft: draft)
+            var plane = HorizontalPlane(polygon: polygon, draft: draft)
+            HorizontalBoardRuleApplication.applySettings(to: &plane, rules: board.rules)
             board.planes.append(plane)
             selectedObjects = [HorizontalSelectableRef(id: plane.id, type: .plane, layer: plane.layer)]
             hoveredObject = nil
@@ -6155,6 +6194,7 @@ struct BoardCanvasView: View {
                 return
             }
             board.planes[index].apply(draft)
+            HorizontalBoardRuleApplication.applySettings(to: &board.planes[index], rules: board.rules)
             invalidateSelectableCache()
             onPlaneEdit(board, "Edit Plane")
         case .finishDrawing(let polygons):
@@ -7940,12 +7980,19 @@ struct BoardCanvasView: View {
         }
         var resolved = HorizontalBoardConnectivity.recompute(board)
         if regeneratingAirwires { resolved.regenerateAirwires() }
+        // The rules stay applied: a track on another layer or net takes the
+        // width the rules give it there, a via the shape, a plane the
+        // settings, from the nets the pass just gave.
+        let ruled = !HorizontalBoardRuleApplication.apply(to: &resolved, poolURL: poolURL).isEmpty
         // A net change is a color change (net-less copper is orange), so force a
         // metal-scene rebuild even when the edit would otherwise patch in place.
-        if resolved.tracks.map(\.netID) != board.tracks.map(\.netID) {
+        if ruled || resolved.tracks.map(\.netID) != board.tracks.map(\.netID) {
             metalSceneRevision &+= 1
         }
         editedBoard = resolved
+        if ruled {
+            invalidateSelectableCache()
+        }
         onBoardChange(resolved)
     }
 
@@ -8175,6 +8222,9 @@ struct BoardCanvasView: View {
             case "rules":
                 via.fromRules = true
                 via.definitionID = nil
+                // The rule's padstack and parameters at once, as applying
+                // the rules gives them.
+                HorizontalBoardRuleApplication.shape(&via, in: board, poolURL: poolURL)
             case "definition":
                 via.fromRules = false
                 if let definitionID = via.definitionID ?? board.viaDefinitions.first?.id {
@@ -8215,7 +8265,7 @@ struct BoardCanvasView: View {
             }
         }
         board.vias[index] = via
-        syncViaHole(for: via, board: &board)
+        board.syncHole(of: via)
     }
 
     /// Selecting a padstack copies a base-pool padstack into the project
@@ -8302,24 +8352,6 @@ struct BoardCanvasView: View {
     /// hole diameter has no drill object, which the loader makes only from
     /// one; it gets one here, where it went on drawing no hole until the
     /// board was opened again.
-    private func syncViaHole(for via: HorizontalMarker, board: inout HorizontalBoard) {
-        guard let holeSize = via.holeSize else {
-            return
-        }
-        let holeID = normalizedID(via.id) + "/hole"
-        guard let index = board.viaHoles.firstIndex(where: { normalizedID($0.id) == holeID }) else {
-            guard holeSize > 0 else {
-                return
-            }
-            board.viaHoles.append(HorizontalHole(
-                id: "\(via.id)/hole", position: via.position, diameter: holeSize, length: holeSize,
-                shape: .round, plated: true, netID: via.netID))
-            return
-        }
-        board.viaHoles[index].diameter = holeSize
-        board.viaHoles[index].length = holeSize
-    }
-
     /// A via's drill is selectable as its own board-hole object; pushing a
     /// diameter edit back onto the owning via keeps the marker (and the
     /// persisted via parameter_set) in sync.
@@ -8431,16 +8463,25 @@ struct BoardCanvasView: View {
             board.planes[index].netID = normalizedID(netID)
         case ("fromRules", .bool(let on)):
             board.planes[index].fromRules = on
+            HorizontalBoardRuleApplication.applySettings(to: &board.planes[index], rules: board.rules)
         case ("fromRules", .choice(let source)):
             board.planes[index].fromRules = source == "rules"
+            // From the rules: the plane rule's settings at once, as applying
+            // the rules gives them.
+            HorizontalBoardRuleApplication.applySettings(to: &board.planes[index], rules: board.rules)
+        // A setting given the plane is its own, as a width typed into a
+        // track is, so the rules no longer set it.
         case ("fill", .choice(let style)):
+            board.planes[index].fromRules = false
             board.planes[index].settings.fillStyle = (style == "hatch") ? .hatch : .solid
             board.planes[index].fillStyle = style
         case ("minWidth", .length(let width)):
             let nm = Int(max(width, 0).rounded())
+            board.planes[index].fromRules = false
             board.planes[index].settings.minWidth = nm
             board.planes[index].minWidth = Double(nm)
         case ("keepOrphans", .bool(let on)):
+            board.planes[index].fromRules = false
             board.planes[index].settings.keepOrphans = on
             board.planes[index].keepOrphans = on
         case ("layer", .layer(let layer)):

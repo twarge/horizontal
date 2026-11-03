@@ -2,12 +2,16 @@ import SwiftUI
 
 /// Horizon's plane dialog as a popover on the polygon: the net and fill
 /// order, whether the pour follows the rules, and — when it does not —
-/// every pour setting Horizon's plane editor offers.
+/// every pour setting Horizon's plane editor offers. Settings from the rules
+/// shows the plane rule's, which the plane takes.
 struct HorizontalPlaneSettingsPopover: View {
     var title: String
     var confirmTitle: String
     var nets: [HorizontalSelectionPropertyOption]
     var layerName: String?
+    /// The settings the plane rules give a plane on a net; nil where the
+    /// host has no rules to read.
+    var ruleSettings: ((String?) -> HorizontalPlaneSettings)?
     var canDelete: Bool
     var onConfirm: (HorizontalPlaneEditorDraft) -> Void
     var onDelete: (() -> Void)?
@@ -21,6 +25,7 @@ struct HorizontalPlaneSettingsPopover: View {
         nets: [HorizontalSelectionPropertyOption],
         layerName: String?,
         draft: HorizontalPlaneEditorDraft,
+        ruleSettings: ((String?) -> HorizontalPlaneSettings)? = nil,
         canDelete: Bool = false,
         onConfirm: @escaping (HorizontalPlaneEditorDraft) -> Void,
         onDelete: (() -> Void)? = nil,
@@ -30,10 +35,15 @@ struct HorizontalPlaneSettingsPopover: View {
         self.confirmTitle = confirmTitle
         self.nets = nets
         self.layerName = layerName
+        self.ruleSettings = ruleSettings
         self.canDelete = canDelete
         self.onConfirm = onConfirm
         self.onDelete = onDelete
         self.onCancel = onCancel
+        var draft = draft
+        if draft.fromRules, let ruleSettings {
+            draft.settings = ruleSettings(draft.netID)
+        }
         _draft = State(initialValue: draft)
     }
 
@@ -80,10 +90,14 @@ struct HorizontalPlaneSettingsPopover: View {
                     }
                 }
                 GridRow {
-                    Text("From rules")
-                    Toggle("", isOn: $draft.fromRules)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
+                    Text("Settings from")
+                    Picker("Settings from", selection: settingsSource) {
+                        Text("Rules").tag(true)
+                        Text("Custom").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
                 }
             }
 
@@ -210,8 +224,29 @@ struct HorizontalPlaneSettingsPopover: View {
     private var netSelection: Binding<String> {
         Binding(
             get: { draft.netID ?? nets.first?.id ?? "" },
-            set: { draft.netID = $0 }
+            set: { net in
+                draft.netID = net
+                takeRuleSettings()
+            }
         )
+    }
+
+    /// Rules gives the plane the rule's settings at once, which the fields
+    /// show; Custom keeps them, for the plane to change from there.
+    private var settingsSource: Binding<Bool> {
+        Binding(
+            get: { draft.fromRules },
+            set: { fromRules in
+                draft.fromRules = fromRules
+                takeRuleSettings()
+            }
+        )
+    }
+
+    private func takeRuleSettings() {
+        if draft.fromRules, let ruleSettings {
+            draft.settings = ruleSettings(draft.netID ?? nets.first?.id)
+        }
     }
 
     /// The plane editor offers solid or thermal; a plane read back with one

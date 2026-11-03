@@ -226,6 +226,38 @@ final class HorizontalMCPFieldFindings44Tests: XCTestCase {
         XCTAssertEqual(under.count, 1, "only the via inside U1's pads")
     }
 
+    // MARK: - Rules kept applied
+
+    func testATrackWidthRuleChangeGivesTheTracksWhoseWidthIsTheRulesTheNewOne() throws {
+        let chip = part(["A", "B"])
+        try apply([["op": "ensure_component", "refdes": "U1", "part": chip.part],
+                   ["op": "ensure_component", "refdes": "U2", "part": chip.part],
+                   ["op": "place_component", "component": "U1", "x_mm": 10, "y_mm": 10],
+                   ["op": "place_component", "component": "U2", "x_mm": 30, "y_mm": 10],
+                   ["op": "connect", "component": "U1", "pin": "A", "net": "GND", "create_net": true],
+                   ["op": "connect", "component": "U2", "pin": "A", "net": "GND"],
+                   ["op": "connect", "component": "U1", "pin": "B", "net": "GND"],
+                   ["op": "connect", "component": "U2", "pin": "B", "net": "GND"]], ["pool_items": chip.items])
+        // First by order, so it is the rule every GND track takes.
+        let added = try apply([["op": "add_rule", "kind": "track_width", "fields": [
+            "order": -10, "widths": ["0": ["min": 100_000, "max": 1_000_000, "def": 300_000]]]]])
+        let ruleID = try XCTUnwrap(changes(added).first?.string("rule_id"))
+        // One track from the rules, one of its own.
+        try apply([["op": "place_track", "from": ["component": "U1", "pad": "1"], "to": ["component": "U2", "pad": "1"], "layer": 0],
+                   ["op": "place_track", "from": ["component": "U1", "pad": "2"], "to": ["component": "U2", "pad": "2"], "layer": 0,
+                    "width_mm": 0.25]])
+        func widths() throws -> [Double] {
+            try XCTUnwrap(try result("list_tracks") as? JSONDictionary).dictionaryArray("tracks")
+                .compactMap { $0.double("width_mm") }.sorted()
+        }
+        XCTAssertEqual(try widths(), [0.25, 0.3])
+
+        let changed = try apply([["op": "set_rule", "kind": "track_width", "id": ruleID, "fields": [
+            "widths": ["0": ["min": 100_000, "max": 1_000_000, "def": 400_000]]]]])
+        XCTAssertEqual(changes(changed).first?.int("tracks_rederived"), 1)
+        XCTAssertEqual(try widths(), [0.25, 0.4], "the rules' track takes the new width, the other keeps its own")
+    }
+
     // MARK: - 132, 134, 135: via rules
 
     func testViasTakeTheirShapeFromTheRuleThatMatchesTheirNet() throws {

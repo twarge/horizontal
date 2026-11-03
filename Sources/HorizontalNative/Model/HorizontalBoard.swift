@@ -3041,7 +3041,8 @@ struct HorizontalBoard {
                     id: id,
                     name: definition.string("name") ?? String(id.prefix(8)),
                     padstackID: definition.string("padstack"),
-                    parameters: doubleParameters(definition.dictionary("parameters"))
+                    parameters: doubleParameters(definition.dictionary("parameters")),
+                    span: HorizontalViaSpan(json: definition.dictionary("span"))
                 )
             }
             .sorted { ($0.name, $0.id) < ($1.name, $1.id) }

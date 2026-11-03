@@ -1835,6 +1835,16 @@ enum HorizontalProjectJSONApplicator {
         if item["source"] != nil || via.definitionID != nil {
             item["source"] = via.fromRules ? "rules" : (via.definitionID != nil ? "definition" : "local")
         }
+
+        // A span the via definition gave it, which Via::serialize writes
+        // only where it isn't through.
+        if let span = via.span {
+            if span.isThrough {
+                item.removeValue(forKey: "span")
+            } else {
+                item["span"] = span.json
+            }
+        }
         return item
     }
 

@@ -482,13 +482,23 @@ treatment the pour got:
    Horizon's `width_from_rules`: a track's `width_from_net_class`, a net tie's
    `width_from_rules`, true where the file leaves it out). The selection
    inspector's Width from: Rules gives a track or net tie the matching rule's
-   width and the flag, and a width typed in makes it its own. The rules
-   window's Apply now applies the track width rules too
-   (`HorizontalTrackWidthRules`, BoardRules::apply for TRACK_WIDTH): every track
-   and net tie whose width is the rules', on a net, takes its rule's default
-   on its layer, except where no rule takes the net, where Horizon's 0 is
-   left alone. A via's Shape from and a plane's Settings from use the same
-   Rules / Custom picker.
+   width and the flag, and a width typed in makes it its own. The rules are
+   kept applied (`HorizontalBoardRuleApplication`, BoardRules::apply for every
+   kind Horizon applies, which Horizon does only when its Apply is pressed):
+   after every board edit, rules change and netlist sync, every track and net
+   tie whose width is the rules', on a net, takes its rule's default on its
+   layer (`HorizontalTrackWidthRules`), except where no rule takes the net,
+   where Horizon's 0 is left alone; a via from the rules takes its via rule's
+   padstack and parameters, one from a via definition the definition's and
+   its span; a plane from the rules its plane rule's settings. A change to the
+   rules' parameters reloads the board, which derives the pads from them.
+   The rules window's Apply is gone; its Apply & Check applies every rule to a
+   board that disagrees with them (as one Horizon wrote can; opening a board
+   changes nothing) and runs every check into the rules results sidebar,
+   which replaced the window's Checks tab. A via's Shape from and a plane's
+   Settings from use the same Rules / Custom picker, and choosing Rules gives
+   the item the rule's shape at once; a setting given a plane makes it Custom,
+   as a width typed into a track does.
 
    **The route inspector** (`HorizontalRouteInspectorView`) is the sidebar
    while the track tool is in use, opening for the route and closing a few
