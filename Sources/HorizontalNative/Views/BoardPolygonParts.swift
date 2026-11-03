@@ -89,6 +89,26 @@ enum BoardPolygonParts {
         }
     }
 
+    /// What a double-click on `ref` selects: the whole polygon it is an edge,
+    /// vertex or arc centre of, as Horizon's double-click on one does (its
+    /// Select Polygon action). Nil for a ref that is no part of `polygon`.
+    static func doubleClickSelection(of ref: HorizontalSelectableRef, in polygon: HorizontalPolygon?) -> [HorizontalSelectableRef]? {
+        guard isPart(ref.type),
+              let polygon,
+              HorizontalCanvasModeSupport.normalizedID(polygon.id) == HorizontalCanvasModeSupport.normalizedID(ref.id) else {
+            return nil
+        }
+        return wholeSelection(of: polygon)
+    }
+
+    /// The click action a double-click's whole polygon is selected with. The
+    /// pair's first click has already toggled the part, so a toggle adds the
+    /// polygon, as Horizon's Select Polygon adds to the selection, rather
+    /// than taking that part back out.
+    static func doubleClickAction(for action: HorizontalSelectionClickAction) -> HorizontalSelectionClickAction {
+        action == .toggle ? .add : action
+    }
+
     /// Every edge and arc centre of `polygon`, the selection that stands for
     /// the polygon itself, as a paste or a conversion leaves it selected:
     /// moved, it moves whole.
