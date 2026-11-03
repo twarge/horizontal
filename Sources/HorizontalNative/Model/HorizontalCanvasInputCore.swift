@@ -219,6 +219,10 @@ enum HorizontalCanvasInputCore {
         event.keyCode == 36 || event.keyCode == 76 || event.characters == "\r" || matches(event.key, .return)
     }
 
+    static func isTab(_ event: HorizontalCanvasKeyEvent) -> Bool {
+        event.keyCode == 48 || event.characters == "\t" || matches(event.key, .tab)
+    }
+
     static func isDelete(_ event: HorizontalCanvasKeyEvent) -> Bool {
         event.keyCode == 51 || event.keyCode == 117
             || event.characters == "\u{7f}" || event.characters == "\u{8}"
@@ -319,7 +323,13 @@ enum HorizontalCanvasInputCore {
         }
     }
 
-    static func command(_ event: HorizontalCanvasKeyEvent, supportsTrackVias: Bool) -> HorizontalCanvasCommand? {
+    /// `switchesPanes`: the canvas is the schematic's or the board's, which
+    /// Tab trades for the other. Elsewhere Tab is left to the window.
+    static func command(
+        _ event: HorizontalCanvasKeyEvent,
+        supportsTrackVias: Bool,
+        switchesPanes: Bool = false
+    ) -> HorizontalCanvasCommand? {
         let modifiers = event.modifiers
         let characters = event.characters?.lowercased()
 
@@ -350,6 +360,10 @@ enum HorizontalCanvasInputCore {
 
         guard modifiers.isEmpty else {
             return nil
+        }
+
+        if switchesPanes, isTab(event) {
+            return .switchPane
         }
 
         if let digit = digit(event), let layer = copperLayer(forDigit: digit) {

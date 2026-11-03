@@ -307,6 +307,9 @@ struct SchematicCanvasView: View {
     var onCanvasCommandActionsChange: (HorizontalCanvasCommandActions?) -> Void = { _ in }
     var hasKeyboardFocus = true
     var onRequestKeyboardFocus: () -> Void = {}
+    /// Tab: the host gives the board the keyboard, or shows it in the
+    /// schematic's place. Nil leaves Tab to the window.
+    var onSwitchPane: (() -> Void)?
     var selectionPropertyChangeCommand: HorizontalSelectionPropertyChangeCommand?
     var netSegmentSelectionCommand: HorizontalNetSegmentSelectionCommand?
     var drawingToolCommand: HorizontalDrawingToolCommand?
@@ -427,6 +430,7 @@ struct SchematicCanvasView: View {
         onCanvasCommandActionsChange: @escaping (HorizontalCanvasCommandActions?) -> Void = { _ in },
         hasKeyboardFocus: Bool = true,
         onRequestKeyboardFocus: @escaping () -> Void = {},
+        onSwitchPane: (() -> Void)? = nil,
         selectionPropertyChangeCommand: HorizontalSelectionPropertyChangeCommand? = nil,
         netSegmentSelectionCommand: HorizontalNetSegmentSelectionCommand? = nil,
         drawingToolCommand: HorizontalDrawingToolCommand? = nil,
@@ -477,6 +481,7 @@ struct SchematicCanvasView: View {
         self.onCanvasCommandActionsChange = onCanvasCommandActionsChange
         self.hasKeyboardFocus = hasKeyboardFocus
         self.onRequestKeyboardFocus = onRequestKeyboardFocus
+        self.onSwitchPane = onSwitchPane
         self.selectionPropertyChangeCommand = selectionPropertyChangeCommand
         self.netSegmentSelectionCommand = netSegmentSelectionCommand
         self.drawingToolCommand = drawingToolCommand
@@ -994,7 +999,8 @@ struct SchematicCanvasView: View {
                 || resizeSymbolState != nil
                 || moveState?.tracksCursor == true
                 || drawNetLineState != nil
-                || drawGraphicsState != nil
+                || drawGraphicsState != nil,
+            switchesPanes: onSwitchPane != nil
         )
         .onChange(of: sourceSheet.id) { _, _ in
             undoTarget.removeAllActions(from: undoManager)
@@ -8555,6 +8561,7 @@ struct SchematicCanvasView: View {
             handlers.showInPoolManager = { revealSelectedSymbol(.registeredPool) }
             handlers.showInProjectPoolManager = { revealSelectedSymbol(.projectPool) }
         }
+        handlers.switchPane = onSwitchPane
         if editorProfile.supportsPins {
             handlers.placePin = { beginPlaceNextPin() }
             // The board's "p" reaches the canvas as placePad; here it places a pin.

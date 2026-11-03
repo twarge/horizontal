@@ -38,6 +38,7 @@ final class HorizontalCanvasInputCoreTests: XCTestCase {
         case .toggleVia: return "via"
         case .updateAllPlanes: return "updatePlanes"
         case .bendNetLine: return "bend"
+        case .switchPane: return "switchPane"
         default: return "other"
         }
     }
@@ -119,6 +120,25 @@ final class HorizontalCanvasInputCoreTests: XCTestCase {
         XCTAssertNil(HorizontalCanvasInputCore.command(key("m", .command), supportsTrackVias: true))
         XCTAssertNil(HorizontalCanvasInputCore.command(key("a", [.command, .shift]), supportsTrackVias: true))
         XCTAssertNil(HorizontalCanvasInputCore.command(key("z"), supportsTrackVias: true))
+    }
+
+    func testTabSwitchesPanesOnlyWhereTheCanvasSwitchesThem() {
+        // The schematic and the board trade Tab for the other; any other
+        // canvas leaves it to the window, and so does a modified Tab.
+        let tab = HorizontalCanvasKeyEvent(characters: "\t", keyCode: 48, modifiers: [])
+        XCTAssertEqual(token(HorizontalCanvasInputCore.command(tab, supportsTrackVias: false, switchesPanes: true)), "switchPane")
+        XCTAssertEqual(token(HorizontalCanvasInputCore.command(tab, supportsTrackVias: true, switchesPanes: true)), "switchPane")
+        XCTAssertNil(HorizontalCanvasInputCore.command(tab, supportsTrackVias: true))
+        // The iPad's path: the key alone, or the character alone.
+        let iPadTab = HorizontalCanvasKeyEvent(key: .tab, modifiers: [])
+        XCTAssertEqual(token(HorizontalCanvasInputCore.command(iPadTab, supportsTrackVias: false, switchesPanes: true)), "switchPane")
+        XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("\t"), supportsTrackVias: false, switchesPanes: true)), "switchPane")
+        for modifiers: Mods in [.shift, .control, .option, .command] {
+            let modified = HorizontalCanvasKeyEvent(characters: "\t", keyCode: 48, modifiers: modifiers)
+            XCTAssertNil(HorizontalCanvasInputCore.command(modified, supportsTrackVias: true, switchesPanes: true))
+        }
+        // Other keys keep their meaning on a canvas that switches panes.
+        XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("r"), supportsTrackVias: false, switchesPanes: true)), "rotate")
     }
 
     func testClipboardAndSelectAllPredicates() {
