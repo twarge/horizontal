@@ -32,7 +32,7 @@ struct HorizontalNativeApp: App {
             // Settings opens a resizable window of the app's own, not a
             // Settings scene, whose window SwiftUI keeps a fixed size.
             HorizontalSettingsCommands(appearanceSettings: appearanceSettings)
-            HorizontalViewCommands()
+            HorizontalViewCommands(appearanceSettings: appearanceSettings)
         }
         #else
         DocumentGroup(newDocument: HorizontalProjectDocument.newProject()) { configuration in
