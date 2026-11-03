@@ -8,6 +8,9 @@ struct SchematicCanvasView: View {
     private static let junctionDotRadiusWorld = 375_000.0
     private static let terminalCrossHalfSizeWorld = 250_000.0
     private static let junctionHighlightPaddingWorld = 180_000.0
+    // A highlight's dim, under the highlighted sheet the top overlay draws
+    // over it in the scene's composite groups (1 to 9): below every group.
+    private static let highlightDimMetalCompositeGroup = -1
     private static let minimumJunctionDotRadius: CGFloat = 0.75
     private static let quarterTurnAngle = -16_384
     private static let noNetClassChoiceID = "none"
@@ -710,7 +713,11 @@ struct SchematicCanvasView: View {
         }
         let metalHighlightBatch = measureBody("highlight batch") {
             HorizontalMoveProfiler.measure("body.highlightBatch", enabled: profilesMetalPatchMove) {
-                self.schematicMetalHighlightBatch()
+                self.schematicMetalHighlightBatch(
+                    sceneKey: metalLineBatch.lineKey,
+                    isolatedNetLineIDs: isolatedSchematicNetLineIDs,
+                    junctionRenderInfo: schematicJunctionRenderInfo
+                )
             }
         }
         let metalDimBatch = measureBody("dim batch") {
@@ -753,9 +760,11 @@ struct SchematicCanvasView: View {
         }
         let metalTopOverlayBufferPatches = measureBody("selection move patches") {
             HorizontalMoveProfiler.measure("body.selectionMovePatches", enabled: profilesMetalPatchMove) {
+                // The direct line buffer holds only the ungrouped lines, so the
+                // selection's start there counts only the highlight's ungrouped ones.
                 self.schematicMetalSelectionMovePatches(
                     baseSelectionBatch: metalSelectionBatch,
-                    lineStart: metalHighlightBatch.lines.count,
+                    lineStart: metalHighlightBatch.lines.reduce(0) { $0 + ($1.compositeGroup == 0 ? 1 : 0) },
                     handleStart: metalHighlightBatch.handles.count
                 )
             }
@@ -812,6 +821,8 @@ struct SchematicCanvasView: View {
             metalTopOverlayLineKey: metalTopOverlayKey,
             metalTopOverlayHandles: metalTopOverlayHandles,
             metalTopOverlayHandleKey: metalTopOverlayHandleKey,
+            metalTopOverlayAnchoredRects: metalHighlightBatch.anchoredRects,
+            metalTopOverlayAnchoredRectKey: metalHighlightBatch.anchoredRectKey,
             metalTopOverlayBufferPatches: metalTopOverlayBufferPatches,
             metalTopOverlayBufferPatchKey: metalTopOverlayBufferPatches.hashValue,
             metalLoadProfileID: schematic2DProfileID,
@@ -9022,6 +9033,23 @@ struct SchematicCanvasView: View {
         isolatedNetLineIDs: Set<String>,
         junctionRenderInfo: [String: JunctionRenderInfo]
     ) -> SchematicMetalLineBatch {
+        schematicMetalScene(
+            of: sheet,
+            isolatedNetLineIDs: isolatedNetLineIDs,
+            junctionRenderInfo: junctionRenderInfo,
+            cached: true
+        )
+    }
+
+    /// The scene `sheet` is drawn with. The sheet's own goes through its
+    /// caches; a highlight's part of it (`SchematicHighlightSubset`) is built
+    /// past them, uncached, with this sheet's wire hops and junctions.
+    private func schematicMetalScene(
+        of sheet: HorizontalSchematicSheet,
+        isolatedNetLineIDs: Set<String>,
+        junctionRenderInfo: [String: JunctionRenderInfo],
+        cached: Bool
+    ) -> SchematicMetalLineBatch {
         guard drawsSchematicUnderlayLinesInMetal else {
             return .empty
         }
@@ -9079,7 +9107,7 @@ struct SchematicCanvasView: View {
         let powerSymbolOwnerIDByNormalizedID = powerSymbolIDs(in: sheet).reduce(into: [String: String]()) { result, symbolID in
             result[normalizedID(symbolID)] = symbolID
         }
-        let lineScene = selectableCache.metalLines(key: key) {
+        let buildLineScene = { () -> SchematicMetalLineScene in
             var primitives = [HorizontalMetalLinePrimitive]()
             var spansByRef = [HorizontalSelectableRef: [SchematicMetalPrimitiveSpan]]()
             var primitivesByRef = [HorizontalSelectableRef: [HorizontalMetalLinePrimitive]]()
@@ -9443,7 +9471,9 @@ struct SchematicCanvasView: View {
 
             if displayOptions.nets {
                 currentGroup = 5; currentOpacity = 0.75
-                let hops = drawsWireHops ? HorizontalSchematicWireHops(lines: sheet.netLines) : .empty
+                // Hops are found among all the sheet's wires, so a highlighted
+                // wire hops where it does on the sheet.
+                let hops = drawsWireHops ? HorizontalSchematicWireHops(lines: self.sheet.netLines) : .empty
                 for segment in sheet.netLines {
                     let color = isolatedNetLineIDs.contains(normalizedID(segment.id)) ? isolatedColor : netColor
                     let owner = HorizontalSelectableRef(id: segment.id, type: .lineNet)
@@ -9631,12 +9661,15 @@ struct SchematicCanvasView: View {
 
             return (primitives, spansByRef, primitivesByRef)
         }
+        let lineScene = cached
+            ? selectableCache.metalLines(key: key, build: buildLineScene)
+            : buildLineScene()
         let lines = lineScene.0
         let lineSpansByRef = lineScene.1
         let linePrimitivesByRef = lineScene.2
 
         let symbolFillColor = HorizontalMetalRGBA(theme.pin.opacity(0.13))
-        let triangleScene = selectableCache.metalTriangles(key: key) {
+        let buildTriangleScene = { () -> SchematicMetalTriangleScene in
             var primitives = [HorizontalMetalTrianglePrimitive]()
             var spansByRef = [HorizontalSelectableRef: [SchematicMetalPrimitiveSpan]]()
             var primitivesByRef = [HorizontalSelectableRef: [HorizontalMetalTrianglePrimitive]]()
@@ -9805,6 +9838,9 @@ struct SchematicCanvasView: View {
             }
             return (primitives, spansByRef, primitivesByRef)
         }
+        let triangleScene = cached
+            ? selectableCache.metalTriangles(key: key, build: buildTriangleScene)
+            : buildTriangleScene()
         let triangles = triangleScene.0
         let triangleSpansByRef = triangleScene.1
         let trianglePrimitivesByRef = triangleScene.2
@@ -10727,415 +10763,53 @@ struct SchematicCanvasView: View {
         return primitiveIndex == primitives.count ? patches : []
     }
 
-    private func schematicMetalHighlightBatch() -> SchematicMetalLineBatch {
+    /// The highlighted nets and components drawn again over the dimmed
+    /// sheet, as the sheet draws them: the scene build over just what is
+    /// highlighted (`SchematicHighlightSubset`), so a highlight only dims the
+    /// rest, as Horizon's Dim other does.
+    private func schematicMetalHighlightBatch(
+        sceneKey: Int,
+        isolatedNetLineIDs: Set<String>,
+        junctionRenderInfo: [String: JunctionRenderInfo]
+    ) -> SchematicMetalLineBatch {
         guard drawsSchematicUnderlayLinesInMetal, hasActiveHighlight else {
             return .empty
         }
 
-        let highlightColor = HorizontalMetalRGBA(theme.junction.opacity(0.95))
-        let highlightFillColor = HorizontalMetalRGBA(theme.junction.opacity(0.08))
-        let highlightedJunctionFillColor = HorizontalMetalRGBA(theme.junction.opacity(0.5))
-        let highlightedJunctionStrokeColor = HorizontalMetalRGBA(theme.junction.opacity(0.98))
-        let symbolColor = HorizontalMetalRGBA(theme.pin.opacity(0.92))
-        let pinColor = HorizontalMetalRGBA(theme.pin.opacity(0.86))
-        let pinAnnotationColor = HorizontalMetalRGBA(theme.pinAnnotation.opacity(0.9))
-        let backgroundColor = HorizontalMetalRGBA(theme.background.opacity(0.55))
-        let highlightedIDs = Set(highlightedNetIDs.map { $0.lowercased() })
-        let highlightedComponentIDSet = Set(highlightedComponentIDs.map { $0.lowercased() })
-        let junctionNetIDs = Dictionary(uniqueKeysWithValues: sheet.junctionNetIDs.map { ($0.key.lowercased(), $0.value) })
-        let sheetSnapshot = sheet
-        let displayOptionsSnapshot = displayOptions
+        let netIDs = Set(highlightedNetIDs.map { $0.lowercased() })
+        let componentIDs = Set(highlightedComponentIDs.map { $0.lowercased() })
         let key = SchematicMetalHighlightCacheKey(
             selectableKey: selectableCacheKey,
-            highlightedNetIDs: highlightedIDs.sorted(),
-            highlightedComponentIDs: highlightedComponentIDSet.sorted(),
-            highlightColor: highlightColor,
-            symbolColor: symbolColor,
-            pinColor: pinColor,
-            pinAnnotationColor: pinAnnotationColor,
-            backgroundColor: backgroundColor,
-            drawsWireHops: drawsSchematicWireHops
+            sceneKey: sceneKey,
+            highlightedNetIDs: netIDs.sorted(),
+            highlightedComponentIDs: componentIDs.sorted()
         )
-        let drawsWireHops = key.drawsWireHops
 
         return selectableCache.metalHighlight(key: key) {
-            var lines = [HorizontalMetalLinePrimitive]()
-            var triangles = [HorizontalMetalTrianglePrimitive]()
-
-            func appendLine(
-                from: HorizontalPoint,
-                to: HorizontalPoint,
-                color: HorizontalMetalRGBA,
-                width: Double = 0,
-                minimumWidth: Float
-            ) {
-                lines.append(
-                    HorizontalMetalLinePrimitive(
-                        from: from,
-                        to: to,
-                        color: color,
-                        width: width,
-                        minimumWidth: minimumWidth
-                    )
-                )
-            }
-
-            func appendSegment(_ segment: HorizontalSegment, color: HorizontalMetalRGBA, minimumWidth: Float) {
-                appendLine(
-                    from: segment.from,
-                    to: segment.to,
-                    color: color,
-                    width: segment.width,
-                    minimumWidth: minimumWidth
-                )
-            }
-
-            func appendPolyline(_ points: [HorizontalPoint], color: HorizontalMetalRGBA, width: Double = 0, minimumWidth: Float) {
-                guard points.count >= 2 else {
-                    return
-                }
-                for pair in zip(points, points.dropFirst()) {
-                    appendLine(from: pair.0, to: pair.1, color: color, width: width, minimumWidth: minimumWidth)
-                }
-            }
-
-            func appendClosedPolyline(_ points: [HorizontalPoint], color: HorizontalMetalRGBA, minimumWidth: Float) {
-                guard let first = points.first else {
-                    return
-                }
-                appendPolyline(points + [first], color: color, minimumWidth: minimumWidth)
-            }
-
-            func appendQuadraticCurve(from: HorizontalPoint, to: HorizontalPoint, control: HorizontalPoint, color: HorizontalMetalRGBA, minimumWidth: Float) {
-                let steps = 32
-                let points = (0...steps).map { index in
-                    let t = Double(index) / Double(steps)
-                    let oneMinusT = 1 - t
-                    return from * (oneMinusT * oneMinusT)
-                        + control * (2 * oneMinusT * t)
-                        + to * (t * t)
-                }
-                appendPolyline(points, color: color, minimumWidth: minimumWidth)
-            }
-
-            func appendCircle(center: HorizontalPoint, radius: Double, color: HorizontalMetalRGBA, minimumWidth: Float) {
-                let segments = 64
-                let points = (0...segments).map { index in
-                    let angle = Double(index) / Double(segments) * Double.pi * 2
-                    return HorizontalPoint(
-                        x: center.x + cos(angle) * radius,
-                        y: center.y + sin(angle) * radius
-                    )
-                }
-                appendPolyline(points, color: color, minimumWidth: minimumWidth)
-            }
-
-            func appendText(_ text: HorizontalText, color: HorizontalMetalRGBA, minimumWidth: Float) {
-                for segment in HorizontalOutlineTextRenderer.outlineSegments(for: text) {
-                    appendLine(from: segment.0, to: segment.1, color: color, width: text.width, minimumWidth: minimumWidth)
-                }
-            }
-
-            func angleUnits(from: HorizontalPoint, to: HorizontalPoint) -> Int {
-                let radians = atan2(to.y - from.y, to.x - from.x)
-                return Int((radians / (2 * Double.pi) * 65_536).rounded())
-            }
-
-            func matches(_ netID: String?) -> Bool {
-                guard let netID else {
-                    return false
-                }
-                return highlightedIDs.contains(netID.lowercased())
-            }
-
-            func matches(_ netIDs: Set<String>) -> Bool {
-                netIDs.contains { matches($0) }
-            }
-
-            func junctionNetID(_ junctionID: String) -> String? {
-                junctionNetIDs[junctionID.lowercased()]
-            }
-
-            func angleForOrientation(_ orientation: String) -> Int {
-                switch orientation {
-                case "left":
-                    return 32_768
-                case "up":
-                    return 16_384
-                case "down":
-                    return 49_152
-                default:
-                    return 0
-                }
-            }
-
-            func labelTextShift(size: Double, orientation: String) -> HorizontalPoint {
-                switch orientation {
-                case "left":
-                    return HorizontalPoint(x: -size, y: 0)
-                case "up":
-                    return HorizontalPoint(x: 0, y: size)
-                case "down":
-                    return HorizontalPoint(x: 0, y: -size)
-                default:
-                    return HorizontalPoint(x: size, y: 0)
-                }
-            }
-
-            func highlightedNetLabelText(for label: HorizontalSchematicNetLabel) -> HorizontalText {
-                HorizontalText(
-                    id: "\(label.id)/net-label-text",
-                    text: label.text,
-                    position: label.position + labelTextShift(size: label.size, orientation: label.orientation),
-                    size: label.size,
-                    layer: nil,
-                    angle: angleForOrientation(label.orientation),
-                    origin: .center
-                )
-            }
-
-            func labelBounds(for text: HorizontalText) -> (HorizontalPoint, HorizontalPoint) {
-                let segments = HorizontalOutlineTextRenderer.outlineSegments(for: text)
-                let points = [text.position] + segments.flatMap { [$0.0, $0.1] }
-                let xs = points.map(\.x)
-                let ys = points.map(\.y)
-                let enlarge = text.size / 4
-                return (
-                    HorizontalPoint(
-                        x: (xs.min() ?? text.position.x) - enlarge,
-                        y: (ys.min() ?? text.position.y) - enlarge
-                    ),
-                    HorizontalPoint(
-                        x: (xs.max() ?? text.position.x) + enlarge,
-                        y: (ys.max() ?? text.position.y) + enlarge
-                    )
-                )
-            }
-
-            func flagOutlinePoints(position: HorizontalPoint, min: HorizontalPoint, max: HorizontalPoint, orientation: String) -> [HorizontalPoint] {
-                let topLeft = HorizontalPoint(x: min.x, y: max.y)
-                let bottomRight = HorizontalPoint(x: max.x, y: min.y)
-
-                switch orientation {
-                case "left":
-                    return [min, topLeft, max, position, bottomRight]
-                case "up":
-                    return [position, min, topLeft, max, bottomRight]
-                case "down":
-                    return [position, max, bottomRight, min, topLeft]
-                default:
-                    return [max, bottomRight, min, position, topLeft]
-                }
-            }
-
-            func highlightedNetLabelOutlinePoints(for label: HorizontalSchematicNetLabel, text: HorizontalText) -> [HorizontalPoint] {
-                let bounds = labelBounds(for: text)
-                return flagOutlinePoints(
-                    position: label.position,
-                    min: bounds.0,
-                    max: bounds.1,
-                    orientation: label.orientation
-                )
-            }
-
-            func appendNetTie(_ tie: HorizontalSchematicNetTie) {
-                let from = tie.from
-                let to = tie.to
-                let vector = to - from
-                let normal = HorizontalPoint(x: vector.y, y: -vector.x).normalized
-                let center = HorizontalPoint(x: (from.x + to.x) / 2, y: (from.y + to.y) / 2)
-                let controlOffset = normal * 1_000_000
-                appendQuadraticCurve(from: from, to: to, control: center + controlOffset, color: highlightColor, minimumWidth: 2.8)
-                appendQuadraticCurve(from: to, to: from, control: center - controlOffset, color: highlightColor, minimumWidth: 2.8)
-                appendText(
-                    HorizontalText(
-                        id: "\(tie.id)/net-tie-label",
-                        text: tie.label,
-                        position: center + normal * 1_500_000,
-                        size: 1_500_000,
-                        layer: nil,
-                        angle: angleUnits(from: from, to: to),
-                        origin: .center,
-                        centered: true
-                    ),
-                    color: highlightColor,
-                    minimumWidth: 1.1
-                )
-            }
-
-            func isPinAnnotationSegmentIDLocal(_ id: String) -> Bool {
-                id.contains("/pin-direction/")
-                    || (id.contains("/pin-connector/") && id.contains("/nc/"))
-            }
-
-            func isPinAnnotationTextIDLocal(_ id: String) -> Bool {
-                id.contains("/pin-name/")
-                    || id.contains("/pin-pad/")
-                    || id.contains("/pin-connector-text/")
-            }
-
-            func isBlockSymbolPortAnnotationSegmentIDLocal(_ id: String) -> Bool {
-                id.contains("/block-port-direction/")
-                    || (id.contains("/block-port-connector/") && id.contains("/nc/"))
-            }
-
-            func annotationColor(for segmentID: String) -> HorizontalMetalRGBA {
-                isPinAnnotationSegmentIDLocal(segmentID) || isBlockSymbolPortAnnotationSegmentIDLocal(segmentID)
-                    ? pinAnnotationColor
-                    : pinColor
-            }
-
-            func symbolTextColor(for textID: String) -> HorizontalMetalRGBA {
-                isPinAnnotationTextIDLocal(textID) ? pinAnnotationColor : symbolColor
-            }
-
-            func matchesComponent(_ componentID: String?) -> Bool {
-                guard let componentID else {
-                    return false
-                }
-                return highlightedComponentIDSet.contains(componentID.lowercased())
-            }
-
-            func symbolIDPrefix(for geometryID: String) -> String? {
-                schematicMetalSymbolID(forGeometryID: geometryID)
-            }
-
-            func belongsToSymbol(_ geometryID: String, symbolID: String) -> Bool {
-                symbolIDPrefix(for: geometryID).map { $0 == symbolID } ?? false
-            }
-
-            let pointsBySymbol = schematicSymbolGeometryPoints()
-
-            func appendHighlightedSymbol(_ symbol: HorizontalPlacement) {
-                let symbolID = symbol.id.lowercased()
-                let symbolPoints = pointsBySymbol[symbolID] ?? []
-                let selectable = HorizontalSelectable.bounds(
-                    ref: HorizontalSelectableRef(id: symbol.id, type: .schematicSymbol),
-                    points: symbolPoints,
-                    fallbackCenter: symbol.position,
-                    fallbackSize: 2_540_000
-                )
-                triangles.append(contentsOf: HorizontalMetalTessellator.triangles(for: selectable.corners, color: highlightFillColor))
-                appendClosedPolyline(selectable.corners, color: highlightColor, minimumWidth: 1.4)
-
-                for polygon in sheetSnapshot.symbolPolygons where belongsToSymbol(polygon.id, symbolID: symbolID) {
-                    appendClosedPolyline(polygon.vertices, color: symbolColor, minimumWidth: 2.4)
-                }
-                for line in sheetSnapshot.symbolLines where belongsToSymbol(line.id, symbolID: symbolID) {
-                    appendSegment(line, color: symbolColor, minimumWidth: 2.4)
-                }
-                for pin in sheetSnapshot.symbolPins where belongsToSymbol(pin.id, symbolID: symbolID) {
-                    appendSegment(pin, color: annotationColor(for: pin.id), minimumWidth: 2.4)
-                }
-                for circle in sheetSnapshot.symbolPinCircles where belongsToSymbol(circle.id, symbolID: symbolID) {
-                    appendCircle(center: circle.center, radius: circle.radius, color: pinColor, minimumWidth: 2.2)
-                }
-                if displayOptionsSnapshot.text {
-                    for text in sheetSnapshot.symbolTexts where belongsToSymbol(text.id, symbolID: symbolID) {
-                        appendText(text, color: symbolTextColor(for: text.id), minimumWidth: 1.1)
-                    }
-                }
-            }
-
-            if displayOptions.symbols {
-                for symbol in sheet.symbols where matchesComponent(symbol.componentID) {
-                    appendHighlightedSymbol(symbol)
-                }
-            }
-
-            if displayOptions.nets {
-                let hops = drawsWireHops ? HorizontalSchematicWireHops(lines: sheet.netLines) : .empty
-                for segment in sheet.netLines where matches(segment.netID) {
-                    if let lineHops = hops.hopsByLineID[segment.id.lowercased()] {
-                        appendPolyline(HorizontalSchematicWireHops.polyline(for: segment, hops: lineHops), color: highlightColor, minimumWidth: 3.2)
-                    } else {
-                        appendSegment(segment, color: highlightColor, minimumWidth: 3.2)
-                    }
-                }
-            }
-
-            if displayOptions.netTies {
-                for tie in sheet.netTies where matches(tie.netIDs) {
-                    appendNetTie(tie)
-                }
-            }
-
-            if displayOptions.symbols {
-                for segment in sheet.symbolPins where matches(segment.netID) {
-                    appendSegment(segment, color: annotationColor(for: segment.id), minimumWidth: 2.4)
-                }
-                for circle in sheet.symbolPinCircles where matches(circle.netID) {
-                    appendCircle(center: circle.center, radius: circle.radius, color: pinColor, minimumWidth: 2.2)
-                }
-            }
-
-            if displayOptions.blockSymbols {
-                for segment in sheet.blockSymbolPorts where matches(segment.netID) {
-                    appendSegment(segment, color: annotationColor(for: segment.id), minimumWidth: 2.4)
-                }
-            }
-
-            if displayOptions.buses {
-                for segment in sheet.busRipperLines where matches(segment.netID) {
-                    appendSegment(segment, color: highlightColor, minimumWidth: 2.6)
-                }
-                for text in sheet.busRipperTexts where matches(text.netID) {
-                    appendText(text, color: highlightColor, minimumWidth: 1.1)
-                }
-            }
-
-            if displayOptions.netLabels {
-                for label in sheet.netLabels where matches(label.netID) {
-                    let text = highlightedNetLabelText(for: label)
-                    let outline = highlightedNetLabelOutlinePoints(for: label, text: text)
-                    triangles.append(contentsOf: HorizontalMetalTessellator.triangles(
-                        for: outline,
-                        color: highlightFillColor
-                    ))
-                    appendClosedPolyline(outline, color: highlightColor, minimumWidth: 1.0)
-                    appendText(text, color: highlightColor, minimumWidth: 1.1)
-                }
-            }
-
-            if displayOptions.junctions {
-                for (junctionID, junction) in sheet.junctions where matches(junctionNetID(junctionID)) {
-                    let radius = Self.junctionDotRadiusWorld + Self.junctionHighlightPaddingWorld
-                    triangles.append(contentsOf: HorizontalMetalTessellator.circle(
-                        center: junction,
-                        radius: radius,
-                        color: highlightedJunctionFillColor,
-                        segments: 32
-                    ))
-                    appendCircle(center: junction, radius: radius, color: highlightedJunctionStrokeColor, minimumWidth: 1.2)
-                }
-            }
-
-            if displayOptions.power {
-                for line in sheet.powerSymbolLines where matches(line.netID) {
-                    appendSegment(line, color: pinColor, minimumWidth: 2.4)
-                }
-                for circle in sheet.powerSymbolCircles where matches(circle.netID) {
-                    appendCircle(center: circle.center, radius: circle.radius, color: pinColor, minimumWidth: 2.2)
-                }
-                for text in sheet.powerSymbolTexts where matches(text.netID) {
-                    appendText(text, color: pinColor, minimumWidth: 1.1)
-                }
-            }
-
+            let scene = schematicMetalScene(
+                of: SchematicHighlightSubset.sheet(sheet, netIDs: netIDs, componentIDs: componentIDs),
+                isolatedNetLineIDs: isolatedNetLineIDs,
+                junctionRenderInfo: junctionRenderInfo,
+                cached: false
+            )
             let batchKey = key.hashValue
             return SchematicMetalLineBatch(
                 triangleKey: batchKey,
-                triangles: triangles,
+                triangles: scene.triangles,
                 lineKey: batchKey,
-                lines: lines,
+                lines: scene.lines,
                 handleKey: 0,
                 handles: [],
-                anchoredRectKey: 0,
-                anchoredRects: []
+                anchoredRectKey: batchKey,
+                anchoredRects: scene.anchoredRects
             )
         }
     }
 
+    /// The background laid over the whole sheet under a highlight, which the
+    /// highlight batch draws over again. It is in a composite group of its own
+    /// that sorts below every other (`highlightDimMetalCompositeGroup`), since
+    /// the top overlay draws its groups before its ungrouped primitives.
     private func schematicMetalDimBatch(hasMetalHighlight: Bool) -> SchematicMetalLineBatch {
         guard drawsSchematicUnderlayLinesInMetal,
               hasMetalHighlight,
@@ -11153,7 +10827,11 @@ struct SchematicCanvasView: View {
         let triangles = HorizontalMetalTessellator.triangles(
             for: vertices,
             color: HorizontalMetalRGBA(theme.background.opacity(0.54))
-        )
+        ).map { triangle in
+            var triangle = triangle
+            triangle.compositeGroup = Self.highlightDimMetalCompositeGroup
+            return triangle
+        }
         let key = highlightedNetIDs.hashValue
             &* 31
             &+ highlightedComponentIDs.hashValue

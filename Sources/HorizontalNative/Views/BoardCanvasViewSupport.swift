@@ -13,18 +13,82 @@ struct BoardAllSelectableCacheKey: Hashable {
     var counts: [Int]
 }
 
+/// The highlight is the board's own scene build over just what is
+/// highlighted, so it is keyed as the scene is: by the buckets' key and the
+/// visibility signature (which carries the label cull's threshold), and by
+/// the layers shown.
 struct BoardMetalHighlightCacheKey: Hashable {
-    var selectableKey: BoardSelectableCacheKey
+    var bucketsKey: BoardMetalElementBucketsCacheKey
+    var visibilitySignature: BoardMetalVisibilitySignature
+    var visibleCompositeGroups: Set<Int>
     var highlightedNetIDs: [String]
     var highlightedComponentIDs: [String]
-    var highlightColor: HorizontalMetalRGBA
-    var backgroundColor: HorizontalMetalRGBA
-    var layerOpacity: Double
-    /// These batches emit generated net labels too, and cull them by zoom the
-    /// same way the main build does. The threshold is part of the key so a
-    /// cached batch is never reused across a zoom step that changes which
-    /// labels are legible.
-    var minimumLabelSize: Double
+    /// "As is": nothing dims, so what is highlighted is drawn lighter.
+    var lightens: Bool
+}
+
+/// What a highlight draws again over the dimmed board: everything on the
+/// highlighted nets, and the highlighted components' packages whole, as a
+/// board of its own that the scene build draws as it draws the board. So a
+/// highlight changes nothing it shows, as Horizon's Dim other doesn't; it
+/// dims the rest. The board outline, panels, dimensions and decals are left
+/// out, carrying no net. Ids are compared lowercased.
+enum BoardHighlightSubset {
+    static func board(
+        _ board: HorizontalBoard,
+        netIDs: Set<String>,
+        componentIDs: Set<String>
+    ) -> HorizontalBoard {
+        func onNet(_ netID: String?) -> Bool {
+            guard let netID else {
+                return false
+            }
+            return netIDs.contains(netID.lowercased())
+        }
+
+        var subset = board
+        subset.packages = board.packages.filter { package in
+            package.componentID.map { componentIDs.contains($0.lowercased()) } ?? false
+        }
+        let packageIDs = Set(subset.packages.map { $0.id.lowercased() })
+        func inPackage(_ geometryID: String) -> Bool {
+            guard !packageIDs.isEmpty,
+                  let packageID = BoardMovePlanner.packageID(forGeometryID: geometryID) else {
+                return false
+            }
+            return packageIDs.contains(packageID)
+        }
+
+        subset.packagePads = board.packagePads.filter { onNet($0.netID) || inPackage($0.id) }
+        subset.packageHoles = board.packageHoles.filter { onNet($0.netID) || inPackage($0.id) }
+        subset.packagePolygons = board.packagePolygons.filter { inPackage($0.id) }
+        subset.packageLines = board.packageLines.filter { inPackage($0.id) }
+        subset.packageArcs = board.packageArcs.filter { inPackage($0.id) }
+        subset.packageTexts = board.packageTexts.filter { onNet($0.netID) || inPackage($0.id) }
+        subset.keepouts = board.keepouts.filter { inPackage($0.id) }
+        subset.tracks = board.tracks.filter { onNet($0.netID) }
+        subset.netTies = board.netTies.filter { onNet($0.netID) }
+        subset.lines = board.lines.filter { onNet($0.netID) }
+        subset.arcs = board.arcs.filter { onNet($0.netID) }
+        subset.connectionLines = board.connectionLines.filter { onNet($0.netID) }
+        subset.airwires = board.airwires.filter { onNet($0.netID) }
+        subset.polygons = board.polygons.filter {
+            onNet($0.netID) && !($0.layer.map(HorizontalBoardLayers.isOutline) ?? false)
+        }
+        subset.planes = board.planes.filter { onNet($0.netID) }
+        subset.vias = board.vias.filter { onNet($0.netID) }
+        // A via's hole shares its id.
+        let viaIDs = Set(subset.vias.map { $0.id.lowercased() })
+        subset.viaHoles = board.viaHoles.filter { onNet($0.netID) || viaIDs.contains($0.id.lowercased()) }
+        subset.holes = board.holes.filter { onNet($0.netID) }
+        subset.texts = board.texts.filter { onNet($0.netID) }
+        subset.dimensions = []
+        subset.decals = []
+        subset.boardPanels = []
+        subset.pads = []
+        subset.padstackShapes = []
+        return subset
+    }
 }
 
 struct BoardMetalSelectionCacheKey: Hashable {
@@ -41,7 +105,10 @@ struct BoardMetalSelectionCacheKey: Hashable {
     var selectedGroupPreviewColor: HorizontalMetalRGBA
     var hoverOuterColor: HorizontalMetalRGBA
     var hoverInnerColor: HorizontalMetalRGBA
-    /// See `BoardMetalHighlightCacheKey.minimumLabelSize`.
+    /// These batches emit generated net labels too, and cull them by zoom the
+    /// same way the main build does. The threshold is part of the key so a
+    /// cached batch is never reused across a zoom step that changes which
+    /// labels are legible.
     var minimumLabelSize: Double
     var handleShape: HorizontalSelectionHandleShape
 }

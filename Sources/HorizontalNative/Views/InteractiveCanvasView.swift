@@ -486,6 +486,10 @@ struct InteractiveCanvasView: View {
     var metalTopOverlayBufferPatches = HorizontalMetalBufferPatches.empty
     var metalTopOverlayBufferPatchKey = 0
     var metalTopOverlayVisibleCompositeGroups: Set<Int>? = nil
+    /// As `metalLayerOpacity`, for the top overlay's composite groups: the
+    /// board's highlight draws copper there in its layers' groups.
+    var metalTopOverlayLayerOpacity: Double = 1
+    var metalTopOverlayLayerOpacityExemptGroups: Set<Int> = []
     var metalLoadProfileID: String? = nil
     var cursorSize: HorizontalCursorSize = .small
     var drawsCursorInMetal = true
@@ -801,6 +805,7 @@ struct InteractiveCanvasView: View {
                         backgroundColor: .clear,
                         gridColor: .clear,
                         minimumLineWidth: minimumLineWidth,
+                        layerOpacity: metalTopOverlayLayerOpacity,
                         triangles: metalTopOverlayTriangles,
                         triangleKey: metalTopOverlayTriangleKey,
                         lines: topOverlayLines,
@@ -816,6 +821,7 @@ struct InteractiveCanvasView: View {
                         bufferPatches: metalTopOverlayBufferPatches,
                         bufferPatchKey: metalTopOverlayBufferPatchKey,
                         visibleCompositeGroups: metalTopOverlayVisibleCompositeGroups,
+                        layerOpacityExemptCompositeGroups: metalTopOverlayLayerOpacityExemptGroups,
                         loadProfileID: metalLoadProfileID,
                         loadProfileLabel: "Metal top overlay",
                         marksLoadProfileFirstDraw: false
