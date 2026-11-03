@@ -181,4 +181,32 @@ final class BoardLayerSelectionTests: XCTestCase {
         options.selectedLayer = nil
         XCTAssertFalse(options.isLayerVisible(HorizontalBoardLayers.topCopper))
     }
+
+    /// The board outline's stroke follows the Outline layer as it is seen:
+    /// its eye, the working layer and solo. A preset that leaves the outline
+    /// out clears the Outline category, and turning the layer's eye back on
+    /// sets an override the stroke didn't follow, so it stayed at the faint
+    /// opacity it has with the layer off.
+    func testTheBoardOutlineFollowsTheOutlineLayersEye() {
+        var options = BoardDisplayOptions()
+        XCTAssertTrue(options.showsOutlineLayer)
+
+        options.topPlacementView()
+        XCTAssertFalse(options.outline, "the preset leaves the outline out")
+        XCTAssertFalse(options.showsOutlineLayer)
+        options.setLayerVisibility(HorizontalBoardLayers.outline, isVisible: true)
+        XCTAssertFalse(options.outline, "the eye sets an override, not the category")
+        XCTAssertTrue(options.showsOutlineLayer)
+
+        options = BoardDisplayOptions()
+        options.setLayerVisibility(HorizontalBoardLayers.outline, isVisible: false)
+        XCTAssertTrue(options.outline)
+        XCTAssertFalse(options.showsOutlineLayer)
+        options.selectedLayer = HorizontalBoardLayers.outline
+        XCTAssertTrue(options.showsOutlineLayer, "the working layer is always shown")
+
+        options = BoardDisplayOptions()
+        options.soloLayer = HorizontalBoardLayers.topCopper
+        XCTAssertFalse(options.showsOutlineLayer)
+    }
 }

@@ -57,6 +57,11 @@ struct HorizontalMetalLinePrimitive: Hashable {
     var minimumWidth: Float
     var dashLength: Float
     var dashGap: Float
+    /// How far along its polyline this line starts, in world units. A
+    /// polyline's segments carry their running length here so its dashes run
+    /// on round the corners; without it each segment starts a dash afresh,
+    /// and an arc's short chords draw solid.
+    var dashPhase: Double
     var normalOffset: Float
     var outlineOnly: Bool
     var compositeGroup: Int
@@ -70,6 +75,7 @@ struct HorizontalMetalLinePrimitive: Hashable {
         minimumWidth: Float = 1,
         dashLength: Float = 0,
         dashGap: Float = 0,
+        dashPhase: Double = 0,
         normalOffset: Float = 0,
         outlineOnly: Bool = false,
         compositeGroup: Int = 0,
@@ -82,10 +88,26 @@ struct HorizontalMetalLinePrimitive: Hashable {
         self.minimumWidth = minimumWidth
         self.dashLength = dashLength
         self.dashGap = dashGap
+        self.dashPhase = dashPhase
         self.normalOffset = normalOffset
         self.outlineOnly = outlineOnly
         self.compositeGroup = compositeGroup
         self.compositeOpacity = compositeOpacity
+    }
+}
+
+extension HorizontalMetalLinePrimitive {
+    /// How far along `points` each of its segments starts, for their
+    /// `dashPhase`: one entry per segment.
+    static func dashPhases(along points: [HorizontalPoint]) -> [Double] {
+        var phases = [Double]()
+        phases.reserveCapacity(max(points.count - 1, 0))
+        var length = 0.0
+        for (from, to) in zip(points, points.dropFirst()) {
+            phases.append(length)
+            length += hypot(to.x - from.x, to.y - from.y)
+        }
+        return phases
     }
 }
 

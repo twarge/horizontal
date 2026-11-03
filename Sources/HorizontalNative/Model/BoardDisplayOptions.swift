@@ -498,6 +498,15 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         orientationAxes = false
     }
 
+    /// Whether the board outline is drawn as the Outline layer: its eye, the
+    /// working layer and solo, as for any layer, rather than the Outline
+    /// category alone. A layer preset that leaves the outline out clears the
+    /// category, and the eye turned back on then marks the layer seen with an
+    /// override, which the outline's stroke didn't follow.
+    var showsOutlineLayer: Bool {
+        isLayerVisible(HorizontalBoardLayers.outline)
+    }
+
     func isLayerVisible(_ layer: Int?) -> Bool {
         guard let layer else {
             return true

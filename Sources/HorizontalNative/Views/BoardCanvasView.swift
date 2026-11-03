@@ -80,6 +80,17 @@ private struct PackagePlacementState {
     var placementID: String
 }
 
+/// Where the pointer last picked something on the board — a click or a
+/// right-click — and how many world units a point was there. A polygon edge
+/// and the board's fill name the polygon alike, as its first edge, so this is
+/// what tells a click on that edge from one inside the board. Kept outside
+/// SwiftUI state, as the live transform is.
+@MainActor
+private final class BoardPointerPick {
+    var point: HorizontalPoint?
+    var worldUnitsPerPoint = 0.0
+}
+
 /// Horizon's `ToolRoundOffVertex` in flight: the corner's rounding, the
 /// arc direction (E flips it) and the radius the cursor last set. A corner
 /// rounded off before starts at its arc's radius and direction, and keeps
@@ -598,6 +609,7 @@ struct BoardCanvasView: View {
     #endif
     /// Every reported transform, for the live channel (see HorizontalLiveCanvasTransform).
     @State private var liveCanvasTransform = HorizontalLiveCanvasTransform()
+    @State private var lastPointerPick = BoardPointerPick()
     /// The airwires the scene last handed over was built with, for the live
     /// channel (see HorizontalLiveCanvasAirwires).
     @State private var liveCanvasAirwires = HorizontalLiveCanvasAirwires()
@@ -840,7 +852,7 @@ struct BoardCanvasView: View {
         HorizontalMetalBackdropView.isSupported
             && (displayOptions.boardBody
                 || displayOptions.packages
-                || displayOptions.outline
+                || displayOptions.showsOutlineLayer
                 || displayOptions.origin
                 || displayOptions.keepouts
                 || displayOptions.holes
@@ -1086,6 +1098,8 @@ struct BoardCanvasView: View {
                     return
                 }
 
+                lastPointerPick.point = pointer.raw
+                lastPointerPick.worldUnitsPerPoint = worldUnitsPerPoint
                 let hitRef = hitSelectable(at: pointer.raw, worldUnitsPerPoint: worldUnitsPerPoint)
                 #if os(macOS)
                 // Double-click a text → reopen the inline editor instead of just
@@ -1109,7 +1123,9 @@ struct BoardCanvasView: View {
                 updateSelection(with: refs, action: action)
             },
             targetMenuItems: { pointer, worldUnitsPerPoint in
-                targetMenuItems(at: pointer.raw, worldUnitsPerPoint: worldUnitsPerPoint)
+                lastPointerPick.point = pointer.raw
+                lastPointerPick.worldUnitsPerPoint = worldUnitsPerPoint
+                return targetMenuItems(at: pointer.raw, worldUnitsPerPoint: worldUnitsPerPoint)
             },
             onTargetMenuSelection: { ref in
                 setSelectedObject(ref)
@@ -9160,13 +9176,13 @@ struct BoardCanvasView: View {
     ) -> Bool {
         switch ref.type {
         case .boardPanel:
-            return displayOptions.outline
+            return displayOptions.showsOutlineLayer
         case .polygonArcCenter, .polygonEdge, .polygonVertex:
             if planePolygonIDs.contains(normalizedID(ref.id)) {
                 return displayOptions.isLayerVisible(ref.layer)
             }
             if let layer = ref.layer, isBoardBodyLayer(layer) {
-                return displayOptions.boardBody || displayOptions.outline
+                return displayOptions.boardBody || displayOptions.showsOutlineLayer
             }
             return displayOptions.isLayerVisible(ref.layer)
         case .keepout:
@@ -9346,7 +9362,8 @@ struct BoardCanvasView: View {
                     continue
                 }
                 let closedPath = path + [first]
-                for pair in zip(closedPath, closedPath.dropFirst()) {
+                let phases = dash == nil ? [] : HorizontalMetalLinePrimitive.dashPhases(along: closedPath)
+                for (index, pair) in zip(closedPath, closedPath.dropFirst()).enumerated() {
                     primitives.append(
                         HorizontalMetalLinePrimitive(
                             from: pair.0,
@@ -9356,6 +9373,7 @@ struct BoardCanvasView: View {
                             minimumWidth: minimumWidth,
                             dashLength: dash?.0 ?? 0,
                             dashGap: dash?.1 ?? 0,
+                            dashPhase: phases.isEmpty ? 0 : phases[index],
                             compositeGroup: compositeGroup,
                             compositeOpacity: compositeOpacity
                         )
@@ -9444,7 +9462,7 @@ struct BoardCanvasView: View {
 
     private func metalVisibilitySignature() -> BoardMetalVisibilitySignature {
         BoardMetalVisibilitySignature(
-            outline: displayOptions.outline,
+            outline: displayOptions.showsOutlineLayer,
             panelLabels: displayOptions.panelLabels,
             origin: displayOptions.origin,
             boardBody: displayOptions.boardBody,
@@ -10169,7 +10187,8 @@ struct BoardCanvasView: View {
             to bucketKey: ReferenceWritableKeyPath<BoardMetalElementBuckets, BoardMetalElementBatch>
         ) {
             guard points.count >= 2 else { return }
-            for pair in zip(points, points.dropFirst()) {
+            let phases = dash == nil ? [] : HorizontalMetalLinePrimitive.dashPhases(along: points)
+            for (index, pair) in zip(points, points.dropFirst()).enumerated() {
                 buckets[keyPath: bucketKey].appendLine(
                     HorizontalMetalLinePrimitive(
                         from: pair.0,
@@ -10179,6 +10198,7 @@ struct BoardCanvasView: View {
                         minimumWidth: minimumWidth,
                         dashLength: dash?.0 ?? 0,
                         dashGap: dash?.1 ?? 0,
+                        dashPhase: phases.isEmpty ? 0 : phases[index],
                         outlineOnly: outlineOnly,
                         compositeGroup: compositeGroup,
                         compositeOpacity: compositeOpacity
@@ -11871,6 +11891,7 @@ struct BoardCanvasView: View {
             width: Double = 0,
             minimumWidth: Float = 1,
             dash: (Float, Float)? = nil,
+            dashPhase: Double = 0,
             outlineOnly: Bool = false,
             compositeGroup: Int = 0,
             compositeOpacity: Float = 1
@@ -11884,6 +11905,7 @@ struct BoardCanvasView: View {
                     minimumWidth: minimumWidth,
                     dashLength: dash?.0 ?? 0,
                     dashGap: dash?.1 ?? 0,
+                    dashPhase: dashPhase,
                     outlineOnly: outlineOnly,
                     compositeGroup: compositeGroup,
                     compositeOpacity: compositeOpacity
@@ -11902,7 +11924,8 @@ struct BoardCanvasView: View {
             compositeOpacity: Float = 1
         ) {
             guard points.count >= 2 else { return }
-            for pair in zip(points, points.dropFirst()) {
+            let phases = dash == nil ? [] : HorizontalMetalLinePrimitive.dashPhases(along: points)
+            for (index, pair) in zip(points, points.dropFirst()).enumerated() {
                 appendLine(
                     from: pair.0,
                     to: pair.1,
@@ -11910,6 +11933,7 @@ struct BoardCanvasView: View {
                     width: width,
                     minimumWidth: minimumWidth,
                     dash: dash,
+                    dashPhase: phases.isEmpty ? 0 : phases[index],
                     outlineOnly: outlineOnly,
                     compositeGroup: compositeGroup,
                     compositeOpacity: compositeOpacity
@@ -12452,7 +12476,8 @@ struct BoardCanvasView: View {
                 color: HorizontalMetalRGBA,
                 width: Double = 0,
                 minimumWidth: Float,
-                dash: (Float, Float)? = nil
+                dash: (Float, Float)? = nil,
+                dashPhase: Double = 0
             ) {
                 lines.append(
                     HorizontalMetalLinePrimitive(
@@ -12462,7 +12487,8 @@ struct BoardCanvasView: View {
                         width: width,
                         minimumWidth: minimumWidth,
                         dashLength: dash?.0 ?? 0,
-                        dashGap: dash?.1 ?? 0
+                        dashGap: dash?.1 ?? 0,
+                        dashPhase: dashPhase
                     )
                 )
             }
@@ -12477,8 +12503,12 @@ struct BoardCanvasView: View {
                 guard points.count >= 2 else {
                     return
                 }
-                for pair in zip(points, points.dropFirst()) {
-                    appendLine(from: pair.0, to: pair.1, color: color, width: width, minimumWidth: minimumWidth, dash: dash)
+                let phases = dash == nil ? [] : HorizontalMetalLinePrimitive.dashPhases(along: points)
+                for (index, pair) in zip(points, points.dropFirst()).enumerated() {
+                    appendLine(
+                        from: pair.0, to: pair.1, color: color, width: width, minimumWidth: minimumWidth,
+                        dash: dash, dashPhase: phases.isEmpty ? 0 : phases[index]
+                    )
                 }
             }
 
@@ -13104,14 +13134,17 @@ struct BoardCanvasView: View {
                   selectable.handlePoints.count >= 2 else {
                 continue
             }
-            lines.append(contentsOf: zip(selectable.handlePoints, selectable.handlePoints.dropFirst()).map {
+            let points = selectable.handlePoints
+            let phases = HorizontalMetalLinePrimitive.dashPhases(along: points)
+            lines.append(contentsOf: zip(points, points.dropFirst()).enumerated().map { index, pair in
                 HorizontalMetalLinePrimitive(
-                    from: $0.0,
-                    to: $0.1,
+                    from: pair.0,
+                    to: pair.1,
                     color: color,
                     minimumWidth: 1.8,
                     dashLength: 5,
                     dashGap: 4,
+                    dashPhase: phases[index],
                     normalOffset: 0
                 )
             })
@@ -13825,7 +13858,7 @@ struct BoardCanvasView: View {
 
     private func visibleMetalCompositeGroups(for renderLayers: [Int]) -> Set<Int> {
         var groups = Set(renderLayers.map(metalCompositeGroup(for:)))
-        if displayOptions.boardBody || displayOptions.outline {
+        if displayOptions.boardBody || displayOptions.showsOutlineLayer {
             groups.insert(Self.boardBodyMetalCompositeGroup)
         }
         // The overlay-label group must be composited whenever labels can appear.
@@ -16418,18 +16451,25 @@ extension BoardCanvasView {
 
     /// The one selected polygon vertex the tool would round, when exactly
     /// one is selected (other selected objects are ignored, as upstream),
-    /// or with no vertex the one selected arc centre, whose rounded corner
-    /// it adjusts.
+    /// or with no vertex the one selected arc centre or arc, whose rounded
+    /// corner it adjusts.
     private var roundOffVertexCandidate: HorizontalSelectableRef? {
         let vertexRefs = selectedObjects.filter { $0.type == .polygonVertex }
         if vertexRefs.count == 1 {
             return vertexRefs[0]
         }
-        let arcCenterRefs = selectedObjects.filter { $0.type == .polygonArcCenter }
-        guard vertexRefs.isEmpty, arcCenterRefs.count == 1 else {
+        guard vertexRefs.isEmpty else {
             return nil
         }
-        return arcCenterRefs[0]
+        let arcCenterRefs = selectedObjects.filter { $0.type == .polygonArcCenter }
+        if arcCenterRefs.count == 1 {
+            return arcCenterRefs[0]
+        }
+        let edgeRefs = selectedObjects.filter { $0.type == .polygonEdge }
+        guard arcCenterRefs.isEmpty, edgeRefs.count == 1 else {
+            return nil
+        }
+        return edgeRefs[0]
     }
 
     /// Whether the tool would adjust a corner rounded off before rather than
@@ -16453,10 +16493,10 @@ extension BoardCanvasView {
     /// The rounding for the corner `ref` names, or nil when it cannot be
     /// rounded: package-owned polygons, an arc that isn't a rounded corner
     /// (tangent to the straight edges either side), and collinear (or
-    /// folded) edges. A vertex of a rounded corner, or its arc's centre,
-    /// adjusts that rounding.
+    /// folded) edges. A vertex of a rounded corner, its arc's centre, or the
+    /// arc itself where the pointer picked it, adjusts that rounding.
     private func roundOffVertexState(for ref: HorizontalSelectableRef) -> RoundOffVertexState? {
-        guard ref.type == .polygonVertex || ref.type == .polygonArcCenter, !normalizedID(ref.id).contains("/") else {
+        guard [.polygonVertex, .polygonArcCenter, .polygonEdge].contains(ref.type), !normalizedID(ref.id).contains("/") else {
             return nil
         }
         let stableBoard = editedBoard ?? sourceBoard
@@ -16465,14 +16505,36 @@ extension BoardCanvasView {
               !polygon.id.contains("/") else {
             return nil
         }
-        let rounding = ref.type == .polygonArcCenter
-            ? HorizontalPolygonRounding(roundedCornerOf: polygon, arcStart: ref.vertex)
-            : HorizontalPolygonRounding(polygon: polygon, vertexIndex: ref.vertex)
+        let rounding: HorizontalPolygonRounding?
+        switch ref.type {
+        case .polygonArcCenter:
+            rounding = HorizontalPolygonRounding(roundedCornerOf: polygon, arcStart: ref.vertex)
+        case .polygonEdge:
+            rounding = pointerPicked(edge: ref.vertex, of: polygon)
+                ? HorizontalPolygonRounding(roundedCornerOf: polygon, arcStart: ref.vertex)
+                : nil
+        default:
+            rounding = HorizontalPolygonRounding(polygon: polygon, vertexIndex: ref.vertex)
                 ?? HorizontalPolygonRounding.roundedCorner(of: polygon, vertexIndex: ref.vertex)
+        }
         guard let rounding else {
             return nil
         }
         return RoundOffVertexState(polygonID: polygon.id, rounding: rounding, cursor: lastCursorWorldPoint ?? rounding.corner)
+    }
+
+    /// Whether the last click or right-click was on the polygon's edge at
+    /// `index`, rather than inside the board, which names the polygon by its
+    /// first edge as well.
+    private func pointerPicked(edge index: Int, of polygon: HorizontalPolygon) -> Bool {
+        guard let point = lastPointerPick.point, polygon.polygonVertices.indices.contains(index) else {
+            return false
+        }
+        let tolerance = max(lastPointerPick.worldUnitsPerPoint, 0) * 6
+        let edge = polygon.edgePolyline(at: index, arcPrecision: 24)
+        return zip(edge, edge.dropFirst()).contains { from, to in
+            HorizontalRouteClearanceProbe.pointSegmentDistance(point, from, to) <= tolerance
+        }
     }
 
     private func beginRoundOffVertex() {
