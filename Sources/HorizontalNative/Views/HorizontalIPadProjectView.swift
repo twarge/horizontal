@@ -725,7 +725,7 @@ struct HorizontalIPadProjectView: View {
             HorizontalRulesResultsSidebarView(
                 result: rulesResultsState,
                 safeAreaInsets: EdgeInsets(),
-                onRunChecks: { _ = checkAndApplyBoardRules() },
+                onRunChecks: { checkAndApplyBoardRules() },
                 onOpenRules: {
                     rulesFocus = nil
                     rulesSheetPresented = true
@@ -2164,9 +2164,8 @@ struct HorizontalIPadProjectView: View {
                 isReadOnly: isReadOnly,
                 onRulesChange: { applyEditedBoardRules($0) },
                 onCheckAndApply: {
-                    let message = checkAndApplyBoardRules()
+                    checkAndApplyBoardRules()
                     rulesSheetPresented = false
-                    return message
                 },
                 rulesRevision: boardRulesRevision,
                 focus: rulesFocus
@@ -2188,28 +2187,22 @@ struct HorizontalIPadProjectView: View {
 
     /// Apply & Check, as on macOS: every rule applied to the board as it
     /// stands, one undoable edit through the archive and a reload, then every
-    /// check run, with the results in the rules results panel. Says what
-    /// applying changed.
-    private func checkAndApplyBoardRules() -> String? {
-        var message: String?
+    /// check run, with the results in the rules results panel.
+    private func checkAndApplyBoardRules() {
         if !isReadOnly, let project, var board = project.board {
             let changes = HorizontalBoardRuleApplication.apply(to: &board, poolURL: boardPoolURL)
-            if let summary = changes.summary {
+            if changes.summary != nil {
                 do {
                     var archive = document.archive
                     try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &archive)
                     try applyArchiveEdit(archive, to: project, actionName: "Apply Board Rules")
-                    message = "Applied the rules to \(summary)."
                 } catch {
-                    message = "Couldn't apply the rules: \(error.localizedDescription)"
+                    loadError = "Couldn't apply the rules: \(error.localizedDescription)"
                 }
-            } else {
-                message = "The board follows its rules."
             }
         }
         refreshRulesResults()
         rightPane = .rulesResults
-        return message
     }
 
     /// The rules checks over every kind, as the board's rules now stand, as

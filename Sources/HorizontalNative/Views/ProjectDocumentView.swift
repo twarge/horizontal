@@ -1329,7 +1329,7 @@ struct ProjectWorkspaceView: View {
             HorizontalRulesResultsSidebarView(
                 result: rulesResultsState,
                 safeAreaInsets: safeAreaInsets,
-                onRunChecks: { _ = checkAndApplyBoardRules() },
+                onRunChecks: { checkAndApplyBoardRules() },
                 onOpenRules: { showBoardRulesWindow() },
                 onShowFinding: showClearanceFinding,
                 onShowRule: { finding in
@@ -3389,29 +3389,22 @@ struct ProjectWorkspaceView: View {
     /// as one undoable edit through the archive and a reload; then every
     /// check run, with the results in the sidebar. The rules are applied as
     /// the board and they change, so applying here catches up a board that
-    /// disagrees with them, as one Horizon wrote can. Says what applying
-    /// changed, for the window to show.
-    private func checkAndApplyBoardRules() -> String? {
-        var message: String?
+    /// disagrees with them, as one Horizon wrote can.
+    private func checkAndApplyBoardRules() {
         if !isReadOnly, var board = project.board {
             let changes = HorizontalBoardRuleApplication.apply(to: &board, poolURL: boardPoolURL)
-            if let summary = changes.summary {
+            if changes.summary != nil {
                 do {
                     var archive = document.archive
                     try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &archive)
                     try applyLiveArchive(archive, actionName: "Apply Board Rules")
-                    message = "Applied the rules to \(summary)."
                 } catch {
                     recordArchiveApplyFailure(error)
-                    message = "Couldn't apply the rules: \(error.localizedDescription)"
                 }
-            } else {
-                message = "The board follows its rules."
             }
         }
         refreshRulesResults()
         rightSidebarPane = .rulesResults
-        return message
     }
 
     /// The rules checks over every kind, as the board's rules now stand, so

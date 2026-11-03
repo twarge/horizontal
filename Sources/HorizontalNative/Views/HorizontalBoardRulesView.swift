@@ -19,7 +19,7 @@ final class HorizontalBoardRulesWindowController: NSObject, NSWindowDelegate {
         initialRules: JSONDictionary,
         isReadOnly: Bool,
         onRulesChange: @escaping (JSONDictionary) -> Void,
-        onCheckAndApply: (() -> String?)? = nil,
+        onCheckAndApply: (() -> Void)? = nil,
         focus: HorizontalBoardRuleFocus? = nil
     ) {
         let rootView = HorizontalBoardRulesWindow(
@@ -89,8 +89,8 @@ struct HorizontalBoardRulesWindow: View {
     var onRulesChange: (JSONDictionary) -> Void
     /// Apply & Check: applies every rule to the board as it stands and runs
     /// every check, whose results the host shows in its rules results
-    /// sidebar; says what applying changed. Nil where the host can't.
-    var onCheckAndApply: (() -> String?)?
+    /// sidebar. Nil where the host can't.
+    var onCheckAndApply: (() -> Void)?
     /// Bumped when the rules change from outside the window: it takes
     /// `initialRules` again.
     var rulesRevision = 0
@@ -100,7 +100,6 @@ struct HorizontalBoardRulesWindow: View {
     @State private var rules: JSONDictionary
     @State private var selectedKind: HorizontalBoardRuleKind = .clearanceCopper
     @State private var selectedRuleID: String?
-    @State private var statusMessage: String?
 
     init(
         projectName: String,
@@ -109,7 +108,7 @@ struct HorizontalBoardRulesWindow: View {
         initialRules: JSONDictionary,
         isReadOnly: Bool,
         onRulesChange: @escaping (JSONDictionary) -> Void,
-        onCheckAndApply: (() -> String?)? = nil,
+        onCheckAndApply: (() -> Void)? = nil,
         rulesRevision: Int = 0,
         focus: HorizontalBoardRuleFocus? = nil
     ) {
@@ -130,23 +129,17 @@ struct HorizontalBoardRulesWindow: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
+        HStack(spacing: 0) {
+            ruleFamilyList
+                .frame(width: 260)
             Divider()
-            HStack(spacing: 0) {
-                ruleFamilyList
-                    .frame(width: 260)
+            if selectedKind.listsEntries {
+                ruleInstanceList
+                    .frame(width: 250)
                 Divider()
-                if selectedKind.isMulti {
-                    ruleInstanceList
-                        .frame(width: 250)
-                    Divider()
-                }
-                editorArea
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            Divider()
-            footer
+            editorArea
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // The minimum size sizes the macOS window; on iPad the view fills the
         // presenting sheet/cover instead (a forced 1080pt min overflows portrait).
@@ -168,10 +161,6 @@ struct HorizontalBoardRulesWindow: View {
         }
         .onChange(of: selectedKind) { _, _ in
             ensureSelection()
-            statusMessage = nil
-        }
-        .onChange(of: selectedRuleID) { _, _ in
-            statusMessage = nil
         }
     }
 
@@ -179,60 +168,30 @@ struct HorizontalBoardRulesWindow: View {
         HorizontalBoardRuleContext(board: board, netClasses: netClasses)
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Board Rules")
-                    .font(.title3.weight(.semibold))
-                Text(projectName)
-                    .foregroundStyle(.secondary)
-                    .font(.callout)
-            }
-            Spacer()
-
-            // Every rule, not the one shown: the rules are applied as they
-            // change, so applying here catches up a board that disagrees
-            // with them, as one Horizon wrote can; the checks' results are
-            // in the rules results sidebar.
-            if let onCheckAndApply {
-                Button("Apply & Check") {
-                    statusMessage = onCheckAndApply()
-                }
-                .help("Apply every rule to the board and run every check. The results are in the rules results sidebar.")
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-    }
-
-    private var footer: some View {
-        HStack {
-            if isReadOnly {
-                Label("Read-only operation is enabled. Rules can be inspected and copied, but not saved.", systemImage: "lock")
-                    .foregroundStyle(.secondary)
-            } else if let statusMessage {
-                Text(statusMessage)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Rules apply to the board as they change. \(selectedKind.footerDescription)")
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Text("\(totalRuleCount) rule instances")
-                .foregroundStyle(.secondary)
-        }
-        .font(.callout)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 9)
-    }
-
     private var ruleFamilyList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Rules")
-                .font(.headline)
-                .padding(.horizontal, 14)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+            HStack {
+                Text("Rules")
+                    .font(.headline)
+                Spacer()
+                // Every rule, not the one shown: the rules are applied as
+                // they change, so applying here catches up a board that
+                // disagrees with them, as one Horizon wrote can; the checks'
+                // results are in the rules results sidebar.
+                if let onCheckAndApply {
+                    Button {
+                        onCheckAndApply()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Apply every rule to the board and run every check. The results are in the rules results sidebar.")
+                    .accessibilityLabel("Apply & Check")
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
 
             HorizontalSelectionList(
                 selection: Binding(
@@ -255,7 +214,7 @@ struct HorizontalBoardRulesWindow: View {
     private var ruleInstanceList: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Instances")
+                Text(selectedKind.isMulti ? "Instances" : "Definitions")
                     .font(.headline)
                 Spacer()
                 Button {
@@ -264,7 +223,7 @@ struct HorizontalBoardRulesWindow: View {
                     Image(systemName: "plus")
                 }
                 .buttonStyle(.borderless)
-                .help("Add \(selectedKind.title) rule")
+                .help(selectedKind.isMulti ? "Add \(selectedKind.title) rule" : "Add via definition")
                 .disabled(isReadOnly)
 
                 Button {
@@ -273,7 +232,7 @@ struct HorizontalBoardRulesWindow: View {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.borderless)
-                .help("Remove selected rule")
+                .help(selectedKind.isMulti ? "Remove selected rule" : "Remove selected via definition")
                 .disabled(isReadOnly || selectedRuleID == nil)
             }
             .padding(.horizontal, 14)
@@ -286,9 +245,9 @@ struct HorizontalBoardRulesWindow: View {
                     Image(systemName: "square.stack.3d.down.right")
                         .font(.title2)
                         .foregroundStyle(.secondary)
-                    Text("No rules")
+                    Text(selectedKind.isMulti ? "No rules" : "No via definitions")
                         .font(.headline)
-                    Text("Add a rule to create the GTK-style priority list.")
+                    Text(selectedKind.isMulti ? "Add rules in order of priority. Last rule must match all." : "Add a via definition.")
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
                 }
@@ -305,40 +264,62 @@ struct HorizontalBoardRulesWindow: View {
                 .listStyle(.inset)
             }
 
-            HStack(spacing: 8) {
-                Button {
-                    moveSelectedRuleInstance(by: -1)
-                } label: {
-                    Image(systemName: "chevron.up")
-                }
-                .buttonStyle(.borderless)
-                .help("Move rule up")
-                .disabled(isReadOnly || selectedRuleID == nil)
-
-                Button {
-                    moveSelectedRuleInstance(by: 1)
-                } label: {
-                    Image(systemName: "chevron.down")
-                }
-                .buttonStyle(.borderless)
-                .help("Move rule down")
-                .disabled(isReadOnly || selectedRuleID == nil)
-
-                Spacer()
-                if selectedKind.needsMatchAll && !selectedKind.lastRuleIsCatchAll(in: rules) {
-                    Label("Last rule needs to be catch-all.", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                        .font(.caption)
-                }
+            // Via definitions are listed by name; only rules have a priority.
+            if selectedKind.isMulti {
+                priorityBar
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
         }
+    }
+
+    private var priorityBar: some View {
+        HStack(spacing: 8) {
+            Button {
+                moveSelectedRuleInstance(by: -1)
+            } label: {
+                Image(systemName: "chevron.up")
+            }
+            .buttonStyle(.borderless)
+            .help("Move rule up")
+            .disabled(isReadOnly || selectedRuleID == nil)
+
+            Button {
+                moveSelectedRuleInstance(by: 1)
+            } label: {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(.borderless)
+            .help("Move rule down")
+            .disabled(isReadOnly || selectedRuleID == nil)
+
+            Spacer()
+            if selectedKind.needsMatchAll && !selectedKind.lastRuleIsCatchAll(in: rules) {
+                Label("Last rule needs to be catch-all.", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .font(.caption)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
     }
 
     @ViewBuilder
     private var editorArea: some View {
-        if let binding = selectedRuleBinding {
+        if selectedKind == .viaDefinitions {
+            if let binding = selectedViaDefinitionBinding {
+                ScrollView {
+                    HorizontalRuleViaDefinitionEditor(definition: binding, context: context)
+                        .padding(16)
+                        .frame(maxWidth: 760, alignment: .leading)
+                }
+                .disabled(isReadOnly)
+            } else {
+                ContentUnavailableView(
+                    "No Via Definition Selected",
+                    systemImage: "smallcircle.filled.circle",
+                    description: Text("Choose or add a via definition to edit.")
+                )
+            }
+        } else if let binding = selectedRuleBinding {
             HorizontalBoardRuleEditorView(
                 kind: selectedKind,
                 rule: binding,
@@ -380,21 +361,42 @@ struct HorizontalBoardRulesWindow: View {
         }
     }
 
-    private var totalRuleCount: Int {
-        HorizontalBoardRuleKind.visibleCases.reduce(0) { partial, kind in
-            partial + max(1, count(for: kind))
+    /// The selected via definition, kept in the via definitions rule's own
+    /// `via_definitions`.
+    private var selectedViaDefinitionBinding: Binding<JSONDictionary>? {
+        guard let selectedRuleID else {
+            return nil
         }
+        return Binding {
+            HorizontalBoardRuleKind.viaDefinitions(in: rules)[selectedRuleID] as? JSONDictionary ?? [:]
+        } set: { definition in
+            var definitions = HorizontalBoardRuleKind.viaDefinitions(in: rules)
+            definitions[selectedRuleID] = definition
+            setViaDefinitions(definitions)
+        }
+    }
+
+    private func setViaDefinitions(_ definitions: JSONDictionary) {
+        let kind = HorizontalBoardRuleKind.viaDefinitions
+        var rule = rules[kind.rawValue] as? JSONDictionary ?? kind.defaultRule(context: context, order: -1)
+        rule["via_definitions"] = definitions
+        var updatedRules = rules
+        updatedRules[kind.rawValue] = rule
+        setRules(updatedRules)
     }
 
     private func count(for kind: HorizontalBoardRuleKind) -> Int {
         if kind.isMulti {
             return (rules[kind.rawValue] as? JSONDictionary)?.count ?? 0
         }
+        if kind == .viaDefinitions {
+            return HorizontalBoardRuleKind.viaDefinitions(in: rules).count
+        }
         return rules[kind.rawValue] == nil ? 0 : 1
     }
 
     private func ensureSelection() {
-        guard selectedKind.isMulti else {
+        guard selectedKind.listsEntries else {
             selectedRuleID = nil
             return
         }
@@ -406,6 +408,14 @@ struct HorizontalBoardRulesWindow: View {
     }
 
     private func addRuleInstance() {
+        if selectedKind == .viaDefinitions {
+            var definitions = HorizontalBoardRuleKind.viaDefinitions(in: rules)
+            let id = UUID().uuidString.lowercased()
+            definitions[id] = HorizontalRuleViaDefinitionEditor.defaultDefinition()
+            selectedRuleID = id
+            setViaDefinitions(definitions)
+            return
+        }
         guard selectedKind.isMulti else {
             return
         }
@@ -420,6 +430,14 @@ struct HorizontalBoardRulesWindow: View {
     }
 
     private func removeSelectedRuleInstance() {
+        if selectedKind == .viaDefinitions, let selectedRuleID {
+            var definitions = HorizontalBoardRuleKind.viaDefinitions(in: rules)
+            definitions.removeValue(forKey: selectedRuleID)
+            self.selectedRuleID = nil
+            setViaDefinitions(definitions)
+            ensureSelection()
+            return
+        }
         guard selectedKind.isMulti, let selectedRuleID else {
             return
         }
@@ -459,11 +477,9 @@ struct HorizontalBoardRulesWindow: View {
     private func setRules(_ updatedRules: JSONDictionary) {
         rules = updatedRules
         guard !isReadOnly else {
-            statusMessage = "Read-only mode is enabled."
             return
         }
         onRulesChange(updatedRules)
-        statusMessage = "Rules updated."
     }
 }
 
@@ -579,6 +595,18 @@ enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
         canApply && self != .shortedPads
     }
 
+    /// Whether the window lists this kind's entries beside the editor: the
+    /// rules of a kind that holds several, in priority order, or the via
+    /// definitions, which one rule holds, by name.
+    var listsEntries: Bool {
+        isMulti || self == .viaDefinitions
+    }
+
+    /// The via definitions rule's definitions, by id.
+    static func viaDefinitions(in rules: JSONDictionary) -> JSONDictionary {
+        (rules[viaDefinitions.rawValue] as? JSONDictionary)?.dictionary("via_definitions") ?? [:]
+    }
+
     var needsMatchAll: Bool {
         switch self {
         case .clearanceCopper, .clearanceCopperOther, .clearanceCopperKeepout, .trackWidth, .via, .plane:
@@ -588,23 +616,6 @@ enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
              .layerPair, .preflightChecks, .boardConnectivity:
             return false
         }
-    }
-
-    var footerDescription: String {
-        var traits = [String]()
-        if isMulti {
-            traits.append("priority list")
-        }
-        if canCheck {
-            traits.append("checkable")
-        }
-        if appliesInHorizontal {
-            traits.append("applied to the board")
-        }
-        if needsMatchAll {
-            traits.append("last rule should match all")
-        }
-        return traits.isEmpty ? "GTK-compatible board rule." : traits.joined(separator: ", ")
     }
 
     func defaultRule(context: HorizontalBoardRuleContext, order: Int) -> JSONDictionary {
@@ -694,6 +705,26 @@ enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
     }
 
     func instances(in rules: JSONDictionary, context: HorizontalBoardRuleContext) -> [HorizontalBoardRuleInstance] {
+        if self == .viaDefinitions {
+            return Self.viaDefinitions(in: rules).compactMap { key, value -> HorizontalBoardRuleInstance? in
+                guard let definition = value as? JSONDictionary else {
+                    return nil
+                }
+                let span = definition.dictionary("span")
+                let start = context.layerName(span?.int("start") ?? HorizontalBoardLayers.topCopper)
+                let end = context.layerName(span?.int("end") ?? HorizontalBoardLayers.bottomCopper)
+                return HorizontalBoardRuleInstance(
+                    id: key,
+                    title: "\(definition.string("name") ?? "Via definition")\n\(start) – \(end)",
+                    enabled: nil,
+                    order: 0
+                )
+            }
+            .sorted { lhs, rhs in
+                let order = lhs.title.localizedStandardCompare(rhs.title)
+                return order == .orderedSame ? lhs.id < rhs.id : order == .orderedAscending
+            }
+        }
         guard isMulti else {
             return []
         }
@@ -949,7 +980,8 @@ struct HorizontalBoardRuleContext {
 struct HorizontalBoardRuleInstance: Identifiable {
     var id: String
     var title: String
-    var enabled: Bool
+    /// Nil for a via definition, which is not turned on and off.
+    var enabled: Bool?
     var order: Int
 }
 
@@ -966,7 +998,7 @@ private struct HorizontalBoardRuleFamilyRow: View {
                 Text(kind.title)
                     .lineLimit(1)
                 HStack(spacing: 4) {
-                    if kind.isMulti {
+                    if kind.listsEntries {
                         Text("\(count)")
                     }
                     if kind.canCheck {
@@ -999,8 +1031,8 @@ private struct HorizontalBoardRuleInstanceRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: instance.enabled ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(instance.enabled ? .green : .secondary)
+            Image(systemName: iconName)
+                .foregroundStyle(instance.enabled == true ? .green : .secondary)
                 .font(.caption)
                 .padding(.top, 2)
             VStack(alignment: .leading, spacing: 3) {
@@ -1010,6 +1042,17 @@ private struct HorizontalBoardRuleInstanceRow: View {
             Spacer()
         }
         .padding(.vertical, 4)
+    }
+
+    private var iconName: String {
+        switch instance.enabled {
+        case true?:
+            return "checkmark.circle.fill"
+        case false?:
+            return "circle"
+        case nil:
+            return "smallcircle.filled.circle"
+        }
     }
 }
 
@@ -1042,13 +1085,14 @@ private struct HorizontalBoardRuleEditorView: View {
                     GroupBox("Clearance") {
                         VStack(alignment: .leading, spacing: 10) {
                             Toggle("Pads only", isOn: boolBinding("pads_only", default: true))
+                                .padding(.leading, 158)
                             HorizontalRuleDimensionField(label: "Top clearance", value: mmBinding("clearance_top", defaultNanometers: 100_000))
                             HorizontalRuleDimensionField(label: "Bottom clearance", value: mmBinding("clearance_bottom", defaultNanometers: 100_000))
                         }
                         .padding(6)
                     }
                 case .heightRestrictions:
-                    TextRuleExplanation("Height restriction checks use board height restriction objects. No additional serialized settings are required by GTK.")
+                    TextRuleExplanation("Checks packages against the height restrictions drawn on the board. This rule has no settings.")
                 case .trackWidth:
                     HorizontalRuleMatchEditor(title: "Match", match: dictionaryBinding("match", default: context.defaultMatch()), context: context)
                     HorizontalRuleTrackWidthsEditor(widths: dictionaryBinding("widths", default: context.defaultTrackWidths()), context: context)
@@ -1071,7 +1115,9 @@ private struct HorizontalBoardRuleEditorView: View {
                         .padding(6)
                     }
                 case .viaDefinitions:
-                    HorizontalRuleViaDefinitionsEditor(viaDefinitions: dictionaryBinding("via_definitions", default: [:]), context: context)
+                    // The window edits one via definition at a time
+                    // (HorizontalRuleViaDefinitionEditor), chosen from its list.
+                    EmptyView()
                 case .plane:
                     HorizontalRuleMatchEditor(title: "Match", match: dictionaryBinding("match", default: context.defaultMatch()), context: context)
                     layerSection
@@ -1082,11 +1128,20 @@ private struct HorizontalBoardRuleEditorView: View {
                     layerSection
                     GroupBox("Pads and Thermals") {
                         VStack(alignment: .leading, spacing: 10) {
-                            Picker("Pads", selection: stringBinding("pad_mode", default: "all")) {
-                                Text("All").tag("all")
-                                Text("Specific pads").tag("pads")
+                            HStack {
+                                Text("Pads")
+                                    .frame(width: 150, alignment: .trailing)
+                                    .foregroundStyle(.secondary)
+                                Picker("Pads", selection: stringBinding("pad_mode", default: "all")) {
+                                    Text("All").tag("all")
+                                    Text("Specific pads").tag("pads")
+                                }
+                                .labelsHidden()
+                                .frame(maxWidth: 260, alignment: .leading)
                             }
-                            HorizontalRuleStringListEditor(title: "Pads", values: arrayStringBinding("pads"))
+                            if rule.string("pad_mode") == "pads" {
+                                HorizontalRuleStringListEditor(title: "Pad names", values: arrayStringBinding("pads"))
+                            }
                             HorizontalRulePlaneSettingsFields(settings: $rule)
                         }
                         .padding(6)
@@ -1117,14 +1172,14 @@ private struct HorizontalBoardRuleEditorView: View {
                     HorizontalRuleMatchComponentEditor(match: dictionaryBinding("match_component", default: HorizontalBoardRuleContext.defaultComponentMatch()))
                     HorizontalRuleMatchEditor(title: "Net Match", match: dictionaryBinding("match", default: context.defaultMatch()), context: context)
                 case .netTies:
-                    TextRuleExplanation("Net tie checks are represented by GTK as a board check rule without additional serialized settings.")
+                    TextRuleExplanation("Checks the net ties on the board. This rule has no settings.")
                 case .layerPair:
                     HorizontalRuleMatchEditor(title: "Match", match: dictionaryBinding("match", default: context.defaultMatch()), context: context)
                     HorizontalRuleLayerPairEditor(layers: arrayBinding("layers"), context: context)
                 case .preflightChecks:
-                    TextRuleExplanation("Preflight checks cover project-level board readiness conditions. GTK stores only the enabled state.")
+                    TextRuleExplanation("Checks that the board is ready for fabrication. This rule has no settings.")
                 case .boardConnectivity:
-                    TextRuleExplanation("Connectivity checks compare board copper connectivity against the schematic netlist. GTK stores only the enabled state.")
+                    TextRuleExplanation("Compares the board's copper connectivity with the schematic netlist. This rule has no settings.")
                 }
             }
             .padding(16)
@@ -1276,7 +1331,7 @@ private struct HorizontalRuleIntField: View {
                 .foregroundStyle(.secondary)
             TextField(label, value: $value, format: .number)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 120)
+                .frame(width: 60)
         }
     }
 }
@@ -1292,7 +1347,7 @@ private struct HorizontalRuleDimensionField: View {
                 .foregroundStyle(.secondary)
             TextField(label, value: $value, format: .number.precision(.fractionLength(0...4)))
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 120)
+                .frame(width: 60)
             Text("mm")
                 .foregroundStyle(.secondary)
         }
@@ -1314,7 +1369,8 @@ private struct HorizontalRuleLayerPicker: View {
                     Text(context.layerName(layer)).tag(layer)
                 }
             }
-            .frame(maxWidth: 260)
+            .labelsHidden()
+            .frame(maxWidth: 260, alignment: .leading)
         }
     }
 }
@@ -1338,7 +1394,8 @@ private struct HorizontalRuleNetClassPicker: View {
                         Text("Default").tag(horizonRuleNullUUID)
                     }
                 }
-                .frame(maxWidth: 260)
+                .labelsHidden()
+                .frame(maxWidth: 260, alignment: .leading)
             }
         }
     }
@@ -1370,7 +1427,8 @@ private struct HorizontalRuleMatchEditor: View {
                             Text(mode.1).tag(mode.0)
                         }
                     }
-                    .frame(maxWidth: 260)
+                    .labelsHidden()
+                    .frame(maxWidth: 260, alignment: .leading)
                 }
                 switch match.string("mode") ?? "all" {
                 case "net":
@@ -1384,7 +1442,8 @@ private struct HorizontalRuleMatchEditor: View {
                                 Text(net.name).tag(net.id)
                             }
                         }
-                        .frame(maxWidth: 300)
+                        .labelsHidden()
+                        .frame(maxWidth: 300, alignment: .leading)
                     }
                 case "nets":
                     HorizontalRuleStringListEditor(title: "Nets", values: arrayStringBinding("nets"))
@@ -1434,7 +1493,8 @@ private struct HorizontalRuleMatchComponentEditor: View {
                         Text("Multiple components").tag("components")
                         Text("Part").tag("part")
                     }
-                    .frame(maxWidth: 260)
+                    .labelsHidden()
+                    .frame(maxWidth: 260, alignment: .leading)
                 }
                 switch match.string("mode") ?? "component" {
                 case "components":
@@ -1442,11 +1502,11 @@ private struct HorizontalRuleMatchComponentEditor: View {
                 case "part":
                     Text("Part-specific matches are preserved, but the part picker is not wired here yet.")
                         .foregroundStyle(.secondary)
-                        .padding(.leading, 154)
+                        .padding(.leading, 158)
                 default:
                     Text("Component-specific matches are preserved, but the component picker is not wired here yet.")
                         .foregroundStyle(.secondary)
-                        .padding(.leading, 154)
+                        .padding(.leading, 158)
                 }
             }
             .padding(6)
@@ -1485,13 +1545,14 @@ private struct HorizontalRuleMatchKeepoutEditor: View {
                         Text("Component").tag("component")
                         Text("Keepout class").tag("keepout_class")
                     }
-                    .frame(maxWidth: 260)
+                    .labelsHidden()
+                    .frame(maxWidth: 260, alignment: .leading)
                 }
                 switch match.string("mode") ?? "all" {
                 case "component":
                     Text("Component keepout matches are preserved, but the component picker is not wired here yet.")
                         .foregroundStyle(.secondary)
-                        .padding(.leading, 154)
+                        .padding(.leading, 158)
                 case "keepout_class":
                     HorizontalRuleTextField(label: "Keepout class", value: stringBinding("keepout_class", default: ""))
                 default:
@@ -1574,11 +1635,11 @@ private struct HorizontalRuleTrackWidthsEditor: View {
                     Text("Layer")
                         .frame(width: 130, alignment: .leading)
                     Text("Min")
-                        .frame(width: 90, alignment: .leading)
+                        .frame(width: 62, alignment: .leading)
                     Text("Default")
-                        .frame(width: 90, alignment: .leading)
+                        .frame(width: 62, alignment: .leading)
                     Text("Max")
-                        .frame(width: 90, alignment: .leading)
+                        .frame(width: 62, alignment: .leading)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1646,35 +1707,86 @@ private struct HorizontalInlineMMField: View {
         HStack(spacing: 4) {
             TextField("", value: $value, format: .number.precision(.fractionLength(0...4)))
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 72)
+                .frame(width: 36)
             Text("mm")
                 .foregroundStyle(.secondary)
+                .fixedSize()
         }
-        .frame(width: 90, alignment: .leading)
+        .frame(width: 62, alignment: .leading)
     }
 }
 
-private struct HorizontalSteppedMMField: View {
+/// A length typed in millimetres, the unit inside the box, as the clearance
+/// tables lay their cells out.
+private struct HorizontalTableMMField: View {
     @Binding var value: Double
-    var step: Double = 0.025
-    var width: CGFloat = 132
+    var width: CGFloat = 66
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 1) {
             TextField("", value: $value, format: .number.precision(.fractionLength(0...4)))
                 .textFieldStyle(.plain)
-                .padding(.horizontal, 8)
-                .frame(width: width - 52)
             Text("mm")
                 .foregroundStyle(.secondary)
                 .font(.caption)
-                .padding(.trailing, 6)
-            Stepper("", value: $value, in: 0...100, step: step)
-                .labelsHidden()
-                .frame(width: 46)
         }
+        .padding(.horizontal, 5)
         .frame(width: width, height: 28)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+/// A clearance table's chevron: down above a column, right of a row, and
+/// down and forward in the corner where those meet, for the whole table.
+/// One width for all, so the corner's sits over the rows' and level with the
+/// columns'.
+private struct HorizontalRuleTableChevron: View {
+    var systemName: String
+    var help: String
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.callout)
+                .frame(width: 16)
+        }
+        .buttonStyle(.borderless)
+        .help(help)
+    }
+}
+
+/// Under a clearance table: the value its chevrons set cells to, then the
+/// rule's routing offset where it has one. Their labels end where the row
+/// titles' column does, so the fields stand under the table's first column.
+private struct HorizontalRuleTableFooter: View {
+    var labelWidth: CGFloat
+    var fieldWidth: CGFloat = 66
+    var setValue: Binding<Double>?
+    var routingOffset: Binding<Double>?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let setValue {
+                HStack(spacing: 12) {
+                    Text("Set value")
+                        .frame(width: labelWidth, alignment: .trailing)
+                        .foregroundStyle(.secondary)
+                    HorizontalTableMMField(value: setValue, width: fieldWidth)
+                    Text("The chevrons set a row, a column or the whole table to this.")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                }
+            }
+            if let routingOffset {
+                HStack(spacing: 12) {
+                    Text("Routing offset")
+                        .frame(width: labelWidth, alignment: .trailing)
+                        .foregroundStyle(.secondary)
+                    HorizontalTableMMField(value: routingOffset, width: fieldWidth)
+                }
+            }
+        }
     }
 }
 
@@ -1706,15 +1818,16 @@ private struct HorizontalRuleClearanceCopperEditor: View {
                             .frame(width: 112, alignment: .trailing)
                             .foregroundStyle(.secondary)
                         HorizontalInlineLayerPicker(value: intBinding("layer", default: horizonRuleAnyLayer), context: context)
-                        Text("Routing offset")
-                            .foregroundStyle(.secondary)
-                        HorizontalSteppedMMField(value: mmBinding("routing_offset", defaultNanometers: 50_000))
                     }
                 }
                 .padding(8)
             }
 
-            HorizontalRuleClearanceMatrixEditor(clearances: arrayBinding("clearances"), setValue: $setValue)
+            HorizontalRuleClearanceMatrixEditor(
+                clearances: arrayBinding("clearances"),
+                setValue: $setValue,
+                routingOffset: mmBinding("routing_offset", defaultNanometers: 50_000)
+            )
         }
     }
 
@@ -1777,17 +1890,11 @@ private struct HorizontalRuleClearanceCopperOtherEditor: View {
                 .padding(8)
             }
 
-            GroupBox("Routing") {
-                HStack(alignment: .center, spacing: 12) {
-                    Text("Routing offset")
-                        .frame(width: 112, alignment: .trailing)
-                        .foregroundStyle(.secondary)
-                    HorizontalSteppedMMField(value: mmBinding("routing_offset", defaultNanometers: 50_000))
-                }
-                .padding(8)
-            }
-
-            HorizontalRuleClearanceCopperOtherMatrixEditor(clearances: arrayBinding("clearances"), setValue: $setValue)
+            HorizontalRuleClearanceCopperOtherMatrixEditor(
+                clearances: arrayBinding("clearances"),
+                setValue: $setValue,
+                routingOffset: mmBinding("routing_offset", defaultNanometers: 50_000)
+            )
         }
     }
 
@@ -1849,17 +1956,10 @@ private struct HorizontalRuleClearanceCopperKeepoutEditor: View {
                 .padding(8)
             }
 
-            GroupBox("Routing") {
-                HStack(alignment: .center, spacing: 12) {
-                    Text("Routing offset")
-                        .frame(width: 112, alignment: .trailing)
-                        .foregroundStyle(.secondary)
-                    HorizontalSteppedMMField(value: mmBinding("routing_offset", defaultNanometers: 50_000))
-                }
-                .padding(8)
-            }
-
-            HorizontalRuleCopperKeepoutClearancesEditor(clearances: dictionaryBinding("clearances", default: JSONDictionary()))
+            HorizontalRuleCopperKeepoutClearancesEditor(
+                clearances: dictionaryBinding("clearances", default: JSONDictionary()),
+                routingOffset: mmBinding("routing_offset", defaultNanometers: 50_000)
+            )
         }
     }
 
@@ -2060,6 +2160,7 @@ private struct HorizontalInlineLayerPicker: View {
 
 private struct HorizontalRuleCopperKeepoutClearancesEditor: View {
     @Binding var clearances: JSONDictionary
+    var routingOffset: Binding<Double>
 
     private let patchTypes = HorizontalRulePatchType.copperKeepoutTypes
 
@@ -2071,9 +2172,11 @@ private struct HorizontalRuleCopperKeepoutClearancesEditor: View {
                         Text(type.matrixTitle)
                             .frame(width: 112, alignment: .trailing)
                             .foregroundStyle(.secondary)
-                        HorizontalSteppedMMField(value: clearanceBinding(type), width: 150)
+                        HorizontalTableMMField(value: clearanceBinding(type), width: 75)
                     }
                 }
+                HorizontalRuleTableFooter(labelWidth: 112, fieldWidth: 75, routingOffset: routingOffset)
+                    .padding(.top, 8)
             }
             .padding(8)
         }
@@ -2095,35 +2198,32 @@ private struct HorizontalRuleSameNetClearanceMatrixEditor: View {
     private let columnTypes = HorizontalRulePatchType.sameNetColumnTypes
     private let rowTypes = HorizontalRulePatchType.sameNetRowTypes
 
+    /// A cell: its switch, then its field.
+    private let toggleWidth: CGFloat = 18
+    private let toggleSpacing: CGFloat = 8
+    private let fieldWidth: CGFloat = 81
+    private var cellWidth: CGFloat { toggleWidth + toggleSpacing + fieldWidth }
+
     var body: some View {
         GroupBox("Clearances") {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 10) {
-                    Button("set all") {
-                        setAllClearances(setValue)
-                    }
-                    .frame(width: 92)
-                    HorizontalSteppedMMField(value: $setValue, width: 128)
-                }
-
                 ScrollView(.horizontal) {
                     Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                         GridRow {
-                            Color.clear
-                                .frame(width: 116, height: 1)
+                            HorizontalRuleTableChevron(systemName: "chevron.down.forward.2", help: "Set all") {
+                                setAllClearances(setValue)
+                            }
+                            .frame(width: 116, alignment: .trailing)
                             ForEach(Array(columnTypes.enumerated()), id: \.element) { column, type in
                                 HStack(spacing: 6) {
-                                    Button {
+                                    HorizontalRuleTableChevron(systemName: "chevron.down", help: "Set column") {
                                         setColumn(column, to: setValue)
-                                    } label: {
-                                        Image(systemName: "chevron.down")
                                     }
-                                    .buttonStyle(.borderless)
-                                    .help("Set column")
                                     Text(type.matrixTitle)
                                         .lineLimit(1)
+                                        .fixedSize()
                                 }
-                                .frame(width: 190, alignment: .leading)
+                                .frame(minWidth: cellWidth, alignment: .leading)
                             }
                         }
                         .font(.callout)
@@ -2133,32 +2233,28 @@ private struct HorizontalRuleSameNetClearanceMatrixEditor: View {
                                 HStack(spacing: 6) {
                                     Text(rowType.matrixTitle)
                                         .frame(width: 84, alignment: .trailing)
-                                    Button {
+                                    HorizontalRuleTableChevron(systemName: "chevron.right", help: "Set row") {
                                         setRow(row, to: setValue)
-                                    } label: {
-                                        Image(systemName: "chevron.right")
                                     }
-                                    .buttonStyle(.borderless)
-                                    .help("Set row")
                                 }
                                 .frame(width: 116, alignment: .trailing)
 
                                 ForEach(Array(columnTypes.enumerated()), id: \.element) { _, columnType in
                                     if isValidPair(columnType, rowType) {
-                                        HStack(spacing: 8) {
+                                        HStack(spacing: toggleSpacing) {
                                             Toggle("", isOn: enabledBinding(columnType, rowType))
                                                 .labelsHidden()
-                                                .frame(width: 18)
-                                            HorizontalSteppedMMField(
+                                                .frame(width: toggleWidth)
+                                            HorizontalTableMMField(
                                                 value: clearanceBinding(columnType, rowType),
-                                                width: 162
+                                                width: fieldWidth
                                             )
                                             .disabled(!isClearanceEnabled(columnType, rowType))
                                         }
-                                        .frame(width: 190, alignment: .leading)
+                                        .frame(width: cellWidth, alignment: .leading)
                                     } else {
                                         Color.clear
-                                            .frame(width: 190, height: 28)
+                                            .frame(width: cellWidth, height: 28)
                                     }
                                 }
                             }
@@ -2166,6 +2262,13 @@ private struct HorizontalRuleSameNetClearanceMatrixEditor: View {
                     }
                     .padding(.vertical, 4)
                 }
+
+                // The field under the cells' fields, past their switches.
+                HorizontalRuleTableFooter(
+                    labelWidth: 116 + 12 + toggleWidth + toggleSpacing - 12,
+                    fieldWidth: fieldWidth,
+                    setValue: $setValue
+                )
             }
             .padding(8)
         }
@@ -2275,41 +2378,31 @@ private struct HorizontalRuleSameNetClearanceMatrixEditor: View {
 private struct HorizontalRuleClearanceMatrixEditor: View {
     @Binding var clearances: [Any]
     @Binding var setValue: Double
+    var routingOffset: Binding<Double>
 
     private let patchTypes = HorizontalRulePatchType.copperMatrixTypes
+    private let fieldWidth: CGFloat = 66
 
     var body: some View {
         GroupBox("Clearances") {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 10) {
-                    Button("set all") {
-                        setAllClearances(setValue)
-                    }
-                    .frame(width: 92)
-                    HorizontalSteppedMMField(value: $setValue, width: 128)
-                    Text("Use row and column buttons to copy this value into part of the matrix.")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                }
-
                 ScrollView(.horizontal) {
                     Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                         GridRow {
-                            Color.clear
-                                .frame(width: 104, height: 1)
+                            HorizontalRuleTableChevron(systemName: "chevron.down.forward.2", help: "Set all") {
+                                setAllClearances(setValue)
+                            }
+                            .frame(width: 104, alignment: .trailing)
                             ForEach(Array(patchTypes.enumerated()), id: \.element) { column, type in
                                 HStack(spacing: 6) {
-                                    Button {
+                                    HorizontalRuleTableChevron(systemName: "chevron.down", help: "Set column") {
                                         setColumn(column, to: setValue)
-                                    } label: {
-                                        Image(systemName: "chevron.down")
                                     }
-                                    .buttonStyle(.borderless)
-                                    .help("Set column")
                                     Text(type.matrixTitle)
                                         .lineLimit(1)
+                                        .fixedSize()
                                 }
-                                .frame(width: 132, alignment: .leading)
+                                .frame(minWidth: fieldWidth, alignment: .leading)
                             }
                         }
                         .font(.callout)
@@ -2319,25 +2412,21 @@ private struct HorizontalRuleClearanceMatrixEditor: View {
                                 HStack(spacing: 6) {
                                     Text(rowType.matrixTitle)
                                         .frame(width: 72, alignment: .trailing)
-                                    Button {
+                                    HorizontalRuleTableChevron(systemName: "chevron.right", help: "Set row") {
                                         setRow(row, to: setValue)
-                                    } label: {
-                                        Image(systemName: "chevron.right")
                                     }
-                                    .buttonStyle(.borderless)
-                                    .help("Set row")
                                 }
                                 .frame(width: 104, alignment: .trailing)
 
                                 ForEach(Array(patchTypes.enumerated()), id: \.element) { column, columnType in
                                     if column <= row {
-                                        HorizontalSteppedMMField(
+                                        HorizontalTableMMField(
                                             value: clearanceBinding(columnType, rowType),
-                                            width: 132
+                                            width: fieldWidth
                                         )
                                     } else {
                                         Color.clear
-                                            .frame(width: 132, height: 28)
+                                            .frame(width: fieldWidth, height: 28)
                                     }
                                 }
                             }
@@ -2345,6 +2434,13 @@ private struct HorizontalRuleClearanceMatrixEditor: View {
                     }
                     .padding(.vertical, 4)
                 }
+
+                HorizontalRuleTableFooter(
+                    labelWidth: 104,
+                    fieldWidth: fieldWidth,
+                    setValue: $setValue,
+                    routingOffset: routingOffset
+                )
             }
             .padding(8)
         }
@@ -2415,39 +2511,32 @@ private struct HorizontalRuleClearanceMatrixEditor: View {
 private struct HorizontalRuleClearanceCopperOtherMatrixEditor: View {
     @Binding var clearances: [Any]
     @Binding var setValue: Double
+    var routingOffset: Binding<Double>
 
     private let copperTypes = HorizontalRulePatchType.copperOtherCopperTypes
     private let nonCopperTypes = HorizontalRulePatchType.copperOtherNonCopperTypes
+    private let fieldWidth: CGFloat = 66
 
     var body: some View {
         GroupBox("Clearances") {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 10) {
-                    Button("set all") {
-                        setAllClearances(setValue)
-                    }
-                    .frame(width: 92)
-                    HorizontalSteppedMMField(value: $setValue, width: 128)
-                }
-
                 ScrollView(.horizontal) {
                     Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                         GridRow {
-                            Color.clear
-                                .frame(width: 116, height: 1)
+                            HorizontalRuleTableChevron(systemName: "chevron.down.forward.2", help: "Set all") {
+                                setAllClearances(setValue)
+                            }
+                            .frame(width: 116, alignment: .trailing)
                             ForEach(Array(copperTypes.enumerated()), id: \.element) { column, type in
                                 HStack(spacing: 6) {
-                                    Button {
+                                    HorizontalRuleTableChevron(systemName: "chevron.down", help: "Set column") {
                                         setColumn(column, to: setValue)
-                                    } label: {
-                                        Image(systemName: "chevron.down")
                                     }
-                                    .buttonStyle(.borderless)
-                                    .help("Set column")
                                     Text(type.matrixTitle)
                                         .lineLimit(1)
+                                        .fixedSize()
                                 }
-                                .frame(width: 132, alignment: .leading)
+                                .frame(minWidth: fieldWidth, alignment: .leading)
                             }
                         }
                         .font(.callout)
@@ -2457,20 +2546,16 @@ private struct HorizontalRuleClearanceCopperOtherMatrixEditor: View {
                                 HStack(spacing: 6) {
                                     Text(rowType.matrixTitle)
                                         .frame(width: 84, alignment: .trailing)
-                                    Button {
+                                    HorizontalRuleTableChevron(systemName: "chevron.right", help: "Set row") {
                                         setRow(row, to: setValue)
-                                    } label: {
-                                        Image(systemName: "chevron.right")
                                     }
-                                    .buttonStyle(.borderless)
-                                    .help("Set row")
                                 }
                                 .frame(width: 116, alignment: .trailing)
 
                                 ForEach(Array(copperTypes.enumerated()), id: \.element) { _, columnType in
-                                    HorizontalSteppedMMField(
+                                    HorizontalTableMMField(
                                         value: clearanceBinding(columnType, rowType),
-                                        width: 132
+                                        width: fieldWidth
                                     )
                                 }
                             }
@@ -2478,6 +2563,13 @@ private struct HorizontalRuleClearanceCopperOtherMatrixEditor: View {
                     }
                     .padding(.vertical, 4)
                 }
+
+                HorizontalRuleTableFooter(
+                    labelWidth: 116,
+                    fieldWidth: fieldWidth,
+                    setValue: $setValue,
+                    routingOffset: routingOffset
+                )
             }
             .padding(8)
         }
@@ -2575,12 +2667,14 @@ private struct HorizontalRuleClearanceListEditor: View {
                                 Text(type.title).tag(type.rawValue)
                             }
                         }
+                        .labelsHidden()
                         .frame(width: 120)
                         Picker("", selection: typeBinding(index: index, slot: 1)) {
                             ForEach(HorizontalRulePatchType.allCases, id: \.self) { type in
                                 Text(type.title).tag(type.rawValue)
                             }
                         }
+                        .labelsHidden()
                         .frame(width: 120)
                         HorizontalInlineMMField(value: clearanceBinding(index: index))
                         Button {
@@ -2819,7 +2913,7 @@ private struct HorizontalRulePlaneSettingsFields: View {
             pickerRow("Text style", key: "text_style", values: ["expand", "clip"])
             pickerRow("Fill style", key: "fill_style", values: ["solid", "hatch"])
             Toggle("Keep orphans", isOn: boolBinding("keep_orphans", default: false))
-                .padding(.leading, 154)
+                .padding(.leading, 158)
             HorizontalRuleDimensionField(label: "Minimum width", value: mmBinding("min_width", defaultNanometers: 200_000))
             HorizontalRuleDimensionField(label: "Thermal gap", value: mmBinding("thermal_gap_width", defaultNanometers: 200_000))
             HorizontalRuleDimensionField(label: "Thermal spoke", value: mmBinding("thermal_spoke_width", defaultNanometers: 200_000))
@@ -2841,7 +2935,8 @@ private struct HorizontalRulePlaneSettingsFields: View {
                     Text(value.capitalized).tag(value)
                 }
             }
-            .frame(maxWidth: 220)
+            .labelsHidden()
+            .frame(maxWidth: 220, alignment: .leading)
         }
     }
 
@@ -2878,112 +2973,47 @@ private struct HorizontalRulePlaneSettingsFields: View {
     }
 }
 
-private struct HorizontalRuleViaDefinitionsEditor: View {
-    @Binding var viaDefinitions: JSONDictionary
+/// One via definition, chosen from the via definitions the rules window
+/// lists beside it.
+private struct HorizontalRuleViaDefinitionEditor: View {
+    @Binding var definition: JSONDictionary
     var context: HorizontalBoardRuleContext
-    @State private var selectedID: String?
 
-    var body: some View {
-        GroupBox("Via Definitions") {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 8) {
-                    HorizontalSelectionList(
-                        selection: $selectedID,
-                        items: definitionIDs,
-                        id: { $0 }
-                    ) { id in
-                        Text(definitionName(id))
-                    }
-                    HStack {
-                        Button {
-                            addDefinition()
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                        .buttonStyle(.borderless)
-                        Button {
-                            removeDefinition()
-                        } label: {
-                            Image(systemName: "xmark")
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(selectedID == nil)
-                    }
-                }
-                .frame(width: 220)
-
-                Divider()
-
-                if let selectedID {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HorizontalRuleTextField(label: "Name", value: definitionStringBinding(id: selectedID, key: "name", default: "Via"))
-                        HorizontalRuleTextField(label: "Padstack", value: definitionStringBinding(id: selectedID, key: "padstack", default: ""))
-                        HorizontalRuleLayerRangeEditor(title: "Span", span: definitionDictionaryBinding(id: selectedID, key: "span", default: ["start": HorizontalBoardLayers.topCopper, "end": HorizontalBoardLayers.bottomCopper]), context: context)
-                        HorizontalRuleParameterSetEditor(parameters: definitionDictionaryBinding(id: selectedID, key: "parameters", default: ["via_diameter": 500_000, "hole_diameter": 200_000]))
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    Text("Select or add a via definition.")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-            .padding(6)
-            .frame(minHeight: 260)
-        }
-        .onAppear {
-            if selectedID == nil {
-                selectedID = definitionIDs.first
-            }
-        }
-    }
-
-    private var definitionIDs: [String] {
-        viaDefinitions.keys.sorted {
-            definitionName($0).localizedStandardCompare(definitionName($1)) == .orderedAscending
-        }
-    }
-
-    private func definitionName(_ id: String) -> String {
-        (viaDefinitions[id] as? JSONDictionary)?.string("name") ?? "Via definition"
-    }
-
-    private func addDefinition() {
-        let id = UUID().uuidString.lowercased()
-        viaDefinitions[id] = [
+    static func defaultDefinition() -> JSONDictionary {
+        [
             "name": "Via",
             "padstack": "",
             "parameters": ["via_diameter": 500_000, "hole_diameter": 200_000] as JSONDictionary,
             "span": ["start": HorizontalBoardLayers.topCopper, "end": HorizontalBoardLayers.bottomCopper] as JSONDictionary
-        ] as JSONDictionary
-        selectedID = id
+        ]
     }
 
-    private func removeDefinition() {
-        guard let selectedID else {
-            return
-        }
-        viaDefinitions.removeValue(forKey: selectedID)
-        self.selectedID = definitionIDs.first
-    }
-
-    private func definitionStringBinding(id: String, key: String, default defaultValue: String) -> Binding<String> {
-        Binding {
-            (viaDefinitions[id] as? JSONDictionary)?.string(key) ?? defaultValue
-        } set: { value in
-            var definition = viaDefinitions[id] as? JSONDictionary ?? [:]
-            definition[key] = value
-            viaDefinitions[id] = definition
+    var body: some View {
+        GroupBox("Via Definition") {
+            VStack(alignment: .leading, spacing: 10) {
+                HorizontalRuleTextField(label: "Name", value: stringBinding("name", default: "Via"))
+                HorizontalRuleTextField(label: "Padstack", value: stringBinding("padstack", default: ""))
+                HorizontalRuleLayerRangeEditor(title: "Span", span: dictionaryBinding("span", default: ["start": HorizontalBoardLayers.topCopper, "end": HorizontalBoardLayers.bottomCopper]), context: context)
+                HorizontalRuleParameterSetEditor(parameters: dictionaryBinding("parameters", default: ["via_diameter": 500_000, "hole_diameter": 200_000]))
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func definitionDictionaryBinding(id: String, key: String, default defaultValue: JSONDictionary) -> Binding<JSONDictionary> {
+    private func stringBinding(_ key: String, default defaultValue: String) -> Binding<String> {
         Binding {
-            (viaDefinitions[id] as? JSONDictionary)?.dictionary(key) ?? defaultValue
+            definition.string(key) ?? defaultValue
         } set: { value in
-            var definition = viaDefinitions[id] as? JSONDictionary ?? [:]
             definition[key] = value
-            viaDefinitions[id] = definition
+        }
+    }
+
+    private func dictionaryBinding(_ key: String, default defaultValue: JSONDictionary) -> Binding<JSONDictionary> {
+        Binding {
+            definition.dictionary(key) ?? defaultValue
+        } set: { value in
+            definition[key] = value
         }
     }
 }
@@ -3052,12 +3082,10 @@ private struct TextRuleExplanation: View {
     }
 
     var body: some View {
-        GroupBox("GTK Rule") {
-            Text(message)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-        }
+        Text(message)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 6)
     }
 }
 
@@ -3167,12 +3195,12 @@ enum HorizontalBoardRulesValidator {
 
         for kind in HorizontalBoardRuleKind.visibleCases {
             if kind.isMulti, rules[kind.rawValue] != nil, !(rules[kind.rawValue] is JSONDictionary) {
-                messages.append(.init(level: .error, title: "\(kind.title) is not an object", detail: "GTK expects a keyed object for multi-rule families."))
+                messages.append(.init(level: .error, title: "\(kind.title) is not an object", detail: "A rule family that holds several rules keeps them in a keyed object."))
             }
             if kind.needsMatchAll && kind.isMulti {
                 let count = kind.instances(in: rules, context: context).count
                 if count == 0 {
-                    messages.append(.init(level: .warning, title: "\(kind.title) has no catch-all rule", detail: "GTK warns that the last \(kind.title) rule should match all targets."))
+                    messages.append(.init(level: .warning, title: "\(kind.title) has no catch-all rule", detail: "The last \(kind.title) rule should match everything."))
                 } else if !kind.lastRuleIsCatchAll(in: rules) {
                     messages.append(.init(level: .warning, title: "\(kind.title) catch-all is missing", detail: "The last rule should match all nets and any layer where applicable."))
                 }
@@ -3186,7 +3214,7 @@ enum HorizontalBoardRulesValidator {
                     continue
                 }
                 if rule.bool("enabled") == nil {
-                    messages.append(.init(level: .warning, title: "Rule instance has no enabled flag", detail: "GTK serializes every rule instance with enabled=true or enabled=false."))
+                    messages.append(.init(level: .warning, title: "Rule instance has no enabled flag", detail: "Every rule should say whether it is enabled."))
                 }
                 // Horizon gives every via a rule matches that rule's padstack,
                 // so a rule naming none leaves them with no shape at all.
