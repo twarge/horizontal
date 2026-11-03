@@ -199,6 +199,34 @@ final class BoardLayerSelectionTests: XCTestCase {
         XCTAssertNil(HorizontalBoardLayerPreset.all.drawingLayer)
     }
 
+    /// A via's net name is drawn only with its copper: a silkscreen view
+    /// shows none of a through via's copper, so it shows no label either.
+    func testViaCopperShowsOnlyOnItsVisibleLayers() {
+        let through = HorizontalMarker(
+            id: "via", position: HorizontalPoint(x: 0, y: 0), size: 600_000, layer: nil,
+            connectedLayers: [HorizontalBoardLayers.topCopper, HorizontalBoardLayers.bottomCopper]
+        )
+        let buried = HorizontalMarker(
+            id: "buried", position: HorizontalPoint(x: 0, y: 0), size: 600_000, layer: nil,
+            connectedLayers: [HorizontalBoardLayers.in1Copper, HorizontalBoardLayers.in2Copper]
+        )
+        var options = BoardDisplayOptions()
+        XCTAssertTrue(options.showsCopper(of: through))
+
+        options.topSilkscreenView()
+        XCTAssertFalse(options.showsCopper(of: through), "the top silkscreen view hides the via's copper")
+        options.bottomSilkscreenView()
+        XCTAssertFalse(options.showsCopper(of: through), "and so does the bottom one")
+
+        options.selectedLayer = HorizontalBoardLayers.bottomCopper
+        XCTAssertTrue(options.showsCopper(of: through), "the working layer shows whatever its eye says")
+        options.selectedLayer = nil
+
+        options.bottomPlacementView()
+        XCTAssertTrue(options.showsCopper(of: through), "the bottom copper shows, and the via's ring on it")
+        XCTAssertFalse(options.showsCopper(of: buried), "a buried via has no copper on the bottom")
+    }
+
     func testPlainDigitDecodesToSelectLayer() {
         let command = HorizontalCanvasInputCore.command(keyEvent("2"), supportsTrackVias: true)
         guard case .selectLayer(let layer)? = command else {
