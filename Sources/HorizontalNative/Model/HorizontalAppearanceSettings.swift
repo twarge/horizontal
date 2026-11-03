@@ -273,6 +273,9 @@ struct HorizontalCanvasPalette {
             .hole: rgb(146.0 / 255.0, 146.0 / 255.0, 146.0 / 255.0),
             .dimension: rgb(0, 0, 0),
             .pin: rgb(146.0 / 255.0, 146.0 / 255.0, 146.0 / 255.0),
+            // The dark theme's cyan all but vanishes on white, more so at
+            // the airwires' 72 % opacity, so a deep teal.
+            .airwire: rgb(0, 0.42, 0.55),
         ]) { _, new in new },
         layerColors: darkDefault.layerColors
     )

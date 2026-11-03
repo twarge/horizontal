@@ -5903,6 +5903,11 @@ struct BoardCanvasView: View {
     /// edge.
     static let viaDiameterFill = Color(red: 0.2, green: 1, blue: 0.35)
 
+    /// How wide airwires and drawn connection lines are at the least, in
+    /// pixels: twice the board's default minimum line width, which they were
+    /// drawn at before (their own 0.9 was always under it).
+    static let connectionLineMinimumWidth: Float = 3
+
     /// Where the next click drops the armed via, and its shape: on the end of
     /// the preview, or on the end of the route itself while the cursor rests
     /// there (see `addDrawTrackPoint`). Nil with no via armed, and over a pad
@@ -10652,7 +10657,7 @@ struct BoardCanvasView: View {
                 appendSegment(
                     connectionLine,
                     color: connectionLineDashColor,
-                    minimumWidth: 0.9,
+                    minimumWidth: Self.connectionLineMinimumWidth,
                     dash: (6, 4),
                     owner: selectableRef(id: connectionLine.id, type: .connectionLine),
                     to: \.connectionLines
@@ -10662,7 +10667,7 @@ struct BoardCanvasView: View {
                 appendSegment(
                     airwire,
                     color: airwireDashColor,
-                    minimumWidth: 0.9,
+                    minimumWidth: Self.connectionLineMinimumWidth,
                     dash: (6, 4),
                     owner: airwire.netID.map(airwireOwner),
                     to: \.connectionLines
@@ -11872,7 +11877,7 @@ struct BoardCanvasView: View {
                 to: segment.to,
                 color: isConnectionLine ? HorizontalMetalRGBA(theme.connectionLine.opacity(0.72)) : layerMetalColor(layer),
                 width: segment.width,
-                minimumWidth: isConnectionLine ? 0.9 : 1.1,
+                minimumWidth: isConnectionLine ? Self.connectionLineMinimumWidth : 1.1,
                 dash: dash,
                 outlineOnly: isConnectionLine ? false : !displayOptions.isLayerFilled(layer),
                 compositeGroup: isConnectionLine ? 0 : (layer.map(metalCompositeGroup(for:)) ?? 0)
@@ -12055,7 +12060,7 @@ struct BoardCanvasView: View {
                 to: segment.to,
                 color: type == .connectionLine ? HorizontalMetalRGBA(theme.connectionLine.opacity(0.72)) : layerMetalColor(layer),
                 width: segment.width,
-                minimumWidth: type == .connectionLine ? 0.9 : 1.1,
+                minimumWidth: type == .connectionLine ? Self.connectionLineMinimumWidth : 1.1,
                 dash: dash,
                 outlineOnly: type == .connectionLine ? false : !layerUsesFill(layer),
                 compositeGroup: type == .connectionLine ? 0 : compositeGroup,
@@ -13107,7 +13112,7 @@ struct BoardCanvasView: View {
                         from: airwire.from,
                         to: airwire.to,
                         color: color,
-                        minimumWidth: 0.9,
+                        minimumWidth: Self.connectionLineMinimumWidth,
                         dashLength: 6,
                         dashGap: 4
                     )

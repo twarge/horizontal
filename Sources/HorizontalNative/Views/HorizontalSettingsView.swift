@@ -535,6 +535,7 @@ private let boardColorRoles: Set<HorizontalColorRole> = [
     .dimension,
     .error,
     .origin,
+    .airwire,
     .connectionLine,
     .selectableOuter,
     .selectableInner,
