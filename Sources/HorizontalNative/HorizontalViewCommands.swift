@@ -273,6 +273,7 @@ extension FocusedValues {
 }
 
 struct HorizontalViewCommands: Commands {
+    @ObservedObject var appearanceSettings: HorizontalAppearanceSettings
     @FocusedBinding(\.horizonVisiblePanes) private var visiblePanes
     @FocusedBinding(\.horizonBoardDisplayOptions) private var boardDisplayOptions
     @FocusedBinding(\.horizonSchematicDisplayOptions) private var schematicDisplayOptions
@@ -672,6 +673,10 @@ struct HorizontalViewCommands: Commands {
                 // a board is open; it pours only boards that can be edited.
                 Toggle("Update Planes Automatically", isOn: $updatesPlanesAutomatically)
             }
+            // Settings' Silkscreen toggle, here too. It changes what the board
+            // view, the 3D view and the board exports draw, not the project,
+            // so it stays when the document is locked.
+            Toggle("Clip Silkscreen to Solder Mask", isOn: appearanceSettings.clipSilkscreenToSolderMaskBinding())
 
             // Empties every plane's renderFragments so the board draws without
             // plane fills; Q recomputes them. This is the plane-fill control —
