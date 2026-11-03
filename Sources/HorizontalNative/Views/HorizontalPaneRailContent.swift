@@ -2480,7 +2480,7 @@ struct PlaceBlockToolButton: View {
                 if !choices.isEmpty {
                     Divider()
                 }
-                Button("New Block…", action: onNewBlock)
+                Button("New Block", action: onNewBlock)
             } label: {
                 Image(systemName: "cube")
             }

@@ -1785,6 +1785,14 @@ final class HorizontalProjectEditorTests: XCTestCase {
                        "R7 is on the sub-block's sheet only")
     }
 
+    /// New Block names a block without asking: "Block", then the first
+    /// "Block n" no block has, whatever its case.
+    func testNewBlockNameSkipsNamesTaken() throws {
+        XCTAssertEqual(try HorizontalProject.load(from: packageURL).newBlockName, "Block")
+        _ = try apply([["op": "add_block", "name": "Block"], ["op": "add_block", "name": "block 2"]])
+        XCTAssertEqual(try HorizontalProject.load(from: packageURL).newBlockName, "Block 3")
+    }
+
     /// A Channel block with a resistor whose pin 1 is the block's port IN, used
     /// twice on the top sheet (CHA and CHB, R1 there as R11 and R12) with both
     /// ports wired to a top net also called IN. Returns the block's uuid.
