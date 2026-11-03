@@ -174,15 +174,14 @@ struct HorizontalSettingsView: View {
             HorizontalMouserSettingsSection()
         }
         .formStyle(.grouped)
-        // The macOS Settings window (HorizontalSettingsWindow) resizes down to
-        // the minimum, where the colour matrix's four columns still fit and the
-        // form scrolls; on iPad the form is presented in a sheet and should
-        // fill whatever size the sheet provides.
+        // The macOS Settings window (HorizontalSettingsWindow) keeps the width
+        // the colour matrix's four columns fit and resizes only in height,
+        // down to the minimum, where the form scrolls; on iPad the form is
+        // presented in a sheet and should fill whatever size the sheet
+        // provides.
         #if os(macOS)
-        .frame(
-            minWidth: Self.minimumSize.width, maxWidth: .infinity,
-            minHeight: Self.minimumSize.height, maxHeight: .infinity
-        )
+        .frame(width: Self.minimumSize.width)
+        .frame(minHeight: Self.minimumSize.height, maxHeight: .infinity)
         #endif
     }
 
