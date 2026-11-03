@@ -1162,8 +1162,7 @@ struct InteractiveCanvasView: View {
                     HorizontalUnplacedObjectColumn(
                         objects: unplacedObjects,
                         selectedID: selectedUnplacedObjectID,
-                        foregroundColor: foregroundColor,
-                        backgroundColor: overlayBackgroundColor,
+                        colorScheme: canvasColorScheme,
                         onHover: { pointerInsideUnplacedObjectColumn = $0 },
                         onSelect: onUnplacedObjectSelection
                     )
@@ -1212,6 +1211,14 @@ struct InteractiveCanvasView: View {
             bottom: safeAreaInsets.bottom + 18,
             trailing: safeAreaInsets.trailing + 12
         )
+    }
+
+    /// Dark or light as the canvas is, for a system material drawn over it: a
+    /// palette can be dark while the window is light.
+    private var canvasColorScheme: ColorScheme {
+        let color = HorizontalMetalRGBA(backgroundColor)
+        let luminance = 0.2126 * color.red + 0.7152 * color.green + 0.0722 * color.blue
+        return luminance < 0.5 ? .dark : .light
     }
 
     private var unplacedObjectColumnAlignment: Alignment {
@@ -2343,15 +2350,16 @@ private struct HorizontalHoverPopoverView: View {
 }
 
 /// The components (or a symbol's pins) left to place, in a panel along the
-/// canvas edge: as tall as its rows, up to the canvas between its safe areas,
-/// and scrolled past that. A row gives the reference designator and the value,
-/// the part's (its MPN where it has none) as Horizon shows it; a pin, which has
-/// no component, gives its direction.
+/// canvas edge under a title that counts them: as tall as its rows, up to the
+/// canvas between its safe areas, and scrolled past that, the title staying put.
+/// A row gives the reference designator and the value, the part's (its MPN
+/// where it has none) as Horizon shows it; a pin, which has no component, gives
+/// its direction. The panel is the system's material, the canvas blurred
+/// through it, dark or light as the canvas is.
 private struct HorizontalUnplacedObjectColumn: View {
     var objects: [HorizontalUnplacedObject]
     var selectedID: String?
-    var foregroundColor: Color
-    var backgroundColor: Color
+    var colorScheme: ColorScheme
     /// The pointer is over the panel. The canvas's event monitor sees the
     /// scroll wheel first and pans with it, so it has to be told to leave the
     /// panel its events.
@@ -2370,47 +2378,90 @@ private struct HorizontalUnplacedObjectColumn: View {
     private static let baseRowHeight: CGFloat = 24
     private static let baseWidth: CGFloat = 200
     private static let baseLabelWidth: CGFloat = 50
+    private static let titleTopPadding: CGFloat = 8
+    private static let titleBottomPadding: CGFloat = 6
     #else
     private static let baseRowHeight: CGFloat = 44
     private static let baseWidth: CGFloat = 240
     private static let baseLabelWidth: CGFloat = 60
+    private static let titleTopPadding: CGFloat = 12
+    private static let titleBottomPadding: CGFloat = 8
     #endif
     private static let rowSpacing: CGFloat = 1
     private static let inset: CGFloat = 5
+    private static let rowPadding: CGFloat = 8
     private static let cornerRadius: CGFloat = 8
 
     var body: some View {
-        ScrollView(.vertical) {
-            LazyVStack(alignment: .leading, spacing: Self.rowSpacing) {
-                ForEach(objects) { object in
-                    row(for: object)
+        VStack(alignment: .leading, spacing: 0) {
+            title
+            Divider()
+                .padding(.horizontal, Self.inset)
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: Self.rowSpacing) {
+                    ForEach(objects) { object in
+                        row(for: object)
+                    }
                 }
+                .padding(Self.inset)
             }
-            .padding(Self.inset)
+            .scrollBounceBehavior(.basedOnSize)
+            // A scroll view takes all the height it is offered: held to its
+            // rows, the list is no taller than they are, and what the canvas
+            // leaves under the title (less its safe areas) caps it, past which
+            // it scrolls.
+            .frame(maxHeight: rowsHeight)
         }
-        .scrollBounceBehavior(.basedOnSize)
         .frame(width: width)
-        // A scroll view takes all the height it is offered: held to its rows,
-        // the panel is no taller than they are, and the canvas's height (less
-        // its safe areas) caps it, past which it scrolls.
-        .frame(maxHeight: contentHeight)
-        .background {
-            RoundedRectangle(cornerRadius: Self.cornerRadius)
-                .fill(backgroundColor)
-        }
+        .background { material }
         .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius))
         .overlay {
             RoundedRectangle(cornerRadius: Self.cornerRadius)
-                .stroke(foregroundColor.opacity(0.16), lineWidth: 0.7)
+                .stroke(Color.primary.opacity(0.16), lineWidth: 0.7)
         }
         .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        .environment(\.colorScheme, colorScheme)
         .onHover(perform: onHover)
         // The last row placed with the pointer resting on the panel takes the
         // panel away without a hover end, which would leave the canvas deaf.
         .onDisappear { onHover(false) }
     }
 
-    private var contentHeight: CGFloat {
+    @ViewBuilder private var material: some View {
+        #if os(macOS)
+        HorizontalCanvasPanelMaterial(colorScheme: colorScheme, cornerRadius: Self.cornerRadius)
+        #else
+        RoundedRectangle(cornerRadius: Self.cornerRadius)
+            .fill(.regularMaterial)
+        #endif
+    }
+
+    private var title: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(titleText)
+                .font(.headline)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .foregroundStyle(.primary)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 0)
+            Text(objects.count, format: .number)
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, Self.inset + Self.rowPadding)
+        .padding(.top, Self.titleTopPadding)
+        .padding(.bottom, Self.titleBottomPadding)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// The symbol editor lists its unit's pins; the board and the schematic list
+    /// components, whole or by gate.
+    private var titleText: String {
+        objects.allSatisfy { $0.componentID == nil } ? "Unplaced Pins" : "Unplaced Components"
+    }
+
+    private var rowsHeight: CGFloat {
         let count = CGFloat(objects.count)
         return count * rowHeight + max(count - 1, 0) * Self.rowSpacing + 2 * Self.inset
     }
@@ -2426,25 +2477,25 @@ private struct HorizontalUnplacedObjectColumn: View {
                     .font(.body.weight(.semibold).monospacedDigit())
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                    .foregroundStyle(foregroundColor.opacity(isSelected ? 0.96 : 0.82))
+                    .foregroundStyle(Color.primary.opacity(isSelected ? 0.96 : 0.82))
                     .frame(width: labelWidth, alignment: .leading)
                 Text(value(for: object))
                     .font(.body)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .foregroundStyle(foregroundColor.opacity(isSelected ? 0.78 : 0.6))
+                    .foregroundStyle(Color.primary.opacity(isSelected ? 0.78 : 0.6))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, Self.rowPadding)
             .frame(height: rowHeight)
             .background {
                 RoundedRectangle(cornerRadius: 5)
-                    .fill(foregroundColor.opacity(isSelected ? 0.14 : isHovered ? 0.07 : 0))
+                    .fill(Color.primary.opacity(isSelected ? 0.14 : isHovered ? 0.07 : 0))
             }
             .overlay {
                 if isSelected {
                     RoundedRectangle(cornerRadius: 5)
-                        .stroke(foregroundColor.opacity(0.32), lineWidth: 0.8)
+                        .stroke(Color.primary.opacity(0.32), lineWidth: 0.8)
                 }
             }
             .contentShape(Rectangle())
@@ -2466,6 +2517,47 @@ private struct HorizontalUnplacedObjectColumn: View {
         return details.value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
+
+#if os(macOS)
+/// The system's frosted material for a panel over the canvas, kept frosted. A
+/// SwiftUI material on the Mac follows the window's active state and turns to a
+/// flat fill when the window stops being key, while the canvas behind it goes
+/// on drawing; this one blurs the canvas, in the window, either way. It takes no
+/// clicks: the panel's own views do.
+private struct HorizontalCanvasPanelMaterial: NSViewRepresentable {
+    var colorScheme: ColorScheme
+    var cornerRadius: CGFloat
+
+    final class EffectView: NSVisualEffectView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    func makeNSView(context: Context) -> EffectView {
+        let view = EffectView()
+        view.material = .hudWindow
+        view.blendingMode = .withinWindow
+        view.state = .active
+        view.maskImage = Self.maskImage(cornerRadius: cornerRadius)
+        return view
+    }
+
+    func updateNSView(_ view: EffectView, context: Context) {
+        view.appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
+    }
+
+    private static func maskImage(cornerRadius: CGFloat) -> NSImage {
+        let edge = 2 * cornerRadius + 1
+        let image = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: cornerRadius, left: cornerRadius, bottom: cornerRadius, right: cornerRadius)
+        image.resizingMode = .stretch
+        return image
+    }
+}
+#endif
 
 /// Cross-platform SwiftUI canvas input (the unified pointer layer). A drag either
 /// PANS (`.pans`, iOS navigation) or runs the shared select state machine
