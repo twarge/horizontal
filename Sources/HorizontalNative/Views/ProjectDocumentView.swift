@@ -3298,18 +3298,16 @@ struct ProjectWorkspaceView: View {
                 selectOrSoloBoardLayer(layer)
             }
         case .useRuleWidth:
-            boardToolSettings.explicitTrackWidth = nil
+            boardToolSettings.setExplicitTrackWidth(nil)
             routeWidthCommand = HorizontalRouteWidthCommand()
         case .useCustomWidth(let width):
             guard width > 0 else { return }
-            boardToolSettings.explicitTrackWidth = width
+            boardToolSettings.setExplicitTrackWidth(width)
         case .useRuleVia:
-            boardToolSettings.viaDiameter = nil
-            boardToolSettings.viaHoleDiameter = nil
+            boardToolSettings.setVia(diameter: nil, holeDiameter: nil)
         case .useCustomVia(let diameter, let holeDiameter):
             guard diameter > 0, holeDiameter > 0 else { return }
-            boardToolSettings.viaDiameter = diameter
-            boardToolSettings.viaHoleDiameter = holeDiameter
+            boardToolSettings.setVia(diameter: diameter, holeDiameter: holeDiameter)
         case .editRule(let edit):
             applyRouteRuleEdit(edit)
         case .showRules(let kind, let ruleID):

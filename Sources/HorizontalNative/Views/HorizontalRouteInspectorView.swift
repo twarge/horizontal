@@ -438,7 +438,11 @@ private struct HorizontalRouteInspectorContent: View {
                 } else {
                     Picker("Layer", selection: Binding(
                         get: { state.layer },
-                        set: { onCommand(.selectLayer($0)) }
+                        set: { layer in
+                            if layer != state.layer {
+                                onCommand(.selectLayer(layer))
+                            }
+                        }
                     )) {
                         ForEach(state.layerOptions) { option in
                             Text(option.title).tag(option.id)
@@ -483,9 +487,13 @@ private struct HorizontalRouteInspectorContent: View {
             HStack {
                 sectionTitle("Width")
                 Spacer()
+                // Each picker here sends only a change: SwiftUI can hand a
+                // picker its own selection back while it updates the view, and
+                // the command would publish the tool settings mid-update.
                 Picker("Width from", selection: Binding(
                     get: { widthMode },
                     set: { mode in
+                        guard mode != widthMode else { return }
                         switch mode {
                         case .rules: onCommand(.useRuleWidth)
                         case .custom: onCommand(.useCustomWidth(state.width))
@@ -593,6 +601,7 @@ private struct HorizontalRouteInspectorContent: View {
                     Picker("Via from", selection: Binding(
                         get: { via.isCustom },
                         set: { custom in
+                            guard custom != via.isCustom else { return }
                             if custom, let diameter = via.diameter, let hole = via.holeDiameter {
                                 onCommand(.useCustomVia(diameter: diameter, holeDiameter: hole))
                             } else if !custom {

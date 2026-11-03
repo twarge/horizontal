@@ -85,6 +85,24 @@ final class HorizontalBoardToolSettings: ObservableObject {
         viaHoleDiameter ?? template?.holeDiameter ?? Self.defaultViaHoleDiameter
     }
 
+    /// The route inspector's Rules / Custom, nil for the rules'. These set a
+    /// property only when it changes: an @Published property publishes on
+    /// every set, the value it already has too.
+    func setExplicitTrackWidth(_ width: Double?) {
+        if explicitTrackWidth != width {
+            explicitTrackWidth = width
+        }
+    }
+
+    func setVia(diameter: Double?, holeDiameter: Double?) {
+        if viaDiameter != diameter {
+            viaDiameter = diameter
+        }
+        if viaHoleDiameter != holeDiameter {
+            viaHoleDiameter = holeDiameter
+        }
+    }
+
     private func persist(_ value: Double?, forKey key: String) {
         if let value {
             defaults.set(value, forKey: key)
