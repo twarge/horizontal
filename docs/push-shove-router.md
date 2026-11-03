@@ -532,13 +532,14 @@ treatment the pour got:
    padstack and parameters, one from a via definition the definition's and
    its span; a plane from the rules its plane rule's settings. A change to the
    rules' parameters reloads the board, which derives the pads from them.
-   The rules window's Apply is gone; its Apply & Check applies every rule to a
-   board that disagrees with them (as one Horizon wrote can; opening a board
-   changes nothing) and runs every check into the rules results sidebar,
-   which replaced the window's Checks tab. A via's Shape from and a plane's
-   Settings from use the same Rules / Custom picker, and choosing Rules gives
-   the item the rule's shape at once; a setting given a plane makes it Custom,
-   as a width typed into a track does.
+   The rules window's Apply is gone; its Apply & Check, the arrow beside its
+   Rules heading, applies every rule to a board that disagrees with them (as
+   one Horizon wrote can; opening a board changes nothing) and runs every
+   check into the rules results sidebar, which replaced the window's Checks
+   tab. A via's Shape from and a plane's Settings from use the same Rules /
+   Custom picker, and choosing Rules gives the item the rule's shape at once;
+   a setting given a plane makes it Custom, as a width typed into a track
+   does.
 
    **The route inspector** (`HorizontalRouteInspectorView`) is the sidebar
    while the track tool is in use. Routing leaves the sidebar open or closed
