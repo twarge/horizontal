@@ -430,6 +430,46 @@ treatment the pour got:
    click lays nothing — it used to fall back to the plain elbow, which cut
    through everything and looked exactly like a router ignoring obstacles.
 
+   **Since then the route stops at the nearest legal point instead**
+   (`HorizontalRouteFinder.approach`, which the track tool previews and
+   lays). Even with the empty preview, the cursor over another net's pad or
+   track still drew the route straight into it. The exemption a route needs
+   for the pad it STARTS in applied to the cursor too, so whatever the
+   cursor was over stopped being an obstacle. Now the end keeps that
+   exemption only where the route joins copper there: its own net's, where
+   a fine pitch puts the neighbours' clearances over the pad's centre, or
+   any copper while the route has no net yet. Anywhere else, a cursor too
+   close to something makes the route aim at the nearest point that isn't
+   (`nearestClearPoint`). That point is worked out from the octagons: the
+   feet of perpendiculars onto their faces and the corners where faces
+   meet, within a radius that doubles from the cursor's depth inside, each
+   round tested against the hulls reaching it, in whole nanometres. A goal
+   the search can't reach, enclosed, ends the route at the nearest point
+   the search did reach. The grid search now hands that path back with its
+   verdict, and the route carries on from there along the elbow for as far
+   as it stays clear, to the nanometre. So the preview never comes nearer
+   anything than the rules allow, and is empty only when the route can
+   go nowhere towards the cursor. A click lays what it shows: a click on
+   another net's copper, which lays nothing without the router, lays the
+   route to that copper's clearance and carries on from there, and a click
+   on a pad the route can't get into lays no pad connection and doesn't
+   end the route. `route` itself still exempts both ends, for the
+   harness's pad-to-pad requests. The session keeps its last eight
+   answers, because the canvas asks the same question several times for
+   one cursor position (the preview, the route inspector, the click) and an
+   unreachable goal costs a whole search. On Randi Short, with the cursor on another
+   net's pad (`RouterRealBoardHarnessTests`, 96 requests): every one stops
+   short, none violates, and in a release build they take 8 ms on average
+   and 27 ms at worst — the nearest legal point about 0.2 ms of that, the rest
+   the search, which on that finished board can't reach two goals in three,
+   the same cost an unreachable route already had (29 ms at worst in the
+   pad-to-pad harness). The first version of `nearestClearPoint` paired every
+   face line and asked the index about every candidate, and took 14 s for one
+   cursor unoptimised; keeping only the feet and crossings that lie on the
+   hulls' own faces, and testing them against one list of hulls per round,
+   brought the whole sample's share from 41 s to 2 s. An armed via is dropped where the
+   route stops, which the route's own clearance doesn't account for.
+
    **Loop removal is back** (`BoardTrackLoops`, "Remove loops" in the tool
    settings, on by default). The vendored engine replaced the copper a
    reroute bypassed; this router only ever added copper, so rerouting a

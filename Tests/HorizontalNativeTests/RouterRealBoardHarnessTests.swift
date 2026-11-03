@@ -172,4 +172,86 @@ final class RouterRealBoardHarnessTests: XCTestCase {
             completed * 100 / max(attempted, 1), 35,
             "a search should complete a substantial share of routable pairs; see /tmp/router-harness.txt")
     }
+
+    /// The track tool's preview with the cursor on another net's pad: the
+    /// route has to stop at that pad's clearance, wherever on a real board the
+    /// pad is, and never cross anything on the way (`HorizontalRouteFinder
+    /// .approach`). Every request here ends short of its target by
+    /// construction, so it is the router's slowest interactive case; the
+    /// numbers go to /tmp/router-approach-harness.txt.
+    func testApproachingAnotherNetsPadStopsAtItsClearance() throws {
+        let board = try loadBoard()
+        let session = HorizontalBoardTrackRouterSession(board: board)
+        let layer = HorizontalBoardLayers.topCopper
+        let width = 200_000.0
+
+        var pads: [(point: HorizontalPoint, net: String?)] = []
+        for pad in board.packagePads where pad.layer == layer && pad.netID != nil {
+            let centre = HorizontalRect(points: pad.renderVertices(arcPrecision: 16)).center
+            pads.append((centre, pad.netID))
+        }
+        pads.sort { $0.point.x != $1.point.x ? $0.point.x < $1.point.x : $0.point.y < $1.point.y }
+        try XCTSkipIf(pads.count < 20, "board has too few top-layer pads to sample")
+
+        var seed: UInt64 = 0x9e3779b9
+        func next(_ bound: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(max(bound, 1)))
+        }
+
+        var attempted = 0
+        var stoppedShort = 0
+        var wentNowhere = 0
+        var violating = 0
+        var shortfalls: [Double] = []
+        var worstMilliseconds = 0.0
+
+        for _ in 0..<150 {
+            let a = pads[next(pads.count)]
+            let b = pads[next(pads.count)]
+            guard a.net != b.net else { continue }
+            let dx = b.point.x - a.point.x
+            let dy = b.point.y - a.point.y
+            let distance = (dx * dx + dy * dy).squareRoot()
+            guard distance > 1_000_000, distance < 20_000_000 else { continue }
+            attempted += 1
+
+            let start = DispatchTime.now().uptimeNanoseconds
+            let approach = session.approach(
+                from: a.point, to: b.point, layer: layer, netID: a.net,
+                width: width, diagonalFirst: true)
+            worstMilliseconds = max(
+                worstMilliseconds,
+                Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
+
+            XCTAssertFalse(approach.reachesTarget, "a route never ends on another net's pad")
+            if !approach.reachesTarget { stoppedShort += 1 }
+            guard approach.points.count > 1, let end = approach.points.last else {
+                wentNowhere += 1
+                continue
+            }
+            shortfalls.append(((end.x - b.point.x) * (end.x - b.point.x)
+                + (end.y - b.point.y) * (end.y - b.point.y)).squareRoot())
+            let bad = violations(
+                points: approach.points, layer: layer,
+                net: session.netCode(for: a.net), width: width, session: session)
+            if bad > 0 { violating += 1 }
+        }
+
+        let sorted = shortfalls.sorted()
+        let report = """
+        requests:       \(attempted), cursor on another net's pad
+        stopped short:  \(stoppedShort)
+        went nowhere:   \(wentNowhere)
+        with violations:\(violating)
+        end from pad centre: median \(sorted.isEmpty ? 0 : Int(sorted[sorted.count / 2]) / 1000) µm, \
+        max \(Int(sorted.last ?? 0) / 1000) µm
+        slowest:        \(String(format: "%.1f", worstMilliseconds)) ms
+        """
+        try? report.write(toFile: "/tmp/router-approach-harness.txt", atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(violating, 0, "a route that stops short must still be clear")
+        XCTAssertLessThan(worstMilliseconds, 1_000, "no single request should take a second, even unoptimised")
+        XCTAssertGreaterThan(attempted, 20, "the sample should be big enough to mean something")
+    }
 }

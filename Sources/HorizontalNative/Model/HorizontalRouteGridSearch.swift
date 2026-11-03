@@ -88,6 +88,37 @@ final class HorizontalRouteCollider {
         }
     }
 
+    /// The obstacles constraining this route whose grown hull may come within
+    /// `radius` of `point`, in obstacle order. With a radius of zero, exactly
+    /// those `point` lies inside — where a route may not end. Otherwise
+    /// conservative, as `candidates(_:within:of:into:)` is.
+    func hulls(within radius: Double, of point: HorizontalPoint) -> [Int] {
+        var result: [Int] = []
+        let supports = HorizontalOctagon.supports(point)
+        let box = HorizontalOctagon(from: point, to: point, width: 0).inflated(by: radius + reach).boundingBox
+        index.forEachObstacle(overlapping: box, on: layer) { position, _ in
+            if let hull = hull(position), hull.separation(from: supports) < radius {
+                result.append(position)
+            }
+        }
+        return result
+    }
+
+    /// How far `point` is inside the grown hulls it must keep out of: the
+    /// distance to the nearest face of the one it is deepest in, or 0 when it
+    /// is clear of them all.
+    func depth(of point: HorizontalPoint) -> Double {
+        let supports = HorizontalOctagon.supports(point)
+        let box = HorizontalOctagon(from: point, to: point, width: 0).inflated(by: reach).boundingBox
+        var depth = 0.0
+        index.forEachObstacle(overlapping: box, on: layer) { position, _ in
+            if let hull = hull(position) {
+                depth = max(depth, -hull.separation(from: supports))
+            }
+        }
+        return depth
+    }
+
     /// Of `candidates`, those whose grown hull lies within `radius` of `point`
     /// — the only ones a step of that length from the point can touch.
     func candidates(
@@ -183,10 +214,23 @@ enum HorizontalRouteGridSearch {
         /// target that stopped it, or −1 when nothing did, and says whether the
         /// region it explored reached the edge of its window — if it did, a
         /// wider window might have found a way; if not, the start is enclosed
-        /// at this grid's resolution and only a finer one could.
-        case unreachable(blocker: Int, reachedWindowEdge: Bool)
-        /// The search ran out of budget with the target still unreached.
-        case exhausted(blocker: Int)
+        /// at this grid's resolution and only a finer one could. `nearest` is
+        /// the clear grid path to the node it reached nearest the target.
+        case unreachable(blocker: Int, reachedWindowEdge: Bool, nearest: [HorizontalPoint])
+        /// The search ran out of budget with the target still unreached, and
+        /// `nearest` is the clear grid path to the node it had got nearest.
+        case exhausted(blocker: Int, nearest: [HorizontalPoint])
+    }
+
+    /// The path a failed search hands back with its verdict: every grid step
+    /// it explored was tested clear, so the way to whichever node got nearest
+    /// the target is a legal route that ends as near it as the search got.
+    /// What a route that cannot arrive draws instead of nothing.
+    static func nearest(in outcome: Outcome) -> [HorizontalPoint]? {
+        switch outcome {
+        case .found: return nil
+        case .unreachable(_, _, let nearest), .exhausted(_, let nearest): return nearest
+        }
     }
 
     /// Whether a popped node tries the direct elbow onto the target. Doing it
@@ -343,7 +387,7 @@ enum HorizontalRouteGridSearch {
             }
         }
         guard arrivalPossible else {
-            return .unreachable(blocker: arrivalBlocker, reachedWindowEdge: false)
+            return .unreachable(blocker: arrivalBlocker, reachedWindowEdge: false, nearest: [from])
         }
 
         // --- The search ---------------------------------------------------
@@ -385,6 +429,21 @@ enum HorizontalRouteGridSearch {
         var nearestBlockedH = Double.infinity
         var nearestBlocker = -1
         var reachedWindowEdge = false
+        // And the node it got nearest the target, as the crow flies, for the
+        // route that stops short: the one ending nearest the cursor.
+        var nearestCell = start
+        var nearestDistance = Double.infinity
+
+        @inline(__always) func path(to cell: Int) -> [HorizontalPoint] {
+            var path: [HorizontalPoint] = []
+            var cursor = cell
+            while cursor >= 0 {
+                path.append(point(of: cursor))
+                cursor = Int(parent[cursor])
+            }
+            path.reverse()
+            return path
+        }
 
         while let entry = heap.pop() {
             let cell = Int(entry.cell)
@@ -392,11 +451,16 @@ enum HorizontalRouteGridSearch {
             closed[cell] = true
             expansions += 1
             if expansions > maxExpansions {
-                return .exhausted(blocker: nearestBlocker)
+                return .exhausted(blocker: nearestBlocker, nearest: path(to: nearestCell))
             }
 
             let p = point(of: cell)
             let h = entry.h
+            let distance = (p.x - to.x) * (p.x - to.x) + (p.y - to.y) * (p.y - to.y)
+            if distance < nearestDistance {
+                nearestDistance = distance
+                nearestCell = cell
+            }
 
             // The arrival: an elbow from this node onto the target, in the
             // route's own posture or failing that the other.
@@ -413,15 +477,7 @@ enum HorizontalRouteGridSearch {
                     }
                 }
                 if let arrival {
-                    var path: [HorizontalPoint] = []
-                    var cursor = cell
-                    while cursor >= 0 {
-                        path.append(point(of: cursor))
-                        cursor = Int(parent[cursor])
-                    }
-                    path.reverse()
-                    path.append(contentsOf: arrival.dropFirst())
-                    return .found(path)
+                    return .found(path(to: cell) + arrival.dropFirst())
                 }
                 if let arrivalHit, h < nearestBlockedH {
                     nearestBlockedH = h
@@ -478,6 +534,7 @@ enum HorizontalRouteGridSearch {
             }
         }
 
-        return .unreachable(blocker: nearestBlocker, reachedWindowEdge: reachedWindowEdge)
+        return .unreachable(
+            blocker: nearestBlocker, reachedWindowEdge: reachedWindowEdge, nearest: path(to: nearestCell))
     }
 }

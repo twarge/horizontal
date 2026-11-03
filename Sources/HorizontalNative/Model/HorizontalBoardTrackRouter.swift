@@ -50,6 +50,58 @@ final class HorizontalBoardTrackRouterSession {
         )
     }
 
+    /// Routes from `from` towards `to`, ending there if a legal route can and
+    /// otherwise at the nearest point one can reach
+    /// (`HorizontalRouteFinder.approach`): what the track tool previews and
+    /// lays.
+    ///
+    /// The last few answers are kept. The canvas asks the same question
+    /// several times for one cursor position — its preview, the route
+    /// inspector, the click — and a route that cannot get through costs a
+    /// whole search to say so; the board does not change while a session
+    /// lasts, so the answer does not either.
+    func approach(
+        from: HorizontalPoint,
+        to: HorizontalPoint,
+        layer: Int,
+        netID: String?,
+        width: Double,
+        diagonalFirst: Bool,
+        budget: HorizontalRouteFinder.Budget = .interactive
+    ) -> HorizontalRouteFinder.Approach {
+        let net = netCode(for: netID)
+        let key = ApproachKey(
+            fromX: from.x, fromY: from.y, toX: to.x.rounded(), toY: to.y.rounded(),
+            layer: layer, net: net, width: width, diagonalFirst: diagonalFirst,
+            maxExpansions: budget.maxExpansions)
+        if let known = recentApproaches.first(where: { $0.key == key }) {
+            return known.approach
+        }
+        let approach = HorizontalRouteFinder.approach(
+            from: from, to: to, layer: layer,
+            net: net, width: width,
+            index: index, clearances: clearances,
+            diagonalFirst: diagonalFirst, budget: budget
+        )
+        recentApproaches.insert((key, approach), at: 0)
+        if recentApproaches.count > Self.recentApproachLimit {
+            recentApproaches.removeLast()
+        }
+        return approach
+    }
+
+    private struct ApproachKey: Equatable {
+        var fromX, fromY, toX, toY: Double
+        var layer: Int
+        var net: Int
+        var width: Double
+        var diagonalFirst: Bool
+        var maxExpansions: Int
+    }
+
+    private static let recentApproachLimit = 8
+    private var recentApproaches: [(key: ApproachKey, approach: HorizontalRouteFinder.Approach)] = []
+
     /// What blocked a route, in board terms, for the UI to highlight.
     ///
     /// Only tracks and vias map back to a board object — a pad, a keepout, an
