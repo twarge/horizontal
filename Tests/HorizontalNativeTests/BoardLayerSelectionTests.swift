@@ -125,6 +125,43 @@ final class BoardLayerSelectionTests: XCTestCase {
         XCTAssertFalse(silkscreen.isLayerVisible(HorizontalBoardLayers.topCopper), "silkscreen does not")
     }
 
+    /// A placement view is its side's copper, assembly drawing and courtyard,
+    /// and none of the other side's.
+    func testPlacementViewsShowTheirSidesAssembly() {
+        let top = [HorizontalBoardLayers.topCopper, HorizontalBoardLayers.topAssembly, HorizontalBoardLayers.topCourtyard]
+        let bottom = [HorizontalBoardLayers.bottomCopper, HorizontalBoardLayers.bottomAssembly, HorizontalBoardLayers.bottomCourtyard]
+        for (name, apply, shown, hidden) in [
+            ("top", { (options: inout BoardDisplayOptions) in options.topPlacementView() }, top, bottom),
+            ("bottom", { (options: inout BoardDisplayOptions) in options.bottomPlacementView() }, bottom, top),
+        ] {
+            var options = BoardDisplayOptions()
+            apply(&options)
+            for layer in shown {
+                XCTAssertTrue(options.isLayerVisible(layer), "\(name) placement shows \(HorizontalBoardLayers.name(for: layer))")
+            }
+            for layer in hidden + [HorizontalBoardLayers.topPackage, HorizontalBoardLayers.bottomPackage] {
+                XCTAssertFalse(options.isLayerVisible(layer), "\(name) placement hides \(HorizontalBoardLayers.name(for: layer))")
+            }
+        }
+    }
+
+    /// The solder masks start as outlines and every other layer filled; a
+    /// switch set back to its layer's default leaves no override behind.
+    func testSolderMasksDefaultToOutlines() {
+        var options = BoardDisplayOptions()
+        XCTAssertFalse(options.isLayerFilled(HorizontalBoardLayers.topMask))
+        XCTAssertFalse(options.isLayerFilled(HorizontalBoardLayers.bottomMask))
+        XCTAssertTrue(options.isLayerFilled(HorizontalBoardLayers.topCopper))
+        XCTAssertTrue(options.isLayerFilled(HorizontalBoardLayers.topPaste))
+
+        options.setLayerFilled(HorizontalBoardLayers.topMask, isFilled: true)
+        XCTAssertTrue(options.isLayerFilled(HorizontalBoardLayers.topMask))
+        XCTAssertFalse(options.isLayerFilled(HorizontalBoardLayers.bottomMask), "the other mask keeps its default")
+        options.setLayerFilled(HorizontalBoardLayers.topMask, isFilled: false)
+        options.setLayerFilled(HorizontalBoardLayers.topCopper, isFilled: true)
+        XCTAssertTrue(options.layerFillOverrides.isEmpty)
+    }
+
     /// The Objects switches start on, and no view preset sets them: a
     /// view is its layers, and what the user switched off stays off.
     func testPresetsLeaveObjectSwitchesAlone() {

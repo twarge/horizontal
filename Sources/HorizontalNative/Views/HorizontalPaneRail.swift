@@ -144,8 +144,8 @@ struct PaneKeyboardFocusBadge: View {
     }
 }
 
-/// The vertical rail itself: Info / Layers / Grid popover buttons plus the free-form
-/// `tools` column beneath them.
+/// The vertical rail itself: Info / Layers / Grid popover buttons (Info / Grid /
+/// Layers on the board) plus the free-form `tools` column beneath them.
 struct PaneToolColumn<
     InfoContent: View,
     LayersContent: View,
@@ -170,47 +170,13 @@ struct PaneToolColumn<
 
     var body: some View {
         VStack(spacing: 8) {
-            if showsInfoButton {
-                HorizontalRailHelpLabel(title: "\(pane.title) information") {
-                    Button {
-                        isInfoPopoverPresented.toggle()
-                    } label: {
-                        Image(systemName: isInfoPopoverPresented ? "info.circle.fill" : "info.circle")
-                    }
-                    .disabled(!infoEnabled)
-                    .help("\(pane.title) information")
-                    .popover(isPresented: $isInfoPopoverPresented, arrowEdge: .trailing) {
-                        info
-                    }
-                }
-            }
-
-            if showsLayerButton {
-                HorizontalRailHelpLabel(title: "\(pane.title) layers") {
-                    Button {
-                        isLayerPopoverPresented.toggle()
-                    } label: {
-                        Image(systemName: "square.3.layers.3d")
-                    }
-                    .help("\(pane.title) layers")
-                    .popover(isPresented: $isLayerPopoverPresented, arrowEdge: .trailing) {
-                        layers
-                    }
-                }
-            }
-
-            if showsGridButton {
-                HorizontalRailHelpLabel(title: "\(pane.title) grid") {
-                    Button {
-                        isGridPopoverPresented.toggle()
-                    } label: {
-                        Image(systemName: "square.grid.3x3")
-                    }
-                    .help("\(pane.title) grid")
-                    .popover(isPresented: $isGridPopoverPresented, arrowEdge: .trailing) {
-                        grid
-                    }
-                }
+            infoButton
+            if pane == .board {
+                gridButton
+                layerButton
+            } else {
+                layerButton
+                gridButton
             }
 
             tools
@@ -224,6 +190,58 @@ struct PaneToolColumn<
         #if os(macOS)
         .onHover { isRailHovered = $0 }
         #endif
+    }
+
+    @ViewBuilder
+    private var infoButton: some View {
+        if showsInfoButton {
+            HorizontalRailHelpLabel(title: "\(pane.title) information") {
+                Button {
+                    isInfoPopoverPresented.toggle()
+                } label: {
+                    Image(systemName: isInfoPopoverPresented ? "info.circle.fill" : "info.circle")
+                }
+                .disabled(!infoEnabled)
+                .help("\(pane.title) information")
+                .popover(isPresented: $isInfoPopoverPresented, arrowEdge: .trailing) {
+                    info
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var layerButton: some View {
+        if showsLayerButton {
+            HorizontalRailHelpLabel(title: "\(pane.title) layers") {
+                Button {
+                    isLayerPopoverPresented.toggle()
+                } label: {
+                    Image(systemName: pane == .board ? "square.2.layers.3d.top.filled" : "square.3.layers.3d")
+                }
+                .help("\(pane.title) layers")
+                .popover(isPresented: $isLayerPopoverPresented, arrowEdge: .trailing) {
+                    layers
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var gridButton: some View {
+        if showsGridButton {
+            HorizontalRailHelpLabel(title: "\(pane.title) grid") {
+                Button {
+                    isGridPopoverPresented.toggle()
+                } label: {
+                    Image(systemName: "square.grid.3x3")
+                }
+                .help("\(pane.title) grid")
+                .popover(isPresented: $isGridPopoverPresented, arrowEdge: .trailing) {
+                    grid
+                }
+            }
+        }
     }
 }
 

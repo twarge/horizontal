@@ -361,6 +361,7 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         layerView(
             layers: [
                 HorizontalBoardLayers.topCopper,
+                HorizontalBoardLayers.topAssembly,
                 HorizontalBoardLayers.topCourtyard
             ]
         )
@@ -370,6 +371,7 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         layerView(
             layers: [
                 HorizontalBoardLayers.bottomCopper,
+                HorizontalBoardLayers.bottomAssembly,
                 HorizontalBoardLayers.bottomCourtyard
             ]
         )
@@ -457,15 +459,21 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
             return planeFills
         }
 
-        return layerFillOverrides[layer] ?? planeFills
+        return layerFillOverrides[layer] ?? isLayerFilledByDefault(layer)
     }
 
     mutating func setLayerFilled(_ layer: Int, isFilled: Bool) {
-        if isFilled == planeFills {
+        if isFilled == isLayerFilledByDefault(layer) {
             layerFillOverrides.removeValue(forKey: layer)
         } else {
             layerFillOverrides[layer] = isFilled
         }
+    }
+
+    /// The fill a layer has until its own switch is set. The solder masks
+    /// start as outlines: a mask opening drawn filled covers the pad it opens.
+    private func isLayerFilledByDefault(_ layer: Int) -> Bool {
+        planeFills && HorizontalBoardLayers.category(for: layer) != .solderMask
     }
 
     private func isLayerCategoryVisible(_ layer: Int) -> Bool {
@@ -531,8 +539,8 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
 /// The layer views a request can ask for by name — the presets the board rail
 /// offers, plus all layers, copper only and the clean view — so a spoken "show
 /// the top layer" and an agent's `show_layers` mean the same thing. The bare
-/// side ("the top layer") is the placement view: copper and courtyard, which
-/// is what one looks at when working on that side.
+/// side ("the top layer") is the placement view: copper, assembly and
+/// courtyard, which is what one looks at when working on that side.
 enum HorizontalBoardSide: String {
     case top
     case bottom
