@@ -91,6 +91,70 @@ enum BoardHighlightSubset {
     }
 }
 
+/// Horizon's text owner annotation (ImpBoard::update_text_owner_annotation):
+/// a line from each selected smashed text's origin to its package's origin,
+/// and from a selected package's origin to each of its smashed texts that
+/// shows, so a text dragged away from its part still says whose it is.
+enum BoardTextOwnerLines {
+    struct Line: Hashable {
+        var text: HorizontalPoint
+        var package: HorizontalPoint
+    }
+
+    static func lines(
+        in board: HorizontalBoard,
+        selectedRefs: [HorizontalSelectableRef],
+        showsText: (HorizontalText) -> Bool
+    ) -> [Line] {
+        var textIDs = Set<String>()
+        var packageIDs = Set<String>()
+        for ref in selectedRefs {
+            switch ref.type {
+            case .text:
+                textIDs.insert(ref.id.lowercased())
+            case .boardPackage:
+                packageIDs.insert(ref.id.lowercased())
+            default:
+                break
+            }
+        }
+        guard !textIDs.isEmpty || !packageIDs.isEmpty else {
+            return []
+        }
+
+        // Only a smashed text is board text with a package: the package's own
+        // texts go with it and are never selected alone.
+        var owned = [(text: HorizontalText, packageID: String)]()
+        for text in board.packageTexts where text.fromSmash {
+            guard let packageID = BoardMovePlanner.packageID(forGeometryID: text.id) else {
+                continue
+            }
+            if textIDs.contains(text.id.lowercased())
+                || (packageIDs.contains(packageID) && showsText(text)) {
+                owned.append((text, packageID))
+            }
+        }
+        guard !owned.isEmpty else {
+            return []
+        }
+
+        let ownerIDs = Set(owned.map(\.packageID))
+        var origins = [String: HorizontalPoint]()
+        for package in board.packages {
+            let id = package.id.lowercased()
+            if ownerIDs.contains(id) {
+                origins[id] = package.position
+            }
+        }
+        return owned.compactMap { text, packageID in
+            guard let origin = origins[packageID], origin != text.position else {
+                return nil
+            }
+            return Line(text: text.position, package: origin)
+        }
+    }
+}
+
 struct BoardMetalSelectionCacheKey: Hashable {
     var selectableKey: BoardSelectableCacheKey
     /// Non-nil while a non-patchable move is in progress, so the selection
