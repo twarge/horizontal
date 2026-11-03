@@ -5900,9 +5900,18 @@ struct BoardCanvasView: View {
     static let viaDiameterFill = Color(red: 0.2, green: 1, blue: 0.35)
 
     /// How wide airwires and drawn connection lines are at the least, in
-    /// pixels: twice the board's default minimum line width, which they were
-    /// drawn at before (their own 0.9 was always under it).
-    static let connectionLineMinimumWidth: Float = 3
+    /// pixels: Settings' Connection lines width, 3 (twice the board's default
+    /// minimum line width) unless set.
+    private var connectionLineMinimumWidth: Float {
+        Float(appearanceSettings.lineWidth(for: .connectionLine))
+    }
+
+    /// How wide a smashed text's line to its package is at the least, in
+    /// pixels: Settings' Smashed connection lines width, the board's default
+    /// minimum line width unless set.
+    private var smashedConnectionLineMinimumWidth: Float {
+        Float(appearanceSettings.lineWidth(for: .smashedConnectionLine))
+    }
 
     /// Where the next click drops the armed via, and its shape: on the end of
     /// the preview, or on the end of the route itself while the cursor rests
@@ -9504,6 +9513,7 @@ struct BoardCanvasView: View {
             connectionLineColor: HorizontalMetalRGBA(theme.connectionLine.opacity(0.86)),
             connectionLineDashColor: HorizontalMetalRGBA(theme.connectionLine.opacity(0.72)),
             airwireColor: HorizontalMetalRGBA(theme.airwire.opacity(0.72)),
+            connectionLineMinimumWidth: connectionLineMinimumWidth,
             holeFillColor: HorizontalMetalRGBA(theme.background.opacity(0.95)),
             platedHoleStrokeColor: HorizontalMetalRGBA(theme.hole.opacity(0.7)),
             unplatedHoleStrokeColor: HorizontalMetalRGBA(theme.hole.opacity(0.45)),
@@ -10157,6 +10167,7 @@ struct BoardCanvasView: View {
         let connectionLineColor = HorizontalMetalRGBA(theme.connectionLine.opacity(0.86))
         let connectionLineDashColor = HorizontalMetalRGBA(theme.connectionLine.opacity(0.72))
         let airwireDashColor = HorizontalMetalRGBA(theme.airwire.opacity(0.72))
+        let connectionLineMinimumWidth = connectionLineMinimumWidth
         let platedHoleStrokeColor = HorizontalMetalRGBA(theme.hole.opacity(0.7))
         let unplatedHoleStrokeColor = HorizontalMetalRGBA(theme.hole.opacity(0.45))
         let holeFillColor = HorizontalMetalRGBA(theme.background.opacity(0.95))
@@ -10651,7 +10662,7 @@ struct BoardCanvasView: View {
                 appendSegment(
                     connectionLine,
                     color: connectionLineDashColor,
-                    minimumWidth: Self.connectionLineMinimumWidth,
+                    minimumWidth: connectionLineMinimumWidth,
                     dash: (6, 4),
                     owner: selectableRef(id: connectionLine.id, type: .connectionLine),
                     to: \.connectionLines
@@ -10661,7 +10672,7 @@ struct BoardCanvasView: View {
                 appendSegment(
                     airwire,
                     color: airwireDashColor,
-                    minimumWidth: Self.connectionLineMinimumWidth,
+                    minimumWidth: connectionLineMinimumWidth,
                     dash: (6, 4),
                     owner: airwire.netID.map(airwireOwner),
                     to: \.connectionLines
@@ -11873,7 +11884,7 @@ struct BoardCanvasView: View {
                 to: segment.to,
                 color: isConnectionLine ? HorizontalMetalRGBA(theme.connectionLine.opacity(0.72)) : layerMetalColor(layer),
                 width: segment.width,
-                minimumWidth: isConnectionLine ? Self.connectionLineMinimumWidth : 1.1,
+                minimumWidth: isConnectionLine ? connectionLineMinimumWidth : 1.1,
                 dash: dash,
                 outlineOnly: isConnectionLine ? false : !displayOptions.isLayerFilled(layer),
                 compositeGroup: isConnectionLine ? 0 : (layer.map(metalCompositeGroup(for:)) ?? 0)
@@ -12056,7 +12067,7 @@ struct BoardCanvasView: View {
                 to: segment.to,
                 color: type == .connectionLine ? HorizontalMetalRGBA(theme.connectionLine.opacity(0.72)) : layerMetalColor(layer),
                 width: segment.width,
-                minimumWidth: type == .connectionLine ? Self.connectionLineMinimumWidth : 1.1,
+                minimumWidth: type == .connectionLine ? connectionLineMinimumWidth : 1.1,
                 dash: dash,
                 outlineOnly: type == .connectionLine ? false : !layerUsesFill(layer),
                 compositeGroup: type == .connectionLine ? 0 : compositeGroup,
@@ -12690,7 +12701,8 @@ struct BoardCanvasView: View {
             hoverOuterColor: hoverOuterColor,
             hoverInnerColor: hoverInnerColor,
             minimumLabelSize: minimumLabelSize,
-            handleShape: handleShape
+            handleShape: handleShape,
+            smashedConnectionLineMinimumWidth: smashedConnectionLineMinimumWidth
         )
 
         return selectableCache.metalSelection(key: key) {
@@ -12741,12 +12753,18 @@ struct BoardCanvasView: View {
                 shape: handleShape
             )
             // A smashed text's line to its package, a hairline as Horizon's
-            // (the board's minimum line width). During a move these are
-            // carried with the rest of the selection's lines, which is right:
-            // a move that can be patched carries a smashed text only with its
-            // package, and one that moves the text alone rebuilds this batch.
+            // unless Settings makes it wider (never under the board's minimum
+            // line width). During a move these are carried with the rest of
+            // the selection's lines, which is right: a move that can be
+            // patched carries a smashed text only with its package, and one
+            // that moves the text alone rebuilds this batch.
             let textOwnerLines = boardTextOwnerLines(in: selectionBoard).map { line in
-                HorizontalMetalLinePrimitive(from: line.text, to: line.package, color: selectedOuterColor)
+                HorizontalMetalLinePrimitive(
+                    from: line.text,
+                    to: line.package,
+                    color: selectedOuterColor,
+                    minimumWidth: key.smashedConnectionLineMinimumWidth
+                )
             }
 
             let batchKey = key.hashValue
@@ -13130,7 +13148,7 @@ struct BoardCanvasView: View {
                         from: airwire.from,
                         to: airwire.to,
                         color: color,
-                        minimumWidth: Self.connectionLineMinimumWidth,
+                        minimumWidth: connectionLineMinimumWidth,
                         dashLength: 6,
                         dashGap: 4
                     )
@@ -15084,7 +15102,11 @@ struct BoardCanvasView: View {
             var path = Path()
             path.move(to: transform.point(line.text))
             path.addLine(to: transform.point(line.package))
-            context.stroke(path, with: .color(theme.selectableOuter.opacity(0.95)), lineWidth: 1)
+            context.stroke(
+                path,
+                with: .color(theme.selectableOuter.opacity(0.95)),
+                lineWidth: max(CGFloat(smashedConnectionLineMinimumWidth), transform.minimumLineWidth)
+            )
         }
         for selectable in boardSelectables() {
             let isSelected = selectedObjects.contains(selectable.ref)

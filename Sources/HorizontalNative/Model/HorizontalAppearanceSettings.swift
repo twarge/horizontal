@@ -122,6 +122,38 @@ enum HorizontalOperationDefaults {
         + "directly, and a fault can damage or lose part of a design. Keep a backup, or commit the project to git, before you edit."
 }
 
+/// The board's lines that Settings gives a width of their own, in pixels on
+/// screen. Each is the least it is drawn at, as a canvas's minimum line width
+/// is, and neither goes under that minimum.
+enum HorizontalLineWidthRole: String, CaseIterable, Identifiable {
+    /// Airwires and drawn connection lines.
+    case connectionLine
+    /// A smashed text's line to its package, drawn while either is selected
+    /// (Horizon's text owner annotation).
+    case smashedConnectionLine
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .connectionLine: "Connection lines"
+        case .smashedConnectionLine: "Smashed connection lines"
+        }
+    }
+
+    /// What each was drawn at before it could be set: connection lines twice
+    /// the board's default minimum line width, a smashed text's line that
+    /// minimum.
+    var defaultWidth: Double {
+        switch self {
+        case .connectionLine: 3
+        case .smashedConnectionLine: HorizontalAppearanceSettings.defaultMinimumLineWidth
+        }
+    }
+
+    static let range: ClosedRange<Double> = 0.5...6
+}
+
 enum HorizontalColorRole: String, CaseIterable, Identifiable {
     case background
     case grid
@@ -422,7 +454,7 @@ private struct HorizontalPaletteKey: Hashable {
 
 @MainActor
 final class HorizontalAppearanceSettings: ObservableObject {
-    static let defaultMinimumLineWidth: Double = 1.5
+    nonisolated static let defaultMinimumLineWidth: Double = 1.5
     static let defaultGridLineWidth: Double = 0.5
 
     @Published private var appTheme: HorizontalAppTheme
@@ -445,6 +477,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
     @Published private var layerColorSets = [HorizontalPaletteMode: [Int: Color]]()
     @Published private var minimumLineWidths = [HorizontalCanvasKind: Double]()
     @Published private var gridLineWidth: Double
+    @Published private var roleLineWidths = [HorizontalLineWidthRole: Double]()
     @Published private var clipsSilkscreenToSolderMask: Bool
     @Published private var silkscreenMaskClearanceMM: Double
 
@@ -480,6 +513,9 @@ final class HorizontalAppearanceSettings: ObservableObject {
             for mode in HorizontalPaletteMode.allCases {
                 palettes[HorizontalPaletteKey(kind: kind, mode: mode)] = loadPalette(kind: kind, mode: mode)
             }
+        }
+        for role in HorizontalLineWidthRole.allCases {
+            roleLineWidths[role] = Self.loadLineWidth(role: role, defaults: defaults)
         }
     }
 
@@ -761,6 +797,18 @@ final class HorizontalAppearanceSettings: ObservableObject {
         }
     }
 
+    func lineWidth(for role: HorizontalLineWidthRole) -> CGFloat {
+        CGFloat(roleLineWidths[role] ?? role.defaultWidth)
+    }
+
+    func lineWidthBinding(for role: HorizontalLineWidthRole) -> Binding<Double> {
+        Binding {
+            self.roleLineWidths[role] ?? role.defaultWidth
+        } set: { width in
+            self.setLineWidth(width, for: role)
+        }
+    }
+
     /// The clip-silkscreen-to-solder-mask mode, nil while it is off. The
     /// board view, the 3D view and the fabrication exports all apply it.
     var silkscreenClipping: HorizontalSilkscreenClipping? {
@@ -808,6 +856,12 @@ final class HorizontalAppearanceSettings: ObservableObject {
         objectWillChange.send()
         gridLineWidth = Self.defaultGridLineWidth
         defaults.removeObject(forKey: Self.gridLineWidthDefaultsKey)
+    }
+
+    func resetLineWidth(role: HorizontalLineWidthRole) {
+        objectWillChange.send()
+        roleLineWidths[role] = role.defaultWidth
+        defaults.removeObject(forKey: Self.lineWidthDefaultsKey(role: role))
     }
 
     func resetBoardSceneBackgroundColor() {
@@ -991,6 +1045,13 @@ final class HorizontalAppearanceSettings: ObservableObject {
         defaults.set(clampedWidth, forKey: Self.gridLineWidthDefaultsKey)
     }
 
+    private func setLineWidth(_ width: Double, for role: HorizontalLineWidthRole) {
+        let clampedWidth = min(max(width, HorizontalLineWidthRole.range.lowerBound), HorizontalLineWidthRole.range.upperBound)
+        objectWillChange.send()
+        roleLineWidths[role] = clampedWidth
+        defaults.set(clampedWidth, forKey: Self.lineWidthDefaultsKey(role: role))
+    }
+
     private func loadPalette(kind: HorizontalCanvasKind, mode: HorizontalPaletteMode) -> HorizontalCanvasPalette {
         var palette = HorizontalCanvasPalette.defaultPalette(kind: kind, mode: mode)
         for role in HorizontalColorRole.allCases {
@@ -1025,6 +1086,14 @@ final class HorizontalAppearanceSettings: ObservableObject {
             return defaultGridLineWidth
         }
         return min(max(defaults.double(forKey: gridLineWidthDefaultsKey), 0.5), 4.0)
+    }
+
+    private static func loadLineWidth(role: HorizontalLineWidthRole, defaults: UserDefaults) -> Double {
+        let key = lineWidthDefaultsKey(role: role)
+        guard defaults.object(forKey: key) != nil else {
+            return role.defaultWidth
+        }
+        return min(max(defaults.double(forKey: key), HorizontalLineWidthRole.range.lowerBound), HorizontalLineWidthRole.range.upperBound)
     }
 
     private static func loadAppTheme(defaults: UserDefaults) -> HorizontalAppTheme {
@@ -1195,6 +1264,10 @@ final class HorizontalAppearanceSettings: ObservableObject {
 
     private func minimumLineWidthDefaultsKey(kind: HorizontalCanvasKind) -> String {
         "appearance.\(kind.rawValue).minimumLineWidth"
+    }
+
+    private static func lineWidthDefaultsKey(role: HorizontalLineWidthRole) -> String {
+        "appearance.board.\(role.rawValue).lineWidth"
     }
 
     static func color(from hex: String) -> Color? {
