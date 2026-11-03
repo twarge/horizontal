@@ -802,8 +802,29 @@ struct BoardCanvasView: View {
         appearanceSettings.palette(for: .board, colorScheme: colorScheme)
     }
 
+    /// The net a route under way connects, from its first click, or from the
+    /// click that reached a net when it began on copper on none.
+    private var routeHighlightNetID: String? {
+        drawTrackState?.netID.map(normalizedID)
+    }
+
+    private var shownHighlightNetIDs: Set<String> {
+        Self.shownHighlightNetIDs(window: highlightedNetIDs, routeNetID: drawTrackState?.netID)
+    }
+
+    /// The nets the canvas draws highlighted: the window's, and the route's
+    /// while it lasts, as KiCad's router highlights the net it routes. The
+    /// route's is the canvas's own, so the window's highlight, the schematic
+    /// and the live channel don't take it, and it ends with the route.
+    static func shownHighlightNetIDs(window: Set<String>, routeNetID: String?) -> Set<String> {
+        guard let routeNetID else {
+            return window
+        }
+        return window.union([HorizontalCanvasModeSupport.normalizedID(routeNetID)])
+    }
+
     private var hasActiveHighlight: Bool {
-        !highlightedNetIDs.isEmpty || !highlightedComponentIDs.isEmpty
+        !highlightedNetIDs.isEmpty || routeHighlightNetID != nil || !highlightedComponentIDs.isEmpty
     }
 
     private var drawsGridInMetal: Bool {
@@ -1498,6 +1519,7 @@ struct BoardCanvasView: View {
         guard hasActiveHighlight else {
             return false
         }
+        let highlightedNetIDs = shownHighlightNetIDs
 
         func matches(_ netID: String?) -> Bool {
             guard let netID else {
@@ -12390,9 +12412,10 @@ struct BoardCanvasView: View {
         let highlightMarkerStrokeColor = HorizontalMetalRGBA(theme.junction.opacity(0.98))
         let highlightTextColor = HorizontalMetalRGBA(theme.junction.opacity(0.96))
         let backgroundColor = HorizontalMetalRGBA(theme.background.opacity(0.55))
+        let shownHighlightNetIDs = shownHighlightNetIDs
         let key = BoardMetalHighlightCacheKey(
             selectableKey: selectableCacheKey,
-            highlightedNetIDs: highlightedNetIDs.sorted(),
+            highlightedNetIDs: shownHighlightNetIDs.sorted(),
             highlightedComponentIDs: highlightedComponentIDs.sorted(),
             highlightColor: highlightColor,
             backgroundColor: backgroundColor,
@@ -12406,7 +12429,7 @@ struct BoardCanvasView: View {
         return selectableCache.metalHighlight(key: key) {
             var lines = [HorizontalMetalLinePrimitive]()
             var triangles = [HorizontalMetalTrianglePrimitive]()
-            let highlightedNetIDs = highlightedNetIDs
+            let highlightedNetIDs = shownHighlightNetIDs
             let highlightedComponentIDSet = Set(highlightedComponentIDs.map { $0.lowercased() })
 
             func matches(_ netID: String?) -> Bool {
@@ -12766,7 +12789,7 @@ struct BoardCanvasView: View {
             HorizontalPoint(x: board.bounds.minX, y: board.bounds.maxY)
         ]
         let triangles = HorizontalMetalTessellator.triangles(for: vertices, color: color)
-        let key = highlightedNetIDs.hashValue
+        let key = shownHighlightNetIDs.hashValue
             &* 31
             &+ highlightedComponentIDs.hashValue
             &* 31
@@ -14615,7 +14638,7 @@ struct BoardCanvasView: View {
     }
 
     private func drawNetHighlight(context: GraphicsContext, transform: HorizontalCanvasTransform) {
-        guard !highlightedNetIDs.isEmpty else {
+        guard !highlightedNetIDs.isEmpty || routeHighlightNetID != nil else {
             return
         }
 
@@ -14731,7 +14754,8 @@ struct BoardCanvasView: View {
         guard let netID else {
             return false
         }
-        return highlightedNetIDs.contains(normalizedID(netID))
+        let id = normalizedID(netID)
+        return highlightedNetIDs.contains(id) || id == routeHighlightNetID
     }
 
     private func matchesHighlightedComponent(_ componentID: String?) -> Bool {
