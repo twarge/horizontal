@@ -2400,6 +2400,7 @@ struct ProjectWorkspaceView: View {
                     infoEnabled: project.board != nil,
                     showsTools: !isDistractionFree && !isWindowToolbarHidden,
                     isKeyboardFocused: activeCanvasCommandPane == .board && !isKeyboardInControl,
+                    showsScaleBar: boardDisplayOptions.scaleBar,
                     onToolbarHover: { setPointerInsideToolbar($0, for: .board) }
                 ) {
                     if let board = project.board {

@@ -23,9 +23,13 @@ struct PaneOverlayContainer<
     var showsInfoButton = true
     var showsLayerButton = true
     var showsGridButton = true
-    /// Shows the keyboard-focus badge at the top of the rail (this pane receives
-    /// keyboard commands).
+    /// Shows the keyboard-focus badge in the pane's lower left, above the
+    /// canvas's scale bar (this pane receives keyboard commands).
     var isKeyboardFocused = false
+    /// The canvas draws its scale bar in the lower left, which the focus badge
+    /// then stands over: a board's, when its Scale Bar option is on. A
+    /// schematic draws none.
+    var showsScaleBar = false
     /// macOS: tracks pointer-over-rail so the canvas can ignore those mouse events.
     /// No-op on iOS (touch has no hover).
     var onToolbarHover: (Bool) -> Void = { _ in }
@@ -37,6 +41,23 @@ struct PaneOverlayContainer<
 
     var body: some View {
         content
+        .overlay(alignment: .bottomLeading) {
+            // In the corner rather than atop the rail, where it pushed every
+            // rail button down a place each time focus moved between panes.
+            if showsTools, isKeyboardFocused {
+                // Its 3 pt padding and the symbol's side bearing taken off, so
+                // the scope's edge stands over the scale bar's left tick.
+                PaneKeyboardFocusBadge()
+                    .padding(.leading, safeAreaInsets.leading + 7)
+                    .padding(.bottom, safeAreaInsets.bottom + keyboardFocusBadgeBottomPadding)
+                    #if os(macOS)
+                    .onHover(perform: onToolbarHover)
+                    .onDisappear {
+                        onToolbarHover(false)
+                    }
+                    #endif
+            }
+        }
         .overlay(alignment: toolColumnAlignment) {
             if showsTools {
                 PaneToolColumn(
@@ -45,7 +66,6 @@ struct PaneOverlayContainer<
                     infoEnabled: infoEnabled,
                     showsLayerButton: showsLayerButton,
                     showsGridButton: showsGridButton,
-                    isKeyboardFocused: isKeyboardFocused,
                     labelSide: appearanceSettings.shouldSwapViewControlsAndUnplacedReferences ? .trailing : .leading
                 ) {
                     info
@@ -69,6 +89,13 @@ struct PaneOverlayContainer<
         }
     }
 
+    /// In the corner, or clear of the scale bar: its line sits 18 pt over the
+    /// canvas's bottom safe area and its label 20 pt over that
+    /// (`InteractiveCanvasView.drawScaleBar`).
+    private var keyboardFocusBadgeBottomPadding: CGFloat {
+        showsScaleBar ? 18 + 20 + 3 : 9
+    }
+
     private var toolColumnAlignment: Alignment {
         appearanceSettings.shouldSwapViewControlsAndUnplacedReferences ? .topLeading : .topTrailing
     }
@@ -85,6 +112,25 @@ struct PaneOverlayContainer<
     }
 }
 
+/// The pane's keyboard-focus mark: a tinted scope, no button behind it.
+struct PaneKeyboardFocusBadge: View {
+    #if os(iOS)
+    private let iconSize: CGFloat = 20
+    #else
+    private let iconSize: CGFloat = 16
+    #endif
+
+    var body: some View {
+        Image(systemName: "scope")
+            .font(.system(size: iconSize, weight: .semibold))
+            .foregroundStyle(.tint)
+            .padding(3)
+            .contentShape(Rectangle())
+            .help("This view receives keyboard commands")
+            .accessibilityLabel("Keyboard focus")
+    }
+}
+
 /// The vertical rail itself: Info / Layers / Grid popover buttons plus the free-form
 /// `tools` column beneath them.
 struct PaneToolColumn<
@@ -98,7 +144,6 @@ struct PaneToolColumn<
     var infoEnabled = true
     var showsLayerButton = true
     var showsGridButton = true
-    var isKeyboardFocused = false
     var labelSide = HorizontalRailHelpLabelSide.trailing
     @ViewBuilder var info: InfoContent
     @ViewBuilder var layers: LayersContent
@@ -110,28 +155,8 @@ struct PaneToolColumn<
     @State private var isGridPopoverPresented = false
     @State private var isRailHovered = false
 
-    // Match PaneToolButtonStyle so the focus badge aligns with the rail buttons.
-    #if os(iOS)
-    private let keyboardFocusBadgeSize: CGFloat = 42.5
-    private let keyboardFocusIconSize: CGFloat = 20
-    #else
-    private let keyboardFocusBadgeSize: CGFloat = 34
-    private let keyboardFocusIconSize: CGFloat = 16
-    #endif
-
     var body: some View {
         VStack(spacing: 8) {
-            if isKeyboardFocused {
-                HorizontalRailHelpLabel(title: "Keyboard focus") {
-                    Image(systemName: "scope")
-                        .font(.system(size: keyboardFocusIconSize, weight: .semibold))
-                        .foregroundStyle(.tint)
-                        .frame(width: keyboardFocusBadgeSize, height: keyboardFocusBadgeSize)
-                        .help("This view receives keyboard commands")
-                        .accessibilityLabel("Keyboard focus")
-                }
-            }
-
             if showsInfoButton {
                 HorizontalRailHelpLabel(title: "\(pane.title) information") {
                     Button {
