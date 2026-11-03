@@ -41,7 +41,8 @@ enum HorizontalDefaultTheme {
             return color
         }
         if HorizontalBoardLayers.isCopper(layer), layer != HorizontalBoardLayers.topCopper, layer != HorizontalBoardLayers.bottomCopper {
-            return color(red: 1, green: 1, blue: 0)
+            let rgb = innerCopperRGB(for: layer)
+            return color(red: rgb.red, green: rgb.green, blue: rgb.blue)
         }
         if HorizontalBoardLayers.isUser(layer) {
             return color(red: 0.25, green: 1, blue: 1)
@@ -58,12 +59,32 @@ enum HorizontalDefaultTheme {
             return color
         }
         if HorizontalBoardLayers.isCopper(layer), layer != HorizontalBoardLayers.topCopper, layer != HorizontalBoardLayers.bottomCopper {
-            return platformColor(red: 1, green: 1, blue: 0)
+            let rgb = innerCopperRGB(for: layer)
+            return platformColor(red: rgb.red, green: rgb.green, blue: rgb.blue)
         }
         if HorizontalBoardLayers.isUser(layer) {
             return platformColor(red: 0.25, green: 1, blue: 1)
         }
         return textOverlayNS
+    }
+
+    /// Inner copper runs through a rainbow, In1 first, one colour for each of
+    /// the eight inner layers, so each reads apart from its neighbours.
+    static let innerCopperRainbow: [(red: Double, green: Double, blue: Double)] = [
+        (1, 0.5, 0),        // orange
+        (0, 0.85, 0.9),     // cyan
+        (1, 0.15, 0.85),    // magenta
+        (0.72, 0.62, 1),    // lavender
+        (0.78, 0.75, 0.48), // grey-yellow
+        (1, 0.6, 0.78),     // pink
+        (0.66, 0.42, 0.2),  // brown
+        (0.5, 0.62, 0.2),   // pea soup
+    ]
+
+    static func innerCopperRGB(for layer: Int) -> (red: Double, green: Double, blue: Double) {
+        // In1 is -1, In2 -2 and so on.
+        let index = max(0, -layer - 1) % innerCopperRainbow.count
+        return innerCopperRainbow[index]
     }
 
     private static let fixedLayerColors: [Int: Color] = [
