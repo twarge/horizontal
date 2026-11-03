@@ -2269,6 +2269,7 @@ struct ProjectWorkspaceView: View {
                                 },
                                 hasKeyboardFocus: activeCanvasCommandPane == .schematic,
                                 onRequestKeyboardFocus: { activeCanvasCommandPane = .schematic },
+                                onSwitchPane: { switchCanvasPane(from: .schematic) },
                                 selectionPropertyChangeCommand: selectionPropertyChangeCommands[.schematic],
                                 netSegmentSelectionCommand: schematicNetSegmentSelectionCommand,
                                 drawingToolCommand: schematicDrawingToolCommand,
@@ -2458,6 +2459,7 @@ struct ProjectWorkspaceView: View {
                                 },
                                 hasKeyboardFocus: activeCanvasCommandPane == .board,
                                 onRequestKeyboardFocus: { activeCanvasCommandPane = .board },
+                                onSwitchPane: { switchCanvasPane(from: .board) },
                                 selectionPropertyChangeCommand: selectionPropertyChangeCommands[.board],
                                 drawingToolCommand: boardDrawingToolCommand,
                                 drawTrackCommand: boardDrawTrackCommand,
@@ -5184,6 +5186,22 @@ struct ProjectWorkspaceView: View {
         columnVisibility = .all
         navigatorSelection = .board
         visiblePanes.insert(.board)
+    }
+
+    /// Tab on the schematic or the board: with both open, the keyboard goes
+    /// to the other; with only this one, the other is shown in its place,
+    /// beside whatever else is open, and has the keyboard. Nothing happens
+    /// when the project has no board or no schematic to go to.
+    private func switchCanvasPane(from pane: HorizontalPane) {
+        guard let other = pane.tabCounterpart,
+              other == .board ? project.board != nil : selectedSchematic != nil else {
+            return
+        }
+        activeCanvasCommandPane = other
+        let panes = pane.panesAfterTab(from: visiblePanes)
+        if panes != visiblePanes {
+            visiblePanes = panes
+        }
     }
 
     private func showDiagnosticsView() {

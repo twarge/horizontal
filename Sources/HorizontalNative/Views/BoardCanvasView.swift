@@ -506,6 +506,9 @@ struct BoardCanvasView: View {
     var onCanvasCommandActionsChange: (HorizontalCanvasCommandActions?) -> Void = { _ in }
     var hasKeyboardFocus = true
     var onRequestKeyboardFocus: () -> Void = {}
+    /// Tab: the host gives the schematic the keyboard, or shows it in the
+    /// board's place. Nil leaves Tab to the window.
+    var onSwitchPane: (() -> Void)?
     var selectionPropertyChangeCommand: HorizontalSelectionPropertyChangeCommand?
     var drawingToolCommand: HorizontalDrawingToolCommand?
     var drawTrackCommand: HorizontalDrawTrackCommand?
@@ -663,6 +666,7 @@ struct BoardCanvasView: View {
         onCanvasCommandActionsChange: @escaping (HorizontalCanvasCommandActions?) -> Void = { _ in },
         hasKeyboardFocus: Bool = true,
         onRequestKeyboardFocus: @escaping () -> Void = {},
+        onSwitchPane: (() -> Void)? = nil,
         selectionPropertyChangeCommand: HorizontalSelectionPropertyChangeCommand? = nil,
         drawingToolCommand: HorizontalDrawingToolCommand? = nil,
         drawTrackCommand: HorizontalDrawTrackCommand? = nil,
@@ -708,6 +712,7 @@ struct BoardCanvasView: View {
         self.onCanvasCommandActionsChange = onCanvasCommandActionsChange
         self.hasKeyboardFocus = hasKeyboardFocus
         self.onRequestKeyboardFocus = onRequestKeyboardFocus
+        self.onSwitchPane = onSwitchPane
         self.selectionPropertyChangeCommand = selectionPropertyChangeCommand
         self.drawingToolCommand = drawingToolCommand
         self.drawTrackCommand = drawTrackCommand
@@ -1214,7 +1219,8 @@ struct BoardCanvasView: View {
                 || poolPlacementState != nil
                 || roundOffVertexState != nil || packagePlacementState != nil
                 || moveState?.tracksCursor == true,
-            supportsTrackVias: true
+            supportsTrackVias: true,
+            switchesPanes: onSwitchPane != nil
         )
         .onChange(of: syncRevision) { _, _ in
             adoptExternallyUpdatedBoard()
@@ -3001,6 +3007,7 @@ struct BoardCanvasView: View {
         if let poolRevealAction, !modeProfile.isPoolMode {
             handlers.showAlternateParts = { poolRevealAction(.alternateParts) }
         }
+        handlers.switchPane = onSwitchPane
         return handlers
     }
 

@@ -39,6 +39,29 @@ enum HorizontalPane: String, CaseIterable, Codable, Identifiable {
         }
     }
 
+    /// The pane Tab on this one goes to: the board from the schematic and
+    /// the schematic from the board. The other panes have none.
+    var tabCounterpart: HorizontalPane? {
+        switch self {
+        case .schematic: .board
+        case .board: .schematic
+        case .parts, .library, .threeD: nil
+        }
+    }
+
+    /// The panes open after Tab on `self` goes to `tabCounterpart`: as they
+    /// are when it is open too, since Tab then only moves the keyboard;
+    /// otherwise with it in this one's place, beside the rest.
+    func panesAfterTab(from visiblePanes: Set<HorizontalPane>) -> Set<HorizontalPane> {
+        guard let other = tabCounterpart, !visiblePanes.contains(other) else {
+            return visiblePanes
+        }
+        var panes = visiblePanes
+        panes.remove(self)
+        panes.insert(other)
+        return panes
+    }
+
     var keyboardShortcut: KeyEquivalent {
         switch self {
         case .parts: "1"

@@ -254,6 +254,7 @@ struct HorizontalCanvasCommandHandlerSet {
     var drawPlane: (() -> Void)? = nil
     var selectLayer: ((Int) -> Void)? = nil
     var selectBoardLayerView: ((HorizontalBoardLayerViewPreset) -> Void)? = nil
+    var switchPane: (() -> Void)? = nil
     var definePlane: (() -> Void)? = nil
     var editPlane: (() -> Void)? = nil
     var updateAllPlanes: (() -> Void)? = nil
@@ -381,6 +382,12 @@ struct HorizontalCanvasCommandHandlerSet {
             selectLayer?(layer)
         case .selectBoardLayerView(let preset):
             selectBoardLayerView?(preset)
+        case .switchPane:
+            // Mid-interaction the pane stays: the canvas taking the keyboard
+            // away from a wire or a placement half done, or hiding it, would
+            // strand it.
+            guard !hasInteraction else { return }
+            switchPane?()
         case .definePlane:
             guard !isReadOnly else { return }
             definePlane?()

@@ -75,6 +75,9 @@ enum HorizontalCanvasCommand {
     case selectLayer(Int)
     /// Jump to a whole board view (shifted / control number keys).
     case selectBoardLayerView(HorizontalBoardLayerViewPreset)
+    /// Tab, on the schematic or the board: the keyboard goes to the other
+    /// when both are open, and the other takes this one's place when not.
+    case switchPane
     case definePlane
     case editPlane
     /// Pours every plane (Q): the fills go stale as copper moves.
@@ -567,6 +570,9 @@ struct InteractiveCanvasView: View {
     /// When true, the `v` key maps to `.toggleVia` (board track tool) instead of
     /// the schematic `.moveNetSegmentToExistingNet`.
     var supportsTrackVias = false
+    /// When true, Tab is `.switchPane` (the schematic and the board canvases);
+    /// otherwise the canvas leaves Tab alone.
+    var switchesPanes = false
 
     /// The cursor crosshair + coordinate readout live in `CursorReadoutLayer`, fed
     /// through this holder so a pointer move re-renders only that small layer, not
@@ -991,6 +997,7 @@ struct InteractiveCanvasView: View {
                         handlesInteractionKeys: handlesInteractionKeys,
                         samplesCursorContinuously: samplesCursorContinuously,
                         supportsTrackVias: supportsTrackVias,
+                        switchesPanes: switchesPanes,
                         hasKeyboardFocus: hasKeyboardFocus,
                         onRequestKeyboardFocus: onRequestKeyboardFocus,
                         ignoresCanvasMouseEvents: ignoresCanvasMouseEvents || pointerInsideSelectionPopover
@@ -1075,7 +1082,9 @@ struct InteractiveCanvasView: View {
                                 onCommand(.deleteSelection)
                                 return true
                             }
-                            if let command = HorizontalCanvasInputCore.command(keyEvent, supportsTrackVias: supportsTrackVias) {
+                            if let command = HorizontalCanvasInputCore.command(
+                                keyEvent, supportsTrackVias: supportsTrackVias, switchesPanes: switchesPanes
+                            ) {
                                 onCommand(command)
                                 return true
                             }
@@ -3105,6 +3114,7 @@ struct HorizontalMultitouchView: UIViewRepresentable {
             case .keyboardReturnOrEnter, .keypadEnter: return .return
             case .keyboardDeleteOrBackspace: return .delete
             case .keyboardDeleteForward: return .deleteForward
+            case .keyboardTab: return .tab
             default: return nil
             }
         }
@@ -3644,6 +3654,7 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
     var handlesInteractionKeys: Bool
     var samplesCursorContinuously: Bool
     var supportsTrackVias: Bool
+    var switchesPanes: Bool
     var hasKeyboardFocus: Bool
     var onRequestKeyboardFocus: () -> Void
     var ignoresCanvasMouseEvents: Bool
@@ -3670,6 +3681,7 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
         view.handlesInteractionKeys = handlesInteractionKeys
         view.samplesCursorContinuously = samplesCursorContinuously
         view.supportsTrackVias = supportsTrackVias
+        view.switchesPanes = switchesPanes
         view.hasKeyboardFocus = hasKeyboardFocus
         view.onRequestKeyboardFocus = onRequestKeyboardFocus
         view.ignoresCanvasMouseEvents = ignoresCanvasMouseEvents
@@ -3697,6 +3709,7 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
         nsView.handlesInteractionKeys = handlesInteractionKeys
         nsView.samplesCursorContinuously = samplesCursorContinuously
         nsView.supportsTrackVias = supportsTrackVias
+        nsView.switchesPanes = switchesPanes
         nsView.hasKeyboardFocus = hasKeyboardFocus
         nsView.onRequestKeyboardFocus = onRequestKeyboardFocus
         nsView.ignoresCanvasMouseEvents = ignoresCanvasMouseEvents
@@ -3738,6 +3751,7 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
             }
         }
         var supportsTrackVias = false
+        var switchesPanes = false
         /// The pane this canvas is in has the keyboard (its badge is on), so
         /// its key monitor takes the keys no field, list or text keeps.
         var hasKeyboardFocus = true
@@ -4166,7 +4180,9 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
         }
 
         private func canvasCommand(from event: NSEvent) -> HorizontalCanvasCommand? {
-            HorizontalCanvasInputCore.command(keyEvent(from: event), supportsTrackVias: supportsTrackVias)
+            HorizontalCanvasInputCore.command(
+                keyEvent(from: event), supportsTrackVias: supportsTrackVias, switchesPanes: switchesPanes
+            )
         }
 
         private func isEscapeKey(_ event: NSEvent) -> Bool {
