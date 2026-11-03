@@ -1346,10 +1346,6 @@ struct ProjectWorkspaceView: View {
         // rendered their own capsule, which read as scattered buttons.
         ToolbarItem(placement: .primaryAction) {
             HStack(spacing: 14) {
-                readOnlyLockButton
-
-                paneSelector
-
                 ToolbarFindControl(
                     text: $navigatorSearchText,
                     isPresented: $findIsPresented,
@@ -1360,6 +1356,10 @@ struct ProjectWorkspaceView: View {
                     HorizontalVoiceControlButton(control: voiceControl)
                 }
 
+                readOnlyLockButton
+
+                paneSelector
+
                 Button {
                     toggleRightSidebar(.selection)
                 } label: {
@@ -1367,14 +1367,6 @@ struct ProjectWorkspaceView: View {
                 }
                 .help(selectionSidebarToggleTitle)
                 .accessibilityLabel(selectionSidebarToggleTitle)
-
-                Button {
-                    toggleRightSidebar(.export)
-                } label: {
-                    Label(exportSidebarToggleTitle, systemImage: "square.and.arrow.up")
-                }
-                .help(exportSidebarToggleTitle)
-                .accessibilityLabel(exportSidebarToggleTitle)
 
                 Button {
                     toggleRightSidebar(.rulesResults)
@@ -1389,6 +1381,14 @@ struct ProjectWorkspaceView: View {
                 .help(rulesResultsHelp)
                 .accessibilityLabel(rulesResultsSidebarToggleTitle)
                 .accessibilityValue(rulesResultsHelp)
+
+                Button {
+                    toggleRightSidebar(.export)
+                } label: {
+                    Label(exportSidebarToggleTitle, systemImage: "square.and.arrow.up")
+                }
+                .help(exportSidebarToggleTitle)
+                .accessibilityLabel(exportSidebarToggleTitle)
             }
             .labelStyle(.iconOnly)
             .imageScale(.large)
