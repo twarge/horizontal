@@ -56,11 +56,11 @@ Third-party licence texts ship inside the app at
 `Scripts/copy-third-party-licenses.sh` puts them there as a build phase, and a
 Release build fails if any is missing.
 
-**Open CASCADE Technology 8.0.0**
+**Open CASCADE Technology 8.0.1**
 (STEP model import) is LGPL 2.1 with the Open CASCADE exception, and is linked
 statically, so a release has to let someone rebuild the app against a
 modified OCCT. That is what the `Vendor/OCCT` submodule is for: it pins the
-`V8_0_0` tag, and `make deps` reproduces the exact static build the app links
+`V8_0_1` tag, and `make deps` reproduces the exact static build the app links
 (third-party dynamic dependencies off, RapidJSON on).
 
 The other bundled components — RapidJSON (MIT), mapbox/earcut.hpp (ISC), Clipper

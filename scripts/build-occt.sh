@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OCCT_TAG="${OCCT_TAG:-V8_0_0}"
-OCCT_VERSION="${OCCT_VERSION:-8.0.0}"
+OCCT_TAG="${OCCT_TAG:-V8_0_1}"
+OCCT_VERSION="${OCCT_VERSION:-8.0.1}"
 SOURCE_DIR="${OCCT_SOURCE_DIR:-$ROOT_DIR/Vendor/OCCT}"
 RAPIDJSON_DIR="${RAPIDJSON_DIR:-$ROOT_DIR/Vendor/RapidJSON}"
 BUILD_DIR="${OCCT_BUILD_DIR:-/private/tmp/occt-build/macos-arm64-$OCCT_VERSION}"
