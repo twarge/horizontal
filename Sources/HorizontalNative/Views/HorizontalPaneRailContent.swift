@@ -1933,7 +1933,7 @@ struct BoardLayerControls: View {
 
     private func colorBinding(for entry: BoardLayerEntry) -> Binding<Color> {
         let colorLayer = board?.userLayers.first(where: { $0.id == entry.layer })?.colorLayer ?? entry.layer
-        return appearanceSettings.layerColorBinding(for: colorLayer)
+        return appearanceSettings.layerColorBinding(for: colorLayer, colorScheme: colorScheme)
     }
 
     private func fillModeBinding(for entry: BoardLayerEntry) -> Binding<Bool>? {

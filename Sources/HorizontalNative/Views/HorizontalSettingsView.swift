@@ -136,6 +136,7 @@ struct HorizontalSettingsView: View {
             }
 
             Section("Layer Colors") {
+                colorMatrixHeader(columns: layerColorColumns)
                 ForEach(editableLayers, id: \.self) { layer in
                     layerColorRow(layer)
                 }
@@ -277,16 +278,8 @@ struct HorizontalSettingsView: View {
     }
 
     private func layerColorRow(_ layer: Int) -> some View {
-        HStack(spacing: 10) {
-            Text(layerName(for: layer))
-                .frame(width: 170, alignment: .leading)
-            ColorPicker(
-                "\(layerName(for: layer)) Layer Color",
-                selection: appearanceSettings.layerColorBinding(for: layer),
-                supportsOpacity: false
-            )
-            .labelsHidden()
-            Spacer(minLength: 0)
+        colorMatrixRow(layerName(for: layer), columns: layerColorColumns) { column in
+            appearanceSettings.layerColorBinding(for: layer, mode: column.mode)
         }
     }
 
@@ -501,6 +494,10 @@ private let colorColumns: [ColorMatrixColumn] = [
     ColorMatrixColumn(kind: .board, mode: .light),
     ColorMatrixColumn(kind: .board, mode: .dark),
 ]
+
+/// Board layers draw in the light or the dark theme's colours whichever canvas
+/// shows them, so their columns are just the board's.
+private let layerColorColumns = colorColumns.filter { $0.kind == .board }
 
 private let lineWidthKinds: [HorizontalCanvasKind] = [
     .schematic,
