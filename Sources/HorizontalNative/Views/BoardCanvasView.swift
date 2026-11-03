@@ -12744,13 +12744,21 @@ struct BoardCanvasView: View {
                 innerColor: selectedHandleInnerColor,
                 shape: handleShape
             )
+            // A smashed text's line to its package, a hairline as Horizon's
+            // (the board's minimum line width). During a move these are
+            // carried with the rest of the selection's lines, which is right:
+            // a move that can be patched carries a smashed text only with its
+            // package, and one that moves the text alone rebuilds this batch.
+            let textOwnerLines = boardTextOwnerLines(in: selectionBoard).map { line in
+                HorizontalMetalLinePrimitive(from: line.text, to: line.package, color: selectedOuterColor)
+            }
 
             let batchKey = key.hashValue
             return BoardMetalLineBatch(
                 triangleKey: batchKey,
                 triangles: [],
                 lineKey: batchKey,
-                lines: polygonGroupPreviewLines + overlay.lines,
+                lines: polygonGroupPreviewLines + textOwnerLines + overlay.lines,
                 handleKey: batchKey,
                 handles: polygonControlHandles + overlay.handles,
                 anchoredRectKey: 0,
@@ -12823,6 +12831,15 @@ struct BoardCanvasView: View {
             )
         }
         return patches
+    }
+
+    /// The selected smashed texts' lines to their packages, and a selected
+    /// package's to its smashed texts that show (Horizon's text owner
+    /// annotation).
+    private func boardTextOwnerLines(in board: HorizontalBoard) -> [BoardTextOwnerLines.Line] {
+        BoardTextOwnerLines.lines(in: board, selectedRefs: selectedObjects) { text in
+            displayOptions.text && displayOptions.isLayerVisible(text.layer)
+        }
     }
 
     private func boardSelectionOutline(for selectable: HorizontalSelectable) -> HorizontalCanvasSelectionOutline? {
@@ -15067,6 +15084,12 @@ struct BoardCanvasView: View {
     }
 
     private func drawSelection(context: GraphicsContext, transform: HorizontalCanvasTransform) {
+        for line in boardTextOwnerLines(in: board) {
+            var path = Path()
+            path.move(to: transform.point(line.text))
+            path.addLine(to: transform.point(line.package))
+            context.stroke(path, with: .color(theme.selectableOuter.opacity(0.95)), lineWidth: 1)
+        }
         for selectable in boardSelectables() {
             let isSelected = selectedObjects.contains(selectable.ref)
             let isHovered = selectable.ref == hoveredObject
