@@ -32,12 +32,12 @@ final class InnerCopperLayerColorTests: XCTestCase {
 
         for (index, layer) in innerLayers.enumerated() {
             let expected = rainbow[index]
-            assertColor(settings.layerColorBinding(for: layer).wrappedValue, expected, "In\(index + 1) in Settings")
+            assertColor(settings.layerColorBinding(for: layer, mode: .dark).wrappedValue, expected, "In\(index + 1) in Settings")
             assertColor(settings.palette(for: .board, mode: .light).layerColor(for: layer), expected, "In\(index + 1) on a light board")
             assertColor(Color(nsColor: HorizontalDefaultTheme.nsLayerColor(for: layer)), expected, "In\(index + 1) in the 3D view")
         }
         let colours = innerLayers.map {
-            HorizontalAppearanceSettings.hexString(from: settings.layerColorBinding(for: $0).wrappedValue)
+            HorizontalAppearanceSettings.hexString(from: settings.layerColorBinding(for: $0, mode: .dark).wrappedValue)
         }
         XCTAssertEqual(Set(colours).count, 8, "no two inner layers share a colour")
     }
@@ -46,11 +46,11 @@ final class InnerCopperLayerColorTests: XCTestCase {
         let name = "horizontal-inner-copper-tests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: name) }
-        HorizontalAppearanceSettings(defaults: defaults).layerColorBinding(for: HorizontalBoardLayers.in2Copper).wrappedValue = Color(red: 1, green: 1, blue: 0)
+        HorizontalAppearanceSettings(defaults: defaults).layerColorBinding(for: HorizontalBoardLayers.in2Copper, mode: .dark).wrappedValue = Color(red: 1, green: 1, blue: 0)
 
         let settings = HorizontalAppearanceSettings(defaults: defaults)
-        XCTAssertEqual(HorizontalAppearanceSettings.hexString(from: settings.layerColorBinding(for: HorizontalBoardLayers.in2Copper).wrappedValue), "#FFFF00")
-        assertColor(settings.layerColorBinding(for: HorizontalBoardLayers.in1Copper).wrappedValue, rainbow[0], "In1 keeps its default")
+        XCTAssertEqual(HorizontalAppearanceSettings.hexString(from: settings.layerColorBinding(for: HorizontalBoardLayers.in2Copper, mode: .dark).wrappedValue), "#FFFF00")
+        assertColor(settings.layerColorBinding(for: HorizontalBoardLayers.in1Copper, mode: .dark).wrappedValue, rainbow[0], "In1 keeps its default")
     }
 
     /// Within one step of 255 a channel: a component that lands on a half,

@@ -262,7 +262,7 @@ struct HorizontalCanvasPalette {
             .selectablePrelight: rgb(0.5, 0, 0.5),
             .selectableAlways: rgb(1, 1, 0),
         ],
-        layerColors: defaultLayerColors
+        layerColors: darkLayerColors
     )
 
     static let boardLightDefault = HorizontalCanvasPalette(
@@ -277,7 +277,7 @@ struct HorizontalCanvasPalette {
             // the airwires' 72 % opacity, so a deep teal.
             .airwire: rgb(0, 0.42, 0.55),
         ]) { _, new in new },
-        layerColors: darkDefault.layerColors
+        layerColors: lightLayerColors
     )
 
     static let schematicLightDefault = HorizontalCanvasPalette(
@@ -298,7 +298,7 @@ struct HorizontalCanvasPalette {
             .diffPair: rgb(0.4583333433, 0.7333333492, 0.1833333373),
             .netTie: rgb(58.0 / 255.0, 73.0 / 255.0, 147.0 / 255.0),
         ]) { _, new in new },
-        layerColors: darkDefault.layerColors
+        layerColors: lightLayerColors
     )
 
     static let schematicDarkDefault = HorizontalCanvasPalette(
@@ -310,6 +310,15 @@ struct HorizontalCanvasPalette {
         ]) { _, new in new },
         layerColors: darkDefault.layerColors
     )
+
+    /// The layer colours a palette of this mode starts with: board layers are
+    /// the same whichever canvas draws them.
+    static func defaultLayerColors(mode: HorizontalPaletteMode) -> [Int: Color] {
+        switch mode {
+        case .light: lightLayerColors
+        case .dark: darkLayerColors
+        }
+    }
 
     static func defaultPalette(kind: HorizontalCanvasKind, mode: HorizontalPaletteMode) -> HorizontalCanvasPalette {
         switch (kind, mode) {
@@ -324,7 +333,7 @@ struct HorizontalCanvasPalette {
         }
     }
 
-    private static let defaultLayerColors: [Int: Color] = [
+    private static let darkLayerColors: [Int: Color] = [
         HorizontalBoardLayers.topNotes: rgb(1, 1, 1),
         HorizontalBoardLayers.outlineNotes: rgb(0.6, 0.6, 0),
         HorizontalBoardLayers.outline: rgb(0.6, 0.6, 0),
@@ -367,6 +376,34 @@ struct HorizontalCanvasPalette {
         HorizontalBoardLayers.dimensions: rgb(1, 1, 1),
     ]
 
+    /// The dark set's near-whites all but vanish on a white canvas, the more
+    /// so at the 60 % layer opacity, so the light theme has its own: the
+    /// neutral silkscreen, notes and dimensions mirror to near-black, as does
+    /// Outline Notes, text drawn in the outline's olive; paste goes to a mid
+    /// grey that still lets the copper show through, the user layers' pale
+    /// cyan becomes a deep teal and the outline's olive darkens.
+    /// Copper, the masks and the 0.5 grey package layers read on either
+    /// background and stay as they are.
+    private static let lightLayerColors: [Int: Color] = darkLayerColors.merging([
+        HorizontalBoardLayers.topNotes: rgb(0, 0, 0),
+        HorizontalBoardLayers.outlineNotes: rgb(0.1, 0.1, 0),
+        HorizontalBoardLayers.outline: rgb(0.45, 0.45, 0),
+        HorizontalBoardLayers.topPaste: rgb(0.45, 0.45, 0.45),
+        HorizontalBoardLayers.topSilkscreen: rgb(0.1, 0.1, 0.1),
+        HorizontalBoardLayers.bottomSilkscreen: rgb(0.1, 0.1, 0.1),
+        HorizontalBoardLayers.bottomPaste: rgb(0.45, 0.45, 0.45),
+        HorizontalBoardLayers.bottomNotes: rgb(0, 0, 0),
+        HorizontalBoardLayers.user1: rgb(0, 0.5, 0.55),
+        HorizontalBoardLayers.user2: rgb(0, 0.5, 0.55),
+        HorizontalBoardLayers.user3: rgb(0, 0.5, 0.55),
+        HorizontalBoardLayers.user4: rgb(0, 0.5, 0.55),
+        HorizontalBoardLayers.user5: rgb(0, 0.5, 0.55),
+        HorizontalBoardLayers.user6: rgb(0, 0.5, 0.55),
+        HorizontalBoardLayers.user7: rgb(0, 0.5, 0.55),
+        HorizontalBoardLayers.user8: rgb(0, 0.5, 0.55),
+        HorizontalBoardLayers.dimensions: rgb(0, 0, 0),
+    ]) { _, light in light }
+
     static func rgb(_ red: Double, _ green: Double, _ blue: Double) -> Color {
         Color(red: red, green: green, blue: blue)
     }
@@ -404,7 +441,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
     @Published private var boardSceneSilkscreenColor: Color
     @Published private var boardSceneCopperColor: Color
     @Published private var palettes = [HorizontalPaletteKey: HorizontalCanvasPalette]()
-    @Published private var sharedLayerColors = [Int: Color]()
+    @Published private var layerColorSets = [HorizontalPaletteMode: [Int: Color]]()
     @Published private var minimumLineWidths = [HorizontalCanvasKind: Double]()
     @Published private var gridLineWidth: Double
     @Published private var clipsSilkscreenToSolderMask: Bool
@@ -430,7 +467,10 @@ final class HorizontalAppearanceSettings: ObservableObject {
         boardSceneSolderMaskColor = Self.loadBoardSceneSolderMaskColor(defaults: defaults)
         boardSceneSilkscreenColor = Self.loadBoardSceneSilkscreenColor(defaults: defaults)
         boardSceneCopperColor = Self.loadBoardSceneCopperColor(defaults: defaults)
-        sharedLayerColors = Self.loadSharedLayerColors(defaults: defaults)
+        Self.seedLightLayerColors(defaults: defaults)
+        layerColorSets = Dictionary(uniqueKeysWithValues: HorizontalPaletteMode.allCases.map { mode in
+            (mode, Self.loadLayerColors(mode: mode, defaults: defaults))
+        })
         gridLineWidth = Self.loadGridLineWidth(defaults: defaults)
         clipsSilkscreenToSolderMask = Self.loadClipsSilkscreenToSolderMask(defaults: defaults)
         silkscreenMaskClearanceMM = Self.loadSilkscreenMaskClearanceMM(defaults: defaults)
@@ -496,15 +536,24 @@ final class HorizontalAppearanceSettings: ObservableObject {
         boardSceneBackgroundColor
     }
 
+    /// The 3D view's background is a colour of its own, not the theme's, so
+    /// its layer colours are the set made for a background like it.
     var boardSceneLayerColors: [Int: HorizontalRGBColor] {
-        editableLayers.reduce(into: [Int: HorizontalRGBColor]()) { result, layer in
-            let components = Self.colorComponents(from: sharedLayerColor(for: layer))
+        let mode = boardSceneLayerColorMode
+        return editableLayers.reduce(into: [Int: HorizontalRGBColor]()) { result, layer in
+            let components = Self.colorComponents(from: layerColor(for: layer, mode: mode))
             result[layer] = HorizontalRGBColor(
                 red: Double(components.red),
                 green: Double(components.green),
                 blue: Double(components.blue)
             )
         }
+    }
+
+    var boardSceneLayerColorMode: HorizontalPaletteMode {
+        let components = Self.colorComponents(from: boardSceneBackgroundColor)
+        let luminance = 0.2126 * components.red + 0.7152 * components.green + 0.0722 * components.blue
+        return luminance > 0.5 ? .light : .dark
     }
 
     var boardSceneMaterialColors: HorizontalBoardColors {
@@ -521,7 +570,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
 
     func palette(for kind: HorizontalCanvasKind, mode: HorizontalPaletteMode) -> HorizontalCanvasPalette {
         var palette = palettes[HorizontalPaletteKey(kind: kind, mode: mode)] ?? HorizontalCanvasPalette.defaultPalette(kind: kind, mode: mode)
-        palette.layerColors = sharedLayerColors
+        palette.layerColors = layerColorSets[mode] ?? HorizontalCanvasPalette.defaultLayerColors(mode: mode)
         return palette
     }
 
@@ -533,16 +582,18 @@ final class HorizontalAppearanceSettings: ObservableObject {
         }
     }
 
-    func layerColorBinding(for layer: Int) -> Binding<Color> {
+    /// A layer's colour in the light or the dark theme; every canvas that
+    /// draws board layers shares it.
+    func layerColorBinding(for layer: Int, mode: HorizontalPaletteMode) -> Binding<Color> {
         Binding {
-            self.sharedLayerColor(for: layer)
+            self.layerColor(for: layer, mode: mode)
         } set: { color in
-            self.setLayerColor(color, for: layer)
+            self.setLayerColor(color, for: layer, mode: mode)
         }
     }
 
-    func layerColorBinding(for layer: Int, kind: HorizontalCanvasKind, mode: HorizontalPaletteMode) -> Binding<Color> {
-        layerColorBinding(for: layer)
+    func layerColorBinding(for layer: Int, colorScheme: ColorScheme) -> Binding<Color> {
+        layerColorBinding(for: layer, mode: colorScheme == .dark ? .dark : .light)
     }
 
     func appThemeBinding() -> Binding<HorizontalAppTheme> {
@@ -788,11 +839,14 @@ final class HorizontalAppearanceSettings: ObservableObject {
         }
     }
 
+    /// Both themes' layer colours go back to their defaults.
     func resetLayerColors() {
         objectWillChange.send()
-        sharedLayerColors = Self.defaultSharedLayerColors()
-        for layer in editableLayers {
-            defaults.removeObject(forKey: sharedLayerDefaultsKey(layer: layer))
+        for mode in HorizontalPaletteMode.allCases {
+            layerColorSets[mode] = Self.defaultLayerColorSet(mode: mode)
+            for layer in editableLayers {
+                defaults.removeObject(forKey: Self.layerDefaultsKey(mode: mode, layer: layer))
+            }
         }
     }
 
@@ -805,15 +859,15 @@ final class HorizontalAppearanceSettings: ObservableObject {
         defaults.set(Self.hexString(from: color), forKey: colorDefaultsKey(kind: kind, mode: mode, role: role))
     }
 
-    private func sharedLayerColor(for layer: Int) -> Color {
-        sharedLayerColors[layer]
-            ?? HorizontalCanvasPalette.defaultPalette(kind: .board, mode: .dark).layerColor(for: layer)
+    private func layerColor(for layer: Int, mode: HorizontalPaletteMode) -> Color {
+        layerColorSets[mode]?[layer]
+            ?? HorizontalCanvasPalette.defaultPalette(kind: .board, mode: mode).layerColor(for: layer)
     }
 
-    private func setLayerColor(_ color: Color, for layer: Int) {
+    private func setLayerColor(_ color: Color, for layer: Int, mode: HorizontalPaletteMode) {
         objectWillChange.send()
-        sharedLayerColors[layer] = color
-        defaults.set(Self.hexString(from: color), forKey: sharedLayerDefaultsKey(layer: layer))
+        layerColorSets[mode, default: Self.defaultLayerColorSet(mode: mode)][layer] = color
+        defaults.set(Self.hexString(from: color), forKey: Self.layerDefaultsKey(mode: mode, layer: layer))
     }
 
     // A segmented Picker on macOS writes its selection back through its
@@ -1046,28 +1100,51 @@ final class HorizontalAppearanceSettings: ObservableObject {
             ?? defaultBoardSceneCopperColor
     }
 
-    private static func loadSharedLayerColors(defaults: UserDefaults) -> [Int: Color] {
-        var colors = defaultSharedLayerColors()
+    private static func loadLayerColors(mode: HorizontalPaletteMode, defaults: UserDefaults) -> [Int: Color] {
+        var colors = defaultLayerColorSet(mode: mode)
         for layer in editableLayers {
-            if let color = defaults.string(forKey: sharedLayerDefaultsKey(layer: layer)).flatMap(color(from:)) {
-                colors[layer] = color
-            } else if let color = defaults.string(forKey: legacyLayerDefaultsKey(kind: .board, mode: .dark, layer: layer)).flatMap(color(from:)) {
+            if let color = storedLayerColor(mode: mode, layer: layer, defaults: defaults) {
                 colors[layer] = color
             }
         }
         return colors
     }
 
-    private static func defaultSharedLayerColors() -> [Int: Color] {
+    private static func storedLayerColor(mode: HorizontalPaletteMode, layer: Int, defaults: UserDefaults) -> Color? {
+        if let color = defaults.string(forKey: layerDefaultsKey(mode: mode, layer: layer)).flatMap(color(from:)) {
+            return color
+        }
+        // Before one set served both themes, each canvas kept its own; the
+        // board's dark one became that set.
+        guard mode == .dark else { return nil }
+        return defaults.string(forKey: legacyLayerDefaultsKey(kind: .board, mode: .dark, layer: layer)).flatMap(color(from:))
+    }
+
+    /// Until the light theme had layer colours of its own, one set served
+    /// both, so a colour someone chose then was a choice for the light canvas
+    /// too: the first launch that knows the light set copies each such
+    /// colour into it, once, and the sets go their own ways from there.
+    private static func seedLightLayerColors(defaults: UserDefaults) {
+        guard !defaults.bool(forKey: lightLayerColorsSeededDefaultsKey) else { return }
+        for layer in editableLayers where defaults.string(forKey: layerDefaultsKey(mode: .light, layer: layer)) == nil {
+            if let color = storedLayerColor(mode: .dark, layer: layer, defaults: defaults) {
+                defaults.set(hexString(from: color), forKey: layerDefaultsKey(mode: .light, layer: layer))
+            }
+        }
+        defaults.set(true, forKey: lightLayerColorsSeededDefaultsKey)
+    }
+
+    private static func defaultLayerColorSet(mode: HorizontalPaletteMode) -> [Int: Color] {
         var colors = [Int: Color]()
-        let darkPalette = HorizontalCanvasPalette.defaultPalette(kind: .board, mode: .dark)
+        let palette = HorizontalCanvasPalette.defaultPalette(kind: .board, mode: mode)
         for layer in editableLayers {
-            colors[layer] = darkPalette.layerColor(for: layer)
+            colors[layer] = palette.layerColor(for: layer)
         }
         return colors
     }
 
     private static let appThemeDefaultsKey = "appearance.appTheme"
+    private static let lightLayerColorsSeededDefaultsKey = "appearance.board.shared.light.seeded"
     private static let cursorSizeDefaultsKey = "appearance.cursorSize"
     private static let selectionHandleShapeDefaultsKey = "appearance.selectionHandleShape"
     private static let hoverPopoverDefaultsKey = "appearance.showsHoverPopover"
@@ -1102,16 +1179,17 @@ final class HorizontalAppearanceSettings: ObservableObject {
         "appearance.\(kind.rawValue).\(mode.rawValue).color.\(role.rawValue)"
     }
 
-    private static func sharedLayerDefaultsKey(layer: Int) -> String {
-        "appearance.board.shared.layer.\(layer)"
+    /// The dark theme keeps the key the one shared set had, so the colours
+    /// chosen then stay where they were.
+    private static func layerDefaultsKey(mode: HorizontalPaletteMode, layer: Int) -> String {
+        switch mode {
+        case .dark: "appearance.board.shared.layer.\(layer)"
+        case .light: "appearance.board.shared.light.layer.\(layer)"
+        }
     }
 
     private static func legacyLayerDefaultsKey(kind: HorizontalCanvasKind, mode: HorizontalPaletteMode, layer: Int) -> String {
         "appearance.\(kind.rawValue).\(mode.rawValue).layer.\(layer)"
-    }
-
-    private func sharedLayerDefaultsKey(layer: Int) -> String {
-        Self.sharedLayerDefaultsKey(layer: layer)
     }
 
     private func minimumLineWidthDefaultsKey(kind: HorizontalCanvasKind) -> String {
