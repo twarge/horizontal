@@ -501,8 +501,10 @@ treatment the pour got:
    as a width typed into a track does.
 
    **The route inspector** (`HorizontalRouteInspectorView`) is the sidebar
-   while the track tool is in use, opening for the route and closing a few
-   seconds after the last route ends. The track tool's settings are at its
+   while the track tool is in use. Routing leaves the sidebar open or closed
+   as it was: an open one on the Mac turns to the route inspector for the
+   route and back to its pane a few seconds after the last route ends, and a
+   closed one stays closed. The track tool's settings are at its
    top: the corner style, Route around obstacles, Remove loops and Start on
    copper only, which a route under way follows (they were the rail's Track
    Settings popover; S and View ▸ Show Track Settings open the sidebar on

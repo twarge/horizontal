@@ -94,7 +94,8 @@ struct HorizontalIPadProjectView: View {
     /// The rule the rules sheet opens at, as the route inspector asks.
     @State private var rulesFocus: HorizontalBoardRuleFocus?
     /// Fed by the board canvas while a track is routed, and shown in the
-    /// inspector; plain state, as on macOS.
+    /// inspector when it is open; routing neither opens nor closes it. Plain
+    /// state, as on macOS.
     @State private var routeInspector = HorizontalRouteInspectorModel()
     @State private var routeWidthCommand: HorizontalRouteWidthCommand?
     @State private var boardRulesRevision = 0
@@ -105,12 +106,6 @@ struct HorizontalIPadProjectView: View {
     /// panel and its badge, kept up to date as the board changes.
     @State private var rulesResultsState: HorizontalBoardRulesResultState?
     @State private var clearanceCheckTask: Task<Void, Never>?
-    /// Routing opened the inspector, and closes it when the route ends.
-    @State private var inspectorOpenedForRoute = false
-    @State private var seesRouting = false
-    /// Closes it a moment after a route ends, so it doesn't close and open
-    /// again between one route and the next.
-    @State private var inspectorCloseTask: Task<Void, Never>?
     @StateObject private var boardRulesUndoTarget = HorizontalUndoTarget<JSONDictionary>()
     // The right-side slide-over (the iPad analogue of the macOS workspace's right
     // sidebar) shows one pane at a time — the selection inspector or the export panel.
@@ -170,17 +165,6 @@ struct HorizontalIPadProjectView: View {
         } else {
             projectBody
                 .environment(\.horizonPoolRevealAction, revealInPools)
-                .modifier(RouteInspectorPresentation(
-                    model: routeInspector,
-                    onRoutingChange: routingChanged,
-                    rightPane: rightPane,
-                    onRightPaneChange: { pane in
-                        // Changed by hand while routing: it stays as it was left.
-                        if inspectorOpenedForRoute, pane != .inspector {
-                            inspectorOpenedForRoute = false
-                        }
-                    }
-                ))
                 // The first project the app opens offers Horizon's default
                 // pool, once, as the Mac does at its first launch.
                 .task {
@@ -2383,33 +2367,6 @@ struct HorizontalIPadProjectView: View {
         }
     }
 
-    /// The track tool started or ended. On a regular width the inspector
-    /// opens for the route, unless the tool settings say not to, and closes
-    /// again when it ends; a compact width keeps the canvas whole.
-    private func routingChanged(_ isRouting: Bool) {
-        if isRouting {
-            guard !seesRouting else { return }
-            seesRouting = true
-            inspectorCloseTask?.cancel()
-            inspectorCloseTask = nil
-            guard !inspectorOpenedForRoute, !isCompact, rightPane == nil else { return }
-            inspectorOpenedForRoute = true
-            rightPane = .inspector
-        } else {
-            seesRouting = false
-            guard inspectorOpenedForRoute else { return }
-            inspectorCloseTask?.cancel()
-            inspectorCloseTask = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(3))
-                guard !Task.isCancelled, !routeInspector.isRouting, inspectedPane == nil, inspectorOpenedForRoute else { return }
-                inspectorOpenedForRoute = false
-                if rightPane == .inspector {
-                    rightPane = nil
-                }
-            }
-        }
-    }
-
     @ViewBuilder
     private func threeDView(for project: HorizontalProject) -> some View {
         if let board = project.board {
@@ -2978,21 +2935,6 @@ struct HorizontalDocumentExporter: UIViewControllerRepresentable {
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
             onFinish()
         }
-    }
-}
-
-/// Opens and closes the inspector as routing starts and ends, off the
-/// project view's own chain of modifiers.
-private struct RouteInspectorPresentation: ViewModifier {
-    let model: HorizontalRouteInspectorModel
-    var onRoutingChange: (Bool) -> Void
-    var rightPane: HorizontalIPadRightPane?
-    var onRightPaneChange: (HorizontalIPadRightPane?) -> Void
-
-    func body(content: Content) -> some View {
-        content
-            .onReceive(model.$isRouting.removeDuplicates()) { onRoutingChange($0) }
-            .onChange(of: rightPane) { _, pane in onRightPaneChange(pane) }
     }
 }
 

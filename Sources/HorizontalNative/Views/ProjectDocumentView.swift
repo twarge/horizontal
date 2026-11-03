@@ -645,15 +645,15 @@ struct ProjectWorkspaceView: View {
     /// Bumped with `boardRulesRevision` when applying the new rules changed
     /// the board, for the canvas to draw it again.
     @State private var boardRuleShapeRevision = 0
-    /// What the sidebar showed before routing opened the route inspector,
-    /// put back when the route ends; nil when routing didn't open it, or the
-    /// sidebar was changed by hand since.
+    /// The pane the open sidebar showed before routing turned it to the route
+    /// inspector, put back when the route ends; nil when routing didn't turn
+    /// it, or the sidebar was changed by hand since.
     @State private var sidebarBeforeRouting: SidebarBeforeRouting?
-    /// Routing's start was seen, so the sidebar opens once per route even
+    /// Routing's start was seen, so the sidebar turns once per route even
     /// when the start is reported again.
     @State private var seesRouting = false
-    /// Puts the sidebar back a moment after a route ends, so it doesn't
-    /// close and open again between one route and the next.
+    /// Puts the sidebar's pane back a moment after a route ends, so it
+    /// doesn't flip back and forth between one route and the next.
     @State private var sidebarRestoreTask: Task<Void, Never>?
     @StateObject private var boardRulesUndoTarget = HorizontalUndoTarget<JSONDictionary>()
     @StateObject private var boardToolSettings = HorizontalBoardToolSettings()
@@ -924,8 +924,8 @@ struct ProjectWorkspaceView: View {
             }
     }
 
-    /// The route inspector opens the sidebar while a track is routed, and
-    /// puts back what it showed when the route ends.
+    /// An open sidebar shows the route inspector while a track is routed,
+    /// and goes back to what it showed when the route ends.
     private var workspaceWithRouteInspector: some View {
         workspaceWithBoardSceneActions
             .onReceive(routeInspector.$isRouting.removeDuplicates()) { isRouting in
@@ -3359,16 +3359,17 @@ struct ProjectWorkspaceView: View {
         }
     }
 
-    /// The track tool started or ended: the route inspector opens the
-    /// sidebar, and the sidebar goes back to what it was when the route ends.
+    /// The track tool started or ended: an open sidebar turns to the route
+    /// inspector, and goes back to the pane it showed when the route ends. A
+    /// closed sidebar stays closed, and an open one is never closed.
     private func routingChanged(_ isRouting: Bool) {
         if isRouting {
             guard !seesRouting else { return }
             seesRouting = true
             sidebarRestoreTask?.cancel()
             sidebarRestoreTask = nil
-            guard sidebarBeforeRouting == nil, rightSidebarPane != .selection else { return }
-            sidebarBeforeRouting = SidebarBeforeRouting(pane: rightSidebarPane)
+            guard sidebarBeforeRouting == nil, let pane = rightSidebarPane, pane != .selection else { return }
+            sidebarBeforeRouting = SidebarBeforeRouting(pane: pane)
             rightSidebarPane = .selection
         } else {
             seesRouting = false
@@ -5382,9 +5383,10 @@ struct ProjectMetadataRow: Identifiable, Equatable {
     }
 }
 
-/// What the sidebar showed before routing opened the route inspector.
+/// The pane the sidebar showed before routing turned it to the route
+/// inspector.
 private struct SidebarBeforeRouting: Equatable {
-    var pane: HorizontalWorkspaceRightSidebar?
+    var pane: HorizontalWorkspaceRightSidebar
 }
 
 private struct SelectionSidebarSection: Identifiable {
