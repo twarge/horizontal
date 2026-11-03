@@ -59,11 +59,7 @@ final class BoardMovePerfBenchmarkTests: XCTestCase {
                 ref: HorizontalSelectableRef(id: k.id, type: .keepout, layer: k.polygon.layer),
                 points: k.points, fallbackCenter: HorizontalRect(points: k.points).center, fallbackSize: 1_000_000)
         }
-        s += board.dimensions.map { d in
-            HorizontalSelectable.bounds(
-                ref: HorizontalSelectableRef(id: d.id, type: .dimension),
-                points: d.points, fallbackCenter: (d.p0 + d.p1) * 0.5, fallbackSize: d.labelSize)
-        }
+        s += board.dimensions.flatMap(BoardDimensionParts.selectables)
         s += HorizontalCanvasModeSupport.segmentSelectables(board.lines, type: .boardLine, convertsArcSegments: true)
         s += HorizontalCanvasModeSupport.arcSelectables(board.arcs, type: .boardArc)
         s += HorizontalCanvasModeSupport.segmentSelectables(board.tracks, type: .track, convertsArcSegments: true)

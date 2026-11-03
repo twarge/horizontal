@@ -23,6 +23,17 @@ extension HorizontalBoard {
         return layers
     }
 
+    /// The junction ids at each point (`junctionPointKey`), sorted, for many
+    /// `junctionIDs(at:joining:)` lookups without a scan of every junction
+    /// each.
+    func junctionIDsByPoint() -> [String: [String]] {
+        var byPoint = [String: [String]]()
+        for (id, point) in junctions {
+            byPoint[Self.junctionPointKey(point), default: []].append(id)
+        }
+        return byPoint.mapValues { $0.sorted() }
+    }
+
     /// The junctions at `point` copper on `layer` can end on, by id: every one
     /// there when a via there reaches the layer; else those tracks on the
     /// layer name, then those nothing names; never one only copper on another
@@ -30,10 +41,12 @@ extension HorizontalBoard {
     func junctionIDs(
         at point: HorizontalPoint,
         joining layer: Int?,
-        layers: [String: Set<Int>]? = nil
+        layers: [String: Set<Int>]? = nil,
+        byPoint: [String: [String]]? = nil
     ) -> [String] {
         let key = Self.junctionPointKey(point)
-        let here = junctions.filter { Self.junctionPointKey($0.value) == key }.map(\.key).sorted()
+        let here = byPoint.map { $0[key] ?? [] }
+            ?? junctions.filter { Self.junctionPointKey($0.value) == key }.map(\.key).sorted()
         guard let layer, !here.isEmpty else {
             return here
         }

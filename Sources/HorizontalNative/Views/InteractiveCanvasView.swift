@@ -544,6 +544,10 @@ struct InteractiveCanvasView: View {
     /// selection. Mode views implement it — returning false during any active
     /// interaction (draw, paste, move) — and the default keeps drags selecting.
     var hitsSelection: (HorizontalPoint, Double) -> Bool = { _, _ in false }
+    /// Whether a plain click at this world point (with this hit-test slop)
+    /// picks one object outright, though several are under it, so the menu
+    /// asking which is not shown: a vertex the selection marks.
+    var clickPicksOutright: (HorizontalPoint, Double) -> Bool = { _, _ in false }
     /// Reports the exact world→view transform the canvas is rendering with
     /// (built from `effectiveViewport` — what's on screen — not the `viewport`
     /// binding, which can lag behind by a gesture-settle). Hosts that overlay
@@ -1898,7 +1902,8 @@ struct InteractiveCanvasView: View {
         // The click-time disambiguation popup is macOS-only (NSMenu); on iOS
         // overlapping candidates are disambiguated by the long-press menu.
         #if canImport(AppKit)
-        if allowsContextMenu, action == .replace, clickCount == 1 {
+        if allowsContextMenu, action == .replace, clickCount == 1,
+           !clickPicksOutright(worldPoint.raw, unitsPerPoint) {
             let selectableTargets = targetMenuItems(worldPoint, unitsPerPoint).filter { $0.ref != nil }
             if selectableTargets.count > 1 {
                 showSelectionTargetMenu(targets: selectableTargets)
