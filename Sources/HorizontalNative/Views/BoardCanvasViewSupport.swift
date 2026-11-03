@@ -277,6 +277,13 @@ struct BoardMoveConnectivityIndex {
     var packageAnchorsByID = [String: [BoardMoveConnectionAnchor]]()
 }
 
+/// What the selection marks (`BoardSelectionVertices`) is looked up on every
+/// hover, so it is kept per scene and selection.
+struct BoardSelectionVerticesCacheKey: Hashable {
+    var selectableKey: BoardSelectableCacheKey
+    var selectedRefs: [HorizontalSelectableRef]
+}
+
 struct BoardSelectionDetailsCacheKey: Hashable {
     var boardID: String
     var revision: Int
@@ -888,6 +895,8 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
     private var movePreviewValue: HorizontalBoard?
     private var selectionDetailsKey: BoardSelectionDetailsCacheKey?
     private var selectionDetailsValue = HorizontalSelectionDetailState.empty
+    private var selectionVerticesKey: BoardSelectionVerticesCacheKey?
+    private var selectionVerticesValue = HorizontalSelectableSpatialIndex([])
     private var planeFragmentTrianglePoints = [BoardPlaneFragmentKey: [BoardMetalTrianglePoints]]()
     private var planeFragmentTriangles = [BoardMetalPlaneTriangleCacheKey: [HorizontalMetalTrianglePrimitive]]()
     private var planeFragmentOutlines = [BoardMetalPlaneOutlineCacheKey: [HorizontalMetalLinePrimitive]]()
@@ -1052,6 +1061,17 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
             movePreviewKey = key
         }
         return movePreviewValue ?? build()
+    }
+
+    func selectionVertices(
+        key: BoardSelectionVerticesCacheKey,
+        build: () -> [HorizontalSelectable]
+    ) -> HorizontalSelectableSpatialIndex {
+        if selectionVerticesKey != key {
+            selectionVerticesValue = HorizontalSelectableSpatialIndex(build())
+            selectionVerticesKey = key
+        }
+        return selectionVerticesValue
     }
 
     func selectionDetails(
@@ -1411,6 +1431,8 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         turnedMoveTextsValue = []
         selectionDetailsKey = nil
         selectionDetailsValue = .empty
+        selectionVerticesKey = nil
+        selectionVerticesValue = HorizontalSelectableSpatialIndex([])
         padOutlineFragmentsKey = nil
         padOutlineFragmentsValue = BoardPadOutlineFragmentsByLayer()
         padLabelTextsKey = nil

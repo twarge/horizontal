@@ -1188,6 +1188,9 @@ struct BoardCanvasView: View {
             hitsSelection: { worldPoint, worldUnitsPerPoint in
                 pressLandsOnSelection(at: worldPoint, worldUnitsPerPoint: worldUnitsPerPoint)
             },
+            clickPicksOutright: { worldPoint, worldUnitsPerPoint in
+                selectionVertex(at: worldPoint, worldUnitsPerPoint: worldUnitsPerPoint) != nil
+            },
             onCanvasDisplayTransformChange: { transform in
                 liveCanvasTransform.transform = transform
                 #if os(macOS)
@@ -1765,7 +1768,11 @@ struct BoardCanvasView: View {
             )
         }
 
-        let items = selectedObjects.compactMap(selectionDetailItem)
+        // A dimension's points and label are one dimension to the inspector.
+        var listedDimensions = Set<String>()
+        let items = selectedObjects
+            .filter { $0.type != .dimension || listedDimensions.insert(normalizedID($0.id)).inserted }
+            .compactMap(selectionDetailItem)
         let groups = Dictionary(grouping: items, by: { $0.ref.type })
             .map { type, items in
                 HorizontalSelectionDetailGroup(
@@ -3121,7 +3128,26 @@ struct BoardCanvasView: View {
     }
 
     private func hitSelectable(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> HorizontalSelectableRef? {
-        boardSelectableScene().hitSelectable(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+        selectionVertex(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+            ?? boardSelectableScene().hitSelectable(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+    }
+
+    /// The part of the selection marked under the cursor (`BoardSelectionVertices`):
+    /// a vertex of a selected polygon, a selected track's end, a selected
+    /// dimension's point or label. A click there picks it ahead of anything
+    /// else under the cursor, and without the menu asking which.
+    private func selectionVertex(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> HorizontalSelectableRef? {
+        guard !selectedObjects.isEmpty else {
+            return nil
+        }
+        let expand = HorizontalSelectable.minimumScreenSize * worldUnitsPerPoint
+        let index = selectableCache.selectionVertices(
+            key: BoardSelectionVerticesCacheKey(selectableKey: selectableCacheKey, selectedRefs: selectedObjects)
+        ) {
+            let selectablesByRef = boardSelectablesByRef()
+            return BoardSelectionVertices.refs(of: selectedObjects, in: board).flatMap { selectablesByRef[$0] ?? [] }
+        }
+        return BoardSelectionVertices.pick(at: point, among: index.candidates(at: point, expand: expand), expand: expand)
     }
 
     /// Whether a primary-drag press lands on the current selection — the drag
@@ -7041,7 +7067,10 @@ struct BoardCanvasView: View {
         case .keepout:
             return board.keepouts.first { normalizedID($0.id) == normalizedID(ref.id) }?.points ?? []
         case .dimension:
-            return board.dimensions.first { normalizedID($0.id) == normalizedID(ref.id) }?.points ?? []
+            // The point the part stands for: one of the two, or the label's origin.
+            return board.dimensions.first { normalizedID($0.id) == normalizedID(ref.id) }
+                .flatMap { BoardDimensionParts.anchor(of: $0, part: ref.vertex) }
+                .map { [$0] } ?? []
         case .boardDecal:
             return board.decals.first { normalizedID($0.id) == normalizedID(ref.id) }?.points ?? []
         case .plane:
@@ -7073,10 +7102,8 @@ struct BoardCanvasView: View {
             }
             return keepout.points.indices.contains(ref.vertex) ? keepout.points[ref.vertex] : keepout.points.first
         case .dimension:
-            guard let dimension = board.dimensions.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
-                return nil
-            }
-            return dimension.points.indices.contains(ref.vertex) ? dimension.points[ref.vertex] : dimension.points.first
+            return board.dimensions.first { normalizedID($0.id) == normalizedID(ref.id) }
+                .flatMap { BoardDimensionParts.anchor(of: $0, part: ref.vertex) }
         case .boardDecal:
             guard let decal = board.decals.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return nil
@@ -7133,6 +7160,35 @@ struct BoardCanvasView: View {
                 BoardPolygonParts.isPart($0.type) && reshaped.contains(normalizedID($0.id))
             })
         }
+        // So does a dimension with one point, or only its label, moving: the
+        // shift of its spans draws only a dimension that moves whole.
+        let dimensionParts = BoardDimensionParts.selectedParts(in: refs)
+        plan.unsupportedRefs.formUnion(refs.filter {
+            $0.type == .dimension && !BoardDimensionParts.movesWhole(dimensionParts[normalizedID($0.id)] ?? [])
+        })
+        // And a junction that carries the end of a line or arc the selection
+        // doesn't move whole, which the plan's track patches leave behind.
+        let junctionRefs = refs.filter { $0.type == .junction }
+        if !junctionRefs.isEmpty {
+            let movedWhole = Set(refs.map { normalizedID($0.id) })
+            var carriedEnds = Set<String>()
+            for segment in board.lines + board.connectionLines where !movedWhole.contains(normalizedID(segment.id)) {
+                carriedEnds.insert(pointKey(segment.from))
+                carriedEnds.insert(pointKey(segment.to))
+            }
+            for arc in board.arcs where !movedWhole.contains(normalizedID(arc.id)) {
+                carriedEnds.formUnion([arc.from, arc.to, arc.center].map(pointKey))
+            }
+            if !carriedEnds.isEmpty {
+                let junctionPoints = Dictionary(
+                    board.junctions.map { (normalizedID($0.key), $0.value) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+                plan.unsupportedRefs.formUnion(junctionRefs.filter { ref in
+                    junctionPoints[normalizedID(ref.id)].map { carriedEnds.contains(pointKey($0)) } ?? false
+                })
+            }
+        }
         return plan
     }
 
@@ -7141,6 +7197,15 @@ struct BoardCanvasView: View {
         var movedLayerVertexKeys = Set<String>()
         let selectedRefSet = Set(selectedObjects)
         var movedPolygonPoints = Set<String>()
+        let dimensionParts = BoardDimensionParts.selectedParts(in: selectedObjects)
+        var movedDimensionIDs = Set<String>()
+        // Lines, arcs and connection lines the selection moves whole; a
+        // selected junction carries the ends of the rest.
+        let graphicsMovedWhole = Set(
+            selectedObjects
+                .filter { $0.type == .boardLine || $0.type == .boardArc || $0.type == .connectionLine }
+                .map { normalizedID($0.id) }
+        )
 
         for ref in selectedObjects {
             switch ref.type {
@@ -7159,7 +7224,7 @@ struct BoardCanvasView: View {
             case .boardLine:
                 moveBoardLayerSegmentSelection(&board.lines, ref: ref, by: delta, movedKeys: &movedLayerVertexKeys)
             case .junction:
-                moveBoardJunction(ref: ref, by: delta, board: &board, movedKeys: &movedConnectionKeys)
+                moveBoardJunction(ref: ref, by: delta, board: &board, movedKeys: &movedConnectionKeys, graphicsMovedWhole: graphicsMovedWhole)
             case .boardArc:
                 moveArc(&board.arcs, ref: ref, by: delta)
             case .via:
@@ -7186,7 +7251,7 @@ struct BoardCanvasView: View {
             case .keepout:
                 moveKeepout(&board.keepouts, ref: ref, by: delta)
             case .dimension:
-                moveDimension(&board.dimensions, ref: ref, by: delta)
+                moveDimension(&board.dimensions, ref: ref, parts: dimensionParts, by: delta, done: &movedDimensionIDs)
             case .boardDecal:
                 moveBoardDecal(&board.decals, ref: ref, by: delta)
             case .plane:
@@ -7516,11 +7581,13 @@ struct BoardCanvasView: View {
         ref: HorizontalSelectableRef,
         by delta: HorizontalPoint,
         board: inout HorizontalBoard,
-        movedKeys: inout Set<String>
+        movedKeys: inout Set<String>,
+        graphicsMovedWhole: Set<String> = []
     ) {
         guard let entry = board.junctions.first(where: { normalizedID($0.key) == normalizedID(ref.id) }) else {
             return
         }
+        let firstMoveHere = !movedKeys.contains(pointKey(entry.value))
         moveBoardConnectionPoint(
             at: entry.value,
             by: delta,
@@ -7528,6 +7595,50 @@ struct BoardCanvasView: View {
             board: &board,
             movedKeys: &movedKeys
         )
+        // Lines and arcs end on junctions as tracks do, and Horizon's follow
+        // the junction they end on. The model keeps their ends as points, so
+        // the ends at the junction's point go with it.
+        if firstMoveHere {
+            moveBoardGraphicEnds(at: entry.value, by: delta, skipping: graphicsMovedWhole, board: &board)
+        }
+    }
+
+    /// Moves the ends at `point` of the board's lines, connection lines and
+    /// arcs (an arc's centre too), but for those in `skipping` (normalized
+    /// ids), which move whole.
+    private func moveBoardGraphicEnds(
+        at point: HorizontalPoint,
+        by delta: HorizontalPoint,
+        skipping: Set<String>,
+        board: inout HorizontalBoard
+    ) {
+        guard delta != .zero else {
+            return
+        }
+        let key = pointKey(point)
+        func moveEnds(_ segments: inout [HorizontalSegment]) {
+            for index in segments.indices where !skipping.contains(normalizedID(segments[index].id)) {
+                if pointKey(segments[index].from) == key {
+                    segments[index].from = segments[index].from + delta
+                }
+                if pointKey(segments[index].to) == key {
+                    segments[index].to = segments[index].to + delta
+                }
+            }
+        }
+        moveEnds(&board.lines)
+        moveEnds(&board.connectionLines)
+        for index in board.arcs.indices where !skipping.contains(normalizedID(board.arcs[index].id)) {
+            if pointKey(board.arcs[index].from) == key {
+                board.arcs[index].from = board.arcs[index].from + delta
+            }
+            if pointKey(board.arcs[index].to) == key {
+                board.arcs[index].to = board.arcs[index].to + delta
+            }
+            if pointKey(board.arcs[index].center) == key {
+                board.arcs[index].center = board.arcs[index].center + delta
+            }
+        }
     }
 
     private func boardSegmentHasSelectedEndpointOwner(
@@ -7824,11 +7935,21 @@ struct BoardCanvasView: View {
         keepouts[index] = shifted(keepouts[index], by: delta)
     }
 
-    private func moveDimension(_ dimensions: inout [HorizontalDimension], ref: HorizontalSelectableRef, by delta: HorizontalPoint) {
-        guard let index = dimensions.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+    /// Moves the parts of a dimension the selection holds, once however many
+    /// of them it holds (`BoardDimensionParts`).
+    private func moveDimension(
+        _ dimensions: inout [HorizontalDimension],
+        ref: HorizontalSelectableRef,
+        parts: [String: Set<Int>],
+        by delta: HorizontalPoint,
+        done: inout Set<String>
+    ) {
+        let id = normalizedID(ref.id)
+        guard done.insert(id).inserted,
+              let index = dimensions.firstIndex(where: { normalizedID($0.id) == id }) else {
             return
         }
-        dimensions[index] = shifted(dimensions[index], by: delta)
+        dimensions[index] = BoardDimensionParts.moved(dimensions[index], parts: parts[id] ?? [ref.vertex], by: delta)
     }
 
     private func moveBoardDecal(_ decals: inout [HorizontalBoardDecal], ref: HorizontalSelectableRef, by delta: HorizontalPoint) {
@@ -9004,13 +9125,6 @@ struct BoardCanvasView: View {
         var keepout = keepout
         keepout.polygon = rotated(keepout.polygon, around: origin, by: angleDelta)
         return keepout
-    }
-
-    private func shifted(_ dimension: HorizontalDimension, by delta: HorizontalPoint) -> HorizontalDimension {
-        var dimension = dimension
-        dimension.p0 = dimension.p0 + delta
-        dimension.p1 = dimension.p1 + delta
-        return dimension
     }
 
     private func shifted(_ decal: HorizontalBoardDecal, by delta: HorizontalPoint) -> HorizontalBoardDecal {
@@ -12740,10 +12854,13 @@ struct BoardCanvasView: View {
                 hoveredRef: hoveredObject,
                 color: selectedGroupPreviewColor
             )
-            let polygonControlHandles = boardMetalPolygonSelectionControlHandles(
+            let vertexMarks = boardMetalSelectionVertexMarks(
                 in: selectionBoard,
+                selectablesByRef: selectablesByRef,
                 selectedRefs: selectedObjects,
+                hoveredRef: hoveredObject,
                 outerColor: selectedGroupPreviewColor,
+                hoverColor: hoverOuterColor,
                 innerColor: selectedHandleInnerColor,
                 shape: handleShape
             )
@@ -12767,9 +12884,9 @@ struct BoardCanvasView: View {
                 triangleKey: batchKey,
                 triangles: [],
                 lineKey: batchKey,
-                lines: polygonGroupPreviewLines + textOwnerLines + overlay.lines,
+                lines: polygonGroupPreviewLines + vertexMarks.lines + textOwnerLines + overlay.lines,
                 handleKey: batchKey,
-                handles: polygonControlHandles + overlay.handles,
+                handles: vertexMarks.handles + overlay.handles,
                 anchoredRectKey: 0,
                 anchoredRects: []
             )
@@ -12874,70 +12991,76 @@ struct BoardCanvasView: View {
                 dashesWhenSelected: true,
                 drawsInnerStroke: false
             )
+        case .dimension where selectable.isPoint:
+            // A dimension's point is a handle, as a polygon's vertex is.
+            return HorizontalCanvasSelectionOutline(
+                points: [],
+                closesPath: false,
+                normalOffset: 0,
+                handlePoints: [selectable.center],
+                dashesWhenSelected: true,
+                drawsInnerStroke: false
+            )
         default:
             return nil
         }
     }
 
-    private func boardMetalPolygonSelectionControlHandles(
+    /// The marks on the selection's parts that select on their own
+    /// (`BoardSelectionVertices`), apart from those selected themselves,
+    /// which the selection overlay draws: a handle on each point, and a
+    /// dimension's label outlined in dashes, as Horizon previews the rest of
+    /// a selected dimension's group. The one under the cursor, which a click
+    /// picks, is lit as hovered.
+    private func boardMetalSelectionVertexMarks(
         in board: HorizontalBoard,
+        selectablesByRef: [HorizontalSelectableRef: [HorizontalSelectable]],
         selectedRefs: [HorizontalSelectableRef],
+        hoveredRef: HorizontalSelectableRef?,
         outerColor: HorizontalMetalRGBA,
+        hoverColor: HorizontalMetalRGBA,
         innerColor: HorizontalMetalRGBA,
         shape: HorizontalSelectionHandleShape
-    ) -> [HorizontalMetalHandlePrimitive] {
-        let polygonRefs = selectedRefs.filter(isPolygonControlRef)
-        guard !polygonRefs.isEmpty else {
-            return []
-        }
-
-        let selectedControlRefs = Set(
-            polygonRefs.filter { $0.type == .polygonArcCenter || $0.type == .polygonVertex }
-        )
-        let polygonIDs = Set(polygonRefs.map { normalizedID($0.id) })
-        let polygons = board.polygons + board.planes.compactMap(\.fallbackPolygon)
+    ) -> (handles: [HorizontalMetalHandlePrimitive], lines: [HorizontalMetalLinePrimitive]) {
+        let selected = Set(selectedRefs)
         let outerRadius = max(Float(shape.outerRadius) * 0.56, 5)
         let innerRadius = max(Float(shape.innerRadius) * 0.56, 2.5)
-
-        var seenRefs = Set<HorizontalSelectableRef>()
         var handles = [HorizontalMetalHandlePrimitive]()
-
-        func appendHandle(ref: HorizontalSelectableRef, center: HorizontalPoint) {
-            guard !selectedControlRefs.contains(ref),
-                  seenRefs.insert(ref).inserted else {
-                return
-            }
-            handles.append(
-                HorizontalMetalHandlePrimitive(
-                    center: center,
-                    outerColor: outerColor,
-                    innerColor: innerColor,
-                    shape: shape,
-                    outerRadius: outerRadius,
-                    innerRadius: innerRadius
-                )
-            )
-        }
-
-        for polygon in polygons where polygonIDs.contains(normalizedID(polygon.id)) {
-            guard displayOptions.isLayerVisible(polygon.layer) else {
-                continue
-            }
-            for (index, vertex) in polygon.polygonVertices.enumerated() {
-                appendHandle(
-                    ref: HorizontalSelectableRef(id: polygon.id, type: .polygonVertex, vertex: index, layer: polygon.layer),
-                    center: vertex.position
-                )
-                if vertex.type == .arc {
-                    appendHandle(
-                        ref: HorizontalSelectableRef(id: polygon.id, type: .polygonArcCenter, vertex: index, layer: polygon.layer),
-                        center: vertex.arcCenter
+        var lines = [HorizontalMetalLinePrimitive]()
+        for ref in BoardSelectionVertices.refs(of: selectedRefs, in: board) where !selected.contains(ref) {
+            let outerColor = ref == hoveredRef ? hoverColor : outerColor
+            for selectable in selectablesByRef[ref] ?? [] {
+                if selectable.isPoint {
+                    handles.append(
+                        HorizontalMetalHandlePrimitive(
+                            center: selectable.center,
+                            outerColor: outerColor,
+                            innerColor: innerColor,
+                            shape: shape,
+                            outerRadius: outerRadius,
+                            innerRadius: innerRadius
+                        )
                     )
+                    continue
                 }
+                let corners = selectable.corners
+                let points = corners + corners.prefix(1)
+                let phases = HorizontalMetalLinePrimitive.dashPhases(along: points)
+                lines.append(contentsOf: zip(points, points.dropFirst()).enumerated().map { index, pair in
+                    HorizontalMetalLinePrimitive(
+                        from: pair.0,
+                        to: pair.1,
+                        color: outerColor,
+                        minimumWidth: 1.8,
+                        dashLength: 5,
+                        dashGap: 4,
+                        dashPhase: phases[index],
+                        normalOffset: 0
+                    )
+                })
             }
         }
-
-        return handles
+        return (handles, lines)
     }
 
     private func boardMetalPolygonSelectionPreviewLines(
@@ -12989,15 +13112,6 @@ struct BoardCanvasView: View {
             })
         }
         return lines
-    }
-
-    private func isPolygonControlRef(_ ref: HorizontalSelectableRef) -> Bool {
-        switch ref.type {
-        case .polygonArcCenter, .polygonEdge, .polygonVertex:
-            return true
-        default:
-            return false
-        }
     }
 
     private func polygonEdgeSelectionKey(_ ref: HorizontalSelectableRef) -> String {
@@ -13214,14 +13328,8 @@ struct BoardCanvasView: View {
             )
         })
 
-        selectables.append(contentsOf: board.dimensions.map { dimension in
-            HorizontalSelectable.bounds(
-                ref: HorizontalSelectableRef(id: dimension.id, type: .dimension),
-                points: dimension.points,
-                fallbackCenter: (dimension.p0 + dimension.p1) * 0.5,
-                fallbackSize: dimension.labelSize
-            )
-        })
+        // Horizon's three: the two points and the label, not a box round it all.
+        selectables.append(contentsOf: board.dimensions.flatMap(BoardDimensionParts.selectables))
 
         selectables.append(contentsOf: segmentSelectables(board.lines, type: .boardLine))
         selectables.append(contentsOf: arcSelectables(board.arcs, type: .boardArc))
@@ -15125,6 +15233,19 @@ struct BoardCanvasView: View {
                 drawSelectionHandle(
                     at: point,
                     color: theme.selectableOuter,
+                    context: context,
+                    transform: transform
+                )
+            }
+        }
+        // The selection's parts that select on their own (`BoardSelectionVertices`).
+        let selected = Set(selectedObjects)
+        let selectablesByRef = boardSelectablesByRef()
+        for ref in BoardSelectionVertices.refs(of: selectedObjects, in: board) where !selected.contains(ref) {
+            for selectable in selectablesByRef[ref] ?? [] where selectable.isPoint {
+                drawSelectionHandle(
+                    at: selectable.center,
+                    color: theme.selectableAlways,
                     context: context,
                     transform: transform
                 )

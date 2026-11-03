@@ -54,7 +54,13 @@ final class BoardOutlineMoveCommitTests: XCTestCase {
         HorizontalPoint(x: 0, y: 0), HorizontalPoint(x: 20_000_000, y: 0), HorizontalPoint(x: 0, y: 10_000_000),
     ]
 
-    private func board(outline: [HorizontalPoint]? = nil, tracks: [HorizontalSegment] = []) -> HorizontalBoard {
+    private func board(
+        outline: [HorizontalPoint]? = nil,
+        tracks: [HorizontalSegment] = [],
+        junctions: [String: HorizontalPoint] = [:],
+        lines: [HorizontalSegment] = [],
+        dimensions: [HorizontalDimension] = []
+    ) -> HorizontalBoard {
         HorizontalBoard(
             url: URL(fileURLWithPath: "/tmp/outline.hprj"), uuid: "b", name: "outline",
             grid: .boardDefault,
@@ -63,10 +69,10 @@ final class BoardOutlineMoveCommitTests: XCTestCase {
                 HorizontalBoardStackupLayer(layer: 0, copperThickness: 35_000, substrateThickness: 1_500_000),
                 HorizontalBoardStackupLayer(layer: -100, copperThickness: 35_000, substrateThickness: 1_500_000),
             ],
-            userLayers: [], junctions: [:], junctionNetIDs: [:], netDetails: [:],
-            tracks: tracks, netTies: [], lines: [], arcs: [], connectionLines: [], airwires: [],
+            userLayers: [], junctions: junctions, junctionNetIDs: [:], netDetails: [:],
+            tracks: tracks, netTies: [], lines: lines, arcs: [], connectionLines: [], airwires: [],
             polygons: outline.map { [HorizontalPolygon(id: "outline", vertices: $0, layer: HorizontalBoardLayers.outline, netID: nil)] } ?? [],
-            planes: [], keepouts: [], dimensions: [], decals: [], holes: [],
+            planes: [], keepouts: [], dimensions: dimensions, decals: [], holes: [],
             vias: [], viaHoles: [],
             packages: [], packagePads: [], packageHoles: [], packagePolygons: [],
             packageLines: [], packageArcs: [], packageTexts: [], texts: [],
@@ -187,6 +193,55 @@ final class BoardOutlineMoveCommitTests: XCTestCase {
         XCTAssertTrue(same([(SIMD2(Float(moved.from.x), Float(moved.from.y)), SIMD2(Float(moved.to.x), Float(moved.to.y)))], preview))
         let shown = await settle { self.same(drawn(), preview) }
         XCTAssertTrue(shown, "the committed track is drawn where it went: \(drawn())")
+    }
+
+    /// Moves the selection up one key press and commits; the board committed.
+    private func keyMoveUp(_ state: State, key: (UInt16, String) throws -> Void) async throws -> HorizontalBoard {
+        try key(126, "\u{f700}")
+        try key(36, "\r")
+        let committed = await settle { state.committed.count == 1 }
+        XCTAssertTrue(committed)
+        return try XCTUnwrap(state.committed.last)
+    }
+
+    func testADimensionWithAllItsPartsSelectedMovesWholeAndOnce() async throws {
+        // Its two points and its label are three selectables, as in Horizon;
+        // all three moving shift it once and leave its label's distance.
+        let dimension = HorizontalDimension(
+            id: "d", p0: HorizontalPoint(x: 0, y: 0), p1: HorizontalPoint(x: 10_000_000, y: 0),
+            labelDistance: 1_000_000, labelSize: 1_500_000, mode: .distance
+        )
+        let state = State(board(dimensions: [dimension]))
+        let (window, _, key) = try await mount(state)
+        defer { window.close() }
+
+        let board = try await keyMoveUp(state, key: key)
+        let moved = try XCTUnwrap(board.dimensions.first)
+        let delta = moved.p0 - dimension.p0
+        XCTAssertGreaterThan(delta.y, 0, "it moved up")
+        XCTAssertEqual(delta.x, 0)
+        XCTAssertEqual(moved.p1 - dimension.p1, delta, "both points by the one step")
+        XCTAssertEqual(moved.labelDistance, dimension.labelDistance, "the label goes with them")
+    }
+
+    func testALineAndTheJunctionsItEndsOnMoveOnce() async throws {
+        // A selected junction carries the end of a line that ends on it, as
+        // Horizon's does, but not of one the selection moves whole.
+        let silk = HorizontalBoardLayers.topSilkscreen
+        let line = HorizontalSegment(
+            id: "l", from: HorizontalPoint(x: 0, y: 0), to: HorizontalPoint(x: 5_000_000, y: 0), width: 150_000, layer: silk
+        )
+        let state = State(board(junctions: ["a": line.from, "b": line.to], lines: [line]))
+        let (window, _, key) = try await mount(state)
+        defer { window.close() }
+
+        let board = try await keyMoveUp(state, key: key)
+        let moved = try XCTUnwrap(board.lines.first)
+        let delta = moved.from - line.from
+        XCTAssertGreaterThan(delta.y, 0, "it moved up")
+        XCTAssertEqual(moved.to - line.to, delta)
+        XCTAssertEqual(board.junctions["a"], moved.from, "the junction went with the line's end, once")
+        XCTAssertEqual(board.junctions["b"], moved.to)
     }
 
     func testROnASelectedOutlineTurnsItAQuarterOnce() async throws {
