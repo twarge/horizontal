@@ -97,4 +97,37 @@ final class BoardPolygonPartsTests: XCTestCase {
         XCTAssertEqual(polygons[0].polygonVertices[1].position, HorizontalPoint(x: -10, y: 0))
         XCTAssertEqual(polygons[0].polygonVertices[0].position, HorizontalPoint(x: 0, y: 0), "not on the edge")
     }
+
+    func testADoubleClickOnAnyPartSelectsTheWholePolygon() {
+        var arc = square
+        arc.polygonVertices[2].type = .arc
+        arc.polygonVertices[2].arcCenter = HorizontalPoint(x: 5, y: 10)
+        let whole = BoardPolygonParts.wholeSelection(of: arc)
+        for part in [ref(.polygonEdge, 1), ref(.polygonVertex, 3), ref(.polygonArcCenter, 2)] {
+            XCTAssertEqual(BoardPolygonParts.doubleClickSelection(of: part, in: arc), whole, "\(part.type)")
+        }
+        XCTAssertTrue(BoardPolygonParts.reshapedPolygonIDs(by: whole, in: [arc]).isEmpty, "moved, it moves whole")
+
+        XCTAssertNil(BoardPolygonParts.doubleClickSelection(of: ref(.polygonEdge, 1), in: nil))
+        XCTAssertNil(BoardPolygonParts.doubleClickSelection(
+            of: HorizontalSelectableRef(id: "other", type: .polygonEdge, vertex: 1), in: arc
+        ), "another polygon's edge")
+        XCTAssertNil(BoardPolygonParts.doubleClickSelection(
+            of: HorizontalSelectableRef(id: arc.id, type: .boardLine), in: arc
+        ), "not a polygon part")
+    }
+
+    func testAToggleDoubleClickAddsThePolygonToTheSelection() {
+        let track = HorizontalSelectableRef(id: "track", type: .track)
+        let edge = HorizontalSelectableRef(id: square.id, type: .polygonEdge, vertex: 1, layer: HorizontalBoardLayers.outline)
+        let whole = BoardPolygonParts.wholeSelection(of: square)
+        // ⌘-double-click: the first click toggled the edge in; a toggle of
+        // every part would take it back out.
+        let action = BoardPolygonParts.doubleClickAction(for: .toggle)
+        XCTAssertEqual(action, .add)
+        let selection = HorizontalCanvasModeSupport.updatedSelection(current: [track, edge], refs: whole, action: action)
+        XCTAssertEqual(selection.map(Set.init), Set([track] + whole))
+        XCTAssertEqual(BoardPolygonParts.doubleClickAction(for: .replace), .replace)
+        XCTAssertEqual(BoardPolygonParts.doubleClickAction(for: .remove), .remove)
+    }
 }

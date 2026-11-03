@@ -1140,6 +1140,13 @@ struct BoardCanvasView: View {
                     return
                 }
                 #endif
+                // Double-click a polygon's edge, vertex or arc centre → the
+                // whole polygon, as Horizon's double-click selects it.
+                if clickCount >= 2, let hitRef,
+                   let whole = BoardPolygonParts.doubleClickSelection(of: hitRef, in: boardPolygon(for: hitRef.id, in: board)) {
+                    updateSelection(with: whole, action: BoardPolygonParts.doubleClickAction(for: clickAction))
+                    return
+                }
                 updateSelection(with: hitRef, action: clickAction)
             },
             onAreaSelection: { refs, action in
