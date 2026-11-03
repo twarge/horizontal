@@ -909,8 +909,13 @@ struct BoardCanvasView: View {
              .dimension,
              .boardDecal,
              .polygonEdge,
+             .polygonVertex,
+             .polygonArcCenter,
              .plane,
              .junction:
+            // A polygon whose points do not all move changes shape, which
+            // its spans' shift cannot draw; the resident plan marks those
+            // (`boardResidentMovePlan`), so they fall back to a rebuild.
             return true
         case .text:
             // Standalone board text owns an individually-patchable resident span.
@@ -930,12 +935,6 @@ struct BoardCanvasView: View {
                 return false
             }
             return selectedObjects.contains(HorizontalSelectableRef(id: packageID, type: .boardPackage))
-        case .polygonArcCenter, .polygonVertex:
-            // Polygon control points share the polygon's resident span (tagged by
-            // .polygonEdge). If the whole polygon (its edge) is also selected the
-            // polygon translates rigidly; a lone vertex/arc move reshapes the
-            // polygon (non-rigid) and must fall back to a rebuild.
-            return selectedObjects.contains(HorizontalSelectableRef(id: ref.id, type: .polygonEdge, layer: ref.layer))
         case .blockSymbolPort, .boardPanel, .busLabel, .busRipper, .drawingArc, .drawingLine, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .padstackShape, .symbolPin:
             return false
         }
@@ -3889,7 +3888,7 @@ struct BoardCanvasView: View {
                     var v = $0; v.position = shift(v.position); v.arcCenter = shift(v.arcCenter); return v
                 }
                 board.polygons.append(poly)
-                refs.append(HorizontalSelectableRef(id: poly.id, type: .polygonVertex))
+                refs.append(contentsOf: BoardPolygonParts.wholeSelection(of: poly))
             case .pad(var pad):
                 pad.id = newID()
                 pad.name = HorizontalPoolPackage.nextPadName(among: board.pads)
@@ -4357,21 +4356,6 @@ struct BoardCanvasView: View {
         let totalDelta = measure("delta") {
             state.lastPoint - state.startPoint
         }
-        // A committed package move (and the tracks it drags along) doesn't reliably
-        // survive the preserved metal scene: the cached buckets stay built from the
-        // pre-move board, so the part and its tracks keep rendering at their old
-        // spot until the next full rebuild (reopening the file fixes it). The data
-        // is correct — only the live render is stale. Force a scene rebuild from the
-        // committed board whenever a package moved so the render matches the data.
-        let movesPackage = selectedObjects.contains { $0.type == .boardPackage }
-        // A turn during the move (105, 122) changed more than a translation
-        // patch carries: the preserved scene would be the one from before it.
-        let canPreserveCommittedMetalScene = drawsBoardLinesInMetal
-            && plan.isPatchable
-            && !movesPackage
-            && state.boardBeforeMove == nil
-            && state.turn == nil
-            && selectedObjects.allSatisfy(isBoardMetalMovePatchable)
         if totalDelta == .zero, state.boardBeforeMove == nil, state.turn == nil {
             measure("clear move state") {
                 moveState = nil
@@ -4424,7 +4408,12 @@ struct BoardCanvasView: View {
             moveState = nil
         }
         measure("invalidate caches") {
-            invalidateSelectableCache(preservesMetalScene: canPreserveCommittedMetalScene)
+            // The scene is built again from the committed board, whatever
+            // moved. The resident patches end with the move, and the renderer
+            // then puts back the scene it was given; one kept from before the
+            // move drew everything that moved at its old place until something
+            // else rebuilt it (a pour, or Q).
+            invalidateSelectableCache()
         }
         measure("publish board change") {
             publishConnectivityResolvedEdit(draft)
@@ -4436,7 +4425,7 @@ struct BoardCanvasView: View {
         HorizontalMoveCommitDiagnostics.report(
             modeName: "board",
             selectedCount: selectedCount,
-            details: "translated \(plan.translatedRefs.count), segments \(plan.segmentMoves.count), unsupported \(plan.unsupportedRefs.count), moved true, preserved metal \(canPreserveCommittedMetalScene)",
+            details: "translated \(plan.translatedRefs.count), segments \(plan.segmentMoves.count), unsupported \(plan.unsupportedRefs.count), moved true",
             timings: timings
         )
         HorizontalMoveCommitDiagnostics.markCommitReturned()
@@ -6340,7 +6329,7 @@ struct BoardCanvasView: View {
         draft.arcs.removeAll { result.consumedArcIDs.contains($0.id) }
         draft.polygons.append(result.polygon)
         editedBoard = draft
-        selectedObjects = [HorizontalSelectableRef(id: result.polygon.id, type: .polygonEdge, layer: result.polygon.layer)]
+        selectedObjects = BoardPolygonParts.wholeSelection(of: result.polygon)
         invalidateSelectableCache()
         registerUndoSnapshot(previousBoard, actionName: "Line Loop to Polygon")
         publishConnectivityResolvedEdit(draft)
@@ -7029,7 +7018,15 @@ struct BoardCanvasView: View {
             }
             return [polygon.polygonVertices[ref.vertex].arcCenter]
         case .polygonEdge, .polygonVertex:
-            return boardPolygon(for: ref.id, in: board)?.renderVertices(arcPrecision: 24) ?? []
+            // The points the ref moves (`BoardPolygonParts`): an edge's two
+            // ends, a vertex itself. The rest of the polygon stays put, so it
+            // is no part of the pivot and stays a snap target.
+            guard let polygon = boardPolygon(for: ref.id, in: board) else {
+                return []
+            }
+            return BoardPolygonParts.parts(of: ref, in: polygon).vertices.sorted().map {
+                polygon.polygonVertices[$0].position
+            }
         case .keepout:
             return board.keepouts.first { normalizedID($0.id) == normalizedID(ref.id) }?.points ?? []
         case .dimension:
@@ -7106,7 +7103,7 @@ struct BoardCanvasView: View {
         for refs: [HorizontalSelectableRef],
         in board: HorizontalBoard
     ) -> BoardResidentMovePlan {
-        BoardMovePlanner.residentMovePlan(
+        var plan = BoardMovePlanner.residentMovePlan(
             for: refs,
             tracks: board.tracks,
             netTies: board.netTies,
@@ -7116,12 +7113,23 @@ struct BoardCanvasView: View {
             packagePads: board.packagePads,
             packageHoles: board.packageHoles
         )
+        // Polygon parts share their polygon's resident spans, which a shift
+        // moves whole. One with a point left behind (an edge moved alone, a
+        // vertex) changes shape, so it is previewed from a rebuilt scene.
+        let reshaped = BoardPolygonParts.reshapedPolygonIDs(by: refs, in: board.polygons)
+        if !reshaped.isEmpty {
+            plan.unsupportedRefs.formUnion(refs.filter {
+                BoardPolygonParts.isPart($0.type) && reshaped.contains(normalizedID($0.id))
+            })
+        }
+        return plan
     }
 
     private func moveSelectedObjects(by delta: HorizontalPoint, board: inout HorizontalBoard) {
         var movedConnectionKeys = Set<String>()
         var movedLayerVertexKeys = Set<String>()
         let selectedRefSet = Set(selectedObjects)
+        var movedPolygonPoints = Set<String>()
 
         for ref in selectedObjects {
             switch ref.type {
@@ -7153,7 +7161,7 @@ struct BoardCanvasView: View {
                 moveText(&board.texts, ref: ref, by: delta)
                 moveText(&board.packageTexts, ref: ref, by: delta)
             case .polygonArcCenter, .polygonEdge, .polygonVertex:
-                movePolygon(&board.polygons, ref: ref, by: delta)
+                BoardPolygonParts.change(&board.polygons, ref: ref, done: &movedPolygonPoints) { $0 + delta }
             case .pad:
                 if modeProfile.mode == .package {
                     movePoolPad(ref: ref, by: delta, board: &board)
@@ -7181,6 +7189,7 @@ struct BoardCanvasView: View {
     }
 
     private func mirrorSelectedObjects(around center: HorizontalPoint, board: inout HorizontalBoard) {
+        var mirroredPolygonPoints = Set<String>()
         for ref in selectedObjects {
             switch ref.type {
             case .boardPackage:
@@ -7203,7 +7212,9 @@ struct BoardCanvasView: View {
                 mirrorText(&board.texts, ref: ref, around: center)
                 mirrorText(&board.packageTexts, ref: ref, around: center)
             case .polygonArcCenter, .polygonEdge, .polygonVertex:
-                mirrorPolygon(&board.polygons, ref: ref, around: center, flipsLayer: false)
+                BoardPolygonParts.change(&board.polygons, ref: ref, done: &mirroredPolygonPoints, mirrorsArcs: true) {
+                    mirrored($0, around: center)
+                }
             case .pad:
                 if modeProfile.mode == .package {
                     mirrorPoolPad(ref: ref, around: center, board: &board)
@@ -7239,6 +7250,7 @@ struct BoardCanvasView: View {
         originFor refOrigin: (HorizontalSelectableRef) -> HorizontalPoint?
     ) {
         var movedConnectionKeys = Set<String>()
+        var turnedPolygonPoints = Set<String>()
 
         for ref in selectedObjects {
             guard let center = refOrigin(ref) else {
@@ -7265,7 +7277,9 @@ struct BoardCanvasView: View {
                 rotateText(&board.texts, ref: ref, around: center, by: angleDelta)
                 rotateText(&board.packageTexts, ref: ref, around: center, by: angleDelta)
             case .polygonArcCenter, .polygonEdge, .polygonVertex:
-                rotatePolygon(&board.polygons, ref: ref, around: center, by: angleDelta)
+                BoardPolygonParts.change(&board.polygons, ref: ref, done: &turnedPolygonPoints) {
+                    rotated($0, around: center, by: angleDelta)
+                }
             case .pad:
                 if modeProfile.mode == .package {
                     rotatePoolPad(ref: ref, around: center, by: angleDelta, board: &board)
@@ -7789,14 +7803,6 @@ struct BoardCanvasView: View {
         guard let index = polygons.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
             return
         }
-        if ref.type == .polygonArcCenter, polygons[index].polygonVertices.indices.contains(ref.vertex) {
-            polygons[index].polygonVertices[ref.vertex].arcCenter = polygons[index].polygonVertices[ref.vertex].arcCenter + delta
-            return
-        }
-        if ref.type == .polygonVertex, polygons[index].polygonVertices.indices.contains(ref.vertex) {
-            polygons[index].polygonVertices[ref.vertex].position = polygons[index].polygonVertices[ref.vertex].position + delta
-            return
-        }
         polygons[index] = shifted(polygons[index], by: delta)
     }
 
@@ -7887,15 +7893,6 @@ struct BoardCanvasView: View {
         guard let index = polygons.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
             return
         }
-        if ref.type == .polygonArcCenter, polygons[index].polygonVertices.indices.contains(ref.vertex) {
-            polygons[index].polygonVertices[ref.vertex].arcCenter = mirrored(polygons[index].polygonVertices[ref.vertex].arcCenter, around: center)
-            polygons[index].polygonVertices[ref.vertex].arcReverse.toggle()
-            return
-        }
-        if ref.type == .polygonVertex, polygons[index].polygonVertices.indices.contains(ref.vertex) {
-            polygons[index].polygonVertices[ref.vertex].position = mirrored(polygons[index].polygonVertices[ref.vertex].position, around: center)
-            return
-        }
         polygons[index] = mirrored(polygons[index], around: center, flipsLayer: flipsLayer)
     }
 
@@ -7929,14 +7926,6 @@ struct BoardCanvasView: View {
 
     private func rotatePolygon(_ polygons: inout [HorizontalPolygon], ref: HorizontalSelectableRef, around center: HorizontalPoint, by angleDelta: Int) {
         guard let index = polygons.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
-            return
-        }
-        if ref.type == .polygonArcCenter, polygons[index].polygonVertices.indices.contains(ref.vertex) {
-            polygons[index].polygonVertices[ref.vertex].arcCenter = rotated(polygons[index].polygonVertices[ref.vertex].arcCenter, around: center, by: angleDelta)
-            return
-        }
-        if ref.type == .polygonVertex, polygons[index].polygonVertices.indices.contains(ref.vertex) {
-            polygons[index].polygonVertices[ref.vertex].position = rotated(polygons[index].polygonVertices[ref.vertex].position, around: center, by: angleDelta)
             return
         }
         polygons[index] = rotated(polygons[index], around: center, by: angleDelta)
@@ -9182,12 +9171,10 @@ struct BoardCanvasView: View {
         )
     }
 
-    private func invalidateSelectableCache(preservesMetalScene: Bool = false) {
+    private func invalidateSelectableCache() {
         selectableCacheRevision &+= 1
-        if !preservesMetalScene {
-            metalSceneRevision &+= 1
-        }
-        selectableCache.invalidate(preservesMetalScene: preservesMetalScene)
+        metalSceneRevision &+= 1
+        selectableCache.invalidate()
     }
 
     private func boardSelectableScene() -> HorizontalCanvasSelectableScene {
@@ -12555,9 +12542,11 @@ struct BoardCanvasView: View {
                 group == 0 || visibleCompositeGroups.contains(group)
             }
             // Lighter, as Horizon's highlight_lighten; the drill holes, the
-            // background seen through the board, stay as they are.
+            // background seen through the board, stay as they are. The local
+            // function is nonisolated, so it captures the group, not Self's.
+            let holesGroup = Self.holesMetalCompositeGroup
             func drawn(_ color: HorizontalMetalRGBA, group: Int) -> HorizontalMetalRGBA {
-                guard lightens, group != Self.holesMetalCompositeGroup else {
+                guard lightens, group != holesGroup else {
                     return color
                 }
                 return HorizontalMetalRGBA(
@@ -13282,7 +13271,7 @@ struct BoardCanvasView: View {
     }
 
     /// The selection's own snap points, by key: what moves with it. A
-    /// polygon's part brings the polygon's corners; the rest are looked up by
+    /// polygon's part brings the points it moves; the rest are looked up by
     /// ref, so a large selection costs no search per object.
     private func boardSnapTargetKeys(for refs: [HorizontalSelectableRef]) -> Set<String> {
         let selectablesByRef = boardSelectablesByRef()
