@@ -2150,34 +2150,26 @@ struct HorizontalIPadProjectView: View {
     }
 
     /// The board design-rules (DRC) editor. macOS opens this in a separate
-    /// NSWindow; iPad presents the same SwiftUI view full-screen with a Done
-    /// button. Its Apply & Check closes it on the rules results panel, where
-    /// the checks' results are.
+    /// NSWindow; iPad presents the same SwiftUI view full-screen, its own
+    /// split view carrying the titles and a Done button. Its Apply & Check
+    /// closes it on the rules results panel, where the checks' results are.
     @ViewBuilder
     private func boardRulesCover(for project: HorizontalProject) -> some View {
-        NavigationStack {
-            HorizontalBoardRulesWindow(
-                projectName: project.name,
-                board: project.board,
-                netClasses: project.schematic?.netClasses ?? [],
-                initialRules: (try? HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive)) ?? [:],
-                isReadOnly: isReadOnly,
-                onRulesChange: { applyEditedBoardRules($0) },
-                onCheckAndApply: {
-                    checkAndApplyBoardRules()
-                    rulesSheetPresented = false
-                },
-                rulesRevision: boardRulesRevision,
-                focus: rulesFocus
-            )
-            .navigationTitle("Board Rules")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { rulesSheetPresented = false }
-                }
-            }
-        }
+        HorizontalBoardRulesWindow(
+            projectName: project.name,
+            board: project.board,
+            netClasses: project.schematic?.netClasses ?? [],
+            initialRules: (try? HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive)) ?? [:],
+            isReadOnly: isReadOnly,
+            onRulesChange: { applyEditedBoardRules($0) },
+            onCheckAndApply: {
+                checkAndApplyBoardRules()
+                rulesSheetPresented = false
+            },
+            rulesRevision: boardRulesRevision,
+            focus: rulesFocus,
+            onDone: { rulesSheetPresented = false }
+        )
     }
 
     /// The project pool, where a via's padstack is read.

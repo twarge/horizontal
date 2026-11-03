@@ -38,9 +38,13 @@ final class HorizontalBoardRulesWindowController: NSObject, NSWindowDelegate {
             hostingController.rootView = rootView
         } else {
             let hostingController = NSHostingController(rootView: rootView)
+            // The split view's toolbar, with its sidebar button; the title
+            // stays the window's own.
+            hostingController.sceneBridgingOptions = [.toolbars]
             let window = NSWindow(contentViewController: hostingController)
             window.title = "Board Rules"
-            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+            window.toolbarStyle = .unified
             window.setContentSize(NSSize(width: 1080, height: 720))
             window.minSize = NSSize(width: 1080, height: 680)
             window.isReleasedWhenClosed = false
@@ -96,9 +100,15 @@ struct HorizontalBoardRulesWindow: View {
     var rulesRevision = 0
     /// A rule to show, as the route inspector asks for one.
     var focus: HorizontalBoardRuleFocus?
+    /// The iPad's Done, which dismisses the cover the window is shown in.
+    var onDone: (() -> Void)?
 
     @State private var rules: JSONDictionary
     @State private var selectedKind: HorizontalBoardRuleKind = .clearanceCopper
+    /// The sidebar's selection: `selectedKind`, except that going back to
+    /// the sidebar on a narrow iPad clears it, leaving the kind shown.
+    @State private var sidebarKind: HorizontalBoardRuleKind? = .clearanceCopper
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var selectedRuleID: String?
 
     init(
@@ -110,7 +120,8 @@ struct HorizontalBoardRulesWindow: View {
         onRulesChange: @escaping (JSONDictionary) -> Void,
         onCheckAndApply: (() -> Void)? = nil,
         rulesRevision: Int = 0,
-        focus: HorizontalBoardRuleFocus? = nil
+        focus: HorizontalBoardRuleFocus? = nil,
+        onDone: (() -> Void)? = nil
     ) {
         self.projectName = projectName
         self.board = board
@@ -121,26 +132,59 @@ struct HorizontalBoardRulesWindow: View {
         self.onCheckAndApply = onCheckAndApply
         self.rulesRevision = rulesRevision
         self.focus = focus
+        self.onDone = onDone
         _rules = State(initialValue: initialRules)
         if let focus {
             _selectedKind = State(initialValue: focus.kind)
+            _sidebarKind = State(initialValue: focus.kind)
             _selectedRuleID = State(initialValue: focus.ruleID)
         }
     }
 
     var body: some View {
-        HStack(spacing: 0) {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             ruleFamilyList
-                .frame(width: 260)
-            Divider()
-            if selectedKind.listsEntries {
-                ruleInstanceList
-                    .frame(width: 250)
-                Divider()
+                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
+        } detail: {
+            HStack(spacing: 0) {
+                if selectedKind.listsEntries {
+                    ruleInstanceList
+                        .frame(width: 250)
+                    Divider()
+                }
+                editorArea
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            editorArea
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            #if os(iOS)
+            .navigationTitle(selectedKind.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if let onDone {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done", action: onDone)
+                    }
+                }
+            }
+            #endif
         }
+        .navigationSplitViewStyle(.balanced)
+        #if os(macOS)
+        // A window of its own gets no sidebar button from SwiftUI, only the
+        // toolbar items it is given (sceneBridgingOptions).
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    withAnimation {
+                        columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+                    }
+                } label: {
+                    Image(systemName: "sidebar.left")
+                }
+                .help(columnVisibility == .detailOnly ? "Show Sidebar" : "Hide Sidebar")
+                .accessibilityLabel(columnVisibility == .detailOnly ? "Show Sidebar" : "Hide Sidebar")
+            }
+        }
+        #endif
         // The minimum size sizes the macOS window; on iPad the view fills the
         // presenting sheet/cover instead (a forced 1080pt min overflows portrait).
         #if os(macOS)
@@ -159,7 +203,13 @@ struct HorizontalBoardRulesWindow: View {
             selectedRuleID = focus.ruleID
             ensureSelection()
         }
-        .onChange(of: selectedKind) { _, _ in
+        .onChange(of: sidebarKind) { _, kind in
+            if let kind {
+                selectedKind = kind
+            }
+        }
+        .onChange(of: selectedKind) { _, kind in
+            sidebarKind = kind
             ensureSelection()
         }
     }
@@ -168,46 +218,56 @@ struct HorizontalBoardRulesWindow: View {
         HorizontalBoardRuleContext(board: board, netClasses: netClasses)
     }
 
+    /// The split view's sidebar. On the Mac it heads itself, as the rules
+    /// results sidebar does; the iPad's navigation bar carries the heading
+    /// and the button.
     private var ruleFamilyList: some View {
         VStack(alignment: .leading, spacing: 0) {
+            #if os(macOS)
             HStack {
                 Text("Rules")
                     .font(.headline)
                 Spacer()
-                // Every rule, not the one shown: the rules are applied as
-                // they change, so applying here catches up a board that
-                // disagrees with them, as one Horizon wrote can; the checks'
-                // results are in the rules results sidebar.
-                if let onCheckAndApply {
-                    Button {
-                        onCheckAndApply()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Apply every rule to the board and run every check. The results are in the rules results sidebar.")
-                    .accessibilityLabel("Apply & Check")
-                }
+                applyAndCheckButton
             }
             .padding(.horizontal, 14)
-            .padding(.top, 12)
+            .padding(.top, 4)
             .padding(.bottom, 8)
+            #endif
 
-            HorizontalSelectionList(
-                selection: Binding(
-                    get: { selectedKind },
-                    set: { newValue in
-                        if let newValue {
-                            selectedKind = newValue
-                        }
-                    }
-                ),
-                items: HorizontalBoardRuleKind.visibleCases,
-                id: { $0 }
-            ) { kind in
-                HorizontalBoardRuleFamilyRow(kind: kind, count: count(for: kind))
+            // A selection the split view navigates by, on a narrow iPad.
+            List(selection: $sidebarKind) {
+                ForEach(HorizontalBoardRuleKind.visibleCases) { kind in
+                    HorizontalBoardRuleFamilyRow(kind: kind, count: count(for: kind))
+                        .tag(kind)
+                }
             }
             .listStyle(.sidebar)
+        }
+        #if os(iOS)
+        .navigationTitle("Rules")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                applyAndCheckButton
+            }
+        }
+        #endif
+    }
+
+    // Every rule, not the one shown: the rules are applied as they change,
+    // so applying here catches up a board that disagrees with them, as one
+    // Horizon wrote can; the checks' results are in the rules results sidebar.
+    @ViewBuilder
+    private var applyAndCheckButton: some View {
+        if let onCheckAndApply {
+            Button {
+                onCheckAndApply()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+            .help("Apply every rule to the board and run every check. The results are in the rules results sidebar.")
+            .accessibilityLabel("Apply & Check")
         }
     }
 
@@ -254,52 +314,29 @@ struct HorizontalBoardRulesWindow: View {
                 .padding(24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+                // Rules are dragged into their priority; via definitions
+                // are listed by name.
                 HorizontalSelectionList(
                     selection: $selectedRuleID,
                     items: instances,
-                    id: { $0.id }
+                    id: { $0.id },
+                    onMove: selectedKind.isMulti && !isReadOnly ? { source, destination in
+                        setRules(selectedKind.movingRules(in: rules, fromOffsets: source, toOffset: destination))
+                    } : nil
                 ) { instance in
                     HorizontalBoardRuleInstanceRow(instance: instance)
                 }
                 .listStyle(.inset)
             }
 
-            // Via definitions are listed by name; only rules have a priority.
-            if selectedKind.isMulti {
-                priorityBar
-            }
-        }
-    }
-
-    private var priorityBar: some View {
-        HStack(spacing: 8) {
-            Button {
-                moveSelectedRuleInstance(by: -1)
-            } label: {
-                Image(systemName: "chevron.up")
-            }
-            .buttonStyle(.borderless)
-            .help("Move rule up")
-            .disabled(isReadOnly || selectedRuleID == nil)
-
-            Button {
-                moveSelectedRuleInstance(by: 1)
-            } label: {
-                Image(systemName: "chevron.down")
-            }
-            .buttonStyle(.borderless)
-            .help("Move rule down")
-            .disabled(isReadOnly || selectedRuleID == nil)
-
-            Spacer()
-            if selectedKind.needsMatchAll && !selectedKind.lastRuleIsCatchAll(in: rules) {
+            if selectedKind.isMulti && selectedKind.needsMatchAll && !selectedKind.lastRuleIsCatchAll(in: rules) {
                 Label("Last rule needs to be catch-all.", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
                     .font(.caption)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
     }
 
     @ViewBuilder
@@ -448,30 +485,6 @@ struct HorizontalBoardRulesWindow: View {
         self.selectedRuleID = nil
         setRules(updatedRules)
         ensureSelection()
-    }
-
-    private func moveSelectedRuleInstance(by delta: Int) {
-        guard selectedKind.isMulti, let selectedRuleID else {
-            return
-        }
-        var bucket = rules[selectedKind.rawValue] as? JSONDictionary ?? [:]
-        var ordered = selectedKind.instances(in: rules, context: context)
-        guard let index = ordered.firstIndex(where: { $0.id == selectedRuleID }) else {
-            return
-        }
-        let newIndex = max(0, min(ordered.count - 1, index + delta))
-        guard newIndex != index else {
-            return
-        }
-        ordered.move(fromOffsets: IndexSet(integer: index), toOffset: newIndex > index ? newIndex + 1 : newIndex)
-        for (order, instance) in ordered.enumerated() {
-            var rule = bucket[instance.id] as? JSONDictionary ?? [:]
-            rule["order"] = order
-            bucket[instance.id] = rule
-        }
-        var updatedRules = rules
-        updatedRules[selectedKind.rawValue] = bucket
-        setRules(updatedRules)
     }
 
     private func setRules(_ updatedRules: JSONDictionary) {
@@ -770,6 +783,26 @@ enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
              .netTies, .preflightChecks, .boardConnectivity:
             return title
         }
+    }
+
+    /// The rules with this kind's rules moved as a list drag moves them:
+    /// the offsets are into `instances(in:)`, the order the list shows, and
+    /// every rule of the kind is numbered again from 0 in its new place.
+    func movingRules(in rules: JSONDictionary, fromOffsets source: IndexSet, toOffset destination: Int) -> JSONDictionary {
+        guard isMulti else {
+            return rules
+        }
+        var ordered = instances(in: rules, context: HorizontalBoardRuleContext(board: nil, netClasses: []))
+        ordered.move(fromOffsets: source, toOffset: destination)
+        var bucket = rules[rawValue] as? JSONDictionary ?? [:]
+        for (order, instance) in ordered.enumerated() {
+            var rule = bucket[instance.id] as? JSONDictionary ?? [:]
+            rule["order"] = order
+            bucket[instance.id] = rule
+        }
+        var updatedRules = rules
+        updatedRules[rawValue] = bucket
+        return updatedRules
     }
 
     func lastRuleIsCatchAll(in rules: JSONDictionary) -> Bool {
@@ -3251,17 +3284,21 @@ private struct HorizontalSelectionList<SelectionValue: Hashable, Item, RowConten
     @Binding var selection: SelectionValue?
     var items: [Item]
     var id: (Item) -> SelectionValue
+    /// Rows dragged to a new place, by `List`'s offsets; nil, they stay put.
+    var onMove: ((IndexSet, Int) -> Void)?
     var rowContent: (Item) -> RowContent
 
     init(
         selection: Binding<SelectionValue?>,
         items: [Item],
         id: @escaping (Item) -> SelectionValue,
+        onMove: ((IndexSet, Int) -> Void)? = nil,
         @ViewBuilder rowContent: @escaping (Item) -> RowContent
     ) {
         _selection = selection
         self.items = items
         self.id = id
+        self.onMove = onMove
         self.rowContent = rowContent
     }
 
@@ -3281,6 +3318,7 @@ private struct HorizontalSelectionList<SelectionValue: Hashable, Item, RowConten
                 rowContent(entry.value)
                     .tag(entry.id)
             }
+            .onMove(perform: onMove)
         }
         #else
         List {
@@ -3294,6 +3332,7 @@ private struct HorizontalSelectionList<SelectionValue: Hashable, Item, RowConten
                         selection = entry.id
                     }
             }
+            .onMove(perform: onMove)
         }
         #endif
     }
