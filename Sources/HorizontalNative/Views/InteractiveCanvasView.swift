@@ -2358,16 +2358,23 @@ private struct HorizontalUnplacedObjectColumn: View {
     var onHover: (Bool) -> Void = { _ in }
     var onSelect: (HorizontalUnplacedObject) -> Void
 
-    @ScaledMetric(relativeTo: .caption) private var rowHeight: CGFloat = Self.baseRowHeight
+    // The text is the system's size, and the row, the reference designator's
+    // column and the panel grow with it. A row on the iPad is a whole tap
+    // target, 44 pt.
+    @ScaledMetric(relativeTo: .body) private var rowHeight: CGFloat = Self.baseRowHeight
+    @ScaledMetric(relativeTo: .body) private var width: CGFloat = Self.baseWidth
+    @ScaledMetric(relativeTo: .body) private var labelWidth: CGFloat = Self.baseLabelWidth
     @State private var hoveredID: String?
 
     #if os(macOS)
     private static let baseRowHeight: CGFloat = 24
+    private static let baseWidth: CGFloat = 200
+    private static let baseLabelWidth: CGFloat = 50
     #else
-    private static let baseRowHeight: CGFloat = 30
+    private static let baseRowHeight: CGFloat = 44
+    private static let baseWidth: CGFloat = 240
+    private static let baseLabelWidth: CGFloat = 60
     #endif
-    private static let width: CGFloat = 184
-    private static let labelWidth: CGFloat = 46
     private static let rowSpacing: CGFloat = 1
     private static let inset: CGFloat = 5
     private static let cornerRadius: CGFloat = 8
@@ -2382,7 +2389,7 @@ private struct HorizontalUnplacedObjectColumn: View {
             .padding(Self.inset)
         }
         .scrollBounceBehavior(.basedOnSize)
-        .frame(width: Self.width)
+        .frame(width: width)
         // A scroll view takes all the height it is offered: held to its rows,
         // the panel is no taller than they are, and the canvas's height (less
         // its safe areas) caps it, past which it scrolls.
@@ -2414,21 +2421,21 @@ private struct HorizontalUnplacedObjectColumn: View {
         return Button {
             onSelect(object)
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Text(object.label)
-                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .font(.body.weight(.semibold).monospacedDigit())
                     .lineLimit(1)
-                    .minimumScaleFactor(0.62)
+                    .minimumScaleFactor(0.7)
                     .foregroundStyle(foregroundColor.opacity(isSelected ? 0.96 : 0.82))
-                    .frame(width: Self.labelWidth, alignment: .leading)
+                    .frame(width: labelWidth, alignment: .leading)
                 Text(value(for: object))
-                    .font(.caption)
+                    .font(.body)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .foregroundStyle(foregroundColor.opacity(isSelected ? 0.78 : 0.6))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 6)
+            .padding(.horizontal, 8)
             .frame(height: rowHeight)
             .background {
                 RoundedRectangle(cornerRadius: 5)
