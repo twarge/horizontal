@@ -920,6 +920,7 @@ enum HorizontalCanvasModeSupport {
             color: HorizontalMetalRGBA,
             minimumWidth: Float,
             dash: (Float, Float)?,
+            dashPhase: Double = 0,
             normalOffset: Float
         ) {
             overlay.lines.append(
@@ -930,6 +931,7 @@ enum HorizontalCanvasModeSupport {
                     minimumWidth: minimumWidth,
                     dashLength: dash?.0 ?? 0,
                     dashGap: dash?.1 ?? 0,
+                    dashPhase: dashPhase,
                     normalOffset: normalOffset
                 )
             )
@@ -952,13 +954,17 @@ enum HorizontalCanvasModeSupport {
             guard pathPoints.count >= 2 else {
                 return
             }
-            for pair in zip(pathPoints, pathPoints.dropFirst()) {
+            // The dashes run on round the corners: an arc's chords are
+            // shorter than a dash, and would each start a dash afresh.
+            let phases = dash == nil ? [] : HorizontalMetalLinePrimitive.dashPhases(along: pathPoints)
+            for (index, pair) in zip(pathPoints, pathPoints.dropFirst()).enumerated() {
                 appendLine(
                     from: pair.0,
                     to: pair.1,
                     color: color,
                     minimumWidth: minimumWidth,
                     dash: dash,
+                    dashPhase: phases.isEmpty ? 0 : phases[index],
                     normalOffset: normalOffset
                 )
             }

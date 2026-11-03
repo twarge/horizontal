@@ -871,7 +871,8 @@ struct HorizontalMetalBackdropView {
                 dashLength: line.dashLength,
                 dashGap: line.dashGap,
                 normalOffset: line.normalOffset,
-                outlineOnly: line.outlineOnly ? 1 : 0
+                outlineOnly: line.outlineOnly ? 1 : 0,
+                dashPhase: Float(line.dashPhase)
             )
         }
 
@@ -1746,7 +1747,10 @@ private struct HorizontalMetalLineShaderPrimitive {
     var dashGap: Float
     var normalOffset: Float
     var outlineOnly: Float
-    var padding = SIMD2<Float>(0, 0)
+    /// How far along its polyline the line starts, in world units, so a
+    /// dash pattern runs on across the polyline's corners.
+    var dashPhase: Float = 0
+    var padding: Float = 0
 }
 
 private struct HorizontalMetalTriangleShaderPrimitive {
@@ -2135,7 +2139,8 @@ struct HorizontalMetalLinePrimitive {
     float dashGap;
     float normalOffset;
     float outlineOnly;
-    float2 padding;
+    float dashPhase;
+    float padding;
 };
 
 struct HorizontalMetalTrianglePrimitive {
@@ -2193,6 +2198,7 @@ struct LineVertexOut {
     float halfWidth;
     float dashLength;
     float dashGap;
+    float dashPhase;
     float outlineOnly;
 };
 
@@ -2372,6 +2378,7 @@ vertex LineVertexOut horizon_line_vertex(
     out.halfWidth = halfWidth;
     out.dashLength = line.dashLength;
     out.dashGap = line.dashGap;
+    out.dashPhase = line.dashPhase * scale;
     out.outlineOnly = line.outlineOnly;
     return out;
 }
@@ -2478,6 +2485,7 @@ vertex LineVertexOut horizon_screen_line_vertex(
     out.halfWidth = halfWidth;
     out.dashLength = line.dashLength;
     out.dashGap = line.dashGap;
+    out.dashPhase = 0.0;
     out.outlineOnly = 0.0;
     return out;
 }
@@ -2562,7 +2570,7 @@ fragment float4 horizon_line_fragment(LineVertexOut in [[stage_in]]) {
     if (in.dashLength > 0.0 && in.dashGap > 0.0) {
         float segmentLength = max(length(segment), 0.001);
         float along = clamp(dot(in.screenPosition - in.start, segment / segmentLength), 0.0, segmentLength);
-        float phase = fmod(along, in.dashLength + in.dashGap);
+        float phase = fmod(along + in.dashPhase, in.dashLength + in.dashGap);
         coverage *= phase <= in.dashLength ? 1.0 : 0.0;
     }
     float4 color = in.color;
