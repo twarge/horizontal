@@ -1722,15 +1722,15 @@ struct ProjectWorkspaceView: View {
         live.setLayerPreset = { preset in
             // A side-less preset ("show silkscreen") takes the side that is
             // up; the view presets also turn the board over and put the tools
-            // on that side's copper.
+            // on that side's copper, or its silkscreen for a silkscreen view.
             let side = boardDisplayOptions.visibleSide ?? (boardViewport.mirrored ? .bottom : .top)
             let resolved = preset.resolved(for: side)
             boardDisplayOptions.applyLayerPreset(resolved)
             if let mirrors = resolved.mirrorsView {
                 boardViewport.mirrored = mirrors
             }
-            if let side = resolved.side {
-                boardDrawingLayer = side.copperLayer
+            if let layer = resolved.drawingLayer {
+                boardDrawingLayer = layer
             }
             visiblePanes.insert(.board)
         }
@@ -3202,14 +3202,13 @@ struct ProjectWorkspaceView: View {
         guard let current = boardDisplayOptions.visibleSide, current != side else {
             return
         }
-        let mode: HorizontalBoardLayerPreset = !boardDisplayOptions.pads && boardDisplayOptions.packages ? .silkscreen
-            : (!boardDisplayOptions.packages ? .routing : .placement)
-        boardDisplayOptions.applyLayerPreset(mode.resolved(for: side))
+        let resolved = boardDisplayOptions.visibleViewMode(on: current).resolved(for: side)
+        boardDisplayOptions.applyLayerPreset(resolved)
         if boardViewport.mirrored {
             // Seen from below and turning to the top: stop mirroring.
             boardViewport.mirrored = side == .bottom
         }
-        boardDrawingLayer = side.copperLayer
+        boardDrawingLayer = resolved.drawingLayer ?? side.copperLayer
     }
 
     private func applyEditedBoardRules(_ rules: JSONDictionary) {

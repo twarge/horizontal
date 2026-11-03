@@ -65,14 +65,14 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
     var decals = true
     var trackLabels = true
     var vias = true
-    var viaLabels = false
+    var viaLabels = true
     var pads = true
     var padLabels = true
     var holes = true
     var packages = true
     var text = true
-    var connectionLines = false
-    var connectionLabels = false
+    var connectionLines = true
+    var connectionLabels = true
     var keepouts = true
     var scaleBar = true
     var coordinates = true
@@ -203,19 +203,6 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         origin = true
         fabrication = true
         userLayers = true
-        dimensions = true
-        decals = true
-        trackLabels = true
-        vias = true
-        viaLabels = false
-        pads = true
-        padLabels = true
-        holes = true
-        packages = true
-        text = true
-        connectionLines = true
-        connectionLabels = false
-        keepouts = true
         scaleBar = true
         coordinates = true
         orientationAxes = false
@@ -244,19 +231,6 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         origin = false
         fabrication = false
         userLayers = false
-        dimensions = false
-        decals = false
-        trackLabels = false
-        vias = true
-        viaLabels = false
-        pads = true
-        padLabels = false
-        holes = true
-        packages = false
-        text = false
-        connectionLines = true
-        connectionLabels = false
-        keepouts = true
         scaleBar = true
         coordinates = true
         orientationAxes = false
@@ -277,19 +251,6 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         origin = false
         fabrication = true
         userLayers = false
-        dimensions = true
-        decals = true
-        trackLabels = false
-        vias = false
-        viaLabels = false
-        pads = false
-        padLabels = false
-        holes = true
-        packages = true
-        text = true
-        connectionLines = false
-        connectionLabels = false
-        keepouts = false
         scaleBar = true
         coordinates = true
         orientationAxes = false
@@ -310,19 +271,6 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         origin = true
         fabrication = false
         userLayers = false
-        dimensions = false
-        decals = false
-        trackLabels = true
-        vias = true
-        viaLabels = true
-        pads = true
-        padLabels = false
-        holes = true
-        packages = false
-        text = false
-        connectionLines = true
-        connectionLabels = true
-        keepouts = true
         scaleBar = true
         coordinates = true
         orientationAxes = false
@@ -343,19 +291,6 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         origin = true
         fabrication = true
         userLayers = true
-        dimensions = true
-        decals = true
-        trackLabels = false
-        vias = false
-        viaLabels = false
-        pads = false
-        padLabels = false
-        holes = true
-        packages = false
-        text = true
-        connectionLines = false
-        connectionLabels = false
-        keepouts = false
         scaleBar = true
         coordinates = true
         orientationAxes = false
@@ -376,19 +311,6 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         origin = true
         fabrication = true
         userLayers = true
-        dimensions = true
-        decals = false
-        trackLabels = false
-        vias = false
-        viaLabels = false
-        pads = false
-        padLabels = false
-        holes = true
-        packages = false
-        text = true
-        connectionLines = false
-        connectionLabels = false
-        keepouts = true
         scaleBar = true
         coordinates = true
         orientationAxes = false
@@ -409,19 +331,6 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         origin = false
         fabrication = false
         userLayers = false
-        dimensions = false
-        decals = false
-        trackLabels = false
-        vias = false
-        viaLabels = false
-        pads = true
-        padLabels = true
-        holes = true
-        packages = true
-        text = true
-        connectionLines = false
-        connectionLabels = false
-        keepouts = false
         scaleBar = true
         coordinates = true
         orientationAxes = false
@@ -434,8 +343,7 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
                 HorizontalBoardLayers.topMask,
                 HorizontalBoardLayers.topSilkscreen,
                 HorizontalBoardLayers.outline
-            ],
-            mode: .silkscreen
+            ]
         )
     }
 
@@ -445,8 +353,7 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
                 HorizontalBoardLayers.bottomMask,
                 HorizontalBoardLayers.bottomSilkscreen,
                 HorizontalBoardLayers.outline
-            ],
-            mode: .silkscreen
+            ]
         )
     }
 
@@ -455,8 +362,7 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
             layers: [
                 HorizontalBoardLayers.topCopper,
                 HorizontalBoardLayers.topCourtyard
-            ],
-            mode: .placement
+            ]
         )
     }
 
@@ -465,8 +371,7 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
             layers: [
                 HorizontalBoardLayers.bottomCopper,
                 HorizontalBoardLayers.bottomCourtyard
-            ],
-            mode: .placement
+            ]
         )
     }
 
@@ -480,19 +385,17 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
     }
 
     mutating func topRoutingView() {
-        layerView(layers: [HorizontalBoardLayers.topCopper], mode: .routing)
+        layerView(layers: [HorizontalBoardLayers.topCopper])
     }
 
     mutating func bottomRoutingView() {
-        layerView(layers: [HorizontalBoardLayers.bottomCopper], mode: .routing)
+        layerView(layers: [HorizontalBoardLayers.bottomCopper])
     }
 
     mutating func cleanView() {
         showAll()
         grid = false
         origin = false
-        connectionLines = false
-        connectionLabels = false
         scaleBar = false
         coordinates = false
         orientationAxes = false
@@ -581,47 +484,18 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         }
     }
 
-    private enum LayerPresetMode {
-        case silkscreen
-        case placement
-        case routing
-    }
-
-    private mutating func layerView(layers: Set<Int>, mode: LayerPresetMode) {
+    /// A sided view: only `layers` and the view furniture. The objects
+    /// (pads, holes, packages, text, labels, connections and the rest) are
+    /// the user's own switches, which no view preset touches; what of them
+    /// shows follows the layers they are on.
+    private mutating func layerView(layers: Set<Int>) {
         grid = true
         boardBody = false
         panelLabels = false
         origin = false
-        dimensions = false
-        decals = true
-        // Presets intentionally leave via visibility (`vias`), all label
-        // visibility (`viaLabels`, `padLabels`, `trackLabels`) and `planes`
-        // untouched. Planes follow their copper layer; the others are controlled
-        // independently of the Silk/Placement/Routing presets.
-        connectionLines = false
-        connectionLabels = false
-        keepouts = false
         scaleBar = true
         coordinates = true
         orientationAxes = false
-
-        switch mode {
-        case .silkscreen:
-            pads = false
-            holes = false
-            packages = true
-            text = true
-        case .placement:
-            pads = true
-            holes = true
-            packages = true
-            text = true
-        case .routing:
-            pads = true
-            holes = true
-            packages = false
-            text = false
-        }
 
         showOnlyLayers(layers)
     }
@@ -660,6 +534,8 @@ enum HorizontalBoardSide: String {
 
     /// The copper the drawing tools should be on when this side is up.
     var copperLayer: Int { self == .top ? HorizontalBoardLayers.topCopper : HorizontalBoardLayers.bottomCopper }
+
+    var silkscreenLayer: Int { self == .top ? HorizontalBoardLayers.topSilkscreen : HorizontalBoardLayers.bottomSilkscreen }
 }
 
 enum HorizontalBoardLayerPreset: String, CaseIterable {
@@ -710,6 +586,16 @@ enum HorizontalBoardLayerPreset: String, CaseIterable {
         case .topPlacement, .topSilkscreen, .topRouting, .topView: .top
         case .bottomPlacement, .bottomSilkscreen, .bottomRouting, .bottomView: .bottom
         default: nil
+        }
+    }
+
+    /// The layer the drawing tools go on with this preset: the side's
+    /// silkscreen for a silkscreen view, its copper for the rest, nil for a
+    /// preset about neither side.
+    var drawingLayer: Int? {
+        switch self {
+        case .topSilkscreen, .bottomSilkscreen: side?.silkscreenLayer
+        default: side?.copperLayer
         }
     }
 
@@ -767,5 +653,18 @@ extension BoardDisplayOptions {
         case (false, true): return .bottom
         default: return nil
         }
+    }
+
+    /// Which of the side's views is showing, read from its layers as
+    /// `visibleSide` is, since the views differ only in those: the side's
+    /// silkscreen without its copper is the silkscreen view, its copper
+    /// without its courtyard the routing view, and anything else placement.
+    func visibleViewMode(on side: HorizontalBoardSide) -> HorizontalBoardLayerPreset {
+        let courtyard = side == .top ? HorizontalBoardLayers.topCourtyard : HorizontalBoardLayers.bottomCourtyard
+        let copper = isLayerVisible(side.copperLayer)
+        if isLayerVisible(side.silkscreenLayer), !copper {
+            return .silkscreen
+        }
+        return copper && !isLayerVisible(courtyard) ? .routing : .placement
     }
 }

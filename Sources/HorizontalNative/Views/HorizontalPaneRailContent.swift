@@ -2063,43 +2063,28 @@ struct BoardLayerRow: View {
 
 struct BoardDisplayPresetButtons: View {
     @Binding var displayOptions: BoardDisplayOptions
-    /// The drawing layer follows the preset's side, so choosing the bottom
-    /// view puts the tools on bottom copper.
+    /// The drawing layer follows the preset: the silkscreen views put the
+    /// tools on that side's silkscreen, the others on its copper.
     @Binding var selectedLayer: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text("")
-                    .frame(width: 42, alignment: .leading)
-                presetHeader("Silkscreen")
-                presetHeader("Placement")
-                presetHeader("Routing")
-            }
-
             presetRow(
                 title: "Top",
-                silkscreen: { displayOptions.topSilkscreenView(); selectedLayer = HorizontalBoardLayers.topCopper },
+                silkscreen: { displayOptions.topSilkscreenView(); selectedLayer = HorizontalBoardLayers.topSilkscreen },
                 placement: { displayOptions.topPlacementView(); selectedLayer = HorizontalBoardLayers.topCopper },
                 routing: { displayOptions.topRoutingView(); selectedLayer = HorizontalBoardLayers.topCopper }
             )
 
             presetRow(
                 title: "Bottom",
-                silkscreen: { displayOptions.bottomSilkscreenView(); selectedLayer = HorizontalBoardLayers.bottomCopper },
+                silkscreen: { displayOptions.bottomSilkscreenView(); selectedLayer = HorizontalBoardLayers.bottomSilkscreen },
                 placement: { displayOptions.bottomPlacementView(); selectedLayer = HorizontalBoardLayers.bottomCopper },
                 routing: { displayOptions.bottomRoutingView(); selectedLayer = HorizontalBoardLayers.bottomCopper }
             )
         }
         .controlSize(.small)
         .padding(.vertical, 2)
-    }
-
-    private func presetHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .frame(width: 74)
     }
 
     private func presetRow(
