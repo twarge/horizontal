@@ -23,13 +23,10 @@ struct PaneOverlayContainer<
     var showsInfoButton = true
     var showsLayerButton = true
     var showsGridButton = true
-    /// Shows the keyboard-focus badge in the pane's lower left, above the
-    /// canvas's scale bar (this pane receives keyboard commands).
+    /// Shows the keyboard-focus badge in the pane's lower left (this pane
+    /// receives keyboard commands), where the canvas starts its scale bar
+    /// to the right of it.
     var isKeyboardFocused = false
-    /// The canvas draws its scale bar in the lower left, which the focus badge
-    /// then stands over: a board's, when its Scale Bar option is on. A
-    /// schematic draws none.
-    var showsScaleBar = false
     /// macOS: tracks pointer-over-rail so the canvas can ignore those mouse events.
     /// No-op on iOS (touch has no hover).
     var onToolbarHover: (Bool) -> Void = { _ in }
@@ -41,15 +38,20 @@ struct PaneOverlayContainer<
 
     var body: some View {
         content
+        // Room for the badge whether or not this pane has the keyboard, so
+        // the scale bar stays put as focus moves between panes.
+        .environment(\.horizonScaleBarLeadingClearance, showsTools ? PaneKeyboardFocusBadge.scaleBarClearance : 0)
         .overlay(alignment: .bottomLeading) {
             // In the corner rather than atop the rail, where it pushed every
-            // rail button down a place each time focus moved between panes.
+            // rail button down a place each time focus moved between panes;
+            // in the same place on every pane, scale bar or not.
             if showsTools, isKeyboardFocused {
                 // Its 3 pt padding and the symbol's side bearing taken off, so
-                // the scope's edge stands over the scale bar's left tick.
+                // the scope's edge lines up with where a canvas without one
+                // starts its scale bar.
                 PaneKeyboardFocusBadge()
                     .padding(.leading, safeAreaInsets.leading + 7)
-                    .padding(.bottom, safeAreaInsets.bottom + keyboardFocusBadgeBottomPadding)
+                    .padding(.bottom, safeAreaInsets.bottom + 9)
                     #if os(macOS)
                     .onHover(perform: onToolbarHover)
                     .onDisappear {
@@ -89,13 +91,6 @@ struct PaneOverlayContainer<
         }
     }
 
-    /// In the corner, or clear of the scale bar: its line sits 18 pt over the
-    /// canvas's bottom safe area and its label 20 pt over that
-    /// (`InteractiveCanvasView.drawScaleBar`).
-    private var keyboardFocusBadgeBottomPadding: CGFloat {
-        showsScaleBar ? 18 + 20 + 3 : 9
-    }
-
     private var toolColumnAlignment: Alignment {
         appearanceSettings.shouldSwapViewControlsAndUnplacedReferences ? .topLeading : .topTrailing
     }
@@ -112,17 +107,35 @@ struct PaneOverlayContainer<
     }
 }
 
+private struct HorizontalScaleBarLeadingClearanceKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+    /// How far right of the canvas's leading inset its scale bar starts:
+    /// the room a pane's keyboard-focus badge takes in that corner.
+    var horizonScaleBarLeadingClearance: CGFloat {
+        get { self[HorizontalScaleBarLeadingClearanceKey.self] }
+        set { self[HorizontalScaleBarLeadingClearanceKey.self] = newValue }
+    }
+}
+
 /// The pane's keyboard-focus mark: a tinted scope, no button behind it.
 struct PaneKeyboardFocusBadge: View {
     #if os(iOS)
-    private let iconSize: CGFloat = 20
+    private static let iconSize: CGFloat = 20
     #else
-    private let iconSize: CGFloat = 16
+    private static let iconSize: CGFloat = 16
     #endif
+
+    /// How much further right than usual a canvas under the badge starts its
+    /// scale bar, whose line runs through the badge's corner: the scope's
+    /// width and a gap.
+    static let scaleBarClearance: CGFloat = iconSize + 8
 
     var body: some View {
         Image(systemName: "scope")
-            .font(.system(size: iconSize, weight: .semibold))
+            .font(.system(size: Self.iconSize, weight: .semibold))
             .foregroundStyle(.tint)
             .padding(3)
             .contentShape(Rectangle())
