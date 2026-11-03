@@ -2911,7 +2911,7 @@ struct BoardCanvasView: View {
             addText: { addText() },
             editText: { editSelectedText() },
             openDatasheet: { openSelectedDatasheet() },
-            toggleSmash: { toggleSmashSelection() },
+            setSmashed: { smashSelection($0) },
             smashSilkscreenGraphics: { smashSilkscreenGraphicsSelection() },
             toggleOmitSilkscreen: { togglePackageFlag(\.omitSilkscreen, actionName: "Omit Silkscreen") },
             toggleOmitOutline: { togglePackageFlag(\.omitOutline, actionName: "Omit Outline") },
@@ -2975,7 +2975,7 @@ struct BoardCanvasView: View {
             handlers.editPlane = nil
             handlers.updateAllPlanes = nil
             handlers.openDatasheet = nil
-            handlers.toggleSmash = nil
+            handlers.setSmashed = nil
             handlers.smashSilkscreenGraphics = nil
             handlers.toggleOmitSilkscreen = nil
             handlers.toggleOmitOutline = nil
@@ -3208,7 +3208,7 @@ struct BoardCanvasView: View {
         // airwires" are canvas-level and live in the menu bar.
         if writable, isPackage {
             var packageEntries: [HorizontalTargetItemMenuEntry] = [
-                .command(title: packageIsSmashed(ref) ? "Unsmash Text" : "Smash Text", .toggleSmash),
+                packageIsSmashed(ref) ? .command(title: "Unsmash Text", .unsmash) : .command(title: "Smash Text", .smash),
             ]
             // Horizon gates "smash silkscreen graphics" on omit_silkscreen == false.
             if !packageFlag(ref, \.omitSilkscreen) {
@@ -3414,41 +3414,35 @@ struct BoardCanvasView: View {
         board.packages.first { normalizedID($0.id) == normalizedID(ref.id) }?.smashed ?? false
     }
 
-    /// Smash / Unsmash the selected package(s) (tool_smash). Smash
-    /// extracts the package's own silk text into independently editable
-    /// `fromSmash` board text and hides the package silk; Unsmash removes the
-    /// copies and re-derives the package silk from the pool.
-    private func toggleSmashSelection() {
+    /// Smash (H) or Unsmash (⇧H) the selected package(s) (tool_smash).
+    /// Smash extracts an unsmashed package's own silk text into
+    /// independently editable `fromSmash` board text and hides the package
+    /// silk; Unsmash removes a smashed one's copies and re-derives the
+    /// package silk from the pool.
+    private func smashSelection(_ smashing: Bool) {
         guard !isReadOnly else { return }
         let packageRefs = uniqueRefs(selectedObjects).filter { $0.type == .boardPackage }
         guard !packageRefs.isEmpty else { return }
 
         let previous = editedBoard ?? sourceBoard
         var draft = previous
-        var changed = false
-        var smashedAny = false
-        var smashedPackageIDs = Set<String>()
-        for ref in packageRefs {
-            let result = toggleSmash(ref, in: &draft)
-            changed = result.changed || changed
-            if result.smashed {
-                smashedAny = true
-                smashedPackageIDs.insert(normalizedID(ref.id))
-            }
+        var changedPackageIDs = Set<String>()
+        for ref in packageRefs where smash(ref, smashing: smashing, in: &draft) {
+            changedPackageIDs.insert(normalizedID(ref.id))
         }
-        guard changed else { return }
+        guard !changedPackageIDs.isEmpty else { return }
 
-        registerUndoSnapshot(previous, actionName: smashedAny ? "Smash" : "Unsmash")
+        registerUndoSnapshot(previous, actionName: smashing ? "Smash" : "Unsmash")
         editedBoard = draft
         invalidateSelectableCache()
         hoveredObject = nil
         // After smashing, select the new editable from-smash texts so they can be
         // immediately repositioned / edited.
-        if smashedAny {
+        if smashing {
             selectedObjects = draft.packageTexts.compactMap { text in
                 guard text.fromSmash,
                       let pkg = packageID(forGeometryID: text.id).map(normalizedID),
-                      smashedPackageIDs.contains(pkg) else {
+                      changedPackageIDs.contains(pkg) else {
                     return nil
                 }
                 return HorizontalSelectableRef(id: text.id, type: .text, layer: text.layer)
@@ -3458,11 +3452,12 @@ struct BoardCanvasView: View {
         publishSelectionContext()
     }
 
-    /// Toggles one package. Returns whether anything changed and whether the net
-    /// effect was a smash (true) or unsmash (false), for the undo action name.
-    private func toggleSmash(_ ref: HorizontalSelectableRef, in board: inout HorizontalBoard) -> (changed: Bool, smashed: Bool) {
-        guard let index = board.packages.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
-            return (false, false)
+    /// Smashes or unsmashes one package. Returns whether anything changed:
+    /// nothing does for a package already that way.
+    private func smash(_ ref: HorizontalSelectableRef, smashing: Bool, in board: inout HorizontalBoard) -> Bool {
+        guard let index = board.packages.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }),
+              board.packages[index].smashed != smashing else {
+            return false
         }
         let pkgID = normalizedID(board.packages[index].id)
         func belongs(_ text: HorizontalText) -> Bool {
@@ -3474,7 +3469,7 @@ struct BoardCanvasView: View {
             text.layer.map(HorizontalBoardLayers.isSilkscreen) == true
         }
 
-        if board.packages[index].smashed {
+        if !smashing {
             // UNSMASH: drop the editable copies and re-derive the package silk
             // (silkscreen only — non-silk package text was never smashed).
             board.packageTexts.removeAll { $0.fromSmash && belongs($0) }
@@ -3488,14 +3483,14 @@ struct BoardCanvasView: View {
                 let present = Set(board.packageTexts.map { normalizedID($0.id) })
                 board.packageTexts.append(contentsOf: silk.filter { !present.contains(normalizedID($0.id)) })
             }
-            return (true, false)
+            return true
         }
 
         // SMASH: copy the package's own SILKSCREEN text into editable `fromSmash`
         // board text and remove the pool silk (now represented by the copies).
         let poolSilk = board.packageTexts.filter { !$0.fromSmash && belongs($0) && isSilk($0) }
         guard !poolSilk.isEmpty else {
-            return (false, false)
+            return false
         }
         board.packageTexts.removeAll { !$0.fromSmash && belongs($0) && isSilk($0) }
         let prefix = board.packages[index].id
@@ -3505,7 +3500,7 @@ struct BoardCanvasView: View {
             board.packageTexts.append(text)
         }
         board.packages[index].smashed = true
-        return (true, true)
+        return true
     }
 
     // MARK: - Package flags (omit silkscreen / omit outline / fixed) + smash graphics

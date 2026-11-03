@@ -95,7 +95,12 @@ enum HorizontalCanvasCommand {
     case editText
     case filterAirwires
     case openDatasheet
-    case toggleSmash
+    /// Horizon's Smash (H): the selected symbols' (packages') texts become
+    /// texts of their own on the sheet (board), to move on their own.
+    case smash
+    /// Horizon's Unsmash (⇧H): those texts go, and the symbols (packages)
+    /// draw their own again.
+    case unsmash
     /// Schematic: Horizon's Push into block — the selected block symbol's
     /// block, shown so it can be left again for this sheet.
     case openBlock
@@ -1695,10 +1700,19 @@ struct InteractiveCanvasView: View {
             return item
         case .command(let title, let command):
             let item = NSMenuItem(title: title, action: #selector(CanvasMenuAction.invoke(_:)), keyEquivalent: "")
-            if case .bendNetLine = command {
-                // Shows the canvas's K, the key that does the same.
+            // Shows the canvas's key that does the same.
+            switch command {
+            case .bendNetLine:
                 item.keyEquivalent = "k"
                 item.keyEquivalentModifierMask = []
+            case .smash:
+                item.keyEquivalent = "h"
+                item.keyEquivalentModifierMask = []
+            case .unsmash:
+                item.keyEquivalent = "h"
+                item.keyEquivalentModifierMask = .shift
+            default:
+                break
             }
             let action = CanvasMenuAction {
                 onTargetMenuCommand(ref, command)
