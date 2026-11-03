@@ -6328,7 +6328,7 @@ final class HorizontalProjectEditor {
         }
         var change: JSONDictionary = ["kind": kind.rawValue, "rule_id": id as Any? as Any, "rule": created, "created": true]
         if !written.isEmpty { change["set"] = written }
-        if kind == .via { change.merge(try rederiveRuleVias()) { _, new in new } }
+        if kind.appliesInHorizontal { change.merge(try rederiveRuleShapes()) { _, new in new } }
         return change
     }
 
@@ -6363,7 +6363,7 @@ final class HorizontalProjectEditor {
             }
         }
         var change: JSONDictionary = ["kind": kind.rawValue, "rule_id": id as Any? as Any, "rule": merged, "changed": written]
-        if kind == .via { change.merge(try rederiveRuleVias()) { _, new in new } }
+        if kind.appliesInHorizontal { change.merge(try rederiveRuleShapes()) { _, new in new } }
         return change
     }
 
@@ -6383,7 +6383,7 @@ final class HorizontalProjectEditor {
             }
         }
         var change: JSONDictionary = ["kind": kind.rawValue, "rule_id": id as Any? as Any, "removed": true]
-        if kind == .via { change.merge(try rederiveRuleVias()) { _, new in new } }
+        if kind.appliesInHorizontal { change.merge(try rederiveRuleShapes()) { _, new in new } }
         return change
     }
 
@@ -7250,6 +7250,91 @@ final class HorizontalProjectEditor {
         }
         return ["source": "local", "padstack": template.padstackID,
                 "parameter_set": ["via_diameter": Int(template.diameter), "hole_diameter": Int(template.holeDiameter)]]
+    }
+
+    /// Everything that takes its shape from the rules given it again after
+    /// they change, as the app keeps them applied
+    /// (`HorizontalBoardRuleApplication`) and as Horizon's Apply gives it:
+    /// vias from the via rules or a via definition, tracks and net ties whose
+    /// width is the rules', planes whose settings are. Counted in the reply;
+    /// the rules' parameters shape the pads as the project loads.
+    private func rederiveRuleShapes() throws -> JSONDictionary {
+        var reply = try rederiveRuleVias()
+        guard isTopBlock, files["board"] != nil, let loaded = project.board else { return reply }
+        let rulesJSON = try board()["rules"] as? JSONDictionary ?? [:]
+        let rules = HorizontalBoardRules(rules: rulesJSON, netDetails: ruleNetDetails())
+        // A file's tracks name no net: the nets are the project's as it loaded.
+        func nets(_ segments: [HorizontalSegment]) -> [String: String] {
+            Dictionary(segments.compactMap { segment in segment.netID.map { (segment.id.lowercased(), $0) } },
+                       uniquingKeysWith: { first, _ in first })
+        }
+        func widths(_ key: String, flag: String, nets: [String: String]) throws -> Int {
+            var map = try board().dictionaryMap(key)
+            var count = 0
+            for (id, var item) in map {
+                guard item.bool(flag) ?? true, let net = nets[id.lowercased()], let layer = item.int("layer"),
+                      let rule = rules.trackWidth(net: net, layer: layer), rule.widths.def > 0,
+                      item.double("width") != rule.widths.def else {
+                    continue
+                }
+                item["width"] = Int(rule.widths.def.rounded())
+                map[id] = item
+                count += 1
+            }
+            if count > 0 { try updateBoard { $0[key] = map } }
+            return count
+        }
+        let tracks = try widths("tracks", flag: "width_from_net_class", nets: nets(loaded.tracks))
+            + widths("net_ties", flag: "width_from_rules", nets: nets(loaded.netTies))
+        if tracks > 0 { reply["tracks_rederived"] = tracks }
+
+        // Planes: a plane rule's settings, on the plane's layer.
+        let layers = Dictionary(loaded.planes.compactMap { plane in plane.layer.map { (plane.id.lowercased(), $0) } },
+                                uniquingKeysWith: { first, _ in first })
+        var planes = try board().dictionaryMap("planes")
+        var planeCount = 0
+        for (id, var item) in planes {
+            guard item.bool("from_rules") ?? true, let net = item.string("net")?.lowercased() else { continue }
+            let settings = rules.planeSettings(net: net, layer: layers[id.lowercased()] ?? 10000)
+            guard HorizontalPlaneSettings(json: item.dictionary("settings")) != settings else { continue }
+            item["settings"] = HorizontalProjectJSONApplicator.planeSettingsJSON(settings, existing: item.dictionary("settings"))
+            planes[id] = item
+            planeCount += 1
+        }
+        if planeCount > 0 {
+            try updateBoard { $0["planes"] = planes }
+            reply["planes_rederived"] = planeCount
+        }
+
+        // Vias from a via definition: its padstack, parameters and span.
+        let definitions = rulesJSON.dictionary("via_definitions")?.dictionaryMap("via_definitions") ?? [:]
+        var vias = try board().dictionaryMap("vias")
+        var definitionCount = 0
+        for (id, var via) in vias where via.string("source") == "definition" {
+            guard let reference = via.string("definition")?.lowercased(),
+                  let definition = definitions.first(where: { $0.key.lowercased() == reference })?.value,
+                  let padstack = definition.string("padstack"), !padstack.isEmpty, padstack != Self.nullUUID else {
+                continue
+            }
+            var updated = via
+            updated["padstack"] = padstack
+            updated["parameter_set"] = definition.dictionary("parameters") ?? [:]
+            let span = HorizontalViaSpan(json: definition.dictionary("span")) ?? .through
+            if span.isThrough {
+                updated.removeValue(forKey: "span")
+            } else {
+                updated["span"] = span.json
+            }
+            guard !NSDictionary(dictionary: updated).isEqual(to: via) else { continue }
+            via = updated
+            vias[id] = via
+            definitionCount += 1
+        }
+        if definitionCount > 0 {
+            try updateBoard { $0["vias"] = vias }
+            reply["vias_rederived"] = (reply.int("vias_rederived") ?? 0) + definitionCount
+        }
+        return reply
     }
 
     /// Vias that take their shape from the via rules, given the padstack and

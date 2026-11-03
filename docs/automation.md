@@ -121,8 +121,8 @@ rules, unannotated and duplicate reference designators, components without a
 part, single-pin and pinless nets, gates with no symbol on any sheet, packages
 not placed, and unrouted connections.
 
-It runs Horizon's copper clearance checks too, as the rules window's Run
-Checks and the rules results sidebar do (`HorizontalBoardClearanceCheck`):
+It runs Horizon's copper clearance checks too, as the rules window's Apply &
+Check and the rules results sidebar do (`HorizontalBoardClearanceCheck`):
 copper of two nets — tracks, net ties, pads, through-hole pads, vias, plated
 holes and planes' fills — closer on a layer they share than the
 `clearance_copper` rule for the two nets and kinds allows, and copper closer
@@ -222,7 +222,7 @@ as sent would be refused again.
 | `place_block_symbol`, `remove_block_symbol` | Drawing a block instance on a sheet, with the symbol that block defines for itself |
 | `annotate` | Horizon's Annotate over the whole design: refdes numbered from their prefixes, sheet by sheet (`mode`: sequential, sheet_100, sheet_1000; `order`: right_down, down_right; `fill_gaps`, `keep`, `ignore_unknown`), each block instance's components under its own instance mapping. The options default to the schematic's and are kept there |
 | `set_stackup` | How many inner copper layers the board has, and the copper and dielectric thicknesses |
-| `add_rule`, `set_rule`, `remove_rule` | Board design rules. A rule of a kind gets the defaults the app's own rules editor would give it, with `fields` merged in, and is ordered after its kind's rules; `set_rule` merges fields rather than replacing, an object key by key, and every write is refused unless the app's validator still calls the rules valid — a via rule needs a padstack. A change to the via rules gives the vias they shape the padstack and parameters of the rule that now matches |
+| `add_rule`, `set_rule`, `remove_rule` | Board design rules. A rule of a kind gets the defaults the app's own rules editor would give it, with `fields` merged in, and is ordered after its kind's rules; `set_rule` merges fields rather than replacing, an object key by key, and every write is refused unless the app's validator still calls the rules valid — a via rule needs a padstack. A change to the rules is applied to what they shape, as the app keeps them applied: the vias from the via rules take the padstack and parameters of the rule that now matches their net (`vias_rederived`), the vias from a via definition its padstack, parameters and span, the tracks and net ties whose width is the rules' their rule's default (`tracks_rederived`), the planes whose settings are the rules' their plane rule's (`planes_rederived`) |
 | `add_net_class`, `rename_net_class` | Net classes. Their electrical parameters live in the board rules, not here |
 | `place_via`, `remove_via` | A via on a net at a point, sharing the junction with any copper already there; the junctions of tracks on different layers there fold into it, so it joins them. It takes the padstack and size of the first via rule matching its net, as Horizon gives them; `definition` takes a board via definition instead, and `diameter_mm`, `hole_mm` or `padstack` give it a shape of its own |
 | `copy_group_layout` | Lay one group out like another: every member with a matching tag gets the same relative placement and rotation around an anchor, and the tracks, junctions and vias inside the source group are cloned onto the target's pads |

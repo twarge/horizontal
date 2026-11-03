@@ -370,9 +370,9 @@ struct HorizontalSegment: Identifiable, Hashable {
     var toJunctionID: String? = nil
     /// Horizon's `width_from_rules` (a track's `width_from_net_class`, a net
     /// tie's `width_from_rules`): the width is the track width rule's, which
-    /// the rules window's Apply gives it again. True where the file leaves it
-    /// out, as Horizon reads it; false on what Horizontal draws at a width of
-    /// its own.
+    /// the board keeps applied (`HorizontalBoardRuleApplication`). True where
+    /// the file leaves it out, as Horizon reads it; false on what Horizontal
+    /// draws at a width of its own.
     var widthFromRules: Bool = false
 }
 
@@ -486,6 +486,10 @@ struct HorizontalMarker: Identifiable, Hashable {
     /// edits made in the inspector.
     var topMaskExpansion: Double? = nil
     var bottomMaskExpansion: Double? = nil
+    /// The span a via definition gave the via when the rules were applied
+    /// (`HorizontalBoardRuleApplication`), which the writer writes as Horizon
+    /// does; nil leaves the file's as it is.
+    var span: HorizontalViaSpan? = nil
 
     var boundsPoints: [HorizontalPoint] {
         let radius = size / 2
@@ -592,6 +596,40 @@ struct HorizontalViaDefinition: Identifiable, Hashable {
     var name: String
     var padstackID: String?
     var parameters: [String: Double] = [:]
+    /// The copper layers the definition's vias span, nil where it states none.
+    var span: HorizontalViaSpan? = nil
+}
+
+/// Horizon's LayerRange for a via: the copper layers it spans, `start` the
+/// upper. A through via spans top to bottom copper.
+struct HorizontalViaSpan: Hashable {
+    var start: Int
+    var end: Int
+
+    init(start: Int, end: Int) {
+        self.start = Swift.max(start, end)
+        self.end = Swift.min(start, end)
+    }
+
+    init?(json: JSONDictionary?) {
+        guard let json, let start = json.int("start"), let end = json.int("end") else {
+            return nil
+        }
+        self.init(start: start, end: end)
+    }
+
+    var isThrough: Bool {
+        start == HorizontalBoardLayers.topCopper && end == HorizontalBoardLayers.bottomCopper
+    }
+
+    var json: JSONDictionary {
+        ["start": start, "end": end]
+    }
+
+    /// The layers of `copperLayers` it spans.
+    func layers(of copperLayers: [Int]) -> [Int] {
+        copperLayers.filter { end <= $0 && $0 <= start }
+    }
 }
 
 enum HorizontalHoleShape: String, Hashable {

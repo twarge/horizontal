@@ -1115,17 +1115,6 @@ extension HorizontalBoardClearanceCheck {
         }
         return tied
     }
-
-    /// The findings a rule kind's checks give: the copper table's, or the
-    /// copper-to-other table's holes and edge. Nil for a kind this check
-    /// doesn't cover.
-    static func findings(_ findings: [HorizontalClearanceFinding], for kind: HorizontalBoardRuleKind) -> [HorizontalClearanceFinding]? {
-        switch kind {
-        case .clearanceCopper: findings.filter { $0.check == .copper }
-        case .clearanceCopperOther: findings.filter { $0.check != .copper }
-        default: nil
-        }
-    }
 }
 
 extension HorizontalBoardClearanceCheck {

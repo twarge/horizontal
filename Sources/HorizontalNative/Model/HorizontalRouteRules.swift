@@ -105,15 +105,27 @@ enum HorizontalTrackWidthRules {
     @discardableResult
     static func apply(to board: inout HorizontalBoard) -> [String] {
         var changed = [String]()
+        // A board's tracks share a few nets, and a rule's match can be a
+        // regular expression: each net's width on a layer is asked once.
+        var widths = [String: Double?]()
+        let rules = board.rules
+        func width(net: String, layer: Int) -> Double? {
+            let key = "\(net.lowercased())|\(layer)"
+            if let width = widths[key] {
+                return width
+            }
+            let width = rules.trackWidth(net: net, layer: layer).map { $0.widths.def }.flatMap { $0 > 0 ? $0 : nil }
+            widths[key] = .some(width)
+            return width
+        }
         func apply(_ segments: inout [HorizontalSegment]) {
             for index in segments.indices {
                 let segment = segments[index]
                 guard segment.widthFromRules, let net = segment.netID, let layer = segment.layer,
-                      let rule = board.rules.trackWidth(net: net, layer: layer), rule.widths.def > 0,
-                      segment.width != rule.widths.def else {
+                      let def = width(net: net, layer: layer), segment.width != def else {
                     continue
                 }
-                segments[index].width = rule.widths.def
+                segments[index].width = def
                 changed.append(segment.id)
             }
         }

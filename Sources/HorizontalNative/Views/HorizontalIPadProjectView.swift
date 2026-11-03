@@ -98,6 +98,13 @@ struct HorizontalIPadProjectView: View {
     @State private var routeInspector = HorizontalRouteInspectorModel()
     @State private var routeWidthCommand: HorizontalRouteWidthCommand?
     @State private var boardRulesRevision = 0
+    /// Bumped with `boardRulesRevision` when applying the new rules changed
+    /// the board, for the canvas to draw it again.
+    @State private var boardRuleShapeRevision = 0
+    /// What the last run of every rules check found, for the rules results
+    /// panel and its badge, kept up to date as the board changes.
+    @State private var rulesResultsState: HorizontalBoardRulesResultState?
+    @State private var clearanceCheckTask: Task<Void, Never>?
     /// Routing opened the inspector, and closes it when the route ends.
     @State private var inspectorOpenedForRoute = false
     @State private var seesRouting = false
@@ -391,6 +398,14 @@ struct HorizontalIPadProjectView: View {
         // already, and this catches the rest.
         .onChange(of: boardEditRevision) { _, _ in
             checkPlaneFills()
+            scheduleClearanceCheck()
+        }
+        .onChange(of: boardSyncRevision, initial: true) { _, _ in
+            refreshRulesResults()
+        }
+        // A pour's fills are copper too.
+        .onChange(of: planeFillRevision) { _, _ in
+            scheduleClearanceCheck()
         }
         .onChange(of: updatesPlanesAutomatically) { _, _ in
             checkPlaneFills(again: true)
@@ -694,9 +709,99 @@ struct HorizontalIPadProjectView: View {
                     settledProject: settledProjectForExport
                 )
             }
+        case .rulesResults:
+            rulesResultsPanel
         case nil:
             EmptyView()
         }
+    }
+
+    /// The rules results, as macOS shows them in its right sidebar: what the
+    /// last run of every rules check found, which the rules sheet's Apply &
+    /// Check runs and the board's edits keep up to date.
+    private var rulesResultsPanel: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Rules Results")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    rightPane = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close Rules Results")
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 12)
+            Divider()
+            HorizontalRulesResultsSidebarView(
+                result: rulesResultsState,
+                safeAreaInsets: EdgeInsets(),
+                onRunChecks: { _ = checkAndApplyBoardRules() },
+                onOpenRules: {
+                    rulesFocus = nil
+                    rulesSheetPresented = true
+                },
+                onShowFinding: showClearanceFinding,
+                onShowRule: { finding in
+                    rulesFocus = HorizontalBoardRuleFocus(kind: finding.ruleKind, ruleID: finding.ruleID)
+                    rulesSheetPresented = true
+                }
+            )
+        }
+    }
+
+    /// Where a clearance finding is, as on macOS: the board framed on it,
+    /// with the nets and parts of both sides highlighted, turned to its side
+    /// when the view shows one side and the finding is on the other's copper
+    /// only. A net with a plane lights up most of the board, so it is
+    /// highlighted only where the plane is one of the two, or both nets have
+    /// one.
+    private func showClearanceFinding(_ finding: HorizontalClearanceFinding) {
+        let planeNets = Set(project?.board?.planes.compactMap { $0.netID?.lowercased() } ?? [])
+        let nets = [finding.first.netID, finding.second.netID].compactMap { $0 }
+        let showsPlane = finding.first.type == .plane || finding.second.type == .plane
+        let quiet = nets.filter { !planeNets.contains($0) }
+        highlightedNetIDs = Set(showsPlane || quiet.isEmpty ? nets : quiet)
+        highlightedComponentIDs = Set([finding.first.componentID, finding.second.componentID].compactMap { $0 })
+        if let side = boardDisplayOptions.visibleSide {
+            let layers = Set(finding.layers)
+            if !layers.contains(side.copperLayer), layers.contains(side.other.copperLayer) {
+                showBoardSide(side.other)
+            }
+        }
+        let region = finding.region
+        if visiblePanes.contains(.board), let frame = boardCanvasActions?.frameWorldRect {
+            frame(region)
+            return
+        }
+        // The board pane comes up first, and is framed once it has.
+        showPane(.board)
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            boardCanvasActions?.frameWorldRect?(region)
+        }
+    }
+
+    /// Turns a sided board view over to `side`, keeping its mode
+    /// (silkscreen stays silkscreen); the all-layers view belongs to no side
+    /// and stays.
+    private func showBoardSide(_ side: HorizontalBoardSide) {
+        guard let current = boardDisplayOptions.visibleSide, current != side else {
+            return
+        }
+        let mode: HorizontalBoardLayerPreset = !boardDisplayOptions.pads && boardDisplayOptions.packages ? .silkscreen
+            : (!boardDisplayOptions.packages ? .routing : .placement)
+        boardDisplayOptions.applyLayerPreset(mode.resolved(for: side))
+        if boardViewport.mirrored {
+            // Seen from below and turning to the top: stop mirroring.
+            boardViewport.mirrored = side == .bottom
+        }
+        boardDrawingLayer = side.copperLayer
     }
 
     /// Contents of the right-side slide-over inspector. Reuses the cross-platform
@@ -845,6 +950,12 @@ struct HorizontalIPadProjectView: View {
                 } label: {
                     Label("Board Rules", systemImage: "checklist")
                 }
+                Button {
+                    compactNavigatorPresented = false
+                    rightPane = rightPane == .rulesResults ? nil : .rulesResults
+                } label: {
+                    Label("Rules Results", systemImage: "checklist.checked")
+                }
             }
             Divider()
             Button {
@@ -892,11 +1003,26 @@ struct HorizontalIPadProjectView: View {
             } label: {
                 Label("Board Rules", systemImage: "checklist")
             }
+            rulesResultsButton
         }
         Button {
             rightPane = rightPane == .export ? nil : .export
         } label: {
             Label("Export", systemImage: "square.and.arrow.up")
+        }
+    }
+
+    /// Shows the rules results, with the last run's findings on its badge.
+    private var rulesResultsButton: some View {
+        Button {
+            rightPane = rightPane == .rulesResults ? nil : .rulesResults
+        } label: {
+            Label {
+                Text("Rules Results")
+            } icon: {
+                Image(systemName: "checklist.checked")
+                    .toolbarBadge(rulesResultsState?.badgeCount ?? 0, color: rulesResultsState?.badgeColor ?? .orange)
+            }
         }
     }
 
@@ -1457,6 +1583,7 @@ struct HorizontalIPadProjectView: View {
                     routeWidthCommand: routeWidthCommand,
                     routeInspector: routeInspector,
                     rulesRevision: boardRulesRevision,
+                    rulesShapeRevision: boardRuleShapeRevision,
                     onShowToolSettings: { rightPane = .inspector },
                     toolSettings: boardToolSettings,
                     drawingLayer: boardDrawingLayer,
@@ -1912,6 +2039,11 @@ struct HorizontalIPadProjectView: View {
             syncedBoard.rebasePackageModelURLs(poolURL: poolURL)
         }
         syncedBoard.removePlanesWithDeletedNets()
+        // A net that changed its class, or a track its net, takes what the
+        // rules give it now, which the archive is given too.
+        if !HorizontalBoardRuleApplication.apply(to: &syncedBoard, poolURL: boardPoolURL).isEmpty {
+            try? HorizontalProjectJSONApplicator.apply(board: syncedBoard, in: updated, to: &document.archive)
+        }
         updated.board = syncedBoard
         project = updated
         boardEditRevision += 1
@@ -2033,10 +2165,10 @@ struct HorizontalIPadProjectView: View {
         return project
     }
 
-    /// The board design-rules (DRC) editor + checks. macOS opens this in a separate
-    /// NSWindow; iPad presents the same SwiftUI view full-screen with a Done button.
-    /// The view runs its own checks (the `.checks` tab), so `onChecksRun` (the macOS
-    /// hook that mirrors results into a sidebar) is a no-op here.
+    /// The board design-rules (DRC) editor. macOS opens this in a separate
+    /// NSWindow; iPad presents the same SwiftUI view full-screen with a Done
+    /// button. Its Apply & Check closes it on the rules results panel, where
+    /// the checks' results are.
     @ViewBuilder
     private func boardRulesCover(for project: HorizontalProject) -> some View {
         NavigationStack {
@@ -2047,8 +2179,11 @@ struct HorizontalIPadProjectView: View {
                 initialRules: (try? HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive)) ?? [:],
                 isReadOnly: isReadOnly,
                 onRulesChange: { applyEditedBoardRules($0) },
-                onChecksRun: { _ in },
-                onApplyRules: { applyBoardRules($0) },
+                onCheckAndApply: {
+                    let message = checkAndApplyBoardRules()
+                    rulesSheetPresented = false
+                    return message
+                },
                 rulesRevision: boardRulesRevision,
                 focus: rulesFocus
             )
@@ -2062,39 +2197,80 @@ struct HorizontalIPadProjectView: View {
         }
     }
 
-    /// The rules sheet's Apply, for the via rules: as `ProjectDocumentView`'s,
-    /// one undoable edit through the archive and a reload.
-    private func applyBoardRules(_ kind: HorizontalBoardRuleKind) -> String {
-        if kind == .trackWidth, let project, var board = project.board {
-            let changed = HorizontalTrackWidthRules.apply(to: &board)
-            guard !changed.isEmpty else {
-                return "Every track whose width is from the rules already has it."
-            }
-            do {
-                var archive = document.archive
-                try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &archive)
-                try applyArchiveEdit(archive, to: project, actionName: "Apply Track Width Rules")
-                return changed.count == 1
-                    ? "Applied the track width rules to 1 track."
-                    : "Applied the track width rules to \(changed.count) tracks."
-            } catch {
-                return "Couldn't apply the track width rules: \(error.localizedDescription)"
+    /// The project pool, where a via's padstack is read.
+    private var boardPoolURL: URL? {
+        project.flatMap { project in project.poolDirectory.map { project.baseURL.appendingPathComponent($0) } }
+    }
+
+    /// Apply & Check, as on macOS: every rule applied to the board as it
+    /// stands, one undoable edit through the archive and a reload, then every
+    /// check run, with the results in the rules results panel. Says what
+    /// applying changed.
+    private func checkAndApplyBoardRules() -> String? {
+        var message: String?
+        if !isReadOnly, let project, var board = project.board {
+            let changes = HorizontalBoardRuleApplication.apply(to: &board, poolURL: boardPoolURL)
+            if let summary = changes.summary {
+                do {
+                    var archive = document.archive
+                    try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &archive)
+                    try applyArchiveEdit(archive, to: project, actionName: "Apply Board Rules")
+                    message = "Applied the rules to \(summary)."
+                } catch {
+                    message = "Couldn't apply the rules: \(error.localizedDescription)"
+                }
+            } else {
+                message = "The board follows its rules."
             }
         }
-        guard kind == .via, let project, let board = project.board else {
-            return "Horizontal doesn't apply these rules yet."
+        refreshRulesResults()
+        rightPane = .rulesResults
+        return message
+    }
+
+    /// The rules checks over every kind, as the board's rules now stand, as
+    /// on macOS: the rules' own structure at once, the board's copper against
+    /// the clearance rules behind it.
+    private func refreshRulesResults() {
+        guard let project, project.board != nil,
+              let rules = try? HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive) else {
+            clearanceCheckTask?.cancel()
+            clearanceCheckTask = nil
+            rulesResultsState = nil
+            return
         }
-        do {
-            var archive = document.archive
-            let changed = try HorizontalProjectJSONApplicator.applyViaRules(
-                in: project, to: &archive, viaNets: board.viaNetsForRules, netDetails: board.netDetails)
-            guard !changed.isEmpty else {
-                return "Every via that takes its shape from the rules already has it."
+        let context = HorizontalBoardRuleContext(board: project.board, netClasses: project.schematic?.netClasses ?? [])
+        rulesResultsState = HorizontalBoardRulesResultState(
+            ruleTitle: "All Rules",
+            messages: HorizontalBoardRulesValidator.validateAll(rules: rules, context: context),
+            checkedAt: Date(),
+            clearanceFindings: rulesResultsState?.clearanceFindings
+        )
+        scheduleClearanceCheck()
+    }
+
+    /// The copper clearance checks, in the background, on the board as it
+    /// stands, once edits settle; the last findings stay up until the new
+    /// ones are in.
+    private func scheduleClearanceCheck() {
+        clearanceCheckTask?.cancel()
+        guard let project, let board = project.board, rulesResultsState != nil else {
+            clearanceCheckTask = nil
+            return
+        }
+        rulesResultsState?.isCheckingClearance = true
+        let tiedNets = HorizontalBoardClearanceCheck.tiedNets(of: project)
+        clearanceCheckTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled,
+                  let findings = await HorizontalBoardClearanceCheck.findings(board: board, tiedNets: tiedNets),
+                  !Task.isCancelled else {
+                return
             }
-            try applyArchiveEdit(archive, to: project, actionName: "Apply Via Rules")
-            return changed.count == 1 ? "Applied the via rules to 1 via." : "Applied the via rules to \(changed.count) vias."
-        } catch {
-            return "Couldn't apply the via rules: \(error.localizedDescription)"
+            rulesResultsState?.clearanceFindings = findings
+            rulesResultsState?.isCheckingClearance = false
+            rulesResultsState?.checkedAt = Date()
+            clearanceCheckTask = nil
         }
     }
 
@@ -2102,6 +2278,20 @@ struct HorizontalIPadProjectView: View {
         guard let project else { return }
         do {
             let previous = try HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive)
+            // The rules' parameters shape the pads and vias as the board
+            // loads, so a change to them is applied by a reload, as on macOS.
+            if HorizontalBoardRuleApplication.parametersChange(from: previous, to: rules) {
+                var archive = document.archive
+                try HorizontalProjectJSONApplicator.apply(boardRules: rules, in: project, to: &archive)
+                if var board = project.board {
+                    board.takeRules(rules)
+                    if !HorizontalBoardRuleApplication.apply(to: &board, poolURL: boardPoolURL).isEmpty {
+                        try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &archive)
+                    }
+                }
+                try applyArchiveEdit(archive, to: project, actionName: "Change Board Rules")
+                return
+            }
             try installBoardRules(rules)
             registerBoardRulesUndo(from: previous, actionName: "Change Board Rules")
         } catch {
@@ -2127,17 +2317,30 @@ struct HorizontalIPadProjectView: View {
     }
 
     /// The board's rules as `rules`, in the archive and in the board without
-    /// a reload, which would cancel what the canvas is doing.
+    /// a reload, which would cancel what the canvas is doing, and applied to
+    /// the board at once (`HorizontalBoardRuleApplication`), as on macOS.
     private func installBoardRules(_ rules: JSONDictionary) throws {
         guard var updated = project else { return }
         var archive = document.archive
         try HorizontalProjectJSONApplicator.apply(boardRules: rules, in: updated, to: &archive)
-        document.archive = archive
         updated.board?.takeRules(rules)
+        var applied = HorizontalBoardRuleApplication.Changes()
+        if var board = updated.board {
+            applied = HorizontalBoardRuleApplication.apply(to: &board, poolURL: boardPoolURL)
+            if !applied.isEmpty {
+                try HorizontalProjectJSONApplicator.apply(board: board, in: updated, to: &archive)
+                updated.board = board
+            }
+        }
+        document.archive = archive
         project = updated
+        if !applied.isEmpty {
+            boardRuleShapeRevision += 1
+        }
         boardRulesRevision += 1
         boardEditRevision += 1
         checkPlaneFills()
+        refreshRulesResults()
     }
 
     private func registerBoardRulesUndo(from previous: JSONDictionary, actionName: String) {
@@ -2328,7 +2531,9 @@ struct HorizontalIPadProjectView: View {
                 rightPane = .inspector
             case .export:
                 rightPane = .export
-            case .rulesResults, nil:
+            case .rulesResults:
+                rightPane = .rulesResults
+            case nil:
                 rightPane = nil
             }
         }
@@ -2365,6 +2570,8 @@ struct HorizontalIPadProjectView: View {
             state.rightSidebarPane = .selection
         case .export:
             state.rightSidebarPane = .export
+        case .rulesResults:
+            state.rightSidebarPane = .rulesResults
         case nil:
             state.rightSidebarPane = nil
         }
@@ -2456,20 +2663,8 @@ struct HorizontalIPadProjectView: View {
             showPane(.board)
         }
         live.showBoardSide = { side in
-            // Framing a part on the far side: a sided view turns over to it,
-            // keeping its mode (silkscreen stays silkscreen); the all-layers
-            // view belongs to no side and stays.
-            guard let current = boardDisplayOptions.visibleSide, current != side else {
-                return
-            }
-            let mode: HorizontalBoardLayerPreset = !boardDisplayOptions.pads && boardDisplayOptions.packages ? .silkscreen
-                : (!boardDisplayOptions.packages ? .routing : .placement)
-            boardDisplayOptions.applyLayerPreset(mode.resolved(for: side))
-            if boardViewport.mirrored {
-                // Seen from below and turning to the top: stop mirroring.
-                boardViewport.mirrored = side == .bottom
-            }
-            boardDrawingLayer = side.copperLayer
+            // Framing a part on the far side.
+            showBoardSide(side)
         }
         live.zoomBy = { pane, factor in
             let candidates: [HorizontalPane?] = [pane, focusedPane, .board, .schematic, .threeD]
@@ -2623,6 +2818,7 @@ private struct NavigationDocumentModifier: ViewModifier {
 enum HorizontalIPadRightPane: Identifiable {
     case inspector
     case export
+    case rulesResults
 
     var id: Self { self }
 }

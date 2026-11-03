@@ -19,10 +19,7 @@ final class HorizontalBoardRulesWindowController: NSObject, NSWindowDelegate {
         initialRules: JSONDictionary,
         isReadOnly: Bool,
         onRulesChange: @escaping (JSONDictionary) -> Void,
-        onChecksRun: @escaping (HorizontalBoardRulesResultState) -> Void,
-        onApplyRules: ((HorizontalBoardRuleKind) -> String)? = nil,
-        checkClearance: (@MainActor (JSONDictionary) async -> [HorizontalClearanceFinding]?)? = nil,
-        onShowFinding: ((HorizontalClearanceFinding) -> Void)? = nil,
+        onCheckAndApply: (() -> String?)? = nil,
         focus: HorizontalBoardRuleFocus? = nil
     ) {
         let rootView = HorizontalBoardRulesWindow(
@@ -32,10 +29,7 @@ final class HorizontalBoardRulesWindowController: NSObject, NSWindowDelegate {
             initialRules: initialRules,
             isReadOnly: isReadOnly,
             onRulesChange: onRulesChange,
-            onChecksRun: onChecksRun,
-            onApplyRules: onApplyRules,
-            checkClearance: checkClearance,
-            onShowFinding: onShowFinding,
+            onCheckAndApply: onCheckAndApply,
             rulesRevision: (hostingController?.rootView.rulesRevision ?? 0) + 1,
             focus: focus
         )
@@ -90,17 +84,13 @@ struct HorizontalBoardRulesWindow: View {
     var netClasses: [HorizontalNetClass]
     var initialRules: JSONDictionary
     var isReadOnly: Bool
+    /// Every rule changed here is applied to the board as it changes; the
+    /// host does that, and keeps the board's rules results.
     var onRulesChange: (JSONDictionary) -> Void
-    var onChecksRun: (HorizontalBoardRulesResultState) -> Void
-    /// Applies a kind's rules to the board, as Horizon's Apply does, and says
-    /// what it did; nil where the host can't.
-    var onApplyRules: ((HorizontalBoardRuleKind) -> String)?
-    /// Runs the copper clearance checks with these rules on the board as it
-    /// stands now; nil where the host doesn't, and the window checks `board`.
-    /// Nil back means the run was cancelled.
-    var checkClearance: (@MainActor (JSONDictionary) async -> [HorizontalClearanceFinding]?)?
-    /// Shows where a finding is on the board; nil where the host can't.
-    var onShowFinding: ((HorizontalClearanceFinding) -> Void)?
+    /// Apply & Check: applies every rule to the board as it stands and runs
+    /// every check, whose results the host shows in its rules results
+    /// sidebar; says what applying changed. Nil where the host can't.
+    var onCheckAndApply: (() -> String?)?
     /// Bumped when the rules change from outside the window: it takes
     /// `initialRules` again.
     var rulesRevision = 0
@@ -110,13 +100,6 @@ struct HorizontalBoardRulesWindow: View {
     @State private var rules: JSONDictionary
     @State private var selectedKind: HorizontalBoardRuleKind = .clearanceCopper
     @State private var selectedRuleID: String?
-    @State private var selectedTab: HorizontalBoardRuleEditorTab = .editor
-    @State private var checkMessages: [HorizontalBoardRuleCheckMessage] = []
-    /// The last Run Checks' clearance findings for the kind it ran on; nil
-    /// for a kind the clearance check doesn't cover, or before a run.
-    @State private var clearanceFindings: [HorizontalClearanceFinding]?
-    @State private var clearanceKind: HorizontalBoardRuleKind?
-    @State private var clearanceTask: Task<Void, Never>?
     @State private var statusMessage: String?
 
     init(
@@ -126,10 +109,7 @@ struct HorizontalBoardRulesWindow: View {
         initialRules: JSONDictionary,
         isReadOnly: Bool,
         onRulesChange: @escaping (JSONDictionary) -> Void,
-        onChecksRun: @escaping (HorizontalBoardRulesResultState) -> Void,
-        onApplyRules: ((HorizontalBoardRuleKind) -> String)? = nil,
-        checkClearance: (@MainActor (JSONDictionary) async -> [HorizontalClearanceFinding]?)? = nil,
-        onShowFinding: ((HorizontalClearanceFinding) -> Void)? = nil,
+        onCheckAndApply: (() -> String?)? = nil,
         rulesRevision: Int = 0,
         focus: HorizontalBoardRuleFocus? = nil
     ) {
@@ -139,10 +119,7 @@ struct HorizontalBoardRulesWindow: View {
         self.initialRules = initialRules
         self.isReadOnly = isReadOnly
         self.onRulesChange = onRulesChange
-        self.onChecksRun = onChecksRun
-        self.onApplyRules = onApplyRules
-        self.checkClearance = checkClearance
-        self.onShowFinding = onShowFinding
+        self.onCheckAndApply = onCheckAndApply
         self.rulesRevision = rulesRevision
         self.focus = focus
         _rules = State(initialValue: initialRules)
@@ -178,12 +155,10 @@ struct HorizontalBoardRulesWindow: View {
         #endif
         .onAppear {
             ensureSelection()
-            runStructuralChecks()
         }
         .onChange(of: rulesRevision) { _, _ in
             rules = initialRules
             ensureSelection()
-            runStructuralChecks()
         }
         .onChange(of: focus?.id) { _, _ in
             guard let focus else { return }
@@ -214,27 +189,16 @@ struct HorizontalBoardRulesWindow: View {
                     .font(.callout)
             }
             Spacer()
-            Picker("", selection: $selectedTab) {
-                ForEach(HorizontalBoardRuleEditorTab.allCases) { tab in
-                    Text(tab.title).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 250)
 
-            Button("Run Checks") {
-                runChecks()
-            }
-            .disabled(!selectedKind.canCheck && !selectedKind.needsMatchAll)
-
-            // Horizon's Apply: the board's objects that take their shape
-            // from these rules get it again from the rules as they now stand.
-            if selectedKind.appliesInHorizontal, let onApplyRules {
-                Button("Apply") {
-                    statusMessage = onApplyRules(selectedKind)
+            // Every rule, not the one shown: the rules are applied as they
+            // change, so applying here catches up a board that disagrees
+            // with them, as one Horizon wrote can; the checks' results are
+            // in the rules results sidebar.
+            if let onCheckAndApply {
+                Button("Apply & Check") {
+                    statusMessage = onCheckAndApply()
                 }
-                .disabled(isReadOnly)
-                .help(selectedKind.applyHelp)
+                .help("Apply every rule to the board and run every check. The results are in the rules results sidebar.")
             }
         }
         .padding(.horizontal, 16)
@@ -250,7 +214,7 @@ struct HorizontalBoardRulesWindow: View {
                 Text(statusMessage)
                     .foregroundStyle(.secondary)
             } else {
-                Text("Changes apply immediately. \(selectedKind.footerDescription)")
+                Text("Rules apply to the board as they change. \(selectedKind.footerDescription)")
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -372,33 +336,21 @@ struct HorizontalBoardRulesWindow: View {
         }
     }
 
+    @ViewBuilder
     private var editorArea: some View {
-        Group {
-            switch selectedTab {
-            case .editor:
-                if let binding = selectedRuleBinding {
-                    HorizontalBoardRuleEditorView(
-                        kind: selectedKind,
-                        rule: binding,
-                        context: context,
-                        isReadOnly: isReadOnly
-                    )
-                } else {
-                    ContentUnavailableView(
-                        "No Rule Selected",
-                        systemImage: "checklist",
-                        description: Text("Choose or add a rule instance to edit.")
-                    )
-                }
-            case .checks:
-                HorizontalBoardRuleChecksView(
-                    messages: checkMessages,
-                    kind: selectedKind,
-                    clearanceFindings: clearanceKind == selectedKind ? clearanceFindings : nil,
-                    isCheckingClearance: clearanceKind == selectedKind && clearanceTask != nil,
-                    onShowFinding: onShowFinding
-                )
-            }
+        if let binding = selectedRuleBinding {
+            HorizontalBoardRuleEditorView(
+                kind: selectedKind,
+                rule: binding,
+                context: context,
+                isReadOnly: isReadOnly
+            )
+        } else {
+            ContentUnavailableView(
+                "No Rule Selected",
+                systemImage: "checklist",
+                description: Text("Choose or add a rule instance to edit.")
+            )
         }
     }
 
@@ -504,81 +456,14 @@ struct HorizontalBoardRulesWindow: View {
         setRules(updatedRules)
     }
 
-    /// Run Checks: the rules' own structure, and for the copper clearance
-    /// kinds the board's copper against them, as Horizon's checks do. The
-    /// results go to the Checks tab and the results sidebar once both are in.
-    private func runChecks() {
-        let messages = runStructuralChecks()
-        selectedTab = .checks
-        let kind = selectedKind
-        var result = HorizontalBoardRulesResultState(ruleTitle: kind.title, messages: messages, checkedAt: Date())
-        clearanceTask?.cancel()
-        clearanceTask = nil
-        // A run for one kind shows that kind's results, and no clearance
-        // findings for a kind the clearance check doesn't cover.
-        result.clearanceKind = kind
-        guard HorizontalBoardClearanceCheck.findings([], for: kind) != nil, checkClearance != nil || board != nil else {
-            clearanceKind = nil
-            clearanceFindings = nil
-            onChecksRun(result)
-            return
-        }
-        clearanceKind = kind
-        let rules = self.rules
-        let board = self.board
-        let checkClearance = self.checkClearance
-        clearanceTask = Task { @MainActor in
-            let found: [HorizontalClearanceFinding]?
-            if let checkClearance {
-                found = await checkClearance(rules)
-            } else if let board {
-                found = await HorizontalBoardClearanceCheck.findings(
-                    board: board, rules: HorizontalBoardRules(rules: rules, netDetails: board.netDetails))
-            } else {
-                found = nil
-            }
-            guard !Task.isCancelled, let found else { return }
-            let shown = HorizontalBoardClearanceCheck.findings(found, for: kind) ?? []
-            clearanceFindings = shown
-            clearanceTask = nil
-            result.clearanceFindings = shown
-            result.checkedAt = Date()
-            onChecksRun(result)
-        }
-    }
-
-    @discardableResult
-    private func runStructuralChecks() -> [HorizontalBoardRuleCheckMessage] {
-        let messages = HorizontalBoardRulesValidator.validate(rules: rules, selectedKind: selectedKind, context: context)
-        checkMessages = messages
-        return messages
-    }
-
     private func setRules(_ updatedRules: JSONDictionary) {
         rules = updatedRules
-        runStructuralChecks()
         guard !isReadOnly else {
             statusMessage = "Read-only mode is enabled."
             return
         }
         onRulesChange(updatedRules)
         statusMessage = "Rules updated."
-    }
-}
-
-private enum HorizontalBoardRuleEditorTab: String, CaseIterable, Identifiable {
-    case editor
-    case checks
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .editor:
-            return "Editor"
-        case .checks:
-            return "Checks"
-        }
     }
 }
 
@@ -685,21 +570,13 @@ enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    /// Whether Horizontal applies this kind's rules to the board, as the
-    /// Apply button does. Horizon applies every kind `canApply` names.
+    /// Whether Horizontal keeps this kind's rules applied to the board
+    /// (`HorizontalBoardRuleApplication`; the parameters through the reload
+    /// a change to them makes). Horizon applies every kind `canApply` names,
+    /// when its Apply is pressed; the shorted pads rule's is its airwires,
+    /// which Horizontal doesn't draw from that rule.
     var appliesInHorizontal: Bool {
-        self == .via || self == .trackWidth
-    }
-
-    var applyHelp: String {
-        switch self {
-        case .via:
-            return "Give every via that takes its shape from the rules the padstack and parameters of the rule that matches its net."
-        case .trackWidth:
-            return "Give every track and net tie whose width is from the rules the default width of the rule that matches its net, on its layer."
-        default:
-            return "Apply these rules to the board."
-        }
+        canApply && self != .shortedPads
     }
 
     var needsMatchAll: Bool {
@@ -721,8 +598,8 @@ enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
         if canCheck {
             traits.append("checkable")
         }
-        if canApply {
-            traits.append("applies geometry")
+        if appliesInHorizontal {
+            traits.append("applied to the board")
         }
         if needsMatchAll {
             traits.append("last rule should match all")
@@ -1095,8 +972,8 @@ private struct HorizontalBoardRuleFamilyRow: View {
                     if kind.canCheck {
                         Text("Check")
                     }
-                    if kind.canApply {
-                        Text("Apply")
+                    if kind.appliesInHorizontal {
+                        Text("Applied")
                     }
                 }
                 .font(.caption2)
@@ -1107,7 +984,7 @@ private struct HorizontalBoardRuleFamilyRow: View {
     }
 
     private var iconName: String {
-        if kind.canApply {
+        if kind.appliesInHorizontal {
             return "wand.and.stars"
         }
         if kind.canCheck {
@@ -3184,79 +3061,8 @@ private struct TextRuleExplanation: View {
     }
 }
 
-private struct HorizontalBoardRuleChecksView: View {
-    var messages: [HorizontalBoardRuleCheckMessage]
-    var kind: HorizontalBoardRuleKind
-    /// The copper clearance findings of the last Run Checks on this kind.
-    var clearanceFindings: [HorizontalClearanceFinding]?
-    var isCheckingClearance = false
-    var onShowFinding: ((HorizontalClearanceFinding) -> Void)?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Checks")
-                    .font(.headline)
-                Spacer()
-                if isCheckingClearance {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                Text(kind.title)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
-
-            if messages.isEmpty && (clearanceFindings ?? []).isEmpty {
-                ContentUnavailableView(
-                    clearanceFindings == nil ? "No Structural Issues" : "No Issues",
-                    systemImage: "checkmark.seal",
-                    description: Text(clearanceFindings == nil
-                        ? "The native rules editor validated the serialized rule structure."
-                        : "The rules are well formed, and no copper is closer than they allow.")
-                )
-            } else {
-                List {
-                    if !messages.isEmpty {
-                        Section("Rules") {
-                            ForEach(messages) { message in
-                                Label {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(message.title)
-                                        Text(message.detail)
-                                            .foregroundStyle(.secondary)
-                                            .font(.caption)
-                                    }
-                                } icon: {
-                                    Image(systemName: message.level.iconName)
-                                        .foregroundStyle(message.level.color)
-                                }
-                            }
-                        }
-                    }
-                    if let clearanceFindings, !clearanceFindings.isEmpty {
-                        Section("Board (\(clearanceFindings.count))") {
-                            ForEach(clearanceFindings) { finding in
-                                HorizontalClearanceFindingRow(finding: finding, onShow: onShowFinding)
-                            }
-                        }
-                    }
-                }
-            }
-
-            Text(kind == .clearanceCopper || kind == .clearanceCopperOther
-                ? "Run Checks measures the board's copper against these rules as Horizon's clearance checks do: copper of two nets, and copper against unplated holes and the board edge. The routing offset is the router's margin and isn't checked."
-                : "This panel mirrors GTK's check affordance and validates the rule objects that will be written back to board.json. The copper clearance rules' Run Checks also measures the board.")
-                .foregroundStyle(.secondary)
-                .font(.caption)
-                .padding(16)
-        }
-    }
-}
-
-/// One clearance finding, as the Checks tab and the results sidebar list it.
-/// With `onShow`, a click shows where it is.
+/// One clearance finding, as the rules results sidebar lists it. With
+/// `onShow`, a click shows where it is.
 struct HorizontalClearanceFindingRow: View {
     var finding: HorizontalClearanceFinding
     var onShow: ((HorizontalClearanceFinding) -> Void)?
@@ -3305,9 +3111,6 @@ struct HorizontalBoardRulesResultState {
     /// The clearance check is running again; `clearanceFindings` are the
     /// last run's until it finishes.
     var isCheckingClearance = false
-    /// The rule kind whose findings these are, when a run was for one kind
-    /// (`HorizontalBoardClearanceCheck.findings(_:for:)`); nil for all.
-    var clearanceKind: HorizontalBoardRuleKind? = nil
 }
 
 struct HorizontalBoardRuleCheckMessage: Identifiable {
