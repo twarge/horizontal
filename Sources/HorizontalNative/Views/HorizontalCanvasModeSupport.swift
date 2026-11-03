@@ -266,7 +266,8 @@ struct HorizontalCanvasCommandHandlerSet {
     var editText: (() -> Void)? = nil
     var filterAirwires: (() -> Void)? = nil
     var openDatasheet: (() -> Void)? = nil
-    var toggleSmash: (() -> Void)? = nil
+    /// Smash (true) or unsmash (false) the selection.
+    var setSmashed: ((Bool) -> Void)? = nil
     var openBlock: (() -> Void)? = nil
     var editBlockSymbol: (() -> Void)? = nil
     var smashSilkscreenGraphics: (() -> Void)? = nil
@@ -436,9 +437,11 @@ struct HorizontalCanvasCommandHandlerSet {
             filterAirwires?()
         case .openDatasheet:
             openDatasheet?()
-        case .toggleSmash:
-            guard !isReadOnly else { return }
-            toggleSmash?()
+        case .smash, .unsmash:
+            // Mid-interaction the selection stays as it is: the schematic's
+            // smash reloads the sheet under a move or a wire half done.
+            guard !isReadOnly, !hasInteraction else { return }
+            if case .smash = command { setSmashed?(true) } else { setSmashed?(false) }
         case .openBlock:
             openBlock?()
         case .editBlockSymbol:

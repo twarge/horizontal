@@ -343,6 +343,10 @@ enum HorizontalCanvasInputCore {
             // ⇧L: select all copper on the selection's net (cf. L = highlight).
             return .selectNet
         }
+        if modifiers == .shift, characters == "h" {
+            // ⇧H: unsmash (cf. H = smash).
+            return .unsmash
+        }
         if modifiers == .command {
             // Beat the system Edit-menu Copy/Paste on the canvas; a focused text
             // field keeps its own ⌘C/⌘V/⌘D (handled by the focus model / guard).
@@ -373,6 +377,7 @@ enum HorizontalCanvasInputCore {
         switch characters {
         case "b": return .placeNetLabel
         case "e": return .mirrorSelection
+        case "h": return .smash
         case "i": return .editSymbolPinNames
         case "k": return .bendNetLine
         case "c": return .toggleRectanglePlacementMode

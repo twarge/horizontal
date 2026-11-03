@@ -8523,7 +8523,7 @@ struct SchematicCanvasView: View {
             handlers.setAllUnconnectedPinsNC = { setAllNoConnect(true) }
             handlers.clearAllNCPins = { setAllNoConnect(false) }
             if selectedObjects.contains(where: { $0.type == .schematicSymbol }) {
-                handlers.toggleSmash = { toggleSmashSelection() }
+                handlers.setSmashed = { smashSelection($0) }
             }
         }
         if canSetNoPopulate, selectedObjects.contains(where: { isNoPopulate($0) != nil }) {
@@ -8789,23 +8789,24 @@ struct SchematicCanvasView: View {
               let symbol = sheet.symbols.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
             return nil
         }
-        return .command(title: symbol.smashed ? "Unsmash Text" : "Smash Text", .toggleSmash)
+        return symbol.smashed ? .command(title: "Unsmash Text", .unsmash) : .command(title: "Smash Text", .smash)
     }
 
-    /// Horizon's Smash and Unsmash, each selected symbol toggled: a smash
-    /// gives it texts of its own on the sheet, where it drew them, to move
-    /// on their own; an unsmash deletes them, and it draws its own again. A
-    /// symbol smashed with none left (they were lost) unsmashes. It goes
-    /// through `smash` and `unsmash`, so it is one undo step and the sheet
-    /// reloads with the texts the files now hold.
-    private func toggleSmashSelection() {
+    /// Horizon's Smash (H) and Unsmash (⇧H) on the selected symbols: a smash
+    /// gives each unsmashed one texts of its own on the sheet, where it drew
+    /// them, to move on their own, and smashes again one whose texts were
+    /// lost; an unsmash deletes a smashed one's, and it draws its own again.
+    /// It goes through `smash` and `unsmash`, so it is one undo step and the
+    /// sheet reloads with the texts the files now hold.
+    private func smashSelection(_ smashing: Bool) {
         guard !isReadOnly else { return }
         let symbols = uniqueSelectedObjectRefs()
             .filter { $0.type == .schematicSymbol }
             .compactMap { ref in sheet.symbols.first { normalizedID($0.id) == normalizedID(ref.id) } }
+            .filter { smashing ? !$0.smashed || $0.smashedTextIDs.isEmpty : $0.smashed }
         guard !symbols.isEmpty else { return }
-        let operations: [JSONDictionary] = symbols.map { ["op": $0.smashed ? "unsmash" : "smash", "symbol_instance": $0.id] }
-        applyProjectEdit(operations, actionName: symbols.contains { !$0.smashed } ? "Smash" : "Unsmash")
+        let operations: [JSONDictionary] = symbols.map { ["op": smashing ? "smash" : "unsmash", "symbol_instance": $0.id] }
+        applyProjectEdit(operations, actionName: smashing ? "Smash" : "Unsmash")
     }
 
     /// The sheets Move to Other Sheet lists: every other page of this

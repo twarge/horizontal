@@ -39,6 +39,8 @@ final class HorizontalCanvasInputCoreTests: XCTestCase {
         case .updateAllPlanes: return "updatePlanes"
         case .bendNetLine: return "bend"
         case .switchPane: return "switchPane"
+        case .smash: return "smash"
+        case .unsmash: return "unsmash"
         default: return "other"
         }
     }
@@ -80,6 +82,9 @@ final class HorizontalCanvasInputCoreTests: XCTestCase {
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("a", .command), supportsTrackVias: true)), "selectAll")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("v", .shift), supportsTrackVias: true)), "moveNetNew")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("l", .shift), supportsTrackVias: true)), "selectNet")
+        XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("h", .shift), supportsTrackVias: true)), "unsmash")
+        // charactersIgnoringModifiers can bring ⇧H as a capital.
+        XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("H", .shift), supportsTrackVias: false)), "unsmash")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("c", .command), supportsTrackVias: true)), "copy")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("v", .command), supportsTrackVias: true)), "paste")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("d", .command), supportsTrackVias: true)), "duplicate")
@@ -95,6 +100,8 @@ final class HorizontalCanvasInputCoreTests: XCTestCase {
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("l"), supportsTrackVias: true)), "highlight")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("i"), supportsTrackVias: true)), "editPins")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("k"), supportsTrackVias: true)), "bend")
+        XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("h"), supportsTrackVias: true)), "smash")
+        XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("h"), supportsTrackVias: false)), "smash")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("c"), supportsTrackVias: true)), "toggleRect")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("/"), supportsTrackVias: true)), "flip")
         XCTAssertEqual(token(HorizontalCanvasInputCore.command(key("w"), supportsTrackVias: true)), "width")
