@@ -693,19 +693,6 @@ struct ResizeSymbolToolButton: View {
     }
 }
 
-struct DrawPlaneToolButton: View {
-    var action: () -> Void
-
-    var body: some View {
-        HorizontalRailHelpLabel(title: "Draw plane") {
-            Button(action: action) {
-                Image(systemName: "square.dashed")
-            }
-            .help("Draw a copper plane")
-        }
-    }
-}
-
 struct BoardStackupToolButton: View {
     var board: HorizontalBoard?
     var isReadOnly: Bool

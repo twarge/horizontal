@@ -2538,10 +2538,6 @@ struct ProjectWorkspaceView: View {
                         DrawingToolButtonGroup(primitives: HorizontalDrawingPrimitive.polygonRail) { primitive in
                             boardDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
                         }
-                        DrawPlaneToolButton {
-                            canvasCommandActionsByPane[.board]?.dispatch(.drawPlane)
-                        }
-                        .disabled(project.board == nil)
                         DrawDimensionToolButton {
                             canvasCommandActionsByPane[.board]?.dispatch(.drawDimension)
                         }

@@ -1598,9 +1598,6 @@ struct HorizontalIPadProjectView: View {
                     DrawingToolButtonGroup(primitives: HorizontalDrawingPrimitive.polygonRail) { primitive in
                         boardDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
                     }
-                    DrawPlaneToolButton {
-                        boardCanvasActions?.dispatch(.drawPlane)
-                    }
                     // Pouring automatically leaves the button nothing to do;
                     // Settings turns it off again.
                     if !updatesPlanesAutomatically {
