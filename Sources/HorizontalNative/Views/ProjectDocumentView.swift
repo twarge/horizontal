@@ -667,9 +667,6 @@ struct ProjectWorkspaceView: View {
     /// block opened from a block symbol, with the sheet it was opened from,
     /// so Leave Block goes back there.
     @State private var blockTrail: [BlockTrailStep] = []
-    /// The tool rail's New Block prompt.
-    @State private var isNamingNewBlock = false
-    @State private var newBlockName = ""
     /// The block symbol editor wrote the symbol since the sheets were baked.
     @State private var blockSymbolNeedsReload = false
     @State private var annotatePopoverPresented = false
@@ -1140,18 +1137,6 @@ struct ProjectWorkspaceView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(schematicEditMessage ?? "")
-            }
-            .alert("New Block", isPresented: $isNamingNewBlock) {
-                TextField("Name", text: $newBlockName)
-                Button("Add") {
-                    let name = newBlockName.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !name.isEmpty, let blockID = addBlock(named: name) {
-                        navigatorSelection = .blockSymbol(blockID)
-                    }
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("A block is a schematic of its own that other sheets use through its symbol, as many times as they like.")
             }
             .alert("Could Not Draw That", isPresented: projectEditErrorPresented) {
                 Button("OK", role: .cancel) {}
@@ -2384,8 +2369,11 @@ struct ProjectWorkspaceView: View {
                             choices: placeBlockChoices,
                             onPlace: { placeBlock($0) },
                             onNewBlock: {
-                                newBlockName = "Channel"
-                                isNamingNewBlock = true
+                                // As the navigator's New Block: named for
+                                // now, its symbol shown to draw.
+                                if let blockID = addBlock(named: project.newBlockName) {
+                                    navigatorSelection = .blockSymbol(blockID)
+                                }
                             }
                         )
                         .disabled(selectedSchematic == nil)

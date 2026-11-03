@@ -101,6 +101,20 @@ struct HorizontalProject: Identifiable {
         return url.deletingPathExtension().lastPathComponent
     }
 
+    /// The name New Block gives a block, which it is renamed from later:
+    /// "Block", or "Block 2" and up when a block already has that name.
+    var newBlockName: String {
+        let taken = Set(blocks.map { $0.displayName.localizedLowercase })
+        guard taken.contains("block") else {
+            return "Block"
+        }
+        var number = 2
+        while taken.contains("block \(number)") {
+            number += 1
+        }
+        return "Block \(number)"
+    }
+
     static func load(from url: URL) throws -> HorizontalProject {
         try load(from: url, visitedProjectURLs: [])
     }

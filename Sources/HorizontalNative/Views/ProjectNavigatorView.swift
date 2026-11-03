@@ -66,25 +66,13 @@ struct ProjectNavigatorView: View {
 
     @State private var renameTarget: SheetRenameTarget?
     @State private var renameDraft = ""
-    @State private var blockNameTarget: BlockNameTarget?
+    /// The block the Rename Block prompt names.
+    @State private var renamingBlockID: String?
     @State private var blockNameDraft = ""
     /// The frames the project's base pools hold, for the Frame menu; read off
     /// the main thread, since it scans the pools.
     @State private var basePoolFrames: [HorizontalSheetFrameOption] = []
     @ObservedObject private var poolRegistry = HorizontalPoolRegistry.shared
-
-    /// What the block name prompt names: a block to add, or one to rename.
-    private enum BlockNameTarget: Identifiable {
-        case new
-        case rename(String)
-
-        var id: String {
-            switch self {
-            case .new: "new"
-            case .rename(let blockID): blockID
-            }
-        }
-    }
 
     private struct SheetRenameTarget: Identifiable {
         var schematicURL: URL
@@ -192,20 +180,9 @@ struct ProjectNavigatorView: View {
                         .onMove(perform: sheetMoveHandler(orderedIDs: schematic.schematic.sheets.map(\.id), schematicURL: schematic.schematic.url))
                     }
                 } header: {
-                    HStack {
-                        Text("Blocks")
-                        Spacer()
-                        if allowsSheetEditing, allowsBlockEditing {
-                            Button {
-                                beginNamingBlock(.new)
-                            } label: {
-                                Image(systemName: "plus")
-                            }
-                            .buttonStyle(.borderless)
-                            .help("New Block")
-                            .accessibilityLabel("New Block")
-                        }
-                    }
+                    // New Sheet and New Block are in a block's context menu,
+                    // the Schematic row's among them.
+                    Text("Blocks")
                 }
             }
 
@@ -272,14 +249,10 @@ struct ProjectNavigatorView: View {
             Button("Rename") { commitRename() }
             Button("Cancel", role: .cancel) { renameTarget = nil }
         }
-        .alert(blockNameTitle, isPresented: blockNameAlertPresented) {
+        .alert("Rename Block", isPresented: blockRenameAlertPresented) {
             TextField("Name", text: $blockNameDraft)
-            Button(blockNameTarget.map { if case .new = $0 { "Add" } else { "Rename" } } ?? "OK") { commitBlockName() }
-            Button("Cancel", role: .cancel) { blockNameTarget = nil }
-        } message: {
-            if case .new? = blockNameTarget {
-                Text("A block is a schematic of its own that other sheets use through its symbol, as many times as they like.")
-            }
+            Button("Rename") { commitBlockRename() }
+            Button("Cancel", role: .cancel) { renamingBlockID = nil }
         }
         .task(id: allowsSheetEditing ? [projectPoolURL.path] + poolRegistry.pools.map(\.url.path) : []) {
             guard allowsSheetEditing else {
@@ -352,7 +325,8 @@ struct ProjectNavigatorView: View {
             }
             .disabled(block.symbolFilename?.isEmpty != false)
             Button("Rename Block…") {
-                beginNamingBlock(.rename(block.uuid))
+                blockNameDraft = block.displayName
+                renamingBlockID = block.uuid
             }
             Divider()
         }
@@ -360,8 +334,12 @@ struct ProjectNavigatorView: View {
             .sheet(blockID: block.uuid, sheetID: $0)
         }
         if allowsBlockEditing {
-            Button("New Block…") {
-                beginNamingBlock(.new)
+            // Named for now, and renamed from Rename Block. Horizon selects
+            // the block it made; its symbol is what to draw first.
+            Button("New Block") {
+                if let blockID = onAddBlock(project.newBlockName) {
+                    selection = .blockSymbol(blockID)
+                }
             }
         }
         if allowsBlockEditing, !block.isTop {
@@ -382,51 +360,26 @@ struct ProjectNavigatorView: View {
         }
     }
 
-    private func beginNamingBlock(_ target: BlockNameTarget) {
-        switch target {
-        case .new:
-            blockNameDraft = "Channel"
-        case .rename(let blockID):
-            blockNameDraft = project.blocks.first { $0.uuid == blockID }?.displayName ?? ""
-        }
-        blockNameTarget = target
-    }
-
-    private var blockNameTitle: String {
-        if case .rename? = blockNameTarget { return "Rename Block" }
-        return "New Block"
-    }
-
-    private var blockNameAlertPresented: Binding<Bool> {
+    private var blockRenameAlertPresented: Binding<Bool> {
         Binding {
-            blockNameTarget != nil
+            renamingBlockID != nil
         } set: { presented in
             if !presented {
-                blockNameTarget = nil
+                renamingBlockID = nil
             }
         }
     }
 
-    private func commitBlockName() {
-        guard let target = blockNameTarget else {
+    private func commitBlockRename() {
+        guard let blockID = renamingBlockID else {
             return
         }
-        blockNameTarget = nil
+        renamingBlockID = nil
         let name = blockNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else {
+        guard !name.isEmpty, name != project.blocks.first(where: { $0.uuid == blockID })?.displayName else {
             return
         }
-        switch target {
-        case .new:
-            // Horizon selects the block it made; its symbol is what to draw first.
-            if let blockID = onAddBlock(name) {
-                selection = .blockSymbol(blockID)
-            }
-        case .rename(let blockID):
-            if name != project.blocks.first(where: { $0.uuid == blockID })?.displayName {
-                onRenameBlock(blockID, name)
-            }
-        }
+        onRenameBlock(blockID, name)
     }
 
     /// Horizon's Add Sheet: a page after the last, which is then shown.
