@@ -1389,7 +1389,7 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         planeFragmentOutlines = planeFragmentOutlines.filter { keys.contains($0.key.fragmentKey) }
     }
 
-    func invalidate(preservesMetalScene: Bool = false) {
+    func invalidate() {
         if let allSelectablesKey {
             previousAllSelectables = (allSelectablesKey, allSelectablesValue)
         }
@@ -1414,24 +1414,22 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         visibleRenderLayersValue = []
         metalRenderLayersKey = nil
         metalRenderLayersValue = []
-        if !preservesMetalScene {
-            // Plane tessellation deliberately survives: its keys are content
-            // addresses, so a fill that changed cannot be served a stale
-            // triangulation, and one that did not change should not have to be
-            // re-tessellated. Dropping it here is what made the planes blink out
-            // on every commit — a move does not touch a single fragment, but the
-            // fills rendered empty until the background pass caught up.
-            // `retainPlaneFragments` evicts what is genuinely gone.
-            if let elementBucketsKey {
-                previousElementBuckets = (elementBucketsKey, elementBucketsValue)
-            }
-            if let concatenatedLineBatchKey {
-                previousConcatenatedLineBatch = (concatenatedLineBatchKey, concatenatedLineBatchValue)
-            }
-            elementBucketsKey = nil
-            elementBucketsValue = BoardMetalElementBuckets()
-            concatenatedLineBatchKey = nil
-            concatenatedLineBatchValue = .empty
+        // Plane tessellation deliberately survives: its keys are content
+        // addresses, so a fill that changed cannot be served a stale
+        // triangulation, and one that did not change should not have to be
+        // re-tessellated. Dropping it here is what made the planes blink out
+        // on every commit — a move does not touch a single fragment, but the
+        // fills rendered empty until the background pass caught up.
+        // `retainPlaneFragments` evicts what is genuinely gone.
+        if let elementBucketsKey {
+            previousElementBuckets = (elementBucketsKey, elementBucketsValue)
         }
+        if let concatenatedLineBatchKey {
+            previousConcatenatedLineBatch = (concatenatedLineBatchKey, concatenatedLineBatchValue)
+        }
+        elementBucketsKey = nil
+        elementBucketsValue = BoardMetalElementBuckets()
+        concatenatedLineBatchKey = nil
+        concatenatedLineBatchValue = .empty
     }
 }
