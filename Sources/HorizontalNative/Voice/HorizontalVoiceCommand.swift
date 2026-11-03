@@ -460,9 +460,10 @@ enum HorizontalVoiceCommandParser {
 
     /// "the top layer", "top side", "bottom silkscreen", "top routing", "top
     /// copper", "all layers", "copper only", "clean view". A bare side is the
-    /// placement view — copper and courtyard — which is what one looks at
-    /// when working on that side; on its own it needs a layer word or a show
-    /// verb in front, so a net that happens to be called TOP is still a name.
+    /// placement view — copper, assembly and courtyard — which is what one
+    /// looks at when working on that side; on its own it needs a layer word or
+    /// a show verb in front, so a net that happens to be called TOP is still a
+    /// name.
     static func layerRequest(in text: String, afterShowVerb: Bool = false) -> HorizontalBoardLayerPreset? {
         if ["flip", "flip the board", "flip the view", "flip board", "flip view", "flip it", "turn the board over", "turn it over", "other side", "the other side"].contains(text) {
             return .flipView

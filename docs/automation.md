@@ -644,8 +644,8 @@ sheet", "last page"), clear ("clear the highlight", "clear the selection",
 "deselect"), undo and redo.
 
 Layers and sides are two different things. "The bottom layer" is that side's
-layers — the bottom placement view, copper and courtyard — seen from where you
-are. "The bottom" or "the bottom of the board" is the side itself: the same
+layers — the bottom placement view, copper, assembly and courtyard — seen from
+where you are. "The bottom" or "the bottom of the board" is the side itself: the same
 placement view, but seen from below, so the board canvas mirrors, the way a
 board does when you turn it over; `CanvasViewport.mirrored` runs x the other
 way and everything that maps world to view — the transform, the framing, the

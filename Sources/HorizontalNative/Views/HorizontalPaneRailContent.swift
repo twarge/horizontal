@@ -2091,7 +2091,7 @@ struct BoardDisplayPresetButtons: View {
 
             Button("Place", action: placement)
                 .frame(width: 74)
-                .help("\(title) placement: copper and courtyard")
+                .help("\(title) placement: copper, assembly, and courtyard")
 
             Button("Route", action: routing)
                 .frame(width: 74)
