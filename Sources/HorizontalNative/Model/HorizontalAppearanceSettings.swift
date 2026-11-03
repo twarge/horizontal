@@ -342,12 +342,13 @@ struct HorizontalCanvasPalette {
         HorizontalBoardLayers.topPackage: rgb(0.5, 0.5, 0.5),
         HorizontalBoardLayers.topPaste: rgb(0.8, 0.8, 0.8),
         HorizontalBoardLayers.topSilkscreen: rgb(0.9, 0.9, 0.9),
-        // Mask layers get hues no copper layer uses. Horizon's (1, .5, .5) is
-        // exactly what red copper at the 60% default layer opacity becomes over
-        // a white background, so in the light theme a mask opening inside a
-        // copper ring drew in the copper's own colour; the old bottom mask was
-        // a green on green.
-        HorizontalBoardLayers.topMask: rgb(0.7, 0.3, 0.9),
+        // The mask layers are a light grey, which no copper layer uses and
+        // which reads on both backgrounds. Horizon's (1, .5, .5) is exactly
+        // what red copper at the 60% default layer opacity becomes over a
+        // white background, so in the light theme a mask opening inside a
+        // copper ring drew in the copper's own colour; Horizon's bottom mask
+        // was a green on green.
+        HorizontalBoardLayers.topMask: rgb(0.75, 0.75, 0.75),
         HorizontalBoardLayers.topCopper: rgb(1, 0, 0),
         HorizontalBoardLayers.in1Copper: innerCopper(HorizontalBoardLayers.in1Copper),
         HorizontalBoardLayers.in2Copper: innerCopper(HorizontalBoardLayers.in2Copper),
@@ -358,7 +359,7 @@ struct HorizontalCanvasPalette {
         HorizontalBoardLayers.in7Copper: innerCopper(HorizontalBoardLayers.in7Copper),
         HorizontalBoardLayers.in8Copper: innerCopper(HorizontalBoardLayers.in8Copper),
         HorizontalBoardLayers.bottomCopper: rgb(0, 0.5, 0),
-        HorizontalBoardLayers.bottomMask: rgb(0.3, 0.7, 1),
+        HorizontalBoardLayers.bottomMask: rgb(0.75, 0.75, 0.75),
         HorizontalBoardLayers.bottomSilkscreen: rgb(0.9, 0.9, 0.9),
         HorizontalBoardLayers.bottomPaste: rgb(0.8, 0.8, 0.8),
         HorizontalBoardLayers.bottomPackage: rgb(0.5, 0.5, 0.5),
@@ -382,7 +383,7 @@ struct HorizontalCanvasPalette {
     /// Outline Notes, text drawn in the outline's olive; paste goes to a mid
     /// grey that still lets the copper show through, the user layers' pale
     /// cyan becomes a deep teal and the outline's olive darkens.
-    /// Copper, the masks and the 0.5 grey package layers read on either
+    /// Copper, the grey masks and the 0.5 grey package layers read on either
     /// background and stay as they are.
     private static let lightLayerColors: [Int: Color] = darkLayerColors.merging([
         HorizontalBoardLayers.topNotes: rgb(0, 0, 0),
