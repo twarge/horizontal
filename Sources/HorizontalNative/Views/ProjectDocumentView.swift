@@ -690,6 +690,7 @@ struct ProjectWorkspaceView: View {
     @State private var rulesResultsState: HorizontalBoardRulesResultState?
     /// The copper clearance check the results sidebar is waiting on.
     @State private var clearanceCheckTask: Task<Void, Never>?
+    @State private var schematicCheckTask: Task<Void, Never>?
     @State private var exportSettings: HorizontalExportSettings
     @State private var exportStatus: HorizontalExportStatus?
     @State private var isExporting = false
@@ -1334,7 +1335,9 @@ struct ProjectWorkspaceView: View {
                 onShowFinding: showClearanceFinding,
                 onShowRule: { finding in
                     showBoardRulesWindow(focus: HorizontalBoardRuleFocus(kind: finding.ruleKind, ruleID: finding.ruleID))
-                }
+                },
+                onShowSchematicFinding: showSchematicFinding,
+                onShowSchematicRule: { showBoardRulesWindow(focus: .schematicConnectivity()) }
             )
         }
     }
@@ -1934,20 +1937,32 @@ struct ProjectWorkspaceView: View {
         #endif
     }
 
-    /// The board's rules as `archive` has them, written out to compare.
+    /// The board's rules and the schematic's as `archive` has them, written
+    /// out to compare.
     private func boardRulesData(in archive: HorizontalProjectArchive) -> Data? {
-        (try? HorizontalProjectJSONApplicator.boardRules(in: project, from: archive))
-            .flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) }
+        guard let board = try? HorizontalProjectJSONApplicator.boardRules(in: project, from: archive) else {
+            return nil
+        }
+        let schematic = (try? HorizontalProjectJSONApplicator.schematicRules(in: project, from: archive)) ?? [:]
+        return try? JSONSerialization.data(withJSONObject: ["board": board, "schematic": schematic], options: [.sortedKeys])
     }
 
-    /// An open rules window shows the board's rules as they are now, where
-    /// they differ from `previous`: an undo, or an automation client's edit.
+    /// The schematic's rules as `archive` has them; nil where there is no
+    /// schematic to keep them in.
+    private func schematicRules(in archive: HorizontalProjectArchive) -> HorizontalSchematicRules? {
+        guard project.schematic != nil else { return nil }
+        return HorizontalSchematicRules(json: try? HorizontalProjectJSONApplicator.schematicRules(in: project, from: archive))
+    }
+
+    /// An open rules window shows the board's rules as they are now, and the
+    /// schematic's, where they differ from `previous`: an undo, or an
+    /// automation client's edit.
     private func refreshBoardRulesWindow(ifChangedFrom previous: Data?) {
         guard let boardRulesWindowController, boardRulesData(in: document.archive) != previous,
               let rules = try? HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive) else {
             return
         }
-        boardRulesWindowController.refresh(rules: rules, board: project.board)
+        boardRulesWindowController.refresh(rules: rules, board: project.board, schematicRules: schematicRules(in: document.archive))
     }
 
     /// `installsArchive` is false only for a read-only document reloading from
@@ -2289,7 +2304,10 @@ struct ProjectWorkspaceView: View {
                                 onRevealPoolSymbol: { symbolID, target in
                                     revealPoolItem(.symbol, uuid: symbolID, in: target)
                                 },
-                                syncRevision: schematicSyncRevision
+                                syncRevision: schematicSyncRevision,
+                                ruleMarkers: HorizontalCanvasWarning.markers(
+                                    schematicFindings: rulesResultsState?.schematicFindings ?? [], sheetID: selectedSchematic.sheet.id
+                                )
                             )
                         }
                         .overlay(alignment: .top) {
@@ -2479,7 +2497,8 @@ struct ProjectWorkspaceView: View {
                                 canRevealPoolPackages: true,
                                 onRevealPoolPackage: { packageID, target in
                                     revealPoolItem(.package, uuid: packageID, in: target)
-                                }
+                                },
+                                ruleMarkers: HorizontalCanvasWarning.markers(clearanceFindings: rulesResultsState?.clearanceFindings ?? [])
                             )
                             .id(boardLoadID)
                         }
@@ -3153,6 +3172,8 @@ struct ProjectWorkspaceView: View {
                 isReadOnly: isReadOnly,
                 onRulesChange: applyEditedBoardRules,
                 onCheckAndApply: checkAndApplyBoardRules,
+                schematicRules: schematicRules(in: document.archive),
+                onSchematicRulesChange: applyEditedSchematicRules,
                 focus: focus
             )
         } catch {
@@ -3188,6 +3209,49 @@ struct ProjectWorkspaceView: View {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(250))
             canvasCommandActionsByPane[.board]?.frameWorldRect?(region)
+        }
+    }
+
+    /// Where a schematic finding is: its sheet, framed on it, with its net or
+    /// part highlighted. The sheet comes up first when another shows, and is
+    /// framed once it has.
+    private func showSchematicFinding(_ finding: HorizontalSchematicRuleFinding) {
+        guard let place = finding.place, let region = finding.region else {
+            return
+        }
+        highlightSelectedNet(Set([finding.netID].compactMap { $0 }))
+        highlightSelectedComponents(Set([finding.componentID].compactMap { $0 }))
+        let showing: String? = switch navigatorSelection {
+        case .sheet(_, let sheetID), .standaloneSheet(let sheetID): sheetID
+        default: nil
+        }
+        if visiblePanes.contains(.schematic), showing?.caseInsensitiveCompare(place.sheetID) == .orderedSame,
+           let frame = canvasCommandActionsByPane[.schematic]?.frameWorldRect {
+            frame(region)
+            return
+        }
+        visiblePanes.insert(.schematic)
+        navigatorSelection = place.blockID.map { .sheet(blockID: $0, sheetID: place.sheetID) } ?? .standaloneSheet(place.sheetID)
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            canvasCommandActionsByPane[.schematic]?.frameWorldRect?(region)
+        }
+    }
+
+    /// The rules window's change to the schematic's rules: written into the
+    /// top schematic, one undoable edit, and the schematic checked again.
+    private func applyEditedSchematicRules(_ rules: HorizontalSchematicRules) {
+        guard !isReadOnly else {
+            return
+        }
+        do {
+            var archive = document.archive
+            let current = try HorizontalProjectJSONApplicator.schematicRules(in: project, from: archive)
+            try HorizontalProjectJSONApplicator.apply(schematicRules: rules.json(updating: current), in: project, to: &archive)
+            // The window shows what it sent already.
+            try applyLiveArchive(archive, actionName: "Change Schematic Rules", refreshesRulesWindow: false)
+        } catch {
+            recordArchiveApplyFailure(error)
         }
     }
 
@@ -3293,7 +3357,7 @@ struct ProjectWorkspaceView: View {
         boardEditRevision += 1
         refreshRulesResults()
         if refreshesWindow {
-            boardRulesWindowController?.refresh(rules: rules, board: project.board)
+            boardRulesWindowController?.refresh(rules: rules, board: project.board, schematicRules: schematicRules(in: document.archive))
         }
     }
 
@@ -3409,17 +3473,51 @@ struct ProjectWorkspaceView: View {
         guard project.board != nil, let rules = try? HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive) else {
             clearanceCheckTask?.cancel()
             clearanceCheckTask = nil
+            schematicCheckTask?.cancel()
+            schematicCheckTask = nil
             rulesResultsState = nil
             return
         }
         let context = HorizontalBoardRuleContext(board: project.board, netClasses: selectedSchematic?.sheet.netClasses ?? [])
         rulesResultsState = HorizontalBoardRulesResultState(
-            ruleTitle: "All Rules",
+            ruleTitle: "Design Rules",
             messages: HorizontalBoardRulesValidator.validateAll(rules: rules, context: context),
             checkedAt: Date(),
-            clearanceFindings: rulesResultsState?.clearanceFindings
+            clearanceFindings: rulesResultsState?.clearanceFindings,
+            schematicFindings: rulesResultsState?.schematicFindings
         )
         scheduleClearanceCheck()
+        scheduleSchematicCheck()
+    }
+
+    /// The schematic's Connectivity rule, in the background, on the design as
+    /// the archive now holds it, for the results sidebar, its badge and the
+    /// sheets' markers; as the clearance check, it waits for edits to settle
+    /// and keeps the last findings up until the new ones are in.
+    private func scheduleSchematicCheck() {
+        schematicCheckTask?.cancel()
+        guard rulesResultsState != nil, let rules = schematicRules(in: document.archive) else {
+            schematicCheckTask = nil
+            // No schematic, nothing to find.
+            rulesResultsState?.schematicFindings = []
+            rulesResultsState?.isCheckingSchematic = false
+            return
+        }
+        rulesResultsState?.isCheckingSchematic = true
+        let checked = project
+        let archive = document.archive
+        schematicCheckTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled,
+                  let findings = await HorizontalSchematicRulesCheck.backgroundFindings(project: checked, archive: archive, rules: rules),
+                  !Task.isCancelled else {
+                return
+            }
+            rulesResultsState?.schematicFindings = findings
+            rulesResultsState?.isCheckingSchematic = false
+            rulesResultsState?.checkedAt = Date()
+            schematicCheckTask = nil
+        }
     }
 
     /// The copper clearance checks, in the background, on the board as it

@@ -1,9 +1,9 @@
 import SwiftUI
 
 /// The rules results sidebar: what the last run of every rules check found —
-/// the rules' own structure and the board's copper against the clearance
-/// rules — which the rules window's Apply & Check runs and the document keeps
-/// up to date as the board changes. macOS shows it as the window's right
+/// the rules' own structure, the schematic's connectivity and the board's
+/// copper against the clearance rules — which the rules window's Apply &
+/// Check runs and the document keeps up to date as the design changes. macOS shows it as the window's right
 /// sidebar, the iPad as its right-hand panel.
 struct HorizontalRulesResultsSidebarView: View {
     var result: HorizontalBoardRulesResultState?
@@ -17,10 +17,14 @@ struct HorizontalRulesResultsSidebarView: View {
     var onShowFinding: (HorizontalClearanceFinding) -> Void = { _ in }
     /// Opens the rules window at the rule a finding is against.
     var onShowRule: (HorizontalClearanceFinding) -> Void = { _ in }
+    /// Shows where a schematic finding is on its sheet.
+    var onShowSchematicFinding: (HorizontalSchematicRuleFinding) -> Void = { _ in }
+    /// Opens the rules window at the schematic's Connectivity rule.
+    var onShowSchematicRule: () -> Void = {}
 
     var body: some View {
         List {
-            Section("Rules Results") {
+            Section {
                 if let result {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 4) {
@@ -31,10 +35,12 @@ struct HorizontalRulesResultsSidebarView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        if result.isCheckingClearance {
+                        if result.isCheckingClearance || result.isCheckingSchematic {
                             ProgressView()
                                 .controlSize(.small)
-                                .help("Checking the board's copper against the clearance rules")
+                                .help(result.isCheckingClearance
+                                      ? "Checking the board's copper against the clearance rules"
+                                      : "Checking the schematic's connectivity")
                         }
                         Button(action: onRunChecks) {
                             Image(systemName: "arrow.clockwise")
@@ -56,12 +62,19 @@ struct HorizontalRulesResultsSidebarView: View {
             }
 
             if let result {
-                Section("Rules") {
-                    if result.messages.isEmpty {
-                        Label("No structural issues", systemImage: "checkmark.seal")
-                            .foregroundStyle(.green)
-                            .padding(.vertical, 4)
-                    } else {
+                if result.hasNoIssues {
+                    Section {
+                        Label {
+                            Text("No issues")
+                        } icon: {
+                            Image(systemName: "checkmark.seal")
+                                .foregroundStyle(.green)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                if !result.messages.isEmpty {
+                    Section("Rules") {
                         ForEach(result.messages) { message in
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: message.level.iconName)
@@ -79,25 +92,35 @@ struct HorizontalRulesResultsSidebarView: View {
                         }
                     }
                 }
-                if let findings = result.clearanceFindings {
-                    Section(findings.isEmpty ? "Clearance" : "Clearance (\(findings.count))") {
-                        if findings.isEmpty {
-                            Label("No copper closer than the rules allow", systemImage: "checkmark.seal")
-                                .foregroundStyle(.green)
+                if let findings = result.schematicFindings, !findings.isEmpty {
+                    Section("Schematic (\(findings.count))") {
+                        ForEach(findings) { finding in
+                            HorizontalSchematicRuleFindingRow(finding: finding, onShow: onShowSchematicFinding)
                                 .padding(.vertical, 4)
-                        } else {
-                            ForEach(findings) { finding in
-                                HorizontalClearanceFindingRow(finding: finding, onShow: onShowFinding)
-                                    .padding(.vertical, 4)
-                                    .contextMenu {
-                                        Button("Show on Board") {
-                                            onShowFinding(finding)
-                                        }
-                                        Button(finding.ruleID == nil ? "Show Rules" : "Show Rule") {
-                                            onShowRule(finding)
+                                .contextMenu {
+                                    if finding.place != nil {
+                                        Button("Show on Schematic") {
+                                            onShowSchematicFinding(finding)
                                         }
                                     }
-                            }
+                                    Button("Show Rule", action: onShowSchematicRule)
+                                }
+                        }
+                    }
+                }
+                if let findings = result.clearanceFindings, !findings.isEmpty {
+                    Section("Clearance (\(findings.count))") {
+                        ForEach(findings) { finding in
+                            HorizontalClearanceFindingRow(finding: finding, onShow: onShowFinding)
+                                .padding(.vertical, 4)
+                                .contextMenu {
+                                    Button("Show on Board") {
+                                        onShowFinding(finding)
+                                    }
+                                    Button(finding.ruleID == nil ? "Show Rules" : "Show Rule") {
+                                        onShowRule(finding)
+                                    }
+                                }
                         }
                     }
                 }
@@ -111,6 +134,55 @@ struct HorizontalRulesResultsSidebarView: View {
             Rectangle()
                 .fill(.primary.opacity(0.1))
                 .frame(width: 0.7)
+        }
+    }
+}
+
+extension HorizontalBoardRulesResultState {
+    /// Every check has come back and none found anything: the rules hold
+    /// together, and the schematic and clearance checks have each finished
+    /// at least once with no findings. Until their first runs are in, the
+    /// sidebar says nothing rather than call a design clear that hasn't been
+    /// checked.
+    var hasNoIssues: Bool {
+        messages.isEmpty && clearanceFindings?.isEmpty == true && schematicFindings?.isEmpty == true
+    }
+}
+
+/// One schematic finding, as the rules results sidebar lists it: what Horizon
+/// says and which sheet it is on. With a place, a click shows it there.
+struct HorizontalSchematicRuleFindingRow: View {
+    var finding: HorizontalSchematicRuleFinding
+    var onShow: ((HorizontalSchematicRuleFinding) -> Void)?
+
+    var body: some View {
+        let level: HorizontalBoardRuleCheckMessage.Level = finding.isError ? .error : .warning
+        let label = HStack(alignment: .top, spacing: 8) {
+            Image(systemName: level.iconName)
+                .foregroundStyle(level.color)
+                .frame(width: 18)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(finding.message)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(finding.placeDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        if let onShow, finding.place != nil {
+            Button {
+                onShow(finding)
+            } label: {
+                label
+            }
+            .buttonStyle(.plain)
+            .help("Show it on the schematic")
+        } else {
+            label
         }
     }
 }

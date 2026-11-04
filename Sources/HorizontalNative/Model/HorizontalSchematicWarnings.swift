@@ -3,7 +3,12 @@ import Foundation
 struct HorizontalCanvasWarning: Identifiable, Hashable {
     var position: HorizontalPoint
     var messages: [String]
+    /// Those of `messages` that are errors, a rule check's failures: the
+    /// marker is drawn red when there is one.
+    var errorMessages: Set<String> = []
     var id: String { HorizontalCanvasModeSupport.pointKey(position) }
+
+    var isError: Bool { !errorMessages.isEmpty }
 }
 
 struct HorizontalSchematicWarningContext: Hashable {
@@ -186,29 +191,9 @@ enum HorizontalSchematicWarnings {
             if !points.isEmpty { warn(HorizontalRect(points: points).center, "Missing ports: " + names.joined(separator: " "), title: "Missing ports") }
         }
 
-        // Connected components retain distinct coincident pin and junction nodes.
-        var neighbors: [HorizontalSchematicEndpoint: Set<HorizontalSchematicEndpoint>] = [:]
-        var positions: [HorizontalSchematicEndpoint: HorizontalPoint] = [:]
-        var netIDs: [HorizontalSchematicEndpoint: String] = [:]
         func endpoint(_ stored: HorizontalSchematicEndpoint?, at point: HorizontalPoint) -> HorizontalSchematicEndpoint {
             stored ?? junctionAt[key(point)].map { .junction($0) }
                 ?? .junction("coordinate:\(key(point))")
-        }
-        for (id, point) in sheet.junctions {
-            let node = HorizontalSchematicEndpoint.junction(id)
-            positions[node] = point
-            netIDs[node] = sheet.junctionNetIDs[id]
-        }
-        var linesByNode: [HorizontalSchematicEndpoint: [String]] = [:]
-        for line in sheet.netLines {
-            let from = endpoint(line.schematicFrom, at: line.from)
-            let to = endpoint(line.schematicTo, at: line.to)
-            neighbors[from, default: []].insert(to)
-            neighbors[to, default: []].insert(from)
-            linesByNode[from, default: []].append(line.id)
-            positions[from] = line.from
-            positions[to] = line.to
-            if let netID = line.netID { netIDs[from] = netID; netIDs[to] = netID }
         }
         struct Segment {
             var position: HorizontalPoint
@@ -218,7 +203,6 @@ enum HorizontalSchematicWarnings {
             var lines: [String]
         }
         var segments: [Segment] = []
-        var visited = Set<HorizontalSchematicEndpoint>()
 
         // What names a net on each node, for wiring that joins nets the block
         // keeps apart: a pin's or port's connection, a junction's net, a label
@@ -287,27 +271,12 @@ enum HorizontalSchematicWarnings {
                      title: "Wired to another net", net: seed.netID, component: seed.component, pin: seed.pin)
             }
         }
-        let labelNodes = Set(sheet.netLabels.map { endpoint($0.junctionID.map { .junction($0) }, at: $0.position) })
-        let powerNodes = Set(sheet.powerSymbols.map { HorizontalSchematicEndpoint.junction($0.junctionID) })
-        // Each node's description once, rather than twice per comparison.
-        let roots = positions.keys.map { (String(describing: $0), $0) }.sorted { $0.0 < $1.0 }.map(\.1)
-        for root in roots {
-            guard !visited.contains(root) else { continue }
-            var pending = [root]
-            var nodes = Set<HorizontalSchematicEndpoint>()
-            while let node = pending.popLast() {
-                guard nodes.insert(node).inserted else { continue }
-                pending.append(contentsOf: neighbors[node] ?? [])
-            }
-            visited.formUnion(nodes)
-            warnJoinedNets(nodes)
-            guard let netID = nodes.compactMap({ netIDs[$0] }).sorted().first else { continue }
-            let labelled = !nodes.isDisjoint(with: labelNodes)
-            let power = !nodes.isDisjoint(with: powerNodes)
-            let ripper = nodes.contains { if case .busRipper = $0 { return true }; return false }
-            segments.append(.init(position: positions[root] ?? .zero, netID: netID,
-                                  hasLabel: labelled || power || ripper, hasPower: power,
-                                  lines: Set(nodes.flatMap { linesByNode[$0] ?? [] }).sorted()))
+        for segment in netSegments(sheet) {
+            warnJoinedNets(segment.nodes)
+            guard let netID = segment.netID else { continue }
+            segments.append(.init(position: segment.position, netID: netID,
+                                  hasLabel: segment.hasLabel || segment.hasPowerSymbol || segment.hasBusRipper,
+                                  hasPower: segment.hasPowerSymbol, lines: segment.lines))
         }
         let duplicateNames = Set(Dictionary(grouping: sheet.netDetails.values.filter { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }, by: {
             $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -342,4 +311,93 @@ enum HorizontalSchematicWarnings {
         }
         return found
     }
+
+    /// The sheet's net segments, as Horizon's `Sheet::analyze_net_segments`
+    /// gives them: each stretch of wiring the wires join, every junction one
+    /// whether or not a wire reaches it, with the net it is on and what stands
+    /// on it. Coincident pin and junction nodes stay apart, as the wires keep
+    /// them; each segment is walked from its first node by description, which
+    /// is where a warning about it is drawn.
+    static func netSegments(_ sheet: HorizontalSchematicSheet) -> [HorizontalSchematicNetSegment] {
+        func key(_ point: HorizontalPoint) -> String { HorizontalCanvasModeSupport.pointKey(point) }
+        // The junction at a point, the first `junctions` gives where several
+        // share one, as a scan of it would find.
+        var junctionAt = [String: String]()
+        for (id, point) in sheet.junctions where junctionAt[key(point)] == nil {
+            junctionAt[key(point)] = id
+        }
+        func endpoint(_ stored: HorizontalSchematicEndpoint?, at point: HorizontalPoint) -> HorizontalSchematicEndpoint {
+            stored ?? junctionAt[key(point)].map { .junction($0) }
+                ?? .junction("coordinate:\(key(point))")
+        }
+        var neighbors: [HorizontalSchematicEndpoint: Set<HorizontalSchematicEndpoint>] = [:]
+        var positions: [HorizontalSchematicEndpoint: HorizontalPoint] = [:]
+        var netIDs: [HorizontalSchematicEndpoint: String] = [:]
+        for (id, point) in sheet.junctions {
+            let node = HorizontalSchematicEndpoint.junction(id)
+            positions[node] = point
+            netIDs[node] = sheet.junctionNetIDs[id]
+        }
+        var linesByNode: [HorizontalSchematicEndpoint: [String]] = [:]
+        for line in sheet.netLines {
+            let from = endpoint(line.schematicFrom, at: line.from)
+            let to = endpoint(line.schematicTo, at: line.to)
+            neighbors[from, default: []].insert(to)
+            neighbors[to, default: []].insert(from)
+            linesByNode[from, default: []].append(line.id)
+            positions[from] = line.from
+            positions[to] = line.to
+            if let netID = line.netID { netIDs[from] = netID; netIDs[to] = netID }
+        }
+        var labelsByNode = [HorizontalSchematicEndpoint: [HorizontalSchematicNetLabel]]()
+        for label in sheet.netLabels {
+            labelsByNode[endpoint(label.junctionID.map { .junction($0) }, at: label.position), default: []].append(label)
+        }
+        let powerNodes = Set(sheet.powerSymbols.map { HorizontalSchematicEndpoint.junction($0.junctionID) })
+        var segments = [HorizontalSchematicNetSegment]()
+        var visited = Set<HorizontalSchematicEndpoint>()
+        // Each node's description once, rather than twice per comparison.
+        let roots = positions.keys.map { (String(describing: $0), $0) }.sorted { $0.0 < $1.0 }.map(\.1)
+        for root in roots {
+            guard !visited.contains(root) else { continue }
+            var pending = [root]
+            var nodes = Set<HorizontalSchematicEndpoint>()
+            while let node = pending.popLast() {
+                guard nodes.insert(node).inserted else { continue }
+                pending.append(contentsOf: neighbors[node] ?? [])
+            }
+            visited.formUnion(nodes)
+            segments.append(HorizontalSchematicNetSegment(
+                nodes: nodes,
+                position: positions[root] ?? .zero,
+                netID: nodes.compactMap { netIDs[$0] }.sorted().first,
+                lines: Set(nodes.flatMap { linesByNode[$0] ?? [] }).sorted(),
+                labels: nodes.flatMap { labelsByNode[$0] ?? [] }.sorted { $0.id < $1.id },
+                hasPowerSymbol: !nodes.isDisjoint(with: powerNodes),
+                hasBusRipper: nodes.contains { if case .busRipper = $0 { return true }; return false }
+            ))
+        }
+        return segments
+    }
+}
+
+/// One of a sheet's net segments (`HorizontalSchematicWarnings.netSegments`).
+struct HorizontalSchematicNetSegment {
+    var nodes: Set<HorizontalSchematicEndpoint>
+    /// Where its walk started.
+    var position: HorizontalPoint
+    /// The net its wiring is on: the first by id where it names several.
+    var netID: String?
+    /// Its wires, by id.
+    var lines: [String]
+    /// The net labels on it.
+    var labels: [HorizontalSchematicNetLabel]
+    var hasPowerSymbol: Bool
+    var hasBusRipper: Bool
+
+    var hasLabel: Bool { !labels.isEmpty }
+
+    /// Horizon's `NetSegmentInfo::really_has_label`: a label, and neither a
+    /// power symbol nor a bus ripper, either of which names the net too.
+    var reallyHasLabel: Bool { hasLabel && !hasPowerSymbol && !hasBusRipper }
 }

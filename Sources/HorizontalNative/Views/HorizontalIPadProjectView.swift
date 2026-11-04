@@ -106,6 +106,7 @@ struct HorizontalIPadProjectView: View {
     /// panel and its badge, kept up to date as the board changes.
     @State private var rulesResultsState: HorizontalBoardRulesResultState?
     @State private var clearanceCheckTask: Task<Void, Never>?
+    @State private var schematicCheckTask: Task<Void, Never>?
     @StateObject private var boardRulesUndoTarget = HorizontalUndoTarget<JSONDictionary>()
     // The right-side slide-over (the iPad analogue of the macOS workspace's right
     // sidebar) shows one pane at a time — the selection inspector or the export panel.
@@ -734,6 +735,11 @@ struct HorizontalIPadProjectView: View {
                 onShowRule: { finding in
                     rulesFocus = HorizontalBoardRuleFocus(kind: finding.ruleKind, ruleID: finding.ruleID)
                     rulesSheetPresented = true
+                },
+                onShowSchematicFinding: showSchematicFinding,
+                onShowSchematicRule: {
+                    rulesFocus = .schematicConnectivity()
+                    rulesSheetPresented = true
                 }
             )
         }
@@ -768,6 +774,27 @@ struct HorizontalIPadProjectView: View {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(250))
             boardCanvasActions?.frameWorldRect?(region)
+        }
+    }
+
+    /// Where a schematic finding is, as on macOS: its sheet, framed on it,
+    /// with its net or part highlighted.
+    private func showSchematicFinding(_ finding: HorizontalSchematicRuleFinding) {
+        guard let place = finding.place, let region = finding.region else {
+            return
+        }
+        highlightedNetIDs = Set([finding.netID].compactMap { $0 })
+        highlightedComponentIDs = Set([finding.componentID].compactMap { $0 })
+        let selection: ProjectNavigatorSelection = place.blockID.map { .sheet(blockID: $0, sheetID: place.sheetID) }
+            ?? .standaloneSheet(place.sheetID)
+        let changesSheet = navigatorSelectionBinding.wrappedValue != selection || !visiblePanes.contains(.schematic)
+        showPane(.schematic)
+        navigatorSelectionBinding.wrappedValue = selection
+        Task { @MainActor in
+            if changesSheet {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            schematicCanvasActions?.frameWorldRect?(region)
         }
     }
 
@@ -931,7 +958,7 @@ struct HorizontalIPadProjectView: View {
                 Button {
                     rulesSheetPresented = true
                 } label: {
-                    Label("Board Rules", systemImage: "checklist")
+                    Label("Rules", systemImage: "checklist")
                 }
                 Button {
                     compactNavigatorPresented = false
@@ -984,7 +1011,7 @@ struct HorizontalIPadProjectView: View {
             Button {
                 rulesSheetPresented = true
             } label: {
-                Label("Board Rules", systemImage: "checklist")
+                Label("Rules", systemImage: "checklist")
             }
             rulesResultsButton
         }
@@ -1477,7 +1504,8 @@ struct HorizontalIPadProjectView: View {
                         moveSchematicItems(items, from: sheet.id, toSheet: targetID)
                     },
                     moveRequest: pendingSchematicMove,
-                    poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }
+                    poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
+                    ruleMarkers: HorizontalCanvasWarning.markers(schematicFindings: rulesResultsState?.schematicFindings ?? [], sheetID: sheet.id)
                 )
                 .overlay(alignment: .bottom) {
                     toolControlBar(for: schematicCanvasActions, safeAreaInsets: safeAreaInsets)
@@ -1573,7 +1601,8 @@ struct HorizontalIPadProjectView: View {
                     syncRevision: boardSyncRevision,
                     planePourRevision: planePourRevision,
                     planeFillDelivery: planeFillDelivery,
-                    poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) }
+                    poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
+                    ruleMarkers: HorizontalCanvasWarning.markers(clearanceFindings: rulesResultsState?.clearanceFindings ?? [])
                 )
                 .overlay(alignment: .bottom) {
                     toolControlBar(for: boardCanvasActions, safeAreaInsets: safeAreaInsets)
@@ -2162,6 +2191,9 @@ struct HorizontalIPadProjectView: View {
                 checkAndApplyBoardRules()
                 rulesSheetPresented = false
             },
+            schematicRules: project.schematic == nil ? nil
+                : HorizontalSchematicRules(json: try? HorizontalProjectJSONApplicator.schematicRules(in: project, from: document.archive)),
+            onSchematicRulesChange: { applyEditedSchematicRules($0) },
             rulesRevision: boardRulesRevision,
             focus: rulesFocus,
             onDone: { rulesSheetPresented = false }
@@ -2201,17 +2233,48 @@ struct HorizontalIPadProjectView: View {
               let rules = try? HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive) else {
             clearanceCheckTask?.cancel()
             clearanceCheckTask = nil
+            schematicCheckTask?.cancel()
+            schematicCheckTask = nil
             rulesResultsState = nil
             return
         }
         let context = HorizontalBoardRuleContext(board: project.board, netClasses: project.schematic?.netClasses ?? [])
         rulesResultsState = HorizontalBoardRulesResultState(
-            ruleTitle: "All Rules",
+            ruleTitle: "Design Rules",
             messages: HorizontalBoardRulesValidator.validateAll(rules: rules, context: context),
             checkedAt: Date(),
-            clearanceFindings: rulesResultsState?.clearanceFindings
+            clearanceFindings: rulesResultsState?.clearanceFindings,
+            schematicFindings: rulesResultsState?.schematicFindings
         )
         scheduleClearanceCheck()
+        scheduleSchematicCheck()
+    }
+
+    /// The schematic's Connectivity rule, in the background, as on macOS.
+    private func scheduleSchematicCheck() {
+        schematicCheckTask?.cancel()
+        guard let project, project.schematic != nil, rulesResultsState != nil else {
+            schematicCheckTask = nil
+            // No schematic, nothing to find.
+            rulesResultsState?.schematicFindings = []
+            rulesResultsState?.isCheckingSchematic = false
+            return
+        }
+        let rules = HorizontalSchematicRules(json: try? HorizontalProjectJSONApplicator.schematicRules(in: project, from: document.archive))
+        rulesResultsState?.isCheckingSchematic = true
+        let archive = document.archive
+        schematicCheckTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled,
+                  let findings = await HorizontalSchematicRulesCheck.backgroundFindings(project: project, archive: archive, rules: rules),
+                  !Task.isCancelled else {
+                return
+            }
+            rulesResultsState?.schematicFindings = findings
+            rulesResultsState?.isCheckingSchematic = false
+            rulesResultsState?.checkedAt = Date()
+            schematicCheckTask = nil
+        }
     }
 
     /// The copper clearance checks, in the background, on the board as it
@@ -2236,6 +2299,20 @@ struct HorizontalIPadProjectView: View {
             rulesResultsState?.isCheckingClearance = false
             rulesResultsState?.checkedAt = Date()
             clearanceCheckTask = nil
+        }
+    }
+
+    /// The rules cover's change to the schematic's rules, as on macOS: into
+    /// the top schematic, one undoable edit, and the schematic checked again.
+    private func applyEditedSchematicRules(_ rules: HorizontalSchematicRules) {
+        guard let project, !isReadOnly else { return }
+        do {
+            var archive = document.archive
+            let current = try HorizontalProjectJSONApplicator.schematicRules(in: project, from: archive)
+            try HorizontalProjectJSONApplicator.apply(schematicRules: rules.json(updating: current), in: project, to: &archive)
+            try applyArchiveEdit(archive, to: project, actionName: "Change Schematic Rules")
+        } catch {
+            loadError = "Couldn't save the schematic's rules: \(error.localizedDescription)"
         }
     }
 

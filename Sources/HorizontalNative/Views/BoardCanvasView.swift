@@ -557,6 +557,9 @@ struct BoardCanvasView: View {
     /// The host can show a package in a pool window (macOS project windows).
     var canRevealPoolPackages = false
     var onRevealPoolPackage: (String, HorizontalPoolRevealTarget) -> Void = { _, _ in }
+    /// The rules checks' findings, marked where they are: the clearance
+    /// check's, from the last run.
+    var ruleMarkers: [HorizontalCanvasWarning] = []
     @ObservedObject var toolSettings: HorizontalBoardToolSettings
 
     @State private var hoveredObject: HorizontalSelectableRef?
@@ -686,7 +689,8 @@ struct BoardCanvasView: View {
         modeProfile: HorizontalBoardModeProfile = .board,
         poolContext: HorizontalPoolEditorContext? = nil,
         canRevealPoolPackages: Bool = false,
-        onRevealPoolPackage: @escaping (String, HorizontalPoolRevealTarget) -> Void = { _, _ in }
+        onRevealPoolPackage: @escaping (String, HorizontalPoolRevealTarget) -> Void = { _, _ in },
+        ruleMarkers: [HorizontalCanvasWarning] = []
     ) {
         self.sourceBoard = board
         self.netClasses = netClasses
@@ -733,6 +737,7 @@ struct BoardCanvasView: View {
         self.poolContext = poolContext
         self.canRevealPoolPackages = canRevealPoolPackages
         self.onRevealPoolPackage = onRevealPoolPackage
+        self.ruleMarkers = ruleMarkers
     }
 
     private var board: HorizontalBoard {
@@ -1071,6 +1076,8 @@ struct BoardCanvasView: View {
             placesUnplacedObjectsOnTrailingEdge: appearanceSettings.shouldSwapViewControlsAndUnplacedReferences,
             selectionToolSettings: selectionToolSettings,
             selectionSelectables: boardSelectables(),
+            // Where the copper is, not where a move is taking it.
+            warnings: moveState == nil ? ruleMarkers : [],
             handlesSelectionDeletion: canDeleteSelection,
             undoManager: undoManager,
             ignoresCanvasMouseEvents: ignoresCanvasMouseEvents,

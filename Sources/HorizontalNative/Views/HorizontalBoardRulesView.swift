@@ -20,6 +20,8 @@ final class HorizontalBoardRulesWindowController: NSObject, NSWindowDelegate {
         isReadOnly: Bool,
         onRulesChange: @escaping (JSONDictionary) -> Void,
         onCheckAndApply: (() -> Void)? = nil,
+        schematicRules: HorizontalSchematicRules? = nil,
+        onSchematicRulesChange: @escaping (HorizontalSchematicRules) -> Void = { _ in },
         focus: HorizontalBoardRuleFocus? = nil
     ) {
         let rootView = HorizontalBoardRulesWindow(
@@ -30,6 +32,8 @@ final class HorizontalBoardRulesWindowController: NSObject, NSWindowDelegate {
             isReadOnly: isReadOnly,
             onRulesChange: onRulesChange,
             onCheckAndApply: onCheckAndApply,
+            schematicRules: schematicRules,
+            onSchematicRulesChange: onSchematicRulesChange,
             rulesRevision: (hostingController?.rootView.rulesRevision ?? 0) + 1,
             focus: focus
         )
@@ -42,7 +46,7 @@ final class HorizontalBoardRulesWindowController: NSObject, NSWindowDelegate {
             // stays the window's own.
             hostingController.sceneBridgingOptions = [.toolbars]
             let window = NSWindow(contentViewController: hostingController)
-            window.title = "Board Rules"
+            window.title = "Rules"
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
             window.toolbarStyle = .unified
             window.setContentSize(NSSize(width: 1080, height: 720))
@@ -54,20 +58,24 @@ final class HorizontalBoardRulesWindowController: NSObject, NSWindowDelegate {
             self.window = window
         }
 
-        window?.title = "\(projectName) Board Rules"
+        window?.title = "\(projectName) Rules"
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     /// The board's rules changed from somewhere else, the route inspector or
-    /// an undo: an open window shows them, keeping what it has selected.
-    func refresh(rules: JSONDictionary, board: HorizontalBoard?) {
+    /// an undo: an open window shows them, keeping what it has selected. The
+    /// schematic's too, where given.
+    func refresh(rules: JSONDictionary, board: HorizontalBoard?, schematicRules: HorizontalSchematicRules? = nil) {
         guard let hostingController, window?.isVisible == true else {
             return
         }
         var rootView = hostingController.rootView
         rootView.initialRules = rules
         rootView.board = board
+        if let schematicRules {
+            rootView.schematicRules = schematicRules
+        }
         rootView.rulesRevision += 1
         hostingController.rootView = rootView
     }
@@ -80,6 +88,19 @@ struct HorizontalBoardRuleFocus: Equatable {
     var id = UUID()
     var kind: HorizontalBoardRuleKind
     var ruleID: String?
+    /// The schematic's Connectivity rule rather than a board rule.
+    var showsSchematicConnectivity = false
+
+    static func schematicConnectivity() -> HorizontalBoardRuleFocus {
+        HorizontalBoardRuleFocus(kind: .clearanceCopper, ruleID: nil, showsSchematicConnectivity: true)
+    }
+}
+
+/// What the rules window's sidebar selects: a kind of board rule, or the
+/// schematic's one rule.
+private enum HorizontalRulesPage: Hashable {
+    case board(HorizontalBoardRuleKind)
+    case schematicConnectivity
 }
 
 struct HorizontalBoardRulesWindow: View {
@@ -102,12 +123,21 @@ struct HorizontalBoardRulesWindow: View {
     var focus: HorizontalBoardRuleFocus?
     /// The iPad's Done, which dismisses the cover the window is shown in.
     var onDone: (() -> Void)?
+    /// The schematic's rules, which Horizon keeps in the top schematic and
+    /// edits in a window of their own; here they are the sidebar's first
+    /// group. Nil where the host has no schematic to give them to. Each
+    /// change goes to `onSchematicRulesChange` as it is made.
+    var schematicRules: HorizontalSchematicRules?
+    var onSchematicRulesChange: (HorizontalSchematicRules) -> Void
 
     @State private var rules: JSONDictionary
+    @State private var editedSchematicRules: HorizontalSchematicRules
     @State private var selectedKind: HorizontalBoardRuleKind = .clearanceCopper
-    /// The sidebar's selection: `selectedKind`, except that going back to
-    /// the sidebar on a narrow iPad clears it, leaving the kind shown.
-    @State private var sidebarKind: HorizontalBoardRuleKind? = .clearanceCopper
+    /// The schematic's Connectivity rule is shown rather than `selectedKind`.
+    @State private var showsSchematicConnectivity = false
+    /// The sidebar's selection: what is shown, except that going back to
+    /// the sidebar on a narrow iPad clears it, leaving that shown.
+    @State private var sidebarPage: HorizontalRulesPage? = .board(.clearanceCopper)
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var selectedRuleID: String?
 
@@ -119,6 +149,8 @@ struct HorizontalBoardRulesWindow: View {
         isReadOnly: Bool,
         onRulesChange: @escaping (JSONDictionary) -> Void,
         onCheckAndApply: (() -> Void)? = nil,
+        schematicRules: HorizontalSchematicRules? = nil,
+        onSchematicRulesChange: @escaping (HorizontalSchematicRules) -> Void = { _ in },
         rulesRevision: Int = 0,
         focus: HorizontalBoardRuleFocus? = nil,
         onDone: (() -> Void)? = nil
@@ -130,14 +162,22 @@ struct HorizontalBoardRulesWindow: View {
         self.isReadOnly = isReadOnly
         self.onRulesChange = onRulesChange
         self.onCheckAndApply = onCheckAndApply
+        self.schematicRules = schematicRules
+        self.onSchematicRulesChange = onSchematicRulesChange
         self.rulesRevision = rulesRevision
         self.focus = focus
         self.onDone = onDone
         _rules = State(initialValue: initialRules)
+        _editedSchematicRules = State(initialValue: schematicRules ?? HorizontalSchematicRules())
         if let focus {
-            _selectedKind = State(initialValue: focus.kind)
-            _sidebarKind = State(initialValue: focus.kind)
-            _selectedRuleID = State(initialValue: focus.ruleID)
+            if focus.showsSchematicConnectivity, schematicRules != nil {
+                _showsSchematicConnectivity = State(initialValue: true)
+                _sidebarPage = State(initialValue: .schematicConnectivity)
+            } else {
+                _selectedKind = State(initialValue: focus.kind)
+                _sidebarPage = State(initialValue: .board(focus.kind))
+                _selectedRuleID = State(initialValue: focus.ruleID)
+            }
         }
     }
 
@@ -147,16 +187,21 @@ struct HorizontalBoardRulesWindow: View {
                 .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
         } detail: {
             HStack(spacing: 0) {
-                if selectedKind.listsEntries {
-                    ruleInstanceList
-                        .frame(width: 250)
-                    Divider()
+                if showsSchematicConnectivity {
+                    HorizontalSchematicConnectivityRuleEditor(rules: schematicRulesBinding, isReadOnly: isReadOnly)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    if selectedKind.listsEntries {
+                        ruleInstanceList
+                            .frame(width: 250)
+                        Divider()
+                    }
+                    editorArea
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                editorArea
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             #if os(iOS)
-            .navigationTitle(selectedKind.title)
+            .navigationTitle(showsSchematicConnectivity ? "Schematic Connectivity" : selectedKind.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if let onDone {
@@ -195,22 +240,49 @@ struct HorizontalBoardRulesWindow: View {
         }
         .onChange(of: rulesRevision) { _, _ in
             rules = initialRules
+            editedSchematicRules = schematicRules ?? HorizontalSchematicRules()
             ensureSelection()
         }
         .onChange(of: focus?.id) { _, _ in
             guard let focus else { return }
+            if focus.showsSchematicConnectivity, schematicRules != nil {
+                showsSchematicConnectivity = true
+                sidebarPage = .schematicConnectivity
+                return
+            }
+            showsSchematicConnectivity = false
             selectedKind = focus.kind
+            sidebarPage = .board(focus.kind)
             selectedRuleID = focus.ruleID
             ensureSelection()
         }
-        .onChange(of: sidebarKind) { _, kind in
-            if let kind {
+        .onChange(of: sidebarPage) { _, page in
+            switch page {
+            case .board(let kind):
+                showsSchematicConnectivity = false
                 selectedKind = kind
+            case .schematicConnectivity:
+                showsSchematicConnectivity = true
+            case nil:
+                break
             }
         }
         .onChange(of: selectedKind) { _, kind in
-            sidebarKind = kind
+            if !showsSchematicConnectivity {
+                sidebarPage = .board(kind)
+            }
             ensureSelection()
+        }
+    }
+
+    /// The schematic's rules as edited here, each change handed on.
+    private var schematicRulesBinding: Binding<HorizontalSchematicRules> {
+        Binding {
+            editedSchematicRules
+        } set: { rules in
+            editedSchematicRules = rules
+            guard !isReadOnly else { return }
+            onSchematicRulesChange(rules)
         }
     }
 
@@ -236,10 +308,18 @@ struct HorizontalBoardRulesWindow: View {
             #endif
 
             // A selection the split view navigates by, on a narrow iPad.
-            List(selection: $sidebarKind) {
-                ForEach(HorizontalBoardRuleKind.visibleCases) { kind in
-                    HorizontalBoardRuleFamilyRow(kind: kind, count: count(for: kind))
-                        .tag(kind)
+            List(selection: $sidebarPage) {
+                if schematicRules != nil {
+                    Section("Schematic") {
+                        HorizontalSchematicRuleFamilyRow(enabled: editedSchematicRules.connectivityEnabled)
+                            .tag(HorizontalRulesPage.schematicConnectivity)
+                    }
+                }
+                Section("Board") {
+                    ForEach(HorizontalBoardRuleKind.visibleCases) { kind in
+                        HorizontalBoardRuleFamilyRow(kind: kind, count: count(for: kind))
+                            .tag(HorizontalRulesPage.board(kind))
+                    }
                 }
             }
             .listStyle(.sidebar)
@@ -266,7 +346,7 @@ struct HorizontalBoardRulesWindow: View {
                 Image(systemName: "arrow.clockwise")
             }
             .buttonStyle(.borderless)
-            .help("Apply every rule to the board and run every check. The results are in the rules results sidebar.")
+            .help("Apply every rule to the board and run every check, the schematic's too. The results are in the rules results sidebar.")
             .accessibilityLabel("Apply & Check")
         }
     }
@@ -1056,6 +1136,65 @@ private struct HorizontalBoardRuleFamilyRow: View {
             return "checkmark.seal"
         }
         return "slider.horizontal.3"
+    }
+}
+
+/// The schematic's Connectivity rule in the rules window's sidebar, as a
+/// board rule that only checks is shown.
+private struct HorizontalSchematicRuleFamilyRow: View {
+    var enabled: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.seal")
+                .foregroundStyle(enabled ? .green : .secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Connectivity")
+                    .lineLimit(1)
+                Text(enabled ? "Check" : "Off")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+    }
+}
+
+/// Horizon's `RuleEditorConnectivity`: the rule on or off, what it checks,
+/// and whether a net with no name counts as a one-pin net.
+private struct HorizontalSchematicConnectivityRuleEditor: View {
+    @Binding var rules: HorizontalSchematicRules
+    var isReadOnly: Bool
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                GroupBox("Rule") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Enabled", isOn: $rules.connectivityEnabled)
+                    }
+                    .padding(6)
+                }
+                GroupBox("Checks") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("• One-pin nets")
+                        Toggle("Include unnamed nets", isOn: $rules.includeUnnamedNets)
+                            .padding(.leading, 18)
+                        Text("• One-label nets")
+                        Text("• Unconnected pins")
+                        Text("• Unconnected ports")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                }
+                .disabled(!rules.connectivityEnabled)
+                TextRuleExplanation("Checks the schematic's connectivity as Horizon EDA's schematic rules do: a net with only one pin on it, unless it is marked no connect; a net with a label on only one of its segments, which Horizon warns of; a pin or a block's port on no net and not marked no connect. The findings are in the rules results sidebar and marked on the sheets.")
+            }
+            .padding(16)
+            .frame(maxWidth: 760, alignment: .leading)
+        }
+        .disabled(isReadOnly)
     }
 }
 
@@ -3172,6 +3311,11 @@ struct HorizontalBoardRulesResultState {
     /// The clearance check is running again; `clearanceFindings` are the
     /// last run's until it finishes.
     var isCheckingClearance = false
+    /// The schematic Connectivity rule's findings, as it last finished; nil
+    /// where it wasn't run, empty where it found nothing or is off.
+    var schematicFindings: [HorizontalSchematicRuleFinding]? = nil
+    /// The schematic check is running again, as `isCheckingClearance`.
+    var isCheckingSchematic = false
 }
 
 struct HorizontalBoardRuleCheckMessage: Identifiable {

@@ -345,6 +345,9 @@ struct SchematicCanvasView: View {
     /// header edit, an undo of one, a unit change); the draft is dropped and
     /// the new sheet adopted in place.
     var syncRevision = 0
+    /// The rules checks' findings on this sheet, marked with its own warnings:
+    /// the schematic Connectivity rule's, from the last run.
+    var ruleMarkers: [HorizontalCanvasWarning] = []
 
     @State private var hoveredObject: HorizontalSelectableRef?
     @State private var selectedObjects: [HorizontalSelectableRef] = []
@@ -446,7 +449,8 @@ struct SchematicCanvasView: View {
         onRevealPoolSymbol: ((String, HorizontalPoolRevealTarget) -> Void)? = nil,
         mode: HorizontalSchematicEditorMode = .sheet,
         symbolEditorContext: HorizontalSymbolEditorContext? = nil,
-        syncRevision: Int = 0
+        syncRevision: Int = 0,
+        ruleMarkers: [HorizontalCanvasWarning] = []
     ) {
         self.sourceSheet = sheet
         self.sourceAllSheets = allSheets.isEmpty ? [sheet] : allSheets
@@ -498,6 +502,7 @@ struct SchematicCanvasView: View {
         self.mode = mode
         self.symbolEditorContext = symbolEditorContext
         self.syncRevision = syncRevision
+        self.ruleMarkers = ruleMarkers
     }
 
     /// The sheet drawn and hit-tested. While a move is on, that is the sheet
@@ -794,9 +799,13 @@ struct SchematicCanvasView: View {
                 self.schematicSelectables()
             }
         }
-        let warnings = editorProfile.isPoolMode || moveState != nil ? [] : selectableCache.warnings(key: selectableCacheKey) {
-            HorizontalSchematicWarnings.evaluate(sheet, allSheets: schematicSheets)
-        }
+        // The sheet's own warnings, and the rules checks' findings on it.
+        let warnings = editorProfile.isPoolMode || moveState != nil ? [] : HorizontalCanvasWarning.merging(
+            selectableCache.warnings(key: selectableCacheKey) {
+                HorizontalSchematicWarnings.evaluate(sheet, allSheets: schematicSheets)
+            },
+            ruleMarkers
+        )
 
         return InteractiveCanvasView(
             bounds: sheet.bounds,
