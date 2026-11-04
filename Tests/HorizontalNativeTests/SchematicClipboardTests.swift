@@ -815,5 +815,44 @@ extension SchematicClipboardTests {
         XCTAssertTrue(redone)
         XCTAssertEqual(state.fixture.archive, pasted)
     }
+
+    /// The selection and the which-object menu name what is on the sheet as
+    /// Horizon does, never by an id's first eight digits: a symbol by its
+    /// refdes, a wire, a power symbol or a label by its net, a pin as
+    /// U1.PA13. A wire on a net with no name gives its length alone.
+    @MainActor func testSelectedObjectsAreNamedWithoutIDs() async throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required for the canvas") }
+        _ = NSApplication.shared
+        let state = CanvasState(try fixture())
+        let defaults = UserDefaults(suiteName: "label-canvas-\(UUID().uuidString)")!
+        let hosted = NSHostingView(rootView: ClipboardCanvas(state: state)
+            .environmentObject(HorizontalAppearanceSettings(defaults: defaults)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 650),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosted
+        window.orderFront(nil)
+        defer { window.close() }
+        func settle(_ predicate: () -> Bool) async -> Bool {
+            let deadline = Date().addingTimeInterval(5)
+            while !predicate(), Date() < deadline { try? await Task.sleep(for: .milliseconds(30)) }
+            return predicate()
+        }
+        let mounted = await settle { state.actions != nil }
+        XCTAssertTrue(mounted)
+        state.actions?.dispatch(.selectAll)
+        let selected = await settle { !state.details.groups.isEmpty }
+        XCTAssertTrue(selected)
+        func labels(_ type: HorizontalObjectType) -> [String] {
+            state.details.groups.filter { $0.type == type }.flatMap(\.items).map { "\($0.title) | \($0.subtitle)" }.sorted()
+        }
+        XCTAssertEqual(labels(.schematicSymbol), ["R1 | ", "R2 | "])
+        XCTAssertEqual(labels(.lineNet), ["Net line | 10.00 mm", "Net line | VCC - 10.00 mm"])
+        XCTAssertEqual(labels(.netLabel), ["VCC | Net label"])
+        XCTAssertEqual(labels(.powerSymbol), ["Power symbol | GND"])
+        XCTAssertEqual(labels(.text), ["Amplifier | Text"])
+        let named = state.details.groups.flatMap(\.items).flatMap { [$0.title, $0.subtitle] }
+        XCTAssertEqual(named.filter { $0.range(of: "[0-9a-f]{8}", options: .regularExpression) != nil }, [])
+    }
 }
 #endif
