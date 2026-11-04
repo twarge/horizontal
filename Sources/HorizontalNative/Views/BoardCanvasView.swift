@@ -13391,7 +13391,9 @@ struct BoardCanvasView: View {
             type: .polygonEdge
         ))
 
-        selectables.append(contentsOf: board.keepouts.map { keepout in
+        // A package's keepouts and drills are parts of it, which a click
+        // picks and a move moves only as the whole package, as in Horizon.
+        selectables.append(contentsOf: board.keepouts.filter { packageID(forGeometryID: $0.id) == nil }.map { keepout in
             HorizontalSelectable.bounds(
                 ref: HorizontalSelectableRef(id: keepout.id, type: .keepout, layer: keepout.polygon.layer),
                 points: keepout.points,
@@ -13442,9 +13444,8 @@ struct BoardCanvasView: View {
             )
         })
 
-        // A package editor's pad holes belong to their pads, not to the hole list.
-        let standaloneHoles = modeProfile.isPoolMode ? board.holes : board.holes + board.packageHoles
-        selectables.append(contentsOf: standaloneHoles.map { hole in
+        // Pad holes belong to their pads, on a board and in a package editor.
+        selectables.append(contentsOf: board.holes.map { hole in
             HorizontalSelectable.bounds(
                 ref: HorizontalSelectableRef(id: hole.id, type: .boardHole),
                 points: hole.boundsPoints,
