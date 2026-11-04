@@ -14333,7 +14333,7 @@ struct BoardCanvasView: View {
         guard let size = fittedNetLineTextSize(label, segment: segment, transform: transform) else {
             return
         }
-        drawSegmentLabel(segmentLabelText(segment, text: label, idSuffix: idSuffix, size: size), color: color, context: context, transform: transform)
+        drawSegmentLabel(segmentNetLabelText(segment, text: label, idSuffix: idSuffix, size: size), color: color, context: context, transform: transform)
     }
 
     private func fittedNetLineTextSize(
@@ -14346,14 +14346,16 @@ struct BoardCanvasView: View {
             return nil
         }
 
-        guard let size = fittedNetLineTextSize(text, segment: segment),
+        guard let size = Self.fittedNetLineTextSize(text, segment: segment),
               transform.length(size) >= HorizontalOutlineTextRenderer.minimumDrawableScreenHeight else {
             return nil
         }
         return size
     }
 
-    private func fittedNetLineTextSize(
+    /// The text size of `text` as a net label along `segment`, or nil when the
+    /// segment is too short to carry it.
+    static func fittedNetLineTextSize(
         _ text: String,
         segment: HorizontalSegment
     ) -> Double? {
@@ -14417,7 +14419,7 @@ struct BoardCanvasView: View {
 
     private func segmentNetLabelText(_ segment: HorizontalSegment, idSuffix: String, padCenterKeys: Set<String>? = nil) -> HorizontalText? {
         guard let label = namedNetDisplayName(segment.netID),
-              let size = fittedNetLineTextSize(label, segment: segment) else {
+              let size = Self.fittedNetLineTextSize(label, segment: segment) else {
             return nil
         }
         // A track that ends on a pad is already labeled by that pad's net name,
@@ -14425,7 +14427,19 @@ struct BoardCanvasView: View {
         if segmentTouchesPad(segment, padCenterKeys: padCenterKeys) {
             return nil
         }
-        return segmentLabelText(segment, text: label, idSuffix: idSuffix, size: size)
+        return segmentNetLabelText(segment, text: label, idSuffix: idSuffix, size: size)
+    }
+
+    /// A net label along `segment`, stroked as heavily for its size as a pad label.
+    private func segmentNetLabelText(
+        _ segment: HorizontalSegment,
+        text: String,
+        idSuffix: String,
+        size: Double
+    ) -> HorizontalText {
+        var label = segmentLabelText(segment, text: text, idSuffix: idSuffix, size: size)
+        label.width = size * BoardPadLabelLayout.strokeWidthFraction
+        return label
     }
 
     /// Whether either endpoint of `segment` lands on a pad center. Pass a
@@ -14772,11 +14786,9 @@ struct BoardCanvasView: View {
             // Stroke weight has to scale with the glyphs: `HorizontalOutlineTextRenderer`
             // strokes with `transform.strokeWidth(text.width, minimum:)`, so leaving
             // `width` at its 0 default collapsed every pad label to the 0.7pt floor —
-            // a hairline at any zoom. The simplex font uses `scale = size / 21`, so
-            // size/8 is ≈2.6 glyph units: heavy enough to read like bitmap
-            // pad text. `drawPadLabel` still passes `minimumLineWidth: 0.7` so labels
-            // stay visible when zoomed out.
-            width: size / 8,
+            // a hairline at any zoom. `drawPadLabel` still passes
+            // `minimumLineWidth: 0.7` so labels stay visible when zoomed out.
+            width: size * BoardPadLabelLayout.strokeWidthFraction,
             origin: .center,
             centered: true
         )

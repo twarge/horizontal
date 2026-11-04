@@ -35,6 +35,12 @@ enum BoardPadLabelLayout {
     /// (canvas_gl.cpp:938).
     static let fitMargin = 0.75
 
+    /// A generated label's stroke width as a fraction of its text size, so the
+    /// weight scales with the glyphs: the simplex font draws at `scale = size / 21`,
+    /// so size/8 is ≈2.6 glyph units, heavy enough to read like bitmap pad text.
+    /// Pad labels and track net labels both take it.
+    static let strokeWidthFraction = 1.0 / 8
+
     /// Build a frame from the intrinsic padstack descriptor — correct angle for
     /// any pad shape, including roundrect and circular.
     ///

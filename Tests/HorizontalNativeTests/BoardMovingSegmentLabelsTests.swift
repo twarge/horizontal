@@ -75,7 +75,8 @@ final class BoardMovingSegmentLabelsTests: XCTestCase {
 
     func testAStretchedTracksLabelIsDrawnFromTheMovedTrack() throws {
         let (lines, span) = drawn(label(at: HorizontalPoint(x: 5_000_000, y: 0)))
-        let moved = label(at: HorizontalPoint(x: 5_000_000, y: 500_000), size: 550_000, angle: 1_000)
+        var moved = label(at: HorizontalPoint(x: 5_000_000, y: 500_000), size: 550_000, angle: 1_000)
+        moved.width = 550_000 * BoardPadLabelLayout.strokeWidthFraction
         let patch = try XCTUnwrap(BoardMovingSegmentLabels.patch(for: span, label: moved, lines: lines, minimumLabelSize: 0))
 
         XCTAssertEqual(patch.compositeGroup, span.compositeGroup)
@@ -85,6 +86,8 @@ final class BoardMovingSegmentLabelsTests: XCTestCase {
         XCTAssertEqual(patch.primitives.map(\.to), strokes.map(\.1))
         XCTAssertTrue(patch.primitives.allSatisfy { $0.color == style.color && $0.compositeOpacity == style.compositeOpacity },
                       "in the scene's style")
+        XCTAssertTrue(patch.primitives.allSatisfy { $0.width == moved.width },
+                      "as heavy as the moved label, which the stretch refitted")
     }
 
     func testALabelTheMovedTrackWouldNotShowIsHidden() throws {
@@ -205,13 +208,10 @@ final class BoardMovingSegmentLabelCanvasTests: XCTestCase {
         }
     }
 
-    /// Everything selected, then t2 drawn on from the via to junction j3 and
-    /// left out of the selection, as a track beyond a selected via is: the
-    /// move carries t1 whole and stretches t2 from its via end.
-    func testAKeyMoveDrawsTheLabelOfATrackItStretchesWhereTheCommitPutsIt() async throws {
-        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
+    /// `state`'s board on a canvas in a window, with track labels and no via
+    /// labels; close the window when done.
+    private func mount(_ state: State) async throws -> (window: NSWindow, hosted: NSView, renderer: HorizontalMetalCanvasLayer) {
         _ = NSApplication.shared
-        let state = State(board())
         var options = BoardDisplayOptions()
         options.viaLabels = false
         XCTAssertTrue(options.trackLabels)
@@ -223,12 +223,43 @@ final class BoardMovingSegmentLabelCanvasTests: XCTestCase {
         hosted.frame = window.contentLayoutRect
         window.contentView = hosted
         window.orderFront(nil)
-        defer { window.close() }
         let mounted = await settle {
             state.actions != nil && self.monitor(in: hosted) != nil && self.renderer(in: hosted)?.presentedContentKey != nil
         }
         XCTAssertTrue(mounted)
-        let renderer = try XCTUnwrap(renderer(in: hosted))
+        guard let renderer = renderer(in: hosted) else {
+            window.close()
+            throw XCTSkip("no Metal overlay mounted")
+        }
+        return (window, hosted, renderer)
+    }
+
+    /// A track's net label is stroked as heavily for its size as a pad label,
+    /// not at the hairline floor whatever its size.
+    func testATrackLabelIsStrokedInProportionToItsSize() async throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
+        let state = State(board())
+        let (window, _, renderer) = try await mount(state)
+        defer { window.close() }
+        let labelled = await settle { !renderer.residentLineWidths(compositeGroup: Self.labelsGroup).isEmpty }
+        XCTAssertTrue(labelled, "t1 is labelled")
+
+        let size = try XCTUnwrap(BoardCanvasView.fittedNetLineTextSize("GND", segment: segment("t1", start, bend)))
+        let width = size * BoardPadLabelLayout.strokeWidthFraction
+        XCTAssertGreaterThan(width, 0)
+        let widths = renderer.residentLineWidths(compositeGroup: Self.labelsGroup)
+        XCTAssertTrue(widths.allSatisfy { abs(Double($0) - width) < 1 },
+                      "every stroke \(width) nm wide, got \(Set(widths).sorted())")
+    }
+
+    /// Everything selected, then t2 drawn on from the via to junction j3 and
+    /// left out of the selection, as a track beyond a selected via is: the
+    /// move carries t1 whole and stretches t2 from its via end.
+    func testAKeyMoveDrawsTheLabelOfATrackItStretchesWhereTheCommitPutsIt() async throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
+        let state = State(board())
+        let (window, hosted, renderer) = try await mount(state)
+        defer { window.close() }
         let handle = try XCTUnwrap(monitor(in: hosted)).makeEventHandler()
         let key: (UInt16, String) throws -> Void = { code, characters in
             let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
