@@ -1853,12 +1853,10 @@ struct BoardCanvasView: View {
             ref: HorizontalSelectableRef(id: object.id, type: .boardPackage),
             title: object.label,
             subtitle: object.subtitle,
-            details: componentDetailRows(object.details)
-                + [detailRow("Component", object.componentID.map(shortID))].compactMap { $0 },
+            details: componentDetailRows(object.details),
             properties: [
                 readOnlyProperty("state", "State", "Unplaced"),
                 readOnlyProperty("kind", "Kind", object.subtitle),
-                readOnlyProperty("component", "Component", object.componentID.map(shortID)),
             ].compactMap { $0 }
         )
     }

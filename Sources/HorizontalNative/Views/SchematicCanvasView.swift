@@ -1634,16 +1634,10 @@ struct SchematicCanvasView: View {
             ref: HorizontalSelectableRef(id: object.id, type: .schematicSymbol),
             title: object.label,
             subtitle: object.subtitle,
-            details: componentDetailRows(object.details)
-                + [
-                    detailRow("Gate", object.gateID.map(shortID)),
-                    detailRow("Component", object.componentID.map(shortID)),
-                ].compactMap { $0 },
+            details: componentDetailRows(object.details),
             properties: [
                 readOnlyProperty("state", "State", "Unplaced"),
                 readOnlyProperty("kind", "Kind", object.subtitle),
-                readOnlyProperty("component", "Component", object.componentID.map(shortID)),
-                readOnlyProperty("gate", "Gate", object.gateID.map(shortID)),
             ].compactMap { $0 }
         )
     }
@@ -1662,21 +1656,26 @@ struct SchematicCanvasView: View {
                 return genericHUDItem(for: ref)
             }
             return HorizontalSelectionHUDItem(
-                title: nonEmpty(symbol.label) ?? shortID(symbol.id),
-                subtitle: "Schematic symbol \(shortID(symbol.id))",
+                title: symbolDisplayName(symbol) ?? "Schematic symbol",
+                subtitle: hudSubtitle(symbol.componentDetails?.value),
                 details: componentDetailRows(symbol.componentDetails)
             )
         case .lineNet:
             return segmentHUDItem(for: ref, in: sheet.netLines, title: "Net line", includesLength: true)
         case .symbolPin:
-            return segmentHUDItem(for: ref, in: sheet.symbolPins, title: "Symbol pin", includesLength: false)
+            let name = symbolPinName(for: ref)
+            // A decoration's dot is a circle, with no segment to give a net.
+            guard sheet.symbolPins.contains(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+                return HorizontalSelectionHUDItem(title: "Symbol pin", subtitle: name ?? "")
+            }
+            return segmentHUDItem(for: ref, in: sheet.symbolPins, title: "Symbol pin", includesLength: false, name: name)
         case .netLabel:
             guard let label = sheet.netLabels.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return genericHUDItem(for: ref)
             }
             return HorizontalSelectionHUDItem(
                 title: label.text,
-                subtitle: "Net label \(shortID(label.id))",
+                subtitle: "Net label",
                 details: netDetailRows(label.netID)
             )
         case .junction:
@@ -1692,10 +1691,10 @@ struct SchematicCanvasView: View {
             guard let tie = sheet.netTies.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return genericHUDItem(for: ref)
             }
-            let label = nonEmpty(tie.label) ?? shortID(tie.id)
+            let nets = tie.netIDs.sorted().compactMap(netDisplayName).joined(separator: " <> ")
             return HorizontalSelectionHUDItem(
-                title: label,
-                subtitle: "Schematic net tie \(shortID(tie.id))",
+                title: nonEmpty(tie.label) ?? nonEmpty(nets) ?? "Net tie",
+                subtitle: "Net tie",
                 details: tie.netIDs.sorted().flatMap(netDetailRows)
                     + [detailRow("Length", lengthString((tie.to - tie.from).length))].compactMap { $0 }
             )
@@ -1705,45 +1704,56 @@ struct SchematicCanvasView: View {
             }
             return HorizontalSelectionHUDItem(
                 title: label.text,
-                subtitle: "Bus label \(shortID(label.id))",
+                subtitle: "Bus label",
                 details: [
                     detailRow("Orientation", label.orientation),
                 ].compactMap { $0 }
             )
         case .busRipper:
+            let netID = groupedNetID(
+                for: ref.id,
+                segments: sheet.busRipperLines,
+                texts: sheet.busRipperTexts,
+                separators: ["line", "text"]
+            )
             return HorizontalSelectionHUDItem(
                 title: "Bus ripper",
-                subtitle: shortID(ref.id),
-                details: groupedNetID(
-                    for: ref.id,
-                    segments: sheet.busRipperLines,
-                    texts: sheet.busRipperTexts,
-                    separators: ["line", "text"]
-                ).map(netDetailRows) ?? []
+                subtitle: hudSubtitle(netDisplayName(netID)),
+                details: netID.map(netDetailRows) ?? []
             )
         case .powerSymbol:
+            let netID = groupedNetID(
+                for: ref.id,
+                segments: sheet.powerSymbolLines,
+                circles: sheet.powerSymbolCircles,
+                texts: sheet.powerSymbolTexts,
+                separators: ["circle", "line", "text"]
+            )
             return HorizontalSelectionHUDItem(
                 title: "Power symbol",
-                subtitle: shortID(ref.id),
-                details: groupedNetID(
-                    for: ref.id,
-                    segments: sheet.powerSymbolLines,
-                    circles: sheet.powerSymbolCircles,
-                    texts: sheet.powerSymbolTexts,
-                    separators: ["circle", "line", "text"]
-                ).map(netDetailRows) ?? []
+                subtitle: hudSubtitle(netDisplayName(netID)),
+                details: netID.map(netDetailRows) ?? []
             )
         case .schematicBlockSymbol:
-            return HorizontalSelectionHUDItem(title: "Block symbol", subtitle: shortID(ref.id))
+            let blockSymbol = sheet.blockSymbol(ref.id)
+            return HorizontalSelectionHUDItem(
+                title: nonEmpty(blockSymbol?.refdes) ?? "Block symbol",
+                subtitle: hudSubtitle(blockSymbol?.resource.name)
+            )
         case .blockSymbolPort:
-            return segmentHUDItem(for: ref, in: sheet.blockSymbolPorts, title: "Block symbol port", includesLength: false)
+            let port = blockPort(for: ref).map { symbol, portID in
+                [symbol.refdes, symbol.portNets[portID].flatMap { symbol.resource.nets[$0]?.name }]
+                    .compactMap { nonEmpty($0) }
+                    .joined(separator: ".")
+            }
+            return segmentHUDItem(for: ref, in: sheet.blockSymbolPorts, title: "Block symbol port", includesLength: false, name: port)
         case .text:
             guard let text = sheet.texts.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return genericHUDItem(for: ref)
             }
             return HorizontalSelectionHUDItem(
                 title: nonEmpty(text.text) ?? "Text",
-                subtitle: shortID(text.id),
+                subtitle: nonEmpty(text.text) == nil ? "" : "Text",
                 details: [
                     detailRow("Size", lengthString(text.size)),
                 ].compactMap { $0 }
@@ -1757,19 +1767,23 @@ struct SchematicCanvasView: View {
         }
     }
 
+    /// `name`: what the segment draws, a pin's or a port's, ahead of its net.
     private func segmentHUDItem(
         for ref: HorizontalSelectableRef,
         in segments: [HorizontalSegment],
         title: String,
-        includesLength: Bool
+        includesLength: Bool,
+        name: String? = nil
     ) -> HorizontalSelectionHUDItem {
         guard let segment = segments.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
             return genericHUDItem(for: ref)
         }
 
-        let detail = includesLength
-            ? "\(lengthString(segment.length)) - \(shortID(segment.id))"
-            : shortID(segment.id)
+        let detail = hudSubtitle(
+            name,
+            netDisplayName(segment.netID),
+            includesLength ? lengthString(segment.length) : nil
+        )
         var details = [HorizontalSelectionHUDDetail]()
         if includesLength {
             details.append(detailRow("Length", lengthString(segment.length))!)
@@ -1788,9 +1802,7 @@ struct SchematicCanvasView: View {
             return genericHUDItem(for: ref)
         }
 
-        let detail = includesLength
-            ? "\(lengthString(arc.length)) - \(shortID(arc.id))"
-            : shortID(arc.id)
+        let detail = hudSubtitle(netDisplayName(arc.netID), includesLength ? lengthString(arc.length) : nil)
         var details = [HorizontalSelectionHUDDetail]()
         if includesLength {
             details.append(detailRow("Length", lengthString(arc.length))!)
@@ -1801,7 +1813,37 @@ struct SchematicCanvasView: View {
     }
 
     private func genericHUDItem(for ref: HorizontalSelectableRef) -> HorizontalSelectionHUDItem {
-        HorizontalSelectionHUDItem(title: displayName(for: ref.type), subtitle: shortID(ref.id))
+        HorizontalSelectionHUDItem(title: displayName(for: ref.type), subtitle: "")
+    }
+
+    /// The parts of a HUD subtitle that apply, which the which-object menu
+    /// shows after the title. Never an object's id: it tells the user nothing.
+    private func hudSubtitle(_ parts: String?...) -> String {
+        parts.compactMap { nonEmpty($0) }.joined(separator: " - ")
+    }
+
+    /// A symbol pin as Horizon's tools name one, `U1.PA13`: the symbol's
+    /// refdes and gate, then the pin, from the `<symbol>/pin…/<pin>` id of
+    /// any of the pin's artwork (its line, direction mark or decoration).
+    private func symbolPinName(for ref: HorizontalSelectableRef) -> String? {
+        let parts = normalizedID(ref.id).split(separator: "/").map(String.init)
+        guard parts.count >= 3, parts[1].hasPrefix("pin"),
+              let symbol = sheet.symbols.first(where: { normalizedID($0.id) == parts[0] }) else {
+            return nil
+        }
+        let pin = symbol.symbolPinNames.first { normalizedID($0.id) == parts[2] }
+        return [symbolDisplayName(symbol), nonEmpty(pin?.primaryName)].compactMap { $0 }.joined(separator: ".")
+    }
+
+    /// A symbol as Horizon names it: its refdes and its gate's suffix, U1A.
+    private func symbolDisplayName(_ symbol: HorizontalPlacement) -> String? {
+        guard let label = nonEmpty(symbol.label) else {
+            return nil
+        }
+        let suffix = symbol.componentID.flatMap { sheet.componentInfo[normalizedID($0)] }.flatMap { component in
+            symbol.gateID.flatMap { gate in component.gateSuffixes.first { normalizedID($0.key) == normalizedID(gate) }?.value }
+        }
+        return label + (suffix ?? "")
     }
 
     private func hoverStatusText(for ref: HorizontalSelectableRef, item: HorizontalSelectionHUDItem) -> String {
@@ -2133,7 +2175,7 @@ struct SchematicCanvasView: View {
             : readOnlyProperty("width", "Width", segment.width > 0 ? lengthString(segment.width) : nil)
         return [
             (editsNetName ? netNameProperty(for: segment.netID) : nil)
-                ?? readOnlyProperty("name", title, netDisplayName(segment.netID) ?? shortID(segment.id)),
+                ?? readOnlyProperty("name", title, netDisplayName(segment.netID)),
             widthProperty,
             editableNetClassProperty(for: segment.netID),
             readOnlyProperty("length", "Length", lengthString(segment.length)),
@@ -2154,7 +2196,7 @@ struct SchematicCanvasView: View {
             ? editableLengthProperty("width", "Width", arc.width)
             : readOnlyProperty("width", "Width", arc.width > 0 ? lengthString(arc.width) : nil)
         return [
-            readOnlyProperty("name", title, netDisplayName(arc.netID) ?? shortID(arc.id)),
+            readOnlyProperty("name", title, netDisplayName(arc.netID)),
             widthProperty,
             editableNetClassProperty(for: arc.netID),
             readOnlyProperty("radius", "Radius", lengthString(arc.radius)),
@@ -2324,7 +2366,7 @@ struct SchematicCanvasView: View {
 
         let directions = pinDirectionOptions()
         return placement.symbolPinNames.map { pin in
-            let pinTitle = nonEmpty(pin.primaryName) ?? shortID(pin.id)
+            let pinTitle = nonEmpty(pin.primaryName) ?? "Pin"
             var functions = [HorizontalSelectionPropertyOption(id: "primary", title: pinTitle)]
             var selected = Set<String>()
             if pin.state.usePrimaryName {
@@ -12933,7 +12975,7 @@ extension SchematicCanvasView {
             let kind = editorProfile.pinsArePorts ? "Port" : "Pin"
             return HorizontalSelectionHUDItem(
                 title: nonEmpty(info?.name) ?? kind,
-                subtitle: "\(kind) \(shortID(pin.id))",
+                subtitle: nonEmpty(info?.name) == nil ? "" : kind,
                 details: [
                     detailRow("Direction", info?.direction.replacingOccurrences(of: "_", with: " ").capitalized),
                     detailRow("Position", coordinateString(pin.position)),
@@ -12948,7 +12990,7 @@ extension SchematicCanvasView {
             let title = ref.type == .polygonEdge ? "Polygon edge" : (ref.type == .polygonVertex ? "Polygon vertex" : "Polygon arc center")
             return HorizontalSelectionHUDItem(
                 title: title,
-                subtitle: "Polygon \(shortID(String(ref.id.split(separator: "/").last ?? ""))) - vertex \(ref.vertex)",
+                subtitle: "",
                 details: [detailRow("Vertices", "\(polygon.polygonVertices.count)")].compactMap { $0 }
             )
         default:
