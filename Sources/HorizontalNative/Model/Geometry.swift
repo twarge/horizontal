@@ -1437,6 +1437,10 @@ struct HorizontalBoardDecal: Identifiable, Hashable {
     var lines: [HorizontalSegment]
     var arcs: [HorizontalArc]
     var texts: [HorizontalText]
+    /// Where the board file places it (its placement's shift), which a move
+    /// carries and the writer writes. Nil for a decal of no board file of its
+    /// own, such as a panel's copy of another board's.
+    var position: HorizontalPoint? = nil
 
     var points: [HorizontalPoint] {
         polygons.flatMap(\.vertices)
