@@ -190,7 +190,9 @@ struct HorizontalMetalBackdropView {
         // Paused MTKViews may defer needs-display draws while their window is
         // inactive. Submit a new scene now, just as we already do for move
         // patches, so a live edit cannot wait for a pointer/zoom/window event.
-        if sceneChanged || !bufferPatches.isEmpty {
+        // Not before the view has an area to draw into, though (see
+        // `hasDrawableArea`): it draws on its own once it is given one.
+        if sceneChanged || !bufferPatches.isEmpty, view.hasDrawableArea {
             HorizontalMoveRateDiagnostics.mark(.metalForcedDraw)
             view.draw()
         }
@@ -523,6 +525,12 @@ struct HorizontalMetalBackdropView {
                 #else
                 view.setNeedsDisplay()
                 #endif
+            }
+            // Nothing to re-arm here: a view with no area shows nothing, and
+            // it is redrawn when it is given a size.
+            guard view.hasDrawableArea else {
+                recordLoadProfileDrawSkip("no drawable area", since: drawTickStart)
+                return
             }
             guard let drawable = view.currentDrawable else {
                 recordLoadProfileDrawSkip("no drawable", since: drawTickStart)
@@ -1537,6 +1545,18 @@ struct HorizontalMetalBackdropView {
             return SIMD4(Float(red), Float(green), Float(blue), Float(alpha))
             #endif
         }
+    }
+}
+
+private extension MTKView {
+    /// Whether the view has a drawable to take. SwiftUI updates a view before it
+    /// first lays it out, so a new canvas layer is still zero by zero when its
+    /// first scene arrives, and a pane squeezed to nothing has a side of zero.
+    /// Asking for a drawable then only makes Core Animation log "[CAMetalLayer
+    /// nextDrawable] returning nil because allocation failed". Both AppKit and
+    /// `ResizeRedrawingMTKView` redraw the view once it is given a size.
+    var hasDrawableArea: Bool {
+        drawableSize.width >= 1 && drawableSize.height >= 1
     }
 }
 
