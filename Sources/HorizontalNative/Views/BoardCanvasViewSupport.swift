@@ -77,9 +77,11 @@ enum BoardHighlightSubset {
         }
         subset.planes = board.planes.filter { onNet($0.netID) }
         subset.vias = board.vias.filter { onNet($0.netID) }
-        // A via's hole shares its id.
+        // A via's drill goes with the via (`HorizontalBoard.viaHoleID(ofVia:)`).
         let viaIDs = Set(subset.vias.map { $0.id.lowercased() })
-        subset.viaHoles = board.viaHoles.filter { onNet($0.netID) || viaIDs.contains($0.id.lowercased()) }
+        subset.viaHoles = board.viaHoles.filter {
+            onNet($0.netID) || HorizontalBoard.viaID(ofViaHole: $0.id).map { viaIDs.contains($0.lowercased()) } == true
+        }
         subset.holes = board.holes.filter { onNet($0.netID) }
         subset.texts = board.texts.filter { onNet($0.netID) }
         subset.dimensions = []

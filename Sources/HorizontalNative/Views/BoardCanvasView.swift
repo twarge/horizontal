@@ -7193,7 +7193,10 @@ struct BoardCanvasView: View {
     }
 
     private func moveSelectedObjects(by delta: HorizontalPoint, board: inout HorizontalBoard) {
-        var movedConnectionKeys = Set<String>()
+        // Junctions and vias, and what stands on them, move once, after the
+        // rest, matched against the board as it was (`BoardMovingPoints`).
+        let original = board
+        var movingPoints = BoardMovingPoints()
         var movedLayerVertexKeys = Set<String>()
         let selectedRefSet = Set(selectedObjects)
         var movedPolygonPoints = Set<String>()
@@ -7212,23 +7215,23 @@ struct BoardCanvasView: View {
             case .boardPackage:
                 moveBoardPackage(ref: ref, by: delta, board: &board)
             case .track:
-                if boardSegmentHasSelectedEndpointOwner(ref: ref, in: board.tracks, selectedRefs: selectedRefSet, board: board) {
+                if boardSegmentHasSelectedEndpointOwner(ref: ref, in: original.tracks, selectedRefs: selectedRefSet, board: original) {
                     break
                 }
-                moveBoardTrackSelection(ref: ref, by: delta, in: \.tracks, board: &board, movedKeys: &movedConnectionKeys)
+                moveBoardTrack(ref: ref, by: delta, in: \.tracks, original: original, board: &board, points: &movingPoints)
             case .boardNetTie:
-                if boardSegmentHasSelectedEndpointOwner(ref: ref, in: board.netTies, selectedRefs: selectedRefSet, board: board) {
+                if boardSegmentHasSelectedEndpointOwner(ref: ref, in: original.netTies, selectedRefs: selectedRefSet, board: original) {
                     break
                 }
-                moveBoardTrackSelection(ref: ref, by: delta, in: \.netTies, board: &board, movedKeys: &movedConnectionKeys)
+                moveBoardTrack(ref: ref, by: delta, in: \.netTies, original: original, board: &board, points: &movingPoints)
             case .boardLine:
                 moveBoardLayerSegmentSelection(&board.lines, ref: ref, by: delta, movedKeys: &movedLayerVertexKeys)
             case .junction:
-                moveBoardJunction(ref: ref, by: delta, board: &board, movedKeys: &movedConnectionKeys, graphicsMovedWhole: graphicsMovedWhole)
+                moveBoardJunction(ref: ref, by: delta, in: original, points: &movingPoints)
             case .boardArc:
                 moveArc(&board.arcs, ref: ref, by: delta)
             case .via:
-                moveVia(ref: ref, by: delta, board: &board)
+                moveVia(ref: ref, by: delta, in: original, points: &movingPoints)
             case .boardHole:
                 moveHole(&board.holes, ref: ref, by: delta)
                 moveHole(&board.packageHoles, ref: ref, by: delta)
@@ -7262,9 +7265,12 @@ struct BoardCanvasView: View {
                 break
             }
         }
+        movingPoints.apply(from: original, to: &board, graphicsMovedWhole: graphicsMovedWhole)
     }
 
     private func mirrorSelectedObjects(around center: HorizontalPoint, board: inout HorizontalBoard) {
+        let original = board
+        var movingPoints = BoardMovingPoints()
         var mirroredPolygonPoints = Set<String>()
         for ref in selectedObjects {
             switch ref.type {
@@ -7279,7 +7285,7 @@ struct BoardCanvasView: View {
             case .boardArc:
                 mirrorArc(&board.arcs, ref: ref, around: center, flipsLayer: false)
             case .via:
-                mirrorVia(ref: ref, around: center, board: &board)
+                mirrorVia(ref: ref, around: center, in: original, points: &movingPoints)
             case .boardHole:
                 mirrorHole(&board.holes, ref: ref, around: center)
                 mirrorHole(&board.packageHoles, ref: ref, around: center)
@@ -7305,6 +7311,7 @@ struct BoardCanvasView: View {
                 break
             }
         }
+        movingPoints.apply(from: original, to: &board)
     }
 
     private func rotateSelectedObjects(around center: HorizontalPoint, by angleDelta: Int, board: inout HorizontalBoard) {
@@ -7325,7 +7332,10 @@ struct BoardCanvasView: View {
         board: inout HorizontalBoard,
         originFor refOrigin: (HorizontalSelectableRef) -> HorizontalPoint?
     ) {
-        var movedConnectionKeys = Set<String>()
+        // As a move does (`moveSelectedObjects`): a track and its via both
+        // turned the via, the second time from where the first had put it.
+        let original = board
+        var movingPoints = BoardMovingPoints()
         var turnedPolygonPoints = Set<String>()
 
         for ref in selectedObjects {
@@ -7336,15 +7346,15 @@ struct BoardCanvasView: View {
             case .boardPackage:
                 rotateBoardPackage(ref: ref, around: center, by: angleDelta, board: &board)
             case .track:
-                rotateBoardTrack(ref: ref, around: center, by: angleDelta, in: \.tracks, board: &board, movedKeys: &movedConnectionKeys)
+                rotateBoardTrack(ref: ref, around: center, by: angleDelta, in: \.tracks, original: original, board: &board, points: &movingPoints)
             case .boardNetTie:
-                rotateBoardTrack(ref: ref, around: center, by: angleDelta, in: \.netTies, board: &board, movedKeys: &movedConnectionKeys)
+                rotateBoardTrack(ref: ref, around: center, by: angleDelta, in: \.netTies, original: original, board: &board, points: &movingPoints)
             case .boardLine:
                 rotateSegment(&board.lines, ref: ref, around: center, by: angleDelta)
             case .boardArc:
                 rotateArc(&board.arcs, ref: ref, around: center, by: angleDelta)
             case .via:
-                rotateVia(ref: ref, around: center, by: angleDelta, board: &board)
+                rotateVia(ref: ref, around: center, by: angleDelta, in: original, points: &movingPoints)
             case .boardHole:
                 rotateHole(&board.holes, ref: ref, around: center, by: angleDelta)
                 rotateHole(&board.packageHoles, ref: ref, around: center, by: angleDelta)
@@ -7370,6 +7380,7 @@ struct BoardCanvasView: View {
                 break
             }
         }
+        movingPoints.apply(from: original, to: &board)
     }
 
     private func moveBoardPackage(ref: HorizontalSelectableRef, by delta: HorizontalPoint, board: inout HorizontalBoard) {
@@ -7554,91 +7565,51 @@ struct BoardCanvasView: View {
         return padAnchors + holeAnchors
     }
 
+    /// Moves a via with its drill and the copper on it, as the inspector's
+    /// position fields do.
     private func moveVia(ref: HorizontalSelectableRef, by delta: HorizontalPoint, board: inout HorizontalBoard) {
-        guard let index = board.vias.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
-            return
-        }
-
-        let oldPosition = board.vias[index].position
-        board.vias[index].position = oldPosition + delta
-        moveHole(&board.viaHoles, ref: ref, by: delta)
-        moveBoardTrackEndpoints(at: oldPosition, by: delta, netID: board.vias[index].netID, board: &board)
+        let original = board
+        var points = BoardMovingPoints()
+        moveVia(ref: ref, by: delta, in: original, points: &points)
+        points.apply(from: original, to: &board)
     }
 
-    private func rotateVia(ref: HorizontalSelectableRef, around center: HorizontalPoint, by angleDelta: Int, board: inout HorizontalBoard) {
-        guard let index = board.vias.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+    /// A via goes with its point (`BoardMovingPoints`), which carries its
+    /// drill and the copper on it.
+    private func moveVia(ref: HorizontalSelectableRef, by delta: HorizontalPoint, in board: HorizontalBoard, points: inout BoardMovingPoints) {
+        guard let via = board.vias.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
             return
         }
-
-        let oldPosition = board.vias[index].position
-        let newPosition = rotated(oldPosition, around: center, by: angleDelta)
-        board.vias[index].position = newPosition
-        rotateHole(&board.viaHoles, ref: ref, around: center, by: angleDelta)
-        moveBoardTrackEndpoints(at: oldPosition, by: newPosition - oldPosition, netID: board.vias[index].netID, board: &board)
+        points.add(via.position, to: via.position + delta, netID: via.netID)
     }
 
+    private func rotateVia(
+        ref: HorizontalSelectableRef,
+        around center: HorizontalPoint,
+        by angleDelta: Int,
+        in board: HorizontalBoard,
+        points: inout BoardMovingPoints
+    ) {
+        guard let via = board.vias.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+            return
+        }
+        points.add(via.position, to: rotated(via.position, around: center, by: angleDelta), netID: via.netID)
+    }
+
+    /// A junction goes with its point (`BoardMovingPoints`). Lines and arcs
+    /// end on junctions as tracks do, and Horizon's follow the junction they
+    /// end on. The model keeps their ends as points, so the ends at the
+    /// junction's point go with it.
     private func moveBoardJunction(
         ref: HorizontalSelectableRef,
         by delta: HorizontalPoint,
-        board: inout HorizontalBoard,
-        movedKeys: inout Set<String>,
-        graphicsMovedWhole: Set<String> = []
+        in board: HorizontalBoard,
+        points: inout BoardMovingPoints
     ) {
         guard let entry = board.junctions.first(where: { normalizedID($0.key) == normalizedID(ref.id) }) else {
             return
         }
-        let firstMoveHere = !movedKeys.contains(pointKey(entry.value))
-        moveBoardConnectionPoint(
-            at: entry.value,
-            by: delta,
-            netID: board.junctionNetIDs[entry.key],
-            board: &board,
-            movedKeys: &movedKeys
-        )
-        // Lines and arcs end on junctions as tracks do, and Horizon's follow
-        // the junction they end on. The model keeps their ends as points, so
-        // the ends at the junction's point go with it.
-        if firstMoveHere {
-            moveBoardGraphicEnds(at: entry.value, by: delta, skipping: graphicsMovedWhole, board: &board)
-        }
-    }
-
-    /// Moves the ends at `point` of the board's lines, connection lines and
-    /// arcs (an arc's centre too), but for those in `skipping` (normalized
-    /// ids), which move whole.
-    private func moveBoardGraphicEnds(
-        at point: HorizontalPoint,
-        by delta: HorizontalPoint,
-        skipping: Set<String>,
-        board: inout HorizontalBoard
-    ) {
-        guard delta != .zero else {
-            return
-        }
-        let key = pointKey(point)
-        func moveEnds(_ segments: inout [HorizontalSegment]) {
-            for index in segments.indices where !skipping.contains(normalizedID(segments[index].id)) {
-                if pointKey(segments[index].from) == key {
-                    segments[index].from = segments[index].from + delta
-                }
-                if pointKey(segments[index].to) == key {
-                    segments[index].to = segments[index].to + delta
-                }
-            }
-        }
-        moveEnds(&board.lines)
-        moveEnds(&board.connectionLines)
-        for index in board.arcs.indices where !skipping.contains(normalizedID(board.arcs[index].id)) {
-            if pointKey(board.arcs[index].from) == key {
-                board.arcs[index].from = board.arcs[index].from + delta
-            }
-            if pointKey(board.arcs[index].to) == key {
-                board.arcs[index].to = board.arcs[index].to + delta
-            }
-            if pointKey(board.arcs[index].center) == key {
-                board.arcs[index].center = board.arcs[index].center + delta
-            }
-        }
+        points.add(entry.value, to: entry.value + delta, netID: board.junctionNetIDs[entry.key], carriesGraphics: true)
     }
 
     private func boardSegmentHasSelectedEndpointOwner(
@@ -7712,16 +7683,6 @@ struct BoardCanvasView: View {
         }
     }
 
-    private func moveBoardTrackSelection(
-        ref: HorizontalSelectableRef,
-        by delta: HorizontalPoint,
-        in segments: WritableKeyPath<HorizontalBoard, [HorizontalSegment]>,
-        board: inout HorizontalBoard,
-        movedKeys: inout Set<String>
-    ) {
-        moveBoardTrack(ref: ref, by: delta, in: segments, board: &board, movedKeys: &movedKeys)
-    }
-
     private func moveBoardLayerConnectionPoint(
         at point: HorizontalPoint,
         by delta: HorizontalPoint,
@@ -7792,28 +7753,11 @@ struct BoardCanvasView: View {
         ref: HorizontalSelectableRef,
         by delta: HorizontalPoint,
         in segments: WritableKeyPath<HorizontalBoard, [HorizontalSegment]>,
+        original: HorizontalBoard,
         board: inout HorizontalBoard,
-        movedKeys: inout Set<String>
+        points: inout BoardMovingPoints
     ) {
-        guard let index = board[keyPath: segments].firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
-            return
-        }
-
-        let original = board[keyPath: segments][index]
-        if hasBoardMovableConnection(at: original.from, in: board) {
-            moveBoardConnectionPoint(at: original.from, by: delta, netID: original.netID, board: &board, movedKeys: &movedKeys)
-        } else {
-            board[keyPath: segments][index].from = board[keyPath: segments][index].from + delta
-        }
-        if hasBoardMovableConnection(at: original.to, in: board) {
-            moveBoardConnectionPoint(at: original.to, by: delta, netID: original.netID, board: &board, movedKeys: &movedKeys)
-        } else {
-            board[keyPath: segments][index].to = board[keyPath: segments][index].to + delta
-        }
-        if original.center != nil,
-           let updatedIndex = board[keyPath: segments].firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
-            board[keyPath: segments][updatedIndex].center = board[keyPath: segments][updatedIndex].center.map { $0 + delta }
-        }
+        transformBoardTrack(ref: ref, in: segments, original: original, board: &board, points: &points) { $0 + delta }
     }
 
     private func rotateBoardTrack(
@@ -7821,65 +7765,47 @@ struct BoardCanvasView: View {
         around center: HorizontalPoint,
         by angleDelta: Int,
         in segments: WritableKeyPath<HorizontalBoard, [HorizontalSegment]>,
+        original: HorizontalBoard,
         board: inout HorizontalBoard,
-        movedKeys: inout Set<String>
+        points: inout BoardMovingPoints
     ) {
-        guard let index = board[keyPath: segments].firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
-            return
-        }
-
-        let original = board[keyPath: segments][index]
-        if hasBoardMovableConnection(at: original.from, in: board) {
-            rotateBoardConnectionPoint(at: original.from, around: center, by: angleDelta, netID: original.netID, board: &board, movedKeys: &movedKeys)
-        } else if let updatedIndex = board[keyPath: segments].firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
-            board[keyPath: segments][updatedIndex].from = rotated(original.from, around: center, by: angleDelta)
-        }
-        if hasBoardMovableConnection(at: original.to, in: board) {
-            rotateBoardConnectionPoint(at: original.to, around: center, by: angleDelta, netID: original.netID, board: &board, movedKeys: &movedKeys)
-        } else if let updatedIndex = board[keyPath: segments].firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
-            board[keyPath: segments][updatedIndex].to = rotated(original.to, around: center, by: angleDelta)
-        }
-        if let originalCenter = original.center,
-           let updatedIndex = board[keyPath: segments].firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
-            board[keyPath: segments][updatedIndex].center = rotated(originalCenter, around: center, by: angleDelta)
+        transformBoardTrack(ref: ref, in: segments, original: original, board: &board, points: &points) {
+            rotated($0, around: center, by: angleDelta)
         }
     }
 
-    private func moveBoardConnectionPoint(
-        at point: HorizontalPoint,
-        by delta: HorizontalPoint,
-        netID: String?,
+    /// A track end on a junction or via goes with that point
+    /// (`BoardMovingPoints`), which carries the rest of the copper there; a
+    /// free end, and an arc's centre, go on their own. Both are taken from
+    /// `original`, the board before the change, so an end goes once.
+    private func transformBoardTrack(
+        ref: HorizontalSelectableRef,
+        in segments: WritableKeyPath<HorizontalBoard, [HorizontalSegment]>,
+        original: HorizontalBoard,
         board: inout HorizontalBoard,
-        movedKeys: inout Set<String>
+        points: inout BoardMovingPoints,
+        _ transform: (HorizontalPoint) -> HorizontalPoint
     ) {
-        guard delta != .zero else {
+        guard let index = original[keyPath: segments].firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }),
+              board[keyPath: segments].indices.contains(index),
+              board[keyPath: segments][index].id == original[keyPath: segments][index].id else {
             return
         }
 
-        let key = pointKey(point)
-        guard movedKeys.insert(key).inserted else {
-            return
+        let segment = original[keyPath: segments][index]
+        if hasBoardMovableConnection(at: segment.from, in: original) {
+            points.add(segment.from, to: transform(segment.from), netID: segment.netID)
+        } else {
+            board[keyPath: segments][index].from = transform(segment.from)
         }
-
-        moveBoardTrackEndpoints(at: point, by: delta, netID: netID, board: &board)
-        for index in board.vias.indices where pointKey(board.vias[index].position) == key && netsMatch(board.vias[index].netID, netID) {
-            board.vias[index].position = board.vias[index].position + delta
+        if hasBoardMovableConnection(at: segment.to, in: original) {
+            points.add(segment.to, to: transform(segment.to), netID: segment.netID)
+        } else {
+            board[keyPath: segments][index].to = transform(segment.to)
         }
-        for index in board.viaHoles.indices where pointKey(board.viaHoles[index].position) == key && netsMatch(board.viaHoles[index].netID, netID) {
-            board.viaHoles[index].position = board.viaHoles[index].position + delta
+        if let center = segment.center {
+            board[keyPath: segments][index].center = transform(center)
         }
-    }
-
-    private func rotateBoardConnectionPoint(
-        at point: HorizontalPoint,
-        around center: HorizontalPoint,
-        by angleDelta: Int,
-        netID: String?,
-        board: inout HorizontalBoard,
-        movedKeys: inout Set<String>
-    ) {
-        let newPoint = rotated(point, around: center, by: angleDelta)
-        moveBoardConnectionPoint(at: point, by: newPoint - point, netID: netID, board: &board, movedKeys: &movedKeys)
     }
 
     private func hasBoardMovableConnection(at point: HorizontalPoint, in board: HorizontalBoard) -> Bool {
@@ -7966,16 +7892,16 @@ struct BoardCanvasView: View {
         planes[index] = shifted(planes[index], by: delta)
     }
 
-    private func mirrorVia(ref: HorizontalSelectableRef, around center: HorizontalPoint, board: inout HorizontalBoard) {
-        guard let index = board.vias.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+    private func mirrorVia(
+        ref: HorizontalSelectableRef,
+        around center: HorizontalPoint,
+        in board: HorizontalBoard,
+        points: inout BoardMovingPoints
+    ) {
+        guard let via = board.vias.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
             return
         }
-
-        let oldPosition = board.vias[index].position
-        let newPosition = mirrored(oldPosition, around: center)
-        board.vias[index].position = newPosition
-        mirrorHole(&board.viaHoles, ref: ref, around: center)
-        moveBoardTrackEndpoints(at: oldPosition, by: newPosition - oldPosition, netID: board.vias[index].netID, board: &board)
+        points.add(via.position, to: mirrored(via.position, around: center), netID: via.netID)
     }
 
     private func mirrorSegment(
@@ -11334,7 +11260,8 @@ struct BoardCanvasView: View {
                 appendHoleFill(hole, points: points, owner: owner, to: \.holesPad)
             }
             for hole in board.viaHoles {
-                let owner = selectableRef(id: hole.id, type: .via)
+                // Drawn as part of its via, which a move shifts, drill and all.
+                let owner = selectableRef(id: HorizontalBoard.viaID(ofViaHole: hole.id) ?? hole.id, type: .via)
                 let points = hole.outlinePoints(precision: 32)
                 appendHoleOutline(hole, points: points, owner: owner, to: \.holesVia)
                 appendHoleFill(hole, points: points, owner: owner, to: \.holesVia)
@@ -11904,7 +11831,7 @@ struct BoardCanvasView: View {
             packageID(forGeometryID: hole.id).map { HorizontalSelectableRef(id: $0, type: .boardPackage) }
         })
         .union(changedBoardHoleRefs(from: originalBoard.viaHoles, to: currentBoard.viaHoles) { hole in
-            HorizontalSelectableRef(id: hole.id, type: .via)
+            HorizontalSelectableRef(id: HorizontalBoard.viaID(ofViaHole: hole.id) ?? hole.id, type: .via)
         })
     }
 

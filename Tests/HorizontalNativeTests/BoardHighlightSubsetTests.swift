@@ -40,8 +40,9 @@ final class BoardHighlightSubsetTests: XCTestCase {
                 HorizontalMarker(id: "via-vcc", position: p(1_000_000, 0), size: 600_000, layer: 0, netID: "VCC")
             ],
             viaHoles: [
-                HorizontalHole(id: "via-gnd", position: p(0, 0), diameter: 300_000, plated: true),
-                HorizontalHole(id: "via-vcc", position: p(1_000_000, 0), diameter: 300_000, plated: true)
+                // A via's drill is "<via id>/hole", as the loader names it.
+                HorizontalHole(id: "via-gnd/hole", position: p(0, 0), diameter: 300_000, plated: true),
+                HorizontalHole(id: "via-vcc/hole", position: p(1_000_000, 0), diameter: 300_000, plated: true)
             ],
             packages: [
                 HorizontalPlacement(id: "pkg1", position: p(0, 0), angle: 0, mirrored: false, label: "U1", componentID: "U1-ID"),
@@ -69,7 +70,7 @@ final class BoardHighlightSubsetTests: XCTestCase {
         XCTAssertEqual(subset.tracks.map(\.id), ["t-gnd"], "ids are matched lowercased")
         XCTAssertEqual(subset.airwires.map(\.id), ["a-gnd"])
         XCTAssertEqual(subset.vias.map(\.id), ["via-gnd"])
-        XCTAssertEqual(subset.viaHoles.map(\.id), ["via-gnd"], "a via's hole, on no net of its own, goes with its via")
+        XCTAssertEqual(subset.viaHoles.map(\.id), ["via-gnd/hole"], "a via's hole, on no net of its own, goes with its via")
         XCTAssertEqual(subset.packagePads.map(\.id), ["pkg1/pad/1", "pkg2/pad/1"])
         XCTAssertEqual(subset.polygons.map(\.id), ["poly-gnd"], "the board outline is no copper of the net")
         XCTAssertTrue(subset.packages.isEmpty, "a net's pads are drawn without their packages")

@@ -270,18 +270,29 @@ extension HorizontalPlane {
 }
 
 extension HorizontalBoard {
+    /// The id of a via's drill, its own object in `viaHoles`: "<via id>/hole",
+    /// as the loader, the track tool and `syncHole` name it. Not the via's id.
+    static func viaHoleID(ofVia viaID: String) -> String {
+        "\(viaID)/hole"
+    }
+
+    /// The id of the via whose drill `holeID` names (`viaHoleID(ofVia:)`).
+    static func viaID(ofViaHole holeID: String) -> String? {
+        holeID.hasSuffix("/hole") ? String(holeID.dropLast("/hole".count)) : nil
+    }
+
     /// A via's drill, its own board hole object, at the via's hole size.
     mutating func syncHole(of via: HorizontalMarker) {
         guard let holeSize = via.holeSize else {
             return
         }
-        let holeID = via.id.lowercased() + "/hole"
+        let holeID = Self.viaHoleID(ofVia: via.id).lowercased()
         guard let index = viaHoles.firstIndex(where: { $0.id.lowercased() == holeID }) else {
             guard holeSize > 0 else {
                 return
             }
             viaHoles.append(HorizontalHole(
-                id: "\(via.id)/hole", position: via.position, diameter: holeSize, length: holeSize,
+                id: Self.viaHoleID(ofVia: via.id), position: via.position, diameter: holeSize, length: holeSize,
                 shape: .round, plated: true, netID: via.netID))
             return
         }
