@@ -130,6 +130,28 @@ final class BoardPlanePourTests: XCTestCase {
         XCTAssertGreaterThan(area(updated) / (mm * mm), 300, "should cover most of the 20mm square")
     }
 
+    /// A plane pours its polygon as the board has it now. Its copy of the
+    /// polygon is taken when the board loads or the plane is defined, and a
+    /// polygon moved or reshaped on the canvas left the copy where the polygon
+    /// had been, so the pour put the fill back there.
+    func testAPlanePoursItsPolygonWhereTheBoardHasIt() throws {
+        // The copy is at the lower left, away from the anchor; the polygon has
+        // since moved to the upper right, over it.
+        let stale = plane("p1", half: 4 * mm, net: "gnd", cx: -6 * mm, cy: -6 * mm)
+        let moved = square("poly-p1", cx: 6 * mm, cy: 6 * mm, half: 4 * mm)
+        let board = makeBoard(
+            polygons: [outline(half: 12 * mm), moved],
+            planes: [stale],
+            packagePads: [anchor()]
+        )
+        let updated = try XCTUnwrap(HorizontalBoardPlaneUpdater.updateAllPlanes(in: board).planes.first)
+
+        XCTAssertFalse(updated.fragments.isEmpty, "the polygon where it is now covers the anchor")
+        let points = updated.fragments.flatMap(\.paths).flatMap { $0 }
+        XCTAssertTrue(points.allSatisfy { $0.x >= 2 * mm && $0.y >= 2 * mm }, "the fill is inside the moved polygon")
+        XCTAssertEqual(updated.fallbackPolygon?.vertices, moved.vertices)
+    }
+
     /// A plane with no same-net copper anywhere pours NOTHING: every fragment is
     /// an orphan and is discarded. That is correct — copper connected to no net
     /// is copper that should not be fabricated — and it is the single most

@@ -62,6 +62,17 @@ enum BoardPolygonParts {
         return reshaped
     }
 
+    /// Whether a change that filled `done` changed every point of `polygon`:
+    /// each vertex and each arc's centre, so that a move moved it whole.
+    static func changedWhole(_ polygon: HorizontalPolygon, done: Set<String>) -> Bool {
+        let id = HorizontalCanvasModeSupport.normalizedID(polygon.id)
+        let vertices = polygon.polygonVertices
+        return !vertices.isEmpty && vertices.indices.allSatisfy { index in
+            done.contains("\(id)/vertex/\(index)")
+                && (vertices[index].type != .arc || done.contains("\(id)/arc-center/\(index)"))
+        }
+    }
+
     /// Changes the points of `polygons` that `ref` names by `point`, leaving
     /// those an earlier ref of the same change has changed (`done`, which
     /// this fills). A mirror also turns an arc round where it mirrors the
