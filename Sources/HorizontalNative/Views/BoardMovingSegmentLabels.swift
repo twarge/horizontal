@@ -56,9 +56,10 @@ enum BoardMovingSegmentLabels {
     }
 
     /// What to write over `span`, whose strokes are in `lines` from its
-    /// `lineIndex`: `label`'s strokes in the style the scene gave the old
-    /// ones, or the old ones made transparent when there is no label, it is
-    /// smaller than `minimumLabelSize` (the scene's zoom cull, 0 for none), or
+    /// `lineIndex`: `label`'s strokes, at its stroke width, in the style the
+    /// scene gave the old ones, or the old ones made transparent when there
+    /// is no label, it is smaller than `minimumLabelSize` (the scene's zoom
+    /// cull, 0 for none), or
     /// it takes other strokes than the span holds. Nil when the span is not
     /// where it says in `lines`.
     static func patch(
@@ -84,6 +85,7 @@ enum BoardMovingSegmentLabels {
                         var primitive = style
                         primitive.from = stroke.0
                         primitive.to = stroke.1
+                        primitive.width = label.width
                         return primitive
                     }
                 )

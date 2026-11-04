@@ -596,6 +596,15 @@ final class HorizontalMetalCanvasLayer {
     /// Read the resident geometry for mounted-canvas regression checks.
     /// A scene key alone cannot detect a stale or displaced move preview.
     func residentLineEndpoints(compositeGroup: Int) -> [(from: SIMD2<Float>, to: SIMD2<Float>)] {
+        residentLines(compositeGroup: compositeGroup).map { ($0.from, $0.to) }
+    }
+
+    /// The resident lines' world widths, in `residentLineEndpoints`' order.
+    func residentLineWidths(compositeGroup: Int) -> [Float] {
+        residentLines(compositeGroup: compositeGroup).map(\.width)
+    }
+
+    private func residentLines(compositeGroup: Int) -> [HorizontalMetalLineShaderPrimitive] {
         let buffer: MTLBuffer?
         let count: Int
         if compositeGroup == 0 {
@@ -607,7 +616,7 @@ final class HorizontalMetalCanvasLayer {
         }
         guard let buffer else { return [] }
         let lines = buffer.contents().bindMemory(to: HorizontalMetalLineShaderPrimitive.self, capacity: count)
-        return (0..<count).map { (lines[$0].from, lines[$0].to) }
+        return (0..<count).map { lines[$0] }
     }
 
     /// Takes the layer's content for this pass, and says whether its scene
