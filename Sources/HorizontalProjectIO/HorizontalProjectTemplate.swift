@@ -184,25 +184,10 @@ public extension HorizontalProjectArchive {
 
         // Horizon's `Project::create` gives a new board one via rule, with the
         // pool's default via, so a route's `v` has a via to drop; here that
-        // via tented, and with no pool the one Horizontal ships. RuleVia's own
-        // defaults: every net, a 0.5 mm via with a 0.2 mm hole.
+        // via tented, and with no pool the one Horizontal ships. The rest of
+        // the rules are Horizontal's own (`newBoardRules`).
         let via = defaultViaPadstack(poolDefaultVia: pool.defaultViaUUID)
-        let rules: [String: Any] = [
-            "via": [
-                newID(): [
-                    "enabled": true,
-                    "order": 0,
-                    "match": [
-                        "mode": "all",
-                        "net": nullUUID,
-                        "net_class": nullUUID,
-                        "net_name_regex": ""
-                    ],
-                    "padstack": via,
-                    "parameter_set": ["via_diameter": 500_000, "hole_diameter": 200_000]
-                ]
-            ]
-        ]
+        let rules = newBoardRules(viaPadstack: via)
         // The project pool carries the via, as Horizon's caches an item the
         // project takes from a pool, so the project needs no pool to open. A
         // via Horizontal doesn't ship is cached from its pool when a board
@@ -265,6 +250,145 @@ public extension HorizontalProjectArchive {
             ]),
             suggestedFilename: "\(safeName).horizontal"
         )
+    }
+}
+
+extension HorizontalProjectArchive {
+    /// A new board's rules: every family Horizon's `BoardRules::serialize`
+    /// writes, and in each family whose last rule must match everything
+    /// (`RuleDescription::NEEDS_MATCH_ALL`) one rule that does. Horizon's own
+    /// new board has the via rule alone, so its rules window and Horizontal's
+    /// rules check both start out naming five families with no catch-all, and
+    /// with no track width rule a track drawn from the rules is 0 wide
+    /// (`BoardRules::get_default_track_width`).
+    ///
+    /// Lengths are in nanometers, as the file keeps them. The rest of each
+    /// rule is Horizon's default for it.
+    static func newBoardRules(viaPadstack: String) -> [String: Any] {
+        // Between copper of two nets, for every kind of copper, pours included.
+        let copperClearance = 125_000
+        // From copper to the board's edge, and to a hole that isn't plated.
+        let edgeClearance = 250_000
+        let unplatedHoleClearance = 150_000
+        // What the router keeps beyond a clearance, which the rules check
+        // ignores; half of Horizon's 0.05 mm.
+        let routingOffset = 25_000
+        let matchAll: [String: Any] = [
+            "mode": "all",
+            "net": nullUUID,
+            "net_class": nullUUID,
+            "net_name_regex": ""
+        ]
+        // Horizon's `PatchType` names in its own order, which its clearance
+        // table is indexed by.
+        let patchTypes = ["other", "track", "pad", "pad_th", "via", "plane", "hole_pth", "hole_npth", "board_edge", "text", "net_tie"]
+        func rule(_ fields: [String: Any]) -> [String: Any] {
+            [newID(): fields.merging(["enabled": true, "order": 0]) { field, _ in field }]
+        }
+        // A rule family that holds one rule, as Horizon writes it.
+        func single(_ fields: [String: Any]) -> [String: Any] {
+            fields.merging(["enabled": true, "order": -1]) { field, _ in field }
+        }
+
+        // `RuleClearanceCopper::serialize` writes its whole table, every pair once.
+        var copperClearances = [[String: Any]]()
+        for (index, first) in patchTypes.enumerated() {
+            for second in patchTypes[index...] {
+                copperClearances.append(["types": [first, second], "clearance": copperClearance])
+            }
+        }
+        // What the rules editor offers for copper against what isn't copper,
+        // in the order Horizon writes them. "other" is text and lines on a
+        // copper layer, which belong to no net.
+        var otherClearances = [[String: Any]]()
+        for copper in ["track", "pad", "pad_th", "via", "plane"] {
+            otherClearances.append(["types": [copper, "other"], "clearance": copperClearance])
+            otherClearances.append(["types": [copper, "hole_npth"], "clearance": unplatedHoleClearance])
+            otherClearances.append(["types": [copper, "board_edge"], "clearance": edgeClearance])
+        }
+
+        return [
+            "clearance_copper": rule([
+                "match_1": matchAll,
+                "match_2": matchAll,
+                "layer": 10000,
+                "routing_offset": routingOffset,
+                "clearances": copperClearances
+            ]),
+            "clearance_copper_other": rule([
+                "match": matchAll,
+                "layer": 10000,
+                "routing_offset": routingOffset,
+                "clearances": otherClearances
+            ]),
+            // Copper keeps out of a keepout and may run up to its outline.
+            "clearance_copper_keepout": rule([
+                "match": matchAll,
+                "match_keepout": ["mode": "all", "component": nullUUID, "keepout_class": ""],
+                "routing_offset": routingOffset,
+                "clearances": [String: Any]()
+            ]),
+            "clearance_same_net": [String: Any](),
+            "track_width": rule([
+                "match": matchAll,
+                "widths": [
+                    "0": ["min": 125_000, "def": 250_000, "max": 10_000_000],
+                    "-100": ["min": 125_000, "def": 250_000, "max": 10_000_000]
+                ]
+            ]),
+            // The default via's 0.2 mm hole is the smallest it takes.
+            "hole_size": rule([
+                "match": matchAll,
+                "diameter_min": 200_000,
+                "diameter_max": 10_000_000
+            ]),
+            // RuleVia's own defaults: a 0.5 mm via with a 0.2 mm hole.
+            "via": rule([
+                "match": matchAll,
+                "padstack": viaPadstack,
+                "parameter_set": ["via_diameter": 500_000, "hole_diameter": 200_000]
+            ]),
+            "plane": rule([
+                "match": matchAll,
+                "layer": 10000,
+                "settings": [
+                    "min_width": 200_000,
+                    "keep_orphans": false,
+                    "style": "round",
+                    "connect_style": "solid",
+                    "thermal_gap_width": 200_000,
+                    "thermal_spoke_width": 200_000,
+                    "n_spokes": 4,
+                    "angle": 0,
+                    "text_style": "expand",
+                    "fill_style": "solid",
+                    "hatch_border_width": 500_000,
+                    "hatch_line_spacing": 500_000,
+                    "hatch_line_width": 200_000
+                ]
+            ]),
+            "thermals": [String: Any](),
+            "diffpair": [String: Any](),
+            "shorted_pads": [String: Any](),
+            "layer_pair": [String: Any](),
+            "clearance_silkscreen_exposed_copper": single([
+                "pads_only": false,
+                "clearance_top": 100_000,
+                "clearance_bottom": 100_000
+            ]),
+            // Horizon opens the solder mask 0.1 mm around a pad. Between the
+            // 0.25 mm pads of a 0.5 mm pitch part that leaves a 0.05 mm web of
+            // mask, too thin to make; 0.07 mm leaves 0.11 mm.
+            "parameters": single([
+                "solder_mask_expansion": 70_000,
+                "paste_mask_contraction": 0,
+                "courtyard_expansion": 250_000,
+                "via_solder_mask_expansion": 100_000,
+                "hole_solder_mask_expansion": 100_000
+            ]),
+            "via_definitions": single(["via_definitions": [String: Any]()]),
+            "height_restrictions": single([:])
+        ]
     }
 }
 

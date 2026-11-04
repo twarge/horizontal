@@ -422,7 +422,7 @@ final class HorizontalBoardClearanceCheckDispatchTests: XCTestCase {
         func clearance() throws -> [JSONDictionary] {
             try call("check", ["full": true]).dictionaryArray("messages").filter { $0.string("category") == "clearance" }
         }
-        XCTAssertEqual(try clearance().count, 0, "0.2 mm apart, 0.1 mm asked")
+        XCTAssertEqual(try clearance().count, 0, "0.2 mm apart, 0.125 mm asked")
         // 0.05 mm apart. Their pads 2, on no net, are as close and not checked.
         _ = try call("apply", ["ops": [["op": "place_component", "component": "R2", "x_mm": 10.85, "y_mm": 10]] as [JSONDictionary]])
         let found = try clearance()
@@ -437,8 +437,11 @@ final class HorizontalBoardClearanceCheckDispatchTests: XCTestCase {
         XCTAssertEqual(pads.compactMap { $0?.string("type") }, ["pad", "pad"])
         XCTAssertEqual(message.string("layer"), "Top Copper")
         XCTAssertEqual(message.double("distance_mm") ?? 0, 0.05, accuracy: 1e-6)
-        XCTAssertEqual(message.double("clearance_mm") ?? 0, 0.1, accuracy: 1e-6)
-        XCTAssertTrue(message.dictionary("rule")?["id"] is NSNull, "no rule: Horizon's 0.1 mm")
+        // The new board's catch-all copper clearance rule.
+        XCTAssertEqual(message.double("clearance_mm") ?? 0, 0.125, accuracy: 1e-6)
+        let catchAll = try call("board_rules", ["kind": "clearance_copper"]).dictionaryArray("rules")
+        XCTAssertEqual(catchAll.count, 1)
+        XCTAssertEqual(message.dictionary("rule")?.string("id"), catchAll.first?.string("id"))
         XCTAssertEqual(message.dictionary("rule")?.string("kind"), "clearance_copper")
         XCTAssertEqual(message.double("x_mm") ?? 0, 10.425, accuracy: 1e-6)
         XCTAssertEqual(try call("check").bool("ok"), false)

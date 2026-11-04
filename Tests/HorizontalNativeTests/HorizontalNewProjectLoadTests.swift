@@ -52,6 +52,60 @@ final class HorizontalNewProjectLoadTests: XCTestCase {
         XCTAssertTrue(board.packages.isEmpty)
     }
 
+    /// The rules results sidebar has nothing to say about a new board's rules:
+    /// every family whose last rule must match everything has one that does.
+    func testTemplateRulesPassTheRulesCheck() throws {
+        let packageURL = try writtenTemplate()
+        let project = try HorizontalProject.load(from: packageURL)
+        let archive = try HorizontalProjectArchive.completeProject(from: packageURL)
+
+        let rules = try HorizontalProjectJSONApplicator.boardRules(in: project, from: archive)
+        let context = HorizontalBoardRuleContext(board: project.board, netClasses: project.schematic?.netClasses ?? [])
+
+        XCTAssertEqual(HorizontalBoardRulesValidator.validateAll(rules: rules, context: context).map(\.title), [])
+        for kind in HorizontalBoardRuleKind.visibleCases where kind.needsMatchAll {
+            XCTAssertEqual(kind.instances(in: rules, context: context).count, 1, kind.title)
+        }
+    }
+
+    /// What a new board's rules give it, from rules rather than from Horizon's
+    /// fallbacks for a board with none (a 0 wide track, 0.1 mm everywhere).
+    func testTemplateRulesGiveANewBoardItsClearancesAndWidths() throws {
+        let board = try XCTUnwrap(HorizontalProject.load(from: writtenTemplate()).board)
+        let rules = board.rules
+
+        for layer in [0, -100] {
+            let track = try XCTUnwrap(rules.trackWidth(net: nil, layer: layer))
+            XCTAssertEqual(track.widths, HorizontalRuleTrackWidth.Widths(min: 125_000, max: 10_000_000, def: 250_000))
+        }
+
+        let copper = rules.clearanceCopper(net1: nil, net2: nil, layer: 0)
+        XCTAssertFalse(copper.id.isEmpty)
+        for first in HorizontalPatchType.allCases {
+            for second in HorizontalPatchType.allCases {
+                XCTAssertEqual(copper.clearance(first, second), 125_000, "\(first) / \(second)")
+            }
+        }
+
+        let other = rules.clearanceCopperOther(net: nil, layer: -100)
+        XCTAssertFalse(other.id.isEmpty)
+        for copper in [HorizontalPatchType.track, .pad, .padTH, .via, .plane] {
+            XCTAssertEqual(other.clearance(copper: copper, nonCopper: .boardEdge), 250_000, "\(copper)")
+            XCTAssertEqual(other.clearance(copper: copper, nonCopper: .holeNPTH), 150_000, "\(copper)")
+            XCTAssertEqual(other.clearance(copper: copper, nonCopper: .text), 125_000, "\(copper)")
+        }
+
+        let keepout = rules.clearanceCopperKeepout(net: nil, keepoutClass: "")
+        XCTAssertFalse(keepout.id.isEmpty)
+        XCTAssertEqual(keepout.clearance(.track), 0)
+
+        // The router keeps 0.025 mm beyond each, where Horizon's is 0.05 mm.
+        XCTAssertEqual([copper.routingOffset, other.routingOffset, keepout.routingOffset], [25_000, 25_000, 25_000])
+
+        XCTAssertEqual(rules.planeRules.count, 1)
+        XCTAssertEqual(board.ruleParameters["solder_mask_expansion"], 70_000)
+    }
+
     func testTemplateCanvasesGetTheEmptyContentRegion() throws {
         // An empty document must never hand the canvases empty bounds: the fit
         // renders at one nanometer per pixel and the input transforms map every

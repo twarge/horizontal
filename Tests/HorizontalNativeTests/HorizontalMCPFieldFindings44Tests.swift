@@ -314,9 +314,10 @@ final class HorizontalMCPFieldFindings44Tests: XCTestCase {
         XCTAssertEqual(resized.double("size_mm"), 0.35)
         XCTAssertEqual(resized.double("hole_mm"), 0.15)
 
-        // A definition, or a size of its own.
+        // A definition, or a size of its own. The new board has the via
+        // definitions rule, with none in it, as every board Horizon writes does.
         let definition = UUID().uuidString.lowercased()
-        try apply([["op": "add_rule", "kind": "via_definitions", "fields": ["via_definitions": [definition: [
+        try apply([["op": "set_rule", "kind": "via_definitions", "fields": ["via_definitions": [definition: [
             "name": "mini", "padstack": chip.padstack, "parameters": ["via_diameter": 400_000, "hole_diameter": 150_000],
             "span": ["start": 0, "end": -100]]]]]])
         let more = try apply([["op": "place_via", "x_mm": 60, "y_mm": 7.25, "net": "GND", "definition": "mini"],
