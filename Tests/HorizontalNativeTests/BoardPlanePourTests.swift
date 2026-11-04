@@ -249,6 +249,56 @@ final class BoardPlanePourTests: XCTestCase {
         )
     }
 
+    /// A foreign via is cut out of a plane, ring and drill, only on the layers
+    /// of its span, as Horizon expands a via's padstack and gives its hole the
+    /// via's span. A signal via from the top to the first inner layer sits in
+    /// the middle of a top and a bottom ground plane: the top plane has a hole
+    /// round it, the bottom one none, as Horizon pours them; a via through the
+    /// board punches both.
+    func testAForeignViaIsCutOutOnlyOnTheLayersOfItsSpan() throws {
+        func pour(via connectedLayers: [Int]?) throws -> (top: HorizontalPlane, bottom: HorizontalPlane) {
+            var board = makeBoard(
+                polygons: [outline(half: 12 * mm)],
+                planes: [
+                    plane("top", half: 10 * mm, net: "gnd"),
+                    plane("bottom", half: 10 * mm, net: "gnd", layer: HorizontalBoardLayers.bottomCopper),
+                ],
+                packagePads: [
+                    anchor(),
+                    square("anchor-bottom", cx: 8 * mm, cy: 8 * mm, half: 500_000,
+                           layer: HorizontalBoardLayers.bottomCopper, net: "gnd"),
+                ]
+            )
+            if let connectedLayers {
+                board.vias = [HorizontalMarker(id: "v", position: p(0, 0), size: 600_000, holeSize: 300_000,
+                                               layer: nil, connectedLayers: connectedLayers, netID: "sig")]
+                board.viaHoles = [HorizontalHole(id: HorizontalBoard.viaHoleID(ofVia: "v"), position: p(0, 0),
+                                                 diameter: 300_000, length: 300_000, plated: true, netID: "sig")]
+            }
+            let planes = HorizontalBoardPlaneUpdater.updateAllPlanes(in: board).planes
+            return (try XCTUnwrap(planes.first { $0.id == "top" }), try XCTUnwrap(planes.first { $0.id == "bottom" }))
+        }
+        func holes(_ plane: HorizontalPlane) -> Int {
+            plane.fragments.reduce(0) { $0 + $1.paths.count - 1 }
+        }
+
+        let bare = try pour(via: nil)
+        XCTAssertEqual(holes(bare.top), 0)
+        XCTAssertEqual(holes(bare.bottom), 0)
+
+        let blind = try pour(via: [HorizontalBoardLayers.topCopper, HorizontalBoardLayers.in1Copper])
+        XCTAssertEqual(holes(blind.top), 1, "the top plane clears the via on its span")
+        XCTAssertGreaterThan((area(bare.top) - area(blind.top)) / (mm * mm), 0.28,
+                             "at least the 0.6 mm ring is removed from the top fill")
+        XCTAssertEqual(holes(blind.bottom), 0, "neither the via's ring nor its drill reaches the bottom plane")
+        XCTAssertEqual(blind.bottom.fragments, bare.bottom.fragments,
+                       "the bottom plane pours as if the via were not there")
+
+        let through = try pour(via: [])
+        XCTAssertEqual(holes(through.top), 1)
+        XCTAssertEqual(holes(through.bottom), 1, "a via through the board is cut from the bottom plane too")
+    }
+
     /// The progress callback drives the pour overlay's ring, so it has to report
     /// once per plane, count up, and finish at the total — a ring that stalls
     /// short of full or repeats a step reads as a hang on a board that is in

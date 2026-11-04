@@ -397,14 +397,24 @@ enum HorizontalBoardPlaneUpdater {
             addCopperCutout(segmentPath(line), clearance: clearance)
         }
 
+        // A via has its ring and its drill on the copper layers of its span
+        // alone: Horizon's Padstack::expand_inner drops a blind or buried via's
+        // shapes from the layers outside its span and gives its holes the span,
+        // and the pour cuts a drill only from a plane whose layer that span
+        // overlaps. Package pads and board holes go through the board.
+        var offLayerViaHoleIDs = Set<String>()
         for via in board.vias where conflicts(via.netID) {
+            guard via.spansCopperLayer(layer) else {
+                offLayerViaHoleIDs.insert(normalizedID(HorizontalBoard.viaHoleID(ofVia: via.id)))
+                continue
+            }
             let clearance = rules.clearanceCopper(net1: planeNet, net2: via.netID?.lowercased(), layer: layer)
                 .clearance(.via, .plane)
             addCopperCutout(circlePath(center: via.position, diameter: via.size), clearance: clearance)
         }
 
         // Holes: NPTH always cut (copper-other rule); foreign-net PTH cut.
-        for hole in board.allPlaneCutoutHoles {
+        for hole in board.allPlaneCutoutHoles where !offLayerViaHoleIDs.contains(normalizedID(hole.id)) {
             let isNPTH = !hole.plated
             if !isNPTH && !conflicts(hole.netID) { continue }
             let clearance = isNPTH
