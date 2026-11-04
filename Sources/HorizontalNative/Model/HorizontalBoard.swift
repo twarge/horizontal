@@ -6434,6 +6434,29 @@ extension HorizontalBoard {
         }
     }
 
+    /// Each plane takes its outline and layer from its polygon as the board
+    /// now has it. Horizon's plane holds its polygon, and moving or reshaping
+    /// the polygon moves the plane; the copy kept here (`fallbackPolygon`) is
+    /// taken when the board loads and when the plane is defined, so an edit
+    /// to the polygon left the plane drawn and poured where the polygon had
+    /// been. A plane whose polygon the board lacks keeps its copy.
+    mutating func refreshPlanePolygons() {
+        guard !planes.isEmpty else {
+            return
+        }
+        var polygonsByID = [String: HorizontalPolygon]()
+        for polygon in polygons {
+            polygonsByID[Self.normalizedID(polygon.id)] = polygonsByID[Self.normalizedID(polygon.id)] ?? polygon
+        }
+        for index in planes.indices {
+            guard let polygon = polygonsByID[Self.normalizedID(planes[index].polygonID)] else {
+                continue
+            }
+            planes[index].fallbackPolygon = polygon
+            planes[index].layer = polygon.layer
+        }
+    }
+
     /// A plane whose net the schematic no longer has is gone with the net.
     mutating func removePlanesWithDeletedNets() {
         let validNetIDs = Set(netDetails.keys.map(Self.normalizedID))

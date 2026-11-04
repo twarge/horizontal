@@ -95,11 +95,18 @@ enum HorizontalBoardPlaneUpdater {
     /// poured runs to the end, since its clipping is one call into the
     /// clipper, so the pour gives way within about one plane's time.
     static func pour(
-        in board: HorizontalBoard,
+        in given: HorizontalBoard,
         cache: HorizontalPlanePourCache,
         isCancelled: (@Sendable () -> Bool)? = nil,
         onProgress: (@Sendable (Int, Int) -> Void)? = nil
     ) -> Outcome {
+        // A plane pours its polygon as the board has it now, not the copy it
+        // took when it was loaded or defined.
+        let board = {
+            var board = given
+            board.refreshPlanePolygons()
+            return board
+        }()
         // Priority decides which plane yields to which where two would overlap,
         // so it has to be an ordering and not a preference: pour ascending, and
         // each tier's copper becomes an obstacle the next must clear. Two planes

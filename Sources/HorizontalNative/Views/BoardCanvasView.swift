@@ -2850,6 +2850,7 @@ struct BoardCanvasView: View {
         actions.drawnAirwires = { liveCanvasAirwires.drawn }
         actions.confirmPlaneEditor = { confirmPlaneEditor($0) }
         actions.deletePlaneInEditor = { deletePlaneFromEditor() }
+        actions.cancelPlaneEditor = { cancelPlaneEditor() }
         actions.frameWorldRect = { rect in
             guard let transform = liveCanvasTransform.transform else {
                 return
@@ -7282,12 +7283,24 @@ struct BoardCanvasView: View {
             case .boardDecal:
                 moveBoardDecal(&board.decals, ref: ref, by: delta)
             case .plane:
-                movePlane(&board.planes, ref: ref, by: delta)
+                movePlane(&board.planes, ref: ref, by: delta, polygons: &board.polygons, done: &movedPolygonPoints)
             case .boardPanel:
                 break
             case .blockSymbolPort, .busLabel, .busRipper, .drawingArc, .drawingLine, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .symbolPin:
                 break
             }
+        }
+        // A plane whose polygon moved whole takes its fills along, as a plane
+        // moved itself does, until it is poured again where it now is. One
+        // whose polygon changed shape keeps them until that pour.
+        let movedPlaneIDs = Set(selectedObjects.filter { $0.type == .plane }.map { normalizedID($0.id) })
+        for index in board.planes.indices where !movedPlaneIDs.contains(normalizedID(board.planes[index].id)) {
+            let polygonID = normalizedID(board.planes[index].polygonID)
+            guard let polygon = original.polygons.first(where: { normalizedID($0.id) == polygonID }),
+                  BoardPolygonParts.changedWhole(polygon, done: movedPolygonPoints) else {
+                continue
+            }
+            board.planes[index] = shifted(board.planes[index], by: delta)
         }
         movingPoints.apply(from: original, to: &board, graphicsMovedWhole: graphicsMovedWhole)
     }
@@ -7923,11 +7936,26 @@ struct BoardCanvasView: View {
         decals[index] = shifted(decals[index], by: delta)
     }
 
-    private func movePlane(_ planes: inout [HorizontalPlane], ref: HorizontalSelectableRef, by delta: HorizontalPoint) {
+    /// A plane has no outline of its own: Horizon's is its polygon, so the
+    /// polygon moves whole with it, each point once however many of its parts
+    /// are selected too (`done`). Its fills move along until it is poured again.
+    private func movePlane(
+        _ planes: inout [HorizontalPlane],
+        ref: HorizontalSelectableRef,
+        by delta: HorizontalPoint,
+        polygons: inout [HorizontalPolygon],
+        done: inout Set<String>
+    ) {
         guard let index = planes.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
             return
         }
         planes[index] = shifted(planes[index], by: delta)
+        guard let polygon = polygons.first(where: { normalizedID($0.id) == normalizedID(planes[index].polygonID) }) else {
+            return
+        }
+        for part in BoardPolygonParts.wholeSelection(of: polygon) {
+            BoardPolygonParts.change(&polygons, ref: part, done: &done) { $0 + delta }
+        }
     }
 
     private func mirrorVia(
@@ -8114,6 +8142,9 @@ struct BoardCanvasView: View {
         }
         var resolved = HorizontalBoardConnectivity.recompute(board)
         if regeneratingAirwires { resolved.regenerateAirwires() }
+        // A plane is where its polygon is: one moved or reshaped takes the
+        // plane with it, before the rules give the plane its layer's settings.
+        resolved.refreshPlanePolygons()
         // The rules stay applied: a track on another layer or net takes the
         // width the rules give it there, a via the shape, a plane the
         // settings, from the nets the pass just gave.
