@@ -98,6 +98,29 @@ final class PlaneFillGoldenTests: XCTestCase {
         }
     }
 
+    /// The board canvas runs `HorizontalBoardConnectivity.recompute` on every
+    /// commit, which gives every junction the net of its copper, where the
+    /// loader keeps a junction net only where the file stores one (a Horizon
+    /// file stores none). The pour has to come out the same: a junction
+    /// anchors a fragment only on the layers its copper is on, as Horizon's
+    /// orphan test has it. Anchored on every layer, planes 6b0f8dd6 and
+    /// b0b31a1f kept two orphan fragments each.
+    func testPourAfterRecomputeMatchesTheGolden() throws {
+        let board = HorizontalBoardConnectivity.recompute(try loadGoldenBoard())
+        XCTAssertFalse(board.junctionNetIDs.isEmpty, "recompute should give the junctions nets")
+        let poured = HorizontalBoardPlaneUpdater.updateAllPlanes(in: board)
+        let byID = Dictionary(uniqueKeysWithValues: poured.planes.map { ($0.id, $0) })
+
+        for golden in randiShortPlaneFills {
+            let digest = PlaneFillDigest(try XCTUnwrap(byID[golden.id]))
+            let label = "\(golden.id.prefix(8)) (layer \(golden.layer), priority \(golden.priority))"
+            XCTAssertEqual(digest.fragmentCount, golden.fragments, "\(label): fragment count")
+            XCTAssertEqual(digest.holeCount, golden.holes, "\(label): hole count")
+            XCTAssertEqual(digest.areaMM2, golden.areaMM2, accuracy: areaToleranceMM2,
+                           "\(label): poured copper area")
+        }
+    }
+
     /// Guards the harness itself: if the digest were not reproducible, every
     /// failure above would be noise. Pouring twice in one process must agree
     /// exactly — no tolerance.

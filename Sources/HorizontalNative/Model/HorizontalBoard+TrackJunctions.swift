@@ -23,6 +23,53 @@ extension HorizontalBoard {
         return layers
     }
 
+    /// The copper layers each junction spans, by lowercased id, as Horizon's
+    /// `update_junction_connections` gives a junction its layer range: the
+    /// span of a via at its point, else lowest to highest layer of the tracks
+    /// and net ties on it. Those are the ones naming it and, on a junction
+    /// nothing names, those ending at its point naming none (the rule of
+    /// `junctionIDs(at:joining:)`). A junction on no copper has no range.
+    /// Horizon's range takes in board lines and arcs too; they carry no
+    /// junction ids here, and no net.
+    func junctionLayerRanges() -> [String: ClosedRange<Int>] {
+        func widened(_ range: ClosedRange<Int>?, by layers: ClosedRange<Int>) -> ClosedRange<Int> {
+            range.map { min($0.lowerBound, layers.lowerBound)...max($0.upperBound, layers.upperBound) } ?? layers
+        }
+        var ranges = [String: ClosedRange<Int>]()
+        var unnamedEndLayers = [String: [Int]]()
+        for segment in tracks + netTies {
+            guard let layer = segment.layer else {
+                continue
+            }
+            for (point, id) in [(segment.from, segment.fromJunctionID), (segment.to, segment.toJunctionID)] {
+                if let id {
+                    ranges[id.lowercased()] = widened(ranges[id.lowercased()], by: layer...layer)
+                } else {
+                    unnamedEndLayers[Self.junctionPointKey(point), default: []].append(layer)
+                }
+            }
+        }
+        let byPoint = junctionIDsByPoint()
+        let named = Set(ranges.keys)
+        for (key, layers) in unnamedEndLayers {
+            for id in byPoint[key] ?? [] where !named.contains(id.lowercased()) {
+                ranges[id.lowercased()] = widened(ranges[id.lowercased()], by: layers.min()!...layers.max()!)
+            }
+        }
+        var viaSpans = [String: ClosedRange<Int>]()
+        for via in vias {
+            let listed = via.connectedLayers.filter(HorizontalBoardLayers.isCopper)
+            let span = listed.isEmpty
+                ? HorizontalBoardLayers.bottomCopper...HorizontalBoardLayers.topCopper
+                : listed.min()!...listed.max()!
+            for id in byPoint[Self.junctionPointKey(via.position)] ?? [] {
+                viaSpans[id.lowercased()] = widened(viaSpans[id.lowercased()], by: span)
+            }
+        }
+        ranges.merge(viaSpans) { _, span in span }
+        return ranges
+    }
+
     /// The junction ids at each point (`junctionPointKey`), sorted, for many
     /// `junctionIDs(at:joining:)` lookups without a scan of every junction
     /// each.

@@ -23,9 +23,10 @@ import HorizontalPlaneClipper
 //  frame) but not its mirror flag, so bottom-side pads with non-symmetric
 //  spoke counts/angles may have wrong spoke handedness. 4-spoke (the default)
 //  is mirror-symmetric, so the common case is unaffected.
-//  • Orphan classification anchors junctions by net only (no layer-overlap test)
-//  and pads by net+layer (no THROUGH/TOP/BOTTOM padstack-side test), because
-//  the viewer model doesn't carry junction layer spans or padstack types.
+//  • Orphan classification anchors a pad at the centre of its copper on the
+//  plane's layer (or a through-hole pad at its drill), where Horizon takes the
+//  pad's placement; the two differ only for a pad whose shape is offset from
+//  its origin.
 enum HorizontalBoardPlaneUpdater {
     private static let twiddle = 5_000.0
     private static let keepoutExtra = 50_000.0
@@ -113,6 +114,9 @@ enum HorizontalBoardPlaneUpdater {
         updatedCache.retain(planeIDs: Set(board.planes.map(\.id)))
         var pouredPlaneIDs = Set<String>()
         let total = board.planes.count
+        // Which layers each junction's copper is on, which decides where it
+        // anchors a fragment: once per pour, not per plane.
+        let junctionLayers = board.junctionLayerRanges()
         var completed = 0
 
         for priority in priorities {
@@ -132,7 +136,7 @@ enum HorizontalBoardPlaneUpdater {
                 // because a higher-priority plane above it moved, with nothing
                 // else on the board having changed.
                 let signature = planeInputSignature(
-                    for: plane, in: board, planeObstacles: obstacles)
+                    for: plane, in: board, planeObstacles: obstacles, junctionLayers: junctionLayers)
                 if let reused = cache.fragments(for: plane.id, signature: signature) {
                     var unchanged = plane
                     unchanged.fragments = reused
@@ -142,7 +146,8 @@ enum HorizontalBoardPlaneUpdater {
                     return nil
                 }
                 return PlaneTierResults.Outcome(
-                    plane: update(plane, in: board, planeObstacles: obstacles), signature: signature, poured: true)
+                    plane: update(plane, in: board, planeObstacles: obstacles, junctionLayers: junctionLayers),
+                    signature: signature, poured: true)
             }
 
             // Planes within a tier are independent, so pour them concurrently.
@@ -239,7 +244,8 @@ enum HorizontalBoardPlaneUpdater {
     static func planeInputSignature(
         for plane: HorizontalPlane,
         in board: HorizontalBoard,
-        planeObstacles: [PlaneObstacle] = []
+        planeObstacles: [PlaneObstacle] = [],
+        junctionLayers: [String: ClosedRange<Int>]? = nil
     ) -> Int {
         var hasher = Hasher()
 
@@ -281,13 +287,16 @@ enum HorizontalBoardPlaneUpdater {
         }
 
         // Not layer-scoped: the pour reads every via and every hole whatever
-        // layer it is pouring, and junctions anchor orphans by net alone.
+        // layer it is pouring, and a junction anchors orphans by its net and
+        // the layer range of the copper on it, which tracks on other layers
+        // widen.
         hasher.combine(board.vias)
         hasher.combine(board.viaHoles)
         hasher.combine(board.holes)
         hasher.combine(board.packageHoles)
         hasher.combine(board.junctions)
         hasher.combine(board.junctionNetIDs)
+        hasher.combine(junctionLayers ?? board.junctionLayerRanges())
 
         // Fills poured by earlier tiers on this layer.
         for obstacle in planeObstacles where obstacle.layer == layer {
@@ -307,7 +316,8 @@ enum HorizontalBoardPlaneUpdater {
     private static func update(
         _ plane: HorizontalPlane,
         in board: HorizontalBoard,
-        planeObstacles: [PlaneObstacle]
+        planeObstacles: [PlaneObstacle],
+        junctionLayers: [String: ClosedRange<Int>]
     ) -> HorizontalPlane {
         guard let layer = plane.layer,
               let fallbackPolygon = plane.fallbackPolygon else {
@@ -470,7 +480,7 @@ enum HorizontalBoardPlaneUpdater {
         }
         defer { HorizontalClipperFreeFragments(rawFragments) }
 
-        let anchors = planeAnchors(for: plane, in: board)
+        let anchors = planeAnchors(for: plane, in: board, junctionLayers: junctionLayers)
         var fragments = fragments(from: rawFragments).map { fragment -> HorizontalPlaneFragment in
             var fragment = fragment
             fragment.orphan = !fragment.containsAny(of: anchors)
@@ -581,28 +591,43 @@ enum HorizontalBoardPlaneUpdater {
 
     // MARK: - Anchors / orphans
 
-    private static func planeAnchors(for plane: HorizontalPlane, in board: HorizontalBoard) -> [HorizontalPoint] {
+    private static func planeAnchors(
+        for plane: HorizontalPlane,
+        in board: HorizontalBoard,
+        junctionLayers: [String: ClosedRange<Int>]
+    ) -> [HorizontalPoint] {
         guard let planeNetID = plane.netID.map(normalizedID),
               let layer = plane.layer else {
             return []
         }
 
+        // Horizon anchors a fragment by a junction on the plane's net whose
+        // layer range overlaps the plane's layer, and by a pad of the net with
+        // copper there. A junction's net only gets here once connectivity has
+        // given it one (a Horizon file stores none), so the tracks on the
+        // plane's layer stand in for the junctions at their ends, and a via for
+        // the junction it sits on: on its span only, which is the range Horizon
+        // gives that junction.
         var anchors = [HorizontalPoint]()
         for (junctionID, point) in board.junctions
-        where board.junctionNetIDs[junctionID].map(normalizedID) == planeNetID {
+        where board.junctionNetIDs[junctionID].map(normalizedID) == planeNetID
+            && junctionLayers[junctionID.lowercased()]?.contains(layer) == true {
             anchors.append(point)
         }
         for track in board.tracks where track.layer == layer && track.netID.map(normalizedID) == planeNetID {
             anchors.append(track.from)
             anchors.append(track.to)
         }
-        for via in board.vias where via.netID.map(normalizedID) == planeNetID {
+        for via in board.vias where via.netID.map(normalizedID) == planeNetID && via.spansCopperLayer(layer) {
             anchors.append(via.position)
         }
+        // A pad of a top or bottom padstack has copper on its side's layer
+        // only; a through-hole pad's drill stands for its copper on every
+        // layer, as Horizon anchors a THROUGH pad on any.
         for pad in board.packagePads where pad.netID.map(normalizedID) == planeNetID && pad.layer == layer {
             anchors.append(HorizontalRect(points: pad.renderVertices(arcPrecision: fragmentArcPrecision)).center)
         }
-        for hole in board.packageHoles + board.viaHoles where hole.netID.map(normalizedID) == planeNetID {
+        for hole in board.packageHoles where hole.netID.map(normalizedID) == planeNetID {
             anchors.append(hole.position)
         }
         return anchors

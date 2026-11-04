@@ -120,6 +120,32 @@ final class BoardPlanePourCacheTests: XCTestCase {
         XCTAssertNotEqual(signature(top, before), signature(top, after))
     }
 
+    /// A junction anchors a fragment on the layers its copper spans, and a top
+    /// and a bottom track on one junction with no via span the inner layers
+    /// too, as Horizon's layer range does. So a track on another layer can
+    /// decide whether an inner plane keeps a fragment, with no junction and
+    /// nothing on the plane's layer changing.
+    func testATrackWideningAJunctionOntoThePlanesLayerInvalidatesIt() {
+        let inner = plane("p1", half: 10 * mm, net: "gnd", layer: HorizontalBoardLayers.in1Copper)
+        func board(bottomTrack: Bool) -> HorizontalBoard {
+            var tracks = [
+                HorizontalSegment(id: "t1", from: p(0, 0), to: p(3 * mm, 0), width: 200_000, layer: 0,
+                                  netID: "gnd", fromJunctionID: "j", toJunctionID: "k"),
+            ]
+            if bottomTrack {
+                tracks.append(HorizontalSegment(id: "t2", from: p(0, 0), to: p(0, 3 * mm), width: 200_000,
+                                                layer: HorizontalBoardLayers.bottomCopper, netID: "gnd",
+                                                fromJunctionID: "j", toJunctionID: "m"))
+            }
+            var board = makeBoard(planes: [inner], tracks: tracks)
+            board.junctions = ["j": p(0, 0), "k": p(3 * mm, 0), "m": p(0, 3 * mm)]
+            board.junctionNetIDs = ["j": "gnd", "k": "gnd", "m": "gnd"]
+            return board
+        }
+
+        XCTAssertNotEqual(signature(inner, board(bottomTrack: false)), signature(inner, board(bottomTrack: true)))
+    }
+
     /// A via goes through the board, so the pour reads every via whatever layer
     /// it is pouring. Scoping vias by layer would be wrong.
     func testAViaAnywhereInvalidatesEveryPlane() {
