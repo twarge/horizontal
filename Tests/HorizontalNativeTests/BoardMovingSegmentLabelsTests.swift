@@ -115,7 +115,8 @@ final class BoardMovingSegmentLabelsTests: XCTestCase {
 
 #if os(macOS)
 /// On a mounted canvas: an arrow-key move, patched in Metal, draws the label
-/// of a track it stretches where the committed board's scene draws it.
+/// of a track it stretches where the committed board's scene draws it; and
+/// track and via labels are stroked as heavily for their size as pad labels.
 @MainActor
 final class BoardMovingSegmentLabelCanvasTests: XCTestCase {
     @MainActor private final class State: ObservableObject {
@@ -209,12 +210,13 @@ final class BoardMovingSegmentLabelCanvasTests: XCTestCase {
     }
 
     /// `state`'s board on a canvas in a window, with track labels and no via
-    /// labels; close the window when done.
-    private func mount(_ state: State) async throws -> (window: NSWindow, hosted: NSView, renderer: HorizontalMetalCanvasLayer) {
+    /// labels unless `viaLabels`, which turns track labels off; close the
+    /// window when done.
+    private func mount(_ state: State, viaLabels: Bool = false) async throws -> (window: NSWindow, hosted: NSView, renderer: HorizontalMetalCanvasLayer) {
         _ = NSApplication.shared
         var options = BoardDisplayOptions()
-        options.viaLabels = false
-        XCTAssertTrue(options.trackLabels)
+        options.viaLabels = viaLabels
+        options.trackLabels = !viaLabels
         let hosted = NSHostingView(rootView: Canvas(state: state, displayOptions: options)
             .environmentObject(HorizontalAppearanceSettings(defaults: UserDefaults(suiteName: UUID().uuidString)!)))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
@@ -246,6 +248,25 @@ final class BoardMovingSegmentLabelCanvasTests: XCTestCase {
 
         let size = try XCTUnwrap(BoardCanvasView.fittedNetLineTextSize("GND", segment: segment("t1", start, bend)))
         let width = size * BoardPadLabelLayout.strokeWidthFraction
+        XCTAssertGreaterThan(width, 0)
+        let widths = renderer.residentLineWidths(compositeGroup: Self.labelsGroup)
+        XCTAssertTrue(widths.allSatisfy { abs(Double($0) - width) < 1 },
+                      "every stroke \(width) nm wide, got \(Set(widths).sorted())")
+    }
+
+    /// A via's net label, fitted inside it as a pad's is, is stroked as a
+    /// pad label is too.
+    func testAViaLabelIsStrokedInProportionToItsSize() async throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
+        let state = State(board())
+        let (window, _, renderer) = try await mount(state, viaLabels: true)
+        defer { window.close() }
+        let labelled = await settle { !renderer.residentLineWidths(compositeGroup: Self.labelsGroup).isEmpty }
+        XCTAssertTrue(labelled, "V is labelled")
+
+        let frame = try XCTUnwrap(BoardPadLabelLayout.frame(fromDescriptor: PadLabelFrameDescriptor(
+            center: bend, halfWidth: 300_000, halfHeight: 300_000, angle: 0)))
+        let width = BoardPadLabelLayout.fittedTextSize("GND", frame: frame, mode: .full) * BoardPadLabelLayout.strokeWidthFraction
         XCTAssertGreaterThan(width, 0)
         let widths = renderer.residentLineWidths(compositeGroup: Self.labelsGroup)
         XCTAssertTrue(widths.allSatisfy { abs(Double($0) - width) < 1 },
