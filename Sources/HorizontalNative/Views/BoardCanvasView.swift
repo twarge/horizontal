@@ -11437,6 +11437,15 @@ struct BoardCanvasView: View {
             }
         }
 
+        // The net labels of the tracks the move stretches or turns, drawn
+        // from where it takes them, or hidden until the commit.
+        patches.lineRedrawPatches += boardMovingSegmentLabelRedraws(
+            plan: plan,
+            placement: placement,
+            lineBatch: lineBatch,
+            segmentsByID: segmentsByID
+        )
+
         // The nets the move drags draw their airwires live in the preview
         // overlay; their resident airwires go transparent meanwhile.
         if let airwireRequest = moveState.airwireRequest,
@@ -11454,6 +11463,52 @@ struct BoardCanvasView: View {
                     return primitive
                 }
                 patches.linePatches.append(contentsOf: metalLinePatches(spans: spans, primitives: hidden))
+            }
+        }
+        return patches
+    }
+
+    /// The strokes to write over the labels of the tracks and net ties the
+    /// move reshapes (`BoardMovingSegmentLabels`): each label as the scene
+    /// would draw it on the moved track, or hidden. The moved track is not
+    /// tested against the pads, as the scene's labels are: an end the move
+    /// brings onto a pad keeps its label until the commit's rebuild drops it.
+    private func boardMovingSegmentLabelRedraws(
+        plan: BoardResidentMovePlan,
+        placement: HorizontalPlacementTransform,
+        lineBatch: BoardMetalLineBatch,
+        segmentsByID: [String: HorizontalSegment]
+    ) -> [HorizontalMetalLineBufferPatch] {
+        guard !lineBatch.metadata.textSpansByRef.isEmpty else {
+            return []
+        }
+        let reshaped = BoardMovingSegmentLabels.reshaped(
+            plan: plan,
+            placement: placement,
+            segments: segmentsByID,
+            textSpans: lineBatch.metadata.textSpansByRef
+        )
+        var redrawnStrokes = 0
+        var patches = [HorizontalMetalLineBufferPatch]()
+        for segment in reshaped {
+            let strokes = segment.spans.reduce(0) { $0 + $1.count }
+            redrawnStrokes += strokes
+            let label = redrawnStrokes <= BoardMovingSegmentLabels.maximumRedrawnStrokes
+                ? segmentNetLabelText(
+                    segment.moved,
+                    idSuffix: segment.ref.type == .boardNetTie ? "net-tie-net-label" : "track-net-label",
+                    padCenterKeys: []
+                )
+                : nil
+            for span in segment.spans {
+                if let patch = BoardMovingSegmentLabels.patch(
+                    for: span,
+                    label: label.flatMap { normalizedID($0.id) == normalizedID(span.textID) ? $0 : nil },
+                    lines: lineBatch.lines,
+                    minimumLabelSize: minimumLabelSize
+                ) {
+                    patches.append(patch)
+                }
             }
         }
         return patches
