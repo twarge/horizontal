@@ -627,7 +627,10 @@ def new_project(path: str, name: str | None = None) -> dict[str, Any]:
     """Create a project from the new-document template as a .horizontal package and open it. path must not exist
     and must end in .horizontal. The project it makes has a pool, an empty top block, one schematic sheet and a
     board with no outline — give it one before expecting fabrication output to mean anything. The board has the via
-    rule Horizon gives a new board, with horizon-pool's tented Circular via, which its pool carries."""
+    rule Horizon gives a new board, with horizon-pool's tented Circular via, which its pool carries, and a rule that
+    matches everything in every family that needs one: 0.125 mm between copper of different nets, 0.25 mm to the
+    board edge, 0.15 mm to unplated holes, 0.25 mm tracks no narrower than 0.125 mm, and solid planes. board_rules
+    reads them, set_rule changes them."""
     project = _open_context_for(path, name)
     return project.summary
 
