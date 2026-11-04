@@ -763,10 +763,12 @@ struct BoardCanvasView: View {
         }
         if let roundOffVertexState {
             var preview = base
+            let liftedOutlines = preview.liftPlaneOutlines()
             let polygonID = normalizedID(roundOffVertexState.polygonID)
             if let index = preview.polygons.firstIndex(where: { normalizedID($0.id) == polygonID }) {
                 preview.polygons[index] = roundOffVertexState.polygon()
             }
+            preview.lowerPlaneOutlines(lifted: liftedOutlines)
             return preview
         }
         return base
@@ -6189,8 +6191,8 @@ struct BoardCanvasView: View {
 
     private func finishDrawPlane(polygons: [HorizontalPolygon], draft planeDraft: HorizontalPlaneEditorDraft) {
         var draft = editedBoard ?? sourceBoard
+        // Each outline is kept in its plane, as the board loads a plane's.
         for polygon in polygons {
-            draft.polygons.append(polygon)
             var plane = HorizontalPlane(polygon: polygon, draft: planeDraft)
             HorizontalBoardRuleApplication.applySettings(to: &plane, rules: draft.rules)
             draft.planes.append(plane)
@@ -6296,6 +6298,9 @@ struct BoardCanvasView: View {
             var plane = HorizontalPlane(polygon: polygon, draft: draft)
             HorizontalBoardRuleApplication.applySettings(to: &plane, rules: board.rules)
             board.planes.append(plane)
+            // The polygon is the plane's outline now, kept in the plane as
+            // the board loads it, and no polygon of the board's own.
+            board.lowerPlaneOutlines()
             selectedObjects = [HorizontalSelectableRef(id: plane.id, type: .plane, layer: plane.layer)]
             commitPlaneEdit(board, actionName: "Define Plane")
         case .edit(let planeID):
@@ -6316,11 +6321,13 @@ struct BoardCanvasView: View {
         }
         planeEditorState = nil
         var board = editedBoard ?? sourceBoard
-        // The polygon stays; only the plane over it goes. patchPlanes keeps
-        // entries the model lacks, so the removal is flagged rather than
-        // inferred from absence.
+        // The polygon stays, a polygon again; only the plane over it goes.
+        // patchPlanes keeps entries the model lacks, so the removal is
+        // flagged rather than inferred from absence.
+        let liftedOutlines = board.liftPlaneOutlines()
         board.planes.removeAll { normalizedID($0.id) == normalizedID(planeID) }
         board.removedPlaneIDs.insert(planeID)
+        board.lowerPlaneOutlines(lifted: liftedOutlines)
         selectedObjects = []
         commitPlaneEdit(board, actionName: "Delete Plane")
     }
@@ -6568,7 +6575,20 @@ struct BoardCanvasView: View {
         return true
     }
 
+    /// The board hole entry a hole belongs to: its own id, or the id its
+    /// padstack's holes are numbered under ("<id>/hole/<n>").
+    private func boardHoleEntryID(_ id: String) -> String {
+        let id = normalizedID(id)
+        guard let range = id.range(of: "/hole/", options: .backwards) else {
+            return id
+        }
+        return String(id[..<range.lowerBound])
+    }
+
     private func deleteSelectedObjects(from board: inout HorizontalBoard) -> Bool {
+        // A plane's outline is deleted as a polygon, and takes its plane with it.
+        let liftedOutlines = board.liftPlaneOutlines()
+        defer { board.lowerPlaneOutlines(lifted: liftedOutlines) }
         var changed = false
         // Fixed packages can't be deleted — filter them (and their connection
         // lines, added by the expansion) before expanding the delete set.
@@ -6602,7 +6622,17 @@ struct BoardCanvasView: View {
                     normalizedID($0.id) == normalizedViaID || normalizedID($0.id).hasPrefix("\(normalizedViaID)/")
                 } || changed
             case .boardHole:
-                changed = removeElement(from: &board.holes, matching: ref) || changed
+                if modeProfile.mode == .board {
+                    // The whole board hole goes, every hole of its padstack,
+                    // and patchHoles keeps entries the model lacks.
+                    let entryID = boardHoleEntryID(ref.id)
+                    if removeAll(from: &board.holes, where: { boardHoleEntryID($0.id) == entryID }) {
+                        board.removedHoleIDs.insert(entryID)
+                        changed = true
+                    }
+                } else {
+                    changed = removeElement(from: &board.holes, matching: ref) || changed
+                }
                 changed = removeElement(from: &board.packageHoles, matching: ref) || changed
                 changed = removeElement(from: &board.viaHoles, matching: ref) || changed
             case .text:
@@ -6610,6 +6640,11 @@ struct BoardCanvasView: View {
                 changed = removeElement(from: &board.packageTexts, matching: ref) || changed
             case .polygonArcCenter, .polygonEdge, .polygonVertex:
                 changed = deletePolygonVertices(ref, from: &board.polygons) || changed
+                // One left with too few points is gone, which patchPolygons
+                // takes only from the flag.
+                if !ref.id.contains("/"), !board.polygons.contains(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
+                    board.removedPolygonIDs.insert(ref.id)
+                }
             case .plane:
                 // patchPlanes keeps entries the model lacks, as patchVias does.
                 if removeElement(from: &board.planes, matching: ref) {
@@ -6617,7 +6652,16 @@ struct BoardCanvasView: View {
                     changed = true
                 }
             case .keepout:
-                changed = removeElement(from: &board.keepouts, matching: ref) || changed
+                // With its outline, as Horizon's keepout goes with its polygon;
+                // the writer keeps both entries unless they are flagged.
+                if let keepout = board.keepouts.first(where: { normalizedID($0.id) == normalizedID(ref.id) }),
+                   removeElement(from: &board.keepouts, matching: ref) {
+                    if !keepout.id.contains("/") {
+                        board.removedKeepoutIDs.insert(keepout.id)
+                        board.removedPolygonIDs.insert(keepout.polygonID)
+                    }
+                    changed = true
+                }
             case .dimension:
                 // patchDimensions preserves unknown entries, so the removal is
                 // flagged rather than inferred from absence.
@@ -7193,7 +7237,9 @@ struct BoardCanvasView: View {
         // Polygon parts share their polygon's resident spans, which a shift
         // moves whole. One with a point left behind (an edge moved alone, a
         // vertex) changes shape, so it is previewed from a rebuilt scene.
-        let reshaped = BoardPolygonParts.reshapedPolygonIDs(by: refs, in: board.polygons)
+        let reshaped = BoardPolygonParts.reshapedPolygonIDs(
+            by: refs, in: board.polygons + board.planes.compactMap(\.fallbackPolygon)
+        )
         if !reshaped.isEmpty {
             plan.unsupportedRefs.formUnion(refs.filter {
                 BoardPolygonParts.isPart($0.type) && reshaped.contains(normalizedID($0.id))
@@ -7232,6 +7278,9 @@ struct BoardCanvasView: View {
     }
 
     private func moveSelectedObjects(by delta: HorizontalPoint, board: inout HorizontalBoard) {
+        // A plane's outline moves as a polygon, with the board's own.
+        let liftedOutlines = board.liftPlaneOutlines()
+        defer { board.lowerPlaneOutlines(lifted: liftedOutlines) }
         // Junctions and vias, and what stands on them, move once, after the
         // rest, matched against the board as it was (`BoardMovingPoints`).
         let original = board
@@ -7321,6 +7370,8 @@ struct BoardCanvasView: View {
     }
 
     private func mirrorSelectedObjects(around center: HorizontalPoint, board: inout HorizontalBoard) {
+        let liftedOutlines = board.liftPlaneOutlines()
+        defer { board.lowerPlaneOutlines(lifted: liftedOutlines) }
         let original = board
         var movingPoints = BoardMovingPoints()
         var mirroredPolygonPoints = Set<String>()
@@ -7386,6 +7437,9 @@ struct BoardCanvasView: View {
     ) {
         // As a move does (`moveSelectedObjects`): a track and its via both
         // turned the via, the second time from where the first had put it.
+        // A plane's outline turns as a polygon.
+        let liftedOutlines = board.liftPlaneOutlines()
+        defer { board.lowerPlaneOutlines(lifted: liftedOutlines) }
         let original = board
         var movingPoints = BoardMovingPoints()
         var padEnds = BoardTrackPadEnds(padPositions: original.packagePadPositions)
@@ -8157,9 +8211,9 @@ struct BoardCanvasView: View {
         }
         var resolved = HorizontalBoardConnectivity.recompute(board)
         if regeneratingAirwires { resolved.regenerateAirwires() }
-        // A plane is where its polygon is: one moved or reshaped takes the
-        // plane with it, before the rules give the plane its layer's settings.
-        resolved.refreshPlanePolygons()
+        // A plane's outline is kept in the plane, with its layer, before the
+        // rules give the plane that layer's settings.
+        resolved.lowerPlaneOutlines()
         // The rules stay applied: a track on another layer or net takes the
         // width the rules give it there, a via the shape, a plane the
         // settings, from the nets the pass just gave.
@@ -8226,7 +8280,10 @@ struct BoardCanvasView: View {
             updateText(&board.texts, ref: ref, propertyID: propertyID, value: value)
             updateText(&board.packageTexts, ref: ref, propertyID: propertyID, value: value)
         case .polygonArcCenter, .polygonEdge, .polygonVertex:
+            // A plane's outline too, whose layer is the plane's.
+            let liftedOutlines = board.liftPlaneOutlines()
             updatePolygon(&board.polygons, ref: ref, propertyID: propertyID, value: value)
+            board.lowerPlaneOutlines(lifted: liftedOutlines)
         case .pad:
             if modeProfile.mode == .package {
                 updatePoolPad(ref: ref, propertyID: propertyID, value: value, board: &board)
@@ -8665,7 +8722,9 @@ struct BoardCanvasView: View {
             board.planes[index].settings.keepOrphans = on
             board.planes[index].keepOrphans = on
         case ("layer", .layer(let layer)):
+            // A plane's layer is its outline's.
             board.planes[index].layer = layer
+            board.planes[index].fallbackPolygon?.layer = layer
             let polygonID = board.planes[index].polygonID
             if let polygonIndex = board.polygons.firstIndex(where: { normalizedID($0.id) == normalizedID(polygonID) }) {
                 board.polygons[polygonIndex].layer = layer
@@ -16630,7 +16689,9 @@ extension BoardCanvasView {
         }
         let stableBoard = editedBoard ?? sourceBoard
         let polygonID = normalizedID(ref.id)
-        guard let polygon = stableBoard.polygons.first(where: { normalizedID($0.id) == polygonID }),
+        // A plane's outline rounds off as any polygon does.
+        guard let polygon = (stableBoard.polygons + stableBoard.planes.compactMap(\.fallbackPolygon))
+                .first(where: { normalizedID($0.id) == polygonID }),
               !polygon.id.contains("/") else {
             return nil
         }
@@ -16696,12 +16757,16 @@ extension BoardCanvasView {
         }
         let previous = editedBoard ?? sourceBoard
         var draft = previous
+        // A plane's outline is rounded off as a polygon.
+        let liftedOutlines = draft.liftPlaneOutlines()
         let polygonID = normalizedID(state.polygonID)
         guard let index = draft.polygons.firstIndex(where: { normalizedID($0.id) == polygonID }) else {
             cancelRoundOffVertex()
             return
         }
         draft.polygons[index] = state.polygon()
+        let roundedLayer = draft.polygons[index].layer
+        draft.lowerPlaneOutlines(lifted: liftedOutlines)
         roundOffVertexState = nil
         let actionName = !state.adjustsRounding ? "Round Off Vertex" : state.isSharp ? "Remove Rounding" : "Adjust Rounding"
         registerUndoSnapshot(previous, actionName: actionName)
@@ -16709,7 +16774,7 @@ extension BoardCanvasView {
         publishConnectivityResolvedEdit(draft)
         let vertex = state.rounding.vertexIndex(roundedAt: state.clampedRadius)
         selectedObjects = [
-            HorizontalSelectableRef(id: state.polygonID, type: .polygonVertex, vertex: vertex, layer: draft.polygons[index].layer)
+            HorizontalSelectableRef(id: state.polygonID, type: .polygonVertex, vertex: vertex, layer: roundedLayer)
         ]
         hoveredObject = nil
         publishSelectionContext()

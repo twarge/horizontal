@@ -504,6 +504,11 @@ struct HorizontalBoard {
     /// deleted), for the same reason and with the same lifetime as
     /// `removedPolygonIDs`: `patchPlanes` keeps entries the model lacks.
     var removedPlaneIDs: Set<String> = []
+    /// Board hole and keepout ids the editor has removed, for the same reason
+    /// and with the same lifetime as `removedPolygonIDs`: `patchHoles` and
+    /// `patchKeepouts` keep entries the model lacks.
+    var removedHoleIDs: Set<String> = []
+    var removedKeepoutIDs: Set<String> = []
     var planes: [HorizontalPlane]
     var keepouts: [HorizontalKeepout]
     var dimensions: [HorizontalDimension]
@@ -6434,13 +6439,37 @@ extension HorizontalBoard {
         }
     }
 
-    /// Each plane takes its outline and layer from its polygon as the board
-    /// now has it. Horizon's plane holds its polygon, and moving or reshaping
-    /// the polygon moves the plane; the copy kept here (`fallbackPolygon`) is
-    /// taken when the board loads and when the plane is defined, so an edit
-    /// to the polygon left the plane drawn and poured where the polygon had
-    /// been. A plane whose polygon the board lacks keeps its copy.
-    mutating func refreshPlanePolygons() {
+    /// A plane's outline lives in the plane (`fallbackPolygon`), not among
+    /// `polygons`, as the board loads: Horizon's plane holds its polygon, and
+    /// everything that draws, pours or exports `polygons` takes them for
+    /// polygons of their own (an export writes one on copper as copper). An
+    /// edit that changes polygons by their parts (a move, a turn, a mirror, a
+    /// delete, a rounded corner, the inspector) puts the outlines among them
+    /// for its length, and `lowerPlaneOutlines` gives them back after. Returns
+    /// the ids, normalized, of the outlines it put there.
+    mutating func liftPlaneOutlines() -> Set<String> {
+        var present = Set(polygons.map { Self.normalizedID($0.id) })
+        var lifted = Set<String>()
+        for plane in planes where !plane.id.contains("/") {
+            guard let outline = plane.fallbackPolygon,
+                  present.insert(Self.normalizedID(outline.id)).inserted else {
+                continue
+            }
+            polygons.append(outline)
+            lifted.insert(Self.normalizedID(outline.id))
+        }
+        return lifted
+    }
+
+    /// Each plane takes its outline, and the outline's layer, back out of
+    /// `polygons`, as the edit left it, so a plane goes wherever its polygon
+    /// is moved or reshaped. A plane whose outline the edit took away (`lifted`
+    /// names those put there) goes with it, as Horizon's
+    /// Board::delete_dependants takes a plane whose polygon is gone, and its
+    /// removal is flagged for the writer. Run on its own it also takes in an
+    /// outline left among `polygons`, which a plane defined on an existing
+    /// polygon left there before.
+    mutating func lowerPlaneOutlines(lifted: Set<String> = []) {
         guard !planes.isEmpty else {
             return
         }
@@ -6448,12 +6477,25 @@ extension HorizontalBoard {
         for polygon in polygons {
             polygonsByID[Self.normalizedID(polygon.id)] = polygonsByID[Self.normalizedID(polygon.id)] ?? polygon
         }
-        for index in planes.indices {
-            guard let polygon = polygonsByID[Self.normalizedID(planes[index].polygonID)] else {
-                continue
+        var taken = Set<String>()
+        var removedPlaneIDs = [String]()
+        for index in planes.indices where !planes[index].id.contains("/") {
+            let id = Self.normalizedID(planes[index].polygonID)
+            if let polygon = polygonsByID[id] {
+                planes[index].fallbackPolygon = polygon
+                planes[index].layer = polygon.layer
+                taken.insert(id)
+            } else if lifted.contains(id) {
+                removedPlaneIDs.append(planes[index].id)
             }
-            planes[index].fallbackPolygon = polygon
-            planes[index].layer = polygon.layer
+        }
+        if !removedPlaneIDs.isEmpty {
+            let removed = Set(removedPlaneIDs.map(Self.normalizedID))
+            planes.removeAll { removed.contains(Self.normalizedID($0.id)) }
+            self.removedPlaneIDs.formUnion(removedPlaneIDs)
+        }
+        if !taken.isEmpty {
+            polygons.removeAll { taken.contains(Self.normalizedID($0.id)) }
         }
     }
 

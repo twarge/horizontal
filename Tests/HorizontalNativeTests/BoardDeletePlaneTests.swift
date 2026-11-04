@@ -10,7 +10,8 @@ import XCTest
 /// took the plane out of its board, but the writer keeps every plane entry the
 /// model lacks (a parser that dropped one must not read as a user deleting
 /// it), so the plane stayed in board.json and came back with the next load.
-/// The polygon under it stays, a polygon again.
+/// The polygon under it stays, a polygon again: the board keeps a plane's
+/// polygon in the plane, as it loads it, so it has to be given back.
 @MainActor
 final class BoardDeletePlaneTests: XCTestCase {
     @MainActor private final class State: ObservableObject {
@@ -51,7 +52,8 @@ final class BoardDeletePlaneTests: XCTestCase {
     private var archive: HorizontalProjectArchive!
 
     /// The template project's board with a top-copper polygon that is a GND
-    /// plane, written to its file as a save writes it.
+    /// plane, written to its file as a save writes it, the polygon kept in the
+    /// plane as the board loads one.
     private func fixture() throws -> (board: HorizontalBoard, planeID: String) {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("horizontal-delete-plane-\(UUID().uuidString)", isDirectory: true)
@@ -68,11 +70,11 @@ final class BoardDeletePlaneTests: XCTestCase {
             HorizontalPoint(x: 0, y: 0), HorizontalPoint(x: 20 * mm, y: 0),
             HorizontalPoint(x: 20 * mm, y: 20 * mm), HorizontalPoint(x: 0, y: 20 * mm),
         ], layer: HorizontalBoardLayers.topCopper)
-        board.polygons.append(polygon)
         let plane = HorizontalPlane(polygon: polygon, draft: HorizontalPlaneEditorDraft(netID: "gnd"))
         board.planes.append(plane)
         try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &archive)
         XCTAssertEqual(try writtenKeys("planes"), [plane.id])
+        XCTAssertTrue(try writtenKeys("polygons").contains("pour"))
         return (board, plane.id)
     }
 
@@ -151,6 +153,7 @@ final class BoardDeletePlaneTests: XCTestCase {
         XCTAssertTrue(deleted)
         let after = try XCTUnwrap(state.committed.first)
         XCTAssertTrue(after.planes.isEmpty)
+        XCTAssertTrue(after.polygons.contains { $0.id == "pour" }, "the polygon stays, a polygon again")
 
         try HorizontalProjectJSONApplicator.apply(board: after, in: project, to: &archive)
         XCTAssertFalse(try writtenKeys("planes").contains(planeID))

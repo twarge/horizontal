@@ -7,10 +7,10 @@ import XCTest
 
 /// Moving a plane on the board canvas: by its polygon, which is what a click
 /// on a plane picks, and by the plane itself, which Edit Plane selects. The
-/// plane drew and poured from the copy of its polygon taken when the board
-/// loaded, so a moved polygon left the plane where the polygon had been and
-/// the next pour put the fill back there; a moved plane moved only that copy
-/// and its fills, and the polygon the file stores stayed put.
+/// board keeps a plane's polygon in the plane, as it loads it, and the move
+/// changed only the board's own polygons, so a plane's outline stayed where
+/// it was and the next pour put the fill back there; a moved plane moved only
+/// its outline and fills in memory, and the polygon the file stores stayed put.
 @MainActor
 final class BoardPlanePolygonMoveTests: XCTestCase {
     @MainActor private final class State: ObservableObject {
@@ -56,7 +56,8 @@ final class BoardPlanePolygonMoveTests: XCTestCase {
     }
 
     /// The template project's board with a poured GND plane on a top-copper
-    /// polygon, written to its file.
+    /// polygon, written to its file, its polygon kept in the plane as the
+    /// board loads one.
     private func fixture() throws -> HorizontalBoard {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("horizontal-plane-move-\(UUID().uuidString)", isDirectory: true)
@@ -71,11 +72,11 @@ final class BoardPlanePolygonMoveTests: XCTestCase {
         board.netDetails["gnd"] = HorizontalNetDetails(id: "gnd", name: "GND")
         let polygon = HorizontalPolygon(id: "pour", vertices: square(10 * mm, 10 * mm, half: 10 * mm),
                                         layer: HorizontalBoardLayers.topCopper)
-        board.polygons.append(polygon)
         var plane = HorizontalPlane(polygon: polygon, draft: HorizontalPlaneEditorDraft(netID: "gnd"))
         plane.fragments = [HorizontalPlaneFragment(paths: [square(10 * mm, 10 * mm, half: 9 * mm)], orphan: false)]
         board.planes.append(plane)
         try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &archive)
+        XCTAssertEqual(try writtenPolygonVertices(), polygon.vertices, "the writer writes a plane's outline")
         return board
     }
 
@@ -139,17 +140,19 @@ final class BoardPlanePolygonMoveTests: XCTestCase {
         return try XCTUnwrap(state.committed.last)
     }
 
-    /// The polygon, the plane's copy of it and its fills all moved by one step.
+    /// The plane's outline and its fills moved by one step, and the outline is
+    /// still the plane's alone.
     private func assertMovedTogether(_ before: HorizontalBoard, _ after: HorizontalBoard,
                                      file: StaticString = #filePath, line: UInt = #line) throws -> HorizontalPoint {
-        let old = try XCTUnwrap(before.polygons.first { $0.id == "pour" })
-        let new = try XCTUnwrap(after.polygons.first { $0.id == "pour" })
-        let delta = new.vertices[0] - old.vertices[0]
-        XCTAssertNotEqual(delta, .zero, "the polygon moved", file: file, line: line)
-        XCTAssertEqual(new.vertices, old.vertices.map { $0 + delta }, "whole, by one step", file: file, line: line)
+        let old = try XCTUnwrap(before.planes.first?.fallbackPolygon)
         let plane = try XCTUnwrap(after.planes.first)
-        XCTAssertEqual(plane.fallbackPolygon?.vertices, new.vertices, "the plane is where its polygon is", file: file, line: line)
+        let new = try XCTUnwrap(plane.fallbackPolygon)
+        let delta = new.vertices[0] - old.vertices[0]
+        XCTAssertNotEqual(delta, .zero, "the outline moved", file: file, line: line)
+        XCTAssertEqual(new.vertices, old.vertices.map { $0 + delta }, "whole, by one step", file: file, line: line)
         XCTAssertEqual(plane.layer, new.layer, file: file, line: line)
+        XCTAssertFalse(after.polygons.contains { $0.id == "pour" },
+                       "no polygon of the board's own, which an export would write as copper", file: file, line: line)
         let oldFill = try XCTUnwrap(before.planes.first?.fragments.first?.paths.first)
         XCTAssertEqual(plane.fragments.first?.paths.first, oldFill.map { $0 + delta },
                        "its fills move along, once", file: file, line: line)
@@ -170,7 +173,7 @@ final class BoardPlanePolygonMoveTests: XCTestCase {
         let delta = try assertMovedTogether(board, after)
 
         try HorizontalProjectJSONApplicator.apply(board: after, in: project, to: &archive)
-        XCTAssertEqual(try writtenPolygonVertices(), board.polygons.first { $0.id == "pour" }?.vertices.map { $0 + delta })
+        XCTAssertEqual(try writtenPolygonVertices(), board.planes.first?.fallbackPolygon?.vertices.map { $0 + delta })
     }
 
     func testMovingThePlaneMovesItsPolygon() async throws {
@@ -191,7 +194,7 @@ final class BoardPlanePolygonMoveTests: XCTestCase {
         let delta = try assertMovedTogether(board, after)
 
         try HorizontalProjectJSONApplicator.apply(board: after, in: project, to: &archive)
-        XCTAssertEqual(try writtenPolygonVertices(), board.polygons.first { $0.id == "pour" }?.vertices.map { $0 + delta },
+        XCTAssertEqual(try writtenPolygonVertices(), board.planes.first?.fallbackPolygon?.vertices.map { $0 + delta },
                        "the file has the polygon where the plane went")
     }
 }
