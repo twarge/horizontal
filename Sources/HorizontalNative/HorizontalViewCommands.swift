@@ -116,6 +116,9 @@ struct HorizontalCanvasCommandActions {
     /// as its Define Plane, Apply or Create Plane button does; nothing while
     /// none is open. A popover's button can't be pressed from a test.
     var confirmPlaneEditor: ((HorizontalPlaneEditorDraft) -> Void)? = nil
+    /// Presses the open plane editor's Delete Plane, for the same reason;
+    /// nothing unless it is editing a plane.
+    var deletePlaneInEditor: (() -> Void)? = nil
     /// Frames a world rectangle in the canvas, for the live channel's zoom-to.
     var frameWorldRect: ((HorizontalRect) -> Void)? = nil
     /// Zooms the view about its centre; 2 is twice as close.

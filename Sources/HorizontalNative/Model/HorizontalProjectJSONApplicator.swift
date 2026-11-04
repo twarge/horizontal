@@ -155,7 +155,7 @@ enum HorizontalProjectJSONApplicator {
         patchVias(&json, vias: board.vias, removing: board.removedViaIDs)
         patchNewBoardVias(&json, vias: board.vias, junctions: board.junctions, padstackID: board.viaTemplate?.padstackID)
         patchUnstatedViaRules(&json, rules: board.rules)
-        patchPlanes(&json, planes: board.planes)
+        patchPlanes(&json, planes: board.planes, removing: board.removedPlaneIDs)
         patchKeepouts(&json, keepouts: board.keepouts)
         patchDimensions(&json, dimensions: board.dimensions, removing: board.removedDimensionIDs)
         // Packages smashed in-memory but whose from-smash texts weren't
@@ -1868,11 +1868,21 @@ enum HorizontalProjectJSONApplicator {
         (item["parameter_set"] as? JSONDictionary ?? [:]).filter { !($0.value is NSNumber) }
     }
 
-    private static func patchPlanes(_ json: inout JSONDictionary, planes: [HorizontalPlane]) {
+    private static func patchPlanes(
+        _ json: inout JSONDictionary,
+        planes: [HorizontalPlane],
+        removing removedIDs: Set<String> = []
+    ) {
         let ownPlanes = planes.filter { !$0.id.contains("/") }
         // Use ?? [:] (not a guard) so a board that never had planes can gain its
-        // first drawn plane. Preserve unknown source entries (see patchPolygons).
+        // first drawn plane. Preserve unknown source entries (see patchPolygons):
+        // a deleted plane goes only when the editor flags it in `removedIDs`.
         var map = json["planes"] as? JSONDictionary ?? [:]
+        for id in removedIDs {
+            if let itemKey = matchingKey(id, in: map) {
+                map.removeValue(forKey: itemKey)
+            }
+        }
 
         for plane in ownPlanes {
             // matchingKey ?? plane.id: update an existing plane in place, or

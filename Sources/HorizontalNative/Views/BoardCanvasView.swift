@@ -2849,6 +2849,7 @@ struct BoardCanvasView: View {
         actions.visibleWorldBounds = { liveCanvasTransform.transform?.visibleBounds }
         actions.drawnAirwires = { liveCanvasAirwires.drawn }
         actions.confirmPlaneEditor = { confirmPlaneEditor($0) }
+        actions.deletePlaneInEditor = { deletePlaneFromEditor() }
         actions.frameWorldRect = { rect in
             guard let transform = liveCanvasTransform.transform else {
                 return
@@ -6299,8 +6300,11 @@ struct BoardCanvasView: View {
         }
         planeEditorState = nil
         var board = editedBoard ?? sourceBoard
-        // The polygon stays; only the plane over it goes.
+        // The polygon stays; only the plane over it goes. patchPlanes keeps
+        // entries the model lacks, so the removal is flagged rather than
+        // inferred from absence.
         board.planes.removeAll { normalizedID($0.id) == normalizedID(planeID) }
+        board.removedPlaneIDs.insert(planeID)
         selectedObjects = []
         commitPlaneEdit(board, actionName: "Delete Plane")
     }
@@ -6591,7 +6595,11 @@ struct BoardCanvasView: View {
             case .polygonArcCenter, .polygonEdge, .polygonVertex:
                 changed = deletePolygonVertices(ref, from: &board.polygons) || changed
             case .plane:
-                changed = removeElement(from: &board.planes, matching: ref) || changed
+                // patchPlanes keeps entries the model lacks, as patchVias does.
+                if removeElement(from: &board.planes, matching: ref) {
+                    board.removedPlaneIDs.insert(ref.id)
+                    changed = true
+                }
             case .keepout:
                 changed = removeElement(from: &board.keepouts, matching: ref) || changed
             case .dimension:
