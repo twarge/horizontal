@@ -1875,8 +1875,8 @@ struct BoardCanvasView: View {
             }
             let side = package.mirrored ? "bottom" : "top"
             return HorizontalSelectionHUDItem(
-                title: nonEmpty(package.label) ?? shortID(package.id),
-                subtitle: "Board package \(shortID(package.id)) on \(side)",
+                title: nonEmpty(package.label) ?? "Board package",
+                subtitle: "\(nonEmpty(package.componentDetails?.packageName) ?? "Board package") on \(side)",
                 details: componentDetailRows(package.componentDetails)
                     + [
                         detailRow("Side", side),
@@ -1901,7 +1901,7 @@ struct BoardCanvasView: View {
             }
             return HorizontalSelectionHUDItem(
                 title: "Pad \(padLabel(for: pad))",
-                subtitle: netDisplayName(pad.netID).map { "\($0) - \(shortID(pad.id))" } ?? shortID(pad.id),
+                subtitle: hudSubtitle(netDisplayName(pad.netID), layerName(for: pad.layer)),
                 details: netDetailRows(pad.netID) + [
                     detailRow("Layer", layerName(for: pad.layer)),
                 ].compactMap { $0 } + metadataRows(pad.metadata)
@@ -1912,8 +1912,7 @@ struct BoardCanvasView: View {
             }
             return HorizontalSelectionHUDItem(
                 title: "Via",
-                subtitle: netDisplayName(via.netID).map { "\($0) - \(diameterString(via.size))" }
-                    ?? "\(diameterString(via.size)) - \(shortID(via.id))",
+                subtitle: hudSubtitle(netDisplayName(via.netID), diameterString(via.size)),
                 details: netDetailRows(via.netID) + [
                     detailRow("Diameter", diameterString(via.size)),
                 ].compactMap { $0 }
@@ -1946,7 +1945,7 @@ struct BoardCanvasView: View {
             }
             return HorizontalSelectionHUDItem(
                 title: "Plane",
-                subtitle: netDisplayName(plane.netID) ?? shortID(plane.id),
+                subtitle: hudSubtitle(netDisplayName(plane.netID) ?? "No net", layerName(for: plane.layer)),
                 details: netDetailRows(plane.netID) + [
                     detailRow("Layer", layerName(for: plane.layer)),
                     detailRow("Priority", String(plane.priority)),
@@ -1959,7 +1958,10 @@ struct BoardCanvasView: View {
             }
             return HorizontalSelectionHUDItem(
                 title: "Keepout",
-                subtitle: nonEmpty(keepout.keepoutClass) ?? shortID(keepout.id),
+                subtitle: hudSubtitle(
+                    keepout.keepoutClass,
+                    keepout.allCopperLayers ? "All copper" : layerName(for: keepout.polygon.layer)
+                ),
                 details: [
                     detailRow("Layer", keepout.allCopperLayers ? "All copper" : layerName(for: keepout.polygon.layer)),
                     detailRow("Class", keepout.keepoutClass),
@@ -1982,19 +1984,19 @@ struct BoardCanvasView: View {
             guard let decal = board.decals.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return genericHUDItem(for: ref)
             }
-            return HorizontalSelectionHUDItem(title: nonEmpty(decal.name) ?? "Board decal", subtitle: shortID(decal.id))
+            return HorizontalSelectionHUDItem(title: nonEmpty(decal.name) ?? "Board decal", subtitle: "")
         case .boardPanel:
             guard let panel = board.boardPanels.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return genericHUDItem(for: ref)
             }
-            return HorizontalSelectionHUDItem(title: nonEmpty(panel.boardName) ?? "Board panel", subtitle: shortID(panel.id))
+            return HorizontalSelectionHUDItem(title: nonEmpty(panel.boardName) ?? "Board panel", subtitle: "")
         case .text:
             guard let text = (board.texts + board.packageTexts).first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return genericHUDItem(for: ref)
             }
             return HorizontalSelectionHUDItem(
                 title: nonEmpty(text.text) ?? "Text",
-                subtitle: netDisplayName(text.netID).map { "\($0) - \(shortID(text.id))" } ?? shortID(text.id),
+                subtitle: hudSubtitle(netDisplayName(text.netID), layerName(for: text.layer)),
                 details: netDetailRows(text.netID) + [
                     detailRow("Layer", layerName(for: text.layer)),
                     detailRow("Size", lengthString(text.size)),
@@ -2027,8 +2029,7 @@ struct BoardCanvasView: View {
 
         return HorizontalSelectionHUDItem(
             title: title,
-            subtitle: netDisplayName(segment.netID).map { "\($0) - \(lengthString(segment.length))" }
-                ?? "\(lengthString(segment.length)) - \(shortID(segment.id))",
+            subtitle: hudSubtitle(netDisplayName(segment.netID), layerName(for: segment.layer), lengthString(segment.length)),
             details: details
         )
     }
@@ -2044,8 +2045,7 @@ struct BoardCanvasView: View {
 
         return HorizontalSelectionHUDItem(
             title: title,
-            subtitle: netDisplayName(arc.netID).map { "\($0) - \(lengthString(arc.length))" }
-                ?? "\(lengthString(arc.length)) - \(shortID(arc.id))",
+            subtitle: hudSubtitle(netDisplayName(arc.netID), layerName(for: arc.layer), lengthString(arc.length)),
             details: netDetailRows(arc.netID) + [
                 detailRow("Layer", layerName(for: arc.layer)),
                 detailRow("Radius", lengthString(arc.radius)),
@@ -2055,20 +2055,31 @@ struct BoardCanvasView: View {
         )
     }
 
+    /// A polygon's part is told apart by its layer and, for a plane's polygon,
+    /// the plane's net, as Horizon's "Polygon edge Plane: GND (Top Copper)":
+    /// the plane, not its polygon, carries the net.
     private func polygonHUDItem(for ref: HorizontalSelectableRef, title: String) -> HorizontalSelectionHUDItem {
         guard let polygon = boardPolygon(for: ref.id, in: board) else {
             return genericHUDItem(for: ref)
         }
 
+        let plane = board.planes.first { normalizedID($0.polygonID) == normalizedID(polygon.id) }
+        let netID = plane?.netID ?? polygon.netID
+        let net = plane.map { "Plane \(netDisplayName($0.netID) ?? "with no net")" } ?? netDisplayName(polygon.netID)
         return HorizontalSelectionHUDItem(
             title: title,
-            subtitle: netDisplayName(polygon.netID).map { "\($0) - vertex \(ref.vertex)" }
-                ?? "\(shortID(ref.id)) - vertex \(ref.vertex)",
-            details: netDetailRows(polygon.netID) + [
+            subtitle: hudSubtitle(net, layerName(for: polygon.layer)),
+            details: netDetailRows(netID) + [
                 detailRow("Layer", layerName(for: polygon.layer)),
                 detailRow("Area", areaString(polygon.area)),
             ].compactMap { $0 }
         )
+    }
+
+    /// The parts of a HUD subtitle that apply, which the which-object menu
+    /// shows after the title. Never an object's id: it tells the user nothing.
+    private func hudSubtitle(_ parts: String?...) -> String {
+        parts.compactMap { nonEmpty($0) }.joined(separator: " - ")
     }
 
     private func boardPolygon(for id: String, in board: HorizontalBoard) -> HorizontalPolygon? {
@@ -2078,7 +2089,7 @@ struct BoardCanvasView: View {
     }
 
     private func genericHUDItem(for ref: HorizontalSelectableRef) -> HorizontalSelectionHUDItem {
-        HorizontalSelectionHUDItem(title: displayName(for: ref.type), subtitle: shortID(ref.id))
+        HorizontalSelectionHUDItem(title: displayName(for: ref.type), subtitle: "")
     }
 
     private func hoverStatusText(for ref: HorizontalSelectableRef, item: HorizontalSelectionHUDItem) -> String {
@@ -2839,6 +2850,7 @@ struct BoardCanvasView: View {
         // framing a rectangle in it.
         actions.visibleWorldBounds = { liveCanvasTransform.transform?.visibleBounds }
         actions.drawnAirwires = { liveCanvasAirwires.drawn }
+        actions.confirmPlaneEditor = { confirmPlaneEditor($0) }
         actions.frameWorldRect = { rect in
             guard let transform = liveCanvasTransform.transform else {
                 return
@@ -6170,11 +6182,21 @@ struct BoardCanvasView: View {
         }
 
         drawGraphicsState = nil
+        commitPlaneEdit(draft, actionName: "Draw Plane")
+    }
+
+    /// A plane editor's edit, which the document persists, registers the undo
+    /// for and pours. The canvas takes the board first: once it has a board of
+    /// its own (any edit makes one, and so does every pour it takes in place)
+    /// it draws from it, takes a pour only for the copper in it, and commits
+    /// its next edit from it, so a plane left out of it was never drawn,
+    /// never filled, and dropped again by the next edit.
+    private func commitPlaneEdit(_ board: HorizontalBoard, actionName: String) {
+        editedBoard = board
+        hoveredObject = nil
         invalidateSelectableCache()
         publishSelectionContext()
-        // The document pours all planes, writes the fragment cache, registers the
-        // undo, and re-feeds the board (which remounts this canvas).
-        onPlaneEdit(draft, "Draw Plane")
+        onPlaneEdit(board, actionName)
     }
 
     private func isPolygonRef(_ ref: HorizontalSelectableRef) -> Bool {
@@ -6260,18 +6282,14 @@ struct BoardCanvasView: View {
             HorizontalBoardRuleApplication.applySettings(to: &plane, rules: board.rules)
             board.planes.append(plane)
             selectedObjects = [HorizontalSelectableRef(id: plane.id, type: .plane, layer: plane.layer)]
-            hoveredObject = nil
-            invalidateSelectableCache()
-            publishSelectionContext()
-            onPlaneEdit(board, "Define Plane")
+            commitPlaneEdit(board, actionName: "Define Plane")
         case .edit(let planeID):
             guard let index = board.planes.firstIndex(where: { normalizedID($0.id) == normalizedID(planeID) }) else {
                 return
             }
             board.planes[index].apply(draft)
             HorizontalBoardRuleApplication.applySettings(to: &board.planes[index], rules: board.rules)
-            invalidateSelectableCache()
-            onPlaneEdit(board, "Edit Plane")
+            commitPlaneEdit(board, actionName: "Edit Plane")
         case .finishDrawing(let polygons):
             finishDrawPlane(polygons: polygons, draft: draft)
         }
@@ -6286,10 +6304,7 @@ struct BoardCanvasView: View {
         // The polygon stays; only the plane over it goes.
         board.planes.removeAll { normalizedID($0.id) == normalizedID(planeID) }
         selectedObjects = []
-        hoveredObject = nil
-        invalidateSelectableCache()
-        publishSelectionContext()
-        onPlaneEdit(board, "Delete Plane")
+        commitPlaneEdit(board, actionName: "Delete Plane")
     }
 
     private func cancelPlaneEditor() {
