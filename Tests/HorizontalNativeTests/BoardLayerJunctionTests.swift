@@ -124,6 +124,41 @@ final class BoardLayerJunctionTests: XCTestCase {
         XCTAssertEqual(BoardTrackRouting.junctionID(at: shared, layer: bottom, in: board), dropped)
     }
 
+    /// A junction spans the layers of its copper as Horizon's layer range
+    /// does: lowest to highest layer of the tracks on it, a track end at its
+    /// point that names no junction when nothing names it, and a via's span
+    /// in place of either. One on no copper spans nothing.
+    func testAJunctionSpansTheLayersOfItsCopper() {
+        var board = emptyBoard()
+        board.junctions = [
+            "a": point(0, 0), "b": point(10, 0), "c": point(20, 0),
+            "d": point(30, 0), "e": point(40, 0), "f": point(50, 0),
+        ]
+        func track(_ id: String, _ from: Double, _ to: Double, layer: Int,
+                   _ fromJunction: String?, _ toJunction: String?) -> HorizontalSegment {
+            HorizontalSegment(id: id, from: point(from, 0), to: point(to, 0), width: 200_000, layer: layer,
+                              fromJunctionID: fromJunction, toJunctionID: toJunction)
+        }
+        board.tracks = [
+            track("t1", 0, 10, layer: top, "a", "b"),
+            track("t2", 10, 20, layer: bottom, "b", "c"),
+            track("t3", 20, 30, layer: bottom, "c", nil),
+        ]
+        board.vias = [
+            HorizontalMarker(id: "blind", position: point(20, 0), size: 600_000, layer: nil,
+                             connectedLayers: [HorizontalBoardLayers.in1Copper, bottom]),
+            HorizontalMarker(id: "through", position: point(40, 0), size: 600_000, layer: nil),
+        ]
+
+        let ranges = board.junctionLayerRanges()
+        XCTAssertEqual(ranges["a"], top...top)
+        XCTAssertEqual(ranges["b"], bottom...top, "a top and a bottom track with no via span the layers between")
+        XCTAssertEqual(ranges["c"], bottom...HorizontalBoardLayers.in1Copper, "the via's span, not its tracks'")
+        XCTAssertEqual(ranges["d"], bottom...bottom, "the end naming no junction is on the one nothing names")
+        XCTAssertEqual(ranges["e"], bottom...top, "a via with no span listed goes through the board")
+        XCTAssertNil(ranges["f"])
+    }
+
     /// A junction nothing names (an end drawn before ends kept their
     /// junction, a pasted track's) still joins copper on any layer, as before.
     func testAJunctionNothingNamesJoinsAnyLayer() {

@@ -167,13 +167,63 @@ final class BoardPlanePourTests: XCTestCase {
                 square("pad1", cx: 6 * mm, cy: 0, half: 1 * mm, net: "vcc"),
             ]
         )
-        board.junctions = ["j": p(6 * mm, 0)]
-        board.junctionNetIDs = ["j": "gnd"]
+        // A ground stub on the plane's layer inside the pad, so the junction
+        // has copper there and would anchor a fill it were in.
+        board.junctions = ["j": p(6 * mm, 0), "k": p(6.5 * mm, 0)]
+        board.junctionNetIDs = ["j": "gnd", "k": "gnd"]
+        board.tracks = [
+            HorizontalSegment(id: "stub", from: p(6 * mm, 0), to: p(6.5 * mm, 0), width: 200_000, layer: 0,
+                              netID: "gnd", fromJunctionID: "j", toJunctionID: "k"),
+        ]
 
         let poured = try XCTUnwrap(HorizontalBoardPlaneUpdater.updateAllPlanes(in: board).planes.first)
         XCTAssertEqual(poured.fragments.count, 1, "only the anchored half is kept")
         let outer = try XCTUnwrap(poured.fragments.first?.paths.first)
         XCTAssertLessThan(HorizontalRect(points: outer).maxX, 0, "the kept half is the left one")
+    }
+
+    /// A junction of the plane's net anchors a fragment only where its copper
+    /// is on the plane's layer, as Horizon's orphan test has it. Connectivity
+    /// gives a junction the net of its copper whatever layer that is on, so a
+    /// top plane used to keep a fragment whose only ground was a junction of
+    /// bottom routing, which Horizon deletes. A foreign strip splits the plane;
+    /// the left half holds a ground pad, and the right half a ground junction
+    /// on a bottom track, alone, with a blind via from the bottom to the first
+    /// inner layer, or with a via through the board.
+    func testAJunctionAnchorsOnlyOnTheLayersOfItsCopper() throws {
+        let strip = HorizontalPolygon(
+            id: "strip",
+            vertices: [p(-500_000, -11 * mm), p(500_000, -11 * mm), p(500_000, 11 * mm), p(-500_000, 11 * mm)],
+            layer: 0,
+            netID: "vcc")
+        let junction = p(6 * mm, 0)
+        func pour(via connectedLayers: [Int]?) throws -> HorizontalPlane {
+            var board = makeBoard(
+                polygons: [outline(half: 12 * mm), strip],
+                planes: [plane("p1", half: 10 * mm, net: "gnd")],
+                packagePads: [square("anchor", cx: -6 * mm, cy: 6 * mm, half: 500_000, net: "gnd")]
+            )
+            board.junctions = ["j": junction, "k": p(8 * mm, 0)]
+            board.junctionNetIDs = ["j": "gnd", "k": "gnd"]
+            board.tracks = [
+                HorizontalSegment(id: "under", from: junction, to: p(8 * mm, 0), width: 200_000,
+                                  layer: HorizontalBoardLayers.bottomCopper,
+                                  netID: "gnd", fromJunctionID: "j", toJunctionID: "k"),
+            ]
+            if let connectedLayers {
+                board.vias = [HorizontalMarker(id: "v", position: junction, size: 600_000, layer: nil,
+                                               connectedLayers: connectedLayers, netID: "gnd")]
+            }
+            return try XCTUnwrap(HorizontalBoardPlaneUpdater.updateAllPlanes(in: board).planes.first)
+        }
+
+        XCTAssertEqual(try pour(via: nil).fragments.count, 1,
+                       "a junction of bottom copper does not anchor the top plane")
+        XCTAssertEqual(
+            try pour(via: [HorizontalBoardLayers.in1Copper, HorizontalBoardLayers.bottomCopper]).fragments.count, 1,
+            "nor does one on a via that stops short of the top")
+        XCTAssertEqual(try pour(via: []).fragments.count, 2,
+                       "a via through the board puts its junction on the top, and it keeps the right half")
     }
 
     /// Foreign copper must be cut out, or a pour would short to every pad it
