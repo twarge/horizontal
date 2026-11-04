@@ -697,7 +697,7 @@ struct HorizontalViewCommands: Commands {
             }
             .disabled(clearAllPlanesAction == nil || boardAvailable != true)
 
-            Button("Board Rules…") {
+            Button("Rules…") {
                 boardRulesAction?()
             }
             .keyboardShortcut("r", modifiers: [.command, .option])

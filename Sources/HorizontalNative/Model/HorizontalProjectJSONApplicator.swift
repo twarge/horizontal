@@ -267,6 +267,27 @@ enum HorizontalProjectJSONApplicator {
         try saveJSON(json, relativePath: path, to: &archive)
     }
 
+    /// The schematic's rules: the top schematic's `rules`, as Horizon keeps
+    /// them (`CoreSchematic` reads and writes the top schematic's alone).
+    static func schematicRules(in project: HorizontalProject, from archive: HorizontalProjectArchive) throws -> JSONDictionary {
+        guard let schematic = project.schematic else {
+            return [:]
+        }
+        let path = try archivePath(for: schematic.url, project: project, archive: archive)
+        let json = try loadJSON(relativePath: path, fallbackURL: schematic.url, from: archive)
+        return json.dictionary("rules") ?? [:]
+    }
+
+    static func apply(schematicRules rules: JSONDictionary, in project: HorizontalProject, to archive: inout HorizontalProjectArchive) throws {
+        guard let schematic = project.schematic else {
+            return
+        }
+        let path = try archivePath(for: schematic.url, project: project, archive: archive)
+        var json = try loadJSON(relativePath: path, fallbackURL: schematic.url, from: archive)
+        json["rules"] = rules
+        try saveJSON(json, relativePath: path, to: &archive)
+    }
+
     /// The via rules applied to the board in `archive`, as Horizon's rules
     /// window applies them (`HorizontalViaRules`): each via that takes its
     /// shape from the rules gets the padstack and parameters of the rule that
