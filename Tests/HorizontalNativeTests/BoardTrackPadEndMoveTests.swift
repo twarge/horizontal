@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import MetalKit
 import SwiftUI
 #endif
 import XCTest
@@ -182,8 +183,24 @@ final class BoardTrackPadEndCanvasTests: XCTestCase {
         return view.subviews.lazy.compactMap { self.monitor(in: $0) }.first
     }
 
+    /// The renderer of the top overlay, where the selection is drawn.
+    private func overlayRenderer(in view: NSView) -> HorizontalMetalBackdropView.Renderer? {
+        if let metal = view as? MTKView, let renderer = metal.delegate as? HorizontalMetalBackdropView.Renderer,
+           renderer.loadProfileLabel == "Metal top overlay" { return renderer }
+        return view.subviews.lazy.compactMap { self.overlayRenderer(in: $0) }.first
+    }
+
     /// Mounts the canvas, selects everything and returns a key sender.
     private func mount(_ state: State) async throws -> (window: NSWindow, key: (UInt16, String) throws -> Void) {
+        let (window, _, key) = try await mountWithOverlay(state)
+        return (window, key)
+    }
+
+    /// `mount`, with a finder of the selection overlay's renderer, which the
+    /// canvas makes once there is something to draw in it.
+    private func mountWithOverlay(_ state: State) async throws -> (
+        window: NSWindow, overlay: () -> HorizontalMetalBackdropView.Renderer?, key: (UInt16, String) throws -> Void
+    ) {
         guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
         _ = NSApplication.shared
         let hosted = NSHostingView(rootView: Canvas(state: state)
@@ -206,7 +223,7 @@ final class BoardTrackPadEndCanvasTests: XCTestCase {
         state.actions?.dispatch(.selectAll)
         let selected = await settle { state.actions?.canMoveSelection == true }
         XCTAssertTrue(selected)
-        return (window, key)
+        return (window, { self.overlayRenderer(in: hosted) }, key)
     }
 
     private func tracks(_ board: HorizontalBoard) -> [String: HorizontalSegment] {
@@ -232,6 +249,71 @@ final class BoardTrackPadEndCanvasTests: XCTestCase {
         XCTAssertEqual(moved["t2"]?.to, far + delta)
         XCTAssertEqual(moved["t3"]?.from, pad, "a track from pad to pad stays put")
         XCTAssertEqual(moved["t3"]?.to, otherPad)
+    }
+
+    /// The box `BoardTrackSelectionOutline` outlines a straight track by.
+    private func outlineCorners(_ segment: HorizontalSegment) throws -> [HorizontalPoint] {
+        try XCTUnwrap(
+            HorizontalCanvasModeSupport.segmentSelectables([segment], type: .track).first { !$0.isPoint }
+        ).corners
+    }
+
+    /// Whether `strokes` start a line at every corner of `corners`.
+    private func outlines(
+        _ corners: [HorizontalPoint],
+        in strokes: [(from: SIMD2<Float>, to: SIMD2<Float>)]
+    ) -> Bool {
+        corners.allSatisfy { corner in
+            strokes.contains { abs(Double($0.from.x) - corner.x) < 50 && abs(Double($0.from.y) - corner.y) < 50 }
+        }
+    }
+
+    /// The selection outline keeps to the copper while the move is under
+    /// way: a track's box swings about its pad end with the track, and a
+    /// track from pad to pad keeps its box where it is. The selection used to
+    /// shift whole, boxes and all, off the tracks it outlined.
+    func testAKeyMoveOutlinesTheTracksWhereTheyAre() async throws {
+        let original = board()
+        let state = State(original)
+        let (window, overlay, key) = try await mountWithOverlay(state)
+        defer { window.close() }
+        let found = await settle { overlay()?.presentedContentKey != nil }
+        XCTAssertTrue(found, "the selection is drawn")
+        let renderer = try XCTUnwrap(overlay())
+        let before = original.tracks
+        let shown = await settle {
+            let strokes = renderer.residentLineEndpoints(compositeGroup: 0)
+            return before.allSatisfy { (try? self.outlines(self.outlineCorners($0), in: strokes)) == true }
+        }
+        XCTAssertTrue(shown, "each track is outlined")
+
+        try key(126, "\u{f700}")   // up: a keyboard move, patched in Metal
+        let t1 = try XCTUnwrap(before.first { $0.id == "t1" })
+        let previewed = await settle {
+            let strokes = renderer.residentLineEndpoints(compositeGroup: 0)
+            return (try? self.outlines(self.outlineCorners(t1), in: strokes)) == false
+        }
+        XCTAssertTrue(previewed, "the move redrew t1's outline")
+        let strokes = renderer.residentLineEndpoints(compositeGroup: 0)
+
+        try key(36, "\r")
+        let committed = await settle { state.committed.count == 1 }
+        XCTAssertTrue(committed)
+        let moved = tracks(try XCTUnwrap(state.committed.last))
+        let delta = try XCTUnwrap(moved["t2"]).from - corner
+        XCTAssertGreaterThan(delta.y, 0, "the move went up")
+        for id in ["t1", "t2", "t3"] {
+            let track = try XCTUnwrap(moved[id])
+            XCTAssertTrue(try outlines(outlineCorners(track), in: strokes), "\(id) was outlined where the move took it")
+        }
+        var shiftedPadToPad = try XCTUnwrap(before.first { $0.id == "t3" })
+        shiftedPadToPad.from = shiftedPadToPad.from + delta
+        shiftedPadToPad.to = shiftedPadToPad.to + delta
+        XCTAssertFalse(try outlines(outlineCorners(shiftedPadToPad), in: strokes), "t3's outline stayed with t3")
+        var shiftedPadEnd = t1
+        shiftedPadEnd.from = shiftedPadEnd.from + delta
+        shiftedPadEnd.to = shiftedPadEnd.to + delta
+        XCTAssertFalse(try outlines(outlineCorners(shiftedPadEnd), in: strokes), "t1's outline kept to its pad")
     }
 
     func testRLeavesTrackEndsOnTheirPads() async throws {
