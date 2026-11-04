@@ -112,6 +112,10 @@ struct HorizontalCanvasCommandActions {
     var visibleWorldBounds: (() -> HorizontalRect?)? = nil
     /// The airwires a board canvas's scene draws, for the live channel.
     var drawnAirwires: (() -> HorizontalDrawnAirwires?)? = nil
+    /// Confirms the plane editor open on a board canvas with these values,
+    /// as its Define Plane, Apply or Create Plane button does; nothing while
+    /// none is open. A popover's button can't be pressed from a test.
+    var confirmPlaneEditor: ((HorizontalPlaneEditorDraft) -> Void)? = nil
     /// Frames a world rectangle in the canvas, for the live channel's zoom-to.
     var frameWorldRect: ((HorizontalRect) -> Void)? = nil
     /// Zooms the view about its centre; 2 is twice as close.
