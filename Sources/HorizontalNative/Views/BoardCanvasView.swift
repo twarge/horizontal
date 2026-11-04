@@ -1234,6 +1234,9 @@ struct BoardCanvasView: View {
         .onChange(of: syncRevision) { _, _ in
             adoptExternallyUpdatedBoard()
         }
+        .onChange(of: sourceBoard.grid) { _, grid in
+            adoptSourceGrid(grid)
+        }
         .onChange(of: planeFillDelivery?.revision) { _, _ in
             takePlaneFillDelivery()
         }
@@ -4570,6 +4573,18 @@ struct BoardCanvasView: View {
         invalidateSelectableCache()
         // invalidateSelectableCache also rebuilds the Metal scene.
         publishSelectionContext()
+    }
+
+    /// The grid the pane's grid settings give the board, taken into the
+    /// canvas's own board in place, as a pour's fills are. Once an edit has
+    /// given the canvas a board of its own it draws, snaps and steps the arrow
+    /// keys by that board's grid, and commits its next edit from it, so a grid
+    /// changed in the pane showed there and was put back by the next edit.
+    private func adoptSourceGrid(_ grid: HorizontalGridSettings) {
+        guard editedBoard != nil, editedBoard?.grid != grid else {
+            return
+        }
+        editedBoard?.grid = grid
     }
 
     /// Whether a tool is in use, with a board of its own to commit or to put
