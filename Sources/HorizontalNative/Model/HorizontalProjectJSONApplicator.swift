@@ -157,6 +157,7 @@ enum HorizontalProjectJSONApplicator {
         patchUnstatedViaRules(&json, rules: board.rules)
         patchPlanes(&json, planes: board.planes, removing: board.removedPlaneIDs)
         patchKeepouts(&json, keepouts: board.keepouts, removing: board.removedKeepoutIDs)
+        patchDecals(&json, decals: board.decals, removing: board.removedDecalIDs)
         patchDimensions(&json, dimensions: board.dimensions, removing: board.removedDimensionIDs)
         // Packages smashed in-memory but whose from-smash texts weren't
         // materialized (e.g. the board was opened without a resolvable pool):
@@ -191,7 +192,7 @@ enum HorizontalProjectJSONApplicator {
         return boardChanged || padstacksCached
     }
 
-    /// The padstacks the board's vias and via rules name, cached into the
+    /// The padstacks the board's vias, via rules and holes name, cached into the
     /// project pool where it has none, as Horizon's project pool caches an
     /// item the moment the project takes it from a pool: from the pool that
     /// has it, else, for one of horizon-pool's vias, the copy Horizontal ships.
@@ -205,7 +206,9 @@ enum HorizontalProjectJSONApplicator {
         in project: HorizontalProject,
         to archive: inout HorizontalProjectArchive
     ) -> Bool {
+        // A hole pasted from another project names a padstack too.
         let named = board.vias.compactMap(\.padstackID) + board.rules.viaRules.compactMap(\.padstackID)
+            + board.holes.compactMap(\.padstackID)
         let padstackIDs = Set(named.map(normalizedID)).subtracting(["", HorizontalProjectArchive.nullUUID])
         guard !padstackIDs.isEmpty else {
             return false
@@ -1738,9 +1741,8 @@ enum HorizontalProjectJSONApplicator {
         holes: [HorizontalHole],
         removing removedIDs: Set<String> = []
     ) {
-        guard var map = json[key] as? JSONDictionary else {
-            return
-        }
+        // Defaulted rather than guarded, so a board with no holes can gain one.
+        var map = json[key] as? JSONDictionary ?? [:]
         // Preserve unknown source entries; deletions come through `removedIDs`.
         // See note in patchPolygons.
         for id in removedIDs {
@@ -1750,13 +1752,31 @@ enum HorizontalProjectJSONApplicator {
         }
 
         for hole in holes {
-            guard let itemKey = matchingKey(hole.id, in: map),
-                  let item = map[itemKey] as? JSONDictionary else {
-                continue
+            if let itemKey = matchingKey(hole.id, in: map), let item = map[itemKey] as? JSONDictionary {
+                map[itemKey] = holeJSONEntry(hole, existing: item)
+            } else if let entry = newHoleJSONEntry(hole) {
+                map[hole.id] = entry
             }
-            map[itemKey] = holeJSONEntry(hole, existing: item)
         }
-        json[key] = map
+        if json[key] != nil || !map.isEmpty {
+            json[key] = map
+        }
+    }
+
+    /// A board hole the file has never had, one Paste or Duplicate made, as
+    /// Horizon's BoardHole::serialize writes it: { padstack, placement,
+    /// parameter_set, net }. Only a hole on a padstack of its own makes one;
+    /// Horizon's board holes all have a padstack, and one of several holes a
+    /// padstack numbers ("<id>/hole/<n>") is no board hole by itself.
+    private static func newHoleJSONEntry(_ hole: HorizontalHole) -> JSONDictionary? {
+        guard hole.padstackID != nil, !hole.id.contains("/") else {
+            return nil
+        }
+        var item = holeJSONEntry(hole, existing: ["placement": ["mirror": false] as JSONDictionary])
+        if let netID = hole.netID {
+            item["net"] = netID
+        }
+        return item
     }
 
     /// Builds one hole's on-disk entry, merged over the existing entry so
@@ -2019,6 +2039,40 @@ enum HorizontalProjectJSONApplicator {
             map[itemKey] = item
         }
         json["keepouts"] = map
+    }
+
+    /// A board decal is written where the board has it (Horizon's
+    /// BoardDecal::serialize: { decal, placement, flip, scale }). The canvas
+    /// moves and deletes decals and changes nothing else of them, so only the
+    /// placement's shift is written; its angle and mirror, the flip and the
+    /// scale stay as the file has them. A decal whose pool item could not be
+    /// read is not loaded, so its entry is kept, and a deletion comes through
+    /// `removedIDs`.
+    private static func patchDecals(
+        _ json: inout JSONDictionary,
+        decals: [HorizontalBoardDecal],
+        removing removedIDs: Set<String> = []
+    ) {
+        guard var map = json["decals"] as? JSONDictionary else {
+            return
+        }
+        for id in removedIDs {
+            if let itemKey = matchingKey(id, in: map) {
+                map.removeValue(forKey: itemKey)
+            }
+        }
+        for decal in decals where !decal.id.contains("/") {
+            guard let position = decal.position,
+                  let itemKey = matchingKey(decal.id, in: map),
+                  var item = map[itemKey] as? JSONDictionary else {
+                continue
+            }
+            var placement = item["placement"] as? JSONDictionary ?? [:]
+            placement["shift"] = jsonPoint(position)
+            item["placement"] = placement
+            map[itemKey] = item
+        }
+        json["decals"] = map
     }
 
     private static func patchDimensions(

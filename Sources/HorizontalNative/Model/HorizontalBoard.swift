@@ -509,6 +509,10 @@ struct HorizontalBoard {
     /// `patchKeepouts` keep entries the model lacks.
     var removedHoleIDs: Set<String> = []
     var removedKeepoutIDs: Set<String> = []
+    /// Board decal ids the editor has removed, for the same reason: a decal
+    /// whose pool item could not be read is never loaded, and `patchDecals`
+    /// keeps it.
+    var removedDecalIDs: Set<String> = []
     var planes: [HorizontalPlane]
     var keepouts: [HorizontalKeepout]
     var dimensions: [HorizontalDimension]
@@ -2471,7 +2475,8 @@ struct HorizontalBoard {
                 placement: renderPlacement,
                 scale: scale,
                 layerTransform: layerTransform
-            )
+            ),
+            position: placement.shift
         )
     }
 

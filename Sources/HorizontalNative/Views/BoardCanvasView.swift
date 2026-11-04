@@ -6670,7 +6670,13 @@ struct BoardCanvasView: View {
                     changed = true
                 }
             case .boardDecal:
-                changed = removeElement(from: &board.decals, matching: ref) || changed
+                // patchDecals keeps entries the model lacks.
+                if removeElement(from: &board.decals, matching: ref) {
+                    if !ref.id.contains("/") {
+                        board.removedDecalIDs.insert(ref.id)
+                    }
+                    changed = true
+                }
             case .connectionLine:
                 changed = removeElement(from: &board.connectionLines, matching: ref) || changed
             case .boardPanel:
@@ -9202,6 +9208,7 @@ struct BoardCanvasView: View {
         decal.lines = decal.lines.map { shifted($0, by: delta) }
         decal.arcs = decal.arcs.map { shifted($0, by: delta) }
         decal.texts = decal.texts.map { shifted($0, by: delta) }
+        decal.position = decal.position.map { $0 + delta }
         return decal
     }
 
