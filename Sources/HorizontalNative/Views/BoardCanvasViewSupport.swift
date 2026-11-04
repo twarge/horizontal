@@ -163,6 +163,9 @@ struct BoardMetalSelectionCacheKey: Hashable {
     /// overlay rebuilds (follows the dragged object) instead of returning the
     /// cached pre-move box.
     var movePreview: BoardMovePreviewSignature? = nil
+    /// True while a move that is patched in Metal is under way, whose batch
+    /// keeps the tracks it reshapes apart (`BoardMetalMovingTrackOutlines`).
+    var patchesMove = false
     var selectedRefs: [HorizontalSelectableRef]
     var hoveredRef: HorizontalSelectableRef?
     var selectedOuterColor: HorizontalMetalRGBA
@@ -342,6 +345,9 @@ struct BoardMetalLineBatch {
     var anchoredRectKey: Int
     var anchoredRects: [HorizontalMetalAnchoredRectPrimitive]
     var metadata = BoardMetalSceneMetadata()
+    /// A selection batch's outlines of the tracks a move redraws rather than
+    /// shifts, last among its lines and handles.
+    var movingTrackOutlines: BoardMetalMovingTrackOutlines?
 
     var primitiveWeight: BoardMetalPrimitiveWeight {
         BoardMetalPrimitiveWeight(
@@ -351,6 +357,17 @@ struct BoardMetalLineBatch {
             anchoredRects: anchoredRects.count
         )
     }
+}
+
+/// The tail of a selection batch that a move draws afresh at each step, from
+/// where it has taken the tracks' ends (`BoardMovingTrackOutlines`), in the
+/// style the batch drew them with: its last `lineCount` lines and
+/// `handleCount` handles.
+struct BoardMetalMovingTrackOutlines {
+    var outlines: BoardMovingTrackOutlines
+    var style: HorizontalCanvasSelectionOverlayStyle
+    var lineCount: Int
+    var handleCount: Int
 }
 
 struct BoardMetalPrimitiveWeight {

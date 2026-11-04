@@ -12742,9 +12742,11 @@ struct BoardCanvasView: View {
         let hoverOuterColor = HorizontalMetalRGBA(theme.selectablePrelight.opacity(0.78))
         let hoverInnerColor = HorizontalMetalRGBA(theme.selectableInner.opacity(0.38))
         let handleShape = appearanceSettings.canvasSelectionHandleShape
+        let patchesMove = canPatchBoardMoveInMetal
         let key = BoardMetalSelectionCacheKey(
             selectableKey: selectableCacheKey,
-            movePreview: canPatchBoardMoveInMetal ? nil : boardMovePreviewSignature,
+            movePreview: patchesMove ? nil : boardMovePreviewSignature,
+            patchesMove: patchesMove,
             selectedRefs: selectedObjects,
             hoveredRef: hoveredObject,
             selectedOuterColor: selectedOuterColor,
@@ -12763,14 +12765,14 @@ struct BoardCanvasView: View {
             // of scanning every entry in boardSelectables(). With ~10k
             // selectables on a typical board, the previous O(n) scan ran on
             // every body fire and dominated wall time during interaction.
-            let selectionBoard = canPatchBoardMoveInMetal ? (moveState?.originalBoard ?? board) : board
+            let selectionBoard = patchesMove ? (moveState?.originalBoard ?? board) : board
             // The hit-testing scene already holds these selectables, grouped
             // by ref, for the same board. Rebuilding them here repeated a
             // whole-board build on every hover and selection change. Only a
             // preview board the scene's key can't see (a move that can't be
             // patched, a paste or pool ghost, a corner being rounded) needs
             // them fresh.
-            let previewsUnkeyedBoard = (moveState != nil && !canPatchBoardMoveInMetal)
+            let previewsUnkeyedBoard = (moveState != nil && !patchesMove)
                 || pastePlacementState != nil
                 || poolPlacementState != nil
                 || roundOffVertexState != nil
@@ -12785,17 +12787,35 @@ struct BoardCanvasView: View {
                 hoverInnerColor: hoverInnerColor,
                 handleShape: handleShape
             )
+            // The tracks a patched move reshapes, an end of theirs staying
+            // put, are outlined apart, last, so the move can redraw their
+            // boxes from where it takes their ends while it shifts the rest.
+            var movingTracks = BoardMovingTrackOutlines()
+            if patchesMove, let moveState {
+                movingTracks = BoardMovingTrackOutlines(
+                    selectedRefs: selectedObjects.filter { selectablesByRef[$0] != nil },
+                    plan: moveState.residentMovePlan,
+                    board: selectionBoard
+                )
+            }
+            let movingTrackRefs = movingTracks.refs
+            let shiftedRefs = movingTrackRefs.isEmpty
+                ? selectedObjects
+                : selectedObjects.filter { !movingTrackRefs.contains($0) }
             let arcTrackWidths = BoardTrackSelectionOutline.arcWidths(
                 in: selectionBoard,
-                refs: selectedObjects + [hoveredObject].compactMap { $0 }
+                refs: shiftedRefs + [hoveredObject].compactMap { $0 }
             )
             let overlay = HorizontalCanvasModeSupport.metalSelectionOverlay(
                 selectablesForRef: { selectablesByRef[$0] ?? [] },
-                selectedRefs: selectedObjects,
-                hoveredRef: hoveredObject,
+                selectedRefs: shiftedRefs,
+                hoveredRef: hoveredObject.flatMap { movingTrackRefs.contains($0) ? nil : $0 },
                 style: style,
                 outlineForSelectable: { boardSelectionOutline(for: $0, arcTrackWidths: arcTrackWidths) }
             )
+            let movingTrackOverlay = movingTracks.isEmpty
+                ? HorizontalCanvasMetalSelectionOverlay()
+                : boardMovingTrackOutlineOverlay(movingTracks, at: .identity, style: style)
             let polygonGroupPreviewLines = boardMetalPolygonSelectionPreviewLines(
                 in: selectionBoard,
                 selectedRefs: selectedObjects,
@@ -12832,11 +12852,18 @@ struct BoardCanvasView: View {
                 triangleKey: batchKey,
                 triangles: [],
                 lineKey: batchKey,
-                lines: polygonGroupPreviewLines + vertexMarks.lines + textOwnerLines + overlay.lines,
+                lines: polygonGroupPreviewLines + vertexMarks.lines + textOwnerLines + overlay.lines
+                    + movingTrackOverlay.lines,
                 handleKey: batchKey,
-                handles: vertexMarks.handles + overlay.handles,
+                handles: vertexMarks.handles + overlay.handles + movingTrackOverlay.handles,
                 anchoredRectKey: 0,
-                anchoredRects: []
+                anchoredRects: [],
+                movingTrackOutlines: movingTracks.isEmpty ? nil : BoardMetalMovingTrackOutlines(
+                    outlines: movingTracks,
+                    style: style,
+                    lineCount: movingTrackOverlay.lines.count,
+                    handleCount: movingTrackOverlay.handles.count
+                )
             )
         }
         #else
@@ -12882,29 +12909,84 @@ struct BoardCanvasView: View {
         // The selection turns with what it outlines (122): a quarter turn of a
         // box is the box of the turned part.
         let placement = moveState.livePlacement
+        let movingTracks = baseSelectionBatch.movingTrackOutlines
+        let shiftedLineCount = baseSelectionBatch.lines.count - (movingTracks?.lineCount ?? 0)
+        let shiftedHandleCount = baseSelectionBatch.handles.count - (movingTracks?.handleCount ?? 0)
         var patches = HorizontalMetalBufferPatches()
-        if !baseSelectionBatch.lines.isEmpty {
+        if shiftedLineCount > 0 {
             patches.lineTranslationPatches.append(
                 HorizontalMetalLineTranslationPatch(
                     compositeGroup: 0,
                     start: lineStart,
-                    count: baseSelectionBatch.lines.count,
+                    count: shiftedLineCount,
                     delta: placement.shift,
                     angle: placement.angle
                 )
             )
         }
-        if !baseSelectionBatch.handles.isEmpty {
+        if shiftedHandleCount > 0 {
             patches.handleTranslationPatches.append(
                 HorizontalMetalHandleTranslationPatch(
                     start: handleStart,
-                    count: baseSelectionBatch.handles.count,
+                    count: shiftedHandleCount,
                     delta: placement.shift,
                     angle: placement.angle
                 )
             )
         }
+        // The tracks the move reshapes are outlined where it has taken their
+        // ends, as the scene draws them, not shifted whole off the copper.
+        if let movingTracks {
+            let overlay = boardMovingTrackOutlineOverlay(movingTracks.outlines, at: placement, style: movingTracks.style)
+            if movingTracks.lineCount > 0 {
+                patches.linePatches.append(
+                    HorizontalMetalLineBufferPatch(
+                        compositeGroup: 0,
+                        start: lineStart + shiftedLineCount,
+                        primitives: Self.fitted(overlay.lines, to: Array(baseSelectionBatch.lines.suffix(movingTracks.lineCount)))
+                    )
+                )
+            }
+            if movingTracks.handleCount > 0 {
+                patches.handlePatches.append(
+                    HorizontalMetalHandleBufferPatch(
+                        start: handleStart + shiftedHandleCount,
+                        primitives: Self.fitted(overlay.handles, to: Array(baseSelectionBatch.handles.suffix(movingTracks.handleCount)))
+                    )
+                )
+            }
+        }
         return patches
+    }
+
+    /// The selection outlines of the tracks a move reshapes
+    /// (`BoardMovingTrackOutlines`), where `placement` has taken their moving
+    /// ends; `.identity` outlines them where they were.
+    private func boardMovingTrackOutlineOverlay(
+        _ outlines: BoardMovingTrackOutlines,
+        at placement: HorizontalPlacementTransform,
+        style: HorizontalCanvasSelectionOverlayStyle
+    ) -> HorizontalCanvasMetalSelectionOverlay {
+        let selectables = outlines.selectables(at: placement)
+        let arcWidths = outlines.arcWidths
+        return HorizontalCanvasModeSupport.metalSelectionOverlay(
+            selectablesForRef: { selectables[$0] ?? [] },
+            selectedRefs: outlines.tracks.map(\.ref),
+            hoveredRef: nil,
+            style: style,
+            outlineForSelectable: { boardSelectionOutline(for: $0, arcTrackWidths: arcWidths) }
+        )
+    }
+
+    /// `primitives` laid over `base`, the run they redraw, which they must
+    /// fill exactly: a short redraw keeps the rest of `base`, a long one is cut.
+    /// A track's outline takes as many primitives wherever its ends are, so
+    /// this only guards the buffer.
+    private static func fitted<Primitive>(_ primitives: [Primitive], to base: [Primitive]) -> [Primitive] {
+        guard primitives.count != base.count else {
+            return primitives
+        }
+        return Array(primitives.prefix(base.count)) + base.dropFirst(min(primitives.count, base.count))
     }
 
     /// The selected smashed texts' lines to their packages, and a selected
