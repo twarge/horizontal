@@ -608,7 +608,6 @@ struct HorizontalBoard {
         var ownTracks = parseBoardTracks(
             from: json.dictionaryMap("tracks"),
             junctions: junctions,
-            junctionNetIDs: junctionNetIDs,
             packagePositions: packagePositions,
             packagePadPositions: packageGeometry.padPositions,
             packagePadNetIDs: packageGeometry.padNetIDs
@@ -673,7 +672,6 @@ struct HorizontalBoard {
         var ownVias = parseVias(
             from: json.dictionaryMap("vias"),
             junctions: junctions,
-            junctionNetIDs: junctionNetIDs,
             viaDefinitions: viaDefinitions,
             padstackDefaults: viaPadstackDefaults,
             nInnerLayers: nInnerLayers,
@@ -683,7 +681,6 @@ struct HorizontalBoard {
         var ownViaHoles = parseViaHoles(
             from: json.dictionaryMap("vias"),
             junctions: junctions,
-            junctionNetIDs: junctionNetIDs,
             viaDefinitions: viaDefinitions,
             padstackDefaults: viaPadstackDefaults
         )
@@ -696,16 +693,13 @@ struct HorizontalBoard {
                 packagePadPositions: packageGeometry.padPositions,
                 copperLayers: boardCopperLayers(tracks: ownTracks, pads: packageGeometry.pads),
                 anchors: boardNetAnchors(
-                    junctions: junctions,
-                    junctionNetIDs: junctionNetIDs,
                     packagePadPositions: packageGeometry.padPositions,
                     packagePadNetIDs: packageGeometry.padNetIDs,
                     packagePads: packageGeometry.pads,
                     packageHoles: packageGeometry.holes,
                     copperLayers: boardCopperLayers(tracks: ownTracks, pads: packageGeometry.pads)
                 ),
-                junctions: junctions,
-                junctionNetIDs: junctionNetIDs
+                junctions: junctions
             )
         }
         ownTracks = boardConnectivity.tracks
@@ -714,7 +708,7 @@ struct HorizontalBoard {
         let ownAirwires = BoardLoadTimer.measure("HorizontalBoard.load — generateAirwires") {
             generateAirwires(
                 junctions: junctions,
-                junctionNetIDs: boardConnectivity.airwireJunctionNetIDs,
+                junctionNetIDs: boardConnectivity.junctionNetIDs,
                 packagePadPositions: packageGeometry.padPositions,
                 packagePadNetIDs: packageGeometry.padNetIDs,
                 packagePadLayers: padLayers(from: packageGeometry.pads),
@@ -802,7 +796,12 @@ struct HorizontalBoard {
             stackupLayers: stackupLayers,
             userLayers: userLayers,
             junctions: junctions,
-            junctionNetIDs: junctionNetIDs,
+            // A junction the file stores a net on keeps the one its copper
+            // gives it now, as the writer keeps that net up to date; the rest
+            // stay as Horizon writes them, with none.
+            junctionNetIDs: junctionNetIDs.keys.reduce(into: [String: String]()) { kept, id in
+                kept[id] = boardConnectivity.junctionNetIDs[id]
+            },
             netDetails: blockMetadata.netDetails,
             rules: boardRules,
             tracks: tracks,
@@ -1573,7 +1572,6 @@ struct HorizontalBoard {
     private static func parseBoardTracks(
         from map: [String: JSONDictionary],
         junctions: [String: HorizontalPoint],
-        junctionNetIDs: [String: String],
         packagePositions: [String: HorizontalPoint],
         packagePadPositions: [String: HorizontalPoint],
         packagePadNetIDs: [String: String]
@@ -1606,9 +1604,13 @@ struct HorizontalBoard {
                 width: item.double("width") ?? 0,
                 layer: item.int("layer"),
                 center: item.point("center"),
-                netID: item.string("net").map(normalizedID)
-                    ?? endpointNetID(item.dictionary("from"), junctionNetIDs: junctionNetIDs, packagePadNetIDs: packagePadNetIDs)
-                    ?? endpointNetID(item.dictionary("to"), junctionNetIDs: junctionNetIDs, packagePadNetIDs: packagePadNetIDs),
+                // Only a pad end names a net here: the rest comes from the
+                // copper the track joins (`resolveBoardConnectivity`), as
+                // Horizon's propagate_nets gives it. The net a drawn track and
+                // its junctions store is the one it was drawn on, which a
+                // deleted pad or a pin moved to another net leaves behind.
+                netID: padEndpointNetID(item.dictionary("from"), packagePadNetIDs: packagePadNetIDs)
+                    ?? padEndpointNetID(item.dictionary("to"), packagePadNetIDs: packagePadNetIDs),
                 fromJunctionID: junctionID("from"),
                 toJunctionID: junctionID("to"),
                 widthFromRules: item.bool("width_from_net_class") ?? true
@@ -1621,9 +1623,12 @@ struct HorizontalBoard {
     /// A pad only seeds the layers it actually has copper on. Seeding every
     /// layer at its coordinate is what let a bottom track inherit a top pad's
     /// net — see `HorizontalCopperConnectivity`.
+    ///
+    /// Pads and package holes are the seeds, with the pinned vias the
+    /// resolver reads from the vias themselves. A junction seeds nothing: the
+    /// net a file stores on one (the track tool and `place_track` write the
+    /// net a track was drawn on) outlives the pad it came from.
     private static func boardNetAnchors(
-        junctions: [String: HorizontalPoint],
-        junctionNetIDs: [String: String],
         packagePadPositions: [String: HorizontalPoint],
         packagePadNetIDs: [String: String],
         packagePads: [HorizontalPolygon],
@@ -1640,17 +1645,14 @@ struct HorizontalBoard {
                 .insert(normalizedID(netID))
         }
 
-        /// Objects with no layer of their own — junctions, drill holes — span
-        /// the stackup, so their net applies to every copper layer they meet.
+        /// A drill hole has no layer of its own; it spans the stackup, so its
+        /// net applies to every copper layer it meets.
         func addSpanning(_ point: HorizontalPoint, netID: String?) {
             for layer in copperLayers {
                 add(point, layer: layer, netID: netID)
             }
         }
 
-        for (junctionID, point) in junctions {
-            addSpanning(point, netID: junctionNetIDs[junctionID])
-        }
         for pad in packagePads where pad.layer.map(HorizontalBoardLayers.isCopper) == true {
             add(
                 HorizontalRect(points: pad.renderVertices(arcPrecision: 24)).center,
@@ -1705,15 +1707,18 @@ struct HorizontalBoard {
         return result
     }
 
-    /// Fills in the nets of tracks and vias that store none, from the one net
-    /// on their copper, and finds the same for each junction on single-net
-    /// copper, for the airwires only. Horizon stores no net on a board
-    /// junction, and a track ending at a bend joins nothing in the rats' nest
-    /// unless that junction is a node of its net: on Billo the loader drew 328
-    /// airwires where the editor, which derives junction nets, drew 32. Copper
-    /// that joins two nets gives its junctions neither, as the editor's pass
-    /// does. The derived nets are not put on the board, since a save writes
-    /// the board's junction nets into the file.
+    /// Fills in the nets of tracks and vias from the one net on their copper,
+    /// and finds the same for each junction on single-net copper. The only
+    /// nets that come in are the pads' (the anchors, and a track's pad end)
+    /// and a pinned via's, so copper no pad reaches has none, as Horizon's
+    /// propagate_nets leaves it, and the canvas draws it orange. Horizon
+    /// stores no net on a board junction, and a track ending at a bend joins
+    /// nothing in the rats' nest unless that junction is a node of its net: on
+    /// Billo the loader drew 328 airwires where the editor, which derives
+    /// junction nets, drew 32. Copper that joins two nets gives its junctions
+    /// neither, as the editor's pass does. The airwires take these junction
+    /// nets in place of any the file stores, and the board only where it
+    /// stores one.
     private static func resolveBoardConnectivity(
         tracks: [HorizontalSegment],
         vias: [HorizontalMarker],
@@ -1722,10 +1727,9 @@ struct HorizontalBoard {
         packagePadPositions: [String: HorizontalPoint],
         copperLayers: [Int],
         anchors: [String: Set<String>],
-        junctions: [String: HorizontalPoint] = [:],
-        junctionNetIDs: [String: String] = [:]
+        junctions: [String: HorizontalPoint] = [:]
     ) -> (tracks: [HorizontalSegment], vias: [HorizontalMarker], viaHoles: [HorizontalHole],
-          airwireJunctionNetIDs: [String: String]) {
+          junctionNetIDs: [String: String]) {
         var resolvedTracks = tracks
         var resolvedVias = vias
         var resolvedViaHoles = viaHoles
@@ -1859,15 +1863,15 @@ struct HorizontalBoard {
 
         // A junction carries no layer, so it takes the net of the copper at its
         // point only when every layer there agrees.
-        var airwireJunctionNetIDs = junctionNetIDs
-        for (id, point) in junctions where airwireJunctionNetIDs[id] == nil {
+        var junctionNetIDs = [String: String]()
+        for (id, point) in junctions {
             let netsHere = Set(copperLayers.compactMap { netForKey[HorizontalCopperConnectivity.node(point, layer: $0)] })
             if netsHere.count == 1, let netID = netsHere.first {
-                airwireJunctionNetIDs[id] = netID
+                junctionNetIDs[id] = netID
             }
         }
 
-        return (resolvedTracks, resolvedVias, resolvedViaHoles, airwireJunctionNetIDs)
+        return (resolvedTracks, resolvedVias, resolvedViaHoles, junctionNetIDs)
     }
 
     private static func generateAirwires(
@@ -2836,7 +2840,6 @@ struct HorizontalBoard {
     private static func parseVias(
         from map: [String: JSONDictionary],
         junctions: [String: HorizontalPoint],
-        junctionNetIDs: [String: String],
         viaDefinitions: [String: JSONDictionary],
         padstackDefaults: [String: JSONDictionary] = [:],
         nInnerLayers: Int,
@@ -2874,9 +2877,9 @@ struct HorizontalBoard {
                     viaDefinitions: viaDefinitions,
                     nInnerLayers: nInnerLayers
                 ),
-                netID: item.string("net_set").map(normalizedID)
-                    ?? item.string("net").map(normalizedID)
-                    ?? junctionNetIDs[junctionID],
+                // A via's net is its own only when it is pinned (net_set);
+                // otherwise the copper it stands on gives it one.
+                netID: item.string("net_set").map(normalizedID),
                 netSetID: item.string("net_set").map(normalizedID),
                 padstackID: item.string("padstack"),
                 definitionID: item.string("definition"),
@@ -3051,7 +3054,6 @@ struct HorizontalBoard {
     private static func parseViaHoles(
         from map: [String: JSONDictionary],
         junctions: [String: HorizontalPoint],
-        junctionNetIDs: [String: String],
         viaDefinitions: [String: JSONDictionary],
         padstackDefaults: [String: JSONDictionary] = [:]
     ) -> [HorizontalHole] {
@@ -3072,8 +3074,6 @@ struct HorizontalBoard {
                 shape: .round,
                 plated: true,
                 netID: item.string("net_set").map(normalizedID)
-                    ?? item.string("net").map(normalizedID)
-                    ?? junctionNetIDs[junctionID]
             )
         }
     }
@@ -5679,6 +5679,11 @@ struct HorizontalBoard {
         }
 
         return nil
+    }
+
+    /// The net of the pad a track end names, from the netlist as it is now.
+    private static func padEndpointNetID(_ endpoint: JSONDictionary?, packagePadNetIDs: [String: String]) -> String? {
+        endpoint?.string("pad").flatMap { packagePadNetIDs[normalizedUUIDPath($0)] }
     }
 
     private struct BoardBlockMetadata {

@@ -141,7 +141,7 @@ enum HorizontalProjectJSONApplicator {
         patchPlacements(&json, key: "packages", placements: board.packages, boardPackages: true)
         removeConnectionLinesReferencingPackages(&json, packageIDs: removedPackageIDs)
         patchSegments(&json, key: "tracks", segments: board.tracks, supportsLayer: true, supportsArcCenter: true,
-                      widthFromRulesKey: "width_from_net_class")
+                      widthFromRulesKey: "width_from_net_class", cachesNet: true)
         patchJunctionEnds(&json, key: "tracks", segments: board.tracks, junctions: board.junctions)
         patchNewBoardTracks(&json, board: board)
         patchSegments(&json, key: "net_ties", segments: board.netTies, supportsLayer: true,
@@ -1327,7 +1327,8 @@ enum HorizontalProjectJSONApplicator {
         idPrefix: String? = nil,
         supportsLayer: Bool,
         supportsArcCenter: Bool = false,
-        widthFromRulesKey: String? = nil
+        widthFromRulesKey: String? = nil,
+        cachesNet: Bool = false
     ) {
         guard var map = json[key] as? JSONDictionary else {
             return
@@ -1357,6 +1358,16 @@ enum HorizontalProjectJSONApplicator {
                     item["center"] = jsonPoint(center)
                 } else {
                     item.removeValue(forKey: "center")
+                }
+            }
+            // Horizon stores no net on a track. Keep the one the track tool or
+            // an MCP edit cached up to date, as a junction's is: a track whose
+            // pad went has none any more.
+            if cachesNet, item["net"] != nil {
+                if let netID = segment.netID {
+                    item["net"] = netID
+                } else {
+                    item.removeValue(forKey: "net")
                 }
             }
             map[itemKey] = item
@@ -1409,8 +1420,9 @@ enum HorizontalProjectJSONApplicator {
                 item["center"] = jsonPoint(center)
             }
             // Not part of Track::serialize (net is derived from the
-            // endpoints there), but our parser reads it as the primary net
-            // source, so we keep it for a lossless in-app round-trip.
+            // endpoints there), and the board loader derives it too; it is
+            // the same cache `place_track` writes, which `patchSegments`
+            // keeps up to date.
             if let netID = track.netID {
                 item["net"] = netID
             }
