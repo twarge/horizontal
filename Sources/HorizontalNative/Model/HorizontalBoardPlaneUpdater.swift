@@ -100,11 +100,11 @@ enum HorizontalBoardPlaneUpdater {
         isCancelled: (@Sendable () -> Bool)? = nil,
         onProgress: (@Sendable (Int, Int) -> Void)? = nil
     ) -> Outcome {
-        // A plane pours its polygon as the board has it now, not the copy it
-        // took when it was loaded or defined.
+        // A plane pours its outline as the board has it now, one left among
+        // the board's polygons included.
         let board = {
             var board = given
-            board.refreshPlanePolygons()
+            board.lowerPlaneOutlines()
             return board
         }()
         // Priority decides which plane yields to which where two would overlap,

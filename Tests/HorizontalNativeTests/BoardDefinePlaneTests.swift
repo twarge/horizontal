@@ -199,6 +199,9 @@ final class BoardDefinePlaneTests: XCTestCase {
         XCTAssertEqual(edit.board.planes.count, 1)
         XCTAssertEqual(plane.polygonID, "pour")
         XCTAssertEqual(plane.netID, "gnd")
+        XCTAssertEqual(plane.fallbackPolygon?.id, "pour")
+        XCTAssertFalse(edit.board.polygons.contains { $0.id == "pour" },
+                       "the polygon is kept in the plane, as the board loads it, not among the board's own, which an export writes as copper")
         let planeSelected = await settle { state.details.groups.contains { $0.type == .plane } }
         XCTAssertTrue(planeSelected, "the new plane is selected, which the canvas can only show with the plane in its board")
         XCTAssertEqual(subtitles(state, .plane), ["GND - \(topName)"])

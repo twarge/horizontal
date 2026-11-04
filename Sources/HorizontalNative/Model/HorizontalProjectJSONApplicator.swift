@@ -150,13 +150,13 @@ enum HorizontalProjectJSONApplicator {
         patchBoardDrawingLines(&json, lines: board.lines, junctions: board.junctions)
         patchBoardDrawingArcs(&json, arcs: board.arcs, junctions: board.junctions)
         patchSegments(&json, key: "connection_lines", segments: board.connectionLines, supportsLayer: false)
-        patchPolygons(&json, key: "polygons", polygons: board.polygons, removing: board.removedPolygonIDs)
-        patchHoles(&json, key: "holes", holes: board.holes)
+        patchPolygons(&json, key: "polygons", polygons: writtenPolygons(of: board), removing: board.removedPolygonIDs)
+        patchHoles(&json, key: "holes", holes: board.holes, removing: board.removedHoleIDs)
         patchVias(&json, vias: board.vias, removing: board.removedViaIDs)
         patchNewBoardVias(&json, vias: board.vias, junctions: board.junctions, padstackID: board.viaTemplate?.padstackID)
         patchUnstatedViaRules(&json, rules: board.rules)
         patchPlanes(&json, planes: board.planes, removing: board.removedPlaneIDs)
-        patchKeepouts(&json, keepouts: board.keepouts)
+        patchKeepouts(&json, keepouts: board.keepouts, removing: board.removedKeepoutIDs)
         patchDimensions(&json, dimensions: board.dimensions, removing: board.removedDimensionIDs)
         // Packages smashed in-memory but whose from-smash texts weren't
         // materialized (e.g. the board was opened without a resolvable pool):
@@ -1653,6 +1653,21 @@ enum HorizontalProjectJSONApplicator {
         json["arcs"] = map
     }
 
+    /// The polygons the board's file holds: the board's own, and the outline
+    /// of each plane and keepout, which the board keeps in the plane or the
+    /// keepout (`HorizontalBoard.liftPlaneOutlines`), as Horizon's file keeps
+    /// them among its polygons. An outline moved or reshaped is written with
+    /// the rest, and a drawn plane's makes its entry.
+    static func writtenPolygons(of board: HorizontalBoard) -> [HorizontalPolygon] {
+        var polygons = board.polygons
+        var seen = Set(polygons.map { normalizedID($0.id) })
+        let outlines = board.planes.compactMap(\.fallbackPolygon) + board.keepouts.map(\.polygon)
+        for outline in outlines where seen.insert(normalizedID(outline.id)).inserted {
+            polygons.append(outline)
+        }
+        return polygons
+    }
+
     private static func patchPolygons(
         _ json: inout JSONDictionary,
         key: String,
@@ -1717,11 +1732,22 @@ enum HorizontalProjectJSONApplicator {
         return result
     }
 
-    private static func patchHoles(_ json: inout JSONDictionary, key: String, holes: [HorizontalHole]) {
+    private static func patchHoles(
+        _ json: inout JSONDictionary,
+        key: String,
+        holes: [HorizontalHole],
+        removing removedIDs: Set<String> = []
+    ) {
         guard var map = json[key] as? JSONDictionary else {
             return
         }
-        // Preserve unknown source entries. See note in patchPolygons.
+        // Preserve unknown source entries; deletions come through `removedIDs`.
+        // See note in patchPolygons.
+        for id in removedIDs {
+            if let itemKey = matchingKey(id, in: map) {
+                map.removeValue(forKey: itemKey)
+            }
+        }
 
         for hole in holes {
             guard let itemKey = matchingKey(hole.id, in: map),
@@ -1968,11 +1994,21 @@ enum HorizontalProjectJSONApplicator {
         }
     }
 
-    private static func patchKeepouts(_ json: inout JSONDictionary, keepouts: [HorizontalKeepout]) {
+    private static func patchKeepouts(
+        _ json: inout JSONDictionary,
+        keepouts: [HorizontalKeepout],
+        removing removedIDs: Set<String> = []
+    ) {
         guard var map = json["keepouts"] as? JSONDictionary else {
             return
         }
-        // Preserve unknown source entries. See note in patchPolygons.
+        for id in removedIDs {
+            if let itemKey = matchingKey(id, in: map) {
+                map.removeValue(forKey: itemKey)
+            }
+        }
+        // Preserve unknown source entries; deletions come through `removedIDs`.
+        // See note in patchPolygons.
 
         for keepout in keepouts {
             guard let itemKey = matchingKey(keepout.id, in: map),
