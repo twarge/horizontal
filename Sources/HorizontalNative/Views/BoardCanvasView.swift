@@ -12785,12 +12785,16 @@ struct BoardCanvasView: View {
                 hoverInnerColor: hoverInnerColor,
                 handleShape: handleShape
             )
+            let arcTrackWidths = BoardTrackSelectionOutline.arcWidths(
+                in: selectionBoard,
+                refs: selectedObjects + [hoveredObject].compactMap { $0 }
+            )
             let overlay = HorizontalCanvasModeSupport.metalSelectionOverlay(
                 selectablesForRef: { selectablesByRef[$0] ?? [] },
                 selectedRefs: selectedObjects,
                 hoveredRef: hoveredObject,
                 style: style,
-                outlineForSelectable: boardSelectionOutline
+                outlineForSelectable: { boardSelectionOutline(for: $0, arcTrackWidths: arcTrackWidths) }
             )
             let polygonGroupPreviewLines = boardMetalPolygonSelectionPreviewLines(
                 in: selectionBoard,
@@ -12912,8 +12916,14 @@ struct BoardCanvasView: View {
         }
     }
 
-    private func boardSelectionOutline(for selectable: HorizontalSelectable) -> HorizontalCanvasSelectionOutline? {
+    private func boardSelectionOutline(
+        for selectable: HorizontalSelectable,
+        arcTrackWidths: [String: Double]
+    ) -> HorizontalCanvasSelectionOutline? {
         switch selectable.ref.type {
+        case .track:
+            // Horizon's box round the track, not a line along its middle.
+            return BoardTrackSelectionOutline.outline(for: selectable, arcWidths: arcTrackWidths)
         case .polygonEdge:
             guard selectable.handlePoints.count >= 2 else {
                 return nil
