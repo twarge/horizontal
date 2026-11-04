@@ -1035,6 +1035,9 @@ struct SchematicCanvasView: View {
             adoptExternallyUpdatedSheet()
             rearmLabelToolIfPending()
         }
+        .onChange(of: sourceSheet.grid) { _, grid in
+            adoptSourceGrid(grid)
+        }
         .onAppear {
             configureUndoTarget()
             onSelectionDetailsChange(selectionDetails)
@@ -14552,6 +14555,18 @@ extension SchematicCanvasView {
     }
 
     // MARK: External sheet replacement
+
+    /// The grid the pane's grid settings give the sheet, taken into the
+    /// canvas's own sheet in place, as the board canvas takes its board's.
+    /// Once an edit has given the canvas a sheet of its own it draws, snaps
+    /// and steps the arrow keys by that sheet's grid, and commits its next
+    /// edit from it, so a grid changed in the pane was put back by that edit.
+    private func adoptSourceGrid(_ grid: HorizontalGridSettings) {
+        guard editedSheet != nil, editedSheet?.grid != grid else {
+            return
+        }
+        editedSheet?.grid = grid
+    }
 
     /// Takes on a sheet the host replaced underneath us (a header edit, an
     /// undo of one, a unit change) without tearing the canvas down: the draft
