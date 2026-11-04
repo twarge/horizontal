@@ -500,6 +500,10 @@ struct HorizontalBoard {
     /// replaces them), for the same reason and with the same lifetime as
     /// `removedPolygonIDs`: `patchVias` keeps entries the model lacks.
     var removedViaIDs: Set<String> = []
+    /// Plane ids the editor has removed (Delete Plane, or a selected plane
+    /// deleted), for the same reason and with the same lifetime as
+    /// `removedPolygonIDs`: `patchPlanes` keeps entries the model lacks.
+    var removedPlaneIDs: Set<String> = []
     var planes: [HorizontalPlane]
     var keepouts: [HorizontalKeepout]
     var dimensions: [HorizontalDimension]
