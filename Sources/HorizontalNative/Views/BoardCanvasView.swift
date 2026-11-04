@@ -7133,7 +7133,8 @@ struct BoardCanvasView: View {
             netTies: board.netTies,
             junctions: board.junctions,
             junctionNetIDs: board.junctionNetIDs,
-            vias: board.vias
+            vias: board.vias,
+            padPositions: board.packagePadPositions
         )
     }
 
@@ -7149,7 +7150,8 @@ struct BoardCanvasView: View {
             junctionNetIDs: board.junctionNetIDs,
             vias: board.vias,
             packagePads: board.packagePads,
-            packageHoles: board.packageHoles
+            packageHoles: board.packageHoles,
+            padPositions: board.packagePadPositions
         )
         // Polygon parts share their polygon's resident spans, which a shift
         // moves whole. One with a point left behind (an edge moved alone, a
@@ -7197,6 +7199,7 @@ struct BoardCanvasView: View {
         // rest, matched against the board as it was (`BoardMovingPoints`).
         let original = board
         var movingPoints = BoardMovingPoints()
+        var padEnds = BoardTrackPadEnds(padPositions: original.packagePadPositions)
         var movedLayerVertexKeys = Set<String>()
         let selectedRefSet = Set(selectedObjects)
         var movedPolygonPoints = Set<String>()
@@ -7218,12 +7221,12 @@ struct BoardCanvasView: View {
                 if boardSegmentHasSelectedEndpointOwner(ref: ref, in: original.tracks, selectedRefs: selectedRefSet, board: original) {
                     break
                 }
-                moveBoardTrack(ref: ref, by: delta, in: \.tracks, original: original, board: &board, points: &movingPoints)
+                moveBoardTrack(ref: ref, by: delta, in: \.tracks, original: original, board: &board, points: &movingPoints, padEnds: &padEnds)
             case .boardNetTie:
                 if boardSegmentHasSelectedEndpointOwner(ref: ref, in: original.netTies, selectedRefs: selectedRefSet, board: original) {
                     break
                 }
-                moveBoardTrack(ref: ref, by: delta, in: \.netTies, original: original, board: &board, points: &movingPoints)
+                moveBoardTrack(ref: ref, by: delta, in: \.netTies, original: original, board: &board, points: &movingPoints, padEnds: &padEnds)
             case .boardLine:
                 moveBoardLayerSegmentSelection(&board.lines, ref: ref, by: delta, movedKeys: &movedLayerVertexKeys)
             case .junction:
@@ -7336,6 +7339,7 @@ struct BoardCanvasView: View {
         // turned the via, the second time from where the first had put it.
         let original = board
         var movingPoints = BoardMovingPoints()
+        var padEnds = BoardTrackPadEnds(padPositions: original.packagePadPositions)
         var turnedPolygonPoints = Set<String>()
 
         for ref in selectedObjects {
@@ -7346,9 +7350,9 @@ struct BoardCanvasView: View {
             case .boardPackage:
                 rotateBoardPackage(ref: ref, around: center, by: angleDelta, board: &board)
             case .track:
-                rotateBoardTrack(ref: ref, around: center, by: angleDelta, in: \.tracks, original: original, board: &board, points: &movingPoints)
+                rotateBoardTrack(ref: ref, around: center, by: angleDelta, in: \.tracks, original: original, board: &board, points: &movingPoints, padEnds: &padEnds)
             case .boardNetTie:
-                rotateBoardTrack(ref: ref, around: center, by: angleDelta, in: \.netTies, original: original, board: &board, points: &movingPoints)
+                rotateBoardTrack(ref: ref, around: center, by: angleDelta, in: \.netTies, original: original, board: &board, points: &movingPoints, padEnds: &padEnds)
             case .boardLine:
                 rotateSegment(&board.lines, ref: ref, around: center, by: angleDelta)
             case .boardArc:
@@ -7755,9 +7759,12 @@ struct BoardCanvasView: View {
         in segments: WritableKeyPath<HorizontalBoard, [HorizontalSegment]>,
         original: HorizontalBoard,
         board: inout HorizontalBoard,
-        points: inout BoardMovingPoints
+        points: inout BoardMovingPoints,
+        padEnds: inout BoardTrackPadEnds
     ) {
-        transformBoardTrack(ref: ref, in: segments, original: original, board: &board, points: &points) { $0 + delta }
+        transformBoardTrack(ref: ref, in: segments, original: original, board: &board, points: &points, padEnds: &padEnds) {
+            $0 + delta
+        }
     }
 
     private func rotateBoardTrack(
@@ -7767,9 +7774,10 @@ struct BoardCanvasView: View {
         in segments: WritableKeyPath<HorizontalBoard, [HorizontalSegment]>,
         original: HorizontalBoard,
         board: inout HorizontalBoard,
-        points: inout BoardMovingPoints
+        points: inout BoardMovingPoints,
+        padEnds: inout BoardTrackPadEnds
     ) {
-        transformBoardTrack(ref: ref, in: segments, original: original, board: &board, points: &points) {
+        transformBoardTrack(ref: ref, in: segments, original: original, board: &board, points: &points, padEnds: &padEnds) {
             rotated($0, around: center, by: angleDelta)
         }
     }
@@ -7777,13 +7785,16 @@ struct BoardCanvasView: View {
     /// A track end on a junction or via goes with that point
     /// (`BoardMovingPoints`), which carries the rest of the copper there; a
     /// free end, and an arc's centre, go on their own. Both are taken from
-    /// `original`, the board before the change, so an end goes once.
+    /// `original`, the board before the change, so an end goes once. An end
+    /// on a pad stays there with what else is on it (`BoardTrackPadEnds`),
+    /// and so does an arc's centre unless both ends go.
     private func transformBoardTrack(
         ref: HorizontalSelectableRef,
         in segments: WritableKeyPath<HorizontalBoard, [HorizontalSegment]>,
         original: HorizontalBoard,
         board: inout HorizontalBoard,
         points: inout BoardMovingPoints,
+        padEnds: inout BoardTrackPadEnds,
         _ transform: (HorizontalPoint) -> HorizontalPoint
     ) {
         guard let index = original[keyPath: segments].firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }),
@@ -7793,17 +7804,23 @@ struct BoardCanvasView: View {
         }
 
         let segment = original[keyPath: segments][index]
-        if hasBoardMovableConnection(at: segment.from, in: original) {
-            points.add(segment.from, to: transform(segment.from), netID: segment.netID)
-        } else {
-            board[keyPath: segments][index].from = transform(segment.from)
+        let pinsFrom = padEnds.isOnPad(segment.from)
+        let pinsTo = padEnds.isOnPad(segment.to)
+        if !pinsFrom {
+            if hasBoardMovableConnection(at: segment.from, in: original) {
+                points.add(segment.from, to: transform(segment.from), netID: segment.netID)
+            } else {
+                board[keyPath: segments][index].from = transform(segment.from)
+            }
         }
-        if hasBoardMovableConnection(at: segment.to, in: original) {
-            points.add(segment.to, to: transform(segment.to), netID: segment.netID)
-        } else {
-            board[keyPath: segments][index].to = transform(segment.to)
+        if !pinsTo {
+            if hasBoardMovableConnection(at: segment.to, in: original) {
+                points.add(segment.to, to: transform(segment.to), netID: segment.netID)
+            } else {
+                board[keyPath: segments][index].to = transform(segment.to)
+            }
         }
-        if let center = segment.center {
+        if let center = segment.center, !pinsFrom, !pinsTo {
             board[keyPath: segments][index].center = transform(center)
         }
     }

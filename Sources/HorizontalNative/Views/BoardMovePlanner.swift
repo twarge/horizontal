@@ -116,10 +116,12 @@ enum BoardMovePlanner {
         junctionNetIDs: [String: String],
         vias: [HorizontalMarker],
         packagePads: [HorizontalPolygon],
-        packageHoles: [HorizontalHole]
+        packageHoles: [HorizontalHole],
+        padPositions: [String: HorizontalPoint] = [:]
     ) -> BoardResidentMovePlan {
         var plan = BoardResidentMovePlan()
         var movedConnectionKeys = Set<String>()
+        var padEnds = BoardTrackPadEnds(padPositions: padPositions)
         let selectedRefSet = Set(refs)
         let includesPackages = selectedRefSet.contains { $0.type == .boardPackage }
         let connectivity = connectivityIndex(
@@ -239,17 +241,25 @@ enum BoardMovePlanner {
                 return
             }
 
-            if !ownersAt(segment.from, netID: segment.netID, includesPackages: false).isEmpty {
-                addConnectionPointMove(at: segment.from, netID: segment.netID)
-            } else {
-                addSegmentMove(owner, from: true)
+            // An end on a pad stays there (`BoardTrackPadEnds`), and so does an
+            // arc's centre unless both ends move.
+            let pinsFrom = padEnds.isOnPad(segment.from)
+            let pinsTo = padEnds.isOnPad(segment.to)
+            if !pinsFrom {
+                if !ownersAt(segment.from, netID: segment.netID, includesPackages: false).isEmpty {
+                    addConnectionPointMove(at: segment.from, netID: segment.netID)
+                } else {
+                    addSegmentMove(owner, from: true)
+                }
             }
-            if !ownersAt(segment.to, netID: segment.netID, includesPackages: false).isEmpty {
-                addConnectionPointMove(at: segment.to, netID: segment.netID)
-            } else {
-                addSegmentMove(owner, to: true)
+            if !pinsTo {
+                if !ownersAt(segment.to, netID: segment.netID, includesPackages: false).isEmpty {
+                    addConnectionPointMove(at: segment.to, netID: segment.netID)
+                } else {
+                    addSegmentMove(owner, to: true)
+                }
             }
-            if segment.center != nil {
+            if segment.center != nil, !pinsFrom, !pinsTo {
                 addSegmentMove(owner, center: true)
             }
         }
@@ -459,26 +469,31 @@ enum BoardMovePlanner {
 
     /// Expands a selection to include the endpoint owners (junctions/vias) that a
     /// selected track/net-tie shares, so they drag together. Mirrors the former
-    /// `BoardCanvasView.expandedBoardMoveSelection`.
+    /// `BoardCanvasView.expandedBoardMoveSelection`. Those at an end on a pad
+    /// (`padPositions`, `BoardTrackPadEnds`) stay with the pad, so are left out.
     static func expandedSelection(
         _ refs: [HorizontalSelectableRef],
         tracks: [HorizontalSegment],
         netTies: [HorizontalSegment],
         junctions: [String: HorizontalPoint],
         junctionNetIDs: [String: String],
-        vias: [HorizontalMarker]
+        vias: [HorizontalMarker],
+        padPositions: [String: HorizontalPoint] = [:]
     ) -> [HorizontalSelectableRef] {
         var expanded = [HorizontalSelectableRef]()
+        var padEnds = BoardTrackPadEnds(padPositions: padPositions)
         for ref in refs {
             switch ref.type {
             case .track:
                 expanded.append(ref)
                 expanded.append(contentsOf: trackEndpointOwnerRefs(
-                    for: ref, in: tracks, junctions: junctions, junctionNetIDs: junctionNetIDs, vias: vias))
+                    for: ref, in: tracks, junctions: junctions, junctionNetIDs: junctionNetIDs, vias: vias,
+                    padEnds: &padEnds))
             case .boardNetTie:
                 expanded.append(ref)
                 expanded.append(contentsOf: trackEndpointOwnerRefs(
-                    for: ref, in: netTies, junctions: junctions, junctionNetIDs: junctionNetIDs, vias: vias))
+                    for: ref, in: netTies, junctions: junctions, junctionNetIDs: junctionNetIDs, vias: vias,
+                    padEnds: &padEnds))
             default:
                 expanded.append(ref)
             }
@@ -491,21 +506,21 @@ enum BoardMovePlanner {
         in segments: [HorizontalSegment],
         junctions: [String: HorizontalPoint],
         junctionNetIDs: [String: String],
-        vias: [HorizontalMarker]
+        vias: [HorizontalMarker],
+        padEnds: inout BoardTrackPadEnds
     ) -> [HorizontalSelectableRef] {
         guard let segment = segments.first(where: {
             HorizontalCanvasModeSupport.normalizedID($0.id) == HorizontalCanvasModeSupport.normalizedID(ref.id)
         }) else {
             return []
         }
-        return HorizontalCanvasModeSupport.uniqueRefs(
-            movableEndpointOwnerRefs(at: segment.from, netID: segment.netID, junctions: junctions,
-                                     junctionNetIDs: junctionNetIDs, vias: vias, packages: [],
-                                     packagePads: [], packageHoles: [], includesPackages: false)
-                + movableEndpointOwnerRefs(at: segment.to, netID: segment.netID, junctions: junctions,
-                                           junctionNetIDs: junctionNetIDs, vias: vias, packages: [],
-                                           packagePads: [], packageHoles: [], includesPackages: false)
-        )
+        var owners = [HorizontalSelectableRef]()
+        for end in [segment.from, segment.to] where !padEnds.isOnPad(end) {
+            owners += movableEndpointOwnerRefs(at: end, netID: segment.netID, junctions: junctions,
+                                               junctionNetIDs: junctionNetIDs, vias: vias, packages: [],
+                                               packagePads: [], packageHoles: [], includesPackages: false)
+        }
+        return HorizontalCanvasModeSupport.uniqueRefs(owners)
     }
 
     /// The refs (junctions, vias, packages) that "own" a movable endpoint at a
