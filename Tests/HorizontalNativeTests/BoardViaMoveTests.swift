@@ -204,16 +204,16 @@ final class BoardViaMoveTests: XCTestCase {
         return view.subviews.lazy.compactMap { self.monitor(in: $0) }.first
     }
 
-    @MainActor private func renderer(in view: NSView) -> HorizontalMetalBackdropView.Renderer? {
+    @MainActor private func renderer(in view: NSView) -> HorizontalMetalCanvasLayer? {
         if let metal = view as? MTKView, let renderer = metal.delegate as? HorizontalMetalBackdropView.Renderer,
-           renderer.loadProfileLabel == "Metal overlay" { return renderer }
+           let layer = renderer.layer(labeled: "Metal overlay") { return layer }
         return view.subviews.lazy.compactMap { self.renderer(in: $0) }.first
     }
 
     /// Mounts the canvas and selects everything: the via, its tracks and
     /// their junctions.
     @MainActor private func mount(_ state: State) async throws -> (
-        window: NSWindow, renderer: HorizontalMetalBackdropView.Renderer, key: (UInt16, String) throws -> Void
+        window: NSWindow, renderer: HorizontalMetalCanvasLayer, key: (UInt16, String) throws -> Void
     ) {
         guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
         _ = NSApplication.shared

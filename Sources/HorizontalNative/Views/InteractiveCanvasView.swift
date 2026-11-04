@@ -615,6 +615,10 @@ struct InteractiveCanvasView: View {
     #if canImport(MetalKit)
     @State private var viewportDriver = HorizontalCanvasViewportDriver()
     @State private var liveChromeViewport: CanvasViewport?
+    /// Carries the cursor's Metal layer from `CursorReadoutLayer` to the
+    /// canvas's Metal view without re-rendering this body, as `cursorInput`
+    /// carries the pointer the other way.
+    @State private var cursorMetalLayer = HorizontalMetalCanvasLiveLayer()
     #endif
 
     private var effectiveViewport: CanvasViewport {
@@ -669,9 +673,9 @@ struct InteractiveCanvasView: View {
                     transform: transform,
                     overlayInsets: overlayInsets
                 )
-                // The cursor crosshair + coordinate-readout box moved to
-                // CursorReadoutLayer (its own Metal overlay), so they no longer
-                // contribute here and a cursor move no longer rebuilds this body.
+                // The cursor crosshair + coordinate-readout box are built in
+                // CursorReadoutLayer and reach the Metal view through
+                // cursorMetalLayer, so a cursor move no longer rebuilds this body.
                 let selectionDragMetalBatch = metalSelectionDragBatch(transform: transform)
                 let warningTriangles = HorizontalCanvasWarningGeometry.triangles(for: warnings)
                 let topOverlayLines = metalTopOverlayLines + selectionDragMetalBatch.worldLines
@@ -715,37 +719,91 @@ struct InteractiveCanvasView: View {
 
                 #if canImport(MetalKit)
                 if usesMetalBackdrop {
-                    // The base backdrop renders the grid/background; bucketed
-                    // board primitives flow through the *overlay* backdrop below,
-                    // which is where layerOpacity needs to apply.
+                    // One Metal view draws the canvas's layers into one
+                    // drawable, so they reach the screen on the same frame: the
+                    // base (grid, background and base scene), the overlay (the
+                    // board's layer buckets, where layerOpacity applies), the
+                    // top overlay (dim, highlight, selection, previews and
+                    // screen chrome) and, fed apart, the cursor. They used to be
+                    // a view each, presenting on their own, and the highlight
+                    // trailed the copper by a frame while zooming.
                     HorizontalMetalBackdropView(
                         bounds: bounds,
                         viewport: effectiveViewport,
                         viewportDriver: usesViewportDriver ? viewportDriver : nil,
                         fitInsets: fitInsets,
-                        grid: drawsGridInMetal ? grid : nil,
-                        backgroundColor: backgroundColor,
-                        gridColor: gridColor,
-                        minimumLineWidth: minimumLineWidth,
-                        gridLineWidth: gridLineWidth,
-                        showsOriginMark: showsOriginMark,
-                        originMarkColor: originMarkColor,
-                        triangles: metalTriangles,
-                        triangleKey: metalTriangleKey,
-                        lines: metalLines,
-                        lineKey: metalLineKey,
-                        handles: metalHandles,
-                        handleKey: metalHandleKey,
-                        anchoredRects: metalAnchoredRects,
-                        anchoredRectKey: metalAnchoredRectKey,
-                        screenTriangles: metalScreenTriangles,
-                        screenTriangleKey: metalScreenTriangleKey,
-                        screenLines: metalScreenLines,
-                        screenLineKey: metalScreenLineKey,
-                        visibleCompositeGroups: metalVisibleCompositeGroups,
-                        loadProfileID: metalLoadProfileID,
-                        loadProfileLabel: "Metal base",
-                        marksLoadProfileFirstDraw: !usesMetalOverlay
+                        layers: [
+                            HorizontalMetalCanvasLayerContent(
+                                grid: drawsGridInMetal ? grid : nil,
+                                backgroundColor: backgroundColor,
+                                gridColor: gridColor,
+                                minimumLineWidth: minimumLineWidth,
+                                gridLineWidth: gridLineWidth,
+                                showsOriginMark: showsOriginMark,
+                                originMarkColor: originMarkColor,
+                                triangles: metalTriangles,
+                                triangleKey: metalTriangleKey,
+                                lines: metalLines,
+                                lineKey: metalLineKey,
+                                handles: metalHandles,
+                                handleKey: metalHandleKey,
+                                anchoredRects: metalAnchoredRects,
+                                anchoredRectKey: metalAnchoredRectKey,
+                                screenTriangles: metalScreenTriangles,
+                                screenTriangleKey: metalScreenTriangleKey,
+                                screenLines: metalScreenLines,
+                                screenLineKey: metalScreenLineKey,
+                                visibleCompositeGroups: metalVisibleCompositeGroups,
+                                label: "Metal base",
+                                marksLoadProfileFirstDraw: !usesMetalOverlay
+                            ),
+                            usesMetalOverlay ? HorizontalMetalCanvasLayerContent(
+                                minimumLineWidth: minimumLineWidth,
+                                layerOpacity: metalLayerOpacity,
+                                triangles: metalOverlayTriangles,
+                                triangleKey: metalOverlayTriangleKey,
+                                lines: metalOverlayLines,
+                                lineKey: metalOverlayLineKey,
+                                handles: metalOverlayHandles,
+                                handleKey: metalOverlayHandleKey,
+                                anchoredRects: metalOverlayAnchoredRects,
+                                anchoredRectKey: metalOverlayAnchoredRectKey,
+                                screenTriangles: metalOverlayScreenTriangles,
+                                screenTriangleKey: metalOverlayScreenTriangleKey,
+                                screenLines: metalOverlayScreenLines,
+                                screenLineKey: metalOverlayScreenLineKey,
+                                bufferPatches: metalOverlayBufferPatches,
+                                bufferPatchKey: metalOverlayBufferPatchKey,
+                                visibleCompositeGroups: metalOverlayVisibleCompositeGroups,
+                                layerOpacityExemptCompositeGroups: metalOverlayLayerOpacityExemptGroups,
+                                label: "Metal overlay",
+                                marksLoadProfileFirstDraw: true
+                            ) : nil,
+                            usesMetalTopOverlay ? HorizontalMetalCanvasLayerContent(
+                                minimumLineWidth: minimumLineWidth,
+                                layerOpacity: metalTopOverlayLayerOpacity,
+                                triangles: metalTopOverlayTriangles,
+                                triangleKey: metalTopOverlayTriangleKey,
+                                lines: topOverlayLines,
+                                lineKey: topOverlayLineKey,
+                                handles: metalTopOverlayHandles,
+                                handleKey: metalTopOverlayHandleKey,
+                                anchoredRects: metalTopOverlayAnchoredRects,
+                                anchoredRectKey: metalTopOverlayAnchoredRectKey,
+                                screenTriangles: topOverlayScreenTriangles,
+                                screenTriangleKey: topOverlayScreenTriangleKey,
+                                screenLines: topOverlayScreenLines,
+                                screenLineKey: topOverlayScreenLineKey,
+                                bufferPatches: metalTopOverlayBufferPatches,
+                                bufferPatchKey: metalTopOverlayBufferPatchKey,
+                                visibleCompositeGroups: metalTopOverlayVisibleCompositeGroups,
+                                layerOpacityExemptCompositeGroups: metalTopOverlayLayerOpacityExemptGroups,
+                                label: "Metal top overlay",
+                                marksLoadProfileFirstDraw: false
+                            ) : nil
+                        ],
+                        liveLayer: cursorMetalLayer,
+                        loadProfileID: metalLoadProfileID
                     )
                     .allowsHitTesting(false)
                 }
@@ -761,6 +819,8 @@ struct InteractiveCanvasView: View {
                     }
 
                 #if canImport(MetalKit)
+                // Over all of the Metal layers now, as the scale bar's own
+                // lines are; it used to sit under the board's copper.
                 if drawsSwiftUIChromeText {
                     if let scaleOverlay = scaleBarTextOverlay(
                         size: proxy.size,
@@ -777,83 +837,12 @@ struct InteractiveCanvasView: View {
                 }
                 #endif
 
-                #if canImport(MetalKit)
-                if usesMetalOverlay {
-                    HorizontalMetalBackdropView(
-                        bounds: bounds,
-                        viewport: effectiveViewport,
-                        viewportDriver: usesViewportDriver ? viewportDriver : nil,
-                        fitInsets: fitInsets,
-                        grid: nil,
-                        backgroundColor: .clear,
-                        gridColor: .clear,
-                        minimumLineWidth: minimumLineWidth,
-                        layerOpacity: metalLayerOpacity,
-                        triangles: metalOverlayTriangles,
-                        triangleKey: metalOverlayTriangleKey,
-                        lines: metalOverlayLines,
-                        lineKey: metalOverlayLineKey,
-                        handles: metalOverlayHandles,
-                        handleKey: metalOverlayHandleKey,
-                        anchoredRects: metalOverlayAnchoredRects,
-                        anchoredRectKey: metalOverlayAnchoredRectKey,
-                        screenTriangles: metalOverlayScreenTriangles,
-                        screenTriangleKey: metalOverlayScreenTriangleKey,
-                        screenLines: metalOverlayScreenLines,
-                        screenLineKey: metalOverlayScreenLineKey,
-                        bufferPatches: metalOverlayBufferPatches,
-                        bufferPatchKey: metalOverlayBufferPatchKey,
-                        visibleCompositeGroups: metalOverlayVisibleCompositeGroups,
-                        layerOpacityExemptCompositeGroups: metalOverlayLayerOpacityExemptGroups,
-                        loadProfileID: metalLoadProfileID,
-                        loadProfileLabel: "Metal overlay",
-                        marksLoadProfileFirstDraw: true
-                    )
-                    .allowsHitTesting(false)
-                }
-
-                if usesMetalTopOverlay {
-                    HorizontalMetalBackdropView(
-                        bounds: bounds,
-                        viewport: effectiveViewport,
-                        viewportDriver: usesViewportDriver ? viewportDriver : nil,
-                        fitInsets: fitInsets,
-                        grid: nil,
-                        backgroundColor: .clear,
-                        gridColor: .clear,
-                        minimumLineWidth: minimumLineWidth,
-                        layerOpacity: metalTopOverlayLayerOpacity,
-                        triangles: metalTopOverlayTriangles,
-                        triangleKey: metalTopOverlayTriangleKey,
-                        lines: topOverlayLines,
-                        lineKey: topOverlayLineKey,
-                        handles: metalTopOverlayHandles,
-                        handleKey: metalTopOverlayHandleKey,
-                        anchoredRects: metalTopOverlayAnchoredRects,
-                        anchoredRectKey: metalTopOverlayAnchoredRectKey,
-                        screenTriangles: topOverlayScreenTriangles,
-                        screenTriangleKey: topOverlayScreenTriangleKey,
-                        screenLines: topOverlayScreenLines,
-                        screenLineKey: topOverlayScreenLineKey,
-                        bufferPatches: metalTopOverlayBufferPatches,
-                        bufferPatchKey: metalTopOverlayBufferPatchKey,
-                        visibleCompositeGroups: metalTopOverlayVisibleCompositeGroups,
-                        layerOpacityExemptCompositeGroups: metalTopOverlayLayerOpacityExemptGroups,
-                        loadProfileID: metalLoadProfileID,
-                        loadProfileLabel: "Metal top overlay",
-                        marksLoadProfileFirstDraw: false
-                    )
-                    .allowsHitTesting(false)
-                }
-                #endif
-
                 // Snap-dependent crosshair + coordinate readout, isolated so a
-                // pointer move re-renders only this small layer (and its own Metal
-                // overlay) — not the parent body. Same z-position as the former
-                // SwiftUI cursor canvas (below the input layer + selection chrome).
-                // Intentional z change: the crosshair now composites ABOVE the
-                // selection-drag rectangle (it was a later screen-line in the same
-                // backdrop before); harmless and arguably clearer.
+                // pointer move re-renders only this small layer — not the parent
+                // body. Its Metal part is the canvas view's top layer, handed
+                // over through `cursorMetalLayer`; its label and the SwiftUI
+                // fallback cursor draw here, below the input layer and the
+                // selection chrome.
                 CursorReadoutLayer(
                     cursorInput: cursorInput,
                     bounds: bounds,
@@ -873,8 +862,7 @@ struct InteractiveCanvasView: View {
                     showsCoordinateReadout: showsCoordinateReadout,
                     showsHoverPopover: showsHoverPopover,
                     hoverStatusText: hoverStatusText,
-                    viewportDriver: viewportDriver,
-                    usesViewportDriver: usesViewportDriver
+                    metalLayer: cursorMetalLayer
                 )
 
                 Color.clear

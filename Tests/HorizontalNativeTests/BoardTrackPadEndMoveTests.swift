@@ -183,10 +183,10 @@ final class BoardTrackPadEndCanvasTests: XCTestCase {
         return view.subviews.lazy.compactMap { self.monitor(in: $0) }.first
     }
 
-    /// The renderer of the top overlay, where the selection is drawn.
-    private func overlayRenderer(in view: NSView) -> HorizontalMetalBackdropView.Renderer? {
+    /// The top overlay layer, where the selection is drawn.
+    private func overlayRenderer(in view: NSView) -> HorizontalMetalCanvasLayer? {
         if let metal = view as? MTKView, let renderer = metal.delegate as? HorizontalMetalBackdropView.Renderer,
-           renderer.loadProfileLabel == "Metal top overlay" { return renderer }
+           let layer = renderer.layer(labeled: "Metal top overlay") { return layer }
         return view.subviews.lazy.compactMap { self.overlayRenderer(in: $0) }.first
     }
 
@@ -196,10 +196,10 @@ final class BoardTrackPadEndCanvasTests: XCTestCase {
         return (window, key)
     }
 
-    /// `mount`, with a finder of the selection overlay's renderer, which the
-    /// canvas makes once there is something to draw in it.
+    /// `mount`, with a finder of the selection overlay's layer, which the
+    /// canvas has once there is something to draw in it.
     private func mountWithOverlay(_ state: State) async throws -> (
-        window: NSWindow, overlay: () -> HorizontalMetalBackdropView.Renderer?, key: (UInt16, String) throws -> Void
+        window: NSWindow, overlay: () -> HorizontalMetalCanvasLayer?, key: (UInt16, String) throws -> Void
     ) {
         guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
         _ = NSApplication.shared

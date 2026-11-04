@@ -109,10 +109,10 @@ final class BoardMoveRotateTests: XCTestCase {
         _ = monitorView.makeEventHandler()(event)
     }
 
-    /// The renderer of the board's own scene, under the selection overlay.
-    private func renderer(in view: NSView) -> HorizontalMetalBackdropView.Renderer? {
+    /// The layer of the board's own scene, under the selection overlay.
+    private func renderer(in view: NSView) -> HorizontalMetalCanvasLayer? {
         if let metal = view as? MTKView, let renderer = metal.delegate as? HorizontalMetalBackdropView.Renderer,
-           renderer.loadProfileLabel == "Metal overlay" { return renderer }
+           let layer = renderer.layer(labeled: "Metal overlay") { return layer }
         return view.subviews.lazy.compactMap { self.renderer(in: $0) }.first
     }
 

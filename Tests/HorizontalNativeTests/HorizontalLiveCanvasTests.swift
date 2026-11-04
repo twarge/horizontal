@@ -38,12 +38,12 @@ final class HorizontalLiveCanvasTests: XCTestCase {
         return predicate()
     }
 
-    private func renderers(in view: NSView) -> [HorizontalMetalBackdropView.Renderer] {
-        var result = [HorizontalMetalBackdropView.Renderer]()
+    private func renderers(in view: NSView) -> [HorizontalMetalCanvasLayer] {
+        var result = [HorizontalMetalCanvasLayer]()
         if let metal = view as? MTKView, let renderer = metal.delegate as? HorizontalMetalBackdropView.Renderer,
-           renderer.loadProfileLabel == "Metal overlay" {
-            XCTAssertFalse(metal.isOpaque, "A layered Metal canvas must not occlude its sibling renderers")
-            result.append(renderer)
+           let layer = renderer.layer(labeled: "Metal overlay") {
+            XCTAssertFalse(metal.isOpaque, "A canvas's Metal view must not occlude the views under it")
+            result.append(layer)
         }
         return result + view.subviews.flatMap { renderers(in: $0) }
     }
