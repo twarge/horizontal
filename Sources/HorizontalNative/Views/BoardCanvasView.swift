@@ -14233,7 +14233,8 @@ struct BoardCanvasView: View {
 
     /// A via's label is its net name, fitted INSIDE the via like a (circular) pad
     /// — the via is a `via.size`-diameter disc, so it runs through the same
-    /// `BoardPadLabelLayout` frame + fit machinery pads use, centered on the via.
+    /// `BoardPadLabelLayout` frame + fit machinery and stroke weight pads use,
+    /// centered on the via.
     /// Returns nil for a via with no net (nothing to label).
     private func viaLabelText(_ via: HorizontalMarker) -> HorizontalText? {
         guard let netName = namedNetDisplayName(via.netID),
@@ -14260,6 +14261,7 @@ struct BoardCanvasView: View {
             size: size,
             layer: nil,
             angle: frame.angle,
+            width: size * BoardPadLabelLayout.strokeWidthFraction,
             origin: .center,
             centered: true
         )
