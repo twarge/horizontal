@@ -87,10 +87,10 @@ final class SchematicSheetSelectionTests: XCTestCase {
         return predicate()
     }
 
-    private func renderer(in view: NSView) -> HorizontalMetalBackdropView.Renderer? {
+    private func renderer(in view: NSView) -> HorizontalMetalCanvasLayer? {
         if let metal = view as? MTKView,
            let renderer = metal.delegate as? HorizontalMetalBackdropView.Renderer,
-           renderer.loadProfileLabel == "Metal overlay" { return renderer }
+           let layer = renderer.layer(labeled: "Metal overlay") { return layer }
         return view.subviews.lazy.compactMap { self.renderer(in: $0) }.first
     }
 

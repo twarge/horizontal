@@ -54,10 +54,11 @@ final class HorizontalCursorInput: ObservableObject {
 
 /// The snap-dependent cursor crosshair + coordinate readout, lifted out of
 /// InteractiveCanvasView's body so a pointer move only re-renders this tiny view
-/// (and redraws its own dedicated Metal overlay), never the big canvas body. It
-/// shares the parent's transform inputs + viewport driver so it stays locked to
-/// the board during pan/zoom. The snap math is identical to the parent's (its own
-/// O(1) `HorizontalSnapIndexCache` over the stable snap targets).
+/// (and the canvas's Metal view, whose top layer it feeds), never the big canvas
+/// body. It shares the parent's transform inputs, and the Metal view draws its
+/// layer in the same drawable as the board, so it stays locked to the board.
+/// The snap math is identical to the parent's (its own O(1)
+/// `HorizontalSnapIndexCache` over the stable snap targets).
 struct CursorReadoutLayer: View {
     @ObservedObject var cursorInput: HorizontalCursorInput
 
@@ -78,8 +79,9 @@ struct CursorReadoutLayer: View {
     var showsCoordinateReadout: Bool
     var showsHoverPopover: Bool
     var hoverStatusText: String?
-    var viewportDriver: HorizontalCanvasViewportDriver?
-    var usesViewportDriver: Bool
+    /// Where the crosshair and readout box go: the canvas's Metal view draws
+    /// them as its top layer, on the same frame as the board under them.
+    var metalLayer: HorizontalMetalCanvasLiveLayer
 
     @State private var snapIndexCache = HorizontalSnapIndexCache()
 
@@ -129,26 +131,22 @@ struct CursorReadoutLayer: View {
 
         ZStack {
             #if canImport(MetalKit)
-            // Always mounted (when supported): a long-lived Renderer that draws
-            // nothing (empty batches, stable keys) while idle — versus remounting
-            // per hover-start, which would rebuild ~11 pipeline states each time.
+            // Hands the batches to the canvas's Metal view (empty, with stable
+            // keys, while there is no cursor); this view draws no pixels.
             if HorizontalMetalBackdropView.isSupported {
-                HorizontalMetalBackdropView(
-                    bounds: bounds,
-                    viewport: effectiveViewport,
-                    viewportDriver: usesViewportDriver ? viewportDriver : nil,
-                    fitInsets: fitInsets,
-                    grid: nil,
-                    backgroundColor: .clear,
-                    gridColor: .clear,
-                    minimumLineWidth: minimumLineWidth,
-                    screenTriangles: screenTriangles,
-                    screenTriangleKey: screenTriangles.hashValue,
-                    screenLines: screenLines,
-                    screenLineKey: screenLines.hashValue,
-                    loadProfileLabel: "Metal cursor",
-                    marksLoadProfileFirstDraw: false
+                HorizontalMetalCanvasLiveLayerFeed(
+                    liveLayer: metalLayer,
+                    content: HorizontalMetalCanvasLayerContent(
+                        minimumLineWidth: minimumLineWidth,
+                        screenTriangles: screenTriangles,
+                        screenTriangleKey: screenTriangles.hashValue,
+                        screenLines: screenLines,
+                        screenLineKey: screenLines.hashValue,
+                        label: "Metal cursor",
+                        marksLoadProfileFirstDraw: false
+                    )
                 )
+                .frame(width: 0, height: 0)
                 .allowsHitTesting(false)
             }
             #endif

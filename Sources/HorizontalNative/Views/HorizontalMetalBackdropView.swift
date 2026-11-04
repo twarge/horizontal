@@ -40,18 +40,17 @@ private enum HorizontalMetalLibraryCache {
     }
 }
 
-// Cross-platform: the SwiftUI representable conformance is added per-platform
-// (NSViewRepresentable on macOS, UIViewRepresentable on iOS) in extensions below;
-// the stored properties, the Metal `Renderer`, and the make/update logic are
-// shared. MTKView, MTLDevice, and the shaders are identical on both platforms.
-struct HorizontalMetalBackdropView {
-    var bounds: HorizontalRect
-    var viewport: CanvasViewport
-    var viewportDriver: HorizontalCanvasViewportDriver?
-    var fitInsets: HorizontalCanvasInsets
-    var grid: HorizontalGridSettings?
-    var backgroundColor: Color
-    var gridColor: Color
+/// One of the layers a canvas draws, bottom first: the background, grid and
+/// base scene; the board's layer buckets under the layer-opacity slider; the
+/// dim, highlight, selection, previews and screen chrome over them; the
+/// cursor. Each of them used to be a Metal view of its own, stacked, and each
+/// presented its own drawable, so nothing kept them on the same frame: while
+/// zooming, the highlight reached the screen a frame after the copper under
+/// it. One view now draws them all into one drawable, in this order.
+struct HorizontalMetalCanvasLayerContent {
+    var grid: HorizontalGridSettings? = nil
+    var backgroundColor: Color = .clear
+    var gridColor: Color = .clear
     var minimumLineWidth: CGFloat = 0
     var gridLineWidth: CGFloat = 0.5
     /// The origin mark (the grid's cross doubled, with a ring) at world (0, 0),
@@ -81,9 +80,28 @@ struct HorizontalMetalBackdropView {
     /// full opacity even while the layer-opacity slider dims every other group.
     /// Used for the always-readable overlay-label group (TEXT_OVERLAY).
     var layerOpacityExemptCompositeGroups: Set<Int> = []
-    var loadProfileID: String? = nil
-    var loadProfileLabel = "Metal"
+    /// Names the layer in load-profile records, and to mounted-canvas tests.
+    var label = "Metal"
     var marksLoadProfileFirstDraw = true
+}
+
+// Cross-platform: the SwiftUI representable conformance is added per-platform
+// (NSViewRepresentable on macOS, UIViewRepresentable on iOS) in extensions below;
+// the stored properties, the Metal `Renderer`, and the make/update logic are
+// shared. MTKView, MTLDevice, and the shaders are identical on both platforms.
+struct HorizontalMetalBackdropView {
+    var bounds: HorizontalRect
+    var viewport: CanvasViewport
+    var viewportDriver: HorizontalCanvasViewportDriver?
+    var fitInsets: HorizontalCanvasInsets
+    /// The canvas's layers, bottom first, all drawn into the one drawable. A
+    /// nil layer has nothing to draw this pass and keeps nothing resident.
+    var layers: [HorizontalMetalCanvasLayerContent?]
+    /// The cursor's layer, drawn over `layers`. It comes through this channel
+    /// rather than this view so a pointer move re-renders only
+    /// `CursorReadoutLayer`, never the canvas body that builds this view.
+    var liveLayer: HorizontalMetalCanvasLiveLayer? = nil
+    var loadProfileID: String? = nil
 
     static let isSupported: Bool = {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -92,6 +110,7 @@ struct HorizontalMetalBackdropView {
         return HorizontalMetalLibraryCache.library(for: device) != nil
     }()
 
+    @MainActor
     func makeCoordinator() -> Renderer {
         Renderer()
     }
@@ -131,8 +150,6 @@ struct HorizontalMetalBackdropView {
             viewportDriver?.configure(viewport: viewport)
         }
         coordinator.loadProfileID = loadProfileID
-        coordinator.loadProfileLabel = loadProfileLabel
-        coordinator.marksLoadProfileFirstDraw = marksLoadProfileFirstDraw
         let profileStart = BoardLoadTimer.timingStart()
         let sceneChanged = coordinator.update(
             bounds: bounds,
@@ -143,56 +160,28 @@ struct HorizontalMetalBackdropView {
             // correctness is exactly the trap this avoids.
             viewport: viewportDriver?.viewport ?? viewport,
             fitInsets: fitInsets,
-            grid: grid,
-            backgroundColor: backgroundColor,
-            gridColor: gridColor,
-            minimumLineWidth: Float(minimumLineWidth),
-            gridLineWidth: Float(gridLineWidth),
-            showsOriginMark: showsOriginMark,
-            originMarkColor: originMarkColor,
-            layerOpacity: Float(layerOpacity),
-            triangles: triangles,
-            triangleKey: triangleKey,
-            lines: lines,
-            lineKey: lineKey,
-            handles: handles,
-            handleKey: handleKey,
-            anchoredRects: anchoredRects,
-            anchoredRectKey: anchoredRectKey,
-            screenTriangles: screenTriangles,
-            screenTriangleKey: screenTriangleKey,
-            screenLines: screenLines,
-            screenLineKey: screenLineKey,
-            bufferPatches: bufferPatches,
-            bufferPatchKey: bufferPatchKey,
-            visibleCompositeGroups: visibleCompositeGroups,
-            layerOpacityExemptCompositeGroups: layerOpacityExemptCompositeGroups,
             backingScale: backingScale,
-            viewportSize: viewportSize
+            viewportSize: viewportSize,
+            layers: layers
         )
         if let loadProfileID {
             BoardLoadTimer.recordBoard2DStep(
-                "\(loadProfileLabel) updateNSView",
+                "Metal canvas updateNSView",
                 nanoseconds: BoardLoadTimer.elapsedNanoseconds(since: profileStart),
                 id: loadProfileID
             )
         }
-        // Load-bearing: registration re-pushes the driver's live viewport into
-        // this renderer's uniforms, keeping every stacked canvas layer on the
-        // same pan/zoom even if a stale value slipped in above.
+        // Registration re-pushes the driver's live viewport into the uniforms,
+        // in case a stale value slipped in above.
         viewportDriver?.register(renderer: coordinator, view: view)
-        #if os(macOS)
-        view.needsDisplay = true
-        view.setNeedsDisplay(view.bounds)
-        #else
-        view.setNeedsDisplay()
-        #endif
+        liveLayer?.attach(renderer: coordinator, view: view)
+        Renderer.setNeedsDisplay(view)
         // Paused MTKViews may defer needs-display draws while their window is
         // inactive. Submit a new scene now, just as we already do for move
         // patches, so a live edit cannot wait for a pointer/zoom/window event.
         // Not before the view has an area to draw into, though (see
         // `hasDrawableArea`): it draws on its own once it is given one.
-        if sceneChanged || !bufferPatches.isEmpty, view.hasDrawableArea {
+        if sceneChanged || layers.contains(where: { $0?.bufferPatches.isEmpty == false }), view.hasDrawableArea {
             HorizontalMoveRateDiagnostics.mark(.metalForcedDraw)
             view.draw()
         }
@@ -214,265 +203,140 @@ struct HorizontalMetalBackdropView {
     }
     #endif
 
+    /// Draws a canvas's layers into its one view: every layer's offscreen
+    /// composite textures first, then a single pass over the drawable that
+    /// lays the layers down bottom first, then one present. The layers keep
+    /// their own buffers, keys and move patches (`HorizontalMetalCanvasLayer`).
+    @MainActor
     final class Renderer: NSObject, MTKViewDelegate {
         var loadProfileID: String?
-        var loadProfileLabel = "Metal"
-        var marksLoadProfileFirstDraw = true
 
         let device: MTLDevice?
         let sampleCount: Int
         private let commandQueue: MTLCommandQueue?
-        private var backdropPipelineState: MTLRenderPipelineState?
-        private var trianglePipelineState: MTLRenderPipelineState?
-        private var linePipelineState: MTLRenderPipelineState?
-        private var handlePipelineState: MTLRenderPipelineState?
-        private var anchoredRectPipelineState: MTLRenderPipelineState?
-        private var screenTrianglePipelineState: MTLRenderPipelineState?
-        private var screenLinePipelineState: MTLRenderPipelineState?
-        private var offscreenTrianglePipelineState: MTLRenderPipelineState?
-        private var offscreenLinePipelineState: MTLRenderPipelineState?
-        private var offscreenAnchoredRectPipelineState: MTLRenderPipelineState?
-        private var textureCompositePipelineState: MTLRenderPipelineState?
-        private var uniforms = HorizontalMetalBackdropUniforms()
-        private var triangleBuffer: MTLBuffer?
-        private var triangleBufferStorage = HorizontalMetalBufferStorage<HorizontalMetalTriangleShaderPrimitive>()
-        private var trianglePrimitiveCount = 0
-        private var currentTriangleKey: Int?
-        private var lineBuffer: MTLBuffer?
-        private var lineBufferStorage = HorizontalMetalBufferStorage<HorizontalMetalLineShaderPrimitive>()
-        private var linePrimitiveCount = 0
-        private var currentLineKey: Int?
-        private var handleBuffer: MTLBuffer?
-        private var handleBufferStorage = HorizontalMetalBufferStorage<HorizontalMetalHandleShaderPrimitive>()
-        private var handlePrimitiveCount = 0
-        private var currentHandleKey: Int?
-        private var anchoredRectBuffer: MTLBuffer?
-        private var anchoredRectBufferStorage = HorizontalMetalBufferStorage<HorizontalMetalAnchoredRectShaderPrimitive>()
-        private var anchoredRectPrimitiveCount = 0
-        private var currentAnchoredRectKey: Int?
-        private var screenTriangleBuffer: MTLBuffer?
-        private var screenTriangleBufferStorage = HorizontalMetalBufferStorage<HorizontalMetalScreenTriangleShaderPrimitive>()
-        private var screenTrianglePrimitiveCount = 0
-        private var currentScreenTriangleKey: Int?
-        private var screenLineBuffer: MTLBuffer?
-        private var screenLineBufferStorage = HorizontalMetalBufferStorage<HorizontalMetalScreenLineShaderPrimitive>()
-        private var screenLinePrimitiveCount = 0
-        private var currentScreenLineKey: Int?
-        private var currentBufferPatchKey: Int?
-        private var appliedTranslations = [HorizontalMetalTranslationPatchKey: HorizontalMetalPlacementStep]()
-        private var compositeBatchBuffers = [HorizontalMetalCompositeBatchBuffers]()
-        private var compositeBatchStorageByGroup = [Int: HorizontalMetalCompositeBatchBuffers]()
-        private var currentCompositeBatchKey: Int?
-        /// Last scene submitted to a drawable, used to distinguish model
-        /// updates from presentation in mounted-canvas regression tests.
-        private(set) var presentedContentKey: Int?
-        /// How many times the layer-group buffers have been uploaded whole: a
-        /// new scene, or the base put back after a preview. Patches never
-        /// count, so a mounted-canvas test can tell a patched preview from a
-        /// rebuilt one (122).
-        private(set) var residentSceneUploads = 0
-
-        /// Read the resident geometry for mounted-canvas regression checks.
-        /// A scene key alone cannot detect a stale or displaced move preview.
-        func residentLineEndpoints(compositeGroup: Int) -> [(from: SIMD2<Float>, to: SIMD2<Float>)] {
-            let buffer: MTLBuffer?
-            let count: Int
-            if compositeGroup == 0 {
-                buffer = lineBuffer
-                count = linePrimitiveCount
-            } else {
-                buffer = compositeBatchStorageByGroup[compositeGroup]?.lineBuffer
-                count = compositeBatchStorageByGroup[compositeGroup]?.lineCount ?? 0
-            }
-            guard let buffer else { return [] }
-            let lines = buffer.contents().bindMemory(to: HorizontalMetalLineShaderPrimitive.self, capacity: count)
-            return (0..<count).map { (lines[$0].from, lines[$0].to) }
-        }
-        private var compositeRenderTextures = [MTLTexture]()
-        private var currentCompositeTextureSize = CGSize.zero
-        private var currentBounds = HorizontalRect.empty
-        private var currentFitInsets = HorizontalCanvasInsets.defaultFit
-        private var currentGrid: HorizontalGridSettings?
-        private var currentBackgroundColor = Color.clear
-        private var currentGridColor = Color.clear
-        private var currentMinimumLineWidth: Float = 0
-        private var currentGridLineWidth: Float = 0.5
-        private var currentShowsOriginMark = false
-        private var currentOriginMarkColor: Color = .clear
-        private var currentViewport = CanvasViewport()
+        private let pipelines: HorizontalMetalPipelines?
+        private var frame = HorizontalMetalCanvasFrame()
+        /// One for each layer the view was last given, bottom first, kept
+        /// from update to update by position.
+        private(set) var layers = [HorizontalMetalCanvasLayer]()
+        /// The cursor's, drawn over `layers`.
+        private let liveLayer: HorizontalMetalCanvasLayer
+        /// Whether a draw marks the load profile's first Metal draw, and the
+        /// label it records skipped draws under.
+        private var marksLoadProfileFirstDraw = false
+        private var loadProfileLabel = "Metal"
         /// Identifies the shared live-viewport driver for input-to-first-draw
         /// latency measurements. Set when the renderer registers as a sink.
         var viewportLatencyDriverID: ObjectIdentifier?
-        private var currentBackingScale: Float = 1
-        private var currentViewportSize = SIMD2<Float>(1, 1)
-        private var currentVisibleCompositeGroups: Set<Int>?
-        private var currentLayerOpacity: Float = 1
-        private var currentLayerOpacityExemptCompositeGroups: Set<Int> = []
         private var moveProfilerDrawActiveUntilNanoseconds: UInt64 = 0
-        private var hadBufferPatches = false
+        private var drawCount = 0
+        private var deferredDrawScheduled = false
 
         override init() {
             let device = MTLCreateSystemDefaultDevice()
             self.device = device
-            self.sampleCount = device?.supportsTextureSampleCount(4) == true ? 4 : 1
+            let sampleCount = device?.supportsTextureSampleCount(4) == true ? 4 : 1
+            self.sampleCount = sampleCount
             self.commandQueue = device?.makeCommandQueue()
+            self.pipelines = device.map { HorizontalMetalPipelines(device: $0, sampleCount: sampleCount) }
+            self.liveLayer = HorizontalMetalCanvasLayer(device: device)
             super.init()
-            if let device {
-                backdropPipelineState = Self.makeBackdropPipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount)
-                trianglePipelineState = Self.makeTrianglePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount)
-                linePipelineState = Self.makeLinePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount)
-                handlePipelineState = Self.makeHandlePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount)
-                anchoredRectPipelineState = Self.makeAnchoredRectPipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount)
-                screenTrianglePipelineState = Self.makeScreenTrianglePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount)
-                screenLinePipelineState = Self.makeScreenLinePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount)
-                offscreenTrianglePipelineState = Self.makeTrianglePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: 1)
-                offscreenLinePipelineState = Self.makeLinePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: 1)
-                offscreenAnchoredRectPipelineState = Self.makeAnchoredRectPipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: 1)
-                textureCompositePipelineState = Self.makeTextureCompositePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount)
-            }
+        }
+
+        /// The layer drawn under `label`, for mounted-canvas regression checks.
+        func layer(labeled label: String) -> HorizontalMetalCanvasLayer? {
+            (layers + [liveLayer]).first { $0.isPresent && $0.label == label }
         }
 
         func update(
             bounds: HorizontalRect,
             viewport: CanvasViewport,
             fitInsets: HorizontalCanvasInsets,
-            grid: HorizontalGridSettings?,
-            backgroundColor: Color,
-            gridColor: Color,
-            minimumLineWidth: Float,
-            gridLineWidth: Float,
-            showsOriginMark: Bool,
-            originMarkColor: Color,
-            layerOpacity: Float,
-            triangles: [HorizontalMetalTrianglePrimitive],
-            triangleKey: Int,
-            lines: [HorizontalMetalLinePrimitive],
-            lineKey: Int,
-            handles: [HorizontalMetalHandlePrimitive],
-            handleKey: Int,
-            anchoredRects: [HorizontalMetalAnchoredRectPrimitive],
-            anchoredRectKey: Int,
-            screenTriangles: [HorizontalMetalScreenTrianglePrimitive],
-            screenTriangleKey: Int,
-            screenLines: [HorizontalMetalScreenLinePrimitive],
-            screenLineKey: Int,
-            bufferPatches: HorizontalMetalBufferPatches,
-            bufferPatchKey: Int,
-            visibleCompositeGroups: Set<Int>?,
-            layerOpacityExemptCompositeGroups: Set<Int>,
             backingScale: Float,
-            viewportSize: SIMD2<Float>
+            viewportSize: SIMD2<Float>,
+            layers contents: [HorizontalMetalCanvasLayerContent?]
         ) -> Bool {
-            // SwiftUI can deliver the new base scene before removing the move
-            // patches. Once the preview ends, restore that base even if its
-            // keys already match; otherwise patched positions remain resident.
-            if hadBufferPatches && bufferPatches.isEmpty {
-                currentTriangleKey = nil
-                currentLineKey = nil
-                currentHandleKey = nil
-                currentAnchoredRectKey = nil
-                currentCompositeBatchKey = nil
+            frame = HorizontalMetalCanvasFrame(
+                bounds: bounds,
+                fitInsets: fitInsets,
+                viewport: viewport,
+                backingScale: backingScale,
+                viewportSize: viewportSize
+            )
+            while layers.count < contents.count {
+                layers.append(HorizontalMetalCanvasLayer(device: device))
             }
-            hadBufferPatches = !bufferPatches.isEmpty
-            let sceneChanged = currentTriangleKey != triangleKey || currentLineKey != lineKey
-                || currentHandleKey != handleKey || currentAnchoredRectKey != anchoredRectKey
-                || currentScreenTriangleKey != screenTriangleKey || currentScreenLineKey != screenLineKey
-            let profilesMovePatch = !bufferPatches.isEmpty
-            if profilesMovePatch {
-                HorizontalMoveRateDiagnostics.mark(.metalUpdate)
-                moveProfilerDrawActiveUntilNanoseconds = DispatchTime.now().uptimeNanoseconds + 1_000_000_000
+            if layers.count > contents.count {
+                layers.removeLast(layers.count - contents.count)
             }
-
-            HorizontalMoveProfiler.measure("metal.update.total", enabled: profilesMovePatch) {
-                currentBounds = bounds
-                currentFitInsets = fitInsets
-                currentGrid = grid
-                currentBackgroundColor = backgroundColor
-                currentGridColor = gridColor
-                currentMinimumLineWidth = minimumLineWidth
-                currentGridLineWidth = gridLineWidth
-                currentShowsOriginMark = showsOriginMark
-                currentOriginMarkColor = originMarkColor
-                currentViewport = viewport
-                currentBackingScale = backingScale
-                currentViewportSize = viewportSize
-                currentVisibleCompositeGroups = visibleCompositeGroups
-                currentLayerOpacity = max(0, min(1, layerOpacity))
-                currentLayerOpacityExemptCompositeGroups = layerOpacityExemptCompositeGroups
-
-                func profileLoadUpdate<T>(_ label: String, _ work: () -> T) -> T {
-                    guard loadProfileID != nil,
-                          loadProfileLabel == "Metal overlay" else {
-                        return work()
-                    }
-                    let start = BoardLoadTimer.timingStart()
-                    let value = work()
-                    BoardLoadTimer.recordBoard2DStep(
-                        "\(loadProfileLabel) update: \(label)",
-                        nanoseconds: BoardLoadTimer.elapsedNanoseconds(since: start),
-                        id: loadProfileID
-                    )
-                    return value
+            var sceneChanged = false
+            for (layer, content) in zip(layers, contents) {
+                guard let content else {
+                    layer.clear()
+                    continue
                 }
-
-                HorizontalMoveProfiler.measure("metal.update.uniforms", enabled: profilesMovePatch) {
-                    profileLoadUpdate("uniforms") {
-                        updateUniforms(viewport: viewport)
-                    }
+                if !content.bufferPatches.isEmpty {
+                    moveProfilerDrawActiveUntilNanoseconds = DispatchTime.now().uptimeNanoseconds + 1_000_000_000
                 }
-
-                HorizontalMoveProfiler.measure("metal.update.triangles", enabled: profilesMovePatch) {
-                    profileLoadUpdate("direct triangles") {
-                        updateTriangleBuffer(triangles: triangles, triangleKey: triangleKey)
-                    }
-                }
-                HorizontalMoveProfiler.measure("metal.update.lines", enabled: profilesMovePatch) {
-                    profileLoadUpdate("direct lines") {
-                        updateLineBuffer(lines: lines, lineKey: lineKey)
-                    }
-                }
-                HorizontalMoveProfiler.measure("metal.update.handles", enabled: profilesMovePatch) {
-                    profileLoadUpdate("handles") {
-                        updateHandleBuffer(handles: handles, handleKey: handleKey)
-                    }
-                }
-                HorizontalMoveProfiler.measure("metal.update.anchoredRects", enabled: profilesMovePatch) {
-                    profileLoadUpdate("direct anchored rects") {
-                        updateAnchoredRectBuffer(anchoredRects: anchoredRects, anchoredRectKey: anchoredRectKey)
-                    }
-                }
-                HorizontalMoveProfiler.measure("metal.update.screenTriangles", enabled: profilesMovePatch) {
-                    profileLoadUpdate("screen triangles") {
-                        updateScreenTriangleBuffer(screenTriangles: screenTriangles, screenTriangleKey: screenTriangleKey)
-                    }
-                }
-                HorizontalMoveProfiler.measure("metal.update.screenLines", enabled: profilesMovePatch) {
-                    profileLoadUpdate("screen lines") {
-                        updateScreenLineBuffer(screenLines: screenLines, screenLineKey: screenLineKey)
-                    }
-                }
-                HorizontalMoveProfiler.measure("metal.update.compositeBatches", enabled: profilesMovePatch) {
-                    profileLoadUpdate("composite batches") {
-                        updateCompositeBatchBuffers(
-                            triangles: triangles,
-                            lines: lines,
-                            anchoredRects: anchoredRects,
-                            key: ((triangleKey &* 31) &+ lineKey) &* 31 &+ anchoredRectKey
-                        )
-                    }
-                }
-                HorizontalMoveProfiler.measure("metal.update.bufferPatches", enabled: profilesMovePatch) {
-                    profileLoadUpdate("buffer patches") {
-                        applyBufferPatches(bufferPatches, key: bufferPatchKey)
-                    }
+                if layer.update(content, frame: frame, loadProfileID: loadProfileID) {
+                    sceneChanged = true
                 }
             }
+            liveLayer.updateUniforms(frame: frame)
+            let marking = contents.first { $0?.marksLoadProfileFirstDraw == true } ?? nil
+            marksLoadProfileFirstDraw = marking != nil
+            loadProfileLabel = marking?.label ?? "Metal"
             return sceneChanged
         }
 
+        /// Takes the cursor's layer from `HorizontalMetalCanvasLiveLayer`, and
+        /// says whether there is anything new to draw.
+        func updateLiveLayer(_ content: HorizontalMetalCanvasLayerContent?) -> Bool {
+            guard let content else {
+                let wasPresent = liveLayer.isPresent
+                liveLayer.clear()
+                return wasPresent
+            }
+            return liveLayer.update(content, frame: frame, loadProfileID: nil)
+        }
+
+        /// Asks for a draw as a pan does, and makes sure one happens: a paused
+        /// view in an inactive window may let a needs-display draw wait. The
+        /// forced draw waits for the main actor's next turn and is dropped if
+        /// the view drew in between, so the requests of one turn cost one draw.
+        func requestDraw(in view: MTKView) {
+            Self.setNeedsDisplay(view)
+            guard !deferredDrawScheduled else {
+                return
+            }
+            deferredDrawScheduled = true
+            let requestedAtDraw = drawCount
+            Task { @MainActor [weak self, weak view] in
+                guard let self else {
+                    return
+                }
+                deferredDrawScheduled = false
+                guard let view, drawCount == requestedAtDraw else {
+                    return
+                }
+                view.draw()
+            }
+        }
+
+        static func setNeedsDisplay(_ view: MTKView) {
+            #if os(macOS)
+            view.needsDisplay = true
+            view.setNeedsDisplay(view.bounds)
+            #else
+            view.setNeedsDisplay()
+            #endif
+        }
+
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-            currentViewportSize = SIMD2(Float(size.width), Float(size.height)) / max(uniforms.backingScale, 1)
-            updateUniforms(viewport: currentViewport)
+            frame.viewportSize = SIMD2(Float(size.width), Float(size.height)) / max(frame.backingScale, 1)
+            for layer in layers + [liveLayer] {
+                layer.updateUniforms(frame: frame)
+            }
             // Deliberately no synchronous `view.draw()` here. Redrawing on every
             // resize step re-fitted the content instead of stretching it, but it
             // put a full canvas redraw inside the resize's own layout pass — for
@@ -481,11 +345,14 @@ struct HorizontalMetalBackdropView {
         }
 
         func updateLiveViewport(_ viewport: CanvasViewport) {
-            currentViewport = viewport
-            updateUniforms(viewport: viewport)
+            frame.viewport = viewport
+            for layer in layers + [liveLayer] {
+                layer.updateUniforms(frame: frame)
+            }
         }
 
         func draw(in view: MTKView) {
+            drawCount &+= 1
             if let viewportLatencyDriverID {
                 HorizontalViewportLatencyDiagnostics.firstMetalDrawBegan(driverID: viewportLatencyDriverID)
             }
@@ -494,7 +361,10 @@ struct HorizontalMetalBackdropView {
             let profilesMovePatchDraw = DispatchTime.now().uptimeNanoseconds < moveProfilerDrawActiveUntilNanoseconds
             HorizontalMoveRateDiagnostics.mark(.metalDraw, active: profilesMovePatchDraw)
             let drawableSize = view.drawableSize
-            uniforms.viewportSize = SIMD2(Float(drawableSize.width), Float(drawableSize.height)) / max(uniforms.backingScale, 1)
+            let drawnLayers = (layers + [liveLayer]).filter(\.isPresent)
+            for layer in drawnLayers {
+                layer.setDrawableSize(drawableSize)
+            }
 
             // Always present asynchronously, including during a live window
             // resize.
@@ -515,16 +385,10 @@ struct HorizontalMetalBackdropView {
 
             // Every early return below re-arms the draw. The view is paused and
             // needs-display driven, so a skipped draw otherwise keeps PRESENTING
-            // the previous frame indefinitely — with several stacked canvas
-            // layers contending for drawables during a pan, one layer (e.g. the
-            // highlight overlay) could stay at a stale pan offset from the
-            // others until an unrelated event happened to dirty it.
+            // the previous frame indefinitely — the canvas stays at a stale pan
+            // until an unrelated event happens to dirty it.
             func rearmSkippedDraw() {
-                #if os(macOS)
-                view.setNeedsDisplay(view.bounds)
-                #else
-                view.setNeedsDisplay()
-                #endif
+                Self.setNeedsDisplay(view)
             }
             // Nothing to re-arm here: a view with no area shows nothing, and
             // it is redrawn when it is given a size.
@@ -538,31 +402,18 @@ struct HorizontalMetalBackdropView {
                 return
             }
             guard let commandBuffer = commandQueue?.makeCommandBuffer(),
-                  let backdropPipelineState else {
+                  let pipelines else {
                 recordLoadProfileDrawSkip("missing pipeline", since: drawTickStart)
                 rearmSkippedDraw()
                 return
             }
 
-            let activeBatches = activeCompositeBatches()
-            // Fast path: when every active layer group is fully opaque (the
-            // default — opacity slider at 100%), skip the per-group offscreen
-            // textures and draw the grouped primitives inline. Avoids allocating
-            // one drawable-sized texture per layer group (gigabytes of VRAM at
-            // 5K retina across many layers) plus an extra render pass each.
-            // Identical output for opacity 1 (src-over associativity); any
-            // translucent group falls back to the offscreen composite path.
-            // NOTE: the overlay-label group (textOverlayMetalCompositeGroup) is now
-            // opaque (opacity 1.0), so it no longer forces the offscreen path on its
-            // own: at layerOpacity 1 its opaque strokes draw inline here (still
-            // seam-free — opaque-over-opaque never compounds alpha). When the slider
-            // dims copper (layerOpacity < 1) the offscreen path runs and the label
-            // group is held at full opacity via layerOpacityExemptCompositeGroups.
-            let inlineCompositeGroups = currentLayerOpacity >= 1 && activeBatches.allSatisfy { $0.opacity >= 1 }
-            let compositeTextures = HorizontalMoveProfiler.measure("metal.draw.compositeTextures", enabled: profilesMovePatchDraw) {
-                inlineCompositeGroups
-                    ? []
-                    : renderCompositeTextures(commandBuffer: commandBuffer, drawableSize: drawableSize)
+            // Each layer's translucent layer groups go to offscreen textures
+            // before the drawable's pass begins; opaque ones draw inline.
+            let composites = HorizontalMoveProfiler.measure("metal.draw.compositeTextures", enabled: profilesMovePatchDraw) {
+                drawnLayers.map { layer in
+                    layer.prepareComposites(commandBuffer: commandBuffer, drawableSize: drawableSize, pipelines: pipelines)
+                }
             }
 
             guard let descriptor = view.currentRenderPassDescriptor,
@@ -576,76 +427,23 @@ struct HorizontalMetalBackdropView {
             }
 
             HorizontalMoveProfiler.measure("metal.draw.encode", enabled: profilesMovePatchDraw) {
-                encoder.setRenderPipelineState(backdropPipelineState)
-                encoder.setFragmentBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
-                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
-
-                if inlineCompositeGroups {
-                    encodeInlineCompositeGroups(activeBatches, encoder: encoder)
-                } else if let textureCompositePipelineState {
-                    for compositeTexture in compositeTextures {
-                        // Multiply the per-batch opacity (set when buckets were
-                        // built — currently always 1.0 for layered groups) by the
-                        // live layerOpacity uniform. Lets the slider drag without
-                        // any cache invalidation upstream. Exempt groups (the
-                        // overlay-label group) composite at their own opacity so the
-                        // labels stay fully readable while copper dims.
-                        var opacity = compositeTexture.ignoresLayerOpacity
-                            ? compositeTexture.opacity
-                            : compositeTexture.opacity * currentLayerOpacity
-                        encoder.setRenderPipelineState(textureCompositePipelineState)
-                        encoder.setFragmentTexture(compositeTexture.texture, index: 0)
-                        encoder.setFragmentBytes(&opacity, length: MemoryLayout<Float>.stride, index: 0)
-                        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
-                    }
+                for (index, layer) in drawnLayers.enumerated() {
+                    layer.encode(
+                        into: encoder,
+                        composites: composites[index],
+                        pipelines: pipelines,
+                        // The bottom layer's backdrop lays down the background
+                        // as each layer's own view used to, unblended; a layer
+                        // over it draws its backdrop only when it has one.
+                        backdrop: index == 0 ? .replacing : .overLayersBelow
+                    )
                 }
-
-                if let trianglePipelineState, let triangleBuffer, trianglePrimitiveCount > 0 {
-                    encoder.setRenderPipelineState(trianglePipelineState)
-                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
-                    encoder.setVertexBuffer(triangleBuffer, offset: 0, index: 1)
-                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: trianglePrimitiveCount * 3)
-                }
-
-                if let linePipelineState, let lineBuffer, linePrimitiveCount > 0 {
-                    encoder.setRenderPipelineState(linePipelineState)
-                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
-                    encoder.setVertexBuffer(lineBuffer, offset: 0, index: 1)
-                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: linePrimitiveCount * 6)
-                }
-
-                if let handlePipelineState, let handleBuffer, handlePrimitiveCount > 0 {
-                    encoder.setRenderPipelineState(handlePipelineState)
-                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
-                    encoder.setVertexBuffer(handleBuffer, offset: 0, index: 1)
-                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: handlePrimitiveCount * 6)
-                }
-
-                if let anchoredRectPipelineState, let anchoredRectBuffer, anchoredRectPrimitiveCount > 0 {
-                    encoder.setRenderPipelineState(anchoredRectPipelineState)
-                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
-                    encoder.setVertexBuffer(anchoredRectBuffer, offset: 0, index: 1)
-                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: anchoredRectPrimitiveCount * 6)
-                }
-
-                if let screenTrianglePipelineState, let screenTriangleBuffer, screenTrianglePrimitiveCount > 0 {
-                    encoder.setRenderPipelineState(screenTrianglePipelineState)
-                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
-                    encoder.setVertexBuffer(screenTriangleBuffer, offset: 0, index: 1)
-                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: screenTrianglePrimitiveCount * 3)
-                }
-
-                if let screenLinePipelineState, let screenLineBuffer, screenLinePrimitiveCount > 0 {
-                    encoder.setRenderPipelineState(screenLinePipelineState)
-                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
-                    encoder.setVertexBuffer(screenLineBuffer, offset: 0, index: 1)
-                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: screenLinePrimitiveCount * 6)
-                }
-
                 encoder.endEncoding()
             }
             HorizontalMoveProfiler.measure("metal.draw.commit", enabled: profilesMovePatchDraw) {
-                presentedContentKey = currentCompositeBatchKey
+                for layer in drawnLayers {
+                    layer.markPresented()
+                }
                 if presentsInTransaction {
                     // presentsWithTransaction requires presenting on the main
                     // thread after the command buffer is scheduled, rather than
@@ -670,887 +468,12 @@ struct HorizontalMetalBackdropView {
                 id: loadProfileID
             )
         }
-
-        private func updateTriangleBuffer(triangles: [HorizontalMetalTrianglePrimitive], triangleKey: Int) {
-            guard currentTriangleKey != triangleKey else {
-                return
-            }
-
-            resetIncrementalBufferPatchState()
-            currentTriangleKey = triangleKey
-            var shaderPrimitives = [HorizontalMetalTriangleShaderPrimitive]()
-            shaderPrimitives.reserveCapacity(triangles.count)
-            for triangle in triangles where triangle.compositeGroup == 0 {
-                shaderPrimitives.append(Self.shaderPrimitive(triangle))
-            }
-            trianglePrimitiveCount = shaderPrimitives.count
-            guard let device, !shaderPrimitives.isEmpty else {
-                triangleBuffer = nil
-                return
-            }
-
-            triangleBuffer = triangleBufferStorage.replace(device: device, primitives: shaderPrimitives)
-        }
-
-        private func updateLineBuffer(lines: [HorizontalMetalLinePrimitive], lineKey: Int) {
-            guard currentLineKey != lineKey else {
-                return
-            }
-
-            resetIncrementalBufferPatchState()
-            currentLineKey = lineKey
-            var shaderPrimitives = [HorizontalMetalLineShaderPrimitive]()
-            shaderPrimitives.reserveCapacity(lines.count)
-            for line in lines where line.compositeGroup == 0 {
-                shaderPrimitives.append(Self.shaderPrimitive(line))
-            }
-            linePrimitiveCount = shaderPrimitives.count
-            guard let device, !shaderPrimitives.isEmpty else {
-                lineBuffer = nil
-                return
-            }
-
-            lineBuffer = lineBufferStorage.replace(device: device, primitives: shaderPrimitives)
-        }
-
-        private func updateHandleBuffer(handles: [HorizontalMetalHandlePrimitive], handleKey: Int) {
-            guard currentHandleKey != handleKey else {
-                return
-            }
-
-            resetIncrementalBufferPatchState()
-            currentHandleKey = handleKey
-            handlePrimitiveCount = handles.count
-            guard let device, !handles.isEmpty else {
-                handleBuffer = nil
-                return
-            }
-
-            let shaderPrimitives = handles.map { handle in
-                Self.shaderPrimitive(handle)
-            }
-            handleBuffer = handleBufferStorage.replace(device: device, primitives: shaderPrimitives)
-        }
-
-        private func updateAnchoredRectBuffer(
-            anchoredRects: [HorizontalMetalAnchoredRectPrimitive],
-            anchoredRectKey: Int
-        ) {
-            guard currentAnchoredRectKey != anchoredRectKey else {
-                return
-            }
-
-            resetIncrementalBufferPatchState()
-            currentAnchoredRectKey = anchoredRectKey
-            var shaderPrimitives = [HorizontalMetalAnchoredRectShaderPrimitive]()
-            shaderPrimitives.reserveCapacity(anchoredRects.count)
-            for rect in anchoredRects where rect.compositeGroup == 0 {
-                shaderPrimitives.append(Self.shaderPrimitive(rect))
-            }
-            anchoredRectPrimitiveCount = shaderPrimitives.count
-            guard let device, !shaderPrimitives.isEmpty else {
-                anchoredRectBuffer = nil
-                return
-            }
-
-            anchoredRectBuffer = anchoredRectBufferStorage.replace(device: device, primitives: shaderPrimitives)
-        }
-
-        private func updateScreenTriangleBuffer(
-            screenTriangles: [HorizontalMetalScreenTrianglePrimitive],
-            screenTriangleKey: Int
-        ) {
-            guard currentScreenTriangleKey != screenTriangleKey else {
-                return
-            }
-
-            currentScreenTriangleKey = screenTriangleKey
-            screenTrianglePrimitiveCount = screenTriangles.count
-            guard let device, !screenTriangles.isEmpty else {
-                screenTriangleBuffer = nil
-                return
-            }
-
-            let shaderPrimitives = screenTriangles.map { triangle in
-                HorizontalMetalScreenTriangleShaderPrimitive(
-                    a: SIMD2(triangle.ax, triangle.ay),
-                    b: SIMD2(triangle.bx, triangle.by),
-                    c: SIMD2(triangle.cx, triangle.cy),
-                    color: triangle.color.simd,
-                    anchor: triangle.worldAnchor.map { SIMD4(Float($0.x), Float($0.y), 1, 0) } ?? .zero
-                )
-            }
-            screenTriangleBuffer = screenTriangleBufferStorage.replace(device: device, primitives: shaderPrimitives)
-        }
-
-        private func updateScreenLineBuffer(screenLines: [HorizontalMetalScreenLinePrimitive], screenLineKey: Int) {
-            guard currentScreenLineKey != screenLineKey else {
-                return
-            }
-
-            currentScreenLineKey = screenLineKey
-            screenLinePrimitiveCount = screenLines.count
-            guard let device, !screenLines.isEmpty else {
-                screenLineBuffer = nil
-                return
-            }
-
-            let shaderPrimitives = screenLines.map { line in
-                HorizontalMetalScreenLineShaderPrimitive(
-                    from: SIMD2(line.fromX, line.fromY),
-                    to: SIMD2(line.toX, line.toY),
-                    color: line.color.simd,
-                    width: line.width,
-                    dashLength: line.dashLength,
-                    dashGap: line.dashGap,
-                    padding: 0
-                )
-            }
-            screenLineBuffer = screenLineBufferStorage.replace(device: device, primitives: shaderPrimitives)
-        }
-
-        private func updateCompositeBatchBuffers(
-            triangles: [HorizontalMetalTrianglePrimitive],
-            lines: [HorizontalMetalLinePrimitive],
-            anchoredRects: [HorizontalMetalAnchoredRectPrimitive],
-            key: Int
-        ) {
-            guard currentCompositeBatchKey != key else {
-                return
-            }
-
-            resetIncrementalBufferPatchState()
-            currentCompositeBatchKey = key
-            residentSceneUploads += 1
-            guard let device else {
-                compositeBatchBuffers = []
-                return
-            }
-
-            var trianglesByGroup = [Int: [HorizontalMetalTriangleShaderPrimitive]]()
-            var linesByGroup = [Int: [HorizontalMetalLineShaderPrimitive]]()
-            var rectsByGroup = [Int: [HorizontalMetalAnchoredRectShaderPrimitive]]()
-            var opacityByGroup = [Int: Float]()
-            trianglesByGroup.reserveCapacity(32)
-            linesByGroup.reserveCapacity(32)
-            rectsByGroup.reserveCapacity(32)
-
-            for triangle in triangles where triangle.compositeGroup != 0 {
-                trianglesByGroup[triangle.compositeGroup, default: []].append(Self.shaderPrimitive(triangle))
-                opacityByGroup[triangle.compositeGroup] = triangle.compositeOpacity
-            }
-            for line in lines where line.compositeGroup != 0 {
-                linesByGroup[line.compositeGroup, default: []].append(Self.shaderPrimitive(line))
-                opacityByGroup[line.compositeGroup] = line.compositeOpacity
-            }
-            for rect in anchoredRects where rect.compositeGroup != 0 {
-                rectsByGroup[rect.compositeGroup, default: []].append(Self.shaderPrimitive(rect))
-                opacityByGroup[rect.compositeGroup] = rect.compositeOpacity
-            }
-
-            var allGroups = Set<Int>()
-            allGroups.formUnion(trianglesByGroup.keys)
-            allGroups.formUnion(linesByGroup.keys)
-            allGroups.formUnion(rectsByGroup.keys)
-
-            let sortedGroups = allGroups.sorted()
-            compositeBatchBuffers = sortedGroups.map { group in
-                let batch = compositeBatchStorageByGroup[group] ?? HorizontalMetalCompositeBatchBuffers(group: group)
-                compositeBatchStorageByGroup[group] = batch
-                batch.opacity = min(max(opacityByGroup[group] ?? 1, 0), 1)
-                batch.replaceBuffers(
-                    device: device,
-                    triangles: trianglesByGroup[group] ?? [],
-                    lines: linesByGroup[group] ?? [],
-                    anchoredRects: rectsByGroup[group] ?? []
-                )
-                return batch
-            }
-            compositeBatchStorageByGroup = compositeBatchStorageByGroup.filter { allGroups.contains($0.key) }
-        }
-
-        private static func shaderPrimitive(_ line: HorizontalMetalLinePrimitive) -> HorizontalMetalLineShaderPrimitive {
-            HorizontalMetalLineShaderPrimitive(
-                from: SIMD2(Float(line.from.x), Float(line.from.y)),
-                to: SIMD2(Float(line.to.x), Float(line.to.y)),
-                color: line.color.simd,
-                width: Float(line.width),
-                minimumWidth: line.minimumWidth,
-                dashLength: line.dashLength,
-                dashGap: line.dashGap,
-                normalOffset: line.normalOffset,
-                outlineOnly: line.outlineOnly ? 1 : 0,
-                dashPhase: Float(line.dashPhase)
-            )
-        }
-
-        private static func shaderPrimitive(_ triangle: HorizontalMetalTrianglePrimitive) -> HorizontalMetalTriangleShaderPrimitive {
-            HorizontalMetalTriangleShaderPrimitive(
-                a: SIMD2(Float(triangle.a.x), Float(triangle.a.y)),
-                b: SIMD2(Float(triangle.b.x), Float(triangle.b.y)),
-                c: SIMD2(Float(triangle.c.x), Float(triangle.c.y)),
-                color: triangle.color.simd
-            )
-        }
-
-        private static func shaderPrimitive(_ rect: HorizontalMetalAnchoredRectPrimitive) -> HorizontalMetalAnchoredRectShaderPrimitive {
-            HorizontalMetalAnchoredRectShaderPrimitive(
-                center: SIMD2(Float(rect.center.x), Float(rect.center.y)),
-                color: rect.color.simd,
-                size: SIMD2(rect.width, rect.height)
-            )
-        }
-
-        private static func shaderPrimitive(_ handle: HorizontalMetalHandlePrimitive) -> HorizontalMetalHandleShaderPrimitive {
-            HorizontalMetalHandleShaderPrimitive(
-                center: SIMD2(Float(handle.center.x), Float(handle.center.y)),
-                outerColor: handle.outerColor.simd,
-                innerColor: handle.innerColor.simd,
-                outerRadius: handle.outerRadius,
-                innerRadius: handle.innerRadius,
-                shape: handle.shape.metalValue
-            )
-        }
-
-        private func applyBufferPatches(_ patches: HorizontalMetalBufferPatches, key: Int) {
-            guard currentBufferPatchKey != key else {
-                return
-            }
-            currentBufferPatchKey = key
-            guard !patches.isEmpty else {
-                return
-            }
-
-            for patch in patches.linePatches {
-                let primitives = patch.primitives.map(Self.shaderPrimitive)
-                if patch.compositeGroup == 0 {
-                    lineBufferStorage.replaceSubrange(start: patch.start, primitives: primitives)
-                } else {
-                    compositeBatchStorageByGroup[patch.compositeGroup]?.replaceLineSubrange(
-                        start: patch.start,
-                        primitives: primitives
-                    )
-                }
-            }
-
-            for patch in patches.trianglePatches {
-                let primitives = patch.primitives.map(Self.shaderPrimitive)
-                if patch.compositeGroup == 0 {
-                    triangleBufferStorage.replaceSubrange(start: patch.start, primitives: primitives)
-                } else {
-                    compositeBatchStorageByGroup[patch.compositeGroup]?.replaceTriangleSubrange(
-                        start: patch.start,
-                        primitives: primitives
-                    )
-                }
-            }
-
-            for patch in patches.anchoredRectPatches {
-                let primitives = patch.primitives.map(Self.shaderPrimitive)
-                if patch.compositeGroup == 0 {
-                    anchoredRectBufferStorage.replaceSubrange(start: patch.start, primitives: primitives)
-                } else {
-                    compositeBatchStorageByGroup[patch.compositeGroup]?.replaceAnchoredRectSubrange(
-                        start: patch.start,
-                        primitives: primitives
-                    )
-                }
-            }
-
-            for patch in patches.handlePatches {
-                let primitives = patch.primitives.map(Self.shaderPrimitive)
-                handleBufferStorage.replaceSubrange(start: patch.start, primitives: primitives)
-            }
-
-            for patch in patches.lineTranslationPatches {
-                let step = incrementalTranslationStep(
-                    kind: 0,
-                    compositeGroup: patch.compositeGroup,
-                    start: patch.start,
-                    count: patch.count,
-                    absoluteDelta: patch.delta,
-                    angle: patch.angle
-                )
-                guard !step.isIdentity else { continue }
-                if patch.compositeGroup == 0 {
-                    translateLineSubrange(start: patch.start, count: patch.count, by: step)
-                } else {
-                    compositeBatchStorageByGroup[patch.compositeGroup]?.translateLineSubrange(
-                        start: patch.start,
-                        count: patch.count,
-                        by: step
-                    )
-                }
-            }
-
-            for patch in patches.lineEndpointPatches {
-                if patch.compositeGroup == 0 {
-                    setLineEndpointSubrange(start: patch.start, from: patch.from, to: patch.to)
-                } else {
-                    compositeBatchStorageByGroup[patch.compositeGroup]?.setLineEndpointSubrange(
-                        start: patch.start,
-                        from: Self.shaderPoint(patch.from),
-                        to: Self.shaderPoint(patch.to)
-                    )
-                }
-            }
-
-            for patch in patches.triangleTranslationPatches {
-                let step = incrementalTranslationStep(
-                    kind: 1,
-                    compositeGroup: patch.compositeGroup,
-                    start: patch.start,
-                    count: patch.count,
-                    absoluteDelta: patch.delta,
-                    angle: patch.angle
-                )
-                guard !step.isIdentity else { continue }
-                if patch.compositeGroup == 0 {
-                    translateTriangleSubrange(start: patch.start, count: patch.count, by: step)
-                } else {
-                    compositeBatchStorageByGroup[patch.compositeGroup]?.translateTriangleSubrange(
-                        start: patch.start,
-                        count: patch.count,
-                        by: step
-                    )
-                }
-            }
-
-            for patch in patches.anchoredRectTranslationPatches {
-                let step = incrementalTranslationStep(
-                    kind: 2,
-                    compositeGroup: patch.compositeGroup,
-                    start: patch.start,
-                    count: patch.count,
-                    absoluteDelta: patch.delta,
-                    angle: patch.angle
-                )
-                guard !step.isIdentity else { continue }
-                if patch.compositeGroup == 0 {
-                    translateAnchoredRectSubrange(start: patch.start, count: patch.count, by: step)
-                } else {
-                    compositeBatchStorageByGroup[patch.compositeGroup]?.translateAnchoredRectSubrange(
-                        start: patch.start,
-                        count: patch.count,
-                        by: step
-                    )
-                }
-            }
-
-            for patch in patches.handleTranslationPatches {
-                let step = incrementalTranslationStep(
-                    kind: 3,
-                    compositeGroup: 0,
-                    start: patch.start,
-                    count: patch.count,
-                    absoluteDelta: patch.delta,
-                    angle: patch.angle
-                )
-                guard !step.isIdentity else { continue }
-                translateHandleSubrange(start: patch.start, count: patch.count, by: step)
-            }
-
-            // Last, so a redrawn text is what shows even where a translation
-            // above also moved its primitives.
-            for patch in patches.lineRedrawPatches {
-                let primitives = patch.primitives.map(Self.shaderPrimitive)
-                if patch.compositeGroup == 0 {
-                    lineBufferStorage.replaceSubrange(start: patch.start, primitives: primitives)
-                } else {
-                    compositeBatchStorageByGroup[patch.compositeGroup]?.replaceLineSubrange(
-                        start: patch.start,
-                        primitives: primitives
-                    )
-                }
-            }
-        }
-
-        private func resetIncrementalBufferPatchState() {
-            currentBufferPatchKey = nil
-            appliedTranslations.removeAll(keepingCapacity: true)
-        }
-
-        /// What still has to be done to a run to take it from where the last
-        /// patch left it to where this one puts it. Patches are absolute — the
-        /// move so far, from the resident scene — while the buffers keep only
-        /// what was last applied.
-        private func incrementalTranslationStep(
-            kind: Int,
-            compositeGroup: Int,
-            start: Int,
-            count: Int,
-            absoluteDelta: HorizontalPoint,
-            angle: Int
-        ) -> HorizontalMetalPlacementStep {
-            let key = HorizontalMetalTranslationPatchKey(
-                kind: kind,
-                compositeGroup: compositeGroup,
-                start: start,
-                count: count
-            )
-            let absolute = HorizontalMetalPlacementStep(
-                angle: angle,
-                delta: SIMD2(Float(absoluteDelta.x), Float(absoluteDelta.y))
-            )
-            let previous = appliedTranslations[key] ?? .identity
-            appliedTranslations[key] = absolute
-            return absolute.after(undoing: previous)
-        }
-
-        private static func shaderPoint(_ point: HorizontalPoint?) -> SIMD2<Float>? {
-            point.map { SIMD2(Float($0.x), Float($0.y)) }
-        }
-
-        private func translateLineSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
-            lineBufferStorage.mutateSubrange(start: start, count: count) { primitives in
-                step.apply(toLines: primitives)
-            }
-        }
-
-        private func setLineEndpointSubrange(start: Int, from: HorizontalPoint?, to: HorizontalPoint?) {
-            let shaderFrom = Self.shaderPoint(from)
-            let shaderTo = Self.shaderPoint(to)
-            lineBufferStorage.mutateSubrange(start: start, count: 1) { primitives in
-                guard let index = primitives.indices.first else {
-                    return
-                }
-                if let shaderFrom {
-                    primitives[index].from = shaderFrom
-                }
-                if let shaderTo {
-                    primitives[index].to = shaderTo
-                }
-            }
-        }
-
-        private func translateTriangleSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
-            triangleBufferStorage.mutateSubrange(start: start, count: count) { primitives in
-                step.apply(toTriangles: primitives)
-            }
-        }
-
-        private func translateAnchoredRectSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
-            anchoredRectBufferStorage.mutateSubrange(start: start, count: count) { primitives in
-                step.apply(toAnchoredRects: primitives)
-            }
-        }
-
-        private func translateHandleSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
-            handleBufferStorage.mutateSubrange(start: start, count: count) { primitives in
-                for index in primitives.indices {
-                    primitives[index].center = step.apply(to: primitives[index].center)
-                }
-            }
-        }
-
-        /// Layer-group batches that are visible and contribute color this frame.
-        private func activeCompositeBatches() -> [HorizontalMetalCompositeBatchBuffers] {
-            compositeBatchBuffers.filter { batch in
-                guard !batch.isEmpty, batch.opacity > 0 else {
-                    return false
-                }
-                return currentVisibleCompositeGroups?.contains(batch.group) ?? true
-            }
-        }
-
-        /// Draws fully-opaque layer groups directly into the main pass instead of
-        /// rendering each to its own offscreen texture and compositing. Only used
-        /// when every active group's effective opacity is 1, where this is
-        /// pixel-identical to compositing (src-over is associative).
-        private func encodeInlineCompositeGroups(
-            _ batches: [HorizontalMetalCompositeBatchBuffers],
-            encoder: MTLRenderCommandEncoder
-        ) {
-            for batch in batches {
-                if let trianglePipelineState, let buffer = batch.triangleBuffer, batch.triangleCount > 0 {
-                    encoder.setRenderPipelineState(trianglePipelineState)
-                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
-                    encoder.setVertexBuffer(buffer, offset: 0, index: 1)
-                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: batch.triangleCount * 3)
-                }
-                if let linePipelineState, let buffer = batch.lineBuffer, batch.lineCount > 0 {
-                    encoder.setRenderPipelineState(linePipelineState)
-                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
-                    encoder.setVertexBuffer(buffer, offset: 0, index: 1)
-                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: batch.lineCount * 6)
-                }
-                if let anchoredRectPipelineState, let buffer = batch.anchoredRectBuffer, batch.anchoredRectCount > 0 {
-                    encoder.setRenderPipelineState(anchoredRectPipelineState)
-                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
-                    encoder.setVertexBuffer(buffer, offset: 0, index: 1)
-                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: batch.anchoredRectCount * 6)
-                }
-            }
-        }
-
-        private func renderCompositeTextures(
-            commandBuffer: MTLCommandBuffer,
-            drawableSize: CGSize
-        ) -> [HorizontalMetalCompositeTexture] {
-            let activeBatches = activeCompositeBatches()
-            guard let device,
-                  !activeBatches.isEmpty,
-                  let offscreenTrianglePipelineState,
-                  let offscreenLinePipelineState,
-                  let offscreenAnchoredRectPipelineState else {
-                return []
-            }
-
-            let pixelSize = CGSize(
-                width: max(drawableSize.width.rounded(.down), 1),
-                height: max(drawableSize.height.rounded(.down), 1)
-            )
-            ensureCompositeTextures(device: device, count: activeBatches.count, size: pixelSize)
-
-            var result = [HorizontalMetalCompositeTexture]()
-            for (index, batch) in activeBatches.enumerated() {
-                guard compositeRenderTextures.indices.contains(index) else {
-                    continue
-                }
-                let texture = compositeRenderTextures[index]
-                let descriptor = MTLRenderPassDescriptor()
-                descriptor.colorAttachments[0].texture = texture
-                descriptor.colorAttachments[0].loadAction = .clear
-                descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
-                descriptor.colorAttachments[0].storeAction = .store
-
-                guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
-                    continue
-                }
-
-                if let triangleBuffer = batch.triangleBuffer, batch.triangleCount > 0 {
-                    encoder.setRenderPipelineState(offscreenTrianglePipelineState)
-                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
-                    encoder.setVertexBuffer(triangleBuffer, offset: 0, index: 1)
-                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: batch.triangleCount * 3)
-                }
-
-                if let lineBuffer = batch.lineBuffer, batch.lineCount > 0 {
-                    encoder.setRenderPipelineState(offscreenLinePipelineState)
-                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
-                    encoder.setVertexBuffer(lineBuffer, offset: 0, index: 1)
-                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: batch.lineCount * 6)
-                }
-
-                if let anchoredRectBuffer = batch.anchoredRectBuffer, batch.anchoredRectCount > 0 {
-                    encoder.setRenderPipelineState(offscreenAnchoredRectPipelineState)
-                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
-                    encoder.setVertexBuffer(anchoredRectBuffer, offset: 0, index: 1)
-                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: batch.anchoredRectCount * 6)
-                }
-
-                encoder.endEncoding()
-                result.append(HorizontalMetalCompositeTexture(
-                    texture: texture,
-                    opacity: batch.opacity,
-                    ignoresLayerOpacity: currentLayerOpacityExemptCompositeGroups.contains(batch.group)
-                ))
-            }
-
-            return result
-        }
-
-        private func ensureCompositeTextures(device: MTLDevice, count: Int, size: CGSize) {
-            guard currentCompositeTextureSize != size || compositeRenderTextures.count < count else {
-                return
-            }
-
-            currentCompositeTextureSize = size
-            compositeRenderTextures = (0..<count).compactMap { _ in
-                let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-                    pixelFormat: .bgra8Unorm,
-                    width: Int(size.width),
-                    height: Int(size.height),
-                    mipmapped: false
-                )
-                descriptor.usage = [.renderTarget, .shaderRead]
-                descriptor.storageMode = .private
-                return device.makeTexture(descriptor: descriptor)
-            }
-        }
-
-        private func updateUniforms(viewport: CanvasViewport) {
-            uniforms.viewportSize = max(currentViewportSize, SIMD2<Float>(1, 1))
-            uniforms.backingScale = max(currentBackingScale, 1)
-
-            var effectiveSpacing = currentGrid?.spacing ?? .zero
-            let fitScale = Self.fitScale(bounds: currentBounds, drawableSize: uniforms.viewportSize, fitInsets: currentFitInsets)
-            let scale = Double(fitScale * Float(max(viewport.zoom, 0.01)))
-            while effectiveSpacing.x > 0,
-                  effectiveSpacing.y > 0,
-                  (effectiveSpacing.x * scale < 20 || effectiveSpacing.y * scale < 20) {
-                effectiveSpacing = effectiveSpacing * 2
-            }
-
-            uniforms.boundsMin = SIMD2(Float(currentBounds.minX), Float(currentBounds.minY))
-            uniforms.boundsMax = SIMD2(Float(currentBounds.maxX), Float(currentBounds.maxY))
-            uniforms.pan = SIMD2(Float(viewport.pan.width), Float(viewport.pan.height))
-            uniforms.zoom = Float(max(viewport.zoom, 0.01))
-            uniforms.mirrored = viewport.mirrored ? 1 : 0
-            uniforms.fitInsets = SIMD4(
-                Float(currentFitInsets.top),
-                Float(currentFitInsets.leading),
-                Float(currentFitInsets.bottom),
-                Float(currentFitInsets.trailing)
-            )
-            uniforms.gridSpacing = SIMD2(Float(effectiveSpacing.x), Float(effectiveSpacing.y))
-            uniforms.gridOrigin = SIMD2(Float(currentGrid?.origin.x ?? 0), Float(currentGrid?.origin.y ?? 0))
-            uniforms.backgroundColor = Self.rgba(currentBackgroundColor)
-            uniforms.gridColor = Self.rgba(currentGridColor)
-            uniforms.minimumLineWidth = max(currentMinimumLineWidth, 0)
-            uniforms.gridLineWidth = max(currentGridLineWidth, 0)
-            uniforms.minimumScreenSpacing = 20
-            uniforms.markSize = 5
-            uniforms.showGrid = currentGrid == nil || effectiveSpacing.x <= 0 || effectiveSpacing.y <= 0 ? 0 : 1
-            uniforms.showOrigin = currentShowsOriginMark ? 1 : 0
-            uniforms.originColor = Self.rgba(currentOriginMarkColor)
-        }
-
-        private static func makeTrianglePipelineState(
-            device: MTLDevice,
-            pixelFormat: MTLPixelFormat,
-            sampleCount: Int
-        ) -> MTLRenderPipelineState? {
-            guard let library = HorizontalMetalLibraryCache.library(for: device) else {
-                return nil
-            }
-            do {
-                let descriptor = MTLRenderPipelineDescriptor()
-                descriptor.vertexFunction = library.makeFunction(name: "horizon_triangle_vertex")
-                descriptor.fragmentFunction = library.makeFunction(name: "horizon_triangle_fragment")
-                descriptor.rasterSampleCount = sampleCount
-                let attachment = descriptor.colorAttachments[0]
-                attachment?.pixelFormat = pixelFormat
-                attachment?.isBlendingEnabled = true
-                attachment?.sourceRGBBlendFactor = .sourceAlpha
-                attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
-                attachment?.sourceAlphaBlendFactor = .one
-                attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-                return try device.makeRenderPipelineState(descriptor: descriptor)
-            } catch {
-                NSLog("Horizontal Metal triangle pipeline failed: \(error)")
-                return nil
-            }
-        }
-
-        private static func makeBackdropPipelineState(
-            device: MTLDevice,
-            pixelFormat: MTLPixelFormat,
-            sampleCount: Int
-        ) -> MTLRenderPipelineState? {
-            guard let library = HorizontalMetalLibraryCache.library(for: device) else {
-                return nil
-            }
-            do {
-                let descriptor = MTLRenderPipelineDescriptor()
-                descriptor.vertexFunction = library.makeFunction(name: "horizon_backdrop_vertex")
-                descriptor.fragmentFunction = library.makeFunction(name: "horizon_backdrop_fragment")
-                descriptor.rasterSampleCount = sampleCount
-                descriptor.colorAttachments[0].pixelFormat = pixelFormat
-                return try device.makeRenderPipelineState(descriptor: descriptor)
-            } catch {
-                NSLog("Horizontal Metal backdrop pipeline failed: \(error)")
-                return nil
-            }
-        }
-
-        private static func makeLinePipelineState(
-            device: MTLDevice,
-            pixelFormat: MTLPixelFormat,
-            sampleCount: Int
-        ) -> MTLRenderPipelineState? {
-            guard let library = HorizontalMetalLibraryCache.library(for: device) else {
-                return nil
-            }
-            do {
-                let descriptor = MTLRenderPipelineDescriptor()
-                descriptor.vertexFunction = library.makeFunction(name: "horizon_line_vertex")
-                descriptor.fragmentFunction = library.makeFunction(name: "horizon_line_fragment")
-                descriptor.rasterSampleCount = sampleCount
-                let attachment = descriptor.colorAttachments[0]
-                attachment?.pixelFormat = pixelFormat
-                attachment?.isBlendingEnabled = true
-                attachment?.sourceRGBBlendFactor = .sourceAlpha
-                attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
-                attachment?.sourceAlphaBlendFactor = .one
-                attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-                return try device.makeRenderPipelineState(descriptor: descriptor)
-            } catch {
-                NSLog("Horizontal Metal line pipeline failed: \(error)")
-                return nil
-            }
-        }
-
-        private static func makeHandlePipelineState(
-            device: MTLDevice,
-            pixelFormat: MTLPixelFormat,
-            sampleCount: Int
-        ) -> MTLRenderPipelineState? {
-            guard let library = HorizontalMetalLibraryCache.library(for: device) else {
-                return nil
-            }
-            do {
-                let descriptor = MTLRenderPipelineDescriptor()
-                descriptor.vertexFunction = library.makeFunction(name: "horizon_handle_vertex")
-                descriptor.fragmentFunction = library.makeFunction(name: "horizon_handle_fragment")
-                descriptor.rasterSampleCount = sampleCount
-                let attachment = descriptor.colorAttachments[0]
-                attachment?.pixelFormat = pixelFormat
-                attachment?.isBlendingEnabled = true
-                attachment?.sourceRGBBlendFactor = .sourceAlpha
-                attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
-                attachment?.sourceAlphaBlendFactor = .one
-                attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-                return try device.makeRenderPipelineState(descriptor: descriptor)
-            } catch {
-                NSLog("Horizontal Metal handle pipeline failed: \(error)")
-                return nil
-            }
-        }
-
-        private static func makeAnchoredRectPipelineState(
-            device: MTLDevice,
-            pixelFormat: MTLPixelFormat,
-            sampleCount: Int
-        ) -> MTLRenderPipelineState? {
-            guard let library = HorizontalMetalLibraryCache.library(for: device) else {
-                return nil
-            }
-            do {
-                let descriptor = MTLRenderPipelineDescriptor()
-                descriptor.vertexFunction = library.makeFunction(name: "horizon_anchored_rect_vertex")
-                descriptor.fragmentFunction = library.makeFunction(name: "horizon_triangle_fragment")
-                descriptor.rasterSampleCount = sampleCount
-                let attachment = descriptor.colorAttachments[0]
-                attachment?.pixelFormat = pixelFormat
-                attachment?.isBlendingEnabled = true
-                attachment?.sourceRGBBlendFactor = .sourceAlpha
-                attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
-                attachment?.sourceAlphaBlendFactor = .one
-                attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-                return try device.makeRenderPipelineState(descriptor: descriptor)
-            } catch {
-                NSLog("Horizontal Metal anchored-rect pipeline failed: \(error)")
-                return nil
-            }
-        }
-
-        private static func makeScreenTrianglePipelineState(
-            device: MTLDevice,
-            pixelFormat: MTLPixelFormat,
-            sampleCount: Int
-        ) -> MTLRenderPipelineState? {
-            guard let library = HorizontalMetalLibraryCache.library(for: device) else {
-                return nil
-            }
-            do {
-                let descriptor = MTLRenderPipelineDescriptor()
-                descriptor.vertexFunction = library.makeFunction(name: "horizon_screen_triangle_vertex")
-                descriptor.fragmentFunction = library.makeFunction(name: "horizon_triangle_fragment")
-                descriptor.rasterSampleCount = sampleCount
-                let attachment = descriptor.colorAttachments[0]
-                attachment?.pixelFormat = pixelFormat
-                attachment?.isBlendingEnabled = true
-                attachment?.sourceRGBBlendFactor = .sourceAlpha
-                attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
-                attachment?.sourceAlphaBlendFactor = .one
-                attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-                return try device.makeRenderPipelineState(descriptor: descriptor)
-            } catch {
-                NSLog("Horizontal Metal screen-triangle pipeline failed: \(error)")
-                return nil
-            }
-        }
-
-        private static func makeScreenLinePipelineState(
-            device: MTLDevice,
-            pixelFormat: MTLPixelFormat,
-            sampleCount: Int
-        ) -> MTLRenderPipelineState? {
-            guard let library = HorizontalMetalLibraryCache.library(for: device) else {
-                return nil
-            }
-            do {
-                let descriptor = MTLRenderPipelineDescriptor()
-                descriptor.vertexFunction = library.makeFunction(name: "horizon_screen_line_vertex")
-                descriptor.fragmentFunction = library.makeFunction(name: "horizon_line_fragment")
-                descriptor.rasterSampleCount = sampleCount
-                let attachment = descriptor.colorAttachments[0]
-                attachment?.pixelFormat = pixelFormat
-                attachment?.isBlendingEnabled = true
-                attachment?.sourceRGBBlendFactor = .sourceAlpha
-                attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
-                attachment?.sourceAlphaBlendFactor = .one
-                attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-                return try device.makeRenderPipelineState(descriptor: descriptor)
-            } catch {
-                NSLog("Horizontal Metal screen-line pipeline failed: \(error)")
-                return nil
-            }
-        }
-
-        private static func makeTextureCompositePipelineState(
-            device: MTLDevice,
-            pixelFormat: MTLPixelFormat,
-            sampleCount: Int
-        ) -> MTLRenderPipelineState? {
-            guard let library = HorizontalMetalLibraryCache.library(for: device) else {
-                return nil
-            }
-            do {
-                let descriptor = MTLRenderPipelineDescriptor()
-                descriptor.vertexFunction = library.makeFunction(name: "horizon_texture_vertex")
-                descriptor.fragmentFunction = library.makeFunction(name: "horizon_texture_fragment")
-                descriptor.rasterSampleCount = sampleCount
-                let attachment = descriptor.colorAttachments[0]
-                attachment?.pixelFormat = pixelFormat
-                attachment?.isBlendingEnabled = true
-                attachment?.sourceRGBBlendFactor = .one
-                attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
-                attachment?.sourceAlphaBlendFactor = .one
-                attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-                return try device.makeRenderPipelineState(descriptor: descriptor)
-            } catch {
-                NSLog("Horizontal Metal texture-composite pipeline failed: \(error)")
-                return nil
-            }
-        }
-
-        private static func fitScale(
-            bounds: HorizontalRect,
-            drawableSize: SIMD2<Float>,
-            fitInsets: HorizontalCanvasInsets
-        ) -> Float {
-            guard !bounds.isEmpty else {
-                return 1
-            }
-            let availableWidth = max(drawableSize.x - Float(fitInsets.leading + fitInsets.trailing), 1)
-            let availableHeight = max(drawableSize.y - Float(fitInsets.top + fitInsets.bottom), 1)
-            return min(availableWidth / Float(bounds.width), availableHeight / Float(bounds.height))
-        }
-
-        private static func rgba(_ color: Color) -> SIMD4<Float> {
-            #if canImport(AppKit)
-            let nsColor = NSColor(color)
-            let rgba = nsColor.usingColorSpace(.deviceRGB) ?? nsColor.usingColorSpace(.sRGB) ?? .black
-            return SIMD4(
-                Float(rgba.redComponent),
-                Float(rgba.greenComponent),
-                Float(rgba.blueComponent),
-                Float(rgba.alphaComponent)
-            )
-            #elseif canImport(UIKit)
-            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
-            UIColor(color).getRed(&red, green: &green, blue: &blue, alpha: &alpha)
-            return SIMD4(Float(red), Float(green), Float(blue), Float(alpha))
-            #endif
-        }
     }
 }
 
 private extension MTKView {
     /// Whether the view has a drawable to take. SwiftUI updates a view before it
-    /// first lays it out, so a new canvas layer is still zero by zero when its
+    /// first lays it out, so a new canvas view is still zero by zero when its
     /// first scene arrives, and a pane squeezed to nothing has a side of zero.
     /// Asking for a drawable then only makes Core Animation log "[CAMetalLayer
     /// nextDrawable] returning nil because allocation failed". Both AppKit and
@@ -1580,6 +503,1416 @@ extension HorizontalMetalBackdropView: UIViewRepresentable {
 
     func updateUIView(_ view: MTKView, context: Context) {
         updateBackdropView(view, coordinator: context.coordinator)
+    }
+}
+#endif
+
+/// What every layer of a canvas shares: the world it shows and where the
+/// view puts it.
+struct HorizontalMetalCanvasFrame {
+    var bounds = HorizontalRect.empty
+    var fitInsets = HorizontalCanvasInsets.defaultFit
+    var viewport = CanvasViewport()
+    var backingScale: Float = 1
+    var viewportSize = SIMD2<Float>(1, 1)
+}
+
+/// One layer's resident geometry and how it draws: its buffers and the keys
+/// they were uploaded under, its layer-group batches and their composite
+/// textures, the move patches applied to them, and its uniforms. A canvas's
+/// renderer holds one per layer and draws them in turn into its drawable.
+@MainActor
+final class HorizontalMetalCanvasLayer {
+    private let device: MTLDevice?
+    private(set) var label = "Metal"
+    /// False while the view has no content for this layer; it then draws
+    /// nothing and holds no buffers.
+    private(set) var isPresent = false
+    private var uniforms = HorizontalMetalBackdropUniforms()
+    private var triangleBuffer: MTLBuffer?
+    private var triangleBufferStorage = HorizontalMetalBufferStorage<HorizontalMetalTriangleShaderPrimitive>()
+    private var trianglePrimitiveCount = 0
+    private var currentTriangleKey: Int?
+    private var lineBuffer: MTLBuffer?
+    private var lineBufferStorage = HorizontalMetalBufferStorage<HorizontalMetalLineShaderPrimitive>()
+    private var linePrimitiveCount = 0
+    private var currentLineKey: Int?
+    private var handleBuffer: MTLBuffer?
+    private var handleBufferStorage = HorizontalMetalBufferStorage<HorizontalMetalHandleShaderPrimitive>()
+    private var handlePrimitiveCount = 0
+    private var currentHandleKey: Int?
+    private var anchoredRectBuffer: MTLBuffer?
+    private var anchoredRectBufferStorage = HorizontalMetalBufferStorage<HorizontalMetalAnchoredRectShaderPrimitive>()
+    private var anchoredRectPrimitiveCount = 0
+    private var currentAnchoredRectKey: Int?
+    private var screenTriangleBuffer: MTLBuffer?
+    private var screenTriangleBufferStorage = HorizontalMetalBufferStorage<HorizontalMetalScreenTriangleShaderPrimitive>()
+    private var screenTrianglePrimitiveCount = 0
+    private var currentScreenTriangleKey: Int?
+    private var screenLineBuffer: MTLBuffer?
+    private var screenLineBufferStorage = HorizontalMetalBufferStorage<HorizontalMetalScreenLineShaderPrimitive>()
+    private var screenLinePrimitiveCount = 0
+    private var currentScreenLineKey: Int?
+    private var currentBufferPatchKey: Int?
+    private var appliedTranslations = [HorizontalMetalTranslationPatchKey: HorizontalMetalPlacementStep]()
+    private var compositeBatchBuffers = [HorizontalMetalCompositeBatchBuffers]()
+    private var compositeBatchStorageByGroup = [Int: HorizontalMetalCompositeBatchBuffers]()
+    private var currentCompositeBatchKey: Int?
+    /// Last scene submitted to a drawable, used to distinguish model
+    /// updates from presentation in mounted-canvas regression tests.
+    private(set) var presentedContentKey: Int?
+    /// How many times the layer-group buffers have been uploaded whole: a
+    /// new scene, or the base put back after a preview. Patches never
+    /// count, so a mounted-canvas test can tell a patched preview from a
+    /// rebuilt one (122).
+    private(set) var residentSceneUploads = 0
+    private var compositeRenderTextures = [MTLTexture]()
+    private var currentCompositeTextureSize = CGSize.zero
+    /// Counts every change to the layer-group buffers, whole or patched, so
+    /// a composite texture knows whether what it was drawn from is current.
+    private var compositeContentRevision = 0
+    /// What the composite textures were last rendered from; nil when they
+    /// hold nothing usable.
+    private var renderedCompositeSignature: HorizontalMetalCompositeSignature?
+    /// How many draws rendered the composite textures rather than reusing
+    /// them, for regression checks.
+    private(set) var compositeTextureRenders = 0
+    private var currentGrid: HorizontalGridSettings?
+    private var currentBackgroundColor = Color.clear
+    private var currentGridColor = Color.clear
+    private var currentMinimumLineWidth: Float = 0
+    private var currentGridLineWidth: Float = 0.5
+    private var currentShowsOriginMark = false
+    private var currentOriginMarkColor: Color = .clear
+    private var currentVisibleCompositeGroups: Set<Int>?
+    private var currentLayerOpacity: Float = 1
+    private var currentLayerOpacityExemptCompositeGroups: Set<Int> = []
+    private var hadBufferPatches = false
+
+    init(device: MTLDevice?) {
+        self.device = device
+    }
+
+    /// Read the resident geometry for mounted-canvas regression checks.
+    /// A scene key alone cannot detect a stale or displaced move preview.
+    func residentLineEndpoints(compositeGroup: Int) -> [(from: SIMD2<Float>, to: SIMD2<Float>)] {
+        let buffer: MTLBuffer?
+        let count: Int
+        if compositeGroup == 0 {
+            buffer = lineBuffer
+            count = linePrimitiveCount
+        } else {
+            buffer = compositeBatchStorageByGroup[compositeGroup]?.lineBuffer
+            count = compositeBatchStorageByGroup[compositeGroup]?.lineCount ?? 0
+        }
+        guard let buffer else { return [] }
+        let lines = buffer.contents().bindMemory(to: HorizontalMetalLineShaderPrimitive.self, capacity: count)
+        return (0..<count).map { (lines[$0].from, lines[$0].to) }
+    }
+
+    /// Takes the layer's content for this pass, and says whether its scene
+    /// changed (a patch alone is not a change of scene).
+    func update(
+        _ content: HorizontalMetalCanvasLayerContent,
+        frame: HorizontalMetalCanvasFrame,
+        loadProfileID: String?
+    ) -> Bool {
+        isPresent = true
+        label = content.label
+        // SwiftUI can deliver the new base scene before removing the move
+        // patches. Once the preview ends, restore that base even if its
+        // keys already match; otherwise patched positions remain resident.
+        if hadBufferPatches && content.bufferPatches.isEmpty {
+            currentTriangleKey = nil
+            currentLineKey = nil
+            currentHandleKey = nil
+            currentAnchoredRectKey = nil
+            currentCompositeBatchKey = nil
+        }
+        hadBufferPatches = !content.bufferPatches.isEmpty
+        let sceneChanged = currentTriangleKey != content.triangleKey || currentLineKey != content.lineKey
+            || currentHandleKey != content.handleKey || currentAnchoredRectKey != content.anchoredRectKey
+            || currentScreenTriangleKey != content.screenTriangleKey || currentScreenLineKey != content.screenLineKey
+        let profilesMovePatch = !content.bufferPatches.isEmpty
+        if profilesMovePatch {
+            HorizontalMoveRateDiagnostics.mark(.metalUpdate)
+        }
+
+        HorizontalMoveProfiler.measure("metal.update.total", enabled: profilesMovePatch) {
+            currentGrid = content.grid
+            currentBackgroundColor = content.backgroundColor
+            currentGridColor = content.gridColor
+            currentMinimumLineWidth = Float(content.minimumLineWidth)
+            currentGridLineWidth = Float(content.gridLineWidth)
+            currentShowsOriginMark = content.showsOriginMark
+            currentOriginMarkColor = content.originMarkColor
+            currentVisibleCompositeGroups = content.visibleCompositeGroups
+            currentLayerOpacity = max(0, min(1, Float(content.layerOpacity)))
+            currentLayerOpacityExemptCompositeGroups = content.layerOpacityExemptCompositeGroups
+
+            let label = label
+            func profileLoadUpdate<T>(_ step: String, _ work: () -> T) -> T {
+                guard loadProfileID != nil,
+                      label == "Metal overlay" else {
+                    return work()
+                }
+                let start = BoardLoadTimer.timingStart()
+                let value = work()
+                BoardLoadTimer.recordBoard2DStep(
+                    "\(label) update: \(step)",
+                    nanoseconds: BoardLoadTimer.elapsedNanoseconds(since: start),
+                    id: loadProfileID
+                )
+                return value
+            }
+
+            HorizontalMoveProfiler.measure("metal.update.uniforms", enabled: profilesMovePatch) {
+                profileLoadUpdate("uniforms") {
+                    updateUniforms(frame: frame)
+                }
+            }
+
+            HorizontalMoveProfiler.measure("metal.update.triangles", enabled: profilesMovePatch) {
+                profileLoadUpdate("direct triangles") {
+                    updateTriangleBuffer(triangles: content.triangles, triangleKey: content.triangleKey)
+                }
+            }
+            HorizontalMoveProfiler.measure("metal.update.lines", enabled: profilesMovePatch) {
+                profileLoadUpdate("direct lines") {
+                    updateLineBuffer(lines: content.lines, lineKey: content.lineKey)
+                }
+            }
+            HorizontalMoveProfiler.measure("metal.update.handles", enabled: profilesMovePatch) {
+                profileLoadUpdate("handles") {
+                    updateHandleBuffer(handles: content.handles, handleKey: content.handleKey)
+                }
+            }
+            HorizontalMoveProfiler.measure("metal.update.anchoredRects", enabled: profilesMovePatch) {
+                profileLoadUpdate("direct anchored rects") {
+                    updateAnchoredRectBuffer(anchoredRects: content.anchoredRects, anchoredRectKey: content.anchoredRectKey)
+                }
+            }
+            HorizontalMoveProfiler.measure("metal.update.screenTriangles", enabled: profilesMovePatch) {
+                profileLoadUpdate("screen triangles") {
+                    updateScreenTriangleBuffer(screenTriangles: content.screenTriangles, screenTriangleKey: content.screenTriangleKey)
+                }
+            }
+            HorizontalMoveProfiler.measure("metal.update.screenLines", enabled: profilesMovePatch) {
+                profileLoadUpdate("screen lines") {
+                    updateScreenLineBuffer(screenLines: content.screenLines, screenLineKey: content.screenLineKey)
+                }
+            }
+            HorizontalMoveProfiler.measure("metal.update.compositeBatches", enabled: profilesMovePatch) {
+                profileLoadUpdate("composite batches") {
+                    updateCompositeBatchBuffers(
+                        triangles: content.triangles,
+                        lines: content.lines,
+                        anchoredRects: content.anchoredRects,
+                        key: ((content.triangleKey &* 31) &+ content.lineKey) &* 31 &+ content.anchoredRectKey
+                    )
+                }
+            }
+            HorizontalMoveProfiler.measure("metal.update.bufferPatches", enabled: profilesMovePatch) {
+                profileLoadUpdate("buffer patches") {
+                    applyBufferPatches(content.bufferPatches, key: content.bufferPatchKey)
+                }
+            }
+        }
+        return sceneChanged
+    }
+
+    /// Drops everything the layer holds, as unmounting its view used to: the
+    /// next content uploads whole.
+    func clear() {
+        guard isPresent || currentTriangleKey != nil || currentCompositeBatchKey != nil else {
+            return
+        }
+        isPresent = false
+        triangleBuffer = nil
+        triangleBufferStorage = HorizontalMetalBufferStorage()
+        trianglePrimitiveCount = 0
+        currentTriangleKey = nil
+        lineBuffer = nil
+        lineBufferStorage = HorizontalMetalBufferStorage()
+        linePrimitiveCount = 0
+        currentLineKey = nil
+        handleBuffer = nil
+        handleBufferStorage = HorizontalMetalBufferStorage()
+        handlePrimitiveCount = 0
+        currentHandleKey = nil
+        anchoredRectBuffer = nil
+        anchoredRectBufferStorage = HorizontalMetalBufferStorage()
+        anchoredRectPrimitiveCount = 0
+        currentAnchoredRectKey = nil
+        screenTriangleBuffer = nil
+        screenTriangleBufferStorage = HorizontalMetalBufferStorage()
+        screenTrianglePrimitiveCount = 0
+        currentScreenTriangleKey = nil
+        screenLineBuffer = nil
+        screenLineBufferStorage = HorizontalMetalBufferStorage()
+        screenLinePrimitiveCount = 0
+        currentScreenLineKey = nil
+        resetIncrementalBufferPatchState()
+        compositeBatchBuffers = []
+        compositeBatchStorageByGroup = [:]
+        currentCompositeBatchKey = nil
+        compositeRenderTextures = []
+        currentCompositeTextureSize = .zero
+        renderedCompositeSignature = nil
+        compositeContentRevision += 1
+        presentedContentKey = nil
+        hadBufferPatches = false
+    }
+
+    fileprivate func markPresented() {
+        presentedContentKey = currentCompositeBatchKey
+    }
+
+    fileprivate func setDrawableSize(_ drawableSize: CGSize) {
+        uniforms.viewportSize = SIMD2(Float(drawableSize.width), Float(drawableSize.height)) / max(uniforms.backingScale, 1)
+    }
+
+    private func updateTriangleBuffer(triangles: [HorizontalMetalTrianglePrimitive], triangleKey: Int) {
+        guard currentTriangleKey != triangleKey else {
+            return
+        }
+
+        resetIncrementalBufferPatchState()
+        currentTriangleKey = triangleKey
+        var shaderPrimitives = [HorizontalMetalTriangleShaderPrimitive]()
+        shaderPrimitives.reserveCapacity(triangles.count)
+        for triangle in triangles where triangle.compositeGroup == 0 {
+            shaderPrimitives.append(Self.shaderPrimitive(triangle))
+        }
+        trianglePrimitiveCount = shaderPrimitives.count
+        guard let device, !shaderPrimitives.isEmpty else {
+            triangleBuffer = nil
+            return
+        }
+
+        triangleBuffer = triangleBufferStorage.replace(device: device, primitives: shaderPrimitives)
+    }
+
+    private func updateLineBuffer(lines: [HorizontalMetalLinePrimitive], lineKey: Int) {
+        guard currentLineKey != lineKey else {
+            return
+        }
+
+        resetIncrementalBufferPatchState()
+        currentLineKey = lineKey
+        var shaderPrimitives = [HorizontalMetalLineShaderPrimitive]()
+        shaderPrimitives.reserveCapacity(lines.count)
+        for line in lines where line.compositeGroup == 0 {
+            shaderPrimitives.append(Self.shaderPrimitive(line))
+        }
+        linePrimitiveCount = shaderPrimitives.count
+        guard let device, !shaderPrimitives.isEmpty else {
+            lineBuffer = nil
+            return
+        }
+
+        lineBuffer = lineBufferStorage.replace(device: device, primitives: shaderPrimitives)
+    }
+
+    private func updateHandleBuffer(handles: [HorizontalMetalHandlePrimitive], handleKey: Int) {
+        guard currentHandleKey != handleKey else {
+            return
+        }
+
+        resetIncrementalBufferPatchState()
+        currentHandleKey = handleKey
+        handlePrimitiveCount = handles.count
+        guard let device, !handles.isEmpty else {
+            handleBuffer = nil
+            return
+        }
+
+        let shaderPrimitives = handles.map { handle in
+            Self.shaderPrimitive(handle)
+        }
+        handleBuffer = handleBufferStorage.replace(device: device, primitives: shaderPrimitives)
+    }
+
+    private func updateAnchoredRectBuffer(
+        anchoredRects: [HorizontalMetalAnchoredRectPrimitive],
+        anchoredRectKey: Int
+    ) {
+        guard currentAnchoredRectKey != anchoredRectKey else {
+            return
+        }
+
+        resetIncrementalBufferPatchState()
+        currentAnchoredRectKey = anchoredRectKey
+        var shaderPrimitives = [HorizontalMetalAnchoredRectShaderPrimitive]()
+        shaderPrimitives.reserveCapacity(anchoredRects.count)
+        for rect in anchoredRects where rect.compositeGroup == 0 {
+            shaderPrimitives.append(Self.shaderPrimitive(rect))
+        }
+        anchoredRectPrimitiveCount = shaderPrimitives.count
+        guard let device, !shaderPrimitives.isEmpty else {
+            anchoredRectBuffer = nil
+            return
+        }
+
+        anchoredRectBuffer = anchoredRectBufferStorage.replace(device: device, primitives: shaderPrimitives)
+    }
+
+    private func updateScreenTriangleBuffer(
+        screenTriangles: [HorizontalMetalScreenTrianglePrimitive],
+        screenTriangleKey: Int
+    ) {
+        guard currentScreenTriangleKey != screenTriangleKey else {
+            return
+        }
+
+        currentScreenTriangleKey = screenTriangleKey
+        screenTrianglePrimitiveCount = screenTriangles.count
+        guard let device, !screenTriangles.isEmpty else {
+            screenTriangleBuffer = nil
+            return
+        }
+
+        let shaderPrimitives = screenTriangles.map { triangle in
+            HorizontalMetalScreenTriangleShaderPrimitive(
+                a: SIMD2(triangle.ax, triangle.ay),
+                b: SIMD2(triangle.bx, triangle.by),
+                c: SIMD2(triangle.cx, triangle.cy),
+                color: triangle.color.simd,
+                anchor: triangle.worldAnchor.map { SIMD4(Float($0.x), Float($0.y), 1, 0) } ?? .zero
+            )
+        }
+        screenTriangleBuffer = screenTriangleBufferStorage.replace(device: device, primitives: shaderPrimitives)
+    }
+
+    private func updateScreenLineBuffer(screenLines: [HorizontalMetalScreenLinePrimitive], screenLineKey: Int) {
+        guard currentScreenLineKey != screenLineKey else {
+            return
+        }
+
+        currentScreenLineKey = screenLineKey
+        screenLinePrimitiveCount = screenLines.count
+        guard let device, !screenLines.isEmpty else {
+            screenLineBuffer = nil
+            return
+        }
+
+        let shaderPrimitives = screenLines.map { line in
+            HorizontalMetalScreenLineShaderPrimitive(
+                from: SIMD2(line.fromX, line.fromY),
+                to: SIMD2(line.toX, line.toY),
+                color: line.color.simd,
+                width: line.width,
+                dashLength: line.dashLength,
+                dashGap: line.dashGap,
+                padding: 0
+            )
+        }
+        screenLineBuffer = screenLineBufferStorage.replace(device: device, primitives: shaderPrimitives)
+    }
+
+    private func updateCompositeBatchBuffers(
+        triangles: [HorizontalMetalTrianglePrimitive],
+        lines: [HorizontalMetalLinePrimitive],
+        anchoredRects: [HorizontalMetalAnchoredRectPrimitive],
+        key: Int
+    ) {
+        guard currentCompositeBatchKey != key else {
+            return
+        }
+
+        resetIncrementalBufferPatchState()
+        currentCompositeBatchKey = key
+        residentSceneUploads += 1
+        compositeContentRevision += 1
+        guard let device else {
+            compositeBatchBuffers = []
+            return
+        }
+
+        var trianglesByGroup = [Int: [HorizontalMetalTriangleShaderPrimitive]]()
+        var linesByGroup = [Int: [HorizontalMetalLineShaderPrimitive]]()
+        var rectsByGroup = [Int: [HorizontalMetalAnchoredRectShaderPrimitive]]()
+        var opacityByGroup = [Int: Float]()
+        trianglesByGroup.reserveCapacity(32)
+        linesByGroup.reserveCapacity(32)
+        rectsByGroup.reserveCapacity(32)
+
+        for triangle in triangles where triangle.compositeGroup != 0 {
+            trianglesByGroup[triangle.compositeGroup, default: []].append(Self.shaderPrimitive(triangle))
+            opacityByGroup[triangle.compositeGroup] = triangle.compositeOpacity
+        }
+        for line in lines where line.compositeGroup != 0 {
+            linesByGroup[line.compositeGroup, default: []].append(Self.shaderPrimitive(line))
+            opacityByGroup[line.compositeGroup] = line.compositeOpacity
+        }
+        for rect in anchoredRects where rect.compositeGroup != 0 {
+            rectsByGroup[rect.compositeGroup, default: []].append(Self.shaderPrimitive(rect))
+            opacityByGroup[rect.compositeGroup] = rect.compositeOpacity
+        }
+
+        var allGroups = Set<Int>()
+        allGroups.formUnion(trianglesByGroup.keys)
+        allGroups.formUnion(linesByGroup.keys)
+        allGroups.formUnion(rectsByGroup.keys)
+
+        let sortedGroups = allGroups.sorted()
+        compositeBatchBuffers = sortedGroups.map { group in
+            let batch = compositeBatchStorageByGroup[group] ?? HorizontalMetalCompositeBatchBuffers(group: group)
+            compositeBatchStorageByGroup[group] = batch
+            batch.opacity = min(max(opacityByGroup[group] ?? 1, 0), 1)
+            batch.replaceBuffers(
+                device: device,
+                triangles: trianglesByGroup[group] ?? [],
+                lines: linesByGroup[group] ?? [],
+                anchoredRects: rectsByGroup[group] ?? []
+            )
+            return batch
+        }
+        compositeBatchStorageByGroup = compositeBatchStorageByGroup.filter { allGroups.contains($0.key) }
+    }
+
+    private static func shaderPrimitive(_ line: HorizontalMetalLinePrimitive) -> HorizontalMetalLineShaderPrimitive {
+        HorizontalMetalLineShaderPrimitive(
+            from: SIMD2(Float(line.from.x), Float(line.from.y)),
+            to: SIMD2(Float(line.to.x), Float(line.to.y)),
+            color: line.color.simd,
+            width: Float(line.width),
+            minimumWidth: line.minimumWidth,
+            dashLength: line.dashLength,
+            dashGap: line.dashGap,
+            normalOffset: line.normalOffset,
+            outlineOnly: line.outlineOnly ? 1 : 0,
+            dashPhase: Float(line.dashPhase)
+        )
+    }
+
+    private static func shaderPrimitive(_ triangle: HorizontalMetalTrianglePrimitive) -> HorizontalMetalTriangleShaderPrimitive {
+        HorizontalMetalTriangleShaderPrimitive(
+            a: SIMD2(Float(triangle.a.x), Float(triangle.a.y)),
+            b: SIMD2(Float(triangle.b.x), Float(triangle.b.y)),
+            c: SIMD2(Float(triangle.c.x), Float(triangle.c.y)),
+            color: triangle.color.simd
+        )
+    }
+
+    private static func shaderPrimitive(_ rect: HorizontalMetalAnchoredRectPrimitive) -> HorizontalMetalAnchoredRectShaderPrimitive {
+        HorizontalMetalAnchoredRectShaderPrimitive(
+            center: SIMD2(Float(rect.center.x), Float(rect.center.y)),
+            color: rect.color.simd,
+            size: SIMD2(rect.width, rect.height)
+        )
+    }
+
+    private static func shaderPrimitive(_ handle: HorizontalMetalHandlePrimitive) -> HorizontalMetalHandleShaderPrimitive {
+        HorizontalMetalHandleShaderPrimitive(
+            center: SIMD2(Float(handle.center.x), Float(handle.center.y)),
+            outerColor: handle.outerColor.simd,
+            innerColor: handle.innerColor.simd,
+            outerRadius: handle.outerRadius,
+            innerRadius: handle.innerRadius,
+            shape: handle.shape.metalValue
+        )
+    }
+
+    private func applyBufferPatches(_ patches: HorizontalMetalBufferPatches, key: Int) {
+        guard currentBufferPatchKey != key else {
+            return
+        }
+        currentBufferPatchKey = key
+        guard !patches.isEmpty else {
+            return
+        }
+        compositeContentRevision += 1
+
+        for patch in patches.linePatches {
+            let primitives = patch.primitives.map(Self.shaderPrimitive)
+            if patch.compositeGroup == 0 {
+                lineBufferStorage.replaceSubrange(start: patch.start, primitives: primitives)
+            } else {
+                compositeBatchStorageByGroup[patch.compositeGroup]?.replaceLineSubrange(
+                    start: patch.start,
+                    primitives: primitives
+                )
+            }
+        }
+
+        for patch in patches.trianglePatches {
+            let primitives = patch.primitives.map(Self.shaderPrimitive)
+            if patch.compositeGroup == 0 {
+                triangleBufferStorage.replaceSubrange(start: patch.start, primitives: primitives)
+            } else {
+                compositeBatchStorageByGroup[patch.compositeGroup]?.replaceTriangleSubrange(
+                    start: patch.start,
+                    primitives: primitives
+                )
+            }
+        }
+
+        for patch in patches.anchoredRectPatches {
+            let primitives = patch.primitives.map(Self.shaderPrimitive)
+            if patch.compositeGroup == 0 {
+                anchoredRectBufferStorage.replaceSubrange(start: patch.start, primitives: primitives)
+            } else {
+                compositeBatchStorageByGroup[patch.compositeGroup]?.replaceAnchoredRectSubrange(
+                    start: patch.start,
+                    primitives: primitives
+                )
+            }
+        }
+
+        for patch in patches.handlePatches {
+            let primitives = patch.primitives.map(Self.shaderPrimitive)
+            handleBufferStorage.replaceSubrange(start: patch.start, primitives: primitives)
+        }
+
+        for patch in patches.lineTranslationPatches {
+            let step = incrementalTranslationStep(
+                kind: 0,
+                compositeGroup: patch.compositeGroup,
+                start: patch.start,
+                count: patch.count,
+                absoluteDelta: patch.delta,
+                angle: patch.angle
+            )
+            guard !step.isIdentity else { continue }
+            if patch.compositeGroup == 0 {
+                translateLineSubrange(start: patch.start, count: patch.count, by: step)
+            } else {
+                compositeBatchStorageByGroup[patch.compositeGroup]?.translateLineSubrange(
+                    start: patch.start,
+                    count: patch.count,
+                    by: step
+                )
+            }
+        }
+
+        for patch in patches.lineEndpointPatches {
+            if patch.compositeGroup == 0 {
+                setLineEndpointSubrange(start: patch.start, from: patch.from, to: patch.to)
+            } else {
+                compositeBatchStorageByGroup[patch.compositeGroup]?.setLineEndpointSubrange(
+                    start: patch.start,
+                    from: Self.shaderPoint(patch.from),
+                    to: Self.shaderPoint(patch.to)
+                )
+            }
+        }
+
+        for patch in patches.triangleTranslationPatches {
+            let step = incrementalTranslationStep(
+                kind: 1,
+                compositeGroup: patch.compositeGroup,
+                start: patch.start,
+                count: patch.count,
+                absoluteDelta: patch.delta,
+                angle: patch.angle
+            )
+            guard !step.isIdentity else { continue }
+            if patch.compositeGroup == 0 {
+                translateTriangleSubrange(start: patch.start, count: patch.count, by: step)
+            } else {
+                compositeBatchStorageByGroup[patch.compositeGroup]?.translateTriangleSubrange(
+                    start: patch.start,
+                    count: patch.count,
+                    by: step
+                )
+            }
+        }
+
+        for patch in patches.anchoredRectTranslationPatches {
+            let step = incrementalTranslationStep(
+                kind: 2,
+                compositeGroup: patch.compositeGroup,
+                start: patch.start,
+                count: patch.count,
+                absoluteDelta: patch.delta,
+                angle: patch.angle
+            )
+            guard !step.isIdentity else { continue }
+            if patch.compositeGroup == 0 {
+                translateAnchoredRectSubrange(start: patch.start, count: patch.count, by: step)
+            } else {
+                compositeBatchStorageByGroup[patch.compositeGroup]?.translateAnchoredRectSubrange(
+                    start: patch.start,
+                    count: patch.count,
+                    by: step
+                )
+            }
+        }
+
+        for patch in patches.handleTranslationPatches {
+            let step = incrementalTranslationStep(
+                kind: 3,
+                compositeGroup: 0,
+                start: patch.start,
+                count: patch.count,
+                absoluteDelta: patch.delta,
+                angle: patch.angle
+            )
+            guard !step.isIdentity else { continue }
+            translateHandleSubrange(start: patch.start, count: patch.count, by: step)
+        }
+
+        // Last, so a redrawn text is what shows even where a translation
+        // above also moved its primitives.
+        for patch in patches.lineRedrawPatches {
+            let primitives = patch.primitives.map(Self.shaderPrimitive)
+            if patch.compositeGroup == 0 {
+                lineBufferStorage.replaceSubrange(start: patch.start, primitives: primitives)
+            } else {
+                compositeBatchStorageByGroup[patch.compositeGroup]?.replaceLineSubrange(
+                    start: patch.start,
+                    primitives: primitives
+                )
+            }
+        }
+    }
+
+    private func resetIncrementalBufferPatchState() {
+        currentBufferPatchKey = nil
+        appliedTranslations.removeAll(keepingCapacity: true)
+    }
+
+    /// What still has to be done to a run to take it from where the last
+    /// patch left it to where this one puts it. Patches are absolute — the
+    /// move so far, from the resident scene — while the buffers keep only
+    /// what was last applied.
+    private func incrementalTranslationStep(
+        kind: Int,
+        compositeGroup: Int,
+        start: Int,
+        count: Int,
+        absoluteDelta: HorizontalPoint,
+        angle: Int
+    ) -> HorizontalMetalPlacementStep {
+        let key = HorizontalMetalTranslationPatchKey(
+            kind: kind,
+            compositeGroup: compositeGroup,
+            start: start,
+            count: count
+        )
+        let absolute = HorizontalMetalPlacementStep(
+            angle: angle,
+            delta: SIMD2(Float(absoluteDelta.x), Float(absoluteDelta.y))
+        )
+        let previous = appliedTranslations[key] ?? .identity
+        appliedTranslations[key] = absolute
+        return absolute.after(undoing: previous)
+    }
+
+    private static func shaderPoint(_ point: HorizontalPoint?) -> SIMD2<Float>? {
+        point.map { SIMD2(Float($0.x), Float($0.y)) }
+    }
+
+    private func translateLineSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
+        lineBufferStorage.mutateSubrange(start: start, count: count) { primitives in
+            step.apply(toLines: primitives)
+        }
+    }
+
+    private func setLineEndpointSubrange(start: Int, from: HorizontalPoint?, to: HorizontalPoint?) {
+        let shaderFrom = Self.shaderPoint(from)
+        let shaderTo = Self.shaderPoint(to)
+        lineBufferStorage.mutateSubrange(start: start, count: 1) { primitives in
+            guard let index = primitives.indices.first else {
+                return
+            }
+            if let shaderFrom {
+                primitives[index].from = shaderFrom
+            }
+            if let shaderTo {
+                primitives[index].to = shaderTo
+            }
+        }
+    }
+
+    private func translateTriangleSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
+        triangleBufferStorage.mutateSubrange(start: start, count: count) { primitives in
+            step.apply(toTriangles: primitives)
+        }
+    }
+
+    private func translateAnchoredRectSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
+        anchoredRectBufferStorage.mutateSubrange(start: start, count: count) { primitives in
+            step.apply(toAnchoredRects: primitives)
+        }
+    }
+
+    private func translateHandleSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
+        handleBufferStorage.mutateSubrange(start: start, count: count) { primitives in
+            for index in primitives.indices {
+                primitives[index].center = step.apply(to: primitives[index].center)
+            }
+        }
+    }
+
+    /// How a layer lays its layer groups down this frame: inline, when every
+    /// active group draws at full opacity, or from the offscreen textures
+    /// rendered for them before the drawable's pass began.
+    fileprivate enum Composites {
+        case inline([HorizontalMetalCompositeBatchBuffers])
+        case textures([HorizontalMetalCompositeTexture])
+    }
+
+    /// Whether a layer's backdrop replaces what is under it (the bottom
+    /// layer, over the cleared drawable) or blends over the layers below.
+    fileprivate enum Backdrop {
+        case replacing
+        case overLayersBelow
+    }
+
+    /// Layer-group batches that are visible and contribute color this frame.
+    private func activeCompositeBatches() -> [HorizontalMetalCompositeBatchBuffers] {
+        compositeBatchBuffers.filter { batch in
+            guard !batch.isEmpty, batch.opacity > 0 else {
+                return false
+            }
+            return currentVisibleCompositeGroups?.contains(batch.group) ?? true
+        }
+    }
+
+    /// Renders the layer's translucent layer groups to their offscreen
+    /// textures, ahead of the drawable's pass.
+    fileprivate func prepareComposites(
+        commandBuffer: MTLCommandBuffer,
+        drawableSize: CGSize,
+        pipelines: HorizontalMetalPipelines
+    ) -> Composites {
+        let activeBatches = activeCompositeBatches()
+        // Fast path: when every active layer group is fully opaque (the
+        // default — opacity slider at 100%), skip the per-group offscreen
+        // textures and draw the grouped primitives inline. Avoids allocating
+        // one drawable-sized texture per layer group (gigabytes of VRAM at
+        // 5K retina across many layers) plus an extra render pass each.
+        // Identical output for opacity 1 (src-over associativity); any
+        // translucent group falls back to the offscreen composite path.
+        // NOTE: the overlay-label group (textOverlayMetalCompositeGroup) is now
+        // opaque (opacity 1.0), so it no longer forces the offscreen path on its
+        // own: at layerOpacity 1 its opaque strokes draw inline here (still
+        // seam-free — opaque-over-opaque never compounds alpha). When the slider
+        // dims copper (layerOpacity < 1) the offscreen path runs and the label
+        // group is held at full opacity via layerOpacityExemptCompositeGroups.
+        if currentLayerOpacity >= 1 && activeBatches.allSatisfy({ $0.opacity >= 1 }) {
+            return .inline(activeBatches)
+        }
+        return .textures(renderCompositeTextures(
+            activeBatches,
+            commandBuffer: commandBuffer,
+            drawableSize: drawableSize,
+            pipelines: pipelines
+        ))
+    }
+
+    /// Draws the layer into the drawable's pass: its backdrop, its layer
+    /// groups, then its own primitives.
+    fileprivate func encode(
+        into encoder: MTLRenderCommandEncoder,
+        composites: Composites,
+        pipelines: HorizontalMetalPipelines,
+        backdrop: Backdrop
+    ) {
+        let backdropPipelineState: MTLRenderPipelineState?
+        switch backdrop {
+        case .replacing:
+            backdropPipelineState = pipelines.backdrop
+        case .overLayersBelow:
+            // A clear backdrop with no grid and no origin mark draws nothing
+            // (and, unblended, would wipe the layers below).
+            let drawsBackdrop = uniforms.backgroundColor.w > 0 || uniforms.showGrid > 0.5 || uniforms.showOrigin > 0.5
+            backdropPipelineState = drawsBackdrop ? pipelines.blendedBackdrop : nil
+        }
+        if let backdropPipelineState {
+            encoder.setRenderPipelineState(backdropPipelineState)
+            encoder.setFragmentBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        }
+
+        switch composites {
+        case .inline(let batches):
+            encodeInlineCompositeGroups(batches, encoder: encoder, pipelines: pipelines)
+        case .textures(let compositeTextures):
+            if let textureCompositePipelineState = pipelines.textureComposite {
+                for compositeTexture in compositeTextures {
+                    // Multiply the per-batch opacity (set when buckets were
+                    // built — currently always 1.0 for layered groups) by the
+                    // live layerOpacity uniform. Lets the slider drag without
+                    // any cache invalidation upstream. Exempt groups (the
+                    // overlay-label group) composite at their own opacity so the
+                    // labels stay fully readable while copper dims.
+                    var opacity = compositeTexture.ignoresLayerOpacity
+                        ? compositeTexture.opacity
+                        : compositeTexture.opacity * currentLayerOpacity
+                    encoder.setRenderPipelineState(textureCompositePipelineState)
+                    encoder.setFragmentTexture(compositeTexture.texture, index: 0)
+                    encoder.setFragmentBytes(&opacity, length: MemoryLayout<Float>.stride, index: 0)
+                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+                }
+            }
+        }
+
+        if let trianglePipelineState = pipelines.triangle, let triangleBuffer, trianglePrimitiveCount > 0 {
+            encoder.setRenderPipelineState(trianglePipelineState)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
+            encoder.setVertexBuffer(triangleBuffer, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: trianglePrimitiveCount * 3)
+        }
+
+        if let linePipelineState = pipelines.line, let lineBuffer, linePrimitiveCount > 0 {
+            encoder.setRenderPipelineState(linePipelineState)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
+            encoder.setVertexBuffer(lineBuffer, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: linePrimitiveCount * 6)
+        }
+
+        if let handlePipelineState = pipelines.handle, let handleBuffer, handlePrimitiveCount > 0 {
+            encoder.setRenderPipelineState(handlePipelineState)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
+            encoder.setVertexBuffer(handleBuffer, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: handlePrimitiveCount * 6)
+        }
+
+        if let anchoredRectPipelineState = pipelines.anchoredRect, let anchoredRectBuffer, anchoredRectPrimitiveCount > 0 {
+            encoder.setRenderPipelineState(anchoredRectPipelineState)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
+            encoder.setVertexBuffer(anchoredRectBuffer, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: anchoredRectPrimitiveCount * 6)
+        }
+
+        if let screenTrianglePipelineState = pipelines.screenTriangle, let screenTriangleBuffer, screenTrianglePrimitiveCount > 0 {
+            encoder.setRenderPipelineState(screenTrianglePipelineState)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
+            encoder.setVertexBuffer(screenTriangleBuffer, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: screenTrianglePrimitiveCount * 3)
+        }
+
+        if let screenLinePipelineState = pipelines.screenLine, let screenLineBuffer, screenLinePrimitiveCount > 0 {
+            encoder.setRenderPipelineState(screenLinePipelineState)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
+            encoder.setVertexBuffer(screenLineBuffer, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: screenLinePrimitiveCount * 6)
+        }
+    }
+
+    /// Draws fully-opaque layer groups directly into the main pass instead of
+    /// rendering each to its own offscreen texture and compositing. Only used
+    /// when every active group's effective opacity is 1, where this is
+    /// pixel-identical to compositing (src-over is associative).
+    private func encodeInlineCompositeGroups(
+        _ batches: [HorizontalMetalCompositeBatchBuffers],
+        encoder: MTLRenderCommandEncoder,
+        pipelines: HorizontalMetalPipelines
+    ) {
+        for batch in batches {
+            if let trianglePipelineState = pipelines.triangle, let buffer = batch.triangleBuffer, batch.triangleCount > 0 {
+                encoder.setRenderPipelineState(trianglePipelineState)
+                encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
+                encoder.setVertexBuffer(buffer, offset: 0, index: 1)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: batch.triangleCount * 3)
+            }
+            if let linePipelineState = pipelines.line, let buffer = batch.lineBuffer, batch.lineCount > 0 {
+                encoder.setRenderPipelineState(linePipelineState)
+                encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
+                encoder.setVertexBuffer(buffer, offset: 0, index: 1)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: batch.lineCount * 6)
+            }
+            if let anchoredRectPipelineState = pipelines.anchoredRect, let buffer = batch.anchoredRectBuffer, batch.anchoredRectCount > 0 {
+                encoder.setRenderPipelineState(anchoredRectPipelineState)
+                encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
+                encoder.setVertexBuffer(buffer, offset: 0, index: 1)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: batch.anchoredRectCount * 6)
+            }
+        }
+    }
+
+    /// Renders each active layer group to its texture, unless the textures
+    /// already hold this frame's groups: nothing they are drawn from changed
+    /// since they were rendered (a pointer move, or another layer's change).
+    private func renderCompositeTextures(
+        _ activeBatches: [HorizontalMetalCompositeBatchBuffers],
+        commandBuffer: MTLCommandBuffer,
+        drawableSize: CGSize,
+        pipelines: HorizontalMetalPipelines
+    ) -> [HorizontalMetalCompositeTexture] {
+        guard let device,
+              !activeBatches.isEmpty,
+              let offscreenTrianglePipelineState = pipelines.offscreenTriangle,
+              let offscreenLinePipelineState = pipelines.offscreenLine,
+              let offscreenAnchoredRectPipelineState = pipelines.offscreenAnchoredRect else {
+            return []
+        }
+
+        let pixelSize = CGSize(
+            width: max(drawableSize.width.rounded(.down), 1),
+            height: max(drawableSize.height.rounded(.down), 1)
+        )
+        ensureCompositeTextures(device: device, count: activeBatches.count, size: pixelSize)
+        let signature = HorizontalMetalCompositeSignature(
+            uniforms: uniforms,
+            contentRevision: compositeContentRevision,
+            batches: activeBatches.map(ObjectIdentifier.init),
+            pixelSize: pixelSize
+        )
+        let rendersTextures = signature != renderedCompositeSignature
+        renderedCompositeSignature = signature
+
+        var result = [HorizontalMetalCompositeTexture]()
+        for (index, batch) in activeBatches.enumerated() {
+            guard compositeRenderTextures.indices.contains(index) else {
+                renderedCompositeSignature = nil
+                continue
+            }
+            let texture = compositeRenderTextures[index]
+            if rendersTextures {
+                let descriptor = MTLRenderPassDescriptor()
+                descriptor.colorAttachments[0].texture = texture
+                descriptor.colorAttachments[0].loadAction = .clear
+                descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
+                descriptor.colorAttachments[0].storeAction = .store
+
+                guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+                    renderedCompositeSignature = nil
+                    continue
+                }
+
+                if let triangleBuffer = batch.triangleBuffer, batch.triangleCount > 0 {
+                    encoder.setRenderPipelineState(offscreenTrianglePipelineState)
+                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
+                    encoder.setVertexBuffer(triangleBuffer, offset: 0, index: 1)
+                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: batch.triangleCount * 3)
+                }
+
+                if let lineBuffer = batch.lineBuffer, batch.lineCount > 0 {
+                    encoder.setRenderPipelineState(offscreenLinePipelineState)
+                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
+                    encoder.setVertexBuffer(lineBuffer, offset: 0, index: 1)
+                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: batch.lineCount * 6)
+                }
+
+                if let anchoredRectBuffer = batch.anchoredRectBuffer, batch.anchoredRectCount > 0 {
+                    encoder.setRenderPipelineState(offscreenAnchoredRectPipelineState)
+                    encoder.setVertexBytes(&uniforms, length: MemoryLayout<HorizontalMetalBackdropUniforms>.stride, index: 0)
+                    encoder.setVertexBuffer(anchoredRectBuffer, offset: 0, index: 1)
+                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: batch.anchoredRectCount * 6)
+                }
+
+                encoder.endEncoding()
+            }
+            result.append(HorizontalMetalCompositeTexture(
+                texture: texture,
+                opacity: batch.opacity,
+                ignoresLayerOpacity: currentLayerOpacityExemptCompositeGroups.contains(batch.group)
+            ))
+        }
+        if rendersTextures {
+            compositeTextureRenders += 1
+        }
+
+        return result
+    }
+
+    private func ensureCompositeTextures(device: MTLDevice, count: Int, size: CGSize) {
+        guard currentCompositeTextureSize != size || compositeRenderTextures.count < count else {
+            return
+        }
+
+        currentCompositeTextureSize = size
+        compositeRenderTextures = (0..<count).compactMap { _ in
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .bgra8Unorm,
+                width: Int(size.width),
+                height: Int(size.height),
+                mipmapped: false
+            )
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .private
+            return device.makeTexture(descriptor: descriptor)
+        }
+    }
+
+    func updateUniforms(frame: HorizontalMetalCanvasFrame) {
+        uniforms.viewportSize = max(frame.viewportSize, SIMD2<Float>(1, 1))
+        uniforms.backingScale = max(frame.backingScale, 1)
+
+        let bounds = frame.bounds
+        let fitInsets = frame.fitInsets
+        let viewport = frame.viewport
+        var effectiveSpacing = currentGrid?.spacing ?? .zero
+        let fitScale = Self.fitScale(bounds: bounds, drawableSize: uniforms.viewportSize, fitInsets: fitInsets)
+        let scale = Double(fitScale * Float(max(viewport.zoom, 0.01)))
+        while effectiveSpacing.x > 0,
+              effectiveSpacing.y > 0,
+              (effectiveSpacing.x * scale < 20 || effectiveSpacing.y * scale < 20) {
+            effectiveSpacing = effectiveSpacing * 2
+        }
+
+        uniforms.boundsMin = SIMD2(Float(bounds.minX), Float(bounds.minY))
+        uniforms.boundsMax = SIMD2(Float(bounds.maxX), Float(bounds.maxY))
+        uniforms.pan = SIMD2(Float(viewport.pan.width), Float(viewport.pan.height))
+        uniforms.zoom = Float(max(viewport.zoom, 0.01))
+        uniforms.mirrored = viewport.mirrored ? 1 : 0
+        uniforms.fitInsets = SIMD4(
+            Float(fitInsets.top),
+            Float(fitInsets.leading),
+            Float(fitInsets.bottom),
+            Float(fitInsets.trailing)
+        )
+        uniforms.gridSpacing = SIMD2(Float(effectiveSpacing.x), Float(effectiveSpacing.y))
+        uniforms.gridOrigin = SIMD2(Float(currentGrid?.origin.x ?? 0), Float(currentGrid?.origin.y ?? 0))
+        uniforms.backgroundColor = Self.rgba(currentBackgroundColor)
+        uniforms.gridColor = Self.rgba(currentGridColor)
+        uniforms.minimumLineWidth = max(currentMinimumLineWidth, 0)
+        uniforms.gridLineWidth = max(currentGridLineWidth, 0)
+        uniforms.minimumScreenSpacing = 20
+        uniforms.markSize = 5
+        uniforms.showGrid = currentGrid == nil || effectiveSpacing.x <= 0 || effectiveSpacing.y <= 0 ? 0 : 1
+        uniforms.showOrigin = currentShowsOriginMark ? 1 : 0
+        uniforms.originColor = Self.rgba(currentOriginMarkColor)
+    }
+
+    private static func fitScale(
+        bounds: HorizontalRect,
+        drawableSize: SIMD2<Float>,
+        fitInsets: HorizontalCanvasInsets
+    ) -> Float {
+        guard !bounds.isEmpty else {
+            return 1
+        }
+        let availableWidth = max(drawableSize.x - Float(fitInsets.leading + fitInsets.trailing), 1)
+        let availableHeight = max(drawableSize.y - Float(fitInsets.top + fitInsets.bottom), 1)
+        return min(availableWidth / Float(bounds.width), availableHeight / Float(bounds.height))
+    }
+
+    private static func rgba(_ color: Color) -> SIMD4<Float> {
+        #if canImport(AppKit)
+        let nsColor = NSColor(color)
+        let rgba = nsColor.usingColorSpace(.deviceRGB) ?? nsColor.usingColorSpace(.sRGB) ?? .black
+        return SIMD4(
+            Float(rgba.redComponent),
+            Float(rgba.greenComponent),
+            Float(rgba.blueComponent),
+            Float(rgba.alphaComponent)
+        )
+        #elseif canImport(UIKit)
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        UIColor(color).getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return SIMD4(Float(red), Float(green), Float(blue), Float(alpha))
+        #endif
+    }
+}
+
+/// The pipeline states a canvas's renderer draws its layers with, built once
+/// per renderer from the shared library.
+@MainActor
+final class HorizontalMetalPipelines {
+    let backdrop: MTLRenderPipelineState?
+    /// The backdrop blended over the layers below it, for a layer above the
+    /// bottom one that draws a background, grid or origin mark of its own.
+    let blendedBackdrop: MTLRenderPipelineState?
+    let triangle: MTLRenderPipelineState?
+    let line: MTLRenderPipelineState?
+    let handle: MTLRenderPipelineState?
+    let anchoredRect: MTLRenderPipelineState?
+    let screenTriangle: MTLRenderPipelineState?
+    let screenLine: MTLRenderPipelineState?
+    let offscreenTriangle: MTLRenderPipelineState?
+    let offscreenLine: MTLRenderPipelineState?
+    let offscreenAnchoredRect: MTLRenderPipelineState?
+    let textureComposite: MTLRenderPipelineState?
+
+    init(device: MTLDevice, sampleCount: Int) {
+        backdrop = Self.makeBackdropPipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount, blended: false)
+        blendedBackdrop = Self.makeBackdropPipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount, blended: true)
+        triangle = Self.makeTrianglePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount)
+        line = Self.makeLinePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount)
+        handle = Self.makeHandlePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount)
+        anchoredRect = Self.makeAnchoredRectPipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount)
+        screenTriangle = Self.makeScreenTrianglePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount)
+        screenLine = Self.makeScreenLinePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount)
+        offscreenTriangle = Self.makeTrianglePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: 1)
+        offscreenLine = Self.makeLinePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: 1)
+        offscreenAnchoredRect = Self.makeAnchoredRectPipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: 1)
+        textureComposite = Self.makeTextureCompositePipelineState(device: device, pixelFormat: .bgra8Unorm, sampleCount: sampleCount)
+    }
+
+    private static func makeTrianglePipelineState(
+        device: MTLDevice,
+        pixelFormat: MTLPixelFormat,
+        sampleCount: Int
+    ) -> MTLRenderPipelineState? {
+        guard let library = HorizontalMetalLibraryCache.library(for: device) else {
+            return nil
+        }
+        do {
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.vertexFunction = library.makeFunction(name: "horizon_triangle_vertex")
+            descriptor.fragmentFunction = library.makeFunction(name: "horizon_triangle_fragment")
+            descriptor.rasterSampleCount = sampleCount
+            let attachment = descriptor.colorAttachments[0]
+            attachment?.pixelFormat = pixelFormat
+            attachment?.isBlendingEnabled = true
+            attachment?.sourceRGBBlendFactor = .sourceAlpha
+            attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
+            attachment?.sourceAlphaBlendFactor = .one
+            attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            NSLog("Horizontal Metal triangle pipeline failed: \(error)")
+            return nil
+        }
+    }
+
+    private static func makeBackdropPipelineState(
+        device: MTLDevice,
+        pixelFormat: MTLPixelFormat,
+        sampleCount: Int,
+        blended: Bool
+    ) -> MTLRenderPipelineState? {
+        guard let library = HorizontalMetalLibraryCache.library(for: device) else {
+            return nil
+        }
+        do {
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.vertexFunction = library.makeFunction(name: "horizon_backdrop_vertex")
+            descriptor.fragmentFunction = library.makeFunction(name: "horizon_backdrop_fragment")
+            descriptor.rasterSampleCount = sampleCount
+            let attachment = descriptor.colorAttachments[0]
+            attachment?.pixelFormat = pixelFormat
+            if blended {
+                attachment?.isBlendingEnabled = true
+                attachment?.sourceRGBBlendFactor = .sourceAlpha
+                attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
+                attachment?.sourceAlphaBlendFactor = .one
+                attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            }
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            NSLog("Horizontal Metal backdrop pipeline failed: \(error)")
+            return nil
+        }
+    }
+
+    private static func makeLinePipelineState(
+        device: MTLDevice,
+        pixelFormat: MTLPixelFormat,
+        sampleCount: Int
+    ) -> MTLRenderPipelineState? {
+        guard let library = HorizontalMetalLibraryCache.library(for: device) else {
+            return nil
+        }
+        do {
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.vertexFunction = library.makeFunction(name: "horizon_line_vertex")
+            descriptor.fragmentFunction = library.makeFunction(name: "horizon_line_fragment")
+            descriptor.rasterSampleCount = sampleCount
+            let attachment = descriptor.colorAttachments[0]
+            attachment?.pixelFormat = pixelFormat
+            attachment?.isBlendingEnabled = true
+            attachment?.sourceRGBBlendFactor = .sourceAlpha
+            attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
+            attachment?.sourceAlphaBlendFactor = .one
+            attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            NSLog("Horizontal Metal line pipeline failed: \(error)")
+            return nil
+        }
+    }
+
+    private static func makeHandlePipelineState(
+        device: MTLDevice,
+        pixelFormat: MTLPixelFormat,
+        sampleCount: Int
+    ) -> MTLRenderPipelineState? {
+        guard let library = HorizontalMetalLibraryCache.library(for: device) else {
+            return nil
+        }
+        do {
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.vertexFunction = library.makeFunction(name: "horizon_handle_vertex")
+            descriptor.fragmentFunction = library.makeFunction(name: "horizon_handle_fragment")
+            descriptor.rasterSampleCount = sampleCount
+            let attachment = descriptor.colorAttachments[0]
+            attachment?.pixelFormat = pixelFormat
+            attachment?.isBlendingEnabled = true
+            attachment?.sourceRGBBlendFactor = .sourceAlpha
+            attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
+            attachment?.sourceAlphaBlendFactor = .one
+            attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            NSLog("Horizontal Metal handle pipeline failed: \(error)")
+            return nil
+        }
+    }
+
+    private static func makeAnchoredRectPipelineState(
+        device: MTLDevice,
+        pixelFormat: MTLPixelFormat,
+        sampleCount: Int
+    ) -> MTLRenderPipelineState? {
+        guard let library = HorizontalMetalLibraryCache.library(for: device) else {
+            return nil
+        }
+        do {
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.vertexFunction = library.makeFunction(name: "horizon_anchored_rect_vertex")
+            descriptor.fragmentFunction = library.makeFunction(name: "horizon_triangle_fragment")
+            descriptor.rasterSampleCount = sampleCount
+            let attachment = descriptor.colorAttachments[0]
+            attachment?.pixelFormat = pixelFormat
+            attachment?.isBlendingEnabled = true
+            attachment?.sourceRGBBlendFactor = .sourceAlpha
+            attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
+            attachment?.sourceAlphaBlendFactor = .one
+            attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            NSLog("Horizontal Metal anchored-rect pipeline failed: \(error)")
+            return nil
+        }
+    }
+
+    private static func makeScreenTrianglePipelineState(
+        device: MTLDevice,
+        pixelFormat: MTLPixelFormat,
+        sampleCount: Int
+    ) -> MTLRenderPipelineState? {
+        guard let library = HorizontalMetalLibraryCache.library(for: device) else {
+            return nil
+        }
+        do {
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.vertexFunction = library.makeFunction(name: "horizon_screen_triangle_vertex")
+            descriptor.fragmentFunction = library.makeFunction(name: "horizon_triangle_fragment")
+            descriptor.rasterSampleCount = sampleCount
+            let attachment = descriptor.colorAttachments[0]
+            attachment?.pixelFormat = pixelFormat
+            attachment?.isBlendingEnabled = true
+            attachment?.sourceRGBBlendFactor = .sourceAlpha
+            attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
+            attachment?.sourceAlphaBlendFactor = .one
+            attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            NSLog("Horizontal Metal screen-triangle pipeline failed: \(error)")
+            return nil
+        }
+    }
+
+    private static func makeScreenLinePipelineState(
+        device: MTLDevice,
+        pixelFormat: MTLPixelFormat,
+        sampleCount: Int
+    ) -> MTLRenderPipelineState? {
+        guard let library = HorizontalMetalLibraryCache.library(for: device) else {
+            return nil
+        }
+        do {
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.vertexFunction = library.makeFunction(name: "horizon_screen_line_vertex")
+            descriptor.fragmentFunction = library.makeFunction(name: "horizon_line_fragment")
+            descriptor.rasterSampleCount = sampleCount
+            let attachment = descriptor.colorAttachments[0]
+            attachment?.pixelFormat = pixelFormat
+            attachment?.isBlendingEnabled = true
+            attachment?.sourceRGBBlendFactor = .sourceAlpha
+            attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
+            attachment?.sourceAlphaBlendFactor = .one
+            attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            NSLog("Horizontal Metal screen-line pipeline failed: \(error)")
+            return nil
+        }
+    }
+
+    private static func makeTextureCompositePipelineState(
+        device: MTLDevice,
+        pixelFormat: MTLPixelFormat,
+        sampleCount: Int
+    ) -> MTLRenderPipelineState? {
+        guard let library = HorizontalMetalLibraryCache.library(for: device) else {
+            return nil
+        }
+        do {
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.vertexFunction = library.makeFunction(name: "horizon_texture_vertex")
+            descriptor.fragmentFunction = library.makeFunction(name: "horizon_texture_fragment")
+            descriptor.rasterSampleCount = sampleCount
+            let attachment = descriptor.colorAttachments[0]
+            attachment?.pixelFormat = pixelFormat
+            attachment?.isBlendingEnabled = true
+            attachment?.sourceRGBBlendFactor = .one
+            attachment?.destinationRGBBlendFactor = .oneMinusSourceAlpha
+            attachment?.sourceAlphaBlendFactor = .one
+            attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            NSLog("Horizontal Metal texture-composite pipeline failed: \(error)")
+            return nil
+        }
+    }
+}
+
+/// Hands the cursor's layer to the canvas's Metal view from outside the
+/// canvas body. The canvas holds it as `@State` without observing it, as it
+/// holds `HorizontalCursorInput`, so a pointer move re-renders only
+/// `CursorReadoutLayer`, whose feed submits the crosshair and readout box
+/// here; the view's renderer takes them as its top layer and draws.
+@MainActor
+final class HorizontalMetalCanvasLiveLayer {
+    private weak var renderer: HorizontalMetalBackdropView.Renderer?
+    private weak var view: MTKView?
+    private var content: HorizontalMetalCanvasLayerContent?
+
+    func attach(renderer: HorizontalMetalBackdropView.Renderer, view: MTKView) {
+        guard self.renderer !== renderer || self.view !== view else {
+            return
+        }
+        self.renderer = renderer
+        self.view = view
+        if renderer.updateLiveLayer(content) {
+            renderer.requestDraw(in: view)
+        }
+    }
+
+    func submit(_ content: HorizontalMetalCanvasLayerContent?) {
+        self.content = content
+        guard let renderer, let view, renderer.updateLiveLayer(content) else {
+            return
+        }
+        renderer.requestDraw(in: view)
+    }
+}
+
+/// Submits a layer to a `HorizontalMetalCanvasLiveLayer` from inside a
+/// view's body: a view with nothing to show, whose update is where SwiftUI
+/// hands it the layer's new content.
+struct HorizontalMetalCanvasLiveLayerFeed {
+    var liveLayer: HorizontalMetalCanvasLiveLayer
+    var content: HorizontalMetalCanvasLayerContent?
+}
+
+#if os(macOS)
+extension HorizontalMetalCanvasLiveLayerFeed: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        liveLayer.submit(content)
+    }
+}
+#elseif os(iOS)
+extension HorizontalMetalCanvasLiveLayerFeed: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        liveLayer.submit(content)
     }
 }
 #endif
@@ -1733,7 +2066,7 @@ final class HorizontalCanvasViewportDriver {
     }
 }
 
-private struct HorizontalMetalBackdropUniforms {
+private struct HorizontalMetalBackdropUniforms: Equatable {
     var viewportSize = SIMD2<Float>(1, 1)
     var boundsMin = SIMD2<Float>(0, 0)
     var boundsMax = SIMD2<Float>(1, 1)
@@ -2107,6 +2440,16 @@ private struct HorizontalMetalPlacementStep: Equatable {
             primitives[index].center = apply(to: primitives[index].center)
         }
     }
+}
+
+/// What a layer's composite textures are drawn from: the uniforms (pan,
+/// zoom and the rest), the layer-group buffers, which groups are active, and
+/// the drawable's size. While it holds, the textures need no rendering.
+private struct HorizontalMetalCompositeSignature: Equatable {
+    var uniforms: HorizontalMetalBackdropUniforms
+    var contentRevision: Int
+    var batches: [ObjectIdentifier]
+    var pixelSize: CGSize
 }
 
 private struct HorizontalMetalCompositeTexture {
