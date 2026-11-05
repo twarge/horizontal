@@ -1232,7 +1232,9 @@ final class HorizontalAppearanceSettings: ObservableObject {
     private static let clipSilkscreenDefaultsKey = "fabrication.clipSilkscreenToSolderMask"
     private static let silkscreenMaskClearanceDefaultsKey = "fabrication.silkscreenMaskClearanceMM"
     private static let defaultBoardSceneBackgroundColor = HorizontalDefaultTheme.background
-    private static let defaultBoardSceneSubstrateColor = Color(red: 0.18, green: 0.34, blue: 0.18)
+    // #BCC486. Only a colour someone picks is stored, so this reaches everyone
+    // who never chose one.
+    private static let defaultBoardSceneSubstrateColor = Color(red: 188 / 255, green: 196 / 255, blue: 134 / 255)
     private static let defaultBoardSceneSolderMaskColor = Color(red: 0.05, green: 0.33, blue: 0.12)
     private static let defaultBoardSceneSilkscreenColor = Color(red: 0.92, green: 0.92, blue: 0.88)
     private static let defaultBoardSceneCopperColor = Color(red: 0.72, green: 0.45, blue: 0.2)
