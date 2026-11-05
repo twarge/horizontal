@@ -131,21 +131,18 @@ struct GridControlsPanel: View {
                         GridDimensionField(
                             title: "X",
                             value: rectSpacingXBinding,
-                            range: HorizontalGridSettings.minimumSpacing...HorizontalGridSettings.maximumSpacing,
-                            step: 10_000
+                            range: HorizontalGridSettings.minimumSpacing...HorizontalGridSettings.maximumSpacing
                         )
                         GridDimensionField(
                             title: "Y",
                             value: rectSpacingYBinding,
-                            range: HorizontalGridSettings.minimumSpacing...HorizontalGridSettings.maximumSpacing,
-                            step: 10_000
+                            range: HorizontalGridSettings.minimumSpacing...HorizontalGridSettings.maximumSpacing
                         )
                     } else {
                         GridDimensionField(
                             title: "Size",
                             value: squareSpacingBinding,
-                            range: HorizontalGridSettings.minimumSpacing...HorizontalGridSettings.maximumSpacing,
-                            step: 10_000
+                            range: HorizontalGridSettings.minimumSpacing...HorizontalGridSettings.maximumSpacing
                         )
                     }
                 }
@@ -154,14 +151,12 @@ struct GridControlsPanel: View {
                     GridDimensionField(
                         title: "X0",
                         value: originXBinding,
-                        range: HorizontalGridSettings.minimumOrigin...HorizontalGridSettings.maximumOrigin,
-                        step: 100_000
+                        range: HorizontalGridSettings.minimumOrigin...HorizontalGridSettings.maximumOrigin
                     )
                     GridDimensionField(
                         title: "Y0",
                         value: originYBinding,
-                        range: HorizontalGridSettings.minimumOrigin...HorizontalGridSettings.maximumOrigin,
-                        step: 100_000
+                        range: HorizontalGridSettings.minimumOrigin...HorizontalGridSettings.maximumOrigin
                     )
                     Button("Reset Origin") {
                         var draft = grid
@@ -180,7 +175,6 @@ struct GridDimensionField: View {
     var title: String
     @Binding var value: Double
     var range: ClosedRange<Double>
-    var step: Double
 
     private var millimeterBinding: Binding<Double> {
         Binding {
@@ -188,10 +182,6 @@ struct GridDimensionField: View {
         } set: { newValue in
             value = (newValue * 1_000_000).clamped(to: range)
         }
-    }
-
-    private var millimeterRange: ClosedRange<Double> {
-        (range.lowerBound / 1_000_000)...(range.upperBound / 1_000_000)
     }
 
     var body: some View {
@@ -207,13 +197,6 @@ struct GridDimensionField: View {
             .frame(width: 88)
             Text("mm")
                 .foregroundStyle(.secondary)
-            Stepper(
-                title,
-                value: millimeterBinding,
-                in: millimeterRange,
-                step: step / 1_000_000
-            )
-            .labelsHidden()
         }
     }
 }
@@ -1436,8 +1419,6 @@ struct BoardStackupDimensionField: View {
             .frame(width: 86)
             Text("mm")
                 .foregroundStyle(.secondary)
-            Stepper(title, value: $value, in: 0...10, step: 0.001)
-                .labelsHidden()
         }
         .controlSize(.small)
     }
