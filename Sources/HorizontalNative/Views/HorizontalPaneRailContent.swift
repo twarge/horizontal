@@ -1784,9 +1784,9 @@ struct BoardLayerControls: View {
                 }
 
                 Picker("Layer Mode", selection: $displayOptions.layerMode) {
-                    Text("As is").tag("as_is")
-                    Text("Current only").tag("current_only")
-                    Text("Current and adjacent").tag("current_adjacent")
+                    ForEach(HorizontalBoardLayerMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
                 }
             }
             .padding(.horizontal, 12)

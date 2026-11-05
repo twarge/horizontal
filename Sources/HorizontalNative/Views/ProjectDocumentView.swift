@@ -3717,13 +3717,15 @@ struct ProjectWorkspaceView: View {
     }
 
     /// Board options with the working layer stamped in, so the layer selected in
-    /// the layer list renders even when its eye is off. Derived per hand-off
-    /// rather than stored, which keeps the selection in one place
+    /// the layer list renders even when its eye is off, and the board's copper,
+    /// which the layer mode finds the working layer's neighbours in. Derived per
+    /// hand-off rather than stored, which keeps the selection in one place
     /// (`boardDrawingLayer`) instead of two that could disagree.
     private var boardCanvasDisplayOptions: BoardDisplayOptions {
         var options = boardDisplayOptions
         options.selectedLayer = boardDrawingLayer
         options.soloLayer = soloedBoardLayer
+        options.copperStack = project.board?.copperStack
         return options
     }
 
