@@ -244,6 +244,17 @@ final class HorizontalRouteRulesTests: XCTestCase {
         XCTAssertEqual(rule.id, "made")
         XCTAssertEqual(rule.clearance(.via, .track), 180_000)
         XCTAssertEqual(rule.clearance(.track, .track), 100_000)
+        // A rule Horizontal adds keeps 0.025 mm beyond, where Horizon's
+        // fallback, and a file that leaves it out, keep 0.05 mm.
+        XCTAssertEqual(rule.routingOffset, 25_000)
+
+        let other = try XCTUnwrap(HorizontalRouteRuleEditing.applying(
+            .copperOtherClearance(ruleID: nil, copper: .track, nonCopper: .boardEdge, 300_000), to: [:],
+            copperLayers: [top], newRuleID: { "o" }))
+        let otherRule = HorizontalBoardRules(rules: other, netDetails: [:]).clearanceCopperOther(net: "a", layer: top)
+        XCTAssertEqual(otherRule.id, "o")
+        XCTAssertEqual(otherRule.clearance(copper: .track, nonCopper: .boardEdge), 300_000)
+        XCTAssertEqual(otherRule.routingOffset, 25_000)
 
         let keepout = try XCTUnwrap(HorizontalRouteRuleEditing.applying(
             .keepoutClearance(ruleID: nil, keepoutClass: "shield", copper: .track, 400_000), to: [:],
@@ -252,6 +263,7 @@ final class HorizontalRouteRulesTests: XCTestCase {
             .clearanceCopperKeepout(net: "a", keepoutClass: "shield")
         XCTAssertEqual(keepoutRule.id, "k")
         XCTAssertEqual(keepoutRule.clearance(.track), 400_000)
+        XCTAssertEqual(keepoutRule.routingOffset, 25_000)
         XCTAssertEqual(HorizontalBoardRules(rules: keepout, netDetails: [:])
             .clearanceCopperKeepout(net: "a", keepoutClass: "other").id, "", "the rule takes keepouts of its class")
     }
