@@ -1349,8 +1349,9 @@ struct ProjectWorkspaceView: View {
         case .selection:
             SelectionSidebarView(
                 sections: selectionSidebarSections,
-                netSegmentSelection: schematicNetSegmentSelection,
+                netSegmentSelection: visiblePanes.contains(.schematic) ? schematicNetSegmentSelection : nil,
                 routeInspector: routeInspector,
+                showsRoute: visiblePanes.contains(.board),
                 toolSettings: boardToolSettings,
                 safeAreaInsets: safeAreaInsets,
                 foregroundColor: .primary,
@@ -1778,12 +1779,13 @@ struct ProjectWorkspaceView: View {
         }
         #endif
         live.visibleBounds = { pane in
-            canvasCommandActionsByPane[pane]?.visibleWorldBounds?()
+            visiblePanes.contains(pane) ? canvasCommandActionsByPane[pane]?.visibleWorldBounds?() : nil
         }
         live.drawnAirwires = {
             visiblePanes.contains(.board) ? canvasCommandActionsByPane[.board]?.drawnAirwires?() : nil
         }
         live.frame = { pane, rect in
+            let wasVisible = visiblePanes.contains(pane)
             visiblePanes.insert(pane)
             if pane == .threeD {
                 // The 3D pane has no world rectangle to frame; it has a
@@ -1793,6 +1795,16 @@ struct ProjectWorkspaceView: View {
                         framing: rect, board: board, current: threeDCameraState,
                         projection: boardDisplayOptions.threeDProjection
                     )
+                }
+                return
+            }
+            guard wasVisible else {
+                // A hidden pane's canvas, mounted or not, has no size to
+                // frame in: frame once it has come up and laid out, the same
+                // wait zoom_to gives a sheet swap.
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(250))
+                    canvasCommandActionsByPane[pane]?.frameWorldRect?(rect)
                 }
                 return
             }
@@ -2211,8 +2223,16 @@ struct ProjectWorkspaceView: View {
         let panes = HorizontalPane.allCases.filter { visiblePanes.contains($0) }
 
         // The leading pane runs under the navigator sidebar; its minimum
-        // counts only what shows beside it.
-        ResizablePaneSplitView(panes: panes, sizeFractions: $paneSizeFractions, leadingInset: safeAreaInsets.leading) { pane, isLeadingPane in
+        // counts only what shows beside it. The schematic and the board stay
+        // mounted once shown, so Tab between them doesn't load the other
+        // each time; what reads a pane's canvas reads it only while the pane
+        // is visible.
+        ResizablePaneSplitView(
+            panes: panes,
+            sizeFractions: $paneSizeFractions,
+            leadingInset: safeAreaInsets.leading,
+            keepsMounted: Set(HorizontalPane.allCases.filter(\.staysMountedWhenHidden))
+        ) { pane, isLeadingPane in
             paneView(
                 pane,
                 fitSafeAreaInsets: paneFitSafeAreaInsets(
@@ -2939,12 +2959,13 @@ struct ProjectWorkspaceView: View {
         var selectionDetails = details
         selectionDetails.hovered = nil
         // A selection pushed into this pane from another view (104) updates
-        // its inspector but leaves the keyboard where the user is working.
+        // its inspector but leaves the keyboard where the user is working,
+        // as does one a hidden pane's canvas reports, kept mounted.
         let pushed = crossProbedPanes.remove(pane) != nil
 
         if selectionDetails.hasSelection {
             selectionDetailsByPane[pane] = selectionDetails
-            if !pushed {
+            if !pushed, visiblePanes.contains(pane) {
                 activeCanvasCommandPane = pane
             }
         } else {
@@ -2955,7 +2976,8 @@ struct ProjectWorkspaceView: View {
     private func setCanvasCommandActions(_ actions: HorizontalCanvasCommandActions?, for pane: HorizontalPane) {
         if let actions {
             canvasCommandActionsByPane[pane] = actions
-            if activeCanvasCommandPane == nil || activeCanvasCommandPane.map({ !visiblePanes.contains($0) }) == true {
+            if visiblePanes.contains(pane),
+               activeCanvasCommandPane == nil || activeCanvasCommandPane.map({ !visiblePanes.contains($0) }) == true {
                 activeCanvasCommandPane = pane
             }
         } else {
@@ -3023,13 +3045,20 @@ struct ProjectWorkspaceView: View {
         selectionPropertyChangeCommands[pane] = HorizontalSelectionPropertyChangeCommand(change: change)
     }
 
+    /// A hidden pane's selection and canvas commands go, except a pane's that
+    /// stays mounted: its canvas keeps them, and shown again has no reason to
+    /// report them anew. What reads them (the selection sidebar, the Edit
+    /// menu, the live channel) reads the visible panes' alone.
     private func clearSelectionDetailsForHiddenPanes(_ panes: Set<HorizontalPane>) {
         for pane in HorizontalPane.allCases where !panes.contains(pane) {
+            // Its rail is gone from under the pointer, whether or not the
+            // hover's end was seen.
+            panesWithPointerInsideToolbar.remove(pane)
+            guard !pane.staysMountedWhenHidden else {
+                continue
+            }
             selectionDetailsByPane.removeValue(forKey: pane)
             canvasCommandActionsByPane.removeValue(forKey: pane)
-        }
-        if !panes.contains(.schematic) {
-            schematicNetSegmentSelection = nil
         }
         if let activeCanvasCommandPane,
            !panes.contains(activeCanvasCommandPane) {
@@ -3072,8 +3101,10 @@ struct ProjectWorkspaceView: View {
     /// component selected, and framed as `zoom_to` frames one, 20 mm about
     /// its symbol and a margin. Another sheet swaps the canvas, which drops
     /// its selection, so selecting and framing wait for it, as `zoom_to`
-    /// waits.
+    /// waits; so does a hidden schematic, which has no size to frame in
+    /// until it is shown.
     private func showComponent(_ componentID: String, at position: HorizontalPoint, on sheet: ProjectNavigatorSelection) {
+        let wasVisible = visiblePanes.contains(.schematic)
         visiblePanes.insert(.schematic)
         let rect = HorizontalRect(center: position, size: 26_000_000)
         let changesSheet = navigatorSelection != sheet
@@ -3082,7 +3113,7 @@ struct ProjectWorkspaceView: View {
             selectComponents([componentID])
             canvasCommandActionsByPane[.schematic]?.frameWorldRect?(rect)
         }
-        if changesSheet {
+        if changesSheet || !wasVisible {
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(250))
                 reveal()
@@ -5853,6 +5884,9 @@ private struct SelectionSidebarView: View {
     var sections: [SelectionSidebarSection]
     var netSegmentSelection: HorizontalNetSegmentSelectionSidebarState?
     @ObservedObject var routeInspector: HorizontalRouteInspectorModel
+    /// The board is visible. Hidden, its canvas stays mounted and keeps its
+    /// track tool, whose route isn't shown until the board is again.
+    var showsRoute = true
     var toolSettings: HorizontalBoardToolSettings
     var safeAreaInsets: EdgeInsets
     var foregroundColor: Color
@@ -5862,10 +5896,14 @@ private struct SelectionSidebarView: View {
     var onNetSegmentSelectionCommand: (HorizontalNetSegmentSelectionCommand) -> Void
     var onRouteInspectorCommand: (HorizontalRouteInspectorCommand) -> Void
 
+    private var isRouting: Bool {
+        showsRoute && routeInspector.isRouting
+    }
+
     var body: some View {
         ScrollViewReader { scrollProxy in
             List {
-                if routeInspector.isRouting {
+                if isRouting {
                     Section("Track Route") {
                         HorizontalRouteInspectorView(
                             model: routeInspector,
@@ -5877,7 +5915,7 @@ private struct SelectionSidebarView: View {
                     }
                 }
                 if sections.isEmpty && netSegmentSelection == nil {
-                    if !routeInspector.isRouting {
+                    if !isRouting {
                         Section("Selection") {
                             Label("No selection", systemImage: "scope")
                                 .font(.body)

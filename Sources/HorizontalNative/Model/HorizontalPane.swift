@@ -61,6 +61,17 @@ enum HorizontalPane: String, CaseIterable, Codable, Identifiable {
         }
     }
 
+    /// A pane the macOS workspace keeps mounted once it has been shown: the
+    /// schematic and the board, the two Tab goes between. Hidden, one stays
+    /// in the split at no width, so showing it again finds its canvas as it
+    /// was left, scenes, view and selection, instead of building it again.
+    var staysMountedWhenHidden: Bool {
+        switch self {
+        case .schematic, .board: true
+        case .parts, .library, .threeD: false
+        }
+    }
+
     /// The panes open after Tab on `self` goes to `tabCounterpart`: as they
     /// are when it is open too, since Tab then only moves the keyboard;
     /// otherwise with it in this one's place, beside the rest.

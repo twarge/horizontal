@@ -140,6 +140,21 @@ final class CanvasTabSwitchesPaneTests: XCTestCase {
         XCTAssertEqual(state.switches, 2)
     }
 
+    /// A canvas with no area is one kept mounted in a hidden pane: it takes
+    /// no key, though its pane had the keyboard when it was hidden.
+    func testACanvasWithNoAreaTakesNoKeys() async throws {
+        let state = State()
+        let (window, key) = try await mount(Schematic(state: state, sheet: sheet(), switchesPanes: true).frame(width: 0), state)
+        defer { window.close() }
+        state.actions?.selectComponents?(["component"])
+        let selected = await settle { state.actions?.canMoveSelection == true }
+        XCTAssertTrue(selected)
+        XCTAssertFalse(try key(48, "\t"))
+        XCTAssertEqual(state.switches, 0)
+        XCTAssertFalse(try key(126, "\u{f700}"), "No move starts")
+        XCTAssertFalse(state.actions?.canCommitInteraction == true)
+    }
+
     func testTabIsLeftToTheWindowWhereThereIsNoPaneToSwitchTo() async throws {
         let state = State()
         let (window, key) = try await mount(Schematic(state: state, sheet: sheet(), switchesPanes: false), state)
