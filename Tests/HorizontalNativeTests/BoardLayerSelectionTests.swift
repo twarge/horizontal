@@ -187,6 +187,29 @@ final class BoardLayerSelectionTests: XCTestCase {
         }
     }
 
+    /// Every side's view, placement, silkscreen and routing, shows that
+    /// side's notes and not the other side's.
+    func testSideViewsShowTheirSidesNotes() {
+        let top = HorizontalBoardLayers.topNotes
+        let bottom = HorizontalBoardLayers.bottomNotes
+        let presets: [(HorizontalBoardLayerPreset, shown: Int, hidden: Int)] = [
+            (.topPlacement, top, bottom),
+            (.topSilkscreen, top, bottom),
+            (.topRouting, top, bottom),
+            (.topView, top, bottom),
+            (.bottomPlacement, bottom, top),
+            (.bottomSilkscreen, bottom, top),
+            (.bottomRouting, bottom, top),
+            (.bottomView, bottom, top),
+        ]
+        for (preset, shown, hidden) in presets {
+            var options = BoardDisplayOptions()
+            options.applyLayerPreset(preset)
+            XCTAssertTrue(options.isLayerVisible(shown), "\(preset.rawValue) shows \(HorizontalBoardLayers.name(for: shown))")
+            XCTAssertFalse(options.isLayerVisible(hidden), "\(preset.rawValue) hides \(HorizontalBoardLayers.name(for: hidden))")
+        }
+    }
+
     /// The solder masks start as outlines and every other layer filled; a
     /// switch set back to its layer's default leaves no override behind.
     func testSolderMasksDefaultToOutlines() {
@@ -376,12 +399,16 @@ final class BoardLayerSelectionTests: XCTestCase {
         }
     }
 
-    /// A routing view is its side's copper and the outline, nothing else.
-    func testRoutingViewsShowTheirCopperAndTheOutline() {
+    /// A routing view is its side's copper and notes and the outline, nothing
+    /// else.
+    func testRoutingViewsShowTheirCopperNotesAndTheOutline() {
         var options = BoardDisplayOptions()
         options.bottomRoutingView()
         let shown = HorizontalBoardLayers.all.filter { options.isLayerVisible($0) }
-        XCTAssertEqual(Set(shown), [HorizontalBoardLayers.bottomCopper, HorizontalBoardLayers.outline])
+        XCTAssertEqual(
+            Set(shown),
+            [HorizontalBoardLayers.bottomCopper, HorizontalBoardLayers.bottomNotes, HorizontalBoardLayers.outline]
+        )
     }
 
     /// A board opens on the top placement view, whatever view the file saved,
