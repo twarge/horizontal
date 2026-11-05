@@ -95,6 +95,7 @@ struct HorizontalCanvasCommandActions {
     var canHighlightNet: Bool
     var canSelectAll: Bool
     var canSelectNet: Bool = false
+    var canSelectMore: Bool = false
     var canCopySelection: Bool = false
     var canPasteSelection: Bool = false
     var canDuplicateSelection: Bool = false
@@ -392,6 +393,19 @@ struct HorizontalViewCommands: Commands {
                 canvasCommandActions?.dispatch(.selectNet)
             }
             .disabled(canvasCommandActions?.canSelectNet != true)
+
+            // + and = reach these through the board canvas, for the same
+            // reason: a menu shortcut with no ⌘ would take them from every
+            // text field.
+            Button("Select More") {
+                canvasCommandActions?.dispatch(.selectMore(stopsAtVias: false))
+            }
+            .disabled(canvasCommandActions?.canSelectMore != true)
+
+            Button("Select More (Stop at Vias)") {
+                canvasCommandActions?.dispatch(.selectMore(stopsAtVias: true))
+            }
+            .disabled(canvasCommandActions?.canSelectMore != true)
 
             Divider()
             // ⌘C/⌘V/⌘D are handled by the canvas key monitor (so they beat the

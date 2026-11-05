@@ -67,6 +67,10 @@ enum HorizontalBoardLayerViewPreset: Hashable {
 enum HorizontalCanvasCommand {
     case selectAll
     case selectNet
+    /// Board: the run of track the selection is part of, out to its pads
+    /// (Horizon's Select More, +, which a double-click on a track runs); with
+    /// `stopsAtVias`, out to its vias too (Select More (stop at vias), =).
+    case selectMore(stopsAtVias: Bool)
     case copySelection
     case pasteSelection
     case duplicateSelection
@@ -3268,6 +3272,7 @@ struct HorizontalMultitouchView: UIViewRepresentable {
         private static func keyEvent(from key: UIKey) -> HorizontalCanvasKeyEvent {
             HorizontalCanvasKeyEvent(
                 characters: key.charactersIgnoringModifiers,
+                typedCharacters: key.characters,
                 key: keyEquivalent(for: key.keyCode),
                 modifiers: HorizontalCanvasInputModifiers(
                     command: key.modifierFlags.contains(.command),
@@ -4333,6 +4338,7 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
         private func keyEvent(from event: NSEvent) -> HorizontalCanvasKeyEvent {
             HorizontalCanvasKeyEvent(
                 characters: event.charactersIgnoringModifiers,
+                typedCharacters: event.characters,
                 keyCode: event.keyCode,
                 key: arrowKeyEquivalent(for: event.specialKey),
                 modifiers: inputModifiers(from: event.modifierFlags)
