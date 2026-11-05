@@ -77,8 +77,6 @@ struct HorizontalLengthTuningView: View {
                 .multilineTextAlignment(.trailing)
                 .frame(width: 56)
                 .labelsHidden()
-            Stepper("Velocity factor", value: velocityPercent, in: 22...100, step: 1)
-                .labelsHidden()
             Text("%")
             Text("εr:")
                 .padding(.leading, 8)
@@ -86,8 +84,6 @@ struct HorizontalLengthTuningView: View {
             TextField("εr", value: permittivity, format: .number.precision(.fractionLength(2)))
                 .multilineTextAlignment(.trailing)
                 .frame(width: 56)
-                .labelsHidden()
-            Stepper("εr", value: permittivity, in: HorizontalLengthTuning.relativePermittivityRange, step: 0.1)
                 .labelsHidden()
             Spacer(minLength: 0)
             // Horizon's header bar Clear: empties the list.
