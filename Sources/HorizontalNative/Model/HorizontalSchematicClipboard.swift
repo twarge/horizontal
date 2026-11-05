@@ -220,14 +220,17 @@ enum HorizontalSchematicClipboardEditor {
                 nets[id] = net
             }
         }
+        // A pasted primary keeps its pair when its partner was pasted with it,
+        // as Horizon's paste does; otherwise it is in none, and Horizon writes
+        // no `diffpair` for a net in none.
         for id in Set(ids.values) where destinationNets[id] == nil {
-            if var net = nets[id] {
-                if let pair = net.string("diffpair"), let mapped = ids[pair.lowercased()] {
+            if var net = nets[id], let pair = net.string("diffpair") {
+                if let mapped = ids[pair.lowercased()] {
                     net["diffpair"] = mapped
                 } else {
-                    net["diffpair"] = HorizontalProjectArchive.nullUUID
-                    net["diffpair_primary"] = false
+                    net.removeValue(forKey: "diffpair")
                 }
+                net.removeValue(forKey: "diffpair_primary")
                 nets[id] = net
             }
         }

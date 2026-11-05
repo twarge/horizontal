@@ -111,6 +111,15 @@ struct HorizontalSelectionDetailGroup: Identifiable, Equatable {
     var title: String
     var pluralTitle: String
     var items: [HorizontalSelectionDetailItem]
+    /// Readings of the selected objects of the type together, under the
+    /// group's heading: Horizon's HUD for several tracks, their total length
+    /// and spacing.
+    var summary: [HorizontalSelectionHUDDetail] = []
+    /// Buttons acting on all of them, under the summary. Each sends a
+    /// property change with its id for every selected object of the type,
+    /// whether or not the document is locked: Measure and Measure All add
+    /// tracks to the Length Tuning window.
+    var actions: [HorizontalSelectionPropertyOption] = []
 
     var id: HorizontalObjectType { type }
 }
@@ -358,6 +367,13 @@ struct HorizontalSelectionPopoverView: View {
                     .font(groupTitleFont)
                 Spacer()
                 objectSelector(group, currentItem: item)
+            }
+
+            if !group.summary.isEmpty {
+                detailsGrid(group.summary)
+            }
+            if !group.actions.isEmpty {
+                groupActions(group, item: item)
             }
 
             if showsItemTitle(item, in: group) {
@@ -789,6 +805,26 @@ struct HorizontalSelectionPopoverView: View {
                     ? "Disabled because only one \(group.title.lowercased()) is selected"
                     : "Apply changes to all selected \(group.pluralTitle.lowercased())"
             )
+    }
+
+    /// The group's own buttons, which act on every selected object of its
+    /// type rather than the one shown.
+    private func groupActions(_ group: HorizontalSelectionDetailGroup, item: HorizontalSelectionDetailItem) -> some View {
+        HStack(spacing: 6) {
+            ForEach(group.actions) { action in
+                Button(action.title) {
+                    onChange(HorizontalSelectionPropertyChange(
+                        ref: item.ref,
+                        type: group.type,
+                        propertyID: action.id,
+                        value: .bool(true),
+                        applyToAll: true
+                    ))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(chrome == .sidebar ? .small : .mini)
+            }
+        }
     }
 
     /// The button of a row carrying an `actionID`, e.g. a custom value's

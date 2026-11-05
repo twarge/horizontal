@@ -3558,7 +3558,7 @@ struct HorizontalSchematic {
                 powerSymbolNameVisible: item.value.bool("power_symbol_name_visible") ?? true
             )
         }
-        let netDetails = json.dictionaryMap("nets").reduce(into: [String: HorizontalNetDetails]()) { result, item in
+        var netDetails = json.dictionaryMap("nets").reduce(into: [String: HorizontalNetDetails]()) { result, item in
             let netID = normalizedID(item.key)
             let netClassID = item.value.string("net_class").map(normalizedID)
             result[netID] = HorizontalNetDetails(
@@ -3573,6 +3573,8 @@ struct HorizontalSchematic {
                 powerSymbolNameVisible: item.value.bool("power_symbol_name_visible") ?? true
             )
         }
+        // A pair's nets are drawn in the Diff Pair colour, as Horizon draws them.
+        HorizontalDiffpairs.annotate(&netDetails, nets: json.dictionaryMap("nets"))
         let buses = json.dictionaryMap("buses").reduce(into: [String: SchematicBusInfo]()) { result, item in
             let members = item.value.dictionaryMap("members").reduce(into: [String: SchematicBusMemberInfo]()) { result, item in
                 result[normalizedID(item.key)] = SchematicBusMemberInfo(

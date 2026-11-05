@@ -52,6 +52,22 @@ private struct HorizontalBoardRulesActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
 
+/// The Design menu's diff pair and length tuning commands: Horizon's Set
+/// Diff Pair and Clear Diff Pair for the nets selected, its Length Tuning
+/// window, and Measure Track and Measure All Tracks for the tracks selected.
+/// A command that can't act on the selection is nil.
+struct HorizontalLengthTuningActions {
+    var showWindow: () -> Void
+    /// Measure Tracks (false) or Measure All Tracks (true).
+    var measure: ((Bool) -> Void)?
+    var setDiffpair: (() -> Void)?
+    var clearDiffpair: (() -> Void)?
+}
+
+private struct HorizontalLengthTuningActionsKey: FocusedValueKey {
+    typealias Value = HorizontalLengthTuningActions
+}
+
 /// Capabilities of the currently-focused canvas (board or schematic) for menu
 /// items that mirror the canvas's keyboard shortcuts. Each closure is a no-op
 /// when not applicable to the focused canvas.
@@ -245,6 +261,11 @@ extension FocusedValues {
         set { self[HorizontalBoardRulesActionKey.self] = newValue }
     }
 
+    var horizonLengthTuningActions: HorizontalLengthTuningActions? {
+        get { self[HorizontalLengthTuningActionsKey.self] }
+        set { self[HorizontalLengthTuningActionsKey.self] = newValue }
+    }
+
     var horizonCanvasCommandActions: HorizontalCanvasCommandActions? {
         get { self[HorizontalCanvasCommandActionsKey.self] }
         set { self[HorizontalCanvasCommandActionsKey.self] = newValue }
@@ -299,6 +320,7 @@ struct HorizontalViewCommands: Commands {
     @FocusedValue(\.horizonLeaveBlockAction) private var leaveBlockAction
     @FocusedValue(\.horizonClearAllPlanesAction) private var clearAllPlanesAction
     @FocusedValue(\.horizonBoardRulesAction) private var boardRulesAction
+    @FocusedValue(\.horizonLengthTuningActions) private var lengthTuningActions
     @FocusedValue(\.horizonCanvasCommandActions) private var canvasCommandActions
     @FocusedValue(\.horizonBoardAvailable) private var boardAvailable
     @FocusedValue(\.horizonReadOnlyOperation) private var readOnlyOperation
@@ -635,7 +657,35 @@ struct HorizontalViewCommands: Commands {
                     canvasCommandActions?.dispatch(.showToolSettings)
                 }
                 .disabled(canvasCommandActions?.canShowToolSettings != true)
+
+                Divider()
+                // Horizon's Set Diff Pair pairs the two nets selected, and its
+                // Clear Diff Pair the one; the inspector's Diff pair row picks
+                // a partner for one.
+                Button("Set Diff Pair") {
+                    lengthTuningActions?.setDiffpair?()
+                }
+                .disabled(lengthTuningActions?.setDiffpair == nil)
+                Button("Clear Diff Pair") {
+                    lengthTuningActions?.clearDiffpair?()
+                }
+                .disabled(lengthTuningActions?.clearDiffpair == nil)
             }
+            // Measuring reads the board and writes nothing, so it stays when
+            // the document is locked.
+            Divider()
+            Button("Length Tuning…") {
+                lengthTuningActions?.showWindow()
+            }
+            .disabled(lengthTuningActions == nil)
+            Button("Measure Tracks") {
+                lengthTuningActions?.measure?(false)
+            }
+            .disabled(lengthTuningActions?.measure == nil)
+            Button("Measure All Tracks") {
+                lengthTuningActions?.measure?(true)
+            }
+            .disabled(lengthTuningActions?.measure == nil)
             Divider()
             Button("Filter Airwires…") {
                 canvasCommandActions?.dispatch(.filterAirwires)

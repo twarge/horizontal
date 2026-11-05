@@ -75,13 +75,13 @@ enum HorizontalDispatchMethods {
             params: ["handle": "Project handle.", "refdes": "Reference designator, e.g. U1.", "id": "Component uuid (alternative to refdes)."],
             handler: getComponent
         ),
-        .init(name: "list_nets", summary: "Every net with class, flags, and pin count.", params: ["handle": "Project handle."], handler: { session, params in
+        .init(name: "list_nets", summary: "Every net with class, flags, pin count, routed length, and its diff pair partner if it has one.", params: ["handle": "Project handle."], handler: { session, params in
             let entry = try session.entry(for: params)
             return entry.index.sortedNets.map { netJSON($0, entry: entry, full: false) }
         }),
         .init(
             name: "get_net",
-            summary: "One net in full: its pins and board routing counts.",
+            summary: "One net in full: its pins, board routing counts and routed length, and its diff pair partner if it has one.",
             params: ["handle": "Project handle.", "name": "Net name.", "id": "Net uuid (alternative to name)."],
             handler: getNet
         ),
@@ -2332,9 +2332,17 @@ enum HorizontalDispatchMethods {
         if !net.ports.isEmpty {
             json["port_count"] = net.ports.count
         }
+        // Horizon's Diff pair property: the partner, and which side this is.
+        if let partner = net.diffpairID {
+            json["diffpair"] = ["net": entry.index.net(id: partner)?.name ?? "", "id": partner,
+                                "primary": net.isDiffpairPrimary] as JSONDictionary
+        }
         if let board = entry.project.board {
             json["track_count"] = board.tracks.filter { $0.netID?.lowercased() == net.id }.count
             json["airwire_count"] = board.airwires.filter { $0.netID?.lowercased() == net.id }.count
+            // Every track on it, arcs along their circles: what the Length
+            // Tuning window measures a net's all tracks as.
+            json["routed_length_mm"] = HorizontalDispatchJSON.mm(HorizontalTrackLength.routedLength(ofNet: net.id, in: board.tracks))
         }
         guard full else {
             return json

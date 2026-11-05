@@ -3429,7 +3429,7 @@ struct HorizontalBoard {
             result[componentID] = componentInfo
         }
         let netClassNames = parseNetClassNames(from: json.dictionaryMap("net_classes"))
-        let netDetails = json.dictionaryMap("nets").reduce(into: [String: HorizontalNetDetails]()) { result, item in
+        var netDetails = json.dictionaryMap("nets").reduce(into: [String: HorizontalNetDetails]()) { result, item in
             let netID = normalizedID(item.key)
             let netClassID = item.value.string("net_class").map(normalizedID)
             result[netID] = HorizontalNetDetails(
@@ -3443,6 +3443,8 @@ struct HorizontalBoard {
                 powerSymbolStyle: item.value.string("power_symbol_style")
             )
         }
+        // Each net's partner: the board routes and tunes a pair together.
+        HorizontalDiffpairs.annotate(&netDetails, nets: json.dictionaryMap("nets"))
 
         return BoardBlockMetadata(
             components: components,

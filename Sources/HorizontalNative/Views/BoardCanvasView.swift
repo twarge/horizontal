@@ -501,6 +501,13 @@ struct BoardCanvasView: View {
     /// every plane on its current board.
     var onUpdateAllPlanes: () -> Void = {}
     var onNetClassChange: (String, String?) -> Void = { _, _ in }
+    /// Where the inspector's Diff pair row sends Set and Clear Diff Pair, for
+    /// the nets it can edit; nil leaves the row read-only.
+    var onEditDiffpair: HorizontalDiffpairEditing? = nil
+    /// Horizon's Measure Track and Measure All Tracks: the selected tracks,
+    /// by id, to the Length Tuning window, with whether to measure all of
+    /// their nets' tracks. Nil where the host has no window.
+    var onMeasureTracks: ((Set<String>, Bool) -> Void)? = nil
     var onComponentRefdesChange: (String, String) -> Void = { _, _ in }
     var onSelectionDetailsChange: (HorizontalSelectionDetailState) -> Void = { _ in }
     var onCanvasCommandActionsChange: (HorizontalCanvasCommandActions?) -> Void = { _ in }
@@ -667,6 +674,8 @@ struct BoardCanvasView: View {
         onPlaneEdit: @escaping (HorizontalBoard, String) -> Void = { _, _ in },
         onUpdateAllPlanes: @escaping () -> Void = {},
         onNetClassChange: @escaping (String, String?) -> Void = { _, _ in },
+        onEditDiffpair: HorizontalDiffpairEditing? = nil,
+        onMeasureTracks: ((Set<String>, Bool) -> Void)? = nil,
         onComponentRefdesChange: @escaping (String, String) -> Void = { _, _ in },
         onSelectionDetailsChange: @escaping (HorizontalSelectionDetailState) -> Void = { _ in },
         onCanvasCommandActionsChange: @escaping (HorizontalCanvasCommandActions?) -> Void = { _ in },
@@ -715,6 +724,8 @@ struct BoardCanvasView: View {
         self.onPlaneEdit = onPlaneEdit
         self.onUpdateAllPlanes = onUpdateAllPlanes
         self.onNetClassChange = onNetClassChange
+        self.onEditDiffpair = onEditDiffpair
+        self.onMeasureTracks = onMeasureTracks
         self.onComponentRefdesChange = onComponentRefdesChange
         self.onSelectionDetailsChange = onSelectionDetailsChange
         self.onCanvasCommandActionsChange = onCanvasCommandActionsChange
@@ -1324,7 +1335,12 @@ struct BoardCanvasView: View {
             onSelectionDetailsChange(details)
         }
         .onChange(of: selectionPropertyChangeCommand?.id) { _, _ in
-            if !isReadOnly, let selectionPropertyChangeCommand {
+            guard let selectionPropertyChangeCommand else { return }
+            // Measuring changes nothing, so a locked board measures too.
+            if measureTracks(for: selectionPropertyChangeCommand.change) {
+                return
+            }
+            if !isReadOnly {
                 applySelectionPropertyChange(selectionPropertyChangeCommand.change)
             }
         }
@@ -1804,15 +1820,38 @@ struct BoardCanvasView: View {
             .compactMap(selectionDetailItem)
         let groups = Dictionary(grouping: items, by: { $0.ref.type })
             .map { type, items in
-                HorizontalSelectionDetailGroup(
+                var group = HorizontalSelectionDetailGroup(
                     type: type,
                     title: displayName(for: type),
                     pluralTitle: pluralDisplayName(for: type),
                     items: items
                 )
+                if type == .track {
+                    addTrackSummary(to: &group)
+                }
+                return group
             }
             .sorted { $0.title < $1.title }
         return HorizontalSelectionDetailState(hovered: nil, groups: groups)
+    }
+
+    /// Horizon's track HUD over the selected tracks as a whole: their total
+    /// length, the spacing of two parallel ones, their net's routed length
+    /// and its skew against its diff pair partner; with Measure and Measure
+    /// All, which add them to the Length Tuning window.
+    private func addTrackSummary(to group: inout HorizontalSelectionDetailGroup) {
+        let ids = Set(group.items.map { normalizedID($0.ref.id) })
+        let selected = board.tracks.filter { ids.contains(normalizedID($0.id)) }
+        guard let summary = HorizontalTrackSelectionSummary(selected: selected, board: board.tracks, netDetails: board.netDetails) else {
+            return
+        }
+        group.summary = summary.details(
+            layerName: { layerName(for: $0) },
+            netName: { netDisplayName($0) ?? shortID($0) }
+        )
+        if onMeasureTracks != nil {
+            group.actions = HorizontalTrackSelectionSummary.measureActions
+        }
     }
 
     private var selectedNetID: String? {
@@ -2383,6 +2422,7 @@ struct BoardCanvasView: View {
                 readOnlyProperty("padType", "Pad type", pad.metadata["Pad type"]),
                 readOnlyProperty("net", "Net", netDisplayName(pad.netID)),
                 editableNetClassProperty(for: pad.netID),
+                diffpairProperty(for: pad.netID),
                 editableLayerProperty("layer", "Layer", pad.layer, copperOnly: true),
             ].compactMap { $0 }
         case .boardPackage:
@@ -2462,6 +2502,9 @@ struct BoardCanvasView: View {
         }
         if includesNetClass, let netClass = editableNetClassProperty(for: segment.netID) {
             properties.append(netClass)
+        }
+        if includesNetClass, let diffpair = diffpairProperty(for: segment.netID) {
+            properties.append(diffpair)
         }
         if let radius = segment.arc?.radius,
            let radiusProperty = readOnlyProperty("radius", "Radius", lengthString(radius)) {
@@ -2585,6 +2628,16 @@ struct BoardCanvasView: View {
         HorizontalSelectionProperty(id: id, label: label, editor: .choice(options), value: .choice(value))
     }
 
+    /// Horizon's Diffpair property, a choice of partner for a net the host
+    /// can pair (`HorizontalDiffpairProperty`).
+    private func diffpairProperty(for netID: String?) -> HorizontalSelectionProperty? {
+        guard modeProfile.mode != .package, let netID else {
+            return nil
+        }
+        let editable = !isReadOnly && onEditDiffpair?.canEdit(normalizedID(netID)) == true
+        return HorizontalDiffpairProperty.property(for: netID, in: board.netDetails, editable: editable)
+    }
+
     private func editableNetClassProperty(for netID: String?) -> HorizontalSelectionProperty? {
         guard let netID else {
             return nil
@@ -2640,6 +2693,7 @@ struct BoardCanvasView: View {
         var properties = [
             readOnlyProperty("name", "Net", netDisplayName(via.netID)),
             editableNetClassProperty(for: via.netID),
+            diffpairProperty(for: via.netID),
             readOnlyProperty("span", "Span", viaSpanName(via)),
         ].compactMap { $0 }
 
@@ -8162,8 +8216,30 @@ struct BoardCanvasView: View {
         return normalizedID(lhs) == normalizedID(rhs)
     }
 
+    /// The track group's Measure and Measure All: every selected track to
+    /// the Length Tuning window. False for any other change.
+    private func measureTracks(for change: HorizontalSelectionPropertyChange) -> Bool {
+        guard let allTracks = HorizontalTrackSelectionSummary.measuresAllTracks(change.propertyID) else {
+            return false
+        }
+        let tracks = Set(selectedObjects.filter { $0.type == .track }.map { normalizedID($0.id) })
+        if !tracks.isEmpty {
+            onMeasureTracks?(tracks, allTracks)
+        }
+        return true
+    }
+
     private func applySelectionPropertyChange(_ change: HorizontalSelectionPropertyChange) {
         guard !isReadOnly else {
+            return
+        }
+        // Set and Clear Diff Pair edit the block, through the host's
+        // project edit, which reloads the board with the pair.
+        if change.propertyID == HorizontalDiffpairProperty.id, case .choice(let partner) = change.value {
+            if let netID = netID(for: change.ref).map(normalizedID), let onEditDiffpair, onEditDiffpair.canEdit(netID),
+               let edit = HorizontalDiffpairProperty.operations(for: netID, choice: partner, in: board.netDetails) {
+                onEditDiffpair.apply(edit.ops, edit.actionName)
+            }
             return
         }
         let previousBoard = editedBoard ?? sourceBoard

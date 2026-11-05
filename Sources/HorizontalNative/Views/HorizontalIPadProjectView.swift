@@ -94,6 +94,10 @@ struct HorizontalIPadProjectView: View {
     @State private var schematicDrawNetLineCommand: HorizontalDrawNetLineCommand?
     @State private var schematicCanvasActions: HorizontalCanvasCommandActions?
     @State private var rulesSheetPresented = false
+    /// Horizon's Length Tuning list, kept while the document is open, and
+    /// the sheet that shows it.
+    @StateObject private var lengthTuning = HorizontalLengthTuningModel()
+    @State private var lengthTuningPresented = false
     /// The rule the rules sheet opens at, as the route inspector asks.
     @State private var rulesFocus: HorizontalBoardRuleFocus?
     /// Fed by the board canvas while a track is routed, and shown in the
@@ -422,6 +426,18 @@ struct HorizontalIPadProjectView: View {
             if let project {
                 boardRulesCover(for: project)
             }
+        }
+        .sheet(isPresented: $lengthTuningPresented) {
+            NavigationStack {
+                HorizontalLengthTuningView(model: lengthTuning, onDone: { lengthTuningPresented = false })
+                    .navigationTitle("Length Tuning")
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+        .onChange(of: boardEditRevision) { _, _ in
+            // The lengths follow the board, as Horizon updates its tuning
+            // window on every canvas update.
+            lengthTuning.update(board: project?.board)
         }
         .onChange(of: visiblePanes) { _, panes in
             // The schematic's "already-handled" guard (`handledPlacePartRequestID`) is
@@ -986,6 +1002,7 @@ struct HorizontalIPadProjectView: View {
                 } label: {
                     Label("Rules Results", systemImage: "checklist.checked")
                 }
+                lengthTuningButton
             }
             Divider()
             Button {
@@ -1034,6 +1051,7 @@ struct HorizontalIPadProjectView: View {
                 Label("Rules", systemImage: "checklist")
             }
             rulesResultsButton
+            lengthTuningButton
         }
         Button {
             rightPane = rightPane == .export ? nil : .export
@@ -1079,6 +1097,44 @@ struct HorizontalIPadProjectView: View {
     /// editable on iPad.
     private var isReadOnly: Bool {
         appearanceSettings.isReadOnlyOperationEnabled
+    }
+
+    /// Horizon's Length Tuning window, as a sheet.
+    private var lengthTuningButton: some View {
+        Button {
+            showLengthTuning()
+        } label: {
+            Label("Length Tuning", systemImage: "ruler")
+        }
+    }
+
+    private func showLengthTuning() {
+        lengthTuning.update(board: project?.board)
+        lengthTuningPresented = true
+    }
+
+    /// Horizon's Measure Track and Measure All Tracks, from the board
+    /// inspector: the tracks into the list, and the list up.
+    private func measureTracks(_ trackIDs: Set<String>, allTracks: Bool) {
+        lengthTuning.update(board: project?.board)
+        lengthTuning.add(trackIDs: trackIDs, allTracks: allTracks)
+        lengthTuningPresented = true
+    }
+
+    /// The board inspector's Diff pair row edits the top block's own nets;
+    /// an instance's are its block's, paired in that block's schematic.
+    private var boardDiffpairEditing: HorizontalDiffpairEditing? {
+        guard !isReadOnly, let project else {
+            return nil
+        }
+        let flattened = project.flattenedBlock
+        return HorizontalDiffpairEditing(
+            canEdit: { netID in
+                guard let flattened, flattened.isHierarchical else { return true }
+                return flattened.netPaths[netID.lowercased()]?.contains { $0.count == 1 } ?? false
+            },
+            apply: { ops, actionName in applyProjectEdit(ops, actionName: actionName) }
+        )
     }
 
     private var readOnlyLockButton: some View {
@@ -1632,6 +1688,8 @@ struct HorizontalIPadProjectView: View {
                     onBoardChange: { applyEditedBoard($0) },
                     onPlaneEdit: { applyBoardPlaneEdit($0, actionName: $1) },
                     onUpdateAllPlanes: updateAllBoardPlanes,
+                    onEditDiffpair: boardDiffpairEditing,
+                    onMeasureTracks: { measureTracks($0, allTracks: $1) },
                     onSelectionDetailsChange: { setSelectionDetails($0, for: .board) },
                     onCanvasCommandActionsChange: { boardCanvasActions = $0 },
                     selectionPropertyChangeCommand: selectionPropertyChangeCommands[.board],
