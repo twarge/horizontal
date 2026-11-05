@@ -3047,20 +3047,22 @@ struct ProjectWorkspaceView: View {
         selectedNetIDs = netIDs
     }
 
-    /// One selection for every view. A canvas reports what was selected in
-    /// it, a click in the 3D view or the live channel asks for a set, and
-    /// either way the other canvases are told; a canvas already showing that
-    /// selection ignores the request, which is what stops the round trip.
-    /// `origin` is the canvas the selection was made in, if any: every other
-    /// canvas it changes is marked, so its report doesn't take the focus.
+    /// The workspace's component selection, the last one made: what the 3D
+    /// view, the navigator and the live channel show. `origin` is the canvas
+    /// it was made in, if any, and a canvas keeps its selection to itself,
+    /// so a part picked on the board is not selected in the schematic or the
+    /// other way round. A click in the 3D view, Find, the Parts pane or the
+    /// live channel (no `origin`) selects in both canvases; a canvas already
+    /// showing the set ignores it, and every one it changes is marked, so its
+    /// report doesn't take the focus.
     private func selectComponents(_ componentIDs: Set<String>, from origin: HorizontalPane? = nil,
                                   keepingHighlight: Bool = false) {
         if componentIDs != selectedComponentIDs, !keepingHighlight {
             highlightedComponentIDs.removeAll()
         }
         selectedComponentIDs = componentIDs
-        for pane in [HorizontalPane.board, .schematic] {
-            if canvasCommandActionsByPane[pane]?.selectComponents?(componentIDs) == true, pane != origin {
+        for pane in HorizontalPane.componentSelectionTargets(from: origin) {
+            if canvasCommandActionsByPane[pane]?.selectComponents?(componentIDs) == true {
                 crossProbedPanes.insert(pane)
             }
         }
@@ -3114,11 +3116,12 @@ struct ProjectWorkspaceView: View {
         highlightSelectedComponents(componentIDs)
     }
 
-    /// A schematic page change drops the page's selection, but a highlight
-    /// is by net and component, so it follows onto the next page.
+    /// A schematic page change drops the page's selection, and only the
+    /// schematic's, but a highlight is by net and component, so it follows
+    /// onto the next page.
     private func clearSelectionKeepingHighlight() {
         selectedNetIDs = []
-        selectComponents([], keepingHighlight: true)
+        selectComponents([], from: .schematic, keepingHighlight: true)
     }
 
     private func highlightSelectedNet() {

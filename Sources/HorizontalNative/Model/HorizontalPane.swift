@@ -49,6 +49,18 @@ enum HorizontalPane: String, CaseIterable, Codable, Identifiable {
         }
     }
 
+    /// The canvases a component selection made in `origin` is put into. A
+    /// canvas keeps its own to itself: a part picked on the board is not
+    /// selected in the schematic, nor one picked in the schematic on the
+    /// board. One made anywhere else (`nil`) — a click in the 3D view, Find,
+    /// the Parts pane, `select` from the live channel — lands in both.
+    static func componentSelectionTargets(from origin: HorizontalPane?) -> [HorizontalPane] {
+        switch origin {
+        case .schematic, .board: []
+        case .parts, .library, .threeD, nil: [.board, .schematic]
+        }
+    }
+
     /// The panes open after Tab on `self` goes to `tabCounterpart`: as they
     /// are when it is open too, since Tab then only moves the keyboard;
     /// otherwise with it in this one's place, beside the rest.
