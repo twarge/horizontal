@@ -8,9 +8,6 @@ import SwiftUI
 struct HorizontalRulesResultsSidebarView: View {
     var result: HorizontalBoardRulesResultState?
     var safeAreaInsets: EdgeInsets
-    /// Applies every rule to the board and runs every check again, as the
-    /// rules window's Apply & Check does.
-    var onRunChecks: () -> Void = {}
     /// Opens the board's rules window.
     var onOpenRules: () -> Void = {}
     /// Shows where a clearance finding is on the board.
@@ -26,14 +23,12 @@ struct HorizontalRulesResultsSidebarView: View {
         List {
             Section {
                 if let result {
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(result.ruleTitle)
-                                .fontWeight(.semibold)
-                            Text(result.checkedAt, format: .dateTime.month().day().hour().minute().second())
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                    // The checks run again on every change, so there is no
+                    // run to ask for and no time to give: only the spinner
+                    // while one is under way.
+                    HStack {
+                        Text(result.ruleTitle)
+                            .fontWeight(.semibold)
                         Spacer()
                         if result.isCheckingClearance || result.isCheckingSchematic {
                             ProgressView()
@@ -42,12 +37,6 @@ struct HorizontalRulesResultsSidebarView: View {
                                       ? "Checking the board's copper against the clearance rules"
                                       : "Checking the schematic's connectivity")
                         }
-                        Button(action: onRunChecks) {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Apply the rules and run every check again")
-                        .accessibilityLabel("Apply & Check")
                     }
                     .padding(.vertical, 4)
                 } else {

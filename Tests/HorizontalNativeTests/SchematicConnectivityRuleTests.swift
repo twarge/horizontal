@@ -256,7 +256,7 @@ final class RuleViolationMarkerTests: XCTestCase {
     }
 
     func testNoIssuesWaitsForTheSchematicCheckAndItsErrorsMakeTheBadgeRed() {
-        var state = HorizontalBoardRulesResultState(ruleTitle: "Design Rules", messages: [], checkedAt: Date(), clearanceFindings: [])
+        var state = HorizontalBoardRulesResultState(ruleTitle: "Design Rules", messages: [], clearanceFindings: [])
         XCTAssertFalse(state.hasNoIssues, "the schematic is not checked yet")
         state.schematicFindings = []
         XCTAssertTrue(state.hasNoIssues)

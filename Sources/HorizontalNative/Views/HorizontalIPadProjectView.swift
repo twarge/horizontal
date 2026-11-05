@@ -726,7 +726,6 @@ struct HorizontalIPadProjectView: View {
             HorizontalRulesResultsSidebarView(
                 result: rulesResultsState,
                 safeAreaInsets: EdgeInsets(),
-                onRunChecks: { checkAndApplyBoardRules() },
                 onOpenRules: {
                     rulesFocus = nil
                     rulesSheetPresented = true
@@ -2242,7 +2241,6 @@ struct HorizontalIPadProjectView: View {
         rulesResultsState = HorizontalBoardRulesResultState(
             ruleTitle: "Design Rules",
             messages: HorizontalBoardRulesValidator.validateAll(rules: rules, context: context),
-            checkedAt: Date(),
             clearanceFindings: rulesResultsState?.clearanceFindings,
             schematicFindings: rulesResultsState?.schematicFindings
         )
@@ -2272,7 +2270,6 @@ struct HorizontalIPadProjectView: View {
             }
             rulesResultsState?.schematicFindings = findings
             rulesResultsState?.isCheckingSchematic = false
-            rulesResultsState?.checkedAt = Date()
             schematicCheckTask = nil
         }
     }
@@ -2297,7 +2294,6 @@ struct HorizontalIPadProjectView: View {
             }
             rulesResultsState?.clearanceFindings = findings
             rulesResultsState?.isCheckingClearance = false
-            rulesResultsState?.checkedAt = Date()
             clearanceCheckTask = nil
         }
     }
