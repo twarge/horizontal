@@ -1646,7 +1646,8 @@ struct HorizontalBoard {
                     ?? padEndpointNetID(item.dictionary("to"), packagePadNetIDs: packagePadNetIDs),
                 fromJunctionID: junctionID("from"),
                 toJunctionID: junctionID("to"),
-                widthFromRules: item.bool("width_from_net_class") ?? true
+                widthFromRules: item.bool("width_from_net_class") ?? true,
+                locked: item.bool("locked") ?? false
             )
         }
     }
@@ -2921,7 +2922,8 @@ struct HorizontalBoard {
                     ?? (item.string("source").map { $0 == "rules" } ?? true),
                 parameterSet: doubleParameters(parameterSet),
                 topMaskExpansion: maskExpansions.top,
-                bottomMaskExpansion: maskExpansions.bottom
+                bottomMaskExpansion: maskExpansions.bottom,
+                locked: item.bool("locked") ?? false
             )
         }
     }

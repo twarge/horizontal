@@ -33,6 +33,16 @@ struct HorizontalFlattenedBlock: @unchecked Sendable {
     /// names, by path and component. A component the mapping leaves out
     /// keeps its own, as `Block::get_component_info` gives it.
     var instanceNoPopulate: [String: [String: Bool]] = [:]
+    /// The block each instance is of, by instance path (`/`-joined instance
+    /// uuids, however deep).
+    var instanceBlocks: [String: String] = [:]
+    /// Each instance's name, its instances' refdes top down (`I1/I3`), by
+    /// instance path: `instance_path_to_string`.
+    var instanceNames: [String: String] = [:]
+    /// Each instanced block's name, by block uuid.
+    var blockNames: [String: String] = [:]
+    /// The instances as the board sees them, made once with the rest.
+    var boardInstances = HorizontalBoardBlockInstances.empty
 
     /// Whether anything was expanded: false for a project without instances.
     var isHierarchical: Bool {
@@ -131,10 +141,18 @@ enum HorizontalBlockFlattener {
                 $0[$1.key.lowercased()] = $1.value.bool("nopopulate") ?? false
             }
         }
-        return HorizontalFlattenedBlock(json: context.flat, componentPaths: context.componentPaths,
-                                        componentBlocks: context.componentBlocks,
-                                        netPaths: netPaths, noConnectNets: noConnect, instanceRefdes: instanceRefdes,
-                                        instanceNoPopulate: instanceNoPopulate)
+        var flattened = HorizontalFlattenedBlock(
+            json: context.flat, componentPaths: context.componentPaths,
+            componentBlocks: context.componentBlocks,
+            netPaths: netPaths, noConnectNets: noConnect, instanceRefdes: instanceRefdes,
+            instanceNoPopulate: instanceNoPopulate, instanceBlocks: context.instanceBlocks,
+            instanceNames: context.instanceNames,
+            blockNames: Set(context.instanceBlocks.values).reduce(into: [String: String]()) { names, blockID in
+                names[blockID] = context.blocks[blockID]?.string("name")
+            }
+        )
+        flattened.boardInstances = HorizontalBoardBlockInstances(flattened)
+        return flattened
     }
 
     /// The project's top block flattened, from the block files under
@@ -167,6 +185,8 @@ enum HorizontalBlockFlattener {
         var noConnectPaths = Set<[String]>()
         var componentPaths = [String: [String]]()
         var componentBlocks = [String: String]()
+        var instanceBlocks = [String: String]()
+        var instanceNames = [String: String]()
 
         /// `update_net_map_for_instance`: each wired port of an instance is the
         /// net it is wired to, here; an NC port is noted.
@@ -228,6 +248,8 @@ enum HorizontalBlockFlattener {
         mutating func visit(_ block: JSONDictionary, id blockID: String, path: [String]) {
             guard path.count < HorizontalBlockFlattener.maximumDepth else { return }
             let name = pathName(path)
+            instanceBlocks[path.joined(separator: "/")] = blockID
+            instanceNames[path.joined(separator: "/")] = name
             var nets = flat["nets"] as? JSONDictionary ?? [:]
             let netClasses = flat["net_classes"] as? JSONDictionary ?? [:]
             let defaultClass = flat["net_class_default"]

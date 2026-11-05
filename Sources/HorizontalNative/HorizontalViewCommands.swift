@@ -82,6 +82,8 @@ struct HorizontalCanvasCommandActions {
     var canDrawPlane: Bool = false
     var canAddText: Bool = false
     var canFilterAirwires: Bool = false
+    var canSelectBlockInstance: Bool = false
+    var canCopyBlockLayout: Bool = false
     var canFlipTrackPosture: Bool = false
     var canEnterTrackWidth: Bool = false
     var canToggleVia: Bool = false
@@ -712,6 +714,19 @@ struct HorizontalViewCommands: Commands {
                 canvasCommandActions?.dispatch(.filterAirwires)
             }
             .disabled(canvasCommandActions?.canFilterAirwires != true)
+            // An edit of one instance of a block made in the instances laid
+            // out like it. A view setting, kept with the file's view: the file
+            // has no say in it, so it stays when the document is locked.
+            Toggle("Keep Block Instances in Sync", isOn: boardOptionBinding(\.syncsBlockInstances))
+                .disabled(boardDisplayOptions == nil)
+            Button("Select Block Instance") {
+                canvasCommandActions?.dispatch(.selectBlockInstance)
+            }
+            .disabled(canvasCommandActions?.canSelectBlockInstance != true)
+            Button("Copy Block Layout to Other Instances") {
+                canvasCommandActions?.dispatch(.copyBlockLayout)
+            }
+            .disabled(canvasCommandActions?.canCopyBlockLayout != true)
         }
 
         CommandGroup(replacing: .toolbar) {

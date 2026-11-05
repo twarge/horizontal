@@ -79,7 +79,8 @@ _projects: dict[str, Project] = {}
 _active_project: ContextVar[Project | None] = ContextVar("horizontal_project", default=None)
 _edit_options: ContextVar[dict[str, Any]] = ContextVar("horizontal_edit", default={})
 _mutations = {"apply_ops", "set_component_value", "rename_net", "connect_pin", "place_component", "copy_group_layout",
-              "import_pool_part", "update_project_parts", "clean_up_project_pool", "pool_write", "pour_planes", "autoroute"}
+              "import_pool_part", "update_project_parts", "clean_up_project_pool", "pool_write", "pour_planes", "autoroute",
+              "sync_block_layout"}
 _snapshots: dict[str, dict[str, Any]] = {}
 _jobs = AnalysisJobs()
 _tool_lock = threading.RLock()
@@ -1028,19 +1029,38 @@ def _compact_marks(rows: list[dict[str, Any]], verbose: bool) -> list[dict[str, 
 def list_block_instances(path: str | None = None, block: str | None = None) -> list[dict[str, Any]]:
     """The blocks a block uses — the top one, or the one block names: each instance, the block it stands for, its
     reference designator, which of its ports are wired to which net here, and where its symbol is drawn. This is
-    how a hierarchical design is read."""
+    how a hierarchical design is read. The top block's instances also give board: members and placed_members, the
+    instances laid out like it on the board (in_sync_with) and, for
+    each, the parts that differ (differs_from)."""
     return _resolve(path).block_instances(block)
 
 
 @_tool
 def autoroute(net: str, path: str | None = None, layer: int = 0, width_mm: float | None = None,
-              max_routes: int = 20, dry_run: bool = False) -> dict[str, Any]:
+              max_routes: int = 20, dry_run: bool = False, sync: bool = True) -> dict[str, Any]:
     """Try to route a net's airwires automatically on one layer. Best effort, and usually not enough: it walks
     around one obstacle at a time rather than searching, so on a dense board it completes a small minority and
     reports the rest. Everything it does write has been checked clear of the board's clearances; what it cannot
-    route stays an airwire, is listed in unrouted with what blocked it, and place_track draws those by hand."""
+    route stays an airwire, is listed in unrouted with what blocked it, and place_track draws those by hand. What it
+    routes in one instance of a block it routes the same in the instances laid out like it, unless sync is false."""
     return _edit_call(_resolve(path), "autoroute", net=net, layer=layer, max_routes=max_routes, dry_run=dry_run,
-                      **({"width_mm": width_mm} if width_mm is not None else {}))
+                      **({"width_mm": width_mm} if width_mm is not None else {}), **({} if sync else {"sync": False}))
+
+
+@_tool
+def sync_block_layout(source: str, targets: list[str] | None = None, path: str | None = None,
+                      dry_run: bool = False) -> dict[str, Any]:
+    """Copy Layout to Other Instances: lay out other instances of a block as one instance (source, by name such as
+    I1, or I1/S1 nested) is, each where it is: the parts go where the motion from source puts source's (the motion
+    between the two where they are laid out alike already, else the one keeping the first part both have placed,
+    else beside source), and their own copper gives way to source's, copied; copper that isn't theirs stays, and a
+    fixed part stays and is named in skipped. targets names the instances, default every other one of the block.
+    Afterwards they are laid out alike, so an edit of one's parts or copper reaches the others (list_block_instances
+    says which are, in_sync_with). dry_run previews it and gives the plan_digest a commit takes."""
+    params: dict[str, Any] = {"source": source, "dry_run": dry_run}
+    if targets is not None:
+        params["targets"] = targets
+    return _edit_call(_resolve(path), "sync_block_layout", **params)
 
 
 @_tool
@@ -1391,7 +1411,7 @@ def list_ops(path: str | None = None) -> list[dict[str, Any]]:
 
 @_tool
 def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: bool = False,
-              pool_items: list[dict[str, Any]] | None = None, block: str | None = None) -> dict[str, Any]:
+              pool_items: list[dict[str, Any]] | None = None, block: str | None = None, sync: bool = True) -> dict[str, Any]:
     """Apply edit operations. Each op is {"op": name, ...params}; see list_ops. Components and nets may be named by
     refdes or net name, or by id; an unnamed net has only that. Every op that acts on one thing names it by its own
     field (line, track, junction, …) or by id. Wherever an op takes an id — a component, net, wire, junction, symbol
@@ -1454,6 +1474,14 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
     stands for on the sheets and the board. set_export_settings changes the export settings Horizon EDA keeps
     in the project; export_settings shows them. set_sheet_frame gives a sheet a frame the project pool has, or none.
 
+    Block instances: where a block is used more than once and its instances are laid out alike on the board
+    (list_block_instances, in_sync_with), a batch's edit of one instance's parts — moved, turned, flipped, placed or
+    unplaced — and of its own copper — tracks, vias and junctions that join only its pads — is made the same in the
+    others, through the motion between them; the reply's synced says which and what, and names fixed parts and
+    locked copper it left in skipped. An instance moved as a whole moves nothing else. A batch that changes two
+    instances in ways that disagree is refused, naming them. sync: false edits each instance on its own;
+    sync_block_layout lays instances out alike to begin with.
+
     Symbols: set_custom_value gives a drawn symbol text its $VALUE draws instead of the value, as Horizon's Edit
     Custom Value does: "${value}\\n${mpn}" shows the value over the MPN; ${mfr}, ${desc}, ${pkg} and ${p:<column>}
     work too, and "" or null clears it.
@@ -1469,7 +1497,7 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
     if not ops and (dry_run or not _edit_options.get().get("plan_digest")):
         raise ValueError("Pass ops, or commit a dry run by its plan_digest alone.")
     encoded = None if not ops else [op.model_dump(exclude_unset=True, by_alias=True) if isinstance(op, BaseModel) else op for op in ops]
-    return _edit(_resolve(path), encoded, dry_run=dry_run, pool_items=pool_items, block=block)
+    return _edit(_resolve(path), encoded, dry_run=dry_run, pool_items=pool_items, block=block, sync=None if sync else False)
 
 
 @_tool

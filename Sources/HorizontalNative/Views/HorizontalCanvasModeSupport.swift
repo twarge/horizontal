@@ -269,6 +269,9 @@ struct HorizontalCanvasCommandHandlerSet {
     var tuneTrack: (() -> Void)? = nil
     var editText: (() -> Void)? = nil
     var filterAirwires: (() -> Void)? = nil
+    var toggleInstanceOnly: (() -> Void)? = nil
+    var selectBlockInstance: (() -> Void)? = nil
+    var copyBlockLayout: (() -> Void)? = nil
     var openDatasheet: (() -> Void)? = nil
     /// Smash (true) or unsmash (false) the selection.
     var setSmashed: ((Bool) -> Void)? = nil
@@ -446,6 +449,15 @@ struct HorizontalCanvasCommandHandlerSet {
             editText?()
         case .filterAirwires:
             filterAirwires?()
+        case .toggleInstanceOnly:
+            guard !isReadOnly else { return }
+            toggleInstanceOnly?()
+        case .selectBlockInstance:
+            guard !hasInteraction else { return }
+            selectBlockInstance?()
+        case .copyBlockLayout:
+            guard !isReadOnly, !hasInteraction else { return }
+            copyBlockLayout?()
         case .openDatasheet:
             openDatasheet?()
         case .smash, .unsmash:
@@ -576,6 +588,8 @@ struct HorizontalCanvasCommandHandlerSet {
             canDrawPlane: writable && drawPlane != nil,
             canAddText: writable && addText != nil,
             canFilterAirwires: filterAirwires != nil,
+            canSelectBlockInstance: selectBlockInstance != nil,
+            canCopyBlockLayout: writable && copyBlockLayout != nil,
             canFlipTrackPosture: writable && flipTrackPosture != nil,
             canEnterTrackWidth: writable && enterTrackWidth != nil,
             canToggleVia: writable && toggleVia != nil,

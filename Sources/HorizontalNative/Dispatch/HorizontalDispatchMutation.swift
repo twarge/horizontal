@@ -11,8 +11,11 @@ enum HorizontalDispatchMutation {
 
     /// `byDigestAlone` is for apply and pool_write, whose ops or items a
     /// commit may leave out; every other edit is matched by its request.
+    /// `syncsBlockInstances` is for the edits that keep block instances laid
+    /// out alike (`HorizontalDispatchBlockSync`): apply and autoroute.
     static func execute(session: HorizontalDispatchSession, entry: HorizontalDispatchProjectEntry,
-                        params: JSONDictionary, byDigestAlone: Bool = false, beforeCommit: () throws -> Void = {},
+                        params: JSONDictionary, byDigestAlone: Bool = false, syncsBlockInstances: Bool = false,
+                        beforeCommit: () throws -> Void = {},
                         build: (HorizontalArchiveFileStore) throws -> JSONDictionary) throws -> JSONDictionary {
         let dryRun = params.bool("dry_run") ?? false
         let operationID = params.string("operation_id")
@@ -39,7 +42,8 @@ enum HorizontalDispatchMutation {
         do {
             let result = try perform(session: session, entry: entry, params: params, transaction: transaction,
                                      payloadHash: payloadHash, dryRun: dryRun, operationID: operationID,
-                                     byDigestAlone: byDigestAlone, beforeCommit: beforeCommit, build: build)
+                                     byDigestAlone: byDigestAlone, syncsBlockInstances: syncsBlockInstances,
+                                     beforeCommit: beforeCommit, build: build)
             if let operationID { entry.failedOperations.removeValue(forKey: operationID) }
             return shaped(result, params)
         } catch {
@@ -141,7 +145,7 @@ enum HorizontalDispatchMutation {
 
     private static func perform(session: HorizontalDispatchSession, entry: HorizontalDispatchProjectEntry, params: JSONDictionary,
                                 transaction: HorizontalProjectTransaction?, payloadHash: String, dryRun: Bool, operationID: String?,
-                                byDigestAlone: Bool, beforeCommit: () throws -> Void,
+                                byDigestAlone: Bool, syncsBlockInstances: Bool, beforeCommit: () throws -> Void,
                                 build: (HorizontalArchiveFileStore) throws -> JSONDictionary) throws -> JSONDictionary {
         var timing = JSONDictionary()
         var clock = Date()
@@ -223,6 +227,13 @@ enum HorizontalDispatchMutation {
             let store = HorizontalArchiveFileStore(archive: snapshot.archive, baseURL: entry.project.baseURL)
             result = try build(store)
             lap("edit_ms")
+            // The batch made in the block instances laid out like the ones it
+            // changed, before anything is loaded or kept, so a dry run shows
+            // it and its commit writes it.
+            if syncsBlockInstances, let synced = try HorizontalDispatchBlockSync.run(store: store, entry: entry, params: params) {
+                result["synced"] = synced
+                lap("sync_ms")
+            }
             let built = HorizontalDispatchSnapshot(archive: store.archive, baseURL: entry.project.baseURL)
             // Loading the edited project is most of a dry run's time (about a
             // second on a large board), so it is skipped where the answer is
@@ -271,7 +282,9 @@ enum HorizontalDispatchMutation {
         // A file the edit removed (a pool cleanup) is changed too.
         let removed = snapshot.files.filter { after.archive.regularFileData(relativePath: $0) == nil }
         let changed = (after.files.filter { after.archive.regularFileData(relativePath: $0) != snapshot.archive.regularFileData(relativePath: $0) } + removed).sorted()
-        let plan: JSONDictionary = ["revision": entry.revision, "ops": result["normalized_ops"] ?? params["ops"] ?? [], "pool_items": params["pool_items"] ?? params["items"] ?? []]
+        var plan: JSONDictionary = ["revision": entry.revision, "ops": result["normalized_ops"] ?? params["ops"] ?? [], "pool_items": params["pool_items"] ?? params["items"] ?? []]
+        // A batch that leaves the other block instances alone is another plan.
+        if params.bool("sync") == false { plan["sync"] = false }
         let planDigest = try reused?.digest
             ?? HorizontalProjectTransaction.digest(try JSONSerialization.data(withJSONObject: plan, options: [.sortedKeys]))
         if let expected = params.string("plan_digest"), expected != planDigest {

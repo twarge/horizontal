@@ -475,6 +475,9 @@ struct HorizontalIPadProjectView: View {
         .onChange(of: boardDisplayOptions.hiddenAirwireNetIDs) { _, _ in
             scheduleViewStateSave()
         }
+        .onChange(of: boardDisplayOptions.syncsBlockInstances) { _, _ in
+            scheduleViewStateSave()
+        }
         .onDisappear {
             viewStateSaveTask?.cancel()
             viewStateSaveTask = nil
@@ -1006,6 +1009,11 @@ struct HorizontalIPadProjectView: View {
                     Label("Rules Results", systemImage: "checklist.checked")
                 }
                 lengthTuningButton
+                if project.flattenedBlock?.boardInstances.isEmpty == false {
+                    Toggle(isOn: $boardDisplayOptions.syncsBlockInstances) {
+                        Label("Keep Block Instances in Sync", systemImage: "square.on.square")
+                    }
+                }
             }
             Divider()
             Button {
@@ -1699,6 +1707,7 @@ struct HorizontalIPadProjectView: View {
                     onUpdateAllPlanes: updateAllBoardPlanes,
                     onEditDiffpair: boardDiffpairEditing,
                     onMeasureTracks: { measureTracks($0, allTracks: $1) },
+                    blockInstances: project.flattenedBlock?.boardInstances,
                     tuningReferenceLength: lengthTuning.referenceLength,
                     onSelectionDetailsChange: { setSelectionDetails($0, for: .board) },
                     onCanvasCommandActionsChange: { boardCanvasActions = $0 },
@@ -2686,6 +2695,7 @@ struct HorizontalIPadProjectView: View {
             // Of the board's view only the airwire filter is kept here: the
             // rest opens as BoardDisplayOptions.opening gives it.
             boardDisplayOptions.hiddenAirwireNetIDs = stored.boardDisplayOptions.hiddenAirwireNetIDs
+            boardDisplayOptions.syncsBlockInstances = stored.boardDisplayOptions.syncsBlockInstances
             switch stored.rightSidebarPane {
             case .selection:
                 rightPane = .inspector
@@ -2726,6 +2736,7 @@ struct HorizontalIPadProjectView: View {
         state.showsNavigatorSidebar = navigatorPresented
         state.paneSizeFractions = paneSizeFractions.mapValues(Double.init)
         state.boardDisplayOptions.hiddenAirwireNetIDs = boardDisplayOptions.hiddenAirwireNetIDs
+        state.boardDisplayOptions.syncsBlockInstances = boardDisplayOptions.syncsBlockInstances
         switch rightPane {
         case .inspector:
             state.rightSidebarPane = .selection

@@ -1438,7 +1438,7 @@ enum HorizontalProjectJSONApplicator {
                 "width": jsonNumber(track.width),
                 "layer": track.layer ?? HorizontalBoardLayers.topCopper,
                 "width_from_net_class": track.widthFromRules,
-                "locked": false
+                "locked": track.locked
             ]
             // Curved track: the arc center is a coordinate (Horizon stores it as
             // a point, not a junction).
@@ -1590,11 +1590,20 @@ enum HorizontalProjectJSONApplicator {
                 "padstack": padstack,
                 "parameter_set": parameterSet,
                 "from_rules": via.fromRules,
-                "source": via.fromRules ? "rules" : "local",
-                "locked": false
+                "source": via.fromRules ? "rules" : (via.definitionID != nil ? "definition" : "local"),
+                "locked": via.locked
             ]
             if let netID = via.netID {
                 item["net_set"] = netID
+            }
+            // A via copied from one a definition shapes keeps taking its shape
+            // from it, and one that isn't through keeps its span, which
+            // Via::serialize writes only where it isn't through.
+            if let definitionID = via.definitionID {
+                item["definition"] = definitionID
+            }
+            if let span = via.span, !span.isThrough {
+                item["span"] = span.json
             }
             map[via.id] = item
         }

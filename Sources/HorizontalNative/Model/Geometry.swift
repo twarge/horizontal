@@ -10,6 +10,11 @@ struct HorizontalPoint: Hashable {
     var cgPoint: CGPoint {
         CGPoint(x: x, y: y)
     }
+
+    /// On whole nanometres, as a file stores a point.
+    var rounded: HorizontalPoint {
+        HorizontalPoint(x: x.rounded(), y: y.rounded())
+    }
 }
 
 struct HorizontalPlacementTransform: Hashable {
@@ -85,6 +90,41 @@ struct HorizontalPlacementTransform: Hashable {
             shift: applying(to: child.shift),
             angle: combinedAngle,
             mirrored: mirrored != child.mirrored
+        )
+    }
+
+    /// The placement that undoes this one, so `accumulated(with: inverse)` is
+    /// the identity. Undoing mirror-then-rotate is rotating back and then
+    /// mirroring, which in this mirror-first form is the same mirror with the
+    /// angle unchanged (a mirror turns a rotation round) or negated (none).
+    var inverse: HorizontalPlacementTransform {
+        let linear = HorizontalPlacementTransform(shift: .zero, angle: mirrored ? angle : -angle, mirrored: mirrored)
+        let back = linear.applying(to: shift)
+        return HorizontalPlacementTransform(shift: HorizontalPoint(x: -back.x, y: -back.y), angle: linear.angle, mirrored: mirrored)
+    }
+
+    /// Whether this moves nothing.
+    var isIdentity: Bool {
+        shift == .zero && angle == 0 && !mirrored
+    }
+
+    /// This placement with its shift on whole nanometres, as a file stores one.
+    var rounded: HorizontalPlacementTransform {
+        HorizontalPlacementTransform(shift: shift.rounded, angle: angle, mirrored: mirrored)
+    }
+
+    /// The child placement `accumulatedText` makes `text` from in this frame:
+    /// its inverse, so `accumulatedText(with: unaccumulatedText(text))` is
+    /// `text` again. Horizon draws a mirrored text at 32768 less its angle,
+    /// and places its anchor in the frame as a schematic does
+    /// (`schematicGeometry`).
+    func unaccumulatedText(_ text: HorizontalPlacementTransform) -> HorizontalPlacementTransform {
+        let childMirrored = text.mirrored != mirrored
+        let turned = text.angle - (mirrored ? -angle : angle)
+        return HorizontalPlacementTransform(
+            shift: schematicGeometry.inverse.applying(to: text.shift),
+            angle: text.mirrored ? 32_768 - turned : turned,
+            mirrored: childMirrored
         )
     }
 
@@ -374,6 +414,9 @@ struct HorizontalSegment: Identifiable, Hashable {
     /// the file leaves it out, as Horizon reads it; false on what Horizontal
     /// draws at a width of its own.
     var widthFromRules: Bool = false
+    /// Horizon's `locked` on a track: the router and the tools leave it
+    /// where it is.
+    var locked: Bool = false
 }
 
 extension HorizontalSegment {
@@ -490,6 +533,8 @@ struct HorizontalMarker: Identifiable, Hashable {
     /// (`HorizontalBoardRuleApplication`), which the writer writes as Horizon
     /// does; nil leaves the file's as it is.
     var span: HorizontalViaSpan? = nil
+    /// Horizon's `locked` on a via.
+    var locked: Bool = false
 
     var boundsPoints: [HorizontalPoint] {
         let radius = size / 2

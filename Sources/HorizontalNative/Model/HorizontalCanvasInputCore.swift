@@ -413,6 +413,7 @@ enum HorizontalCanvasInputCore {
         case "w": return .enterTrackWidth
         case "s": return .showToolSettings
         case "r": return .rotateSelection
+        case "u": return supportsTrackVias ? .toggleInstanceOnly : nil
         case "t": return .twirlSelection
         case "v": return supportsTrackVias ? .toggleVia : .moveNetSegmentToExistingNet
         default: return nil
