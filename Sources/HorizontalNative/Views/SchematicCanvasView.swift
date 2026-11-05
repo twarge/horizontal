@@ -809,6 +809,10 @@ struct SchematicCanvasView: View {
 
         return InteractiveCanvasView(
             bounds: sheet.bounds,
+            // A sheet's bounds are its content's, so a paste past them or a
+            // delete at their edge changes them; the view stays put. Another
+            // sheet keeps the zoom it is seen at, fitted to its own.
+            boundsIdentity: AnyHashable(sheet.id),
             viewport: $viewport,
             backgroundColor: theme.background,
             foregroundColor: theme.textOverlay,

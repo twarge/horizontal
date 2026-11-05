@@ -1020,6 +1020,10 @@ struct BoardCanvasView: View {
 
         let canvas = InteractiveCanvasView(
             bounds: board.bounds,
+            // A board's bounds are its content's, so a paste or a part placed
+            // past them changes them; the view stays put. A pool editor's
+            // board is its item's.
+            boundsIdentity: AnyHashable(board.uuid),
             viewport: $viewport,
             backgroundColor: theme.background,
             foregroundColor: theme.textOverlay,
