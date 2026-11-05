@@ -599,6 +599,13 @@ final class HorizontalMetalCanvasLayer {
         residentLines(compositeGroup: compositeGroup).map { ($0.from, $0.to) }
     }
 
+    /// The resident handles' world centres, in the order they were given.
+    func residentHandleCenters() -> [SIMD2<Float>] {
+        guard let handleBuffer else { return [] }
+        let handles = handleBuffer.contents().bindMemory(to: HorizontalMetalHandleShaderPrimitive.self, capacity: handlePrimitiveCount)
+        return (0..<handlePrimitiveCount).map { handles[$0].center }
+    }
+
     /// The resident lines' world widths, in `residentLineEndpoints`' order.
     func residentLineWidths(compositeGroup: Int) -> [Float] {
         residentLines(compositeGroup: compositeGroup).map(\.width)
@@ -786,7 +793,7 @@ final class HorizontalMetalCanvasLayer {
             return
         }
 
-        resetIncrementalBufferPatchState()
+        forgetTranslations { $0.kind == .triangles && $0.compositeGroup == 0 }
         currentTriangleKey = triangleKey
         var shaderPrimitives = [HorizontalMetalTriangleShaderPrimitive]()
         shaderPrimitives.reserveCapacity(triangles.count)
@@ -807,7 +814,7 @@ final class HorizontalMetalCanvasLayer {
             return
         }
 
-        resetIncrementalBufferPatchState()
+        forgetTranslations { $0.kind == .lines && $0.compositeGroup == 0 }
         currentLineKey = lineKey
         var shaderPrimitives = [HorizontalMetalLineShaderPrimitive]()
         shaderPrimitives.reserveCapacity(lines.count)
@@ -828,7 +835,7 @@ final class HorizontalMetalCanvasLayer {
             return
         }
 
-        resetIncrementalBufferPatchState()
+        forgetTranslations { $0.kind == .handles }
         currentHandleKey = handleKey
         handlePrimitiveCount = handles.count
         guard let device, !handles.isEmpty else {
@@ -850,7 +857,7 @@ final class HorizontalMetalCanvasLayer {
             return
         }
 
-        resetIncrementalBufferPatchState()
+        forgetTranslations { $0.kind == .anchoredRects && $0.compositeGroup == 0 }
         currentAnchoredRectKey = anchoredRectKey
         var shaderPrimitives = [HorizontalMetalAnchoredRectShaderPrimitive]()
         shaderPrimitives.reserveCapacity(anchoredRects.count)
@@ -929,7 +936,7 @@ final class HorizontalMetalCanvasLayer {
             return
         }
 
-        resetIncrementalBufferPatchState()
+        forgetTranslations { $0.compositeGroup != 0 }
         currentCompositeBatchKey = key
         residentSceneUploads += 1
         compositeContentRevision += 1
@@ -1076,7 +1083,7 @@ final class HorizontalMetalCanvasLayer {
 
         for patch in patches.lineTranslationPatches {
             let step = incrementalTranslationStep(
-                kind: 0,
+                kind: .lines,
                 compositeGroup: patch.compositeGroup,
                 start: patch.start,
                 count: patch.count,
@@ -1109,7 +1116,7 @@ final class HorizontalMetalCanvasLayer {
 
         for patch in patches.triangleTranslationPatches {
             let step = incrementalTranslationStep(
-                kind: 1,
+                kind: .triangles,
                 compositeGroup: patch.compositeGroup,
                 start: patch.start,
                 count: patch.count,
@@ -1130,7 +1137,7 @@ final class HorizontalMetalCanvasLayer {
 
         for patch in patches.anchoredRectTranslationPatches {
             let step = incrementalTranslationStep(
-                kind: 2,
+                kind: .anchoredRects,
                 compositeGroup: patch.compositeGroup,
                 start: patch.start,
                 count: patch.count,
@@ -1151,7 +1158,7 @@ final class HorizontalMetalCanvasLayer {
 
         for patch in patches.handleTranslationPatches {
             let step = incrementalTranslationStep(
-                kind: 3,
+                kind: .handles,
                 compositeGroup: 0,
                 start: patch.start,
                 count: patch.count,
@@ -1182,12 +1189,26 @@ final class HorizontalMetalCanvasLayer {
         appliedTranslations.removeAll(keepingCapacity: true)
     }
 
+    /// Forgets what the patches did to the runs of a buffer just uploaded
+    /// whole, so the next patches place them from the new base, and applies
+    /// the patches again. Only that buffer's: the others still hold the runs
+    /// where the last patches put them, and a translation taken from scratch
+    /// again would carry those twice as far. A package moved with a track did
+    /// that to the selection's handles, the track's end marks: the package's
+    /// live airwires upload the top overlay's lines anew on every step, which
+    /// forgot the handles' translation too, so each step moved them by the
+    /// whole move so far and they ran ahead of the part.
+    private func forgetTranslations(of reloaded: (HorizontalMetalTranslationPatchKey) -> Bool) {
+        currentBufferPatchKey = nil
+        appliedTranslations = appliedTranslations.filter { !reloaded($0.key) }
+    }
+
     /// What still has to be done to a run to take it from where the last
     /// patch left it to where this one puts it. Patches are absolute — the
     /// move so far, from the resident scene — while the buffers keep only
     /// what was last applied.
     private func incrementalTranslationStep(
-        kind: Int,
+        kind: HorizontalMetalTranslationPatchKey.Kind,
         compositeGroup: Int,
         start: Int,
         count: Int,
@@ -2123,7 +2144,13 @@ private struct HorizontalMetalTriangleShaderPrimitive {
 }
 
 private struct HorizontalMetalTranslationPatchKey: Hashable {
-    var kind: Int
+    /// What the run is of, and so which buffer it lies in with
+    /// `compositeGroup`: the layer's own for group 0, else that group's.
+    enum Kind: Hashable {
+        case lines, triangles, anchoredRects, handles
+    }
+
+    var kind: Kind
     var compositeGroup: Int
     var start: Int
     var count: Int
