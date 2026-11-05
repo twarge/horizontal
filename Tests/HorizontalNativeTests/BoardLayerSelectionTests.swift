@@ -26,8 +26,8 @@ final class BoardLayerSelectionTests: XCTestCase {
     }
 
     /// macOS reports Shift+1 as "!" via charactersIgnoringModifiers, so the
-    /// shifted number row has to decode back to its digit — otherwise the whole
-    /// Shift/Control layer of these bindings silently does nothing.
+    /// shifted number row has to decode back to its digit — otherwise ⌘⇧1 and
+    /// ⌘⇧2 silently do nothing.
     func testShiftedNumberRowStillDecodesToItsDigit() {
         XCTAssertEqual(HorizontalCanvasInputCore.digit(keyEvent("!", modifiers: .shift)), 1)
         XCTAssertEqual(HorizontalCanvasInputCore.digit(keyEvent("@", modifiers: .shift)), 2)
@@ -42,35 +42,77 @@ final class BoardLayerSelectionTests: XCTestCase {
 
     // MARK: - View presets
 
-    func testShiftedSideDigitsSelectPlacementViews() {
+    func testCommandSideDigitsSelectRoutingViews() {
         XCTAssertEqual(
-            HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 1, modifiers: .shift), .topPlacement)
+            HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 1, modifiers: .command), .topRouting)
         XCTAssertEqual(
-            HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 2, modifiers: .shift), .bottomPlacement)
+            HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 2, modifiers: .command), .bottomRouting)
     }
 
-    func testControlSideDigitsSelectSilkscreenViews() {
+    func testCommandOptionSideDigitsSelectPlacementViews() {
         XCTAssertEqual(
-            HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 1, modifiers: .control), .topSilkscreen)
+            HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 1, modifiers: [.command, .option]), .topPlacement)
         XCTAssertEqual(
-            HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 2, modifiers: .control), .bottomSilkscreen)
+            HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 2, modifiers: [.command, .option]), .bottomPlacement)
+    }
+
+    func testCommandShiftSideDigitsSelectSilkscreenViews() {
+        XCTAssertEqual(
+            HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 1, modifiers: [.command, .shift]), .topSilkscreen)
+        XCTAssertEqual(
+            HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 2, modifiers: [.command, .shift]), .bottomSilkscreen)
     }
 
     /// Only the two side digits carry a preset — there is no inner placement
-    /// view — and an unmodified digit is a plain layer selection.
+    /// view — an unmodified digit is a plain layer selection, and the old
+    /// ⇧ and ⌃ bindings are gone.
     func testOtherDigitsAndModifiersCarryNoPreset() {
-        XCTAssertNil(HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 3, modifiers: .shift))
+        XCTAssertNil(HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 3, modifiers: .command))
         XCTAssertNil(HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 1, modifiers: []))
-        XCTAssertNil(HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 1, modifiers: .command))
+        XCTAssertNil(HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 1, modifiers: .shift))
+        XCTAssertNil(HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 1, modifiers: .control))
+        XCTAssertNil(HorizontalCanvasInputCore.boardLayerViewPreset(forDigit: 1, modifiers: [.command, .control]))
     }
 
     func testShiftedDigitDecodesToAPresetCommand() {
         let command = HorizontalCanvasInputCore.command(
-            keyEvent("!", modifiers: .shift), supportsTrackVias: true)
+            keyEvent("!", modifiers: [.command, .shift]), supportsTrackVias: true)
         guard case .selectBoardLayerView(let preset)? = command else {
             return XCTFail("expected .selectBoardLayerView, got \(String(describing: command))")
         }
+        XCTAssertEqual(preset, .topSilkscreen)
+    }
+
+    /// ⌘⌥1 arrives as "¡" on a US layout; the key code still names the 1.
+    func testCommandOptionDigitDecodesByKeyCode() {
+        let event = HorizontalCanvasKeyEvent(characters: "¡", keyCode: 18, modifiers: [.command, .option])
+        guard case .selectBoardLayerView(let preset)? = HorizontalCanvasInputCore.command(event, supportsTrackVias: true) else {
+            return XCTFail("expected .selectBoardLayerView")
+        }
         XCTAssertEqual(preset, .topPlacement)
+    }
+
+    /// Off the board canvas ⌘1 and ⌘2 are not the canvas's: the View menu
+    /// shows and hides the Parts and Schematic panes with them.
+    func testOnlyTheBoardCanvasTakesTheViewKeys() {
+        XCTAssertNil(HorizontalCanvasInputCore.command(keyEvent("1", modifiers: .command), supportsTrackVias: false))
+        XCTAssertNil(HorizontalCanvasInputCore.command(keyEvent("@", modifiers: [.command, .shift]), supportsTrackVias: false))
+    }
+
+    /// A view key puts the tools where the rail's preset button would: the
+    /// side's silkscreen for a silkscreen view, its copper otherwise.
+    func testViewKeyPresetsNameTheirDrawingLayers() {
+        let expected: [(HorizontalBoardLayerViewPreset, Int)] = [
+            (.topRouting, HorizontalBoardLayers.topCopper),
+            (.bottomRouting, HorizontalBoardLayers.bottomCopper),
+            (.topPlacement, HorizontalBoardLayers.topCopper),
+            (.bottomPlacement, HorizontalBoardLayers.bottomCopper),
+            (.topSilkscreen, HorizontalBoardLayers.topSilkscreen),
+            (.bottomSilkscreen, HorizontalBoardLayers.bottomSilkscreen),
+        ]
+        for (preset, layer) in expected {
+            XCTAssertEqual(preset.layerPreset.drawingLayer, layer, "\(preset)")
+        }
     }
 
     // MARK: - Solo
@@ -113,11 +155,11 @@ final class BoardLayerSelectionTests: XCTestCase {
     /// view rather than being wired to the same thing twice.
     func testPresetsProduceDistinctViews() {
         var placement = BoardDisplayOptions()
-        placement.apply(.topPlacement)
+        placement.applyLayerPreset(.topPlacement)
         var silkscreen = BoardDisplayOptions()
-        silkscreen.apply(.topSilkscreen)
+        silkscreen.applyLayerPreset(.topSilkscreen)
         var bottomPlacement = BoardDisplayOptions()
-        bottomPlacement.apply(.bottomPlacement)
+        bottomPlacement.applyLayerPreset(.bottomPlacement)
 
         XCTAssertNotEqual(placement, silkscreen)
         XCTAssertNotEqual(placement, bottomPlacement)
@@ -126,7 +168,7 @@ final class BoardLayerSelectionTests: XCTestCase {
     }
 
     /// A placement view is its side's copper, assembly drawing and courtyard,
-    /// and none of the other side's.
+    /// the outline, and none of the other side's.
     func testPlacementViewsShowTheirSidesAssembly() {
         let top = [HorizontalBoardLayers.topCopper, HorizontalBoardLayers.topAssembly, HorizontalBoardLayers.topCourtyard]
         let bottom = [HorizontalBoardLayers.bottomCopper, HorizontalBoardLayers.bottomAssembly, HorizontalBoardLayers.bottomCourtyard]
@@ -136,7 +178,7 @@ final class BoardLayerSelectionTests: XCTestCase {
         ] {
             var options = BoardDisplayOptions()
             apply(&options)
-            for layer in shown {
+            for layer in shown + [HorizontalBoardLayers.outline] {
                 XCTAssertTrue(options.isLayerVisible(layer), "\(name) placement shows \(HorizontalBoardLayers.name(for: layer))")
             }
             for layer in hidden + [HorizontalBoardLayers.topPackage, HorizontalBoardLayers.bottomPackage] {
@@ -321,6 +363,46 @@ final class BoardLayerSelectionTests: XCTestCase {
         XCTAssertFalse(options.isLayerVisible(HorizontalBoardLayers.topCopper))
     }
 
+    /// Every sided view — placement, routing and silkscreen, top and bottom —
+    /// shows the board outline, with nothing the working layer adds.
+    func testEverySidedViewShowsTheOutline() {
+        for preset in [HorizontalBoardLayerViewPreset.topPlacement, .bottomPlacement, .topRouting,
+                       .bottomRouting, .topSilkscreen, .bottomSilkscreen] {
+            var options = BoardDisplayOptions()
+            options.applyLayerPreset(preset.layerPreset)
+            options.selectedLayer = nil
+            XCTAssertTrue(options.isLayerVisible(HorizontalBoardLayers.outline), "\(preset)")
+            XCTAssertTrue(options.showsOutlineLayer, "\(preset)")
+        }
+    }
+
+    /// A routing view is its side's copper and the outline, nothing else.
+    func testRoutingViewsShowTheirCopperAndTheOutline() {
+        var options = BoardDisplayOptions()
+        options.bottomRoutingView()
+        let shown = HorizontalBoardLayers.all.filter { options.isLayerVisible($0) }
+        XCTAssertEqual(Set(shown), [HorizontalBoardLayers.bottomCopper, HorizontalBoardLayers.outline])
+    }
+
+    /// A board opens on the top placement view, whatever view the file saved,
+    /// and keeps the rest of what it saved.
+    func testABoardOpensOnTheTopPlacementView() {
+        var saved = BoardDisplayOptions()
+        saved.bottomSilkscreenView()
+        saved.pads = false
+        let opened = BoardDisplayOptions.opening(saved)
+        var expected = saved
+        expected.topPlacementView()
+        XCTAssertEqual(opened, expected)
+        XCTAssertFalse(opened.pads, "the object switches stay as saved")
+        XCTAssertTrue(opened.isLayerVisible(HorizontalBoardLayers.topCourtyard))
+        XCTAssertFalse(opened.isLayerVisible(HorizontalBoardLayers.bottomSilkscreen))
+
+        var fresh = BoardDisplayOptions()
+        fresh.topPlacementView()
+        XCTAssertEqual(BoardDisplayOptions.opening(nil), fresh)
+    }
+
     /// The board outline's stroke follows the Outline layer as it is seen:
     /// its eye, the working layer and solo. A preset that leaves the outline
     /// out clears the Outline category, and turning the layer's eye back on
@@ -330,7 +412,7 @@ final class BoardLayerSelectionTests: XCTestCase {
         var options = BoardDisplayOptions()
         XCTAssertTrue(options.showsOutlineLayer)
 
-        options.topPlacementView()
+        options.copperOnly()
         XCTAssertFalse(options.outline, "the preset leaves the outline out")
         XCTAssertFalse(options.showsOutlineLayer)
         options.setLayerVisibility(HorizontalBoardLayers.outline, isVisible: true)

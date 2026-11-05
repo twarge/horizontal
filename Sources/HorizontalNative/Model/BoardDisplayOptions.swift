@@ -362,7 +362,8 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
             layers: [
                 HorizontalBoardLayers.topCopper,
                 HorizontalBoardLayers.topAssembly,
-                HorizontalBoardLayers.topCourtyard
+                HorizontalBoardLayers.topCourtyard,
+                HorizontalBoardLayers.outline
             ]
         )
     }
@@ -372,26 +373,27 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
             layers: [
                 HorizontalBoardLayers.bottomCopper,
                 HorizontalBoardLayers.bottomAssembly,
-                HorizontalBoardLayers.bottomCourtyard
+                HorizontalBoardLayers.bottomCourtyard,
+                HorizontalBoardLayers.outline
             ]
         )
     }
 
-    mutating func apply(_ preset: HorizontalBoardLayerViewPreset) {
-        switch preset {
-        case .topPlacement: topPlacementView()
-        case .bottomPlacement: bottomPlacementView()
-        case .topSilkscreen: topSilkscreenView()
-        case .bottomSilkscreen: bottomSilkscreenView()
-        }
-    }
-
     mutating func topRoutingView() {
-        layerView(layers: [HorizontalBoardLayers.topCopper])
+        layerView(layers: [HorizontalBoardLayers.topCopper, HorizontalBoardLayers.outline])
     }
 
     mutating func bottomRoutingView() {
-        layerView(layers: [HorizontalBoardLayers.bottomCopper])
+        layerView(layers: [HorizontalBoardLayers.bottomCopper, HorizontalBoardLayers.outline])
+    }
+
+    /// The view a board opens on: `saved` (the file's remembered view, or the
+    /// defaults when it has none) showing the top placement layers. The
+    /// object switches, fills and 3D settings it holds stay as they were.
+    static func opening(_ saved: BoardDisplayOptions?) -> BoardDisplayOptions {
+        var options = saved ?? BoardDisplayOptions()
+        options.topPlacementView()
+        return options
     }
 
     mutating func cleanView() {
@@ -639,10 +641,8 @@ enum HorizontalBoardLayerPreset: String, CaseIterable {
 }
 
 extension BoardDisplayOptions {
-    /// Named so as not to overload `apply(_:)`, whose argument is the rail's
-    /// own four-preset enum; a bare `.topPlacement` would otherwise be
-    /// ambiguous between the two. Side-less presets have to be `resolved`
-    /// first; unresolved, they are read as the top side.
+    /// Side-less presets have to be `resolved` first; unresolved, they are
+    /// read as the top side.
     mutating func applyLayerPreset(_ preset: HorizontalBoardLayerPreset) {
         switch preset.resolved(for: .top) {
         case .topPlacement, .topView: topPlacementView()

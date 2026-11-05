@@ -307,18 +307,20 @@ enum HorizontalCanvasInputCore {
         }
     }
 
-    /// ⇧1/⇧2 and ⌃1/⌃2 jump to a whole board view: placement or silkscreen for
-    /// the top or bottom side. Only the two side digits carry these — there is
-    /// no "inner placement" to show.
+    /// ⌘1/⌘2, ⌘⌥1/⌘⌥2 and ⌘⇧1/⌘⇧2 jump to a whole board view: routing,
+    /// placement or silkscreen for the top or bottom side. Only the two side
+    /// digits carry these — there is no "inner placement" to show.
     static func boardLayerViewPreset(
         forDigit digit: Int,
         modifiers: HorizontalCanvasInputModifiers
     ) -> HorizontalBoardLayerViewPreset? {
         switch (modifiers, digit) {
-        case (.shift, 1): return .topPlacement
-        case (.shift, 2): return .bottomPlacement
-        case (.control, 1): return .topSilkscreen
-        case (.control, 2): return .bottomSilkscreen
+        case (.command, 1): return .topRouting
+        case (.command, 2): return .bottomRouting
+        case ([.command, .option], 1): return .topPlacement
+        case ([.command, .option], 2): return .bottomPlacement
+        case ([.command, .shift], 1): return .topSilkscreen
+        case ([.command, .shift], 2): return .bottomSilkscreen
         default: return nil
         }
     }
@@ -357,7 +359,9 @@ enum HorizontalCanvasInputCore {
             default: break
             }
         }
-        if let digit = digit(event),
+        // Board canvas only (the via flag marks it): elsewhere ⌘1 and ⌘2 fall
+        // through to the View menu, which shows and hides panes with them.
+        if supportsTrackVias, let digit = digit(event),
            let preset = boardLayerViewPreset(forDigit: digit, modifiers: modifiers) {
             return .selectBoardLayerView(preset)
         }

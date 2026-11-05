@@ -23,6 +23,9 @@ struct PaneOverlayContainer<
     var showsInfoButton = true
     var showsLayerButton = true
     var showsGridButton = true
+    /// The selection tools, drawn right under the Grid button; nil for a pane
+    /// that has none.
+    var selectionToolSettings: Binding<HorizontalSelectionToolSettings>? = nil
     /// Shows the keyboard-focus badge in the pane's lower left (this pane
     /// receives keyboard commands), where the canvas starts its scale bar
     /// to the right of it.
@@ -68,6 +71,7 @@ struct PaneOverlayContainer<
                     infoEnabled: infoEnabled,
                     showsLayerButton: showsLayerButton,
                     showsGridButton: showsGridButton,
+                    selectionToolSettings: selectionToolSettings,
                     labelSide: appearanceSettings.shouldSwapViewControlsAndUnplacedReferences ? .trailing : .leading
                 ) {
                     info
@@ -157,6 +161,7 @@ struct PaneToolColumn<
     var infoEnabled = true
     var showsLayerButton = true
     var showsGridButton = true
+    var selectionToolSettings: Binding<HorizontalSelectionToolSettings>? = nil
     var labelSide = HorizontalRailHelpLabelSide.trailing
     @ViewBuilder var info: InfoContent
     @ViewBuilder var layers: LayersContent
@@ -173,10 +178,12 @@ struct PaneToolColumn<
             infoButton
             if pane == .board {
                 gridButton
+                selectionToolButton
                 layerButton
             } else {
                 layerButton
                 gridButton
+                selectionToolButton
             }
 
             tools
@@ -241,6 +248,13 @@ struct PaneToolColumn<
                     grid
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var selectionToolButton: some View {
+        if let selectionToolSettings {
+            SelectionToolButton(settings: selectionToolSettings)
         }
     }
 }

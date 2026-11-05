@@ -84,7 +84,7 @@ struct HorizontalIPadProjectView: View {
     @State private var boardDrawingToolCommand: HorizontalDrawingToolCommand?
     // Rail state (brought over from the macOS workspace): display options drive the
     // layer-visibility rail; selection-tool settings drive the selection rail button.
-    @State private var boardDisplayOptions = BoardDisplayOptions()
+    @State private var boardDisplayOptions = BoardDisplayOptions.opening(nil)
     @State private var selectionToolSettings = HorizontalSelectionToolSettings()
     @State private var schematicDisplayOptions = SchematicDisplayOptions()
     @State private var schematicDrawingToolCommand: HorizontalDrawingToolCommand?
@@ -816,6 +816,15 @@ struct HorizontalIPadProjectView: View {
         boardDrawingLayer = resolved.drawingLayer ?? side.copperLayer
     }
 
+    /// A view key (⌘1, ⌘⌥1, ⌘⇧1 and the 2s): the preset's layers, with the
+    /// tools on its side, as on the Mac.
+    private func applyBoardLayerViewPreset(_ preset: HorizontalBoardLayerViewPreset) {
+        boardDisplayOptions.applyLayerPreset(preset.layerPreset)
+        if let layer = preset.layerPreset.drawingLayer {
+            boardDrawingLayer = layer
+        }
+    }
+
     /// Contents of the right-side slide-over inspector. Reuses the cross-platform
     /// `HorizontalSelectionPopoverView` in its `.sidebar` chrome (the same view the macOS
     /// selection sidebar uses); edits flow back to the active canvas as a
@@ -1483,6 +1492,7 @@ struct HorizontalIPadProjectView: View {
                 pane: .schematic,
                 safeAreaInsets: safeAreaInsets,
                 showsInfoButton: false,
+                selectionToolSettings: $selectionToolSettings,
                 isKeyboardFocused: focusedPane == .schematic
             ) {
                 SchematicCanvasView(
@@ -1537,7 +1547,6 @@ struct HorizontalIPadProjectView: View {
             } grid: {
                 GridControlsPanel(title: "Schematic Grid", grid: .constant(sheet.grid), isEditable: false)
             } tools: {
-                SelectionToolButton(settings: $selectionToolSettings)
                 // Locked: the tools that would change the design are gone, not
                 // dimmed. Same rule as the macOS rail.
                 if !isReadOnly {
@@ -1587,6 +1596,7 @@ struct HorizontalIPadProjectView: View {
                 pane: .board,
                 safeAreaInsets: safeAreaInsets,
                 showsInfoButton: false,
+                selectionToolSettings: $selectionToolSettings,
                 isKeyboardFocused: focusedPane == .board
             ) {
                 BoardCanvasView(
@@ -1621,6 +1631,7 @@ struct HorizontalIPadProjectView: View {
                     syncRevision: boardSyncRevision,
                     planePourRevision: planePourRevision,
                     planeFillDelivery: planeFillDelivery,
+                    onSelectBoardLayerView: { applyBoardLayerViewPreset($0) },
                     poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
                     ruleMarkers: HorizontalCanvasWarning.markers(clearanceFindings: rulesResultsState?.clearanceFindings ?? [])
                 )
@@ -1639,7 +1650,6 @@ struct HorizontalIPadProjectView: View {
             } grid: {
                 GridControlsPanel(title: "Board Grid", grid: boardGridBinding())
             } tools: {
-                SelectionToolButton(settings: $selectionToolSettings)
                 if !isReadOnly {
                     DrawTrackToolButton {
                         boardDrawTrackCommand = HorizontalDrawTrackCommand()

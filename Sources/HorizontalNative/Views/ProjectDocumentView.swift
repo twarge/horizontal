@@ -842,7 +842,7 @@ struct ProjectWorkspaceView: View {
         _highlightedComponentIDs = highlightedComponentIDs
         _columnVisibility = State(initialValue: Self.initialColumnVisibility(fileViewState: fileViewState, project: project))
         _schematicDisplayOptions = State(initialValue: fileViewState?.schematicDisplayOptions ?? SchematicDisplayOptions())
-        _boardDisplayOptions = State(initialValue: fileViewState?.boardDisplayOptions ?? BoardDisplayOptions())
+        _boardDisplayOptions = State(initialValue: BoardDisplayOptions.opening(fileViewState?.boardDisplayOptions))
         _windowSize = State(initialValue: fileViewState?.windowSize)
         _schematicViewport = State(initialValue: fileViewState?.schematicViewport ?? CanvasViewport())
         _boardViewport = State(initialValue: fileViewState?.boardViewport ?? CanvasViewport())
@@ -2308,6 +2308,7 @@ struct ProjectWorkspaceView: View {
                     safeAreaInsets: fitSafeAreaInsets,
                     infoEnabled: selectedSchematic != nil,
                     showsTools: !isDistractionFree && !isWindowToolbarHidden,
+                    selectionToolSettings: $selectionToolSettings,
                     isKeyboardFocused: activeCanvasCommandPane == .schematic && !isKeyboardInControl,
                     onToolbarHover: { setPointerInsideToolbar($0, for: .schematic) }
                 ) {
@@ -2439,7 +2440,6 @@ struct ProjectWorkspaceView: View {
                         )
                     }
                 } tools: {
-                    SelectionToolButton(settings: $selectionToolSettings)
                     // Locked, the tools that would change the design are not
                     // shown at all. A rail of dimmed buttons says "this app is
                     // broken" where an absent one says "this document is
@@ -2519,6 +2519,7 @@ struct ProjectWorkspaceView: View {
                     safeAreaInsets: fitSafeAreaInsets,
                     infoEnabled: project.board != nil,
                     showsTools: !isDistractionFree && !isWindowToolbarHidden,
+                    selectionToolSettings: $selectionToolSettings,
                     isKeyboardFocused: activeCanvasCommandPane == .board && !isKeyboardInControl,
                     onToolbarHover: { setPointerInsideToolbar($0, for: .board) }
                 ) {
@@ -2650,7 +2651,6 @@ struct ProjectWorkspaceView: View {
                         )
                         .disabled(project.board?.planes.isEmpty != false)
                     }
-                    SelectionToolButton(settings: $selectionToolSettings)
                     if !isReadOnly {
                         DrawTrackToolButton {
                             boardDrawTrackCommand = HorizontalDrawTrackCommand()
@@ -3747,10 +3747,15 @@ struct ProjectWorkspaceView: View {
 
     /// A view preset replaces the whole visibility picture, so it also drops any
     /// solo — leaving one on would silently hide most of what the preset just
-    /// asked to show.
+    /// asked to show. The tools go on the preset's side, as the rail's preset
+    /// buttons put them: the working layer always shows, so top copper left
+    /// working would show in a bottom view.
     private func applyBoardLayerViewPreset(_ preset: HorizontalBoardLayerViewPreset) {
         soloedBoardLayer = nil
-        boardDisplayOptions.apply(preset)
+        boardDisplayOptions.applyLayerPreset(preset.layerPreset)
+        if let layer = preset.layerPreset.drawingLayer {
+            boardDrawingLayer = layer
+        }
     }
 
     private func updateAllBoardPlanes() {
