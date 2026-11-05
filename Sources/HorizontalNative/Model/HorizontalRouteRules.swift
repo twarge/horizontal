@@ -503,7 +503,7 @@ enum HorizontalRouteRuleEditing {
                     "match_1": matchAll,
                     "match_2": matchAll,
                     "layer": anyLayer,
-                    "routing_offset": 50_000,
+                    "routing_offset": HorizontalRuleClearanceCopper.newRuleRoutingOffset,
                     "clearances": [clearanceEntry(value, types: pair)]
                 ] as JSONDictionary
             }
@@ -531,7 +531,7 @@ enum HorizontalRouteRuleEditing {
                     "order": nextOrder(in: family),
                     "match": matchAll,
                     "layer": anyLayer,
-                    "routing_offset": 50_000,
+                    "routing_offset": HorizontalRuleClearanceCopper.newRuleRoutingOffset,
                     "clearances": [clearanceEntry(value, types: [copper, nonCopper])]
                 ] as JSONDictionary
             }
@@ -564,7 +564,7 @@ enum HorizontalRouteRuleEditing {
                         "component": nullUUID,
                         "keepout_class": keepoutClass
                     ] as JSONDictionary,
-                    "routing_offset": 50_000,
+                    "routing_offset": HorizontalRuleClearanceCopper.newRuleRoutingOffset,
                     "clearances": [copper.jsonString: value]
                 ] as JSONDictionary
             }

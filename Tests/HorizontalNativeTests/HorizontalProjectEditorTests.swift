@@ -2039,6 +2039,17 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual(left.map { $0["kind"] as? String }, ["clearance_silkscreen_exposed_copper"])
     }
 
+    /// A clearance rule add_rule makes keeps 0.025 mm beyond its clearances
+    /// for the router, as a new board's own rules do, not Horizon's 0.05 mm.
+    func testAddRuleStartsClearanceRulesWithTheNewBoardsRoutingOffset() throws {
+        try removeTheNewBoardsRules()
+        for kind in ["clearance_copper", "clearance_copper_other", "clearance_copper_keepout"] {
+            let added = try apply([["op": "add_rule", "kind": kind]])
+            let rule = try XCTUnwrap((added["changes"] as? [[String: Any]])?.first?["rule"] as? [String: Any], kind)
+            XCTAssertEqual(rule["routing_offset"] as? Int, 25_000, kind)
+        }
+    }
+
     /// A rule the validator calls an error is refused, and nothing is written —
     /// a clearance rule written wrong would let check pass on a bad board.
     func testAnInvalidRuleIsRefused() throws {

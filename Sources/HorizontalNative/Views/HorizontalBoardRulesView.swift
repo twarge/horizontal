@@ -722,19 +722,19 @@ enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
             rule["match_1"] = context.defaultMatch()
             rule["match_2"] = context.defaultMatch()
             rule["layer"] = horizonRuleAnyLayer
-            rule["routing_offset"] = 50_000
+            rule["routing_offset"] = HorizontalRuleClearanceCopper.newRuleRoutingOffset
             rule["clearances"] = []
         case .clearanceCopperOther, .clearanceSameNet:
             rule["match"] = context.defaultMatch()
             rule["layer"] = horizonRuleAnyLayer
             rule["clearances"] = []
             if self == .clearanceCopperOther {
-                rule["routing_offset"] = 50_000
+                rule["routing_offset"] = HorizontalRuleClearanceCopper.newRuleRoutingOffset
             }
         case .clearanceCopperKeepout:
             rule["match"] = context.defaultMatch()
             rule["match_keepout"] = HorizontalBoardRuleContext.defaultKeepoutMatch()
-            rule["routing_offset"] = 50_000
+            rule["routing_offset"] = HorizontalRuleClearanceCopper.newRuleRoutingOffset
             rule["clearances"] = JSONDictionary()
         case .clearanceSilkscreenExposedCopper:
             rule["clearance_top"] = 100_000

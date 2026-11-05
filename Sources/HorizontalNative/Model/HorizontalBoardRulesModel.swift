@@ -266,6 +266,9 @@ struct HorizontalRuleClearanceCopper: Hashable {
     static let defaultClearance = 100_000
     /// RuleClearanceCopper's, and what a file that leaves it out has.
     static let defaultRoutingOffset = 50_000
+    /// What a clearance rule Horizontal adds starts with, in any of the three
+    /// clearance families: half Horizon's, as a new board's own rules have it.
+    static let newRuleRoutingOffset = 25_000
 
     init(id: String = "", json: JSONDictionary) {
         self.id = id
