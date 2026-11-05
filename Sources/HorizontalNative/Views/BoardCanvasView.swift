@@ -1194,6 +1194,17 @@ struct BoardCanvasView: View {
                     return
                 }
                 #endif
+                // Double-click a track → the run of track it is part of, out
+                // to its pads, as Horizon's double-click on one runs Select
+                // More. The pair's first click has selected the track, as
+                // the polygon's below.
+                if clickCount >= 2, let hitRef, hitRef.type == .track {
+                    updateSelection(
+                        with: BoardSelectMore.selection(from: [hitRef], in: board, stopsAtVias: false),
+                        action: BoardPolygonParts.doubleClickAction(for: clickAction)
+                    )
+                    return
+                }
                 // Double-click a polygon's edge, vertex or arc centre → the
                 // whole polygon, as Horizon's double-click selects it.
                 if clickCount >= 2, let hitRef,
@@ -3034,6 +3045,7 @@ struct BoardCanvasView: View {
             hasInteraction: drawGraphicsState != nil || drawTrackState != nil || moveState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || tuneState != nil || packagePlacementState != nil,
             selectAll: selectAllObjects,
             selectNet: selectNetOfSelection,
+            selectMore: { selectMoreOfSelection(stopsAtVias: $0) },
             copySelection: { copySelectionToClipboard() },
             pasteSelection: { pasteClipboard() },
             duplicateSelection: { duplicateSelection() },
@@ -3126,6 +3138,11 @@ struct BoardCanvasView: View {
                 }
             }
         )
+        // Select More has nothing to start from without a track, junction
+        // or via, and Horizon doesn't offer it then.
+        if modeProfile.isPoolMode || !BoardSelectMore.canSelectMore(from: selectedObjects) {
+            handlers.selectMore = nil
+        }
         if modeProfile.isPoolMode {
             handlers.selectNet = nil
             handlers.drawTrack = nil
@@ -3468,6 +3485,13 @@ struct BoardCanvasView: View {
                     for: netID(for: ref), selectedNetIDs: selectedNetIDs, in: board.netDetails,
                     canEdit: { onEditDiffpair.canEdit($0) }))
             }
+        }
+
+        // The run of track (Horizon's Select More, + and =).
+        if BoardSelectMore.canSelectMore(from: [ref]) {
+            entries.append(.separator)
+            entries.append(.command(title: "Select More", .selectMore(stopsAtVias: false)))
+            entries.append(.command(title: "Select More (Stop at Vias)", .selectMore(stopsAtVias: true)))
         }
 
         // Pool / datasheet (packages)
@@ -3883,6 +3907,25 @@ struct BoardCanvasView: View {
             return
         }
         selectedObjects = matching
+        selectedUnplacedObjectID = nil
+        hoveredObject = nil
+        publishSelectionContext()
+    }
+
+    /// Horizon's Select More (+), or Select More (stop at vias) (=): the
+    /// selection becomes the run of track its tracks, junctions and vias are
+    /// part of, out to its pads, or its vias too (`BoardSelectMore`).
+    private func selectMoreOfSelection(stopsAtVias: Bool) {
+        guard moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
+              pastePlacementState == nil, poolPlacementState == nil,
+              roundOffVertexState == nil, tuneState == nil, packagePlacementState == nil else {
+            return
+        }
+        let run = BoardSelectMore.selection(from: selectedObjects, in: board, stopsAtVias: stopsAtVias)
+        guard !run.isEmpty else {
+            return
+        }
+        selectedObjects = run
         selectedUnplacedObjectID = nil
         hoveredObject = nil
         publishSelectionContext()

@@ -234,6 +234,9 @@ struct HorizontalCanvasCommandHandlerSet {
     var hasInteraction: Bool
     var selectAll: () -> Void
     var selectNet: (() -> Void)? = nil
+    /// Board: Select More, its argument `stopsAtVias`; nil while the
+    /// selection holds no track, junction or via to start from.
+    var selectMore: ((Bool) -> Void)? = nil
     var copySelection: (() -> Void)? = nil
     var pasteSelection: (() -> Void)? = nil
     var duplicateSelection: (() -> Void)? = nil
@@ -328,6 +331,8 @@ struct HorizontalCanvasCommandHandlerSet {
             selectAll()
         case .selectNet:
             selectNet?()
+        case .selectMore(let stopsAtVias):
+            selectMore?(stopsAtVias)
         case .copySelection:
             copySelection?()
         case .pasteSelection:
@@ -582,6 +587,7 @@ struct HorizontalCanvasCommandHandlerSet {
             canHighlightNet: true,
             canSelectAll: true,
             canSelectNet: selectNet != nil,
+            canSelectMore: selectMore != nil,
             canCopySelection: copySelection != nil,        // copy is non-mutating; enabled even read-only
             canPasteSelection: writable && pasteSelection != nil,
             canDuplicateSelection: writable && duplicateSelection != nil,

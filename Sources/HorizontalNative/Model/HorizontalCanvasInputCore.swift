@@ -72,6 +72,12 @@ struct HorizontalCanvasInputModifiers: OptionSet, Hashable {
 struct HorizontalCanvasKeyEvent {
     /// `charactersIgnoringModifiers`, as-is (not lower-cased).
     var characters: String?
+    /// The characters the key types, Shift applied (`NSEvent.characters`,
+    /// `UIKey.characters`), for keys known by what they type: + is Shift-=
+    /// on one keyboard and a key of its own on another. UIKit's
+    /// `charactersIgnoringModifiers` leaves Shift out, so `characters` alone
+    /// can't tell + from = there.
+    var typedCharacters: String?
     /// macOS hardware key code (123–126 = arrows, 53 = esc, …). Nil on the
     /// SwiftUI path, which supplies `key` instead.
     var keyCode: UInt16?
@@ -79,8 +85,15 @@ struct HorizontalCanvasKeyEvent {
     var key: KeyEquivalent?
     var modifiers: HorizontalCanvasInputModifiers
 
-    init(characters: String? = nil, keyCode: UInt16? = nil, key: KeyEquivalent? = nil, modifiers: HorizontalCanvasInputModifiers) {
+    init(
+        characters: String? = nil,
+        typedCharacters: String? = nil,
+        keyCode: UInt16? = nil,
+        key: KeyEquivalent? = nil,
+        modifiers: HorizontalCanvasInputModifiers
+    ) {
         self.characters = characters
+        self.typedCharacters = typedCharacters
         self.keyCode = keyCode
         self.key = key
         self.modifiers = modifiers
@@ -349,6 +362,9 @@ enum HorizontalCanvasInputCore {
             // ⇧H: unsmash (cf. H = smash).
             return .unsmash
         }
+        if supportsTrackVias, let selectMore = selectMore(event) {
+            return selectMore
+        }
         if modifiers == .command {
             // Beat the system Edit-menu Copy/Paste on the canvas; a focused text
             // field keeps its own ⌘C/⌘V/⌘D (handled by the focus model / guard).
@@ -399,6 +415,21 @@ enum HorizontalCanvasInputCore {
         case "r": return .rotateSelection
         case "t": return .twirlSelection
         case "v": return supportsTrackVias ? .toggleVia : .moveNetSegmentToExistingNet
+        default: return nil
+        }
+    }
+
+    /// Horizon's + (Select More) and = (Select More, stop at vias), by what
+    /// the key types, with Shift or without: + is Shift-= on a US keyboard
+    /// and a key of its own on a German one, where = is Shift-0, and the
+    /// keypad has both.
+    static func selectMore(_ event: HorizontalCanvasKeyEvent) -> HorizontalCanvasCommand? {
+        guard event.modifiers.isSubset(of: .shift) else {
+            return nil
+        }
+        switch event.typedCharacters ?? event.characters {
+        case "+": return .selectMore(stopsAtVias: false)
+        case "=": return .selectMore(stopsAtVias: true)
         default: return nil
         }
     }
