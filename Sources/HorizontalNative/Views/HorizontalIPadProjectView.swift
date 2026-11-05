@@ -2472,18 +2472,22 @@ struct HorizontalIPadProjectView: View {
 
     /// A change the route inspector makes to the rules: as on macOS, one
     /// undoable edit without a reload, so the route in progress carries on.
-    private func applyRouteRuleEdit(_ edit: HorizontalRouteRuleEdit) {
-        guard !isReadOnly, let project, let board = project.board else { return }
+    /// Says whether the rules now hold it: made, or one that changes nothing.
+    @discardableResult
+    private func applyRouteRuleEdit(_ edit: HorizontalRouteRuleEdit) -> Bool {
+        guard !isReadOnly, let project, let board = project.board else { return false }
         do {
             let previous = try HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive)
             let copperLayers = board.stackupLayers.map(\.layer).filter(HorizontalBoardLayers.isCopper)
             guard let rules = HorizontalRouteRuleEditing.applying(edit, to: previous, copperLayers: copperLayers) else {
-                return
+                return true
             }
             try installBoardRules(rules)
             registerBoardRulesUndo(from: previous, actionName: edit.actionName)
+            return true
         } catch {
             loadError = "Couldn't change the board rules: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -2548,6 +2552,15 @@ struct HorizontalIPadProjectView: View {
             boardToolSettings.setVia(diameter: diameter, holeDiameter: holeDiameter)
         case .editRule(let edit):
             applyRouteRuleEdit(edit)
+        case .defineWidthRule(let edit):
+            // The width the rules now give is the custom one, which the route
+            // then takes from them.
+            guard applyRouteRuleEdit(edit) else { return }
+            boardToolSettings.setExplicitTrackWidth(nil)
+            routeWidthCommand = HorizontalRouteWidthCommand()
+        case .defineViaRule(let edit):
+            guard applyRouteRuleEdit(edit) else { return }
+            boardToolSettings.setVia(diameter: nil, holeDiameter: nil)
         case .showRules(let kind, let ruleID):
             rulesFocus = HorizontalBoardRuleFocus(kind: kind, ruleID: ruleID)
             rulesSheetPresented = true

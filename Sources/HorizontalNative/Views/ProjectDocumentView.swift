@@ -3553,20 +3553,24 @@ struct ProjectWorkspaceView: View {
 
     /// A change the route inspector makes to the rules. One undoable edit,
     /// made without a reload so the route in progress carries on with them.
-    private func applyRouteRuleEdit(_ edit: HorizontalRouteRuleEdit) {
+    /// Says whether the rules now hold it: made, or one that changes nothing.
+    @discardableResult
+    private func applyRouteRuleEdit(_ edit: HorizontalRouteRuleEdit) -> Bool {
         guard !isReadOnly, let board = project.board else {
-            return
+            return false
         }
         do {
             let previous = try HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive)
             let copperLayers = board.stackupLayers.map(\.layer).filter(HorizontalBoardLayers.isCopper)
             guard let rules = HorizontalRouteRuleEditing.applying(edit, to: previous, copperLayers: copperLayers) else {
-                return
+                return true
             }
             try installBoardRules(rules, refreshesWindow: true)
             registerBoardRulesUndo(from: previous, actionName: edit.actionName)
+            return true
         } catch {
             recordArchiveApplyFailure(error)
+            return false
         }
     }
 
@@ -3653,6 +3657,15 @@ struct ProjectWorkspaceView: View {
             boardToolSettings.setVia(diameter: diameter, holeDiameter: holeDiameter)
         case .editRule(let edit):
             applyRouteRuleEdit(edit)
+        case .defineWidthRule(let edit):
+            // The width the rules now give is the custom one, which the route
+            // then takes from them.
+            guard applyRouteRuleEdit(edit) else { return }
+            boardToolSettings.setExplicitTrackWidth(nil)
+            routeWidthCommand = HorizontalRouteWidthCommand()
+        case .defineViaRule(let edit):
+            guard applyRouteRuleEdit(edit) else { return }
+            boardToolSettings.setVia(diameter: nil, holeDiameter: nil)
         case .showRules(let kind, let ruleID):
             showBoardRulesWindow(focus: HorizontalBoardRuleFocus(kind: kind, ruleID: ruleID))
         }

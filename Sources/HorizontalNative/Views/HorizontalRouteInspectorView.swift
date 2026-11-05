@@ -38,6 +38,32 @@ struct HorizontalRouteInspectorState: Equatable {
         var defaultPadstackID: String
 
         var canDrop: Bool { diameter != nil }
+
+        /// What a size typed in the Diameter or Hole field asks: a via of
+        /// that size, for this route and the next, never a change to the via
+        /// rule, which Define Rule (`defineRule`) makes. Nil for the size the
+        /// fields already show.
+        func command(diameter: Double, holeDiameter: Double) -> HorizontalRouteInspectorCommand? {
+            guard diameter > 0, holeDiameter > 0,
+                  diameter != self.diameter || holeDiameter != self.holeDiameter else {
+                return nil
+            }
+            return .useCustomVia(diameter: diameter, holeDiameter: holeDiameter)
+        }
+
+        /// Define Rule: the edit that makes a custom via's size the via
+        /// rule's that takes the net, or that adds a via rule taking every net
+        /// with the board's default via at that size where none does. Nil
+        /// while the via is the rules'.
+        var defineRule: HorizontalRouteRuleEdit? {
+            guard isCustom, let diameter, let holeDiameter else {
+                return nil
+            }
+            guard let rule else {
+                return .addViaRule(padstackID: defaultPadstackID, diameter: diameter, holeDiameter: holeDiameter)
+            }
+            return .viaParameters(rule: rule, diameter: diameter, holeDiameter: holeDiameter)
+        }
     }
 
     var hasStarted: Bool
@@ -87,11 +113,39 @@ struct HorizontalRouteInspectorState: Equatable {
         layerOptions.first { $0.id == layer }?.title ?? HorizontalBoardLayers.name(for: layer)
     }
 
+    /// What a width typed in the Width field asks. It never changes a rule:
+    /// typed while the field shows the rules' width, it becomes a custom one,
+    /// which Define Rule (`defineWidthRule`) makes the rules'. Nil for the
+    /// width the field already shows.
+    func command(typingWidth typed: Double) -> HorizontalRouteInspectorCommand? {
+        guard typed > 0, typed != width else {
+            return nil
+        }
+        return .useCustomWidth(typed)
+    }
+
+    /// Define Rule: the edit that makes a width that isn't the rules' (a
+    /// custom one, or the track's the route continues) the default of the
+    /// track width rule that takes the net on the route's layer, or that adds
+    /// a rule taking every net with it where none does. Nil while the width
+    /// is the rules'.
+    var defineWidthRule: HorizontalRouteRuleEdit? {
+        guard !widthSource.followsRules, width > 0 else {
+            return nil
+        }
+        guard let widthRule else {
+            return .addTrackWidthRule(layer: layer, width: width)
+        }
+        var widths = widthRule.widths
+        widths.def = width
+        return .trackWidth(ruleID: widthRule.id, layer: widthRule.layer, widths: widths)
+    }
+
     /// Where the width comes from, in a sentence.
     var widthSourceText: String {
         switch widthSource {
         case .custom:
-            return "A custom width, set with W or here. A route that starts on a pad or a track takes the rules' or the track's again."
+            return "A custom width, set with W or here; Define Rule makes it the rules'. A route that starts on a pad or a track takes the rules' or the track's again."
         case .track:
             return "The width of the track the route started on, which it continues."
         case .rule:
@@ -195,6 +249,12 @@ enum HorizontalRouteInspectorCommand: Equatable {
     /// A via of this size, for this route and the next.
     case useCustomVia(diameter: Double, holeDiameter: Double)
     case editRule(HorizontalRouteRuleEdit)
+    /// Define Rule: the edit that makes the route's custom width the rules',
+    /// and then the width from the rules, as `useRuleWidth`.
+    case defineWidthRule(HorizontalRouteRuleEdit)
+    /// Define Rule for the via: the edit that makes its custom size the via
+    /// rule's, and then the via from the rules, as `useRuleVia`.
+    case defineViaRule(HorizontalRouteRuleEdit)
     /// Open the board's rules at a rule.
     case showRules(HorizontalBoardRuleKind, ruleID: String?)
 }
@@ -770,9 +830,11 @@ private struct HorizontalRouteInspectorContent: View {
 
     private var widthSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                sectionTitle("Width")
-                Spacer()
+            sourceHeader(
+                "Width",
+                define: isReadOnly ? nil : state.defineWidthRule.map { edit in { onCommand(.defineWidthRule(edit)) } },
+                defineHelp: defineWidthRuleHelp
+            ) {
                 // Each picker here sends only a change: SwiftUI can hand a
                 // picker its own selection back while it updates the view, and
                 // the command would publish the tool settings mid-update.
@@ -802,26 +864,13 @@ private struct HorizontalRouteInspectorContent: View {
             }
             row("Width") {
                 millimetreField(state.width, help: widthFieldHelp) { width in
-                    commitWidth(width)
+                    if let command = state.command(typingWidth: width) {
+                        onCommand(command)
+                    }
                 }
             }
             caption(state.widthSourceText)
-            if let rule = state.widthRule, widthMode == .rules {
-                row("Minimum") {
-                    millimetreField(rule.widths.min, help: "The least width the rule allows on \(state.layerName)") { min in
-                        var widths = rule.widths
-                        widths.min = min
-                        onCommand(.editRule(.trackWidth(ruleID: rule.id, layer: rule.layer, widths: widths)))
-                    }
-                }
-                row("Maximum") {
-                    millimetreField(rule.widths.max, help: "The greatest width the rule allows on \(state.layerName)") { max in
-                        var widths = rule.widths
-                        widths.max = max
-                        onCommand(.editRule(.trackWidth(ruleID: rule.id, layer: rule.layer, widths: widths)))
-                    }
-                }
-            } else if widthMode != .rules {
+            if widthMode != .rules {
                 caption("The rules would give \(HorizontalRouteInspectorState.millimetres(state.ruleWidth)).")
             }
             if let warning = state.widthWarning {
@@ -849,30 +898,20 @@ private struct HorizontalRouteInspectorContent: View {
     private var widthFieldHelp: String {
         switch widthMode {
         case .rules:
-            state.widthRule == nil
-                ? "Adds a track width rule with this width"
-                : "Changes the default width of the track width rule on \(state.layerName)"
+            "A width typed here is a custom one, for this route and the next; the rules stay as they are"
         case .track, .custom:
             "Sets a custom width for this route and the next"
         }
     }
 
-    private func commitWidth(_ width: Double) {
-        guard width > 0 else {
-            return
+    private var defineWidthRuleHelp: String {
+        let width = HorizontalRouteInspectorState.millimetres(state.width)
+        if let rule = state.widthRule {
+            return "Make \(width) the default width of the track width rule \(rule.brief) on \(state.layerName), "
+                + "and take the width from the rules"
         }
-        switch widthMode {
-        case .rules:
-            if let rule = state.widthRule {
-                var widths = rule.widths
-                widths.def = width
-                onCommand(.editRule(.trackWidth(ruleID: rule.id, layer: rule.layer, widths: widths)))
-            } else {
-                onCommand(.editRule(.addTrackWidthRule(layer: state.layer, width: width)))
-            }
-        case .track, .custom:
-            onCommand(.useCustomWidth(width))
-        }
+        return "Add a track width rule that takes every net, with \(width) on \(state.layerName), "
+            + "and take the width from the rules"
     }
 
     // MARK: Via
@@ -880,9 +919,11 @@ private struct HorizontalRouteInspectorContent: View {
     private var viaSection: some View {
         let via = state.via
         return VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                sectionTitle(via.isArmed ? "Via (armed)" : "Via")
-                Spacer()
+            sourceHeader(
+                via.isArmed ? "Via (armed)" : "Via",
+                define: isReadOnly ? nil : via.defineRule.map { edit in { onCommand(.defineViaRule(edit)) } },
+                defineHelp: defineViaRuleHelp(via)
+            ) {
                 if via.canDrop {
                     Picker("Via from", selection: Binding(
                         get: { via.isCustom },
@@ -964,20 +1005,24 @@ private struct HorizontalRouteInspectorContent: View {
     }
 
     private func viaFieldHelp(_ via: HorizontalRouteInspectorState.Via) -> String {
-        if via.isCustom || via.rule == nil {
+        if via.isCustom {
             return "Sets the size of the route's via, for this route and the next"
         }
-        return "Changes the via rule \(via.ruleBrief ?? "")"
+        return "A size typed here is a custom one, for this route and the next; the rules stay as they are"
+    }
+
+    private func defineViaRuleHelp(_ via: HorizontalRouteInspectorState.Via) -> String {
+        let size = "\(via.diameter.map(Self.mm) ?? "") / \(via.holeDiameter.map(Self.mm) ?? "") mm"
+        if let brief = via.ruleBrief {
+            return "Make \(size) the size of the via rule \(brief), and take the via from the rules"
+        }
+        return "Add a via rule that takes every net, with the board's default via at \(size), "
+            + "and take the via from the rules"
     }
 
     private func commitVia(_ via: HorizontalRouteInspectorState.Via, diameter: Double, holeDiameter: Double) {
-        guard diameter > 0, holeDiameter > 0 else {
-            return
-        }
-        if !via.isCustom, let rule = via.rule {
-            onCommand(.editRule(.viaParameters(rule: rule, diameter: diameter, holeDiameter: holeDiameter)))
-        } else {
-            onCommand(.useCustomVia(diameter: diameter, holeDiameter: holeDiameter))
+        if let command = via.command(diameter: diameter, holeDiameter: holeDiameter) {
+            onCommand(command)
         }
     }
 
@@ -1130,6 +1175,33 @@ private struct HorizontalRouteInspectorContent: View {
     private func sectionTitle(_ title: String) -> some View {
         Text(title)
             .font(.subheadline.weight(.semibold))
+    }
+
+    /// A section's title, with where its values come from (`source`, the
+    /// Rules / Custom picker) at the right and Define Rule in front of it
+    /// while the values aren't the rules'. On a narrow sidebar the title
+    /// gives way. Not a ViewThatFits putting the two under the title: in the
+    /// sidebar's list, with the segmented picker in both of its layouts, it
+    /// kept SwiftUI updating without end once accessibility read the row.
+    private func sourceHeader<Source: View>(
+        _ title: String,
+        define: (() -> Void)?,
+        defineHelp: String,
+        @ViewBuilder source: () -> Source
+    ) -> some View {
+        HStack(spacing: 6) {
+            sectionTitle(title)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            if let define {
+                Button("Define Rule", action: define)
+                    .controlSize(.small)
+                    .fixedSize()
+                    .help(defineHelp)
+            }
+            source()
+                .layoutPriority(1)
+        }
     }
 
     /// A note under a row. It wraps: one row holds the whole inspector, and
