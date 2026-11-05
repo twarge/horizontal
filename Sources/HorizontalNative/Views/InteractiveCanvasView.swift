@@ -316,19 +316,35 @@ struct CanvasViewport: Codable, Equatable {
     static let maximumZoom: CGFloat = 128
     static let zoomBase: CGFloat = 1.5
 
+    /// The rectangle zoom and pan are measured from, and what it was taken
+    /// from (a sheet's id, a board's uuid). Zoom 1 and no pan fit it to the
+    /// canvas. It is the content's extent when the view was fitted, opened or
+    /// moved to another sheet, and stays that while the content changes, so
+    /// no edit moves the view: a paste past the edge, a delete at it.
+    struct Reference: Equatable {
+        var identity: String
+        var bounds: HorizontalRect
+    }
+
     var zoom: CGFloat = 1
     var pan: CGSize = .zero
     /// Seen from the other side: x runs the other way, as it does when a
     /// board is turned over. Pan and zoom mean what they always did.
     var mirrored = false
+    /// What zoom and pan are measured from; nil until the canvas pins it,
+    /// measured from the content meanwhile. Taken by the canvas whose
+    /// identity it names; another canvas measures from its own content and
+    /// pins its own.
+    var reference: Reference?
 
-    init(zoom: CGFloat = 1, pan: CGSize = .zero, mirrored: Bool = false) {
+    init(zoom: CGFloat = 1, pan: CGSize = .zero, mirrored: Bool = false, reference: Reference? = nil) {
         self.zoom = Self.clamp(zoom)
         self.pan = CGSize(
             width: pan.width.isFinite ? pan.width : 0,
             height: pan.height.isFinite ? pan.height : 0
         )
         self.mirrored = mirrored
+        self.reference = reference
     }
 
     init(from decoder: Decoder) throws {
@@ -337,10 +353,24 @@ struct CanvasViewport: Codable, Equatable {
         let panWidth = try container.decodeIfPresent(Double.self, forKey: .panWidth) ?? 0
         let panHeight = try container.decodeIfPresent(Double.self, forKey: .panHeight) ?? 0
         let mirrored = try container.decodeIfPresent(Bool.self, forKey: .mirrored) ?? false
+        // A view saved before references were kept has none: it is measured
+        // from the content it opens on, as it was saved, and pinned there.
+        var reference: Reference?
+        if let identity = try container.decodeIfPresent(String.self, forKey: .referenceIdentity),
+           let minX = try container.decodeIfPresent(Double.self, forKey: .referenceMinX),
+           let minY = try container.decodeIfPresent(Double.self, forKey: .referenceMinY),
+           let maxX = try container.decodeIfPresent(Double.self, forKey: .referenceMaxX),
+           let maxY = try container.decodeIfPresent(Double.self, forKey: .referenceMaxY) {
+            let bounds = HorizontalRect(points: [HorizontalPoint(x: minX, y: minY), HorizontalPoint(x: maxX, y: maxY)])
+            if !bounds.isEmpty, [minX, minY, maxX, maxY].allSatisfy(\.isFinite) {
+                reference = Reference(identity: identity, bounds: bounds)
+            }
+        }
         self.init(
             zoom: CGFloat(zoom),
             pan: CGSize(width: CGFloat(panWidth), height: CGFloat(panHeight)),
-            mirrored: mirrored
+            mirrored: mirrored,
+            reference: reference
         )
     }
 
@@ -352,6 +382,13 @@ struct CanvasViewport: Codable, Equatable {
         if mirrored {
             try container.encode(mirrored, forKey: .mirrored)
         }
+        if let reference {
+            try container.encode(reference.identity, forKey: .referenceIdentity)
+            try container.encode(reference.bounds.minX, forKey: .referenceMinX)
+            try container.encode(reference.bounds.minY, forKey: .referenceMinY)
+            try container.encode(reference.bounds.maxX, forKey: .referenceMaxX)
+            try container.encode(reference.bounds.maxY, forKey: .referenceMaxY)
+        }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -359,11 +396,28 @@ struct CanvasViewport: Codable, Equatable {
         case panWidth
         case panHeight
         case mirrored
+        case referenceIdentity
+        case referenceMinX
+        case referenceMinY
+        case referenceMaxX
+        case referenceMaxY
     }
 
+    /// The rectangle a canvas showing `identity`, whose content spans
+    /// `contentBounds`, measures this viewport from: the reference when it is
+    /// that canvas's, else the content.
+    func measuringBounds(for identity: String?, contentBounds: HorizontalRect) -> HorizontalRect {
+        if let identity, let reference, reference.identity == identity {
+            return reference.bounds
+        }
+        return contentBounds
+    }
+
+    /// Fits the content: measured from it again, it is pinned anew.
     mutating func fit() {
         zoom = 1
         pan = .zero
+        reference = nil
     }
 
     mutating func zoomIn() {
@@ -437,12 +491,13 @@ struct CanvasViewport: Codable, Equatable {
 
 struct InteractiveCanvasView: View {
     var bounds: HorizontalRect
-    /// What `bounds` are the bounds of, such as a sheet. While it stays the
-    /// same, bounds that change with an edit leave the view where it was: the
-    /// viewport is rebased onto them. When it changes, the viewport is kept
-    /// as it is, measured from the new thing's bounds. nil lets the view
-    /// follow the bounds.
-    var boundsIdentity: AnyHashable? = nil
+    /// What `bounds` are the bounds of, such as a sheet's id. The viewport is
+    /// measured from a reference it carries, pinned to these bounds as the
+    /// canvas first shows them, so bounds that change with an edit never move
+    /// the view. Another identity keeps the viewport's zoom and pan, measured
+    /// from its own bounds, and pins them. nil lets the view follow the
+    /// bounds.
+    var boundsIdentity: String? = nil
     @Binding var viewport: CanvasViewport
     var backgroundColor: Color
     var foregroundColor = Color.horizonPlatformLabel
@@ -618,12 +673,6 @@ struct InteractiveCanvasView: View {
     /// Spatial index over `snapTargets`, rebuilt only when they change, so cursor
     /// snapping stays O(1)-ish per move (held in @State to persist across renders).
     @State private var snapIndexCache = HorizontalSnapIndexCache()
-    /// The bounds the viewport is measured from, and what they belong to.
-    private struct IdentifiedBounds: Equatable {
-        var bounds: HorizontalRect
-        var identity: AnyHashable
-    }
-    @State private var viewedBounds: IdentifiedBounds?
     #if canImport(MetalKit)
     @State private var viewportDriver = HorizontalCanvasViewportDriver()
     @State private var liveChromeViewport: CanvasViewport?
@@ -657,19 +706,20 @@ struct InteractiveCanvasView: View {
         #endif
     }
 
-    private var identifiedBounds: IdentifiedBounds? {
-        boundsIdentity.map { IdentifiedBounds(bounds: bounds, identity: $0) }
+    /// The bounds the canvas draws and measures zoom and pan from: the
+    /// viewport's reference, which no edit changes, or the content's until
+    /// the canvas pins one.
+    private var viewBounds: HorizontalRect {
+        effectiveViewport.measuringBounds(for: boundsIdentity, contentBounds: bounds)
     }
 
-    /// The bounds the canvas draws and measures zoom and pan from: the ones
-    /// the viewport was made for. A body that first sees new bounds of the
-    /// same thing still draws from the old, with the viewport made for them,
-    /// until `adoptBounds` rebases the viewport and takes the new together.
-    private var viewBounds: HorizontalRect {
-        if let viewedBounds, viewedBounds.identity == boundsIdentity {
-            return viewedBounds.bounds
+    /// The viewport has no reference for what the canvas shows: it has just
+    /// opened, been fitted, or come to another sheet.
+    private var needsPinnedReference: Bool {
+        guard let boundsIdentity, !bounds.isEmpty else {
+            return false
         }
-        return bounds
+        return effectiveViewport.reference?.identity != boundsIdentity
     }
 
     private var effectiveZoom: CGFloat {
@@ -745,21 +795,17 @@ struct InteractiveCanvasView: View {
                         .onChange(of: canvasDisplayTransformReportTrigger) { _, _ in onCanvasDisplayTransformChange(transform) }
                 }
 
-                // A paste, a delete or a drop past the edge changes the
-                // bounds; the view stays where it was.
+                // The viewport is measured from the bounds the content had
+                // when it was fitted or first shown, not from the content's,
+                // so a paste, a delete or a drop past the edge leaves the
+                // view where it was.
                 if boundsIdentity != nil {
                     Color.clear
                         .frame(width: 0, height: 0)
                         .allowsHitTesting(false)
-                        .onAppear { viewedBounds = identifiedBounds }
-                        .onChange(of: identifiedBounds) { _, newValue in
-                            adoptBounds(newValue, size: proxy.size, fitInsets: fitInsets)
-                        }
-                        // Bounds that changed while it was hidden, at no
-                        // width, are taken once it is shown.
-                        .onChange(of: proxy.size) { _, size in
-                            if viewedBounds != identifiedBounds {
-                                adoptBounds(identifiedBounds, size: size, fitInsets: fitInsets)
+                        .onChange(of: needsPinnedReference, initial: true) { _, needsPin in
+                            if needsPin {
+                                pinReference()
                             }
                         }
                 }
@@ -775,7 +821,8 @@ struct InteractiveCanvasView: View {
                     // a view each, presenting on their own, and the highlight
                     // trailed the copper by a frame while zooming.
                     HorizontalMetalBackdropView(
-                        bounds: viewBounds,
+                        contentBounds: bounds,
+                        boundsIdentity: boundsIdentity,
                         viewport: effectiveViewport,
                         viewportDriver: usesViewportDriver ? viewportDriver : nil,
                         fitInsets: fitInsets,
@@ -944,7 +991,7 @@ struct InteractiveCanvasView: View {
                                     magnification,
                                     anchor: anchor,
                                     size: size,
-                                    bounds: viewBounds,
+                                    bounds: viewport.measuringBounds(for: boundsIdentity, contentBounds: bounds),
                                     fitInsets: fitInsets
                                 )
                             }
@@ -974,7 +1021,7 @@ struct InteractiveCanvasView: View {
                                     step,
                                     anchor: anchor,
                                     size: size,
-                                    bounds: viewBounds,
+                                    bounds: viewport.measuringBounds(for: boundsIdentity, contentBounds: bounds),
                                     fitInsets: fitInsets
                                 )
                             }
@@ -1093,7 +1140,7 @@ struct InteractiveCanvasView: View {
                                     scale,
                                     anchor: anchor,
                                     size: size,
-                                    bounds: viewBounds,
+                                    bounds: viewport.measuringBounds(for: boundsIdentity, contentBounds: bounds),
                                     fitInsets: fitInsets
                                 )
                                 viewport.pan(by: panDelta)
@@ -1336,29 +1383,21 @@ struct InteractiveCanvasView: View {
         #endif
     }
 
-    /// Takes `newValue` as the bounds the viewport is measured from. New
-    /// bounds of the thing already shown rebase the viewport onto them, on
-    /// the binding and the Metal driver at once, so what is on screen stays
-    /// put; another thing's keep the viewport as it is. A canvas with no
-    /// size, kept mounted in a hidden pane, has nothing on screen to keep in
-    /// place and no size to rebase at: it keeps the bounds it has until it is
-    /// shown again.
-    private func adoptBounds(_ newValue: IdentifiedBounds?, size: CGSize, fitInsets: HorizontalCanvasInsets) {
-        guard let newValue, let viewedBounds, viewedBounds.identity == newValue.identity else {
-            self.viewedBounds = newValue
+    /// Makes the content's bounds now the ones the viewport is measured from,
+    /// on the binding and the Metal driver at once. They are the bounds it
+    /// was measured from until now, so nothing on screen moves; from here on
+    /// a change to the content doesn't move it either. The driver's viewport
+    /// is the one taken, so a gesture under way keeps its zoom and pan.
+    private func pinReference() {
+        guard let boundsIdentity, !bounds.isEmpty else {
             return
         }
-        guard size.width > 0, size.height > 0 else {
-            return
+        var pinned = interactionViewport
+        pinned.reference = CanvasViewport.Reference(identity: boundsIdentity, bounds: bounds)
+        if pinned != viewport {
+            viewport = pinned
         }
-        self.viewedBounds = newValue
-        let current = interactionViewport
-        let rebased = current.rebased(from: viewedBounds.bounds, to: newValue.bounds, size: size, fitInsets: fitInsets)
-        guard rebased != current else {
-            return
-        }
-        viewport = rebased
-        synchronizeLiveViewportFromBinding(rebased)
+        synchronizeLiveViewportFromBinding(pinned)
     }
 
     private func synchronizeLiveViewportFromBinding(_ newValue: CanvasViewport) {
@@ -1570,7 +1609,7 @@ struct InteractiveCanvasView: View {
     private func currentTransform(size: CGSize, fitInsets: HorizontalCanvasInsets) -> HorizontalCanvasTransform {
         let viewport = interactionViewport
         return HorizontalCanvasTransform(
-            bounds: viewBounds,
+            bounds: viewport.measuringBounds(for: boundsIdentity, contentBounds: bounds),
             size: size,
             fitInsets: fitInsets,
             zoom: viewport.zoom,

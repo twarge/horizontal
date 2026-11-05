@@ -42,7 +42,12 @@ extension CanvasViewport {
     /// The viewport that shows `rect` filling `fill` of the canvas described
     /// by `transform` (its bounds, size and insets), centered. What the live
     /// channel's zoom-to uses; the canvases apply it to their viewport binding.
-    static func framing(_ rect: HorizontalRect, in transform: HorizontalCanvasTransform, fill: CGFloat = 0.85) -> CanvasViewport {
+    /// Its zoom and pan are measured from the transform's bounds, so a canvas
+    /// showing `identity` gets them as the viewport's reference, and goes on
+    /// measuring from them whatever its content does.
+    static func framing(
+        _ rect: HorizontalRect, in transform: HorizontalCanvasTransform, fill: CGFloat = 0.85, identity: String? = nil
+    ) -> CanvasViewport {
         let bounds = transform.bounds
         guard !bounds.isEmpty, transform.size.width > 0, transform.size.height > 0 else {
             return CanvasViewport()
@@ -65,33 +70,9 @@ extension CanvasViewport {
             width: CGFloat(bounds.width) * scale / 2 - CGFloat(fromLeft) * scale,
             height: CGFloat(bounds.height) * scale / 2 - CGFloat(bounds.maxY - center.y) * scale
         )
-        return CanvasViewport(zoom: zoom, pan: pan, mirrored: transform.mirrored)
-    }
-
-    /// This viewport measured from `newBounds` instead of `oldBounds`, showing
-    /// what it showed: each world point stays where it was on the canvas.
-    /// Zoom and pan are measured from the fit of a canvas's bounds, and a
-    /// sheet's are its content's, so an edit drawing past them, or taking
-    /// away what stood at their edge, would carry the view with them. Zoom
-    /// keeps to its limits, which only bounds many times larger or smaller
-    /// reach; the middle of the canvas then stays put.
-    func rebased(
-        from oldBounds: HorizontalRect, to newBounds: HorizontalRect,
-        size: CGSize, fitInsets: HorizontalCanvasInsets
-    ) -> CanvasViewport {
-        guard oldBounds != newBounds, !oldBounds.isEmpty, !newBounds.isEmpty, size.width > 0, size.height > 0 else {
-            return self
-        }
-        let old = HorizontalCanvasTransform(bounds: oldBounds, size: size, fitInsets: fitInsets, zoom: zoom, pan: pan, mirrored: mirrored)
-        let newFitScale = HorizontalCanvasTransform(bounds: newBounds, size: size, fitInsets: fitInsets, mirrored: mirrored).length(1)
-        guard newFitScale > 0 else {
-            return self
-        }
-        var rebased = CanvasViewport(zoom: old.length(1) / newFitScale, mirrored: mirrored)
-        let middle = CGPoint(x: size.width / 2, y: size.height / 2)
-        let placed = HorizontalCanvasTransform(bounds: newBounds, size: size, fitInsets: fitInsets, zoom: rebased.zoom, mirrored: mirrored)
-            .point(old.worldPoint(middle))
-        rebased.pan = CGSize(width: middle.x - placed.x, height: middle.y - placed.y)
-        return rebased
+        return CanvasViewport(
+            zoom: zoom, pan: pan, mirrored: transform.mirrored,
+            reference: identity.map { Reference(identity: $0, bounds: bounds) }
+        )
     }
 }

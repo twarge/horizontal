@@ -5,9 +5,11 @@ import XCTest
 @testable import HorizontalNative
 
 /// A board's bounds are its content's, and zoom and pan are measured from
-/// their fit. The board coming back from an edit with bounds grown past what
-/// it held (a paste, a part placed off the board) leaves the view where it
-/// was; another board is shown fitted, as before.
+/// the bounds the viewport pinned when the board was first shown. The board
+/// coming back from an edit with bounds grown past what it held (a paste, a
+/// part placed off the board) or shrunk again leaves the view where it was,
+/// in every frame the renderer takes; another board is shown fitted, as
+/// before.
 @MainActor
 final class BoardBoundsViewTests: XCTestCase {
     @MainActor private final class State: ObservableObject {
@@ -68,9 +70,18 @@ final class BoardBoundsViewTests: XCTestCase {
         window.contentView = hosted
         window.orderFront(nil)
         defer { window.close() }
-        let mounted = await settle { state.actions?.visibleWorldBounds?() != nil }
+        let mounted = await settle {
+            state.actions?.visibleWorldBounds?() != nil
+                && CanvasFrameRecording.renderer(in: hosted)?.frame.viewport.reference != nil
+        }
         XCTAssertTrue(mounted)
         let view = try XCTUnwrap(state.actions?.visibleWorldBounds?())
+        let renderer = try XCTUnwrap(CanvasFrameRecording.renderer(in: hosted))
+        let settled = renderer.frame
+        XCTAssertEqual(settled.viewport.reference, CanvasViewport.Reference(identity: "board", bounds: rect(0, 0, 40, 30)),
+                       "The viewport is pinned to the bounds the board was shown with")
+        let probes = [HorizontalPoint(x: 0, y: 0), HorizontalPoint(x: 37_000_000, y: 21_000_000)]
+        renderer.recordedFrames = []
 
         // The same board, back from an edit that drew past what it held.
         state.board = board(bounds: rect(-60, -10, 140, 90))
@@ -81,6 +92,10 @@ final class BoardBoundsViewTests: XCTestCase {
         state.board = board(bounds: rect(0, 0, 40, 30))
         try await Task.sleep(for: .milliseconds(300))
         assertEqual(state.actions?.visibleWorldBounds?(), view, "Bounds shrunk by an edit moved the view")
+        CanvasFrameRecording.assertEveryFrameShows(probes, as: settled, in: renderer,
+                                                   "An edit's new bounds moved the view, if only for a frame")
+        XCTAssertEqual(renderer.frame.bounds, rect(0, 0, 40, 30), "The renderer measures from the pinned bounds")
+        renderer.recordedFrames = nil
 
         // Another board is shown as it always was: fitted, at the zoom kept.
         let other = rect(500, 500, 540, 530)

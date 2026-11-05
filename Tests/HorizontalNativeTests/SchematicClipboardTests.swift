@@ -817,8 +817,10 @@ extension SchematicClipboardTests {
     }
 
     /// A sheet's bounds are its content's, and zoom and pan are measured from
-    /// their fit. A paste dropped past the content grows them, and undoing it
-    /// shrinks them again; neither moves the view.
+    /// the bounds the viewport pinned when the sheet was first shown. A paste
+    /// dropped past the content grows them, and undoing it shrinks them again,
+    /// as a delete at the edge does; neither moves the view, in any frame the
+    /// renderer takes.
     @MainActor func testAPastePastTheSheetsContentLeavesTheViewWhereItWas() async throws {
         guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required for the canvas") }
         _ = NSApplication.shared
@@ -838,9 +840,17 @@ extension SchematicClipboardTests {
             while !predicate(), Date() < deadline { try? await Task.sleep(for: .milliseconds(30)) }
             return predicate()
         }
-        let mounted = await settle { state.actions?.visibleWorldBounds?() != nil }
+        let mounted = await settle {
+            state.actions?.visibleWorldBounds?() != nil
+                && CanvasFrameRecording.renderer(in: hosted)?.frame.viewport.reference != nil
+        }
         XCTAssertTrue(mounted)
         let view = try XCTUnwrap(state.actions?.visibleWorldBounds?())
+        let renderer = try XCTUnwrap(CanvasFrameRecording.renderer(in: hosted))
+        let settled = renderer.frame
+        XCTAssertEqual(settled.viewport.reference?.bounds, originalBounds)
+        let probes = [originalBounds.center, HorizontalPoint(x: originalBounds.maxX, y: originalBounds.minY)]
+        renderer.recordedFrames = []
         func shownView() -> [Double] {
             guard let shown = state.actions?.visibleWorldBounds?() else { return [] }
             return [shown.minX, shown.minY, shown.maxX, shown.maxY]
@@ -878,6 +888,9 @@ extension SchematicClipboardTests {
         XCTAssertEqual(state.fixture.sheet.bounds, originalBounds)
         try await Task.sleep(for: .milliseconds(300))
         assertTheViewStayed("Undoing the paste moved the view")
+        CanvasFrameRecording.assertEveryFrameShows(probes, as: settled, in: renderer,
+                                                   "The paste or its undo moved the view, if only for a frame")
+        renderer.recordedFrames = nil
     }
 
     /// The selection and the which-object menu name what is on the sheet as
