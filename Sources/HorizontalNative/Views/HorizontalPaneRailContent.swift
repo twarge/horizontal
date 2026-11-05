@@ -2183,7 +2183,7 @@ struct ThreeDViewControlsButton: View {
             Button {
                 isControlsPresented.toggle()
             } label: {
-                Image(systemName: isControlsPresented ? "cube.fill" : "cube")
+                Image(systemName: "slider.horizontal.3")
             }
             .help("3D Board controls")
             .popover(isPresented: $isControlsPresented, arrowEdge: .trailing) {
