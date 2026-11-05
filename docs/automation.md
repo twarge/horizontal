@@ -604,6 +604,14 @@ airwires are taken into that copy when it's made, on the main actor. A stale
 scene shows up as `matches_check: false` with the nets that differ, and nobody
 has to judge the screen by eye.
 
+The pane's airwire filter (the board rail's filter button, or Design ▸ Filter
+Airwires…) hides the airwires of the nets it names, a view setting saved with
+the board's other view state. The scene still holds those nets' airwires and
+the comparison still counts them, so `matches_check` says only whether the
+scene is stale; `filtered` and `hidden_nets` say what the filter leaves out,
+and the render, like the pane, leaves them out too. `check` reports every
+unrouted connection whatever the filter says.
+
 `show_panes` is the one view verb that goes nowhere: it says which panes to
 show and hides the rest, replacing what is up rather than adding to it. `frame`
 and `show_sheet` reveal a pane on the way to somewhere in it, which is not the

@@ -554,6 +554,52 @@ struct BoardMetalElementBatch {
         return result
     }
 
+    /// Drops the airwires of `netIDs` (lowercased net uuids) for the airwire
+    /// filter: the lines drawn under a net's `airwire/<net>` owner, which the
+    /// scene gives its airwires and nothing else. Applied at concat time, as
+    /// the label cull is, so a change to the filter rebuilds no buckets.
+    func filtered(hidingAirwiresOf netIDs: Set<String>) -> BoardMetalElementBatch {
+        let prefix = "airwire/"
+        func hides(_ owner: HorizontalSelectableRef?) -> Bool {
+            guard let owner, owner.type == .connectionLine, owner.id.hasPrefix(prefix) else {
+                return false
+            }
+            return netIDs.contains(String(owner.id.dropFirst(prefix.count)))
+        }
+        guard !netIDs.isEmpty, lineOwners.contains(where: hides) else {
+            return self
+        }
+
+        var result = self
+        result.lines = []
+        result.lineOwners = []
+        result.lineLabelSizes = []
+        result.textRuns = []
+        result.lines.reserveCapacity(lines.count)
+        result.lineOwners.reserveCapacity(lines.count)
+        result.lineLabelSizes.reserveCapacity(lines.count)
+
+        var runIndex = 0
+        for index in lines.indices {
+            let owner = index < lineOwners.count ? lineOwners[index] : nil
+            while runIndex < textRuns.count, textRuns[runIndex].lineStart < index {
+                runIndex += 1
+            }
+            if hides(owner) {
+                continue
+            }
+            if runIndex < textRuns.count, textRuns[runIndex].lineStart == index {
+                var run = textRuns[runIndex]
+                run.lineStart = result.lines.count
+                result.textRuns.append(run)
+            }
+            result.lines.append(lines[index])
+            result.lineOwners.append(owner)
+            result.lineLabelSizes.append(index < lineLabelSizes.count ? lineLabelSizes[index] : 0)
+        }
+        return result
+    }
+
     mutating func appendTriangle(_ primitive: HorizontalMetalTrianglePrimitive, owner: HorizontalSelectableRef? = nil) {
         triangles.append(primitive)
         triangleOwners.append(owner)
@@ -810,6 +856,10 @@ struct BoardMetalVisibilitySignature: Hashable {
     /// carried in the signature so it is both the cache key and the value the
     /// filter uses — the two can never disagree. 0 disables culling.
     var minimumLabelSize: Double = 0
+    /// The nets the airwire filter hides (`BoardDisplayOptions.hiddenAirwireNetIDs`),
+    /// taken out of the connection lines at concat time; a change to it makes
+    /// a new scene key, and so a new upload and composite.
+    var hiddenAirwireNetIDs: Set<String> = []
 }
 
 // Marked @unchecked Sendable so a detached Task can capture `self` to hop back

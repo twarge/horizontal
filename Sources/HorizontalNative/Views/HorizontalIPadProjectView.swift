@@ -85,6 +85,9 @@ struct HorizontalIPadProjectView: View {
     // Rail state (brought over from the macOS workspace): display options drive the
     // layer-visibility rail; selection-tool settings drive the selection rail button.
     @State private var boardDisplayOptions = BoardDisplayOptions.opening(nil)
+    /// The board rail's airwire filter popover, which the canvas's Filter
+    /// Airwires command opens too.
+    @State private var isBoardAirwireFilterPresented = false
     @State private var selectionToolSettings = HorizontalSelectionToolSettings()
     @State private var schematicDisplayOptions = SchematicDisplayOptions()
     @State private var schematicDrawingToolCommand: HorizontalDrawingToolCommand?
@@ -448,6 +451,9 @@ struct HorizontalIPadProjectView: View {
             scheduleViewStateSave()
         }
         .onChange(of: navigatorPresented) { _, _ in
+            scheduleViewStateSave()
+        }
+        .onChange(of: boardDisplayOptions.hiddenAirwireNetIDs) { _, _ in
             scheduleViewStateSave()
         }
         .onDisappear {
@@ -1642,6 +1648,7 @@ struct HorizontalIPadProjectView: View {
                     planePourRevision: planePourRevision,
                     planeFillDelivery: planeFillDelivery,
                     onSelectBoardLayerView: { applyBoardLayerViewPreset($0) },
+                    onFilterAirwires: { isBoardAirwireFilterPresented = true },
                     poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
                     ruleMarkers: HorizontalCanvasWarning.markers(clearanceFindings: rulesResultsState?.clearanceFindings ?? [])
                 )
@@ -1660,6 +1667,14 @@ struct HorizontalIPadProjectView: View {
             } grid: {
                 GridControlsPanel(title: "Board Grid", grid: boardGridBinding())
             } tools: {
+                // Read-only too: it changes only which airwires are drawn.
+                BoardAirwireFilterToolButton(
+                    board: board,
+                    displayOptions: $boardDisplayOptions,
+                    isPresented: $isBoardAirwireFilterPresented,
+                    highlightedNetIDs: highlightedNetIDs,
+                    onHighlightNets: { highlightedNetIDs = $0 }
+                )
                 if !isReadOnly {
                     DrawTrackToolButton {
                         boardDrawTrackCommand = HorizontalDrawTrackCommand()
@@ -2578,6 +2593,9 @@ struct HorizontalIPadProjectView: View {
                 focusedPane = orderedVisiblePanes.first ?? focusedPane
             }
             paneSizeFractions = stored.paneSizeFractions.mapValues { CGFloat($0) }
+            // Of the board's view only the airwire filter is kept here: the
+            // rest opens as BoardDisplayOptions.opening gives it.
+            boardDisplayOptions.hiddenAirwireNetIDs = stored.boardDisplayOptions.hiddenAirwireNetIDs
             switch stored.rightSidebarPane {
             case .selection:
                 rightPane = .inspector
@@ -2617,6 +2635,7 @@ struct HorizontalIPadProjectView: View {
         state.visiblePanes = visiblePanes
         state.showsNavigatorSidebar = navigatorPresented
         state.paneSizeFractions = paneSizeFractions.mapValues(Double.init)
+        state.boardDisplayOptions.hiddenAirwireNetIDs = boardDisplayOptions.hiddenAirwireNetIDs
         switch rightPane {
         case .inspector:
             state.rightSidebarPane = .selection

@@ -547,6 +547,9 @@ struct BoardCanvasView: View {
     var onSelectDrawingLayer: (Int) -> Void = { _ in }
     /// Shifted / control number keys jump to a board view preset.
     var onSelectBoardLayerView: (HorizontalBoardLayerViewPreset) -> Void = { _ in }
+    /// Design ▸ Filter Airwires…: the host opens its airwire filter. Nil
+    /// leaves the menu item off.
+    var onFilterAirwires: (() -> Void)? = nil
     /// Pool directory URL, for re-deriving a package's silk on Unsmash.
     var poolURL: URL?
     /// What the canvas is editing: a board, or a pool package / padstack /
@@ -685,6 +688,7 @@ struct BoardCanvasView: View {
         planeFillDelivery: HorizontalPlaneFillDelivery? = nil,
         onSelectDrawingLayer: @escaping (Int) -> Void = { _ in },
         onSelectBoardLayerView: @escaping (HorizontalBoardLayerViewPreset) -> Void = { _ in },
+        onFilterAirwires: (() -> Void)? = nil,
         poolURL: URL? = nil,
         modeProfile: HorizontalBoardModeProfile = .board,
         poolContext: HorizontalPoolEditorContext? = nil,
@@ -732,6 +736,7 @@ struct BoardCanvasView: View {
         self.planeFillDelivery = planeFillDelivery
         self.onSelectDrawingLayer = onSelectDrawingLayer
         self.onSelectBoardLayerView = onSelectBoardLayerView
+        self.onFilterAirwires = onFilterAirwires
         self.poolURL = poolURL
         self.modeProfile = modeProfile
         self.poolContext = poolContext
@@ -1649,7 +1654,7 @@ struct BoardCanvasView: View {
         }
         if displayOptions.connectionLines,
            board.connectionLines.contains(where: { matches($0.netID) })
-            || board.airwires.contains(where: { matches($0.netID) }) {
+            || board.airwires.contains(where: { matches($0.netID) && displayOptions.showsAirwires(ofNet: $0.netID) }) {
             return true
         }
         if displayOptions.pads,
@@ -3045,6 +3050,7 @@ struct BoardCanvasView: View {
             // Dimensions are the board's: a package or padstack has no use for
             // one, and Horizon offers the tool only there.
             handlers.drawDimension = { beginDrawDimension() }
+            handlers.filterAirwires = onFilterAirwires
             if selectedObjects.contains(where: canDisconnect) {
                 handlers.disconnect = { disconnectSelection() }
             }
@@ -9778,7 +9784,8 @@ struct BoardCanvasView: View {
             dimensions: displayOptions.dimensions,
             connectionLines: displayOptions.connectionLines,
             connectionLabels: displayOptions.connectionLabels,
-            minimumLabelSize: minimumLabelSize
+            minimumLabelSize: minimumLabelSize,
+            hiddenAirwireNetIDs: displayOptions.connectionLines ? displayOptions.hiddenAirwireNetIDs : []
         )
     }
 
@@ -9944,7 +9951,7 @@ struct BoardCanvasView: View {
                 add("dimensions", buckets.dimensions)
             }
             if signature.connectionLines {
-                add("connection lines", buckets.connectionLines)
+                add("connection lines", buckets.connectionLines.filtered(hidingAirwiresOf: signature.hiddenAirwireNetIDs))
             }
             if signature.connectionLines && signature.connectionLabels {
                 add("connection labels", buckets.connectionLabels)
@@ -10248,7 +10255,11 @@ struct BoardCanvasView: View {
         }
         // The buckets just fetched are the ones drawn, cached or not, so what
         // they were built with is what the canvas shows.
-        liveCanvasAirwires.drawn = HorizontalDrawnAirwires(airwires: buckets.airwires, shown: displayOptions.connectionLines)
+        liveCanvasAirwires.drawn = HorizontalDrawnAirwires(
+            airwires: buckets.airwires,
+            shown: displayOptions.connectionLines,
+            hiddenNetIDs: displayOptions.hiddenAirwireNetIDs
+        )
 
         let signature = metalVisibilitySignature()
         let includesResidentMoveMetadata = canPatchBoardMoveInMetal
@@ -13494,7 +13505,7 @@ struct BoardCanvasView: View {
            let airwireRequest = state.airwireRequest,
            let airwires = selectableCache.movingAirwireSegments(for: airwireRequest, placement: state.livePlacement) {
             let color = HorizontalMetalRGBA(theme.airwire.opacity(0.72))
-            for airwire in airwires {
+            for airwire in airwires where displayOptions.showsAirwires(ofNet: airwire.netID) {
                 lines.append(
                     HorizontalMetalLinePrimitive(
                         from: airwire.from,
@@ -14910,7 +14921,7 @@ struct BoardCanvasView: View {
             for connectionLine in board.connectionLines where matchesHighlightedNet(connectionLine.netID) {
                 drawHighlightedSegment(connectionLine, color: color, context: context, transform: transform, dashed: true)
             }
-            for airwire in board.airwires where matchesHighlightedNet(airwire.netID) {
+            for airwire in board.airwires where matchesHighlightedNet(airwire.netID) && displayOptions.showsAirwires(ofNet: airwire.netID) {
                 drawHighlightedSegment(airwire, color: color, context: context, transform: transform, dashed: true)
             }
         }
