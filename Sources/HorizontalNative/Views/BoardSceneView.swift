@@ -533,7 +533,6 @@ private struct BoardSceneDisplayOptionsKey: Hashable {
     var packages: Bool
     var decals: Bool
     var keepouts: Bool
-    var connectionLines: Bool
     var origin: Bool
     var orientationAxes: Bool
     var outline: Bool
@@ -558,7 +557,6 @@ private struct BoardSceneDisplayOptionsKey: Hashable {
         self.packages = options.packages
         self.decals = options.decals
         self.keepouts = options.keepouts
-        self.connectionLines = options.connectionLines
         self.origin = options.origin
         self.orientationAxes = options.orientationAxes
         self.outline = options.outline
@@ -647,7 +645,6 @@ final class BoardSceneNodes: @unchecked Sendable {
     let packageArtGroup = SCNNode()
     let decalGroup = SCNNode()
     let keepoutGroup = SCNNode()
-    let connectionGroup = SCNNode()
     let originGroup = SCNNode()
     let orientationAxesGroup = SCNNode()
     let outlineGroup = SCNNode()
@@ -694,7 +691,7 @@ final class BoardSceneNodes: @unchecked Sendable {
         let groups: [SCNNode] = [
             substrateGroup, solderMaskGroup, silkscreenGroup, pasteGroup,
             copperGroup, planeGroup, viaGroup, holeGroup, modelGroup, noPopulateModelGroup, placeholderModelGroup, textGroup,
-            packageArtGroup, decalGroup, keepoutGroup, connectionGroup,
+            packageArtGroup, decalGroup, keepoutGroup,
             originGroup, orientationAxesGroup, outlineGroup, panelLabelGroup,
         ]
         for group in groups {
@@ -888,7 +885,6 @@ final class BoardSceneNodes: @unchecked Sendable {
         packageArtGroup.isHidden = !options.packages
         decalGroup.isHidden = !options.decals
         keepoutGroup.isHidden = !options.keepouts
-        connectionGroup.isHidden = !options.connectionLines
         originGroup.isHidden = !options.origin
         orientationAxesGroup.isHidden = !options.orientationAxes
         outlineGroup.isHidden = !options.outline
@@ -2427,7 +2423,6 @@ enum BoardSceneFactory {
     private static let maximumPlaneFragments = 400
 
     private static let maximumViaNodes = 2_500
-    private static let maximumConnectionLineDashes = 3_000
 
     private struct SolderMaskOpening {
         var bounds: HorizontalRect
@@ -2461,7 +2456,6 @@ enum BoardSceneFactory {
         var placeholderPackages = false
         var packagePads = true
         var tracks = true
-        var connectionLines = true
         var holes = true
         var originAxes = false
         var orientationAxes = false
@@ -2477,7 +2471,6 @@ enum BoardSceneFactory {
             placeholderPackages: false,
             packagePads: false,
             tracks: false,
-            connectionLines: false,
             holes: false,
             originAxes: false,
             orientationAxes: false
@@ -2494,12 +2487,12 @@ enum BoardSceneFactory {
     /// geometries each holds: for finding what SceneKit defers.
     static func debugFlushReport(for board: HorizontalBoard) -> String {
         var lines = [String]()
-        let names = ["substrate", "solderMask", "silkscreen", "copper", "plane", "via", "model", "text", "packageArt", "decal", "keepout", "connection", "pad(other)"]
+        let names = ["substrate", "solderMask", "silkscreen", "copper", "plane", "via", "model", "text", "packageArt", "decal", "keepout", "pad(other)"]
         func groups(_ nodes: BoardSceneNodes) -> [SCNNode] {
-            [nodes.substrateGroup, nodes.solderMaskGroup, nodes.silkscreenGroup, nodes.copperGroup, nodes.planeGroup, nodes.viaGroup, nodes.modelGroup, nodes.textGroup, nodes.packageArtGroup, nodes.decalGroup, nodes.keepoutGroup, nodes.connectionGroup]
+            [nodes.substrateGroup, nodes.solderMaskGroup, nodes.silkscreenGroup, nodes.copperGroup, nodes.planeGroup, nodes.viaGroup, nodes.modelGroup, nodes.textGroup, nodes.packageArtGroup, nodes.decalGroup, nodes.keepoutGroup]
         }
         SCNTransaction.begin(); SCNTransaction.commit()
-        for (index, name) in names.enumerated() where index < 12 {
+        for (index, name) in names.enumerated() where index < 11 {
             let nodes = buildScene(for: board, options: .full)
             nodes.applyDisplayOptions(
                 BoardDisplayOptions(),
@@ -2756,11 +2749,6 @@ enum BoardSceneFactory {
                 boardThickness: thickness,
                 materialPalette: materialPalette
             ) }
-        }
-
-        if options.connectionLines {
-            addConnectionLines(board.connectionLines, to: nodes.connectionGroup, center: center, color: HorizontalDefaultTheme.connectionLineNS)
-            addConnectionLines(board.airwires, to: nodes.connectionGroup, center: center, color: HorizontalDefaultTheme.airwireNS)
         }
 
         if options.holes {
@@ -4801,62 +4789,6 @@ enum BoardSceneFactory {
         )
     }
 
-    private static func addConnectionLines(
-        _ connectionLines: [HorizontalSegment],
-        to group: SCNNode,
-        center: HorizontalPoint,
-        color: HorizontalPlatformColor
-    ) {
-        let material = SCNMaterial()
-        material.diffuse.contents = color.withAlphaComponent(0.62)
-        material.emission.contents = color.withAlphaComponent(0.16)
-        material.roughness.contents = 0.5
-
-        var dashCount = 0
-        for connectionLine in connectionLines {
-            for node in connectionLineNodes(connectionLine, center: center, material: material) {
-                guard dashCount < maximumConnectionLineDashes else {
-                    return
-                }
-                group.addChildNode(node)
-                dashCount += 1
-            }
-        }
-    }
-
-    private static func connectionLineNodes(
-        _ connectionLine: HorizontalSegment,
-        center: HorizontalPoint,
-        material: SCNMaterial
-    ) -> [SCNNode] {
-        let start = scenePosition(connectionLine.from, center: center, y: 1.08)
-        let end = scenePosition(connectionLine.to, center: center, y: 1.08)
-        let vector = SCNVector3(end.x - start.x, end.y - start.y, end.z - start.z)
-        let length = vectorLength(vector)
-        guard length > 0.05 else {
-            return []
-        }
-
-        let direction = SCNVector3(vector.x / length, vector.y / length, vector.z / length)
-        let dashLength = min(max(length * 0.12, 1.2), 3.2)
-        let gapLength = dashLength * 0.72
-        let step = dashLength + gapLength
-        var nodes = [SCNNode]()
-        var offset: HorizontalSceneScalar = 0
-
-        while offset < length {
-            let segmentLength = min(dashLength, length - offset)
-            let segmentStart = pointAlong(start, direction: direction, distance: offset)
-            let segmentEnd = pointAlong(start, direction: direction, distance: offset + segmentLength)
-            if let node = cylinderNode(from: segmentStart, to: segmentEnd, radius: 0.025, material: material) {
-                nodes.append(node)
-            }
-            offset += step
-        }
-
-        return nodes
-    }
-
     private static func cylinderNode(
         from start: SCNVector3,
         to end: SCNVector3,
@@ -5987,17 +5919,6 @@ enum BoardSceneFactory {
             || layer == HorizontalBoardLayers.bottomAssembly
     }
 
-    private static func pointAlong(
-        _ point: SCNVector3,
-        direction: SCNVector3,
-        distance: HorizontalSceneScalar
-    ) -> SCNVector3 {
-        let x = point.x + direction.x * distance
-        let y = point.y + direction.y * distance
-        let z = point.z + direction.z * distance
-        return SCNVector3(x, y, z)
-    }
-
     private static func vectorLength(_ vector: SCNVector3) -> HorizontalSceneScalar {
         let squaredLength = vector.x * vector.x + vector.y * vector.y + vector.z * vector.z
         return sqrt(squaredLength)
@@ -6162,7 +6083,6 @@ public enum HorizontalBoardPreviewRenderer {
         displayOptions.threeDCopperMode = .on
         displayOptions.threeDModelMode = .placed
         displayOptions.threeDBackground = true
-        displayOptions.connectionLines = false
         displayOptions.origin = false
         displayOptions.orientationAxes = false
         displayOptions.panelLabels = false

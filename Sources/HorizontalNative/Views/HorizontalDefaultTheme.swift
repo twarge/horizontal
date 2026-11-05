@@ -29,8 +29,6 @@ enum HorizontalDefaultTheme {
     static let backgroundNS = platformColor(red: 0, green: 24.0 / 255.0, blue: 64.0 / 255.0)
     static let textOverlayNS = platformColor(red: 1, green: 1, blue: 1)
     static let holeNS = platformColor(red: 1, green: 1, blue: 1)
-    static let airwireNS = platformColor(red: 0, green: 1, blue: 1)
-    static let connectionLineNS = platformColor(red: 0.7, green: 0, blue: 0.6)
 
     static func layerColor(for layer: Int?) -> Color {
         guard let layer else {
