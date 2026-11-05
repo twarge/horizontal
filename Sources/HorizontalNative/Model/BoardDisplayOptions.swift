@@ -150,6 +150,11 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
     /// still reports every unrouted connection. A net the board no longer
     /// has is never asked about, so it is simply ignored.
     var hiddenAirwireNetIDs: Set<String> = []
+    /// Design ▸ Keep Block Instances in Sync: an edit of a block instance's
+    /// parts or copper is made in the instances laid out like it too
+    /// (`HorizontalBlockLayoutSync`). Kept with the file's view, never in
+    /// the file, which has no say in it.
+    var syncsBlockInstances = true
 
     init() { }
 
@@ -224,6 +229,7 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         layerVisibilityOverrides = try container.decodeIfPresent([Int: Bool].self, forKey: .layerVisibilityOverrides) ?? defaults.layerVisibilityOverrides
         layerFillOverrides = try container.decodeIfPresent([Int: Bool].self, forKey: .layerFillOverrides) ?? defaults.layerFillOverrides
         hiddenAirwireNetIDs = Set((try container.decodeIfPresent([String].self, forKey: .hiddenAirwireNetIDs) ?? []).map { $0.lowercased() })
+        syncsBlockInstances = try container.decodeIfPresent(Bool.self, forKey: .syncsBlockInstances) ?? defaults.syncsBlockInstances
     }
 
     mutating func showAll() {

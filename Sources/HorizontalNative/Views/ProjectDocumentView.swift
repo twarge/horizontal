@@ -2589,6 +2589,7 @@ struct ProjectWorkspaceView: View {
                                 onMeasureTracks: { tracks, allTracks in
                                     measureTracks(tracks, allTracks: allTracks)
                                 },
+                                blockInstances: project.flattenedBlock?.boardInstances,
                                 tuningReferenceLength: lengthTuning.referenceLength,
                                 onComponentRefdesChange: { componentID, refdes in
                                     if let selectedSchematic {

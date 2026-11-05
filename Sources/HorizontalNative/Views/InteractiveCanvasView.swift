@@ -116,6 +116,16 @@ enum HorizontalCanvasCommand {
     /// (double-click or the per-object "Edit…" menu item). No-op on iOS.
     case editText
     case filterAirwires
+    /// Board: U while a move, route or paste is under way: this edit only
+    /// for the block instance it is made in, the others laid out like it
+    /// left as they are (`HorizontalBlockLayoutSync`); U again undoes that.
+    case toggleInstanceOnly
+    /// Board: the selected parts' block instances, their parts and their
+    /// own copper.
+    case selectBlockInstance
+    /// Board: the selected part's block instance's layout copied to the
+    /// other instances of its block.
+    case copyBlockLayout
     case openDatasheet
     /// Horizon's Smash (H): the selected symbols' (packages') texts become
     /// texts of their own on the sheet (board), to move on their own.

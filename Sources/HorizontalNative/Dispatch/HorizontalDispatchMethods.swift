@@ -235,7 +235,8 @@ enum HorizontalDispatchMethods {
                      "width_mm": "Track width (optional; the first track_width rule by order that takes the net, on the layer, else required).",
                      "max_routes": "Stop after this many airwires; default 20, maximum 200.",
                      "expected_revision": "The revision this was planned against.",
-                     "operation_id": "Caller-chosen id for this mutation.", "dry_run": "Report without writing (default false)."],
+                     "operation_id": "Caller-chosen id for this mutation.", "dry_run": "Report without writing (default false).",
+                     "sync": "Route the same in the block instances laid out like the one routed (default true)."],
             handler: autoroute
         ),
         .init(
@@ -363,9 +364,20 @@ enum HorizontalDispatchMethods {
                 "ops": "Array of operations, each {\"op\": name, ...params}; see list_ops. A commit may leave them out and name its dry run by plan_digest alone, while the revision is the one it was planned at.",
                 "block": "Block uuid or name to edit (optional; default the top block). A sub-block has no board, so board operations are refused for one.",
                 "pool_items": "Pool items to install in the same transaction.",
-                "dry_run": "Validate and report without writing (default false)."
+                "dry_run": "Validate and report without writing (default false).",
+                "sync": "Make the batch's edits of a block instance's parts and copper in the instances laid out like it too (default true); the reply's synced says what that did."
             ],
             handler: applyOperations
+        ),
+        .init(
+            name: "sync_block_layout",
+            summary: "Copy Layout to Other Instances: lay out other instances of a block as one instance is, each where it is, their own copper given way to its copied; copper that isn't theirs stays. Afterwards edits of one reach the others.",
+            params: ["handle": "Project handle.",
+                     "source": "The instance whose layout to copy, by name (I1, or I1/S1 nested) or instance path.",
+                     "targets": "The instances to lay out (optional; default every other instance of its block).",
+                     "expected_revision": "The revision this was planned against.",
+                     "operation_id": "Caller-chosen id for this mutation.", "dry_run": "Report without writing (default false)."],
+            handler: syncBlockLayout
         ),
         .init(
             name: "live_state",
@@ -1425,7 +1437,8 @@ enum HorizontalDispatchMethods {
             }
         }
         let byDigestAlone = HorizontalDispatchMutation.committingByDigestAlone(params, payload: "ops")
-        return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params, byDigestAlone: byDigestAlone) { store in
+        return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params, byDigestAlone: byDigestAlone,
+                                                      syncsBlockInstances: true) { store in
             if let items = params["pool_items"] as? [JSONDictionary] {
                 _ = try writePoolItems(poolTargets(poolItems(items, entry: entry), entry: entry, store: store), to: store)
             }
@@ -2501,13 +2514,16 @@ enum HorizontalDispatchMethods {
                 sheetsByInstance[instance, default: []].append(["block_symbol": symbolID, "sheet": sheet.id, "sheet_index": sheet.index])
             }
         }
+        // The top block's instances are where their board layouts are: which
+        // are laid out alike, and what differs (`HorizontalBlockLayoutMatch`).
+        let match = selectedBlock.map(\.isTop) ?? true ? blockLayoutMatch(entry) : nil
         return block.dictionaryMap("block_instances").map { id, item -> JSONDictionary in
             let used = item.string("block")?.lowercased()
             let connections = item.dictionaryMap("connections").compactMap { port, value -> JSONDictionary? in
                 guard let net = value.string("net")?.lowercased() else { return nil }
                 return ["port": port, "net": net, "net_name": entry.index.net(id: net)?.name as Any? as Any]
             }.sorted { ($0.string("net_name") ?? "") < ($1.string("net_name") ?? "") }
-            return [
+            var reply: JSONDictionary = [
                 "id": id,
                 "block": used as Any? as Any,
                 "block_name": used.flatMap { names[$0] } as Any? as Any,
@@ -2515,7 +2531,84 @@ enum HorizontalDispatchMethods {
                 "connections": connections,
                 "symbols": sheetsByInstance[id.lowercased()] ?? []
             ]
+            if let match, let board = boardLayout(of: id.lowercased(), in: match) {
+                reply["board"] = board
+            }
+            return reply
         }.sorted { ($0.string("refdes") ?? "", $0.string("id") ?? "") < ($1.string("refdes") ?? "", $1.string("id") ?? "") }
+    }
+
+    /// Copy Layout to Other Instances: `targets`, or every other instance of
+    /// the source's block, laid out as the source is.
+    @Sendable private static func syncBlockLayout(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
+        let entry = try session.entry(for: params)
+        guard let board = entry.project.board,
+              let instances = entry.project.flattenedBlock?.boardInstances, !instances.isEmpty,
+              let boardURL = entry.project.boardFilename.map({ entry.project.baseURL.appendingPathComponent($0) }) else {
+            throw HorizontalDispatchError.notFound("The design has no board, or uses no block more than once.")
+        }
+        func instance(_ reference: String) throws -> HorizontalBoardBlockInstances.Instance {
+            let matches = instances.instances.values.filter { $0.name == reference || $0.path == reference.lowercased() }
+            guard let match = matches.first else {
+                let names = instances.instances.values.sorted(by: HorizontalBoardBlockInstances.inOrder).map(\.name)
+                throw HorizontalDispatchError.notFound("No instance \(reference). Known: \(names.joined(separator: ", ")).")
+            }
+            guard matches.count == 1 else {
+                throw HorizontalDispatchError(code: .ambiguous, message: "\(matches.count) instances are called \(reference); use the path.")
+            }
+            return match
+        }
+        guard let reference = params.string("source") else {
+            throw HorizontalDispatchError.invalidParams("sync_block_layout needs \"source\": the instance whose layout to copy.")
+        }
+        let source = try instance(reference)
+        let targets = try (params["targets"] as? [String])?.map(instance) ?? instances.siblings(of: source)
+        if let other = targets.first(where: { $0.blockID != source.blockID }) {
+            throw HorizontalDispatchError.invalidParams("\(other.name) is an instance of another block than \(source.name).")
+        }
+        let changes = HorizontalBlockLayoutSync.copyLayout(from: source.path, to: targets.map(\.path), board: board, instances: instances)
+        return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params) { store in
+            if !changes.isEmpty {
+                try HorizontalDispatchBlockSync.write(changes, to: store, at: boardURL, board: board)
+            }
+            var result = HorizontalDispatchBlockSync.summary(changes)
+            result["source"] = source.name
+            result["applied"] = changes.report.changed.count
+            result["undo_name"] = "Copy Block Layout"
+            return result
+        }
+    }
+
+    /// Which of the design's block instances are laid out alike on its board.
+    private static func blockLayoutMatch(_ entry: HorizontalDispatchProjectEntry) -> HorizontalBlockLayoutMatch? {
+        guard let board = entry.project.board,
+              let instances = entry.project.flattenedBlock?.boardInstances, !instances.isEmpty else {
+            return nil
+        }
+        return HorizontalBlockLayoutMatch(board: board, instances: instances)
+    }
+
+    /// An instance's layout on the board, for `list_block_instances`: its
+    /// parts and how many are placed, the instances laid out like it, and
+    /// the parts that differ from each other instance laid out like it.
+    private static func boardLayout(of path: String, in match: HorizontalBlockLayoutMatch) -> JSONDictionary? {
+        guard let instance = match.instances.instances[path], match.instances.siblings[instance.blockID] != nil else {
+            return nil
+        }
+        let names = { (paths: [String]) in paths.compactMap { match.instances.instances[$0]?.name } }
+        var differs = JSONDictionary()
+        for sibling in match.instances.siblings(of: instance) {
+            guard let pair = match.pair(from: path, to: sibling.path), pair.related, !pair.differs.isEmpty else { continue }
+            differs[sibling.name] = pair.differs
+                .compactMap { HorizontalBlockInstanceSummary.refdes(of: $0, in: instance, match: match) }
+                .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        }
+        return [
+            "members": instance.members.count,
+            "placed_members": match.layouts[path]?.packages.count ?? 0,
+            "in_sync_with": names(match.classmates(of: path)),
+            "differs_from": differs,
+        ]
     }
 
     @Sendable private static func listSymbols(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
@@ -2856,7 +2949,7 @@ enum HorizontalDispatchMethods {
         }
 
         let widthFromRules = params.double("width_mm") == nil
-        return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params) { store in
+        return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params, syncsBlockInstances: true) { store in
             var written = 0
             if !routed.isEmpty {
                 let editor = try HorizontalProjectEditor(project: entry.project, store: store, snapshot: entry.snapshot)

@@ -57,7 +57,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `find_overlaps` | what looks connected and is not: a wire over a pin it does not end on, a junction on a pin with no wire to it, junctions on one spot no wire joins, and a wire ending part way along another |
 | `list_tracks`, `list_vias` | copper, filtered by net or layer; a track end is a pad (naming the component) or a junction. Both wrap their answer in `total`/`truncated`, because a board has thousands |
 | `list_net_labels`, `list_power_symbols` | what names a net on a page, with the ids their remove ops take |
-| `list_block_instances` | the blocks this block uses, their wired ports, and where each is drawn |
+| `list_block_instances` | the blocks this block uses, their wired ports, and where each is drawn; for the top block's instances, `board`: how many of its parts are placed, the instances laid out like it (`in_sync_with`) and the parts that differ from each (`differs_from`) |
 | `autoroute` | best-effort automatic routing of one net's airwires |
 | `list_board_texts`, `list_dimensions` | board text and dimensions; a dimension reports `measures_mm`, worked out for its mode. The reference designators smashed out of packages are left out unless `smashed`, each with the `refdes` of its part; `component` keeps one part's; a text that draws something other than it stores (`$RD`, `$project_title`) gives it as `drawn`; `text` keeps texts containing it as stored or as drawn, smashed ones included unless `smashed` is false |
 | `export_settings` | the export settings Horizon EDA keeps in the project — Gerber, ODB, pick-and-place, STEP, board PDF, BOM, schematic PDF — as stored, or null where there are none. Horizontal's own `export` names its files after the project file and does not read them |
@@ -69,6 +69,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | `board_rules` | the design rules as data — one entry per rule, not per kind — the net classes they select, and the stackup |
 | `get_pool_item` | one pool item's own JSON — the bytes `pool_write` takes back. `pool_write` also takes `{"from": uuid, "patch": {...}, "uuid"?}`: that item merged with the patch as RFC 7396 merges (objects key by key, `null` removing a key), written over it or, under a new `uuid`, beside it |
 | `pour_planes` | fills every plane, as Update All Planes does |
+| `sync_block_layout` | Copy Layout to Other Instances: lays other instances of a block (`targets`, default all) out as `source` is, each where it is |
 | `list_texts` | free text on the schematic sheets, with the ids the text ops take; texts smashed out of symbols only with `smashed` or in a `text` search, each with its part's `refdes`, or only one part's with `component`; `drawn` and `text` as for `list_board_texts` |
 | `list_parts` | parts the project can use; `scope` widens it from the project pool to the pools it draws from. Every row's `pools` names each pool holding the part, its own first, so a cached part says where it came from. A part flagged `base_part` is left out, as Horizon's part browser leaves it out, and `search_pool` marks it `base_part`. The MCP tool also takes `pool` (only the parts one pool holds) and `fields`, which refuses a key no row has and names the keys there are |
 | `search_pool` | search those pools by name, description, manufacturer, tag, uuid or a part's value, filtered by item kind. A quantity matches however it is written — `2.2 µF`, `2u2`, `2200nF` — against a part's value, description words or parametric data. A part row has the keys a `list_parts` row has, its `package` and `package_id` a derived part's taken from its base, and `package` (a name such as `C0402`, or a uuid) keeps only the parts in it. Every item's `pools` names each searched pool holding it. Rows name what they use — a symbol its `unit_id` and `unit`, an entity its `unit_ids`, a derived part its `base_id`, a package its `padstack_ids` — and `uses` (the items naming one: a unit's symbols and entities, an entity's parts, a padstack's packages) and `used_by` (the items one names) follow those links, by uuid or 8+ leading digits |
@@ -430,6 +431,40 @@ instances' refdes order, so a block used three times prints three times, each
 under its instance's refdes. Frames number the pages across the design
 (`$sheet_idx/$sheet_total`), each block symbol links to its instance's first
 page, and the outline nests the instances under the sheets they are drawn on.
+
+### Block instances laid out alike
+
+Horizon's board is flat: an instance's parts are packages like any other, and
+nothing in its files says that two instances are laid out alike or should
+stay so. Horizontal works that out from the board each time and stores
+nothing: two instances of a block are laid out alike where one rigid motion
+(a shift, a turn, maybe a flip to the other side) takes most of one's parts
+onto the same parts of the other (`HorizontalBlockLayoutMatch`). Its parts
+that the motion takes elsewhere differ, and stay the instance's own. An
+instance's own copper is what its pads join and nothing outside it does: a
+stub, a via off its pad, a track between two of its parts, but not a trunk that
+reaches another part's pad.
+
+`apply` and `autoroute` make a batch's edit of one instance in the instances
+laid out like it, through the motion between them, before anything is loaded
+or kept (`HorizontalDispatchBlockSync`): a part moved, turned, flipped, placed
+or taken off, a flag set, its own copper added, moved, reshaped or deleted.
+The reply's `synced` says which instances and how much, and `skipped` names a
+fixed part or locked track or via it left. An instance moved as a whole moves
+nothing else. What it writes is only those changes: every other byte of the
+board file stays as the batch left it, and copies take ids derived from what
+they copy and where, so a dry run shows the sync and its commit writes the
+same. A batch that changes two instances laid out alike in ways that disagree
+is refused (`INVALID_ARGUMENT`, `reason: block_sync_conflict`), naming them;
+`sync: false` edits each instance on its own and is a plan of its own.
+`sync_block_layout` lays instances out alike to begin with: each target's
+parts go where the motion from the source puts the source's, its own copper
+gives way to the source's, copied, and what isn't its own stays.
+
+The app does the same on its board canvas (Design ▸ Keep Block Instances in
+Sync, kept with the file's view; U during a move, route or paste makes that
+edit the instance's own), but its switch is the app's: an MCP batch says for
+itself with `sync`.
 
 ### Routing is manual, and autoroute is honest about it
 

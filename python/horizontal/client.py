@@ -426,6 +426,16 @@ class Project:
         """Board polygons; layer 100 is the outline."""
         return self._call("list_polygons", **({"layer": layer} if layer is not None else {}))
 
+    def sync_block_layout(self, source: str, targets: list[str] | None = None, dry_run: bool = False, *,
+                          expected_revision: str | None = None, operation_id: str | None = None) -> dict[str, Any]:
+        """Copy Layout to Other Instances: lay out targets, or every other instance of source's block, as source is."""
+        params = {k: v for k, v in {"targets": targets}.items() if v is not None}
+        result = self._call("sync_block_layout", source=source, dry_run=dry_run,
+                            **self._guarded(dry_run, expected_revision, operation_id), **params)
+        if not dry_run and "project" in result:
+            self.summary = result["project"]
+        return result
+
     def pour_planes(self, dry_run: bool = False, *, expected_revision: str | None = None,
                     operation_id: str | None = None) -> dict[str, Any]:
         """Fill every plane from the board as it now stands."""
@@ -454,9 +464,9 @@ class Project:
 
     def autoroute(self, net: str, layer: int = 0, width_mm: float | None = None, max_routes: int = 20,
                   dry_run: bool = False, *, expected_revision: str | None = None,
-                  operation_id: str | None = None) -> dict[str, Any]:
+                  operation_id: str | None = None, sync: bool | None = None) -> dict[str, Any]:
         """Best-effort automatic routing of one net's airwires."""
-        params = {k: v for k, v in {"width_mm": width_mm}.items() if v is not None}
+        params = {k: v for k, v in {"width_mm": width_mm, "sync": sync}.items() if v is not None}
         result = self._call("autoroute", net=net, layer=layer, max_routes=max_routes, dry_run=dry_run,
                             **self._guarded(dry_run, expected_revision, operation_id), **params)
         if not dry_run and "project" in result:
@@ -561,7 +571,7 @@ class Project:
     def apply(self, ops: list[dict[str, Any]] | None, dry_run: bool = False, *, expected_revision: str | None = None,
               operation_id: str | None = None, plan_digest: str | None = None,
               pool_items: list[dict[str, Any]] | None = None, block: str | None = None,
-              detail: str | None = None) -> dict[str, Any]:
+              detail: str | None = None, sync: bool | None = None) -> dict[str, Any]:
         """Apply edit operations; each is {"op": name, ...params}. Writes only changed files. ops None commits the
         dry run plan_digest names, at the revision it was made.
         detail="compact" returns ids and counts without echoing the ops or the project summary. A dry run's
@@ -573,6 +583,7 @@ class Project:
         if pool_items is not None: params["pool_items"] = pool_items
         if block is not None: params["block"] = block
         if detail is not None: params["detail"] = detail
+        if sync is not None: params["sync"] = sync
         result = self._call("apply", **params)
         if not dry_run and "project" in result:
             self.summary = result["project"]

@@ -508,6 +508,10 @@ struct BoardCanvasView: View {
     /// by id, to the Length Tuning window, with whether to measure all of
     /// their nets' tracks. Nil where the host has no window.
     var onMeasureTracks: ((Set<String>, Bool) -> Void)? = nil
+    /// The design's block instances, for the instances of a block laid out
+    /// alike: what the inspector says of an instance's parts, and what Select
+    /// Instance selects. Nil or empty where no block is used twice.
+    var blockInstances: HorizontalBoardBlockInstances? = nil
     /// The Length Tuning window's reference length, the tune tool's target
     /// unless one is typed (`HorizontalBoardToolSettings.tuneTarget`).
     var tuningReferenceLength: Double? = nil
@@ -615,6 +619,13 @@ struct BoardCanvasView: View {
     @State private var roundOffVertexState: RoundOffVertexState?
     /// The tune tool, while it is in use (`BoardTuneState`).
     @State private var tuneState: BoardTuneState?
+    /// U during a move, route or paste: the edit is this block instance's
+    /// alone, the instances laid out like it left as they are.
+    @State private var instanceOnlyEdit = false
+    /// What the last edit also changed in other block instances, said for a
+    /// moment where the hints go.
+    @State private var blockSyncNote: String?
+    @State private var blockSyncNoteID = 0
     @State private var packagePlacementState: PackagePlacementState?
     @State private var planeEditorState: PlaneEditorState?
     @State private var padstackPickerPresented = false
@@ -654,6 +665,7 @@ struct BoardCanvasView: View {
     @StateObject private var labelLODDebouncer = BoardLabelLODDebouncer()
     @StateObject private var undoTarget = HorizontalUndoTarget<HorizontalBoard>()
     @StateObject private var selectableCache = BoardSelectableCache()
+    @State private var blockLayoutCache = BoardBlockLayoutCache()
     @Environment(\.colorScheme) private var colorScheme
     /// The window's Pools pane, for Alternate Parts…; nil where there is none.
     @Environment(\.horizonPoolRevealAction) private var poolRevealAction
@@ -681,6 +693,7 @@ struct BoardCanvasView: View {
         onNetClassChange: @escaping (String, String?) -> Void = { _, _ in },
         onEditDiffpair: HorizontalDiffpairEditing? = nil,
         onMeasureTracks: ((Set<String>, Bool) -> Void)? = nil,
+        blockInstances: HorizontalBoardBlockInstances? = nil,
         tuningReferenceLength: Double? = nil,
         onComponentRefdesChange: @escaping (String, String) -> Void = { _, _ in },
         onSelectionDetailsChange: @escaping (HorizontalSelectionDetailState) -> Void = { _ in },
@@ -732,6 +745,7 @@ struct BoardCanvasView: View {
         self.onNetClassChange = onNetClassChange
         self.onEditDiffpair = onEditDiffpair
         self.onMeasureTracks = onMeasureTracks
+        self.blockInstances = blockInstances
         self.tuningReferenceLength = tuningReferenceLength
         self.onComponentRefdesChange = onComponentRefdesChange
         self.onSelectionDetailsChange = onSelectionDetailsChange
@@ -1107,7 +1121,7 @@ struct BoardCanvasView: View {
             minimumLineWidth: appearanceSettings.minimumLineWidth(for: .board),
             metalLayerOpacity: layerOpacity,
             selectionHUD: selectionHUD,
-            hoverStatusText: interactionStatusText ?? hoverStatusText,
+            hoverStatusText: interactionStatusText.map(withInstanceOnlyHint) ?? blockSyncNote ?? hoverStatusText,
             showsHoverPopover: appearanceSettings.shouldShowHoverPopover,
             selectionDetails: selectionDetails,
             showsSelectionDetails: Self.showsInCanvasSelectionInspector,
@@ -1378,8 +1392,10 @@ struct BoardCanvasView: View {
         }
         .onChange(of: selectionPropertyChangeCommand?.id) { _, _ in
             guard let selectionPropertyChangeCommand else { return }
-            // Measuring changes nothing, so a locked board measures too.
-            if measureTracks(for: selectionPropertyChangeCommand.change) {
+            // Measuring and selecting change nothing, so a locked board does
+            // them too.
+            if measureTracks(for: selectionPropertyChangeCommand.change)
+                || selectBlockInstance(for: selectionPropertyChangeCommand.change) {
                 return
             }
             if !isReadOnly {
@@ -1893,6 +1909,9 @@ struct BoardCanvasView: View {
                 if type == .track {
                     addTrackSummary(to: &group)
                 }
+                if type == .boardPackage {
+                    addBlockInstanceSummary(to: &group)
+                }
                 return group
             }
             .sorted { $0.title < $1.title }
@@ -1916,6 +1935,98 @@ struct BoardCanvasView: View {
         if onMeasureTracks != nil {
             group.actions = HorizontalTrackSelectionSummary.measureActions
         }
+    }
+
+    /// The block instances the selected packages are parts of: which, the
+    /// instances laid out like it and what differs, with Select Instance.
+    private func addBlockInstanceSummary(to group: inout HorizontalSelectionDetailGroup) {
+        guard let match = blockLayoutMatch else {
+            return
+        }
+        let instances = HorizontalBlockInstanceSummary.instances(ofPackages: group.items.map(\.ref.id), in: match)
+        guard !instances.isEmpty else {
+            return
+        }
+        group.summary = HorizontalBlockInstanceSummary.details(for: instances, in: match)
+        group.actions = HorizontalBlockInstanceSummary.actions(canCopyLayout: !isReadOnly && instances.count == 1)
+    }
+
+    /// Which instances of the design's blocks are laid out alike on the
+    /// board as it is, made again only when it changes.
+    private var blockLayoutMatch: HorizontalBlockLayoutMatch? {
+        guard let blockInstances, !blockInstances.isEmpty else {
+            return nil
+        }
+        let current = board
+        let key = BoardBlockLayoutCache.Key(
+            boardID: current.uuid,
+            revision: selectableCacheRevision,
+            counts: boardGeometryCounts(for: current),
+            packageCount: current.packages.count
+        )
+        return blockLayoutCache.match(key: key) {
+            HorizontalBlockLayoutMatch(board: current, instances: blockInstances)
+        }
+    }
+
+    /// Select Instance: the selected packages' instances, their parts and
+    /// their own copper, so they move as one. Selecting changes nothing, so
+    /// a locked board selects too.
+    private func selectBlockInstance(for change: HorizontalSelectionPropertyChange) -> Bool {
+        guard change.propertyID == HorizontalBlockInstanceSummary.selectActionID else {
+            return false
+        }
+        selectBlockInstances()
+        return true
+    }
+
+    /// The block instances the selected packages are parts of, innermost.
+    private var selectedBlockInstances: [HorizontalBoardBlockInstances.Instance] {
+        guard let match = blockLayoutMatch else {
+            return []
+        }
+        let packages = selectedObjects.filter { $0.type == .boardPackage }.map(\.id)
+        return packages.isEmpty ? [] : HorizontalBlockInstanceSummary.instances(ofPackages: packages, in: match)
+    }
+
+    /// Copy Layout to Other Instances: the selected part's instance laid out
+    /// in every other instance of its block, as one undo step. Their own
+    /// copper gives way to its copper; what isn't theirs stays.
+    private func copyBlockLayoutToOtherInstances() {
+        guard !isReadOnly, moveState == nil, pastePlacementState == nil, drawTrackState == nil,
+              let blockInstances, let source = selectedBlockInstances.first, selectedBlockInstances.count == 1 else {
+            return
+        }
+        let previous = editedBoard ?? sourceBoard
+        let targets = blockInstances.siblings(of: source).map(\.path)
+        let changes = HorizontalBlockLayoutSync.copyLayout(from: source.path, to: targets, board: previous, instances: blockInstances)
+        guard !changes.isEmpty else {
+            return
+        }
+        var draft = previous
+        let report = HorizontalBlockLayoutSync.apply(changes, to: &draft, poolURL: poolURL)
+        registerUndoSnapshot(previous, actionName: "Copy Block Layout")
+        editedBoard = draft
+        invalidateSelectableCache()
+        hoveredObject = nil
+        publishConnectivityResolvedEdit(draft, regeneratingAirwires: true)
+        showBlockSyncNote(report, lead: "Copied \(source.name)'s layout to")
+    }
+
+    private func selectBlockInstances() {
+        guard moveState == nil, pastePlacementState == nil, let match = blockLayoutMatch else {
+            return
+        }
+        let packages = selectedObjects.filter { $0.type == .boardPackage }.map(\.id)
+        let instances = HorizontalBlockInstanceSummary.instances(ofPackages: packages, in: match)
+        let refs = HorizontalBlockInstanceSummary.selection(of: instances, in: match, from: boardSelectableScene().refs())
+        guard !refs.isEmpty else {
+            return
+        }
+        selectedObjects = refs
+        selectedUnplacedObjectID = nil
+        hoveredObject = nil
+        publishSelectionContext()
     }
 
     private var selectedNetID: String? {
@@ -3193,6 +3304,13 @@ struct BoardCanvasView: View {
                 }
             }
             handlers.filterAirwires = onFilterAirwires
+            handlers.toggleInstanceOnly = { toggleInstanceOnlyEdit() }
+            if !selectedBlockInstances.isEmpty {
+                handlers.selectBlockInstance = { selectBlockInstances() }
+                if selectedBlockInstances.count == 1 {
+                    handlers.copyBlockLayout = { copyBlockLayoutToOtherInstances() }
+                }
+            }
             if selectedObjects.contains(where: canDisconnect) {
                 handlers.disconnect = { disconnectSelection() }
             }
@@ -3494,6 +3612,15 @@ struct BoardCanvasView: View {
             entries.append(.command(title: "Select More (Stop at Vias)", .selectMore(stopsAtVias: true)))
         }
 
+        // Block instances (packages)
+        if isPackage, let match = blockLayoutMatch, !match.instances(ofPackage: ref.id).isEmpty {
+            entries.append(.separator)
+            entries.append(.command(title: "Select Instance", .selectBlockInstance))
+            if writable {
+                entries.append(.command(title: "Copy Layout to Other Instances", .copyBlockLayout))
+            }
+        }
+
         // Pool / datasheet (packages)
         if isPackage {
             entries.append(.separator)
@@ -3777,7 +3904,7 @@ struct BoardCanvasView: View {
         editedBoard = draft
         invalidateSelectableCache()
         hoveredObject = nil
-        publishConnectivityResolvedEdit(draft)
+        publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previous, kind: .flags))
         publishSelectionContext()
     }
 
@@ -3982,7 +4109,7 @@ struct BoardCanvasView: View {
         selectedObjects = refs
         hoveredObject = nil
         invalidateSelectableCache()
-        publishConnectivityResolvedEdit(draft)
+        publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previous, kind: .paste))
         publishSelectionContext()
         publishCanvasCommandActions()
     }
@@ -4007,7 +4134,7 @@ struct BoardCanvasView: View {
         selectedObjects = refs
         hoveredObject = nil
         invalidateSelectableCache()
-        publishConnectivityResolvedEdit(draft)
+        publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previous, kind: .duplicate))
         publishSelectionContext()
     }
 
@@ -4446,7 +4573,7 @@ struct BoardCanvasView: View {
         HorizontalMoveRateDiagnostics.endMove(committed: true)
         registerUndoSnapshot(state.originalBoard, actionName: "Place Package")
         invalidateSelectableCache()
-        publishConnectivityResolvedEdit(draft, regeneratingAirwires: true)
+        publishConnectivityResolvedEdit(draft, regeneratingAirwires: true, sync: BoardLayoutSyncIntent(baseline: state.originalBoard, kind: .placePackage))
         publishSelectionContext()
         publishCanvasCommandActions()
     }
@@ -4674,8 +4801,13 @@ struct BoardCanvasView: View {
         }
         measure("publish board change") {
             // The rats' nest of the moved board; the board's own was made
-            // before the move, and stayed until a pour remade it.
-            publishConnectivityResolvedEdit(draft, regeneratingAirwires: true)
+            // before the move, and stayed until a pour remade it. The
+            // text-placement flow has no board before it to read an edit from.
+            publishConnectivityResolvedEdit(
+                draft,
+                regeneratingAirwires: true,
+                sync: editTextRef == nil ? BoardLayoutSyncIntent(baseline: state.boardBeforeMove ?? state.originalBoard, kind: .move) : nil
+            )
         }
         measure("publish selection") {
             publishSelectionContext()
@@ -5836,7 +5968,7 @@ struct BoardCanvasView: View {
         clearRouteLoopPreview()
         if state.hasDrawn {
             registerUndoSnapshot(state.originalBoard, actionName: "Draw Track")
-            publishConnectivityResolvedEdit(board)
+            publishConnectivityResolvedEdit(board, sync: BoardLayoutSyncIntent(baseline: state.originalBoard, kind: .drawTrack))
         }
         armDrawTrack()
         // The route inspector measures the next route against the board this
@@ -6796,7 +6928,7 @@ struct BoardCanvasView: View {
         // the connectivity recompute below; selecting it renders it highlighted.
         selectedObjects = chainNext.map { [$0] } ?? []
         hoveredObject = nil
-        publishConnectivityResolvedEdit(draft)
+        publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previousBoard, kind: .delete))
         publishSelectionContext()
     }
 
@@ -7286,7 +7418,7 @@ struct BoardCanvasView: View {
         hoveredObject = nil
         if moveState == nil {
             registerUndoSnapshot(previousBoard, actionName: actionName)
-            publishConnectivityResolvedEdit(draft, regeneratingAirwires: true)
+            publishConnectivityResolvedEdit(draft, regeneratingAirwires: true, sync: BoardLayoutSyncIntent(baseline: previousBoard, kind: .transform))
         }
         publishSelectionContext()
     }
@@ -8404,6 +8536,10 @@ struct BoardCanvasView: View {
         guard !isReadOnly else {
             return
         }
+        if change.propertyID == HorizontalBlockInstanceSummary.copyLayoutActionID {
+            copyBlockLayoutToOtherInstances()
+            return
+        }
         // Set and Clear Diff Pair edit the block, through the host's
         // project edit, which reloads the board with the pair.
         if change.propertyID == HorizontalDiffpairProperty.id, case .choice(let partner) = change.value {
@@ -8438,7 +8574,7 @@ struct BoardCanvasView: View {
         registerUndoSnapshot(previousBoard, actionName: "Edit Properties")
         editedBoard = draft
         invalidateSelectableCache()
-        publishConnectivityResolvedEdit(draft)
+        publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previousBoard, kind: .properties))
         for change in changedNetClasses {
             onNetClassChange(change.netID, change.netClassID)
         }
@@ -8484,7 +8620,11 @@ struct BoardCanvasView: View {
     /// gave. Built before it, on a board whose file stores no junction nets
     /// (Horizon writes none), placing a package brought back an airwire for
     /// every routed connection that bends — on Board A, 328 where there are 32.
-    private func publishConnectivityResolvedEdit(_ board: HorizontalBoard, regeneratingAirwires: Bool = false) {
+    private func publishConnectivityResolvedEdit(
+        _ board: HorizontalBoard,
+        regeneratingAirwires: Bool = false,
+        sync: BoardLayoutSyncIntent? = nil
+    ) {
         // A pool item has no nets: nothing to propagate, and the recompute
         // would strip the (absent) net of every pad anyway.
         guard modeProfile.usesConnectivity else {
@@ -8495,8 +8635,19 @@ struct BoardCanvasView: View {
             onBoardChange(board)
             return
         }
+        // The edit made in the block instances laid out like the one it was
+        // made in, before the nets are given: the copies take theirs from
+        // their own pads.
+        var board = board
+        var synced = false
+        if let sync, let result = syncedBlockInstances(board, sync: sync) {
+            board = result.board
+            synced = !result.changes.isEmpty
+            showBlockSyncNote(result.report)
+        }
+        instanceOnlyEdit = false
         var resolved = HorizontalBoardConnectivity.recompute(board)
-        if regeneratingAirwires { resolved.regenerateAirwires() }
+        if regeneratingAirwires || synced { resolved.regenerateAirwires() }
         // A plane's outline is kept in the plane, with its layer, before the
         // rules give the plane that layer's settings.
         resolved.lowerPlaneOutlines()
@@ -8510,10 +8661,76 @@ struct BoardCanvasView: View {
             metalSceneRevision &+= 1
         }
         editedBoard = resolved
-        if ruled {
+        if ruled || synced {
             invalidateSelectableCache()
         }
         onBoardChange(resolved)
+    }
+
+    /// The edit, made the same in the block instances laid out like the one
+    /// it was made in; nil where the switch is off, U made it this
+    /// instance's alone, or it reaches no other instance.
+    private func syncedBlockInstances(_ board: HorizontalBoard, sync: BoardLayoutSyncIntent)
+        -> (board: HorizontalBoard, changes: HorizontalBlockLayoutSync.ChangeSet, report: HorizontalBlockLayoutSync.Report)? {
+        guard displayOptions.syncsBlockInstances, !instanceOnlyEdit,
+              let blockInstances, !blockInstances.isEmpty,
+              let changes = HorizontalBlockLayoutSync.propagate(
+                baseline: sync.baseline, edited: board, instances: blockInstances, intent: .init(sync.kind)
+              ) else {
+            return nil
+        }
+        var synced = board
+        let report = HorizontalBlockLayoutSync.apply(changes, to: &synced, poolURL: poolURL)
+        return (synced, changes, report)
+    }
+
+    /// U: this edit only for the block instance it is made in. Only while an
+    /// edit that syncs is under way, on a design with an instanced block.
+    private func toggleInstanceOnlyEdit() {
+        guard syncableInteraction, blockInstances?.isEmpty == false else {
+            return
+        }
+        instanceOnlyEdit.toggle()
+    }
+
+    /// Whether an edit that keeps block instances alike is under way.
+    private var syncableInteraction: Bool {
+        moveState != nil || drawTrackState != nil || pastePlacementState != nil || packagePlacementState != nil || tuneState != nil
+    }
+
+    /// The tool's hint, with U where an edit would reach other instances.
+    private func withInstanceOnlyHint(_ text: String) -> String {
+        guard syncableInteraction, displayOptions.syncsBlockInstances, blockInstances?.isEmpty == false else {
+            return text
+        }
+        return text + (instanceOnlyEdit ? "   Only this instance (U)" : "   U only this instance")
+    }
+
+    /// Says for a few seconds which instances an edit also changed, and what
+    /// it left and why.
+    private func showBlockSyncNote(_ report: HorizontalBlockLayoutSync.Report, lead: String = "Also in") {
+        var parts = [String]()
+        if !report.changed.isEmpty {
+            parts.append("\(lead) \(report.changed.joined(separator: ", "))")
+        }
+        if !report.skipped.isEmpty {
+            parts.append("left: \(report.skipped.joined(separator: "; "))")
+        }
+        if !report.conflicts.isEmpty {
+            parts.append(report.conflicts.joined(separator: "; "))
+        }
+        guard !parts.isEmpty else {
+            return
+        }
+        blockSyncNote = parts.joined(separator: " — ")
+        blockSyncNoteID &+= 1
+        let id = blockSyncNoteID
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(4))
+            if blockSyncNoteID == id {
+                blockSyncNote = nil
+            }
+        }
     }
 
     private func registerUndoSnapshot(_ previousBoard: HorizontalBoard, actionName: String) {
@@ -17209,7 +17426,7 @@ extension BoardCanvasView {
         }
         registerUndoSnapshot(previous, actionName: "Tune Track")
         invalidateSelectableCache()
-        publishConnectivityResolvedEdit(draft)
+        publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previous, kind: .tune))
         tuneState = BoardTuneState(board: editedBoard ?? draft)
         publishSelectionContext()
         publishCanvasCommandActions()
