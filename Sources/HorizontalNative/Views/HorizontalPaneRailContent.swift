@@ -1700,6 +1700,14 @@ struct BoardLayerControls: View {
     /// pool items, which have none.
     var showsBoardObjectToggles = true
 
+    /// The Layer Mode picker is the board's 2D view's alone. A pool item's
+    /// few layers and stand-in stackup (one inner layer for them all) leave
+    /// its modes nothing to do that the eyes don't, and the 3D view is given
+    /// no working layer to work from.
+    var showsLayerMode: Bool {
+        layers == nil && !includesThreeDControls
+    }
+
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
 
@@ -1783,9 +1791,11 @@ struct BoardLayerControls: View {
                     Text("Hide other").tag("hide_other")
                 }
 
-                Picker("Layer Mode", selection: $displayOptions.layerMode) {
-                    ForEach(HorizontalBoardLayerMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
+                if showsLayerMode {
+                    Picker("Layer Mode", selection: $displayOptions.layerMode) {
+                        ForEach(HorizontalBoardLayerMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
                     }
                 }
             }
