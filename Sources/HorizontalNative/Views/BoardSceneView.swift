@@ -2598,6 +2598,15 @@ enum BoardSceneFactory {
         packageViaRenderInfo(for: board).map { ($0.marker, $0.coveredPadIDs) }
     }
 
+    /// How many geometries the full scene's silkscreen holds, for tests.
+    static func silkscreenGeometryCount(for board: HorizontalBoard) -> Int {
+        var count = 0
+        buildScene(for: board, options: .full).silkscreenGroup.enumerateHierarchy { node, _ in
+            if node.geometry != nil { count += 1 }
+        }
+        return count
+    }
+
     /// The heights the scene places a board's surfaces at, for tests.
     static func sceneLayout(for board: HorizontalBoard) -> BoardSceneLayout {
         let thickness = boardBodyThickness(for: board)
@@ -2641,6 +2650,9 @@ enum BoardSceneFactory {
     }
 
     private static func buildScene(for board: HorizontalBoard, options: BuildOptions) -> BoardSceneNodes {
+        // A package's Omit Silkscreen and Omit Outline leave its own artwork
+        // out, as on the board and in the exports.
+        let board = board.omittingPackageArtwork()
         let scene = SCNScene()
         scene.background.contents = HorizontalDefaultTheme.backgroundNS
 

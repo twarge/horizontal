@@ -223,7 +223,7 @@ enum HorizontalExportBackend {
         to url: URL,
         silkscreenClipping: HorizontalSilkscreenClipping? = nil
     ) throws {
-        guard let board = project.board else {
+        guard let board = project.board?.omittingPackageArtwork() else {
             throw HorizontalExportError("No board loaded.")
         }
 
@@ -251,7 +251,7 @@ enum HorizontalExportBackend {
         to url: URL,
         silkscreenClipping: HorizontalSilkscreenClipping? = nil
     ) throws {
-        guard let board = project.board else {
+        guard let board = project.board?.omittingPackageArtwork() else {
             throw HorizontalExportError("No board loaded.")
         }
 
@@ -732,7 +732,7 @@ enum HorizontalExportBackend {
         to directoryURL: URL,
         silkscreenClipping: HorizontalSilkscreenClipping? = nil
     ) throws -> [URL] {
-        guard let board = project.board else {
+        guard let board = project.board?.omittingPackageArtwork() else {
             throw HorizontalExportError("No board loaded.")
         }
 
@@ -793,7 +793,7 @@ enum HorizontalExportBackend {
         to directoryURL: URL,
         silkscreenClipping: HorizontalSilkscreenClipping? = nil
     ) throws -> URL {
-        guard let board = project.board else {
+        guard let board = project.board?.omittingPackageArtwork() else {
             throw HorizontalExportError("No board loaded.")
         }
 
@@ -839,7 +839,7 @@ enum HorizontalExportBackend {
         settings: HorizontalSTEPExportSettings,
         to url: URL
     ) throws {
-        guard let board = project.board else {
+        guard let board = project.board?.omittingPackageArtwork() else {
             throw HorizontalExportError("No board loaded.")
         }
         let outline = boardProfileContours(for: board).first ?? []
@@ -2500,7 +2500,7 @@ public enum HorizontalSchematicPreviewRenderer {
 
 extension HorizontalExportBackend {
     fileprivate static func boardThumbnailImage(project: HorizontalProject, fitting requestedSize: CGSize) throws -> NSImage {
-        guard let board = project.board else {
+        guard let board = project.board?.omittingPackageArtwork() else {
             throw HorizontalExportError("No board loaded.")
         }
 
