@@ -799,8 +799,10 @@ struct SchematicCanvasView: View {
                 self.schematicSelectables()
             }
         }
-        // The sheet's own warnings, and the rules checks' findings on it.
-        let warnings = editorProfile.isPoolMode || moveState != nil ? [] : HorizontalCanvasWarning.merging(
+        // The sheet's own warnings, and the rules checks' findings on it,
+        // unless the rules window's Display warnings on canvas is off.
+        let displaysWarnings = !editorProfile.isPoolMode && moveState == nil && appearanceSettings.shouldDisplayCanvasWarnings
+        let warnings = !displaysWarnings ? [] : HorizontalCanvasWarning.merging(
             selectableCache.warnings(key: selectableCacheKey) {
                 HorizontalSchematicWarnings.evaluate(sheet, allSheets: schematicSheets)
             },

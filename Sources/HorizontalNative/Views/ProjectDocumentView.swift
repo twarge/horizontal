@@ -732,6 +732,9 @@ struct ProjectWorkspaceView: View {
     @State private var isKeyboardInControl = false
     @State private var rightSidebarPane: HorizontalWorkspaceRightSidebar?
     @State private var rulesResultsState: HorizontalBoardRulesResultState?
+    /// The rules results sidebar's closed sections, whose findings the
+    /// canvases don't mark.
+    @State private var collapsedRuleSections = Set<String>()
     /// The copper clearance check the results sidebar is waiting on.
     @State private var clearanceCheckTask: Task<Void, Never>?
     @State private var schematicCheckTask: Task<Void, Never>?
@@ -1396,7 +1399,8 @@ struct ProjectWorkspaceView: View {
                     showBoardRulesWindow(focus: finding.kind.map { HorizontalBoardRuleFocus(kind: $0, ruleID: finding.ruleID) })
                 },
                 onShowSchematicFinding: showSchematicFinding,
-                onShowSchematicRule: { showBoardRulesWindow(focus: .schematicConnectivity()) }
+                onShowSchematicRule: { showBoardRulesWindow(focus: .schematicConnectivity()) },
+                collapsedSections: $collapsedRuleSections
             )
         }
     }
@@ -1437,7 +1441,7 @@ struct ProjectWorkspaceView: View {
                         Text(rulesResultsSidebarToggleTitle)
                     } icon: {
                         Image(systemName: "checklist.checked")
-                            .toolbarBadge(rulesResultsState?.badgeCount ?? 0, color: rulesResultsState?.badgeColor ?? .orange)
+                            .toolbarBadge(rulesBadgeCount, color: rulesResultsState?.badgeColor ?? .orange)
                     }
                 }
                 .help(rulesResultsHelp)
@@ -1527,8 +1531,12 @@ struct ProjectWorkspaceView: View {
         pane == .parts ? partLibrary.attentionCount : 0
     }
 
+    private var rulesBadgeCount: Int {
+        rulesResultsState?.toolbarBadgeCount(displayingWarnings: appearanceSettings.shouldDisplayCanvasWarnings) ?? 0
+    }
+
     private var rulesResultsHelp: String {
-        guard let result = rulesResultsState, result.badgeCount > 0 else {
+        guard let result = rulesResultsState, rulesBadgeCount > 0 else {
             return rulesResultsSidebarToggleTitle
         }
         let errors = result.errorCount
@@ -2422,7 +2430,8 @@ struct ProjectWorkspaceView: View {
                                 },
                                 syncRevision: schematicSyncRevision,
                                 ruleMarkers: HorizontalCanvasWarning.markers(
-                                    schematicFindings: rulesResultsState?.schematicFindings ?? [], sheetID: selectedSchematic.sheet.id
+                                    schematicFindings: rulesResultsState?.canvasSchematicFindings(collapsedSections: collapsedRuleSections) ?? [],
+                                    sheetID: selectedSchematic.sheet.id
                                 )
                             )
                         }
@@ -2620,7 +2629,9 @@ struct ProjectWorkspaceView: View {
                                 onRevealPoolPackage: { packageID, target in
                                     revealPoolItem(.package, uuid: packageID, in: target)
                                 },
-                                ruleMarkers: HorizontalCanvasWarning.markers(boardFindings: rulesResultsState?.allBoardFindings ?? [])
+                                ruleMarkers: HorizontalCanvasWarning.markers(
+                                    boardFindings: rulesResultsState?.canvasBoardFindings(collapsedSections: collapsedRuleSections) ?? []
+                                )
                             )
                             .id(boardLoadID)
                         }
@@ -3413,7 +3424,8 @@ struct ProjectWorkspaceView: View {
                 onCheckAndApply: checkAndApplyBoardRules,
                 schematicRules: schematicRules(in: document.archive),
                 onSchematicRulesChange: applyEditedSchematicRules,
-                focus: focus
+                focus: focus,
+                appearanceSettings: appearanceSettings
             )
         } catch {
             recordDiagnostic("Could not load board rules: \(error.localizedDescription)")

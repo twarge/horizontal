@@ -112,6 +112,9 @@ struct HorizontalIPadProjectView: View {
     /// What the last run of every rules check found, for the rules results
     /// panel and its badge, kept up to date as the board changes.
     @State private var rulesResultsState: HorizontalBoardRulesResultState?
+    /// The rules results panel's closed sections, whose findings the
+    /// canvases don't mark.
+    @State private var collapsedRuleSections = Set<String>()
     @State private var clearanceCheckTask: Task<Void, Never>?
     @State private var schematicCheckTask: Task<Void, Never>?
     @StateObject private var boardRulesUndoTarget = HorizontalUndoTarget<JSONDictionary>()
@@ -764,7 +767,8 @@ struct HorizontalIPadProjectView: View {
                 onShowSchematicRule: {
                     rulesFocus = .schematicConnectivity()
                     rulesSheetPresented = true
-                }
+                },
+                collapsedSections: $collapsedRuleSections
             )
         }
     }
@@ -1068,7 +1072,10 @@ struct HorizontalIPadProjectView: View {
                 Text("Rules Results")
             } icon: {
                 Image(systemName: "checklist.checked")
-                    .toolbarBadge(rulesResultsState?.badgeCount ?? 0, color: rulesResultsState?.badgeColor ?? .orange)
+                    .toolbarBadge(
+                        rulesResultsState?.toolbarBadgeCount(displayingWarnings: appearanceSettings.shouldDisplayCanvasWarnings) ?? 0,
+                        color: rulesResultsState?.badgeColor ?? .orange
+                    )
             }
         }
     }
@@ -1596,7 +1603,10 @@ struct HorizontalIPadProjectView: View {
                     },
                     moveRequest: pendingSchematicMove,
                     poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
-                    ruleMarkers: HorizontalCanvasWarning.markers(schematicFindings: rulesResultsState?.schematicFindings ?? [], sheetID: sheet.id)
+                    ruleMarkers: HorizontalCanvasWarning.markers(
+                        schematicFindings: rulesResultsState?.canvasSchematicFindings(collapsedSections: collapsedRuleSections) ?? [],
+                        sheetID: sheet.id
+                    )
                 )
                 .overlay(alignment: .bottom) {
                     toolControlBar(for: schematicCanvasActions, safeAreaInsets: safeAreaInsets)
@@ -1708,7 +1718,9 @@ struct HorizontalIPadProjectView: View {
                     onSelectBoardLayerView: { applyBoardLayerViewPreset($0) },
                     onFilterAirwires: { isBoardAirwireFilterPresented = true },
                     poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
-                    ruleMarkers: HorizontalCanvasWarning.markers(boardFindings: rulesResultsState?.allBoardFindings ?? [])
+                    ruleMarkers: HorizontalCanvasWarning.markers(
+                        boardFindings: rulesResultsState?.canvasBoardFindings(collapsedSections: collapsedRuleSections) ?? []
+                    )
                 )
                 .overlay(alignment: .bottom) {
                     toolControlBar(for: boardCanvasActions, safeAreaInsets: safeAreaInsets)
@@ -2313,6 +2325,7 @@ struct HorizontalIPadProjectView: View {
             onSchematicRulesChange: { applyEditedSchematicRules($0) },
             rulesRevision: boardRulesRevision,
             focus: rulesFocus,
+            appearanceSettings: appearanceSettings,
             onDone: { rulesSheetPresented = false }
         )
     }

@@ -6,7 +6,7 @@ final class HorizontalCanvasWarningGeometryTests: XCTestCase {
 
     func testMetalWarningsHaveWorldAnchorsAndFixedPixelGeometry() {
         let triangles = HorizontalCanvasWarningGeometry.triangles(for: [warning])
-        XCTAssertEqual(triangles.count, 6)
+        XCTAssertEqual(triangles.count, HorizontalCanvasWarningGeometry.glyph.count)
         XCTAssertTrue(triangles.allSatisfy { $0.worldAnchor == warning.position })
         let xs = triangles.flatMap { [$0.ax, $0.bx, $0.cx] }
         let ys = triangles.flatMap { [$0.ay, $0.by, $0.cy] }

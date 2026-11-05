@@ -22,7 +22,8 @@ final class HorizontalBoardRulesWindowController: NSObject, NSWindowDelegate {
         onCheckAndApply: (() -> Void)? = nil,
         schematicRules: HorizontalSchematicRules? = nil,
         onSchematicRulesChange: @escaping (HorizontalSchematicRules) -> Void = { _ in },
-        focus: HorizontalBoardRuleFocus? = nil
+        focus: HorizontalBoardRuleFocus? = nil,
+        appearanceSettings: HorizontalAppearanceSettings? = nil
     ) {
         let rootView = HorizontalBoardRulesWindow(
             projectName: projectName,
@@ -35,7 +36,8 @@ final class HorizontalBoardRulesWindowController: NSObject, NSWindowDelegate {
             schematicRules: schematicRules,
             onSchematicRulesChange: onSchematicRulesChange,
             rulesRevision: (hostingController?.rootView.rulesRevision ?? 0) + 1,
-            focus: focus
+            focus: focus,
+            appearanceSettings: appearanceSettings
         )
 
         if let hostingController {
@@ -96,6 +98,22 @@ struct HorizontalBoardRuleFocus: Equatable {
     }
 }
 
+/// The rules window's Display warnings on canvas. It is the app's setting,
+/// not the board's: off, no canvas draws a warning marker, the schematic's
+/// own or a rules check's, and the rules results button shows no count, in
+/// every document; the checks still run, and their sidebar lists them.
+struct HorizontalCanvasWarningsToggle: View {
+    @ObservedObject var appearanceSettings: HorizontalAppearanceSettings
+
+    var body: some View {
+        Toggle("Display warnings on canvas", isOn: appearanceSettings.canvasWarningsBinding())
+            #if os(macOS)
+            .toggleStyle(.checkbox)
+            #endif
+            .help("Mark warnings and rules check findings on the schematic and board, and count them on the rules results button")
+    }
+}
+
 /// What the rules window's sidebar selects: a kind of board rule, or the
 /// schematic's one rule.
 private enum HorizontalRulesPage: Hashable {
@@ -129,6 +147,9 @@ struct HorizontalBoardRulesWindow: View {
     /// change goes to `onSchematicRulesChange` as it is made.
     var schematicRules: HorizontalSchematicRules?
     var onSchematicRulesChange: (HorizontalSchematicRules) -> Void
+    /// Where Display warnings on canvas is kept, which the sidebar heads;
+    /// nil leaves it out.
+    var appearanceSettings: HorizontalAppearanceSettings?
 
     @State private var rules: JSONDictionary
     @State private var editedSchematicRules: HorizontalSchematicRules
@@ -153,6 +174,7 @@ struct HorizontalBoardRulesWindow: View {
         onSchematicRulesChange: @escaping (HorizontalSchematicRules) -> Void = { _ in },
         rulesRevision: Int = 0,
         focus: HorizontalBoardRuleFocus? = nil,
+        appearanceSettings: HorizontalAppearanceSettings? = nil,
         onDone: (() -> Void)? = nil
     ) {
         self.projectName = projectName
@@ -166,6 +188,7 @@ struct HorizontalBoardRulesWindow: View {
         self.onSchematicRulesChange = onSchematicRulesChange
         self.rulesRevision = rulesRevision
         self.focus = focus
+        self.appearanceSettings = appearanceSettings
         self.onDone = onDone
         _rules = State(initialValue: initialRules)
         _editedSchematicRules = State(initialValue: schematicRules ?? HorizontalSchematicRules())
@@ -306,6 +329,15 @@ struct HorizontalBoardRulesWindow: View {
             .padding(.top, 4)
             .padding(.bottom, 8)
             #endif
+
+            if let appearanceSettings {
+                HorizontalCanvasWarningsToggle(appearanceSettings: appearanceSettings)
+                    .padding(.horizontal, 14)
+                    #if os(iOS)
+                    .padding(.top, 8)
+                    #endif
+                    .padding(.bottom, 8)
+            }
 
             // A selection the split view navigates by, on a narrow iPad.
             List(selection: $sidebarPage) {
@@ -3348,7 +3380,7 @@ struct HorizontalBoardRuleCheckMessage: Identifiable {
             case .warning:
                 return "exclamationmark.triangle"
             case .error:
-                return "xmark.octagon"
+                return "exclamationmark.triangle.fill"
             }
         }
 
