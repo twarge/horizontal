@@ -4629,7 +4629,9 @@ struct BoardCanvasView: View {
             invalidateSelectableCache()
         }
         measure("publish board change") {
-            publishConnectivityResolvedEdit(draft)
+            // The rats' nest of the moved board; the board's own was made
+            // before the move, and stayed until a pour remade it.
+            publishConnectivityResolvedEdit(draft, regeneratingAirwires: true)
         }
         measure("publish selection") {
             publishSelectionContext()
@@ -7204,7 +7206,7 @@ struct BoardCanvasView: View {
         hoveredObject = nil
         if moveState == nil {
             registerUndoSnapshot(previousBoard, actionName: actionName)
-            publishConnectivityResolvedEdit(draft)
+            publishConnectivityResolvedEdit(draft, regeneratingAirwires: true)
         }
         publishSelectionContext()
     }
