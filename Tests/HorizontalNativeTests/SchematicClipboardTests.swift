@@ -840,11 +840,23 @@ extension SchematicClipboardTests {
             while !predicate(), Date() < deadline { try? await Task.sleep(for: .milliseconds(30)) }
             return predicate()
         }
-        let mounted = await settle {
-            state.actions?.visibleWorldBounds?() != nil
-                && CanvasFrameRecording.renderer(in: hosted)?.frame.viewport.reference != nil
+        // The view is taken once the canvas is laid out at the size the window
+        // has on screen. AppKit shrinks a resizable window taller than the
+        // screen's visible frame as it orders it front, as CI's screen does
+        // to this one by 8 points, and the canvas takes the new size a layout
+        // pass or more later, which the view rightly follows.
+        func laidOutInTheWindow() -> Bool {
+            guard let shown = state.actions?.visibleWorldBounds?(),
+                  let frame = CanvasFrameRecording.renderer(in: hosted)?.frame,
+                  frame.viewport.reference != nil else {
+                return false
+            }
+            let size = hosted.bounds.size
+            return frame.viewportSize == SIMD2(Float(size.width), Float(size.height))
+                && abs(shown.width / shown.height - size.width / size.height) < 1e-9
         }
-        XCTAssertTrue(mounted)
+        let mounted = await settle(laidOutInTheWindow)
+        XCTAssertTrue(mounted, "The canvas never took the size of the window it is in")
         let view = try XCTUnwrap(state.actions?.visibleWorldBounds?())
         let renderer = try XCTUnwrap(CanvasFrameRecording.renderer(in: hosted))
         let settled = renderer.frame
