@@ -41,12 +41,27 @@ struct HorizontalSelectionHUDState: Equatable {
     }
 }
 
-/// One of the board's side-and-purpose view presets.
+/// One of the board's side-and-purpose view presets, the six the keys carry.
 enum HorizontalBoardLayerViewPreset: Hashable {
     case topPlacement
     case bottomPlacement
     case topSilkscreen
     case bottomSilkscreen
+    case topRouting
+    case bottomRouting
+
+    /// The named preset it is, which says what it shows and which layer the
+    /// drawing tools go on.
+    var layerPreset: HorizontalBoardLayerPreset {
+        switch self {
+        case .topPlacement: .topPlacement
+        case .bottomPlacement: .bottomPlacement
+        case .topSilkscreen: .topSilkscreen
+        case .bottomSilkscreen: .bottomSilkscreen
+        case .topRouting: .topRouting
+        case .bottomRouting: .bottomRouting
+        }
+    }
 }
 
 enum HorizontalCanvasCommand {
@@ -73,7 +88,7 @@ enum HorizontalCanvasCommand {
     /// Make a copper layer the working layer (number keys). Ignored by panes
     /// that have no layers, and by boards that lack the layer.
     case selectLayer(Int)
-    /// Jump to a whole board view (shifted / control number keys).
+    /// Jump to a whole board view (⌘, ⌘⌥ and ⌘⇧ with 1 or 2).
     case selectBoardLayerView(HorizontalBoardLayerViewPreset)
     /// Tab, on the schematic or the board: the keyboard goes to the other
     /// when both are open, and the other takes this one's place when not.
