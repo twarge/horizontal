@@ -71,11 +71,30 @@ clean-room implementation.
   (`HorizontalLengthTuningModel.referenceLength`) is the target the tuning
   tools below take, as Horizon's tune tools ask its window for it.
 
-### Not yet read
+### The diffpair rule
 
-The `diffpair` rule (net class, layer, track width, track gap, via gap) is
-edited in the rules window and still read by nothing. It is the input of the
-coupled router below.
+`HorizontalBoardRules.diffpair(net:layer:)` reads it: the first enabled rule
+by order whose net class is the pair's, its primary's for either net, and
+whose layer is the route's or any (`HorizontalRuleDiffpair`: track width, track
+gap, via gap). While a net in a pair is routed, the route inspector's Diff Pair
+section shows the partner, the rule and its numbers, and the gap the pair will
+route at: the rule's, or the copper clearance between the two nets where that
+is wider, with a warning, since the rules check holds the two nets to it. The
+coupled router below is what will route by it; the track tool still routes one
+track at a time.
+
+### Meander tuning (single track)
+
+Steps 2 to 4 of the order below are built: `HorizontalMeander` (the cells,
+their pieces and the sizing, pure geometry), `HorizontalMeanderTuner` (each
+slot's room on a board, laying the meander, the exact check), and the tune
+tool on the board canvas (`BoardTuneState`), with its settings and readout in
+the route inspector. What follows in this document describes each as built;
+where the build departed from the first draft of the design, it says so and
+why. On Randi Short (`HorizontalMeanderTunerTests`), sixteen straight tracks of
+four millimetres or more, its pairs' first, each asked for a millimetre more:
+eleven had room and all eleven reached it, nothing they laid broke a clearance
+rule on the exact shapes, and the slowest tune took 50 to 60 ms in a debug build.
 
 ## The licensing constraint comes first
 
@@ -144,8 +163,9 @@ nothing here is tuned.
 ### What bounds the cell
 
 - **Spacing.** Two legs of one net are the same copper to the clearance rules
-  (same-net is zero in `HorizontalRouterClearances`, and Horizon has no
-  same-net rule), so nothing checks how close a meander's legs are. The
+  (same-net is zero in `HorizontalRouterClearances`; Horizon's same-net rule,
+  `clearance_same_net`, holds pads, vias and holes of a net apart, not a
+  track's own runs), so nothing checks how close a meander's legs are. The
   generator holds it by construction: the gap between legs, s − w for a track
   of width w, is a setting with a floor of w. The signal-integrity texts above
   explain why it should be wider — adjacent legs couple, and a pulse takes the
@@ -154,35 +174,57 @@ nothing here is tuned.
   length over the velocity, which a tight serpentine beats: it measures copper,
   not coupling.
 - **Amplitude.** A setting, Amax, and the room the board leaves (below).
-- **Margins.** The first and last cells stay a spacing m ≥ s from the ends of
-  the baseline, where the run meets a corner, a via or a pad.
+- **Margins.** The cells stay a spacing and a corner, m = s + c (or s + r), from the ends
+  of the track, where it meets a corner, a via or a pad, and within the
+  stretch the tool gives them.
 - **Cells that fit.** N cells need (2N − 1)s of baseline, plus the margins.
 
 ### Sizing
 
 With ΔL = target − length (from the window's reference, or a typed target),
-nothing is done within the tolerance. Otherwise:
+nothing is done within the tolerance (1 µm by default). Otherwise, as built
+(`HorizontalMeander.plan`):
 
-1. Cells of amplitude Amax are placed along the baseline from its start, each
-   adding e(Amax), until the next would overshoot.
-2. The last cell's amplitude is solved for the remainder,
-   A = (remainder + 4k)/2, and must be at least Amin (2c or 2r, and no less
-   than a width); below that the remainder goes onto the cells already placed,
-   raising none past Amax.
-3. Coordinates are integer nanometres. A chamfer's diagonal and an arc are
-   irrational lengths, so the target is met by moving the last cell's join: one
-   nanometre of amplitude is two of length. The tolerance therefore has a floor
-   of 2 nm, and the length reached is measured, not computed from the formula.
-4. If the run can't hold enough cells at Amax, the tune reports how much it
-   reached and how much is missing. It does not lay a partial tune unless asked.
+1. **Lattice.** The track runs in one of the eight directions, and everything
+   is laid out in its steps: one nanometre on an axis, √2 nm on a diagonal,
+   where a step is (1, 1). Every vertex and every arc centre is then a whole
+   point, and a chamfer runs in one of the eight directions too. A track at
+   another angle, or an arc, takes no tune.
+2. **Slots.** Starting where the tune starts and running towards the cursor,
+   cell positions two spacings apart, within the margins.
+3. **The fewest cells.** Each slot's room (below) caps its amplitude, Amax at
+   most; the cells are the fewest, in order from the start, whose capped
+   amplitudes reach ΔL. A slot whose room is less than Amin, the track's width
+   or two corners, takes none.
+4. **One amplitude.** All of them at the largest common amplitude that stays
+   within ΔL, found by bisection in steps, each held to its own cap; then one
+   step more on as many cells as bring the length nearer, two steps of length
+   each. The residual is at most a step: a nanometre on an axis.
+5. **Corners.** An arc's radius is half the spacing, which rounds a join and
+   the gap between cells into half circles, a chamfer a quarter of it. A ΔL too
+   short for one cell with them (a cell is at least two corners tall) is tried
+   with smaller corners, halving down to square.
+6. **Short.** If the stretch can't hold enough cells, the plan is as much as
+   fits and the result says how much is missing. The tool shows that before
+   the click that lays it: a click lays what the preview shows, short or not.
+
+The length reached is measured from the pieces (`HorizontalTrackLength`, arcs
+along their circles), not taken from the formula, and the tests check the two
+agree.
 
 ### Clearance: shrinking where blocked
 
-Each cell is built, then tested as the copper it is — legs and join at the
-track's width — against the router world (`HorizontalRouterWorld`,
-`HorizontalRouterIndex`) with the clearances the track tool routes with
-(`includesRoutingOffset`, so a tuned track keeps the same margin as a routed
-one). A cell that collides is shrunk.
+Each cell is tested against the router world (`HorizontalRouterWorld`,
+`HorizontalRouterIndex`), each obstacle grown by its clearance and half the
+track's width. A cell that collides is shrunk.
+
+The draft took the clearances the track tool routes with, routing offset
+included. As built they are the rules' own, with no offset: a tune edits a
+track already there, and a track may legally pass copper within the offset, in
+which case the offset would refuse every cell on both sides of it. Copper of
+the track's own net is kept out of too, at no clearance, so a meander never
+folds onto its own pads or tracks, which would short its added length out; the
+track itself is the one exception.
 
 Shrinking needs care, because collision is **not monotone in amplitude**: an
 obstacle that sits between a tall cell's legs, clear of them, is cut by the
@@ -198,29 +240,53 @@ join of a shorter cell. Bisection on A would be wrong. Two sound ways:
   closed form from its octagon (the same idea as `nearestClearPoint`'s face
   feet). Test those, largest first.
 
-Start with the swept box; it is simple and can't be wrong. Then:
+The swept box is what is built. Its rectangle runs along the baseline from a
+corner before the first leg to a corner after the second, and across from one
+step off the baseline to the join: copper on the far side of the baseline
+clears the track already, at exactly its clearance, and a box that started on
+the baseline itself would touch it. Then:
 
-- A cell shrunk below Amin is dropped, and its share goes onto the cells
-  after it, up to their own limits.
-- A one-sided tune tries its preferred side first and the other side for a
-  cell that can't reach its amplitude there, taking the side that gives more,
-  the left on a tie.
-- The pass is repeated a bounded number of times while the shortfall falls.
-- What is laid is checked once more, whole, with `HorizontalBoardClearanceCheck`
-  on the exact shapes. A tune that fails that check is a bug, and is not laid.
+- Each slot's room is found once per tune gesture and kept, since the slots
+  don't move along the track as the cursor does; the plan takes them as caps,
+  so no repeated pass is needed: a slot below Amin is simply not used, and the
+  common amplitude rises on the others.
+- A one-sided tune takes the cursor's side for each slot, and the other side
+  for one that has more room there. A serpentine alternates from the cursor's
+  side and drops a blocked slot rather than break the alternation.
+- What is laid is checked once more with `HorizontalBoardClearanceCheck` on the
+  exact shapes, over the copper within 5 mm of the new tracks, planes left out,
+  since a pour is redone round new copper and its old fill isn't an obstacle.
+  A tune that fails it isn't laid, and the tool says what it would have broken;
+  that would be a bug in the boxes, and the tests have a negative control that
+  finds cells forced into a wall.
 
 ### The tool
 
-- The tune starts on a straight track: the click picks the baseline's start,
-  the cursor its end, as the track tool works, and the preview shows the cells
-  and the route inspector the length reached against the target.
-- It commits as one undo step: the baseline replaced by the chain of tracks
-  and junctions, each track taking its width from the rules if the original
-  did (`widthFromRules`).
-- A meander is ordinary copper. Retuning finds the cells by walking the chain
-  between the baseline's ends (`BoardTrackLoops` already walks such chains) and
-  replaces it.
-- Later: a baseline across corners, each straight piece taking its share.
+As built (Design ▸ Tune Track, or the board rail's Tune track button):
+
+- A click within six points of a straight track on a net starts the tune there,
+  at the click's place on the track. The cursor's place along the track ends
+  the stretch the cells may take, and its side of the track is the side they
+  grow on. The board draws with the meander laid as it would be, under ids
+  that stay the same from one frame to the next.
+- The target is the Length Tuning window's reference, or a length typed with
+  Return (0 takes the reference again) or in the inspector; the net's length
+  is every track on it, as the window's All Tracks measures it. A track on no
+  net is measured alone.
+- The route inspector, in the sidebar while the tool is in use, has the
+  meander's style (one side or serpentine), corners (45° or arc), amplitude and
+  spacing, the target and where it comes from, and the readout: the net, its
+  length now, the tuned length, the cells and how many slots were blocked, and
+  what the tune does or why it doesn't.
+- A second click lays it as one undo step: the track replaced by the chain of
+  tracks and junctions, each the track's width, layer and net, its width from
+  the rules if the original's was (`widthFromRules`), an arc stored from the end
+  that makes it the minor arc, as Horizon stores one. The tool stays, for the
+  next track; Esc drops a tune under way and a second Esc ends the tool.
+- Not built: retuning (a meander is ordinary copper; finding its cells again
+  means walking the chain between the baseline's ends, as `BoardTrackLoops`
+  walks such chains), a baseline across corners, and the iPad's own controls
+  beyond the rail button and the inspector.
 
 ## Meander tuning: a pair
 
@@ -356,15 +422,24 @@ And a real-board harness, as the router has: Randi Short pairs TX±, RX± and
 PPS In± already, so it is the board to tune and route on, with the input board
 fingerprinted so an edit to it can't pass for a regression.
 
+The single-track tune has the first, second, fourth and fifth of these
+(`HorizontalMeanderTests`, `HorizontalMeanderTunerTests`): lengths to a step
+across a sweep of targets on axis, diagonal and vertical baselines, with both
+corners; the exact check on every laid tune, with a negative control; the same
+plan twice; boxes clear by construction, bisected only where monotone; and
+Randi Short, read from its path, not yet fingerprinted.
+
 ## Suggested order
 
-1. ~~Pairing, the readouts, the Length Tuning window.~~ **Done** — this change.
-2. Read the diffpair rule: `HorizontalBoardRules` gains the lookup above, and
-   the route inspector shows it for a net in a pair.
-3. The cell generator as pure geometry: a baseline, a target, settings in;
-   tracks out, exact length measured; property tests on e(A) and the corners.
-4. Clearance-checked placement (the swept box), the tune tool, its preview and
-   its commit.
+1. ~~Pairing, the readouts, the Length Tuning window.~~ **Done.**
+2. ~~Read the diffpair rule: `HorizontalBoardRules` gains the lookup above, and
+   the route inspector shows it for a net in a pair.~~ **Done.**
+3. ~~The cell generator as pure geometry: a baseline, a target, settings in;
+   tracks out, exact length measured; property tests on e(A) and the corners.~~
+   **Done** — `HorizontalMeander`, `HorizontalMeanderTests`.
+4. ~~Clearance-checked placement (the swept box), the tune tool, its preview and
+   its commit.~~ **Done** — `HorizontalMeanderTuner`, `BoardTuneState`,
+   `HorizontalMeanderTunerTests`, `BoardTuneToolTests`.
 5. Pair offsetting in integer nanometres, with its tests, before any routing.
 6. The fat-centreline route and the fan-out gates.
 7. Via pairs.

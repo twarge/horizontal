@@ -831,6 +831,39 @@ struct HorizontalRuleShortedPads: Hashable {
     }
 }
 
+/// Horizon's RuleDiffpair: the width and gap a differential pair of a net
+/// class routes at on a layer, and the gap between its vias. As the rules
+/// window writes it: `net_class`, `layer` (10000 for any), `track_width`,
+/// `track_gap` and `via_gap`, beside a rule's `enabled` and `order`. The gaps
+/// are edge to edge, the via gap read as the track gap is; that is a reading
+/// of the fields, to be checked against what Horizon lays.
+struct HorizontalRuleDiffpair: Hashable {
+    var id: String
+    var enabled: Bool
+    var order: Int
+    /// Lowercased.
+    var netClassID: String
+    var layer: Int
+    var trackWidth: Double
+    var trackGap: Double
+    var viaGap: Double
+
+    init(id: String, json: JSONDictionary) {
+        self.id = id
+        enabled = json.bool("enabled") ?? true
+        order = json.int("order") ?? 0
+        netClassID = json.string("net_class")?.lowercased() ?? ""
+        layer = json.int("layer") ?? 10000
+        // RuleDiffpair's own defaults, the rules window's for a new rule.
+        trackWidth = json.double("track_width") ?? 150_000
+        trackGap = json.double("track_gap") ?? 150_000
+        viaGap = json.double("via_gap") ?? 250_000
+    }
+
+    /// The members' centres apart: a track width and the gap.
+    var pitch: Double { trackWidth + trackGap }
+}
+
 /// The lookup engine. Each lookup returns the first
 /// enabled rule (rules pre-sorted ascending by `order`) whose match predicates
 /// and layer sentinel (10000 == any) pass, else a default fallback.
@@ -853,6 +886,7 @@ struct HorizontalBoardRules: Hashable {
     var checksNetTies: Bool
     var checksBoardConnectivity: Bool
     var checksHeightRestrictions: Bool
+    var diffpairRules: [HorizontalRuleDiffpair] = []
     /// The file has a `via` entry in its rules, even an empty one. Horizon
     /// always writes one; a board without, written by a tool that left the
     /// via rules out, is given Horizon's default one when it loads
@@ -907,6 +941,7 @@ struct HorizontalBoardRules: Hashable {
         checksNetTies = enabled("net_ties")
         checksBoardConnectivity = enabled("board_connectivity")
         checksHeightRestrictions = enabled("height_restrictions")
+        diffpairRules = parseKeyedGroup("diffpair", HorizontalRuleDiffpair.init(id:json:), order: \.order)
     }
 
     static let empty = HorizontalBoardRules(rules: nil, netDetails: [:])
@@ -926,6 +961,22 @@ struct HorizontalBoardRules: Hashable {
             return nil
         }
         return (rule, rule.widths(on: layer))
+    }
+
+    /// The diffpair rule a pair routes by on `layer`: the first enabled one
+    /// by order whose net class is the pair's — its primary's, for either
+    /// net — and whose layer is `layer` or any, as Horizon's other rules
+    /// match. A net in no pair is matched by its own class. Nil where no
+    /// rule takes it.
+    func diffpair(net: String?, layer: Int) -> HorizontalRuleDiffpair? {
+        guard let net = net?.lowercased(), let detail = netDetails[net] else {
+            return nil
+        }
+        let classNet = detail.diffpairID.flatMap { partner in detail.isDiffpairPrimary ? nil : netDetails[partner] } ?? detail
+        guard let netClass = classNet.netClassID?.lowercased() else {
+            return nil
+        }
+        return diffpairRules.first { $0.enabled && $0.netClassID == netClass && layerMatches($0.layer, layer) }
     }
 
     private func layerMatches(_ ruleLayer: Int, _ layer: Int) -> Bool {

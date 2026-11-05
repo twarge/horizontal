@@ -263,6 +263,7 @@ struct HorizontalCanvasCommandHandlerSet {
     var roundOffVertex: (() -> Void)? = nil
     var addText: (() -> Void)? = nil
     var drawDimension: (() -> Void)? = nil
+    var tuneTrack: (() -> Void)? = nil
     var editText: (() -> Void)? = nil
     var filterAirwires: (() -> Void)? = nil
     var openDatasheet: (() -> Void)? = nil
@@ -427,6 +428,9 @@ struct HorizontalCanvasCommandHandlerSet {
         case .drawDimension:
             guard !isReadOnly else { return }
             drawDimension?()
+        case .tuneTrack:
+            guard !isReadOnly else { return }
+            tuneTrack?()
         case .addText:
             guard !isReadOnly else { return }
             addText?()
@@ -579,6 +583,7 @@ struct HorizontalCanvasCommandHandlerSet {
             canPlaceShape: writable && placeShape != nil,
             canPlaceHole: writable && placeHole != nil,
             canDrawDimension: writable && drawDimension != nil,
+            canTuneTrack: writable && tuneTrack != nil,
             canPlacePin: writable && placePin != nil,
             canPlaceRefdesAndValue: writable && placeRefdesAndValue != nil,
             canPlaceDot: writable && placeDot != nil,

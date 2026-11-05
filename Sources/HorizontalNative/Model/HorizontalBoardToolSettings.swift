@@ -60,6 +60,40 @@ final class HorizontalBoardToolSettings: ObservableObject {
         didSet { persist(viaHoleDiameter, forKey: Self.viaHoleKey) }
     }
 
+    /// The tune tool's meander (`HorizontalMeander.Settings`): the largest
+    /// amplitude and the spacing, nanometres, the corners and the style.
+    @Published var meanderAmplitude: Double {
+        didSet { defaults.set(meanderAmplitude, forKey: Self.meanderAmplitudeKey) }
+    }
+
+    @Published var meanderSpacing: Double {
+        didSet { defaults.set(meanderSpacing, forKey: Self.meanderSpacingKey) }
+    }
+
+    @Published var meanderCorner: HorizontalMeander.Corner {
+        didSet { defaults.set(meanderCorner.rawValue, forKey: Self.meanderCornerKey) }
+    }
+
+    @Published var meanderStyle: HorizontalMeander.Style {
+        didSet { defaults.set(meanderStyle.rawValue, forKey: Self.meanderStyleKey) }
+    }
+
+    /// The length a tune makes its net, nanometres: typed with Return or in
+    /// the inspector. Nil for the Length Tuning window's reference, as
+    /// Horizon's tune tools take it.
+    @Published var tuneTarget: Double? {
+        didSet { persist(tuneTarget, forKey: Self.tuneTargetKey) }
+    }
+
+    var meanderSettings: HorizontalMeander.Settings {
+        var settings = HorizontalMeander.Settings()
+        settings.amplitude = meanderAmplitude
+        settings.spacing = meanderSpacing
+        settings.corner = meanderCorner
+        settings.style = meanderStyle
+        return settings
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -73,6 +107,12 @@ final class HorizontalBoardToolSettings: ObservableObject {
         startsOnCopper = defaults.object(forKey: Self.startsOnCopperKey) as? Bool ?? true
         viaDiameter = Self.optionalDouble(defaults, forKey: Self.viaDiameterKey)
         viaHoleDiameter = Self.optionalDouble(defaults, forKey: Self.viaHoleKey)
+        let meander = HorizontalMeander.Settings()
+        meanderAmplitude = Self.optionalDouble(defaults, forKey: Self.meanderAmplitudeKey) ?? meander.amplitude
+        meanderSpacing = Self.optionalDouble(defaults, forKey: Self.meanderSpacingKey) ?? meander.spacing
+        meanderCorner = defaults.string(forKey: Self.meanderCornerKey).flatMap(HorizontalMeander.Corner.init(rawValue:)) ?? meander.corner
+        meanderStyle = defaults.string(forKey: Self.meanderStyleKey).flatMap(HorizontalMeander.Style.init(rawValue:)) ?? meander.style
+        tuneTarget = Self.optionalDouble(defaults, forKey: Self.tuneTargetKey)
     }
 
     /// Resolved via geometry given a board's via template (template values fill
@@ -123,4 +163,9 @@ final class HorizontalBoardToolSettings: ObservableObject {
     private static let startsOnCopperKey = "boardTool.startsOnCopper"
     private static let viaDiameterKey = "boardTool.viaDiameterNM"
     private static let viaHoleKey = "boardTool.viaHoleDiameterNM"
+    private static let meanderAmplitudeKey = "boardTool.meanderAmplitudeNM"
+    private static let meanderSpacingKey = "boardTool.meanderSpacingNM"
+    private static let meanderCornerKey = "boardTool.meanderCorner"
+    private static let meanderStyleKey = "boardTool.meanderStyle"
+    private static let tuneTargetKey = "boardTool.tuneTargetNM"
 }

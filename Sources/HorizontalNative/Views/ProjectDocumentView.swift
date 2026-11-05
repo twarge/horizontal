@@ -2580,6 +2580,7 @@ struct ProjectWorkspaceView: View {
                                 onMeasureTracks: { tracks, allTracks in
                                     measureTracks(tracks, allTracks: allTracks)
                                 },
+                                tuningReferenceLength: lengthTuning.referenceLength,
                                 onComponentRefdesChange: { componentID, refdes in
                                     if let selectedSchematic {
                                         applyEditedComponentRefdes(
@@ -2685,6 +2686,10 @@ struct ProjectWorkspaceView: View {
                             canvasCommandActionsByPane[.board]?.dispatch(.drawDimension)
                         }
                         .disabled(canvasCommandActionsByPane[.board]?.canDrawDimension != true)
+                        TuneTrackToolButton {
+                            canvasCommandActionsByPane[.board]?.dispatch(.tuneTrack)
+                        }
+                        .disabled(canvasCommandActionsByPane[.board]?.canTuneTrack != true)
                         AddTextToolButton {
                             canvasCommandActionsByPane[.board]?.dispatch(.addText)
                         }
@@ -6039,7 +6044,7 @@ private struct SelectionSidebarView: View {
         ScrollViewReader { scrollProxy in
             List {
                 if isRouting {
-                    Section("Track Route") {
+                    Section(routeInspector.tune != nil ? "Track Tuning" : "Track Route") {
                         HorizontalRouteInspectorView(
                             model: routeInspector,
                             toolSettings: toolSettings,

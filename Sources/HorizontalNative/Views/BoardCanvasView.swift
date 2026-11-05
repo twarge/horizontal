@@ -508,6 +508,9 @@ struct BoardCanvasView: View {
     /// by id, to the Length Tuning window, with whether to measure all of
     /// their nets' tracks. Nil where the host has no window.
     var onMeasureTracks: ((Set<String>, Bool) -> Void)? = nil
+    /// The Length Tuning window's reference length, the tune tool's target
+    /// unless one is typed (`HorizontalBoardToolSettings.tuneTarget`).
+    var tuningReferenceLength: Double? = nil
     var onComponentRefdesChange: (String, String) -> Void = { _, _ in }
     var onSelectionDetailsChange: (HorizontalSelectionDetailState) -> Void = { _ in }
     var onCanvasCommandActionsChange: (HorizontalCanvasCommandActions?) -> Void = { _ in }
@@ -610,6 +613,8 @@ struct BoardCanvasView: View {
     @State private var pastePlacementState: PastePlacementState?
     @State private var poolPlacementState: PoolPlacementState?
     @State private var roundOffVertexState: RoundOffVertexState?
+    /// The tune tool, while it is in use (`BoardTuneState`).
+    @State private var tuneState: BoardTuneState?
     @State private var packagePlacementState: PackagePlacementState?
     @State private var planeEditorState: PlaneEditorState?
     @State private var padstackPickerPresented = false
@@ -676,6 +681,7 @@ struct BoardCanvasView: View {
         onNetClassChange: @escaping (String, String?) -> Void = { _, _ in },
         onEditDiffpair: HorizontalDiffpairEditing? = nil,
         onMeasureTracks: ((Set<String>, Bool) -> Void)? = nil,
+        tuningReferenceLength: Double? = nil,
         onComponentRefdesChange: @escaping (String, String) -> Void = { _, _ in },
         onSelectionDetailsChange: @escaping (HorizontalSelectionDetailState) -> Void = { _ in },
         onCanvasCommandActionsChange: @escaping (HorizontalCanvasCommandActions?) -> Void = { _ in },
@@ -726,6 +732,7 @@ struct BoardCanvasView: View {
         self.onNetClassChange = onNetClassChange
         self.onEditDiffpair = onEditDiffpair
         self.onMeasureTracks = onMeasureTracks
+        self.tuningReferenceLength = tuningReferenceLength
         self.onComponentRefdesChange = onComponentRefdesChange
         self.onSelectionDetailsChange = onSelectionDetailsChange
         self.onCanvasCommandActionsChange = onCanvasCommandActionsChange
@@ -782,6 +789,9 @@ struct BoardCanvasView: View {
             appendPoolPlacementGhost(poolPlacementState, into: &preview)
             return preview
         }
+        if let tuneState, tuneState.result?.hasCells == true {
+            return tuneState.preview(of: base)
+        }
         if let roundOffVertexState {
             var preview = base
             let liftedOutlines = preview.liftPlaneOutlines()
@@ -811,6 +821,15 @@ struct BoardCanvasView: View {
                 itemCount: poolPlacementSignatureCount(poolPlacementState.kind),
                 offsetX: Int64(poolPlacementState.cursor.x.rounded()),
                 offsetY: Int64(poolPlacementState.cursor.y.rounded())
+            )
+        }
+        if let signature = tuneState?.previewSignature {
+            // A tune's meander rides the same slot: its pieces in the count
+            // and a hash, its length.
+            return BoardPastePreviewSignature(
+                itemCount: 2_000_000 + signature.count,
+                offsetX: signature.hash,
+                offsetY: signature.length
             )
         }
         if let roundOffVertexState {
@@ -1115,6 +1134,10 @@ struct BoardCanvasView: View {
                     commitRoundOffVertex(at: point)
                     return
                 }
+                if tuneState != nil {
+                    clickTune(at: pointer.raw, worldUnitsPerPoint: worldUnitsPerPoint)
+                    return
+                }
                 if pastePlacementState != nil {
                     commitPastePlacement(at: point)
                     return
@@ -1185,7 +1208,7 @@ struct BoardCanvasView: View {
                       drawTrackState == nil,
                       pastePlacementState == nil,
                       poolPlacementState == nil,
-                      roundOffVertexState == nil, packagePlacementState == nil else {
+                      roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil else {
                     return
                 }
                 updateSelection(with: refs, action: action)
@@ -1254,8 +1277,8 @@ struct BoardCanvasView: View {
                 labelLODDebouncer.postponeForViewportMovement()
             },
             canvasDisplayTransformReportTrigger: inlineTextEditorReportTrigger,
-            allowsContextMenu: moveState == nil && drawGraphicsState == nil && drawTrackState == nil && pastePlacementState == nil && poolPlacementState == nil && roundOffVertexState == nil && packagePlacementState == nil,
-            handlesInteractionKeys: moveState != nil || drawGraphicsState != nil || drawTrackState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || packagePlacementState != nil,
+            allowsContextMenu: moveState == nil && drawGraphicsState == nil && drawTrackState == nil && pastePlacementState == nil && poolPlacementState == nil && roundOffVertexState == nil && tuneState == nil && packagePlacementState == nil,
+            handlesInteractionKeys: moveState != nil || drawGraphicsState != nil || drawTrackState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || tuneState != nil || packagePlacementState != nil,
             usesCrosshairCursor: drawGraphicsState != nil || drawTrackState != nil,
             hasKeyboardFocus: hasKeyboardFocus,
             onRequestKeyboardFocus: onRequestKeyboardFocus,
@@ -1263,7 +1286,7 @@ struct BoardCanvasView: View {
                 || drawGraphicsState != nil
                 || pastePlacementState != nil
                 || poolPlacementState != nil
-                || roundOffVertexState != nil || packagePlacementState != nil
+                || roundOffVertexState != nil || tuneState != nil || packagePlacementState != nil
                 || moveState?.tracksCursor == true,
             supportsTrackVias: true,
             switchesPanes: onSwitchPane != nil
@@ -1359,6 +1382,7 @@ struct BoardCanvasView: View {
                 cancelDrawGraphics()
                 cancelDrawTrack()
                 cancelMove()
+                endTune()
             }
         }
         return tracksRoute(canvas)
@@ -1380,6 +1404,24 @@ struct BoardCanvasView: View {
             }
             .onChange(of: routeInspectorSignature) { _, _ in
                 publishRouteInspector()
+            }
+            // The tune tool's inspector, and its meander worked out again when
+            // the settings or the target change under it.
+            .onChange(of: tuneState == nil) { _, ended in
+                if ended {
+                    routeInspector?.endRoute()
+                }
+            }
+            .onChange(of: tuneInspectorState) { _, state in
+                if let state {
+                    routeInspector?.updateTune(state)
+                }
+            }
+            .onChange(of: TuneInputs(settings: toolSettings.meanderSettings, target: tuneTarget)) { _, inputs in
+                if var state = tuneState, state.hasStarted {
+                    state.update(target: inputs.target, settings: inputs.settings)
+                    tuneState = state
+                }
             }
             .onChange(of: rulesRevision) { _, _ in
                 adoptBoardRules()
@@ -1771,6 +1813,9 @@ struct BoardCanvasView: View {
             case .hole(let hole):
                 return "Place \(hole.shape == .slot ? "slot" : "round") hole: click places   R rotates   Esc ends"
             }
+        }
+        if let tuneState {
+            return tuneState.hint
         }
         if let state = roundOffVertexState {
             let radiusMM = String(format: "%.3f", state.clampedRadius / 1_000_000)
@@ -2978,7 +3023,7 @@ struct BoardCanvasView: View {
         // the type checker will resolve.
         var handlers = HorizontalCanvasCommandHandlerSet(
             isReadOnly: isReadOnly,
-            hasInteraction: drawGraphicsState != nil || drawTrackState != nil || moveState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || packagePlacementState != nil,
+            hasInteraction: drawGraphicsState != nil || drawTrackState != nil || moveState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || tuneState != nil || packagePlacementState != nil,
             selectAll: selectAllObjects,
             selectNet: selectNetOfSelection,
             copySelection: { copySelectionToClipboard() },
@@ -3036,6 +3081,9 @@ struct BoardCanvasView: View {
                 } else if roundOffVertexState != nil {
                     // Return is Horizon's "enter datum": type the radius.
                     enterRoundOffVertexRadius()
+                } else if tuneState != nil {
+                    // Return types the target, as it types a radius.
+                    enterTuneTarget()
                 } else if pastePlacementState != nil {
                     commitPastePlacement(at: lastCursorWorldPoint)
                 } else if poolPlacementState != nil {
@@ -3053,6 +3101,8 @@ struct BoardCanvasView: View {
                     cancelPackagePlacement()
                 } else if roundOffVertexState != nil {
                     cancelRoundOffVertex()
+                } else if tuneState != nil {
+                    cancelTune()
                 } else if pastePlacementState != nil {
                     cancelPastePlacement()
                 } else if poolPlacementState != nil {
@@ -3104,6 +3154,7 @@ struct BoardCanvasView: View {
             // Dimensions are the board's: a package or padstack has no use for
             // one, and Horizon offers the tool only there.
             handlers.drawDimension = { beginDrawDimension() }
+            handlers.tuneTrack = { beginTuneTrack() }
             handlers.filterAirwires = onFilterAirwires
             if selectedObjects.contains(where: canDisconnect) {
                 handlers.disconnect = { disconnectSelection() }
@@ -3157,6 +3208,19 @@ struct BoardCanvasView: View {
             if state.cursor != point {
                 state.update(cursor: point)
                 roundOffVertexState = state
+            }
+            if hoveredObject != nil {
+                hoveredObject = nil
+            }
+            return
+        }
+
+        if var state = tuneState {
+            // The raw point: the stretch follows the pointer, not the grid.
+            let raw = pointer?.raw ?? point
+            if state.hasStarted, state.cursor != raw {
+                state.move(to: raw, target: tuneTarget, settings: toolSettings.meanderSettings)
+                tuneState = state
             }
             if hoveredObject != nil {
                 hoveredObject = nil
@@ -3820,7 +3884,7 @@ struct BoardCanvasView: View {
               drawGraphicsState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil, packagePlacementState == nil,
+              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil,
               !boardClipboard.isEmpty else { return }
         // Anchor on the cursor at copy time; the ghost keeps that relative offset.
         let anchor = boardClipboardAnchor ?? lastCursorWorldPoint ?? .zero
@@ -4098,7 +4162,7 @@ struct BoardCanvasView: View {
               modeProfile.mode == .board,
               let poolURL,
               moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
-              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil,
+              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil && tuneState == nil,
               packagePlacementState == nil else {
             return
         }
@@ -4338,7 +4402,7 @@ struct BoardCanvasView: View {
     }
 
     private func beginMove(tracksCursor: Bool = true, editTextRefOnCommit: String? = nil) {
-        guard pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil, packagePlacementState == nil else { return }
+        guard pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil else { return }
         let selectedCount = selectedObjects.count
         var timings = [(String, UInt64)]()
         func measure<T>(_ label: String, _ body: () -> T) -> T {
@@ -4604,7 +4668,7 @@ struct BoardCanvasView: View {
               moveState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil, packagePlacementState == nil,
+              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil,
               primitive.producesPolygon ? modeProfile.allowsPolygons : modeProfile.allowsGraphics else {
             return
         }
@@ -4678,7 +4742,7 @@ struct BoardCanvasView: View {
         editingText = editingTextState != nil
         #endif
         return moveState != nil || drawGraphicsState != nil || drawTrackState != nil
-            || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil
+            || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || tuneState != nil
             || packagePlacementState != nil || planeEditorState != nil || editingText
     }
 
@@ -4778,7 +4842,7 @@ struct BoardCanvasView: View {
               moveState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil, packagePlacementState == nil else {
+              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil else {
             return
         }
         drawGraphicsState = DrawGraphicsState(
@@ -4829,7 +4893,7 @@ struct BoardCanvasView: View {
               moveState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil, packagePlacementState == nil else {
+              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil else {
             return
         }
         drawGraphicsState = DrawGraphicsState(
@@ -5280,7 +5344,7 @@ struct BoardCanvasView: View {
               moveState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil, packagePlacementState == nil,
+              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil,
               drawTrackState == nil else {
             return
         }
@@ -6600,7 +6664,7 @@ struct BoardCanvasView: View {
               drawGraphicsState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil, packagePlacementState == nil,
+              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil,
               !selectedObjects.isEmpty else {
             return
         }
@@ -13069,7 +13133,7 @@ struct BoardCanvasView: View {
             let previewsUnkeyedBoard = (moveState != nil && !patchesMove)
                 || pastePlacementState != nil
                 || poolPlacementState != nil
-                || roundOffVertexState != nil
+                || roundOffVertexState != nil || tuneState != nil
             let selectablesByRef = previewsUnkeyedBoard
                 ? boardSelectablesByRef(in: selectionBoard)
                 : boardSelectablesByRef()
@@ -16536,7 +16600,7 @@ extension BoardCanvasView {
     private func requestPlacePad() {
         guard !isReadOnly, modeProfile.placesPads, poolContext != nil,
               moveState == nil, drawGraphicsState == nil, pastePlacementState == nil, poolPlacementState == nil,
-              roundOffVertexState == nil, packagePlacementState == nil else {
+              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil else {
             return
         }
         padstackPickerPresented = true
@@ -16596,7 +16660,7 @@ extension BoardCanvasView {
 
     private func armPoolPlacement(_ kind: PoolPlacementKind) {
         guard moveState == nil, drawGraphicsState == nil, drawTrackState == nil, pastePlacementState == nil,
-              roundOffVertexState == nil, packagePlacementState == nil else {
+              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil else {
             return
         }
         selectedObjects = []
@@ -16798,7 +16862,7 @@ extension BoardCanvasView {
 
     private var canRoundOffVertex: Bool {
         guard !isReadOnly, moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
-              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil, packagePlacementState == nil,
+              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil,
               let ref = roundOffVertexCandidate else {
             return false
         }
@@ -16956,5 +17020,131 @@ extension BoardCanvasView {
         roundOffVertexState = nil
         publishSelectionContext()
         publishCanvasCommandActions()
+    }
+
+    // MARK: - Tune track
+
+    private struct TuneInputs: Equatable {
+        var settings: HorizontalMeander.Settings
+        var target: Double?
+    }
+
+    /// The tune's target: one typed, else the Length Tuning window's reference.
+    private var tuneTarget: Double? {
+        toolSettings.tuneTarget ?? tuningReferenceLength
+    }
+
+    private var tuneTargetSource: HorizontalTuneInspectorState.TargetSource {
+        toolSettings.tuneTarget != nil ? .typed : (tuningReferenceLength != nil ? .reference : .none)
+    }
+
+    private var tuneInspectorState: HorizontalTuneInspectorState? {
+        tuneState?.inspectorState(target: tuneTarget, source: tuneTargetSource)
+    }
+
+    private func beginTuneTrack() {
+        guard !isReadOnly, modeProfile.mode == .board, moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
+              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil,
+              packagePlacementState == nil, tuneState == nil else {
+            return
+        }
+        let state = BoardTuneState(board: editedBoard ?? sourceBoard)
+        tuneState = state
+        routeInspector?.updateTune(state.inspectorState(target: tuneTarget, source: tuneTargetSource))
+        selectedObjects = []
+        hoveredObject = nil
+        publishSelectionContext()
+        publishCanvasCommandActions()
+    }
+
+    /// A click during the tool: on a track, the tune starts there; once it
+    /// has, the meander is laid.
+    private func clickTune(at point: HorizontalPoint, worldUnitsPerPoint: Double) {
+        guard var state = tuneState else { return }
+        if state.hasStarted {
+            commitTune()
+            return
+        }
+        state.start(at: point, reach: max(worldUnitsPerPoint, 0) * 6, target: tuneTarget,
+                    settings: toolSettings.meanderSettings)
+        tuneState = state
+    }
+
+    /// Lays the meander under the cursor, one undo step, once the exact
+    /// clearance check finds nothing wrong with it; the tool stays, for the
+    /// next track.
+    private func commitTune() {
+        guard var state = tuneState, let result = state.result else { return }
+        guard result.hasCells else {
+            state.refusal = BoardTuneState.statusText(result).prefix(1).uppercased() + BoardTuneState.statusText(result).dropFirst() + "."
+            tuneState = state
+            return
+        }
+        let previous = editedBoard ?? sourceBoard
+        var draft = previous
+        let trackIDs = HorizontalMeanderTuner.lay(result, on: &draft)
+        let violations = HorizontalMeanderTuner.violations(on: draft, newTrackIDs: trackIDs)
+        if let first = violations.first {
+            // The swept boxes should never let this through; say so rather
+            // than lay it.
+            state.refusal = "Not laid: \(first.first.name) and \(first.second.name) would be "
+                + "\(HorizontalLengthText.millimetres(first.distance)) apart, under the \(HorizontalLengthText.millimetres(first.clearance)) clearance."
+            tuneState = state
+            return
+        }
+        registerUndoSnapshot(previous, actionName: "Tune Track")
+        invalidateSelectableCache()
+        publishConnectivityResolvedEdit(draft)
+        tuneState = BoardTuneState(board: editedBoard ?? draft)
+        publishSelectionContext()
+        publishCanvasCommandActions()
+    }
+
+    /// Esc: the meander under way goes, then the tool.
+    private func cancelTune() {
+        guard var state = tuneState else { return }
+        if state.hasStarted || state.refusal != nil {
+            state.restart()
+            tuneState = state
+            return
+        }
+        endTune()
+    }
+
+    /// The tool ends, and the inspector goes back to what it showed. Told
+    /// here rather than only on the state's change, which an arm and an end
+    /// in one update would never show.
+    private func endTune() {
+        guard tuneState != nil else { return }
+        tuneState = nil
+        routeInspector?.endRoute()
+        publishSelectionContext()
+        publishCanvasCommandActions()
+    }
+
+    /// Return during the tool: type the target length.
+    private func enterTuneTarget() {
+        let nmPerMM = 1_000_000.0
+        let seed = tuneTarget ?? tuneState?.result?.netLength ?? 0
+        #if os(macOS)
+        guard let chosen = HorizontalTrackWidthPrompt.run(
+            title: "Target Length",
+            message: "Enter the length the tune makes its net, in millimeters. 0 takes the Length Tuning window's reference again.",
+            currentWidthNM: seed,
+            allowsZero: true
+        ) else {
+            return
+        }
+        toolSettings.tuneTarget = chosen > 0 ? chosen : nil
+        #else
+        promptRequest = HorizontalCanvasPromptRequest(
+            title: "Target Length (0 for the reference)",
+            confirmTitle: "Set",
+            content: .number(seed: seed / nmPerMM, unit: "mm") { mm in
+                guard let mm, mm.isFinite, mm >= 0 else { return }
+                toolSettings.tuneTarget = mm > 0 ? (mm * nmPerMM).rounded() : nil
+            }
+        )
+        #endif
     }
 }

@@ -1689,6 +1689,7 @@ struct HorizontalIPadProjectView: View {
                     onUpdateAllPlanes: updateAllBoardPlanes,
                     onEditDiffpair: boardDiffpairEditing,
                     onMeasureTracks: { measureTracks($0, allTracks: $1) },
+                    tuningReferenceLength: lengthTuning.referenceLength,
                     onSelectionDetailsChange: { setSelectionDetails($0, for: .board) },
                     onCanvasCommandActionsChange: { boardCanvasActions = $0 },
                     selectionPropertyChangeCommand: selectionPropertyChangeCommands[.board],
@@ -1755,6 +1756,10 @@ struct HorizontalIPadProjectView: View {
                         boardCanvasActions?.dispatch(.drawDimension)
                     }
                     .disabled(boardCanvasActions?.canDrawDimension != true)
+                    TuneTrackToolButton {
+                        boardCanvasActions?.dispatch(.tuneTrack)
+                    }
+                    .disabled(boardCanvasActions?.canTuneTrack != true)
                     AddTextToolButton {
                         boardCanvasActions?.dispatch(.addText)
                     }
