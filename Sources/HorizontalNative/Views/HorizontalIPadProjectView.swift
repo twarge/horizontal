@@ -421,11 +421,11 @@ struct HorizontalIPadProjectView: View {
             }
         }
         .onChange(of: visiblePanes) { _, panes in
-            // Hiding a pane re-instantiates its canvas on return, and the schematic's
-            // "already-handled" guard (`handledPlacePartRequestID`) is per-instance and
-            // resets — so a still-set request would restart placement. Clear it when the
-            // schematic goes away. (macOS keeps one persistent canvas, so it doesn't
-            // need this.)
+            // The schematic's "already-handled" guard (`handledPlacePartRequestID`) is
+            // per canvas. A schematic kept mounted while hidden keeps it, but one made
+            // afresh (another schematic file, or a pane not shown before) would take a
+            // still-set request and restart placement. Clear it when the schematic goes
+            // away.
             if !panes.contains(.schematic) {
                 placePartRequest = nil
             }
@@ -572,6 +572,7 @@ struct HorizontalIPadProjectView: View {
                     onSelectComponent: { sheet, componentID, position in
                         // As on the Mac: the sheet, then the component
                         // selected and framed once the canvas has swapped.
+                        // A schematic kept hidden has no size to frame in.
                         let changesSheet = navigatorSelectionBinding.wrappedValue != sheet
                         navigatorSelectionBinding.wrappedValue = sheet
                         let rect = HorizontalRect(center: position, size: 26_000_000)
@@ -580,7 +581,9 @@ struct HorizontalIPadProjectView: View {
                                 try? await Task.sleep(for: .milliseconds(250))
                             }
                             selectComponents([componentID])
-                            schematicCanvasActions?.frameWorldRect?(rect)
+                            if isShown(.schematic) {
+                                schematicCanvasActions?.frameWorldRect?(rect)
+                            }
                         }
                     }
                 )
@@ -764,7 +767,7 @@ struct HorizontalIPadProjectView: View {
             }
         }
         let region = finding.region
-        if visiblePanes.contains(.board), let frame = boardCanvasActions?.frameWorldRect {
+        if isShown(.board), let frame = boardCanvasActions?.frameWorldRect {
             frame(region)
             return
         }
@@ -786,7 +789,7 @@ struct HorizontalIPadProjectView: View {
         highlightedComponentIDs = Set([finding.componentID].compactMap { $0 })
         let selection: ProjectNavigatorSelection = place.blockID.map { .sheet(blockID: $0, sheetID: place.sheetID) }
             ?? .standaloneSheet(place.sheetID)
-        let changesSheet = navigatorSelectionBinding.wrappedValue != selection || !visiblePanes.contains(.schematic)
+        let changesSheet = navigatorSelectionBinding.wrappedValue != selection || !isShown(.schematic)
         showPane(.schematic)
         navigatorSelectionBinding.wrappedValue = selection
         Task { @MainActor in
@@ -839,6 +842,7 @@ struct HorizontalIPadProjectView: View {
             Divider()
             RouteInspectorSwitch(
                 model: routeInspector,
+                showsRoute: isShown(.board),
                 toolSettings: boardToolSettings,
                 isReadOnly: isReadOnly,
                 onCommand: handleRouteInspectorCommand
@@ -872,22 +876,24 @@ struct HorizontalIPadProjectView: View {
     }
 
     /// The pane whose selection the inspector is editing: the focused one if it has a
-    /// selection, otherwise any other visible pane that does.
+    /// selection, otherwise any other pane on screen that does. A hidden canvas keeps
+    /// its selection, and its report of it, for when it is shown again.
     private var inspectedPane: HorizontalPane? {
-        if selectionDetailsByPane[focusedPane]?.hasSelection == true {
+        if isShown(focusedPane), selectionDetailsByPane[focusedPane]?.hasSelection == true {
             return focusedPane
         }
-        return orderedVisiblePanes.first { selectionDetailsByPane[$0]?.hasSelection == true }
+        return orderedVisiblePanes.first { isShown($0) && selectionDetailsByPane[$0]?.hasSelection == true }
     }
 
     /// Records a canvas's selection and, when it actually selected something there, moves
     /// the focus (and so the inspector) to that pane. A selection pushed into it from
-    /// another view leaves the focus alone (104). Mirrors the macOS workspace.
+    /// another view leaves the focus alone (104), as does one a hidden pane's canvas,
+    /// kept mounted, reports. Mirrors the macOS workspace.
     private func setSelectionDetails(_ details: HorizontalSelectionDetailState, for pane: HorizontalPane) {
         let pushed = crossProbedPanes.remove(pane) != nil
         if details.hasSelection {
             selectionDetailsByPane[pane] = details
-            if !pushed {
+            if !pushed, isShown(pane) {
                 focusedPane = pane
             }
         } else {
@@ -1170,7 +1176,11 @@ struct HorizontalIPadProjectView: View {
                 sizeFractions: $paneSizeFractions,
                 minimumPaneWidth: 300,
                 handleWidth: 16,
-                leadingInset: proxy.safeAreaInsets.leading
+                leadingInset: proxy.safeAreaInsets.leading,
+                // As on the Mac: the schematic and the board stay mounted
+                // once shown, so switching between them doesn't build the
+                // other again. What reads a canvas asks `isShown` first.
+                keepsMounted: Set(HorizontalPane.allCases.filter(\.staysMountedWhenHidden))
             ) { pane, isLeadingPane in
                 paneContent(
                     pane,
@@ -1196,6 +1206,17 @@ struct HorizontalIPadProjectView: View {
             return [panes.contains(focusedPane) ? focusedPane : (panes.first ?? defaultPane(for: project))]
         }
         return panes.isEmpty ? [defaultPane(for: project)] : panes
+    }
+
+    /// Whether `pane` is on screen: one the split shows, which on a compact
+    /// width is one of the visible panes. A hidden schematic or board keeps
+    /// its canvas mounted, with its actions and selection, but has no size to
+    /// frame or measure in and is no pane to inspect or focus.
+    private func isShown(_ pane: HorizontalPane) -> Bool {
+        guard let project else {
+            return false
+        }
+        return shownPanes(for: project).contains(pane)
     }
 
     /// Splits the window's safe-area insets across the panes: every pane clears the top
@@ -2626,10 +2647,10 @@ struct HorizontalIPadProjectView: View {
             selectComponents(components)
         }
         live.visibleBounds = { pane in
-            canvasActions(for: pane)?.visibleWorldBounds?()
+            isShown(pane) ? canvasActions(for: pane)?.visibleWorldBounds?() : nil
         }
         live.drawnAirwires = {
-            canvasActions(for: .board)?.drawnAirwires?()
+            isShown(.board) ? canvasActions(for: .board)?.drawnAirwires?() : nil
         }
         live.frame = { pane, rect in
             if pane == .threeD {
@@ -2642,13 +2663,13 @@ struct HorizontalIPadProjectView: View {
                 }
                 return
             }
-            if visiblePanes.contains(pane), let actions = canvasActions(for: pane) {
+            if isShown(pane), let actions = canvasActions(for: pane) {
                 actions.frameWorldRect?(rect)
                 return
             }
-            // A hidden pane has no canvas here (unlike the Mac, which keeps
-            // one): bring it up, then frame once it has come up and laid
-            // out — the same wait zoom_to gives a sheet swap.
+            // A hidden pane's canvas, not mounted yet or kept at no width,
+            // has no size to frame in: bring it up, then frame once it has
+            // come up and laid out — the same wait zoom_to gives a sheet swap.
             showPane(pane)
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(250))
@@ -2679,7 +2700,7 @@ struct HorizontalIPadProjectView: View {
         }
         live.zoomBy = { pane, factor in
             let candidates: [HorizontalPane?] = [pane, focusedPane, .board, .schematic, .threeD]
-            guard let target = candidates.compactMap({ $0 }).first(where: { visiblePanes.contains($0) }) else {
+            guard let target = candidates.compactMap({ $0 }).first(where: { isShown($0) }) else {
                 return
             }
             if target == .threeD {
@@ -2998,13 +3019,16 @@ struct HorizontalDocumentExporter: UIViewControllerRepresentable {
 /// the selection otherwise. It observes the model so the host need not.
 private struct RouteInspectorSwitch<Selection: View>: View {
     @ObservedObject var model: HorizontalRouteInspectorModel
+    /// The board is on screen. Hidden, its canvas stays mounted and keeps its
+    /// track tool, whose route isn't shown until the board is again.
+    var showsRoute = true
     var toolSettings: HorizontalBoardToolSettings
     var isReadOnly: Bool
     var onCommand: (HorizontalRouteInspectorCommand) -> Void
     @ViewBuilder var selection: Selection
 
     var body: some View {
-        if model.isRouting {
+        if showsRoute, model.isRouting {
             ScrollView {
                 HorizontalRouteInspectorView(
                     model: model, toolSettings: toolSettings, isReadOnly: isReadOnly, onCommand: onCommand)

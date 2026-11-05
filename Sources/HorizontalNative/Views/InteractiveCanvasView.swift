@@ -3077,6 +3077,32 @@ struct HorizontalMultitouchView: UIViewRepresentable {
         var onMultiTouchSequenceChange: ((Bool) -> Void)?
         override var canBecomeFirstResponder: Bool { true }
 
+        /// A canvas kept mounted in a hidden pane sits at no width: it has no
+        /// area to take touches or keys in.
+        private var hasArea: Bool {
+            bounds.width > 0 && bounds.height > 0
+        }
+        private var hadArea = false
+
+        /// Hidden, the canvas gives up the keyboard, so a key doesn't land on
+        /// a canvas no one can see; shown again, it takes it, as a canvas just
+        /// mounted does (`didMoveToWindow`), unless a field is being typed in.
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            let hasArea = self.hasArea
+            guard hasArea != hadArea else {
+                return
+            }
+            hadArea = hasArea
+            if !hasArea {
+                if isFirstResponder {
+                    resignFirstResponder()
+                }
+            } else if window != nil, !isFirstResponder, !HorizontalFirstResponderProbe.currentResponderIsTextInput() {
+                becomeFirstResponder()
+            }
+        }
+
         /// Fingers still on the canvas, excluding any ending in this event.
         /// Only `.direct` touches count: the Pencil is excluded from the pan and
         /// pinch recognizers, so it can't cause the centroid re-base this guards.
@@ -3153,13 +3179,17 @@ struct HorizontalMultitouchView: UIViewRepresentable {
             // Deferred so a field-to-field move (e.g. tabbing across grid fields)
             // can claim first responder first — only re-focus if NO text input did.
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.window != nil, !self.isFirstResponder else { return }
+                guard let self, self.window != nil, self.hasArea, !self.isFirstResponder else { return }
                 guard !HorizontalFirstResponderProbe.currentResponderIsTextInput() else { return }
                 self.becomeFirstResponder()
             }
         }
 
         override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            guard hasArea else {
+                super.pressesBegan(presses, with: event)
+                return
+            }
             var unhandled = Set<UIPress>()
             for press in presses {
                 if let key = press.key, onKeyEvent?(Self.keyEvent(from: key)) == true {
