@@ -2009,7 +2009,7 @@ struct BoardCanvasView: View {
         editedBoard = draft
         invalidateSelectableCache()
         hoveredObject = nil
-        publishConnectivityResolvedEdit(draft, regeneratingAirwires: true)
+        publishConnectivityResolvedEdit(draft)
         showBlockSyncNote(report, lead: "Copied \(source.name)'s layout to")
     }
 
@@ -4573,7 +4573,7 @@ struct BoardCanvasView: View {
         HorizontalMoveRateDiagnostics.endMove(committed: true)
         registerUndoSnapshot(state.originalBoard, actionName: "Place Package")
         invalidateSelectableCache()
-        publishConnectivityResolvedEdit(draft, regeneratingAirwires: true, sync: BoardLayoutSyncIntent(baseline: state.originalBoard, kind: .placePackage))
+        publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: state.originalBoard, kind: .placePackage))
         publishSelectionContext()
         publishCanvasCommandActions()
     }
@@ -4800,12 +4800,10 @@ struct BoardCanvasView: View {
             invalidateSelectableCache()
         }
         measure("publish board change") {
-            // The rats' nest of the moved board; the board's own was made
-            // before the move, and stayed until a pour remade it. The
-            // text-placement flow has no board before it to read an edit from.
+            // The text-placement flow has no board before it to read an edit
+            // from.
             publishConnectivityResolvedEdit(
                 draft,
-                regeneratingAirwires: true,
                 sync: editTextRef == nil ? BoardLayoutSyncIntent(baseline: state.boardBeforeMove ?? state.originalBoard, kind: .move) : nil
             )
         }
@@ -7418,7 +7416,7 @@ struct BoardCanvasView: View {
         hoveredObject = nil
         if moveState == nil {
             registerUndoSnapshot(previousBoard, actionName: actionName)
-            publishConnectivityResolvedEdit(draft, regeneratingAirwires: true, sync: BoardLayoutSyncIntent(baseline: previousBoard, kind: .transform))
+            publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previousBoard, kind: .transform))
         }
         publishSelectionContext()
     }
@@ -8616,20 +8614,23 @@ struct BoardCanvasView: View {
     /// track without a connection, or copper left dangling by a delete/move,
     /// disconnects automatically (mirrors propagate_nets after edits).
     ///
-    /// regeneratingAirwires rebuilds the rats' nest from the nets the pass just
-    /// gave. Built before it, on a board whose file stores no junction nets
-    /// (Horizon writes none), placing a package brought back an airwire for
-    /// every routed connection that bends — on Billo, 328 where there are 32.
+    /// Every edit leaves the rats' nest of the board it makes, rebuilt from the
+    /// nets the pass just gave. Built before it, on a board whose file stores
+    /// no junction nets (Horizon writes none), placing a package brought back
+    /// an airwire for every routed connection that bends — on Billo, 328 where
+    /// there are 32. Only a placement, a move and R, E and T rebuilt it once,
+    /// and the rest (a drawn track, a delete, a paste) left it to the pour that
+    /// follows, which a board with no planes never has: on Weevling the canvas
+    /// drew 33 airwires where the board has 8, some to where parts had been.
     private func publishConnectivityResolvedEdit(
         _ board: HorizontalBoard,
-        regeneratingAirwires: Bool = false,
         sync: BoardLayoutSyncIntent? = nil
     ) {
         // A pool item has no nets: nothing to propagate, and the recompute
         // would strip the (absent) net of every pad anyway.
         guard modeProfile.usesConnectivity else {
             var board = board
-            if regeneratingAirwires { board.regenerateAirwires() }
+            board.regenerateAirwires()
             board.recomputePoolEditorBounds()
             editedBoard = board
             onBoardChange(board)
@@ -8647,7 +8648,6 @@ struct BoardCanvasView: View {
         }
         instanceOnlyEdit = false
         var resolved = HorizontalBoardConnectivity.recompute(board)
-        if regeneratingAirwires || synced { resolved.regenerateAirwires() }
         // A plane's outline is kept in the plane, with its layer, before the
         // rules give the plane that layer's settings.
         resolved.lowerPlaneOutlines()
@@ -8655,9 +8655,14 @@ struct BoardCanvasView: View {
         // width the rules give it there, a via the shape, a plane the
         // settings, from the nets the pass just gave.
         let ruled = !HorizontalBoardRuleApplication.apply(to: &resolved, poolURL: poolURL).isEmpty
+        // From the planes' fills as they are; a pour that follows remakes it
+        // from its own.
+        resolved.regenerateAirwires()
         // A net change is a color change (net-less copper is orange), so force a
         // metal-scene rebuild even when the edit would otherwise patch in place.
-        if ruled || resolved.tracks.map(\.netID) != board.tracks.map(\.netID) {
+        // So does a changed rats' nest: a route's commit adds no track the
+        // scene of its last click didn't have.
+        if ruled || resolved.tracks.map(\.netID) != board.tracks.map(\.netID) || resolved.airwires != board.airwires {
             metalSceneRevision &+= 1
         }
         editedBoard = resolved
