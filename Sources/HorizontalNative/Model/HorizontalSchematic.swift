@@ -2802,7 +2802,8 @@ struct HorizontalSchematic {
                 text: "B:\(busName)",
                 position: position,
                 size: item.double("size") ?? 2_500_000,
-                orientation: item.string("orientation") ?? "right"
+                orientation: item.string("orientation") ?? "right",
+                busID: busID
             )
         }
 

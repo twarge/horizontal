@@ -14211,7 +14211,8 @@ extension SchematicCanvasView {
                 text: "B:\(bus.name)",
                 position: point,
                 size: HorizontalSchematicSheet.netLabelDefaultSize,
-                orientation: orientation
+                orientation: orientation,
+                busID: bus.id.lowercased()
             ))
         case .busRipper(_, let member):
             draft.setBusRipperInHand(id: markID, memberName: member.name, at: point, orientation: orientation)

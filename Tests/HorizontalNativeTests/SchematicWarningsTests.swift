@@ -232,7 +232,51 @@ final class SchematicWarningsTests: XCTestCase {
         XCTAssertTrue(messages(sheet).contains("Port connected to net: n"))
         XCTAssertTrue(messages(sheet).contains("Bus ripper connected to wrong net line"))
         XCTAssertTrue(messages(sheet).contains("Missing ports: OUT"))
-        sheet.warningContext.junctionBusIDs["bus-junction"] = "bus"
+        sheet.busLabels = [.init(id: "label", text: "B:BUS", position: .init(x: 200, y: 0), size: 10, orientation: "right", busID: "bus")]
         XCTAssertFalse(messages(sheet).contains("Bus ripper connected to wrong net line"))
+        sheet.busLabels[0].busID = "other"
+        XCTAssertTrue(messages(sheet).contains("Bus ripper connected to wrong net line"))
+    }
+
+    /// Horizon writes no bus on a junction: it gives each the bus of the bus
+    /// labels on its net segment as it opens the schematic. A ripper on a bus
+    /// line its bus labels is on the right line, one on a line another bus's
+    /// label is on, or one no label is on, is not.
+    func testBusRipperOnItsBusLineLoadedFromHorizonFilesDoesNotWarn() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("schematic-warnings-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        func write(_ json: JSONDictionary, _ name: String) throws -> URL {
+            let url = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]).write(to: url)
+            return url
+        }
+        func load(labelBus: String?, labelJunction: String = "l") throws -> HorizontalSchematicSheet {
+            let block = try write([
+                "nets": ["d0": ["name": "D0"]],
+                "buses": ["data": ["name": "DATA", "members": ["m0": ["name": "D0", "net": "d0"]]],
+                          "other": ["name": "OTHER", "members": [:]]],
+            ], "block.json")
+            var sheet: JSONDictionary = [
+                "name": "Sheet", "index": 1,
+                "junctions": ["l": ["position": [0, 0]], "k": ["position": [5_000_000, 0]], "r": ["position": [10_000_000, 0]],
+                              "loose": ["position": [0, 20_000_000]], "t": ["position": [10_000_000, 5_000_000]]],
+                "net_lines": ["lk": ["from": ["junc": "l"], "to": ["junc": "k"]],
+                              "kr": ["from": ["junc": "k"], "to": ["junc": "r"]],
+                              "tap": ["from": ["bus_ripper": "rip"], "to": ["junc": "t"]]],
+                "bus_rippers": ["rip": ["junction": "r", "bus": "data", "bus_member": "m0", "orientation": "up"]],
+            ]
+            if let labelBus {
+                sheet["bus_labels"] = ["label": ["junction": labelJunction, "bus": labelBus, "orientation": "left"]]
+            }
+            let schematic = try write(["sheets": ["sheet": sheet]], "schematic.json")
+            var diagnostics: [HorizontalDiagnostic] = []
+            return try XCTUnwrap(HorizontalSchematic.load(from: schematic, blockURL: block, diagnostics: &diagnostics).sheets.first)
+        }
+        let wrongLine = "Bus ripper connected to wrong net line"
+        XCTAssertFalse(messages(try load(labelBus: "data")).contains(wrongLine))
+        XCTAssertTrue(messages(try load(labelBus: "other")).contains(wrongLine))
+        XCTAssertTrue(messages(try load(labelBus: nil)).contains(wrongLine))
+        XCTAssertTrue(messages(try load(labelBus: "data", labelJunction: "loose")).contains(wrongLine))
     }
 }
