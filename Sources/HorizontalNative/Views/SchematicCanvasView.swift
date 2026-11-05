@@ -2340,6 +2340,54 @@ struct SchematicCanvasView: View {
         setNoPopulate(!states.allSatisfy { $0 }, of: symbols)
     }
 
+    /// The selected objects a text size step changes: texts (a smashed
+    /// refdes or value among them), net labels and bus labels.
+    private var selectedSizedTexts: [HorizontalSelectableRef] {
+        selectedObjects.filter { $0.type == .text || $0.type == .netLabel || $0.type == .busLabel }
+    }
+
+    /// ⌘⇧+ and ⌘⇧−: every selected text a size bigger or smaller, each from
+    /// its own size (`HorizontalTextSizeStep`), as one undo step, as an
+    /// edit of their Size in the inspector is; one at the smallest stays.
+    private func stepSelectedTextSize(larger: Bool) {
+        guard !isReadOnly else {
+            return
+        }
+        let refs = selectedSizedTexts
+        func ids(_ type: HorizontalObjectType) -> Set<String> {
+            Set(refs.filter { $0.type == type }.map { normalizedID($0.id) })
+        }
+        let textIDs = ids(.text)
+        let netLabelIDs = ids(.netLabel)
+        let busLabelIDs = ids(.busLabel)
+        let previousSheet = editedSheet ?? sourceSheet
+        var draft = previousSheet
+        var changed = false
+        func step(_ size: inout Double) {
+            if let stepped = HorizontalTextSizeStep.stepped(size, larger: larger) {
+                size = stepped
+                changed = true
+            }
+        }
+        for index in draft.texts.indices where textIDs.contains(normalizedID(draft.texts[index].id)) {
+            step(&draft.texts[index].size)
+        }
+        for index in draft.netLabels.indices where netLabelIDs.contains(normalizedID(draft.netLabels[index].id)) {
+            step(&draft.netLabels[index].size)
+        }
+        for index in draft.busLabels.indices where busLabelIDs.contains(normalizedID(draft.busLabels[index].id)) {
+            step(&draft.busLabels[index].size)
+        }
+        guard changed else {
+            return
+        }
+        registerUndoSnapshot(previousSheet, actionName: larger ? "Increase Text Size" : "Decrease Text Size")
+        editedSheet = draft
+        invalidateSelectableCache()
+        onSheetChange(draft)
+        publishSelectionContext()
+    }
+
     private func editableCustomValueProperty(for placement: HorizontalPlacement) -> HorizontalSelectionProperty? {
         guard placement.componentDetails != nil else {
             return nil
@@ -8618,6 +8666,10 @@ struct SchematicCanvasView: View {
         }
         if canSetNoPopulate, selectedObjects.contains(where: { isNoPopulate($0) != nil }) {
             handlers.toggleNoPopulate = { toggleNoPopulateSelection() }
+        }
+        // A text size step needs a text, and none while an edit is under way.
+        if !handlers.hasInteraction, !selectedSizedTexts.isEmpty {
+            handlers.stepTextSize = { stepSelectedTextSize(larger: $0) }
         }
         if let onOpenBlock, let blockSymbol = selectedBlockSymbol() {
             handlers.openBlock = { onOpenBlock(blockSymbol) }
