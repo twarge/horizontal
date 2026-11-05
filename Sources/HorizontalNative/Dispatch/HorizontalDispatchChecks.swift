@@ -14,7 +14,7 @@ enum HorizontalDispatchChecks {
         var net: String? = nil
         /// Where a sheet warning is drawn.
         var location: Location? = nil
-        /// A clearance finding's pair, numbers and place on the board.
+        /// A board finding's fields: a clearance finding's pair, numbers and place, another check's place, objects and rule.
         var clearance: JSONDictionary? = nil
 
         struct Location {
@@ -174,7 +174,9 @@ enum HorizontalDispatchChecks {
                 }
             }
             messages.append(contentsOf: copperMessages(board: board, index: index))
-            messages.append(contentsOf: clearanceMessages(project: project, board: board))
+            let results = HorizontalBoardRulesCheck.run(board: board, tiedNets: HorizontalBoardClearanceCheck.tiedNets(of: project))
+            messages.append(contentsOf: clearanceMessages(results?.clearance ?? []))
+            messages.append(contentsOf: ruleMessages(results?.findings ?? []))
             messages.append(contentsOf: rulesMessages(project: project, board: board))
         } else {
             messages.append(Message(level: "info", category: "board", title: "The project has no board", detail: ""))
@@ -208,7 +210,7 @@ enum HorizontalDispatchChecks {
             "ok": (counts["error"] ?? 0) == 0,
             "counts": ["error": counts["error"] ?? 0, "warning": counts["warning"] ?? 0, "info": counts["info"] ?? 0],
             "messages": full ? messages.map(\.json) : grouped(messages),
-            "note": "These are load diagnostics, rules validation, and connectivity facts, plus the components and board packages nothing has placed, packages whose component is gone, the warnings the schematic canvas draws on each sheet, copper that joins two nets — tracks and vias reaching pads of both, or a poured plane over a pad of another — and Horizon's copper clearance checks: copper of two nets closer than the clearance_copper rules allow, and copper closer to an unplated hole or the board edge than clearance_copper_other allows, measured on the copper itself, without the routing offset, which only the router keeps. Poured planes count as copper for the rats' nest and the clearance checks."
+            "note": "These are load diagnostics, rules validation, and connectivity facts, plus the components and board packages nothing has placed, packages whose component is gone, the warnings the schematic canvas draws on each sheet, copper that joins two nets — tracks and vias reaching pads of both, or a poured plane over a pad of another — and Horizon's board rules checks. The clearance ones, measured on the copper itself without the routing offset, which only the router keeps: copper of two nets closer than the clearance_copper rules allow; copper closer to an unplated hole or the board edge than clearance_copper_other allows; copper closer to a keepout than clearance_copper_keepout allows; pads, vias and unplated holes of one net closer than clearance_same_net names; silkscreen closer to copper the solder mask leaves bare than clearance_silkscreen_exposed_copper allows. And the rest, each in the category of its rule: track_width, hole_size, preflight_checks (its airwires, unplaced and partless components being the routing, board and part messages), plane fill order (plane), net_ties, board_connectivity (a net's copper in unconnected groups) and height_restrictions. Poured planes count as copper for the rats' nest and the checks."
         ]
     }
 
@@ -284,21 +286,14 @@ enum HorizontalDispatchChecks {
             messages.append(Message(level: "error", category: "copper", title: "Copper joins two nets", detail: detail,
                                     net: short.nets.map(net).sorted().joined(separator: " / ")))
         }
-        let padsByLayer = Dictionary(grouping: board.packagePads.filter { $0.netID != nil && $0.layer != nil }, by: { $0.layer! })
-        for plane in board.planes {
-            guard let layer = plane.layer, let planeNet = plane.netID?.lowercased(), !plane.fragments.isEmpty else { continue }
+        for (plane, overlapped) in HorizontalBoardRulesCheck.planesOverPads(board) {
+            guard let layer = plane.layer, let planeNet = plane.netID?.lowercased() else { continue }
             var covered = Set<String>()
-            for pad in padsByLayer[layer] ?? [] where pad.netID?.lowercased() != planeNet {
-                let center = HorizontalRect(points: pad.renderVertices(arcPrecision: 24)).center
-                let inside = plane.fragments.contains { fragment in
-                    fragment.containmentPaths.filter { $0.contains(center) }.count % 2 == 1
-                }
-                guard inside else { continue }
+            for pad in overlapped {
                 let parts = pad.id.lowercased().split(separator: "/").map(String.init)
                 let path = parts.count >= 3 ? "\(parts[0])/\(parts[2])" : pad.id
                 covered.insert("\(padNames[path] ?? path) (\(net(pad.netID?.lowercased())))")
             }
-            guard !covered.isEmpty else { continue }
             let pads = natural(Array(covered))
             messages.append(Message(level: "error", category: "copper", title: "Plane runs over a pad on another net",
                                     detail: "The \(net(planeNet)) plane on \(HorizontalBoardLayers.name(for: layer)) covers \(pads.prefix(6).joined(separator: ", "))\(pads.count > 6 ? ", … \(pads.count) pads" : ""). It was poured before those pads took their nets, most likely; pour_planes pours it again.",
@@ -307,17 +302,19 @@ enum HorizontalDispatchChecks {
         return messages
     }
 
-    /// Horizon's copper clearance checks (`HorizontalBoardClearanceCheck`):
-    /// one error per pair of objects too close, naming both, with the layers,
+    /// Horizon's clearance checks (`HorizontalBoardClearanceCheck`): one
+    /// error per pair of objects too close, naming both, with the layers,
     /// the distance, the clearance, the rule and where.
-    static func clearanceMessages(project: HorizontalProject, board: HorizontalBoard) -> [Message] {
-        let findings = HorizontalBoardClearanceCheck.run(board: board, tiedNets: HorizontalBoardClearanceCheck.tiedNets(of: project))
-        return findings.map { finding in
+    static func clearanceMessages(_ findings: [HorizontalClearanceFinding]) -> [Message] {
+        findings.map { finding in
             let title: String
             switch finding.check {
             case .copper: title = "Copper closer than its clearance"
             case .hole: title = "Copper too close to an unplated hole"
             case .boardEdge: title = "Copper too close to the board edge"
+            case .keepout: title = "Copper too close to a keepout"
+            case .sameNet: title = "Copper closer than its same net clearance"
+            case .silkscreen: title = "Silkscreen too close to exposed copper"
             }
             let place = String(format: " At (%.3f, %.3f) mm.", finding.location.x / 1_000_000, finding.location.y / 1_000_000)
             let nets = [finding.first, finding.second].compactMap { $0.netName ?? $0.netID }
@@ -344,7 +341,9 @@ enum HorizontalDispatchChecks {
             "layers": finding.layers.map(HorizontalBoardLayers.name(for:)),
             "distance_mm": HorizontalDispatchJSON.mm(finding.distance),
             "clearance_mm": HorizontalDispatchJSON.mm(finding.clearance),
-            "rule": ["kind": finding.ruleKind.rawValue, "id": finding.ruleID ?? NSNull(), "brief": finding.ruleID == nil ? "none, Horizon's 0.1 mm" : finding.ruleBrief] as JSONDictionary,
+            "rule": ["kind": finding.ruleKind.rawValue, "id": finding.ruleID ?? NSNull(),
+                     "brief": finding.ruleID != nil || finding.check == .silkscreen ? finding.ruleBrief
+                        : finding.check == .keepout ? "none, so none asked" : "none, Horizon's 0.1 mm"] as JSONDictionary,
             "x_mm": HorizontalDispatchJSON.mm(finding.location.x),
             "y_mm": HorizontalDispatchJSON.mm(finding.location.y),
         ]
@@ -352,6 +351,40 @@ enum HorizontalDispatchChecks {
             json["outside_board"] = true
         }
         return json
+    }
+
+    /// The other board rules checks (`HorizontalBoardRulesCheck`): one
+    /// message a finding, its category the kind of rule, at Horizon's level.
+    /// Three of the preflight check's findings are messages of their own
+    /// above — airwires (Unrouted connections, Not reached by the plane),
+    /// components with no package (Not placed on the board) and components
+    /// with no part (No part assigned) — as are Horizontal's copper checks
+    /// (Copper joins two nets, Plane runs over a pad on another net), so
+    /// those aren't given twice.
+    static func ruleMessages(_ findings: [HorizontalBoardRuleFinding]) -> [Message] {
+        findings.compactMap { finding in
+            guard let kind = finding.kind,
+                  !(kind == .preflightChecks && ["airwire", "not_placed", "no_part"].contains(finding.check)) else {
+                return nil
+            }
+            var detail = finding.message + "."
+            if !finding.detail.isEmpty { detail += " " + finding.detail }
+            if let at = finding.location {
+                detail += String(format: " At (%.3f, %.3f) mm.", at.x / 1_000_000, at.y / 1_000_000)
+            }
+            var json: JSONDictionary = ["check": finding.check]
+            if let at = finding.location {
+                json["x_mm"] = HorizontalDispatchJSON.mm(at.x)
+                json["y_mm"] = HorizontalDispatchJSON.mm(at.y)
+            }
+            if !finding.layers.isEmpty { json["layers"] = finding.layers.map(HorizontalBoardLayers.name(for:)) }
+            if !finding.objectIDs.isEmpty { json["objects"] = finding.objectIDs }
+            if let rule = finding.ruleID { json["rule"] = ["kind": kind.rawValue, "id": rule] as JSONDictionary }
+            return Message(level: finding.level.rawValue, category: kind.rawValue, title: finding.title, detail: detail,
+                           refdes: finding.refdes,
+                           net: finding.netNames.isEmpty ? nil : finding.netNames.joined(separator: " / "),
+                           clearance: json)
+        }
     }
 
     /// Each airwire as "C61.N to U8.VSS_12", at most three of them. An end

@@ -231,6 +231,21 @@ struct HorizontalRuleMatchComponent: Hashable {
         }
     }
 
+    /// Mirrors RuleMatchComponent::match where the component and its part
+    /// are both known, as the board checks know a package's: Horizon gives a
+    /// board package its component's uuid.
+    func matches(componentID: String, partID: String?) -> Bool {
+        switch mode {
+        case .component:
+            return component == componentID.lowercased()
+        case .components:
+            return components.contains(componentID.lowercased())
+        case .part:
+            guard let part, let partID else { return false }
+            return part == partID.lowercased()
+        }
+    }
+
     /// Mirrors RuleMatchComponent::match — but `packageID` is the board-package
     /// instance UUID (see the type doc), not the schematic component UUID.
     func matches(packageID: String) -> Bool {
@@ -709,6 +724,113 @@ struct HorizontalRuleVia: Hashable {
     }
 }
 
+/// Mirrors RuleHoleSize: the least and greatest diameter of a hole on a net
+/// the rule matches.
+struct HorizontalRuleHoleSize: Hashable {
+    var id: String
+    var enabled: Bool
+    var order: Int
+    var match: HorizontalRuleMatch
+    var diameterMin: Double
+    var diameterMax: Double
+
+    init(id: String, json: JSONDictionary) {
+        self.id = id
+        enabled = json.bool("enabled") ?? true
+        order = json.int("order") ?? 0
+        match = HorizontalRuleMatch(json: json.dictionary("match"))
+        // RuleHoleSize's own defaults, for a rule a tool wrote without them.
+        diameterMin = json.double("diameter_min") ?? 100_000
+        diameterMax = json.double("diameter_max") ?? 10_000_000
+    }
+}
+
+/// Mirrors RuleClearanceSameNet: how far apart copper of one net must stay
+/// from copper of another kind on the same net (a via from a pad, say), for
+/// the pairs of kinds its table names; a pair it doesn't name isn't checked.
+struct HorizontalRuleClearanceSameNet: Hashable {
+    struct Pair: Hashable {
+        var a: HorizontalPatchType
+        var b: HorizontalPatchType
+
+        init(_ a: HorizontalPatchType, _ b: HorizontalPatchType) {
+            self.a = a.rawValue <= b.rawValue ? a : b
+            self.b = a.rawValue <= b.rawValue ? b : a
+        }
+    }
+
+    /// The rule's key in the file; empty for the fallback, which no rule is.
+    var id = ""
+    var enabled: Bool
+    var order: Int
+    var layer: Int
+    var match: HorizontalRuleMatch
+    var clearances: [Pair: Int]
+
+    init(id: String = "", json: JSONDictionary) {
+        self.id = id
+        enabled = json.bool("enabled") ?? true
+        order = json.int("order") ?? 0
+        layer = json.int("layer") ?? 10000
+        match = HorizontalRuleMatch(json: json.dictionary("match"))
+        var map = [Pair: Int]()
+        for entry in json.dictionaryArray("clearances") {
+            guard let types = entry["types"] as? [Any], types.count >= 2,
+                  let a = (types[0] as? String).flatMap(HorizontalPatchType.init(jsonString:)),
+                  let b = (types[1] as? String).flatMap(HorizontalPatchType.init(jsonString:)),
+                  let value = entry.int("clearance") else {
+                continue
+            }
+            map[Pair(a, b)] = value
+        }
+        clearances = map
+    }
+
+    static let fallback = HorizontalRuleClearanceSameNet(id: "", json: [:])
+
+    /// The clearance between the two kinds, nil where the table names no
+    /// such pair (RuleClearanceSameNet::get_clearance's -1).
+    func clearance(_ a: HorizontalPatchType, _ b: HorizontalPatchType) -> Int? {
+        clearances[Pair(a, b)]
+    }
+}
+
+/// Mirrors RuleClearanceSilkscreenExposedCopper, the rule of one: how far
+/// silkscreen keeps from copper the solder mask leaves bare on each side,
+/// that copper being only pads' with `padsOnly`.
+struct HorizontalRuleClearanceSilkscreenExposedCopper: Hashable {
+    var enabled = true
+    var clearanceTop: Double = 100_000
+    var clearanceBottom: Double = 100_000
+    var padsOnly = false
+
+    init(json: JSONDictionary?) {
+        guard let json else { return }
+        enabled = json.bool("enabled") ?? true
+        clearanceTop = json.double("clearance_top") ?? clearanceTop
+        clearanceBottom = json.double("clearance_bottom") ?? clearanceBottom
+        padsOnly = json.bool("pads_only") ?? false
+    }
+}
+
+/// Mirrors RuleShortedPads: a package's pads on a net the rule matches count
+/// as joined inside the part, for the connectivity check.
+struct HorizontalRuleShortedPads: Hashable {
+    var id: String
+    var enabled: Bool
+    var order: Int
+    var match: HorizontalRuleMatch
+    var matchComponent: HorizontalRuleMatchComponent
+
+    init(id: String, json: JSONDictionary) {
+        self.id = id
+        enabled = json.bool("enabled") ?? true
+        order = json.int("order") ?? 0
+        match = HorizontalRuleMatch(json: json.dictionary("match"))
+        matchComponent = HorizontalRuleMatchComponent(json: json.dictionary("match_component"))
+    }
+}
+
 /// The lookup engine. Each lookup returns the first
 /// enabled rule (rules pre-sorted ascending by `order`) whose match predicates
 /// and layer sentinel (10000 == any) pass, else a default fallback.
@@ -720,6 +842,17 @@ struct HorizontalBoardRules: Hashable {
     var thermalRules: [HorizontalRuleThermals]
     var viaRules: [HorizontalRuleVia]
     var trackWidthRules: [HorizontalRuleTrackWidth]
+    var holeSizeRules: [HorizontalRuleHoleSize]
+    var clearanceSameNetRules: [HorizontalRuleClearanceSameNet]
+    var shortedPadsRules: [HorizontalRuleShortedPads]
+    var clearanceSilkscreenExposedCopper: HorizontalRuleClearanceSilkscreenExposedCopper
+    /// The rules of one that only say whether their check runs. Horizon
+    /// neither reads nor writes the preflight, net tie and connectivity
+    /// ones, so they are on unless a file Horizontal wrote turns them off.
+    var checksPreflight: Bool
+    var checksNetTies: Bool
+    var checksBoardConnectivity: Bool
+    var checksHeightRestrictions: Bool
     /// The file has a `via` entry in its rules, even an empty one. Horizon
     /// always writes one; a board without, written by a tool that left the
     /// via rules out, is given Horizon's default one when it loads
@@ -761,6 +894,19 @@ struct HorizontalBoardRules: Hashable {
         statesViaRules = rules["via"] != nil
         viaRules = parseKeyedGroup("via", HorizontalRuleVia.init(id:json:), order: \.order)
         trackWidthRules = parseKeyedGroup("track_width", HorizontalRuleTrackWidth.init(id:json:), order: \.order)
+        holeSizeRules = parseKeyedGroup("hole_size", HorizontalRuleHoleSize.init(id:json:), order: \.order)
+        clearanceSameNetRules = parseKeyedGroup(
+            "clearance_same_net", HorizontalRuleClearanceSameNet.init(id:json:), order: \.order)
+        shortedPadsRules = parseKeyedGroup("shorted_pads", HorizontalRuleShortedPads.init(id:json:), order: \.order)
+        clearanceSilkscreenExposedCopper = HorizontalRuleClearanceSilkscreenExposedCopper(
+            json: rules.dictionary("clearance_silkscreen_exposed_copper"))
+        func enabled(_ key: String) -> Bool {
+            rules.dictionary(key)?.bool("enabled") ?? true
+        }
+        checksPreflight = enabled("preflight_checks")
+        checksNetTies = enabled("net_ties")
+        checksBoardConnectivity = enabled("board_connectivity")
+        checksHeightRestrictions = enabled("height_restrictions")
     }
 
     static let empty = HorizontalBoardRules(rules: nil, netDetails: [:])
@@ -816,6 +962,31 @@ struct HorizontalBoardRules: Hashable {
             return rule
         }
         return .fallback
+    }
+
+    /// Mirrors check_hole_size's pick: the first enabled hole size rule by
+    /// order whose match takes `net`; nil where none does, and the hole
+    /// isn't checked.
+    func holeSize(net: String?) -> HorizontalRuleHoleSize? {
+        holeSizeRules.first { $0.enabled && $0.match.matches(netID: net, netDetails: netDetails) }
+    }
+
+    /// Mirrors BoardRules::get_clearance_same_net.
+    func clearanceSameNet(net: String?, layer: Int) -> HorizontalRuleClearanceSameNet {
+        for rule in clearanceSameNetRules
+        where rule.enabled && layerMatches(rule.layer, layer)
+            && rule.match.matches(netID: net, netDetails: netDetails) {
+            return rule
+        }
+        return .fallback
+    }
+
+    /// Mirrors RuleShortedPads::matches, the first rule by order that does.
+    func shortedPads(componentID: String, partID: String?, net: String?) -> HorizontalRuleShortedPads? {
+        shortedPadsRules.first {
+            $0.enabled && $0.matchComponent.matches(componentID: componentID, partID: partID)
+                && $0.match.matches(netID: net, netDetails: netDetails)
+        }
     }
 
     /// Resolve plane settings for a plane that has `from_rules == true`.

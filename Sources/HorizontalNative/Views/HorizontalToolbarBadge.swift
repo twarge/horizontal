@@ -44,10 +44,13 @@ extension HorizontalBoardRulesResultState {
     /// The badge on the rules results button: the last run's findings, red
     /// when any is an error, as copper closer than the rules allow is and a
     /// pin on no net is.
-    var badgeCount: Int { messages.count + (clearanceFindings?.count ?? 0) + (schematicFindings?.count ?? 0) }
+    var badgeCount: Int {
+        messages.count + (clearanceFindings?.count ?? 0) + (boardFindings?.count ?? 0) + (schematicFindings?.count ?? 0)
+    }
 
     var badgeColor: Color {
         messages.contains { $0.level == .error } || !(clearanceFindings ?? []).isEmpty
+            || (boardFindings ?? []).contains { $0.level == .error }
             || (schematicFindings ?? []).contains(where: \.isError) ? .red : .orange
     }
 }

@@ -136,7 +136,45 @@ not checked. Each finding is one `clearance` error per pair of objects:
 `layer` the numbers are for and every `layers` it is too close on,
 `distance_mm`, `clearance_mm`, the `rule` (`kind`, `id`, null for none and
 Horizon's 0.1 mm, and `brief`), and `x_mm`/`y_mm` between the nearest points.
-Copper text and lines on copper layers aren't checked yet.
+Copper text and lines on copper layers aren't checked against copper yet.
+
+The other clearance rules come out the same way, with `check` saying which:
+`keepout`, copper of a kind a keepout lists, on a layer it keeps out, inside
+it or closer than the first `clearance_copper_keepout` rule taking the net and
+the keepout's class asks (no rule asks nothing, so only copper inside is
+reported then); `same_net`, pads, through-hole pads, vias and unplated holes
+of one net, of two kinds, closer than every shared layer's
+`clearance_same_net` rule names for the pair (a pair a rule doesn't name isn't
+checked); and `silkscreen`, silkscreen closer to the copper its side's solder
+mask leaves bare — pads only with the rule's `pads_only` — than
+`clearance_silkscreen_exposed_copper` asks, top and bottom each by its own
+clearance (Horizon takes the top's for both).
+
+And the rest of Horizon's board checks, one message a finding in the
+category of its rule, at Horizon's level, with `check`, `x_mm`/`y_mm`,
+`layers`, the `objects` it is about and its `rule`: `track_width`, a track
+outside the widths the first track width rule taking its net gives its layer;
+`hole_size`, a board, via or pad hole outside the first hole size rule taking
+its net; `preflight_checks`, a plane with nothing poured, a package's own text
+moved off its side's silkscreen (a warning), a track on no net, a copper
+polygon that is neither plane nor keepout, a line or arc on the outline layer,
+and an outline Horizon can't make a board of (none, none or two enclosing the
+rest, cutouts that cross, a zero-length edge as a warning), its airwires and
+its unplaced and partless components being the routing, board and part
+messages above; `plane`, overlapping planes whose fill order would leave one
+without copper (identical outlines are a warning); `net_ties`, a net tie of
+the block not drawn on the board, and one drawn that misses either of its
+nets on its layer, or meets one more than once or by less than a disc as wide
+as it (warnings); `board_connectivity`, a net whose copper is in more than one
+piece, joined only where it touches and through vias and plated holes, and
+where a `shorted_pads` rule joins a package's pads, which a plane's unpoured
+or orphaned fragments make too; and `height_restrictions`, a package taller on
+a side than a height restriction its outline there overlaps, by its 3D
+model's heights, with a warning for a package with no outline, no model or no
+height on that side, and for a restriction off the package layers. The
+preflight, net tie, connectivity and height restriction checks run unless
+their rule of one is turned off; Horizon doesn't save the first three, so a
+file says nothing of them and they are on.
 
 It also gives the warnings the schematic canvas draws — Horizon's sheet
 warnings: Label missing, Pin connected to net, Power sym missing, Pin on Line,

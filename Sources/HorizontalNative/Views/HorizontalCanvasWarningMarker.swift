@@ -66,6 +66,17 @@ extension HorizontalCanvasWarning {
         })
     }
 
+    /// A marker where each board finding is, the clearance ones among them:
+    /// red for what Horizon fails, yellow for what it warns of.
+    static func markers(boardFindings findings: [HorizontalBoardRuleFinding]) -> [HorizontalCanvasWarning] {
+        merging([], findings.compactMap { finding in
+            guard let location = finding.location else { return nil }
+            let message = finding.clearance.map { "\($0.title): \($0.detail)" } ?? finding.text
+            return HorizontalCanvasWarning(position: location, messages: [message],
+                                           errorMessages: finding.level == .error ? [message] : [])
+        })
+    }
+
     /// A marker for each schematic finding drawn on the sheet `sheetID`,
     /// red for the checks Horizon fails.
     static func markers(schematicFindings findings: [HorizontalSchematicRuleFinding], sheetID: String) -> [HorizontalCanvasWarning] {

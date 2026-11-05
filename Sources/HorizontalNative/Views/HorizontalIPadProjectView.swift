@@ -755,9 +755,9 @@ struct HorizontalIPadProjectView: View {
                     rulesFocus = nil
                     rulesSheetPresented = true
                 },
-                onShowFinding: showClearanceFinding,
+                onShowFinding: showBoardFinding,
                 onShowRule: { finding in
-                    rulesFocus = HorizontalBoardRuleFocus(kind: finding.ruleKind, ruleID: finding.ruleID)
+                    rulesFocus = finding.kind.map { HorizontalBoardRuleFocus(kind: $0, ruleID: finding.ruleID) }
                     rulesSheetPresented = true
                 },
                 onShowSchematicFinding: showSchematicFinding,
@@ -769,26 +769,25 @@ struct HorizontalIPadProjectView: View {
         }
     }
 
-    /// Where a clearance finding is, as on macOS: the board framed on it,
-    /// with the nets and parts of both sides highlighted, turned to its side
-    /// when the view shows one side and the finding is on the other's copper
+    /// Where a board finding is, as on macOS: the board framed on it, with
+    /// the nets and parts it is about highlighted, turned to its side when
+    /// the view shows one side and the finding is on the other's copper
     /// only. A net with a plane lights up most of the board, so it is
-    /// highlighted only where the plane is one of the two, or both nets have
-    /// one.
-    private func showClearanceFinding(_ finding: HorizontalClearanceFinding) {
+    /// highlighted only where a plane is what the finding is about, or every
+    /// net it names has one.
+    private func showBoardFinding(_ finding: HorizontalBoardRuleFinding) {
         let planeNets = Set(project?.board?.planes.compactMap { $0.netID?.lowercased() } ?? [])
-        let nets = [finding.first.netID, finding.second.netID].compactMap { $0 }
-        let showsPlane = finding.first.type == .plane || finding.second.type == .plane
+        let nets = finding.netIDs
         let quiet = nets.filter { !planeNets.contains($0) }
-        highlightedNetIDs = Set(showsPlane || quiet.isEmpty ? nets : quiet)
-        highlightedComponentIDs = Set([finding.first.componentID, finding.second.componentID].compactMap { $0 })
+        highlightedNetIDs = Set(finding.showsPlane || quiet.isEmpty ? nets : quiet)
+        highlightedComponentIDs = Set(finding.componentIDs)
         if let side = boardDisplayOptions.visibleSide {
             let layers = Set(finding.layers)
             if !layers.contains(side.copperLayer), layers.contains(side.other.copperLayer) {
                 showBoardSide(side.other)
             }
         }
-        let region = finding.region
+        guard let region = finding.region else { return }
         if isShown(.board), let frame = boardCanvasActions?.frameWorldRect {
             frame(region)
             return
@@ -1708,7 +1707,7 @@ struct HorizontalIPadProjectView: View {
                     onSelectBoardLayerView: { applyBoardLayerViewPreset($0) },
                     onFilterAirwires: { isBoardAirwireFilterPresented = true },
                     poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
-                    ruleMarkers: HorizontalCanvasWarning.markers(clearanceFindings: rulesResultsState?.clearanceFindings ?? [])
+                    ruleMarkers: HorizontalCanvasWarning.markers(boardFindings: rulesResultsState?.allBoardFindings ?? [])
                 )
                 .overlay(alignment: .bottom) {
                     toolControlBar(for: boardCanvasActions, safeAreaInsets: safeAreaInsets)
@@ -2356,6 +2355,7 @@ struct HorizontalIPadProjectView: View {
             ruleTitle: "Design Rules",
             messages: HorizontalBoardRulesValidator.validateAll(rules: rules, context: context),
             clearanceFindings: rulesResultsState?.clearanceFindings,
+            boardFindings: rulesResultsState?.boardFindings,
             schematicFindings: rulesResultsState?.schematicFindings
         )
         scheduleClearanceCheck()
@@ -2388,7 +2388,7 @@ struct HorizontalIPadProjectView: View {
         }
     }
 
-    /// The copper clearance checks, in the background, on the board as it
+    /// The board's rules checks, in the background, on the board as it
     /// stands, once edits settle; the last findings stay up until the new
     /// ones are in.
     private func scheduleClearanceCheck() {
@@ -2402,11 +2402,12 @@ struct HorizontalIPadProjectView: View {
         clearanceCheckTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled,
-                  let findings = await HorizontalBoardClearanceCheck.findings(board: board, tiedNets: tiedNets),
+                  let results = await HorizontalBoardRulesCheck.results(board: board, tiedNets: tiedNets),
                   !Task.isCancelled else {
                 return
             }
-            rulesResultsState?.clearanceFindings = findings
+            rulesResultsState?.clearanceFindings = results.clearance
+            rulesResultsState?.boardFindings = results.findings
             rulesResultsState?.isCheckingClearance = false
             clearanceCheckTask = nil
         }
