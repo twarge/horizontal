@@ -435,8 +435,10 @@ struct HorizontalExportSettings: Hashable {
             HorizontalBoardLayers.bottomSilkscreen,
             HorizontalBoardLayers.bottomPaste
         ]
+        // The board's dimensions go out on a layer of their own, as a
+        // drawing for the fab; Horizon's Gerber export leaves them out.
         guard let board else {
-            return fixedLayers
+            return fixedLayers + [HorizontalBoardLayers.dimensions]
         }
 
         let boardLayers = Set(
@@ -444,7 +446,7 @@ struct HorizontalExportSettings: Hashable {
                 + board.stackupLayers.map(\.layer)
                 + board.userLayers.map(\.id)
         )
-        return HorizontalBoardLayers.all.filter { boardLayers.contains($0) }
+        return HorizontalBoardLayers.all.filter { boardLayers.contains($0) } + [HorizontalBoardLayers.dimensions]
     }
 
     private static func pdfLayerIDs(for board: HorizontalBoard?) -> [Int] {

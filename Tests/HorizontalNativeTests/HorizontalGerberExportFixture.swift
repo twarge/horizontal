@@ -13,7 +13,13 @@ enum HorizontalGerberExportFixture {
     static func board(
         tracks: [HorizontalSegment] = [],
         keepouts: [HorizontalKeepout] = [],
-        vias: [HorizontalMarker] = []
+        vias: [HorizontalMarker] = [],
+        lines: [HorizontalSegment] = [],
+        polygons: [HorizontalPolygon] = [],
+        planes: [HorizontalPlane] = [],
+        dimensions: [HorizontalDimension] = [],
+        texts: [HorizontalText] = [],
+        userLayers: [HorizontalBoardUserLayer] = []
     ) -> HorizontalBoard {
         HorizontalBoard(
             url: URL(fileURLWithPath: "/tmp/gerber-fixture/board.json"), uuid: "board", name: "gerber-fixture",
@@ -25,9 +31,9 @@ enum HorizontalGerberExportFixture {
                 HorizontalBoardStackupLayer(layer: inner2, copperThickness: 35_000, substrateThickness: 300_000),
                 HorizontalBoardStackupLayer(layer: bottom, copperThickness: 35_000, substrateThickness: 300_000),
             ],
-            userLayers: [], junctions: [:], junctionNetIDs: [:], netDetails: [:],
-            tracks: tracks, netTies: [], lines: [], arcs: [], connectionLines: [], airwires: [],
-            polygons: [], planes: [], keepouts: keepouts, dimensions: [], decals: [], holes: [],
+            userLayers: userLayers, junctions: [:], junctionNetIDs: [:], netDetails: [:],
+            tracks: tracks, netTies: [], lines: lines, arcs: [], connectionLines: [], airwires: [],
+            polygons: polygons, planes: planes, keepouts: keepouts, dimensions: dimensions, decals: [], holes: [],
             vias: vias,
             viaHoles: vias.map { via in
                 HorizontalHole(
@@ -36,7 +42,7 @@ enum HorizontalGerberExportFixture {
                 )
             },
             packages: [], packagePads: [], packageHoles: [],
-            packagePolygons: [], packageLines: [], packageArcs: [], packageTexts: [], texts: [],
+            packagePolygons: [], packageLines: [], packageArcs: [], packageTexts: [], texts: texts,
             boardPanels: [], physicalBounds: .empty, bounds: .empty
         )
     }
