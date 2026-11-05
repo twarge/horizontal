@@ -210,6 +210,21 @@ final class BoardLayerModeTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(BoardDisplayOptions.self, from: Data("{}".utf8)).layerMode, .asIs)
     }
 
+    /// The picker is the board's 2D rail's alone: the pool editors' rails and
+    /// both 3D panes' leave it out.
+    func testOnlyTheBoardsTwoDRailOffersTheLayerMode() {
+        func controls(threeD: Bool, layers: [Int]?) -> BoardLayerControls {
+            BoardLayerControls(board: nil, displayOptions: .constant(BoardDisplayOptions()), selectedLayer: .constant(top),
+                               includesThreeDControls: threeD, layers: layers, showsBoardObjectToggles: layers == nil)
+        }
+        XCTAssertTrue(controls(threeD: false, layers: nil).showsLayerMode, "the board")
+        XCTAssertFalse(controls(threeD: true, layers: nil).showsLayerMode, "the board's 3D pane")
+        for profile in [HorizontalBoardModeProfile.package, .padstack, .decal] {
+            XCTAssertFalse(controls(threeD: false, layers: profile.layers).showsLayerMode, "\(profile.mode)")
+            XCTAssertFalse(controls(threeD: true, layers: profile.layers).showsLayerMode, "\(profile.mode) in 3D")
+        }
+    }
+
     func testTheCopperStackComesFromTheStackup() {
         XCTAssertEqual(layerModeBoard(stackup: [bottom, in2, top, in1]).copperStack, fourLayers)
         XCTAssertEqual(layerModeBoard(stackup: []).copperStack, [top, bottom], "no stackup reads as two layers")
