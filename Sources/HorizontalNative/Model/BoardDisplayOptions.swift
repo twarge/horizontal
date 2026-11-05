@@ -499,15 +499,16 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         }
     }
 
-    /// A sided view: only `layers` and the view furniture. The objects
-    /// (pads, holes, packages, text, labels, connections and the rest) are
-    /// the user's own switches, which no view preset touches; what of them
-    /// shows follows the layers they are on.
+    /// A sided view: only `layers` and the view furniture — the grid, the
+    /// origin mark, the scale bar and the coordinates, as the schematic shows
+    /// them. The objects (pads, holes, packages, text, labels, connections
+    /// and the rest) are the user's own switches, which no view preset
+    /// touches; what of them shows follows the layers they are on.
     private mutating func layerView(layers: Set<Int>) {
         grid = true
         boardBody = false
         panelLabels = false
-        origin = false
+        origin = true
         scaleBar = true
         coordinates = true
         orientationAxes = false
