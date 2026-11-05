@@ -379,6 +379,7 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
             layers: [
                 HorizontalBoardLayers.topMask,
                 HorizontalBoardLayers.topSilkscreen,
+                HorizontalBoardLayers.topNotes,
                 HorizontalBoardLayers.outline
             ]
         )
@@ -389,6 +390,7 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
             layers: [
                 HorizontalBoardLayers.bottomMask,
                 HorizontalBoardLayers.bottomSilkscreen,
+                HorizontalBoardLayers.bottomNotes,
                 HorizontalBoardLayers.outline
             ]
         )
@@ -400,6 +402,7 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
                 HorizontalBoardLayers.topCopper,
                 HorizontalBoardLayers.topAssembly,
                 HorizontalBoardLayers.topCourtyard,
+                HorizontalBoardLayers.topNotes,
                 HorizontalBoardLayers.outline
             ]
         )
@@ -411,17 +414,18 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
                 HorizontalBoardLayers.bottomCopper,
                 HorizontalBoardLayers.bottomAssembly,
                 HorizontalBoardLayers.bottomCourtyard,
+                HorizontalBoardLayers.bottomNotes,
                 HorizontalBoardLayers.outline
             ]
         )
     }
 
     mutating func topRoutingView() {
-        layerView(layers: [HorizontalBoardLayers.topCopper, HorizontalBoardLayers.outline])
+        layerView(layers: [HorizontalBoardLayers.topCopper, HorizontalBoardLayers.topNotes, HorizontalBoardLayers.outline])
     }
 
     mutating func bottomRoutingView() {
-        layerView(layers: [HorizontalBoardLayers.bottomCopper, HorizontalBoardLayers.outline])
+        layerView(layers: [HorizontalBoardLayers.bottomCopper, HorizontalBoardLayers.bottomNotes, HorizontalBoardLayers.outline])
     }
 
     /// The view a board opens on: `saved` (the file's remembered view, or the
@@ -604,8 +608,9 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
 /// The layer views a request can ask for by name — the presets the board rail
 /// offers, plus all layers, copper only and the clean view — so a spoken "show
 /// the top layer" and an agent's `show_layers` mean the same thing. The bare
-/// side ("the top layer") is the placement view: copper, assembly and
-/// courtyard, which is what one looks at when working on that side.
+/// side ("the top layer") is the placement view: copper, assembly, courtyard
+/// and notes, which is what one looks at when working on that side. Every
+/// side's view shows that side's notes.
 enum HorizontalBoardSide: String {
     case top
     case bottom
