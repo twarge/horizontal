@@ -1021,9 +1021,10 @@ struct BoardCanvasView: View {
         let canvas = InteractiveCanvasView(
             bounds: board.bounds,
             // A board's bounds are its content's, so a paste or a part placed
-            // past them changes them; the view stays put. A pool editor's
+            // past them changes them; the view, measured from the bounds its
+            // viewport pinned for this board, stays put. A pool editor's
             // board is its item's.
-            boundsIdentity: AnyHashable(board.uuid),
+            boundsIdentity: board.uuid,
             viewport: $viewport,
             backgroundColor: theme.background,
             foregroundColor: theme.textOverlay,
@@ -1400,7 +1401,7 @@ struct BoardCanvasView: View {
                 // on-screen viewport, not the binding which can lag). Fall back to
                 // a local reconstruction only if no report has arrived yet.
                 let transform = canvasDisplayTransform ?? HorizontalCanvasTransform(
-                    bounds: board.bounds,
+                    bounds: viewport.measuringBounds(for: board.uuid, contentBounds: board.bounds),
                     size: proxy.size,
                     fitInsets: boardCanvasFitInsets(safeArea: proxy.safeAreaInsets),
                     zoom: viewport.zoom,
@@ -1449,7 +1450,7 @@ struct BoardCanvasView: View {
         GeometryReader { proxy in
             if let state = planeEditorState {
                 let transform = canvasDisplayTransform ?? HorizontalCanvasTransform(
-                    bounds: board.bounds,
+                    bounds: viewport.measuringBounds(for: board.uuid, contentBounds: board.bounds),
                     size: proxy.size,
                     fitInsets: boardCanvasFitInsets(safeArea: proxy.safeAreaInsets),
                     zoom: viewport.zoom,
@@ -2871,7 +2872,7 @@ struct BoardCanvasView: View {
             guard let transform = liveCanvasTransform.transform else {
                 return
             }
-            viewport = CanvasViewport.framing(rect, in: transform)
+            viewport = CanvasViewport.framing(rect, in: transform, identity: board.uuid)
         }
         actions.zoomBy = { factor in
             guard let transform = liveCanvasTransform.transform, factor >= 0 else {
@@ -2882,7 +2883,7 @@ struct BoardCanvasView: View {
                 viewport = CanvasViewport(mirrored: viewport.mirrored)
                 return
             }
-            viewport = CanvasViewport.framing(transform.visibleBounds.scaled(by: 1 / factor), in: transform, fill: 1)
+            viewport = CanvasViewport.framing(transform.visibleBounds.scaled(by: 1 / factor), in: transform, fill: 1, identity: board.uuid)
         }
         actions.selectComponents = { componentIDs in
             let wanted = Set(componentIDs.map(normalizedID))

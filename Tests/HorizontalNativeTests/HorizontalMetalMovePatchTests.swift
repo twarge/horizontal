@@ -120,7 +120,7 @@ final class HorizontalMetalMovePatchTests: XCTestCase {
                     handles: [handle], handleKey: handleKey,
                     bufferPatches: patches, bufferPatchKey: patches.hashValue),
                 frame: HorizontalMetalCanvasFrame(
-                    bounds: .init(points: [.init(x: -10_000_000, y: -10_000_000), .init(x: 10_000_000, y: 10_000_000)]),
+                    contentBounds: .init(points: [.init(x: -10_000_000, y: -10_000_000), .init(x: 10_000_000, y: 10_000_000)]),
                     viewportSize: SIMD2(800, 600)),
                 loadProfileID: nil)
         }
@@ -159,7 +159,7 @@ final class HorizontalMetalMovePatchTests: XCTestCase {
                 handles: [], handleKey: key, anchoredRects: [], anchoredRectKey: key,
                 bufferPatches: patches, bufferPatchKey: patches.hashValue),
             frame: HorizontalMetalCanvasFrame(
-                bounds: .init(points: [.init(x: -10_000_000, y: -10_000_000), .init(x: 10_000_000, y: 10_000_000)]),
+                contentBounds: .init(points: [.init(x: -10_000_000, y: -10_000_000), .init(x: 10_000_000, y: 10_000_000)]),
                 viewportSize: SIMD2(800, 600)),
             loadProfileID: nil)
     }

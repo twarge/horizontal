@@ -29,7 +29,7 @@ final class HorizontalMetalCanvasLayersTests: XCTestCase {
 
     private func frame() -> HorizontalMetalCanvasFrame {
         HorizontalMetalCanvasFrame(
-            bounds: .init(points: [.init(x: -10_000_000, y: -10_000_000), .init(x: 10_000_000, y: 10_000_000)]),
+            contentBounds: .init(points: [.init(x: -10_000_000, y: -10_000_000), .init(x: 10_000_000, y: 10_000_000)]),
             viewportSize: SIMD2(800, 600))
     }
 
@@ -85,7 +85,7 @@ final class HorizontalMetalCanvasLayersTests: XCTestCase {
         let top = HorizontalMetalCanvasLayerContent(lines: [line(y: 2_000_000, group: 5)], lineKey: 3, label: "Metal top overlay")
         let bounds = frame().bounds
         func update(_ layers: [HorizontalMetalCanvasLayerContent?]) -> Bool {
-            renderer.update(bounds: bounds, viewport: CanvasViewport(), fitInsets: .defaultFit,
+            renderer.update(contentBounds: bounds, boundsIdentity: nil, viewport: CanvasViewport(), fitInsets: .defaultFit,
                             backingScale: 1, viewportSize: SIMD2(800, 600), layers: layers)
         }
 
@@ -130,7 +130,7 @@ final class HorizontalMetalCanvasLayersTests: XCTestCase {
                                                       label: "Metal overlay")
         let highlight = HorizontalMetalCanvasLayerContent(lines: [line(y: 0)], lineKey: 1, label: "Metal top overlay")
         func update(_ layers: [HorizontalMetalCanvasLayerContent?], zoom: CGFloat = 1) {
-            _ = renderer.update(bounds: bounds, viewport: CanvasViewport(zoom: zoom), fitInsets: .defaultFit,
+            _ = renderer.update(contentBounds: bounds, boundsIdentity: nil, viewport: CanvasViewport(zoom: zoom), fitInsets: .defaultFit,
                                 backingScale: 1, viewportSize: SIMD2(400, 300), layers: layers)
         }
         update([board, highlight])

@@ -90,7 +90,11 @@ struct HorizontalMetalCanvasLayerContent {
 // the stored properties, the Metal `Renderer`, and the make/update logic are
 // shared. MTKView, MTLDevice, and the shaders are identical on both platforms.
 struct HorizontalMetalBackdropView {
-    var bounds: HorizontalRect
+    /// The content's extent and what it is of. The renderer measures zoom and
+    /// pan from the viewport's reference for that identity, or these bounds
+    /// without one (`HorizontalMetalCanvasFrame.bounds`).
+    var contentBounds: HorizontalRect
+    var boundsIdentity: String? = nil
     var viewport: CanvasViewport
     var viewportDriver: HorizontalCanvasViewportDriver?
     var fitInsets: HorizontalCanvasInsets
@@ -152,7 +156,8 @@ struct HorizontalMetalBackdropView {
         coordinator.loadProfileID = loadProfileID
         let profileStart = BoardLoadTimer.timingStart()
         let sceneChanged = coordinator.update(
-            bounds: bounds,
+            contentBounds: contentBounds,
+            boundsIdentity: boundsIdentity,
             // The driver's viewport is the freshest (the SwiftUI `viewport`
             // here is the throttled chrome value, up to a gesture-frame stale);
             // never write a stale pan/zoom into the uniforms, even though the
@@ -215,7 +220,12 @@ struct HorizontalMetalBackdropView {
         let sampleCount: Int
         private let commandQueue: MTLCommandQueue?
         private let pipelines: HorizontalMetalPipelines?
-        private var frame = HorizontalMetalCanvasFrame()
+        /// What the layers' uniforms were last made from; read by
+        /// mounted-canvas tests.
+        private(set) var frame = HorizontalMetalCanvasFrame()
+        /// Every frame the uniforms are made from, in turn, while a test has
+        /// set it to an array; nil, as it always is in the app, keeps none.
+        var recordedFrames: [HorizontalMetalCanvasFrame]?
         /// One for each layer the view was last given, bottom first, kept
         /// from update to update by position.
         private(set) var layers = [HorizontalMetalCanvasLayer]()
@@ -249,7 +259,8 @@ struct HorizontalMetalBackdropView {
         }
 
         func update(
-            bounds: HorizontalRect,
+            contentBounds: HorizontalRect,
+            boundsIdentity: String?,
             viewport: CanvasViewport,
             fitInsets: HorizontalCanvasInsets,
             backingScale: Float,
@@ -257,12 +268,14 @@ struct HorizontalMetalBackdropView {
             layers contents: [HorizontalMetalCanvasLayerContent?]
         ) -> Bool {
             frame = HorizontalMetalCanvasFrame(
-                bounds: bounds,
+                contentBounds: contentBounds,
+                boundsIdentity: boundsIdentity,
                 fitInsets: fitInsets,
                 viewport: viewport,
                 backingScale: backingScale,
                 viewportSize: viewportSize
             )
+            recordedFrames?.append(frame)
             while layers.count < contents.count {
                 layers.append(HorizontalMetalCanvasLayer(device: device))
             }
@@ -346,6 +359,7 @@ struct HorizontalMetalBackdropView {
 
         func updateLiveViewport(_ viewport: CanvasViewport) {
             frame.viewport = viewport
+            recordedFrames?.append(frame)
             for layer in layers + [liveLayer] {
                 layer.updateUniforms(frame: frame)
             }
@@ -510,11 +524,23 @@ extension HorizontalMetalBackdropView: UIViewRepresentable {
 /// What every layer of a canvas shares: the world it shows and where the
 /// view puts it.
 struct HorizontalMetalCanvasFrame {
-    var bounds = HorizontalRect.empty
+    /// The content's extent and what it is the extent of, as the canvas has
+    /// them; `bounds` is what the viewport is measured from.
+    var contentBounds = HorizontalRect.empty
+    var boundsIdentity: String? = nil
     var fitInsets = HorizontalCanvasInsets.defaultFit
     var viewport = CanvasViewport()
     var backingScale: Float = 1
     var viewportSize = SIMD2<Float>(1, 1)
+
+    /// The rectangle zoom and pan are measured from: the viewport's reference,
+    /// or the content's extent before there is one. Worked out from the
+    /// viewport each time, so a viewport the driver pushes ahead of SwiftUI
+    /// (a pan, a pin) brings its own bounds, and the two never reach the GPU
+    /// apart.
+    var bounds: HorizontalRect {
+        viewport.measuringBounds(for: boundsIdentity, contentBounds: contentBounds)
+    }
 }
 
 /// One layer's resident geometry and how it draws: its buffers and the keys

@@ -810,9 +810,10 @@ struct SchematicCanvasView: View {
         return InteractiveCanvasView(
             bounds: sheet.bounds,
             // A sheet's bounds are its content's, so a paste past them or a
-            // delete at their edge changes them; the view stays put. Another
+            // delete at their edge changes them; the view, measured from the
+            // bounds its viewport pinned for this sheet, stays put. Another
             // sheet keeps the zoom it is seen at, fitted to its own.
-            boundsIdentity: AnyHashable(sheet.id),
+            boundsIdentity: sheet.id,
             viewport: $viewport,
             backgroundColor: theme.background,
             foregroundColor: theme.textOverlay,
@@ -1137,7 +1138,7 @@ struct SchematicCanvasView: View {
                 // on-screen viewport, not the binding which can lag). Fall back to
                 // a local reconstruction only if no report has arrived yet.
                 let transform = canvasDisplayTransform ?? HorizontalCanvasTransform(
-                    bounds: sheet.bounds,
+                    bounds: viewport.measuringBounds(for: sheet.id, contentBounds: sheet.bounds),
                     size: proxy.size,
                     fitInsets: schematicCanvasFitInsets(safeArea: proxy.safeAreaInsets),
                     zoom: viewport.zoom,
@@ -8455,7 +8456,7 @@ struct SchematicCanvasView: View {
             guard let transform = liveCanvasTransform.transform else {
                 return
             }
-            viewport = CanvasViewport.framing(rect, in: transform)
+            viewport = CanvasViewport.framing(rect, in: transform, identity: sheet.id)
         }
         actions.zoomBy = { factor in
             guard let transform = liveCanvasTransform.transform, factor >= 0 else {
@@ -8466,7 +8467,7 @@ struct SchematicCanvasView: View {
                 viewport = CanvasViewport(mirrored: viewport.mirrored)
                 return
             }
-            viewport = CanvasViewport.framing(transform.visibleBounds.scaled(by: 1 / factor), in: transform, fill: 1)
+            viewport = CanvasViewport.framing(transform.visibleBounds.scaled(by: 1 / factor), in: transform, fill: 1, identity: sheet.id)
         }
         actions.selectComponents = { componentIDs in
             let wanted = Set(componentIDs.map(normalizedID))
