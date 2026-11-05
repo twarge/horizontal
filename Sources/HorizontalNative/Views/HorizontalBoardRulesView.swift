@@ -3304,7 +3304,6 @@ struct HorizontalClearanceFindingRow: View {
 struct HorizontalBoardRulesResultState {
     var ruleTitle: String
     var messages: [HorizontalBoardRuleCheckMessage]
-    var checkedAt: Date
     /// The copper clearance check's findings, as it last finished; nil where
     /// it wasn't run.
     var clearanceFindings: [HorizontalClearanceFinding]? = nil

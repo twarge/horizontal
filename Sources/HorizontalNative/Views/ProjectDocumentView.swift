@@ -1330,7 +1330,6 @@ struct ProjectWorkspaceView: View {
             HorizontalRulesResultsSidebarView(
                 result: rulesResultsState,
                 safeAreaInsets: safeAreaInsets,
-                onRunChecks: { checkAndApplyBoardRules() },
                 onOpenRules: { showBoardRulesWindow() },
                 onShowFinding: showClearanceFinding,
                 onShowRule: { finding in
@@ -3482,7 +3481,6 @@ struct ProjectWorkspaceView: View {
         rulesResultsState = HorizontalBoardRulesResultState(
             ruleTitle: "Design Rules",
             messages: HorizontalBoardRulesValidator.validateAll(rules: rules, context: context),
-            checkedAt: Date(),
             clearanceFindings: rulesResultsState?.clearanceFindings,
             schematicFindings: rulesResultsState?.schematicFindings
         )
@@ -3515,7 +3513,6 @@ struct ProjectWorkspaceView: View {
             }
             rulesResultsState?.schematicFindings = findings
             rulesResultsState?.isCheckingSchematic = false
-            rulesResultsState?.checkedAt = Date()
             schematicCheckTask = nil
         }
     }
@@ -3541,7 +3538,6 @@ struct ProjectWorkspaceView: View {
             }
             rulesResultsState?.clearanceFindings = findings
             rulesResultsState?.isCheckingClearance = false
-            rulesResultsState?.checkedAt = Date()
             clearanceCheckTask = nil
         }
     }
