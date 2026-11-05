@@ -46,6 +46,31 @@ enum HorizontalBoardSceneModelMode: String, CaseIterable, Codable, Hashable, Ide
     }
 }
 
+/// The layer rail's Layer Mode: which of the board's stackup draws, from the
+/// working layer (`BoardDisplayOptions.selectedLayer`, the one the drawing
+/// tools are on). It only ever hides: a layer it keeps draws as its eye says,
+/// and the working layer always does. See `BoardDisplayOptions.isLayerVisible`.
+enum HorizontalBoardLayerMode: String, CaseIterable, Codable, Hashable, Identifiable {
+    /// Layers draw as their eyes, the working layer and solo say.
+    case asIs = "as_is"
+    /// Of the copper, only the working layer draws, with the surface layers
+    /// of its side.
+    case currentOnly = "current_only"
+    /// The working layer and the copper right above and below it in the
+    /// stackup draw, with the surface layers of an outer one among them.
+    case currentAndAdjacent = "current_adjacent"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .asIs: "As is"
+        case .currentOnly: "Current only"
+        case .currentAndAdjacent: "Current and adjacent"
+        }
+    }
+}
+
 struct BoardDisplayOptions: Codable, Equatable, Hashable {
     var grid = true
     var topCopper = true
@@ -103,12 +128,17 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
     var threeDBoardBody = true
     var layerOpacity = 0.6
     var highlightMode = "dim_other"
-    var layerMode = "as_is"
+    var layerMode: HorizontalBoardLayerMode = .asIs
     var layerVisibilityOverrides: [Int: Bool] = [:]
     /// The layer selected in the layer list, forced visible by `isLayerVisible`.
     /// Derived, not a setting: the canvas is handed options with this stamped
     /// from the current selection, so any decoded value is overwritten.
     var selectedLayer: Int?
+    /// The board's copper layers top to bottom (`HorizontalBoard.copperStack`),
+    /// which Current and Adjacent takes the working layer's neighbours from.
+    /// Derived like `selectedLayer`, stamped from the board as the canvas is
+    /// handed the options; nil reads as a two-layer board.
+    var copperStack: [Int]?
     /// Solo: when set, ONLY this layer is visible, whatever any eye or category
     /// says. Also derived, and deliberately a separate field rather than a pile
     /// of visibility overrides — clearing it restores exactly what the user had
@@ -184,7 +214,8 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         threeDBoardBody = try container.decodeIfPresent(Bool.self, forKey: .threeDBoardBody) ?? defaults.threeDBoardBody
         layerOpacity = try container.decodeIfPresent(Double.self, forKey: .layerOpacity) ?? defaults.layerOpacity
         highlightMode = try container.decodeIfPresent(String.self, forKey: .highlightMode) ?? defaults.highlightMode
-        layerMode = try container.decodeIfPresent(String.self, forKey: .layerMode) ?? defaults.layerMode
+        layerMode = try container.decodeIfPresent(String.self, forKey: .layerMode)
+            .flatMap(HorizontalBoardLayerMode.init(rawValue:)) ?? defaults.layerMode
         layerVisibilityOverrides = try container.decodeIfPresent([Int: Bool].self, forKey: .layerVisibilityOverrides) ?? defaults.layerVisibilityOverrides
         layerFillOverrides = try container.decodeIfPresent([Int: Bool].self, forKey: .layerFillOverrides) ?? defaults.layerFillOverrides
     }
@@ -441,6 +472,12 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
             return true
         }
 
+        // The layer mode hides the stackup away from the working layer, and
+        // shows nothing an eye hides: within what it keeps, the eyes decide.
+        if !layerModeKeeps(layer) {
+            return false
+        }
+
         if let override = layerVisibilityOverrides[layer] {
             return override
         }
@@ -682,5 +719,77 @@ extension BoardDisplayOptions {
             return .silkscreen
         }
         return copper && !isLayerVisible(courtyard) ? .routing : .placement
+    }
+}
+
+extension BoardDisplayOptions {
+    /// Whether the layer mode leaves `layer` to its eye, read from the working
+    /// layer. Only the stackup is the mode's: the copper, and each side's
+    /// surface layers (`surfaceSide(of:)`), which go with that side's outer
+    /// copper, or with the working layer when it is one of them. The outline,
+    /// the user layers and the dimensions are left to their eyes in every
+    /// mode. With no working layer stamped — the rail's own eyes, the 3D
+    /// view — every mode reads as As is.
+    private func layerModeKeeps(_ layer: Int) -> Bool {
+        guard layerMode != .asIs, let selectedLayer else {
+            return true
+        }
+        if HorizontalBoardLayers.isCopper(layer) {
+            return layerModeDraws(copper: layer, workingLayer: selectedLayer)
+        }
+        guard let side = Self.surfaceSide(of: layer) else {
+            return true
+        }
+        return Self.surfaceSide(of: selectedLayer) == side
+            || layerModeDraws(copper: side.copperLayer, workingLayer: selectedLayer)
+    }
+
+    /// Whether the layer mode draws a copper layer: the working layer, and in
+    /// Current and Adjacent the copper next to it in `copperStack`. A surface
+    /// layer working has no copper of its own, so Current Only draws none and
+    /// Current and Adjacent the outer copper of its side, which it lies on.
+    private func layerModeDraws(copper: Int, workingLayer: Int) -> Bool {
+        switch layerMode {
+        case .asIs:
+            return true
+        case .currentOnly:
+            return copper == workingLayer
+        case .currentAndAdjacent:
+            guard HorizontalBoardLayers.isCopper(workingLayer) else {
+                return Self.surfaceSide(of: workingLayer)?.copperLayer == copper
+            }
+            if copper == workingLayer {
+                return true
+            }
+            let stack = copperStack ?? [HorizontalBoardLayers.topCopper, HorizontalBoardLayers.bottomCopper]
+            guard let working = stack.firstIndex(of: workingLayer), let other = stack.firstIndex(of: copper) else {
+                return false
+            }
+            return abs(working - other) == 1
+        }
+    }
+
+    /// The side a surface layer is on: its mask, silkscreen, paste, package,
+    /// assembly, courtyard and notes. Nil for copper and for the layers of
+    /// neither side.
+    static func surfaceSide(of layer: Int) -> HorizontalBoardSide? {
+        switch layer {
+        case HorizontalBoardLayers.topMask...HorizontalBoardLayers.topCourtyard, HorizontalBoardLayers.topNotes:
+            return .top
+        case HorizontalBoardLayers.bottomNotes...HorizontalBoardLayers.bottomMask:
+            return .bottom
+        default:
+            return nil
+        }
+    }
+}
+
+extension HorizontalBoard {
+    /// The board's copper layers top to bottom, as its stackup has them, for
+    /// the layer mode's neighbours. Top and bottom are always there, so a
+    /// stackup that lists no copper reads as a two-layer board.
+    var copperStack: [Int] {
+        let stackup = stackupLayers.map(\.layer).filter(HorizontalBoardLayers.isCopper)
+        return Set(stackup + [HorizontalBoardLayers.topCopper, HorizontalBoardLayers.bottomCopper]).sorted(by: >)
     }
 }

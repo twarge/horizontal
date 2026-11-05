@@ -625,6 +625,12 @@ final class HorizontalMetalCanvasLayer {
         residentLines(compositeGroup: compositeGroup).map { ($0.from, $0.to) }
     }
 
+    /// The layer groups the next frame composites — those with content that
+    /// are shown and not transparent — for mounted-canvas regression checks.
+    var compositedGroups: [Int] {
+        activeCompositeBatches().map(\.group)
+    }
+
     /// The resident handles' world centres, in the order they were given.
     func residentHandleCenters() -> [SIMD2<Float>] {
         guard let handleBuffer else { return [] }

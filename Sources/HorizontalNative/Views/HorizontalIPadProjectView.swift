@@ -1589,6 +1589,16 @@ struct HorizontalIPadProjectView: View {
         }
     }
 
+    /// Board options as the Mac hands them to its canvas: the working layer
+    /// stamped in, so it shows whatever its eye says, and the board's copper,
+    /// which the layer mode finds the working layer's neighbours in.
+    private func boardCanvasDisplayOptions(for board: HorizontalBoard) -> BoardDisplayOptions {
+        var options = boardDisplayOptions
+        options.selectedLayer = boardDrawingLayer
+        options.copperStack = board.copperStack
+        return options
+    }
+
     @ViewBuilder
     private func boardView(for project: HorizontalProject, safeAreaInsets: EdgeInsets) -> some View {
         if let board = project.board {
@@ -1603,7 +1613,7 @@ struct HorizontalIPadProjectView: View {
                     board: board,
                     netClasses: project.schematic?.netClasses ?? [],
                     viewport: $boardViewport,
-                    displayOptions: boardDisplayOptions,
+                    displayOptions: boardCanvasDisplayOptions(for: board),
                     fitSafeAreaInsets: safeAreaInsets,
                     highlightedNetIDs: highlightedNetIDs,
                     highlightedComponentIDs: highlightedComponentIDs,
