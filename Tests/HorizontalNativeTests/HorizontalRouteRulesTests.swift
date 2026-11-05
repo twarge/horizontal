@@ -397,27 +397,19 @@ final class HorizontalRouteRulesTests: XCTestCase {
         XCTAssertEqual(via.defineRule, .addViaRule(padstackID: via.defaultPadstackID, diameter: 700_000, holeDiameter: hole))
     }
 
-    /// A route started on a pad sizes its width and via from the rules, one
-    /// started on a track its width; anywhere else a custom width and via hold.
+    /// A route started on a pad or a track drops the custom width and via;
+    /// anywhere else they hold.
     @MainActor
-    func testARouteStartedOnCopperClearsTheCustomWidthAndOnAPadTheCustomVia() {
+    func testARouteStartedOnAPadOrATrackClearsTheCustomWidthAndVia() {
         let settings = HorizontalBoardToolSettings(defaults: UserDefaults(suiteName: UUID().uuidString)!)
-        func custom() {
-            settings.setExplicitTrackWidth(420_000)
-            settings.setVia(diameter: 650_000, holeDiameter: 300_000)
-        }
-        custom()
-        settings.startRoute(onPad: false, onTrack: false)
+        settings.setExplicitTrackWidth(420_000)
+        settings.setVia(diameter: 650_000, holeDiameter: 300_000)
+        settings.startRoute(onPadOrTrack: false)
         XCTAssertEqual(settings.explicitTrackWidth, 420_000)
         XCTAssertEqual(settings.viaDiameter, 650_000)
-
-        settings.startRoute(onPad: false, onTrack: true)
-        XCTAssertNil(settings.explicitTrackWidth)
-        XCTAssertEqual(settings.viaDiameter, 650_000, "a track says nothing of the via")
         XCTAssertEqual(settings.viaHoleDiameter, 300_000)
 
-        custom()
-        settings.startRoute(onPad: true, onTrack: false)
+        settings.startRoute(onPadOrTrack: true)
         XCTAssertNil(settings.explicitTrackWidth)
         XCTAssertNil(settings.viaDiameter)
         XCTAssertNil(settings.viaHoleDiameter)
