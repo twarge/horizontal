@@ -731,7 +731,7 @@ private struct HorizontalRouteInspectorContent: View {
     /// will route it by: width, gap and via gap.
     private func diffpairSection(_ pair: HorizontalRouteInspectorState.Diffpair) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("Diff Pair")
+            sectionTitle("Differential Pair")
             row("Partner") {
                 Text((pair.isPrimary ? "Pri: " : "Sec: ") + pair.partnerName)
             }
@@ -739,7 +739,7 @@ private struct HorizontalRouteInspectorContent: View {
                 row("Track width") { Text(HorizontalRouteInspectorState.millimetres(rule.trackWidth)) }
                 row("Gap") { Text(pair.gap.map(HorizontalRouteInspectorState.millimetres) ?? "") }
                 row("Via gap") { Text(HorizontalRouteInspectorState.millimetres(rule.viaGap)) }
-                caption("Diffpair rule \(pair.ruleBrief ?? ""). Tracks are routed one at a time for now.")
+                caption("Differential pair rule \(pair.ruleBrief ?? ""). Tracks are routed one at a time for now.")
                 if let warning = pair.gapWarning {
                     Label(warning, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
@@ -749,7 +749,7 @@ private struct HorizontalRouteInspectorContent: View {
                 caption("No diffpair rule takes this pair's net class on \(state.layerName).")
             }
             if canShowRules {
-                Button("Show Diffpair Rules…") {
+                Button("Show Differential Pair Rules…") {
                     onCommand(.showRules(.diffpair, ruleID: pair.rule?.id))
                 }
                 .routeInspectorLinkStyle()

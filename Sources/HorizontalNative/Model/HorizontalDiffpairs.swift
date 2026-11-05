@@ -84,9 +84,9 @@ enum HorizontalDiffpairs {
 
         var errorDescription: String? {
             switch self {
-            case .sameNet: "A net can't be its own diff pair."
+            case .sameNet: "A net can't be its own differential pair."
             case .unknownNet(let net): "No net \(net)."
-            case .alreadyPaired(let net, let partner): "\(net) is already in a diff pair with \(partner); clear it first."
+            case .alreadyPaired(let net, let partner): "\(net) is already in a differential pair with \(partner); clear it first."
             }
         }
     }

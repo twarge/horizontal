@@ -72,6 +72,17 @@ final class HorizontalDiffpairMenuTests: XCTestCase {
                                                               canEdit: { $0 != rxn }).count, 0)
         XCTAssertEqual(HorizontalDiffpairProperty.menuEntries(for: tx, selectedNetIDs: [tx], in: details,
                                                               canEdit: { $0 != tx }).count, 0)
+
+    }
+
+    /// What Horizon calls a diff pair or diffpair is spelled out wherever
+    /// Horizontal shows it.
+    func testTheLabelsSpellOutDifferential() {
+        XCTAssertEqual(HorizontalDiffpairProperty.property(for: tx, in: details, editable: true)?.label, "Differential pair")
+        XCTAssertEqual(HorizontalDiffpairProperty.property(for: rx, in: details, editable: false)?.label, "Differential pair")
+        XCTAssertEqual(HorizontalBoardRuleKind.diffpair.title, "Differential pair")
+        XCTAssertEqual(HorizontalColorRole.diffPair.title, "Differential Pair")
+        XCTAssertEqual(HorizontalDiffpairs.PairingError.sameNet("x").errorDescription, "A net can't be its own differential pair.")
     }
 
     #if os(macOS)

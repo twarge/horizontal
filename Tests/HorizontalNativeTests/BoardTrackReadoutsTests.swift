@@ -7,7 +7,7 @@ import XCTest
 /// The board inspector's readouts for selected tracks, as a mounted board
 /// canvas reports them: Horizon's track HUD (total length, the spacing of two
 /// parallel tracks), the Measure buttons that fill the Length Tuning window,
-/// and the Diff pair row on a paired net, whose edits go to the project edit.
+/// and the Differential pair row on a paired net, whose edits go to the project edit.
 @MainActor
 final class BoardTrackReadoutsTests: XCTestCase {
     @MainActor private final class State: ObservableObject {
@@ -106,7 +106,7 @@ final class BoardTrackReadoutsTests: XCTestCase {
         XCTAssertEqual(rows["Nets"], "2")
         XCTAssertEqual(group.actions.map(\.title), ["Measure", "Measure All"])
 
-        // A paired track's own Diff pair row, editable through the host.
+        // A paired track's own Differential pair row, editable through the host.
         let primary = try XCTUnwrap(group.items.first { $0.ref.id == "t-p" })
         let row = try XCTUnwrap(primary.properties.first { $0.id == HorizontalDiffpairProperty.id })
         XCTAssertEqual(row.value, .choice(txn))
