@@ -365,6 +365,9 @@ enum HorizontalCanvasInputCore {
         if supportsTrackVias, let selectMore = selectMore(event) {
             return selectMore
         }
+        if let textSizeStep = textSizeStep(event) {
+            return textSizeStep
+        }
         if modifiers == .command {
             // Beat the system Edit-menu Copy/Paste on the canvas; a focused text
             // field keeps its own ⌘C/⌘V/⌘D (handled by the focus model / guard).
@@ -432,6 +435,24 @@ enum HorizontalCanvasInputCore {
         case "+": return .selectMore(stopsAtVias: false)
         case "=": return .selectMore(stopsAtVias: true)
         default: return nil
+        }
+    }
+
+    /// ⌘⇧+ and ⌘⇧−: the selected texts a size bigger or smaller, by what
+    /// the key types: ⌘⇧= types + on a US keyboard (= too, should the
+    /// platform report it without Shift) and ⌘⇧− types _, and the keypad's
+    /// + and − type themselves. Where + is a key of its own, as on a German
+    /// keyboard (whose ⇧+ is *), ⌘+ is the one: a US keyboard types no +
+    /// without Shift. ⌘= and ⌘− alone are left alone.
+    static func textSizeStep(_ event: HorizontalCanvasKeyEvent) -> HorizontalCanvasCommand? {
+        let typed = event.typedCharacters ?? event.characters
+        switch (event.modifiers, typed) {
+        case ([.command, .shift], "+"), ([.command, .shift], "="), (.command, "+"):
+            return .stepTextSize(larger: true)
+        case ([.command, .shift], "-"), ([.command, .shift], "_"):
+            return .stepTextSize(larger: false)
+        default:
+            return nil
         }
     }
 

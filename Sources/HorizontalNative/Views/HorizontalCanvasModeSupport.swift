@@ -265,6 +265,8 @@ struct HorizontalCanvasCommandHandlerSet {
     var convertLineLoopToPolygon: (() -> Void)? = nil
     var roundOffVertex: (() -> Void)? = nil
     var addText: (() -> Void)? = nil
+    /// ⌘⇧+ and ⌘⇧−, its argument `larger`; nil while no text is selected.
+    var stepTextSize: ((Bool) -> Void)? = nil
     var drawDimension: (() -> Void)? = nil
     var tuneTrack: (() -> Void)? = nil
     var editText: (() -> Void)? = nil
@@ -444,6 +446,9 @@ struct HorizontalCanvasCommandHandlerSet {
         case .addText:
             guard !isReadOnly else { return }
             addText?()
+        case .stepTextSize(let larger):
+            guard !isReadOnly else { return }
+            stepTextSize?(larger)
         case .editText:
             guard !isReadOnly else { return }
             editText?()
@@ -587,6 +592,7 @@ struct HorizontalCanvasCommandHandlerSet {
             canDrawGraphics: writable && drawGraphics != nil,
             canDrawPlane: writable && drawPlane != nil,
             canAddText: writable && addText != nil,
+            canStepTextSize: writable && stepTextSize != nil,
             canFilterAirwires: filterAirwires != nil,
             canSelectBlockInstance: selectBlockInstance != nil,
             canCopyBlockLayout: writable && copyBlockLayout != nil,

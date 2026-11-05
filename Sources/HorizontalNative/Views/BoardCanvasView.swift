@@ -3254,6 +3254,10 @@ struct BoardCanvasView: View {
         if modeProfile.isPoolMode || !BoardSelectMore.canSelectMore(from: selectedObjects) {
             handlers.selectMore = nil
         }
+        // A text size step needs a text, and none while an edit is under way.
+        if !handlers.hasInteraction, !selectedSizedTexts.isEmpty {
+            handlers.stepTextSize = { stepSelectedTextSize(larger: $0) }
+        }
         if modeProfile.isPoolMode {
             handlers.selectNet = nil
             handlers.drawTrack = nil
@@ -4080,6 +4084,51 @@ struct BoardCanvasView: View {
         selectedObjects = run
         selectedUnplacedObjectID = nil
         hoveredObject = nil
+        publishSelectionContext()
+    }
+
+    /// The selected objects a text size step changes: texts (a smashed
+    /// refdes or value among them) and dimensions, whose label it sizes.
+    private var selectedSizedTexts: [HorizontalSelectableRef] {
+        selectedObjects.filter { $0.type == .text || $0.type == .dimension }
+    }
+
+    /// ⌘⇧+ and ⌘⇧−: every selected text a size bigger or smaller, each from
+    /// its own size (`HorizontalTextSizeStep`), as one undo step, as an
+    /// edit of their Size in the inspector is; one at the smallest stays.
+    private func stepSelectedTextSize(larger: Bool) {
+        guard !isReadOnly else {
+            return
+        }
+        let refs = selectedSizedTexts
+        let textIDs = Set(refs.filter { $0.type == .text }.map { normalizedID($0.id) })
+        let dimensionIDs = Set(refs.filter { $0.type == .dimension }.map { normalizedID($0.id) })
+        let previousBoard = editedBoard ?? sourceBoard
+        var draft = previousBoard
+        var changed = false
+        func step(_ texts: inout [HorizontalText]) {
+            for index in texts.indices where textIDs.contains(normalizedID(texts[index].id)) {
+                if let size = HorizontalTextSizeStep.stepped(texts[index].size, larger: larger) {
+                    texts[index].size = size
+                    changed = true
+                }
+            }
+        }
+        step(&draft.texts)
+        step(&draft.packageTexts)
+        for index in draft.dimensions.indices where dimensionIDs.contains(normalizedID(draft.dimensions[index].id)) {
+            if let size = HorizontalTextSizeStep.stepped(draft.dimensions[index].labelSize, larger: larger) {
+                draft.dimensions[index].labelSize = size
+                changed = true
+            }
+        }
+        guard changed else {
+            return
+        }
+        registerUndoSnapshot(previousBoard, actionName: larger ? "Increase Text Size" : "Decrease Text Size")
+        editedBoard = draft
+        invalidateSelectableCache()
+        publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previousBoard, kind: .properties))
         publishSelectionContext()
     }
 

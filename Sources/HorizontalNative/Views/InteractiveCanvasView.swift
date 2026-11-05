@@ -112,6 +112,9 @@ enum HorizontalCanvasCommand {
     /// follows the cursor (Horizon's round-off-vertex tool).
     case roundOffVertex
     case addText
+    /// ⌘⇧+ (`larger`) and ⌘⇧−: every selected text a size bigger or
+    /// smaller (`HorizontalTextSizeStep`).
+    case stepTextSize(larger: Bool)
     /// macOS: reopen the inline text editor popover on the selected text
     /// (double-click or the per-object "Edit…" menu item). No-op on iOS.
     case editText

@@ -81,6 +81,7 @@ struct HorizontalCanvasCommandActions {
     var canDrawGraphics: Bool = false
     var canDrawPlane: Bool = false
     var canAddText: Bool = false
+    var canStepTextSize: Bool = false
     var canFilterAirwires: Bool = false
     var canSelectBlockInstance: Bool = false
     var canCopyBlockLayout: Bool = false
@@ -450,6 +451,22 @@ struct HorizontalViewCommands: Commands {
                     canvasCommandActions?.dispatch(.mirrorSelection)
                 }
                 .disabled(canvasCommandActions?.canMirrorSelection != true)
+
+                Divider()
+                // The canvas takes these keys itself, by what they type
+                // (+ is ⇧= on a US keyboard, and ⌘⇧− types _), before the
+                // menu sees them; the shortcuts here show them.
+                Button("Increase Text Size") {
+                    canvasCommandActions?.dispatch(.stepTextSize(larger: true))
+                }
+                .keyboardShortcut("+", modifiers: [.command, .shift])
+                .disabled(canvasCommandActions?.canStepTextSize != true)
+
+                Button("Decrease Text Size") {
+                    canvasCommandActions?.dispatch(.stepTextSize(larger: false))
+                }
+                .keyboardShortcut("-", modifiers: [.command, .shift])
+                .disabled(canvasCommandActions?.canStepTextSize != true)
 
                 Divider()
                 Button("Move Net Segment to Existing Net") {
