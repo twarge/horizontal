@@ -1365,8 +1365,18 @@ enum HorizontalDispatchMethods {
                     "only_canvas": drawnHere.subtracting(reportedHere).count,
                     "only_check": reportedHere.subtracting(drawnHere).count]
         }
-        return ["count": drawn.airwires.count, "nets": canvas.keys.filter { !$0.isEmpty }.count,
-                "shown": drawn.shown, "matches_check": differences.isEmpty, "differences": differences]
+        var json: JSONDictionary = ["count": drawn.airwires.count, "nets": canvas.keys.filter { !$0.isEmpty }.count,
+                                    "shown": drawn.shown, "matches_check": differences.isEmpty, "differences": differences]
+        // The airwire filter's nets: in the scene, and so in the comparison,
+        // but left out of what the pane draws.
+        let hidden = drawn.hiddenNetIDs.filter { canvas[$0] != nil }.sorted()
+        if !hidden.isEmpty {
+            json["filtered"] = drawn.airwires.count - drawn.visibleAirwires.count
+            json["hidden_nets"] = hidden.map { netID -> JSONDictionary in
+                ["net": index.net(id: netID)?.name ?? netID, "net_id": netID, "airwires": canvas[netID]?.count ?? 0]
+            }
+        }
+        return json
     }
 
     @Sendable private static func recomputeConnectivity(_ session: HorizontalDispatchSession, _ params: JSONDictionary) throws -> Any {
@@ -2048,7 +2058,8 @@ enum HorizontalDispatchMethods {
             // reply says which, and how the two compare.
             let reported = entry.project.board?.airwires ?? []
             let drawn = canvasAirwires(entry)
-            let airwires = drawn?.airwires ?? reported
+            // The canvas's less the nets its airwire filter hides, as it draws them.
+            let airwires = drawn?.visibleAirwires ?? reported
             // As the pane does: with its Connections switch off, none, unless
             // they are asked for.
             let drawsAirwires = params.bool("airwires") ?? (drawn?.shown ?? true)
@@ -2067,6 +2078,9 @@ enum HorizontalDispatchMethods {
             }.count
             if drawn == nil {
                 airwiresJSON["note"] = "The board canvas gave no airwires, so these are the ones check reports."
+            } else if let hiddenCount = airwiresJSON["filtered"] as? Int, drawn?.shown != false {
+                airwiresJSON["note"] = "The pane's airwire filter hides \(hiddenCount) of them (hidden_nets), "
+                    + "so neither the canvas nor the render draws those; check still reports every one."
             } else if drawn?.shown == false {
                 airwiresJSON["note"] = drawsAirwires
                     ? "The pane's Connections switch is off, so the canvas draws none of these on screen; "

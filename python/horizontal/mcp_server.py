@@ -1545,7 +1545,10 @@ def render_viewport(path: str | None = None, pane: str = "board", dpi: float = 1
     the ones the board canvas draws, which the exporter does not. airwires=true draws them with the switch off,
     false leaves them off. airwires in the reply says whose they are (source "canvas", or "connectivity" when the
     canvas gave none), how many are in view, whether the switch shows them (shown), whether this picture has
-    them (drawn), and matches_check: whether they are the ones check reports, with the nets that differ.
+    them (drawn), and matches_check: whether they are the ones check reports, with the nets that differ. The
+    pane's airwire filter leaves some nets' airwires out of the pane and of the render: filtered counts them and
+    hidden_nets names those nets; matches_check still compares every airwire, so it says only whether the
+    canvas's scene is stale.
 
     A fitted pane spends much of the picture on margins and notes; region {min_x_mm, min_y_mm, max_x_mm,
     max_y_mm} renders only that part of what it shows, as large as the whole view would be, so in more detail. The reply

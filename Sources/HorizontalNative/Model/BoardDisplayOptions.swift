@@ -145,6 +145,11 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
     /// set before, with nothing to save or put back.
     var soloLayer: Int?
     var layerFillOverrides: [Int: Bool] = [:]
+    /// The nets whose airwires the board leaves out (Design ▸ Filter
+    /// Airwires…), by net uuid, lowercased. Only the view changes: check
+    /// still reports every unrouted connection. A net the board no longer
+    /// has is never asked about, so it is simply ignored.
+    var hiddenAirwireNetIDs: Set<String> = []
 
     init() { }
 
@@ -218,6 +223,7 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
             .flatMap(HorizontalBoardLayerMode.init(rawValue:)) ?? defaults.layerMode
         layerVisibilityOverrides = try container.decodeIfPresent([Int: Bool].self, forKey: .layerVisibilityOverrides) ?? defaults.layerVisibilityOverrides
         layerFillOverrides = try container.decodeIfPresent([Int: Bool].self, forKey: .layerFillOverrides) ?? defaults.layerFillOverrides
+        hiddenAirwireNetIDs = Set((try container.decodeIfPresent([String].self, forKey: .hiddenAirwireNetIDs) ?? []).map { $0.lowercased() })
     }
 
     mutating func showAll() {
@@ -443,6 +449,25 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
     /// override, which the outline's stroke didn't follow.
     var showsOutlineLayer: Bool {
         isLayerVisible(HorizontalBoardLayers.outline)
+    }
+
+    /// Whether the airwire filter lets a net's airwires draw. The Connections
+    /// switch is asked separately: with it off none draw, whatever this says.
+    func showsAirwires(ofNet netID: String?) -> Bool {
+        guard let netID, !hiddenAirwireNetIDs.isEmpty else {
+            return true
+        }
+        return !hiddenAirwireNetIDs.contains(netID.lowercased())
+    }
+
+    mutating func setAirwiresShown<Nets: Sequence<String>>(_ isShown: Bool, forNets netIDs: Nets) {
+        for netID in netIDs {
+            if isShown {
+                hiddenAirwireNetIDs.remove(netID.lowercased())
+            } else {
+                hiddenAirwireNetIDs.insert(netID.lowercased())
+            }
+        }
     }
 
     /// Whether any of a via's copper shows. The canvas draws a via's ring on

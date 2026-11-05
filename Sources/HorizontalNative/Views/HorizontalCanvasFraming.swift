@@ -14,8 +14,22 @@ final class HorizontalLiveCanvasTransform {
 /// the canvas draws, which the board it was given need not be; the live
 /// channel holds it up against what `check` reports.
 struct HorizontalDrawnAirwires {
+    /// Every airwire the scene was built with, the airwire filter's hidden
+    /// nets' too, so it can be held up against check's.
     var airwires: [HorizontalSegment]
+    /// The Connections switch.
     var shown: Bool
+    /// The nets the airwire filter hides (lowercased uuids), whose airwires
+    /// the canvas leaves out.
+    var hiddenNetIDs: Set<String> = []
+
+    /// The airwires the canvas draws while `shown`: those the filter lets through.
+    var visibleAirwires: [HorizontalSegment] {
+        guard !hiddenNetIDs.isEmpty else {
+            return airwires
+        }
+        return airwires.filter { !hiddenNetIDs.contains($0.netID?.lowercased() ?? "") }
+    }
 }
 
 /// Where the board canvas leaves `HorizontalDrawnAirwires` each time it hands

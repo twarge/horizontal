@@ -655,6 +655,9 @@ struct ProjectWorkspaceView: View {
     @State private var navigatorSelection: ProjectNavigatorSelection?
     @State private var schematicDisplayOptions = SchematicDisplayOptions()
     @State private var boardDisplayOptions = BoardDisplayOptions()
+    /// The board rail's airwire filter popover, which Design ▸ Filter
+    /// Airwires… opens too.
+    @State private var isBoardAirwireFilterPresented = false
     @State private var windowSize: HorizontalWindowSize?
     @State private var schematicViewport = CanvasViewport()
     @State private var boardViewport = CanvasViewport()
@@ -2596,6 +2599,7 @@ struct ProjectWorkspaceView: View {
                                 planeFillDelivery: planeFillDelivery,
                                 onSelectDrawingLayer: { selectOrSoloBoardLayer($0) },
                                 onSelectBoardLayerView: { applyBoardLayerViewPreset($0) },
+                                onFilterAirwires: { isBoardAirwireFilterPresented = true },
                                 poolURL: project.poolDirectory.map { project.baseURL.appendingPathComponent($0) },
                                 canRevealPoolPackages: true,
                                 onRevealPoolPackage: { packageID, target in
@@ -2634,6 +2638,10 @@ struct ProjectWorkspaceView: View {
                         }
                     )
                     .disabled(project.board == nil)
+                    // Like the stackup it stays when locked: it changes only
+                    // which airwires are drawn, never the file.
+                    boardAirwireFilterButton(board: project.board)
+                        .disabled(project.board == nil)
                     // Pouring rewrites the board, so it goes with the drawing
                     // tools rather than staying as a dimmed button; the
                     // stackup above stays, as locked it is how the board is
@@ -2667,6 +2675,19 @@ struct ProjectWorkspaceView: View {
                             canvasCommandActionsByPane[.board]?.dispatch(.addText)
                         }
                         .disabled(project.board == nil)
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    // With the rail hidden (distraction free, no toolbar) the
+                    // menu item's popover comes from the pane's corner.
+                    if isDistractionFree || isWindowToolbarHidden {
+                        Color.clear
+                            .frame(width: 1, height: 1)
+                            .padding(.top, fitSafeAreaInsets.top + 12)
+                            .padding(.trailing, fitSafeAreaInsets.trailing + 12)
+                            .popover(isPresented: $isBoardAirwireFilterPresented, arrowEdge: .trailing) {
+                                boardAirwireFilterPanel(board: project.board)
+                            }
                     }
                 }
             }
@@ -3714,6 +3735,25 @@ struct ProjectWorkspaceView: View {
         } else {
             canvasCommandActionsByPane[.schematic]?.dispatch(.placePowerSymbol)
         }
+    }
+
+    private func boardAirwireFilterButton(board: HorizontalBoard?) -> some View {
+        BoardAirwireFilterToolButton(
+            board: board,
+            displayOptions: $boardDisplayOptions,
+            isPresented: $isBoardAirwireFilterPresented,
+            highlightedNetIDs: activeHighlightedNetIDs,
+            onHighlightNets: highlightSelectedNet
+        )
+    }
+
+    private func boardAirwireFilterPanel(board: HorizontalBoard?) -> some View {
+        BoardAirwireFilterPanel(
+            board: board,
+            displayOptions: $boardDisplayOptions,
+            highlightedNetIDs: activeHighlightedNetIDs,
+            onHighlightNets: highlightSelectedNet
+        )
     }
 
     /// Board options with the working layer stamped in, so the layer selected in
