@@ -517,10 +517,9 @@ treatment the pour got:
    on a track continues the track's width, or takes the rules' where the
    track's is theirs, as Horizon's router inherits a track's width and whether
    it is explicit. Either clears a custom width (W, the tool settings), which
-   otherwise gives the width of a route started anywhere else; one that starts
-   on a pad clears a custom via size too, so its via is the rules' again. A
-   track says nothing of a via, so one started on a track keeps the via it
-   had. Only with no
+   otherwise gives the width of a route started anywhere else, and a custom
+   via size too, so the via of a route started on a pad or a track is the
+   rules' again. Only with no
    rule taking the net does the width fall back to the one most of the net's
    tracks have, as it always did before the rules were read. A width from the
    rules follows the route onto the layer a via takes it to and the net it

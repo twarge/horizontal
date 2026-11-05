@@ -143,17 +143,16 @@ final class HorizontalBoardToolSettings: ObservableObject {
         }
     }
 
-    /// A route started on copper sizes itself from the rules again: on a pad
-    /// its width and via both, on a track its width, which continues the
-    /// track's (`HorizontalRouteWidth.start`) while the via stays as it is.
+    /// A route started on a pad or a track drops the custom width and via:
+    /// its width is the rules' on a pad and continues the track's on a track
+    /// (`HorizontalRouteWidth.start`), and its via is the rules' on either.
     /// Started anywhere else, a custom width and via hold.
-    func startRoute(onPad: Bool, onTrack: Bool) {
-        if onPad || onTrack {
-            setExplicitTrackWidth(nil)
+    func startRoute(onPadOrTrack: Bool) {
+        guard onPadOrTrack else {
+            return
         }
-        if onPad {
-            setVia(diameter: nil, holeDiameter: nil)
-        }
+        setExplicitTrackWidth(nil)
+        setVia(diameter: nil, holeDiameter: nil)
     }
 
     private func persist(_ value: Double?, forKey key: String) {

@@ -5471,11 +5471,11 @@ struct BoardCanvasView: View {
             if let net = boardNetID(at: point, layer: state.layer) ?? boardNetID(at: anchorPoint, layer: state.layer) {
                 state.netID = net
             }
-            // On a pad the rules' width and via; on a track the track's width
-            // (or the rules', where the track's is theirs); anywhere else a
-            // custom width (W) and via when they are set. A route that starts
-            // on copper clears the custom width, and on a pad the custom via,
-            // as Horizon's router keeps them for its route.
+            // On a pad the rules' width; on a track the track's (or the
+            // rules', where the track's is theirs); on either the rules' via;
+            // anywhere else a custom width (W) and via when they are set. A
+            // route that starts on a pad or a track clears the custom width
+            // and via, as Horizon's router keeps them for its route.
             let startTrack = BoardTrackRouting.track(at: anchorPoint, layer: state.layer, tracks: board.tracks)
             let width = HorizontalRouteWidth.start(
                 explicit: toolSettings.explicitTrackWidth,
@@ -5484,7 +5484,7 @@ struct BoardCanvasView: View {
                 net: state.netID, layer: state.layer, rules: board.rules, tracks: board.tracks)
             state.width = width.width
             state.widthSource = width.source
-            toolSettings.startRoute(onPad: state.anchorOnPad, onTrack: startTrack != nil)
+            toolSettings.startRoute(onPadOrTrack: state.anchorOnPad || startTrack != nil)
             state.cursor = anchorPoint
             if let bend = boardTrackBendMode(at: anchorPoint, layer: state.layer) {
                 state.bendMode = bend
