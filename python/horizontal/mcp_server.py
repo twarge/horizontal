@@ -206,14 +206,14 @@ def _resolve(path: str | None) -> Project:
     return project
 
 
-def _open_context_for(path: str, name: str | None) -> Project:
+def _open_context_for(path: str, name: str | None, blank_board: bool = False) -> Project:
     """A brand-new project, opened as a context of its own."""
     if len(_projects) >= 64: raise ValueError("Close unused project contexts before opening another.")
     target = Path(path).expanduser()
     if target.exists(): raise ValueError(f"{target} already exists; new_project will not write over it.")
     session = Session(isolated=os.environ.get("HORIZONTAL_ISOLATED") != "0")
     try:
-        project = session.new_project(target, name=name)
+        project = session.new_project(target, name=name, blank_board=blank_board)
     except Exception:
         session.close()
         raise
@@ -623,15 +623,17 @@ def open_project(path: str, source: Literal["auto", "live", "disk"] = "auto") ->
 
 
 @_tool
-def new_project(path: str, name: str | None = None) -> dict[str, Any]:
+def new_project(path: str, name: str | None = None, blank_board: bool = False) -> dict[str, Any]:
     """Create a project from the new-document template as a .horizontal package and open it. path must not exist
-    and must end in .horizontal. The project it makes has a pool, an empty top block, one schematic sheet and a
-    board with no outline — give it one before expecting fabrication output to mean anything. The board has the via
+    and must end in .horizontal. The project it makes has a pool, a top block whose one net is GND, one schematic
+    sheet, and a board 50 mm square, its corner at the origin, with a GND plane over each side of it; the planes
+    pour nothing until GND has copper on the board to pour from; blank_board leaves out the outline, the planes
+    and GND, for a design that brings its own. The board has the via
     rule Horizon gives a new board, with horizon-pool's tented Circular via, which its pool carries, and a rule that
     matches everything in every family that needs one: 0.125 mm between copper of different nets, 0.25 mm to the
     board edge, 0.15 mm to unplated holes, 0.25 mm tracks no narrower than 0.125 mm, and solid planes. board_rules
     reads them, set_rule changes them."""
-    project = _open_context_for(path, name)
+    project = _open_context_for(path, name, blank_board)
     return project.summary
 
 

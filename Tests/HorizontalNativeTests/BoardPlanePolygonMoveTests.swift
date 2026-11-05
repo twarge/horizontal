@@ -64,7 +64,7 @@ final class BoardPlanePolygonMoveTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("Untitled.horizontal")
-        try HorizontalProjectArchive.newProject().write(to: url)
+        try HorizontalProjectArchive.newProject(blankBoard: true).write(to: url)
         project = try HorizontalProject.load(from: url)
         archive = try HorizontalProjectArchive.completeProject(from: url)
 

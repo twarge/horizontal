@@ -726,8 +726,9 @@ final class HorizontalBoardRulesCheckTests: XCTestCase {
         XCTAssertTrue((width["detail"] as? String)?.hasPrefix("Track width 0.100 mm is less than 0.200 mm.") ?? false)
     }
 
-    /// The whole pipeline on the new-document template: its board has no
-    /// outline, which preflight says, and MCP `check` reports.
+    /// The whole pipeline on the new-document template: its GND planes have
+    /// nothing to pour from yet, which preflight says, and MCP `check`
+    /// reports.
     func testMCPCheckRunsTheBoardChecksOnARealProject() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("rules-check-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -739,7 +740,7 @@ final class HorizontalBoardRulesCheckTests: XCTestCase {
         let report = HorizontalDispatchChecks.run(entry: HorizontalDispatchProjectEntry(handle: 1, url: project.baseURL, project: project), full: true)
         let messages = report["messages"] as? [JSONDictionary] ?? []
         let preflight = messages.filter { $0.string("category") == "preflight_checks" }
-        XCTAssertEqual(preflight.map { $0.string("title") }, ["No board outline"], "\(messages)")
+        XCTAssertEqual(preflight.map { $0.string("title") }, ["Plane has no fragments", "Plane has no fragments"], "\(messages)")
         XCTAssertEqual(preflight.first?.string("level"), "error")
     }
 }

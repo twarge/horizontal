@@ -117,11 +117,14 @@ class Session:
         summary = self.call("open_project", path=str(Path(path).expanduser()))
         return Project(self, summary)
 
-    def new_project(self, path: str | Path, name: str | None = None) -> "Project":
-        """Create a project from the template as a .horizontal package and open it."""
+    def new_project(self, path: str | Path, name: str | None = None, blank_board: bool = False) -> "Project":
+        """Create a project from the template as a .horizontal package and open it. blank_board leaves the board
+        with no outline, planes or nets, for a design that brings its own."""
         params: dict[str, Any] = {"path": str(Path(path).expanduser())}
         if name:
             params["name"] = name
+        if blank_board:
+            params["blank_board"] = True
         return Project(self, self.call("new_project", **params))
 
     def projects(self) -> list["Project"]:
@@ -756,12 +759,12 @@ def _image_result(result: dict[str, Any]) -> bytes | Path:
 _default_session: Session | None = None
 
 
-def new_project(path: str | Path, name: str | None = None, isolated: bool = False) -> Project:
+def new_project(path: str | Path, name: str | None = None, isolated: bool = False, blank_board: bool = False) -> Project:
     """Create a project from the template (a .horizontal package) and open it in this process."""
     global _default_session
     if _default_session is None or _default_session.isolated != isolated or _default_session.transport.closed:
         _default_session = Session(isolated=isolated)
-    return _default_session.new_project(path, name=name)
+    return _default_session.new_project(path, name=name, blank_board=blank_board)
 
 
 def _no_live_reason(resolved: str) -> str:

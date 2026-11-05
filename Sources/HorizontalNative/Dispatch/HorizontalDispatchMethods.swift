@@ -36,7 +36,8 @@ enum HorizontalDispatchMethods {
         .init(
             name: "new_project",
             summary: "Create a project from the new-document template as a .horizontal package and open it.",
-            params: ["path": "Where to write the package; must end in .horizontal.", "name": "Project name (optional)."],
+            params: ["path": "Where to write the package; must end in .horizontal.", "name": "Project name (optional).",
+                     "blank_board": "Start the board with no outline, planes or nets, for a design that brings its own (optional, default false)."],
             handler: newProject
         ),
         .init(
@@ -591,7 +592,7 @@ enum HorizontalDispatchMethods {
             throw HorizontalDispatchError.invalidParams("\(url.path) already exists.")
         }
         let name = params.string("name") ?? url.deletingPathExtension().lastPathComponent
-        try HorizontalProjectArchive.newProject(named: name).write(to: url)
+        try HorizontalProjectArchive.newProject(named: name, blankBoard: params.bool("blank_board") ?? false).write(to: url)
         return projectSummary(try session.open(url: url))
     }
 

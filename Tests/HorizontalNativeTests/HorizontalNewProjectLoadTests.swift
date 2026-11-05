@@ -52,6 +52,33 @@ final class HorizontalNewProjectLoadTests: XCTestCase {
         XCTAssertTrue(board.packages.isEmpty)
     }
 
+    /// A new board is a 50 mm square, its corner at the origin, with a GND
+    /// plane over each side of it: three polygons of the one square, and a
+    /// power net for the planes, which take their settings from the rules.
+    func testTemplateBoardIsA50MillimetreSquareWithGroundPlanesOnBothSides() throws {
+        let board = try XCTUnwrap(HorizontalProject.load(from: writtenTemplate()).board)
+        let square = [HorizontalPoint(x: 0, y: 0), HorizontalPoint(x: 50_000_000, y: 0),
+                      HorizontalPoint(x: 50_000_000, y: 50_000_000), HorizontalPoint(x: 0, y: 50_000_000)]
+
+        XCTAssertEqual(board.polygons.map(\.layer), [HorizontalBoardLayers.outline])
+        XCTAssertEqual(board.polygons.first?.vertices, square)
+        XCTAssertEqual(board.physicalBounds, HorizontalRect(points: square))
+
+        let ground = try XCTUnwrap(board.netDetails.values.first { $0.name == "GND" })
+        XCTAssertTrue(ground.isPower)
+        XCTAssertEqual(board.netDetails.count, 1)
+        XCTAssertEqual(board.planes.map(\.layer).sorted { ($0 ?? 0) > ($1 ?? 0) },
+                       [HorizontalBoardLayers.topCopper, HorizontalBoardLayers.bottomCopper])
+        for plane in board.planes {
+            XCTAssertEqual(plane.netID, ground.id)
+            XCTAssertEqual(plane.fallbackPolygon?.vertices, square)
+            XCTAssertEqual(plane.priority, 0)
+            XCTAssertTrue(plane.fromRules)
+            // Nothing of its net to pour from yet.
+            XCTAssertTrue(plane.fragments.isEmpty)
+        }
+    }
+
     /// The rules results sidebar has nothing to say about a new board's rules:
     /// every family whose last rule must match everything has one that does.
     func testTemplateRulesPassTheRulesCheck() throws {
@@ -109,13 +136,18 @@ final class HorizontalNewProjectLoadTests: XCTestCase {
     func testTemplateCanvasesGetTheEmptyContentRegion() throws {
         // An empty document must never hand the canvases empty bounds: the fit
         // renders at one nanometer per pixel and the input transforms map every
-        // click to the origin, so a brand-new project looked frozen.
-        let packageURL = try writtenTemplate()
-
-        let project = try HorizontalProject.load(from: packageURL)
-
-        XCTAssertEqual(project.board?.bounds, .emptyContentCanvasRegion)
+        // click to the origin, so a brand-new project looked frozen. The new
+        // board has its outline to fit; a blank one, and the empty sheet, the
+        // region an empty canvas gets.
+        let project = try HorizontalProject.load(from: writtenTemplate())
         XCTAssertEqual(project.schematic?.sheets.first?.bounds, .emptyContentCanvasRegion)
+        let bounds = try XCTUnwrap(project.board?.bounds)
+        XCTAssertLessThanOrEqual(bounds.minX, 0)
+        XCTAssertGreaterThanOrEqual(bounds.maxX, 50_000_000)
+        XCTAssertLessThan(bounds.width, HorizontalRect.emptyContentCanvasRegion.width, "it fits the board, not the empty region")
+
+        let blank = try HorizontalProject.load(from: writtenTemplate(blankBoard: true))
+        XCTAssertEqual(blank.board?.bounds, .emptyContentCanvasRegion)
     }
 
     func testBlockEditsApplyToATemplateProject() throws {
@@ -151,14 +183,14 @@ final class HorizontalNewProjectLoadTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func writtenTemplate() throws -> URL {
+    private func writtenTemplate(blankBoard: Bool = false) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("horizontal-new-project-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
 
         let packageURL = root.appendingPathComponent("Untitled.horizontal")
-        try HorizontalProjectArchive.newProject().write(to: packageURL)
+        try HorizontalProjectArchive.newProject(blankBoard: blankBoard).write(to: packageURL)
         return packageURL
     }
 }

@@ -86,7 +86,9 @@ final class HorizontalDispatchTests: XCTestCase {
         XCTAssertEqual(sheets.map { $0["name"] as? String }, ["Sheet 1"])
 
         XCTAssertEqual((try result("list_components", ["handle": handle]) as? [Any])?.count, 0)
-        XCTAssertEqual((try result("list_nets", ["handle": handle]) as? [Any])?.count, 0)
+        // The GND its board's planes pour.
+        let nets = try XCTUnwrap(try result("list_nets", ["handle": handle]) as? [[String: Any]])
+        XCTAssertEqual(nets.map { $0["name"] as? String }, ["GND"])
 
         let bom = try XCTUnwrap(try result("bom", ["handle": handle]) as? [String: Any])
         XCTAssertEqual(bom["line_count"] as? Int, 0)
@@ -128,16 +130,17 @@ final class HorizontalDispatchTests: XCTestCase {
         XCTAssertThrowsError(try HorizontalDispatchRender.resolveBoardLayers(project: project, names: [], ids: []))
     }
 
-    /// A new board has no outline yet, which Horizon's preflight check fails,
-    /// and that is all `check` finds wrong with it.
-    func testCheckOnTheTemplateFindsOnlyTheMissingOutline() throws {
+    /// A new board's GND planes have no copper of their net to pour from,
+    /// so nothing of them is poured, which Horizon's preflight check fails,
+    /// and that is all `check` finds wrong with it: its outline is whole.
+    func testCheckOnTheTemplateFindsOnlyItsUnpouredPlanes() throws {
         let handle = try openTemplate()
         let check = try XCTUnwrap(try result("check", ["handle": handle, "full": true]) as? [String: Any])
         let counts = try XCTUnwrap(check["counts"] as? [String: Int])
-        XCTAssertEqual(counts["error"], 1)
+        XCTAssertEqual(counts["error"], 2)
         let errors = (check["messages"] as? [[String: Any]] ?? []).filter { $0["level"] as? String == "error" }
-        XCTAssertEqual(errors.map { $0["category"] as? String }, ["preflight_checks"])
-        XCTAssertEqual(errors.map { $0["check"] as? String }, ["no_outline"])
+        XCTAssertEqual(errors.map { $0["category"] as? String }, ["preflight_checks", "preflight_checks"])
+        XCTAssertEqual(errors.map { $0["check"] as? String }, ["plane_no_fragments", "plane_no_fragments"])
     }
 
     func testRenderingTheFirstSheetProducesAPNG() throws {
@@ -189,6 +192,30 @@ final class HorizontalDispatchTests: XCTestCase {
 
         let bad = try call("pool_write", ["handle": handle, "items": [["type": "gizmo", "uuid": unitID]]])
         XCTAssertEqual((bad["error"] as? [String: Any])?["code"] as? Int, -32602)
+    }
+
+    /// `new_project` writes the starter board, a 50 mm square with a GND
+    /// plane on each side, and with `blank_board` a board of nothing, for a
+    /// design that brings its own.
+    func testNewProjectStartsTheBoardAsTheAppDoesOrBlank() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("horizontal-dispatch-blank-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        func board(_ params: [String: Any]) throws -> (nets: Int, polygons: Int, planes: Int) {
+            let name = "P\(UUID().uuidString.prefix(8))"
+            let summary = try XCTUnwrap(try result("new_project", ["path": root.appendingPathComponent("\(name).horizontal").path]
+                .merging(params) { _, new in new }) as? [String: Any])
+            let handle = try XCTUnwrap(summary["handle"] as? Int)
+            addTeardownBlock { _ = HorizontalDispatch.call(#"{"jsonrpc":"2.0","id":0,"method":"close_project","params":{"handle":\#(handle)}}"#) }
+            return (try XCTUnwrap(try result("list_nets", ["handle": handle]) as? [Any]).count,
+                    try XCTUnwrap(try result("list_polygons", ["handle": handle]) as? [Any]).count,
+                    try XCTUnwrap(try result("list_planes", ["handle": handle]) as? [Any]).count)
+        }
+        let starter = try board([:])
+        XCTAssertEqual([starter.nets, starter.polygons, starter.planes], [1, 3, 2])
+        let blank = try board(["blank_board": true])
+        XCTAssertEqual([blank.nets, blank.polygons, blank.planes], [0, 0, 0])
     }
 
     func testExportRefusesADirectoryInsideTheProjectAndWritesOutsideIt() throws {

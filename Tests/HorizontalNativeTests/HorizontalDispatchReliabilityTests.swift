@@ -11,7 +11,7 @@ final class HorizontalDispatchReliabilityTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("horizontal-reliability-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         url = root.appendingPathComponent("Test.horizontal")
-        try HorizontalProjectArchive.newProject().write(to: url)
+        try HorizontalProjectArchive.newProject(blankBoard: true).write(to: url)
         let opened = try result("open_project", ["path": url.path]) as! JSONDictionary
         handle = opened["handle"] as! Int
         addTeardownBlock { [handle] in

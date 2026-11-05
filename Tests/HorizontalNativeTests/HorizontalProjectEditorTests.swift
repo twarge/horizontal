@@ -23,7 +23,7 @@ final class HorizontalProjectEditorTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         packageURL = root.appendingPathComponent("Untitled.horizontal")
-        try HorizontalProjectArchive.newProject().write(to: packageURL)
+        try HorizontalProjectArchive.newProject(blankBoard: true).write(to: packageURL)
         (partID, entityID) = try fabricateResistor(poolURL: packageURL.appendingPathComponent("pool"))
 
         let summary = try XCTUnwrap(try result("open_project", ["path": packageURL.path]) as? [String: Any])

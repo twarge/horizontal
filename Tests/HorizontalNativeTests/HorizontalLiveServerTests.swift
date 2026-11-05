@@ -27,7 +27,7 @@ final class HorizontalLiveServerTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         packageURL = root.appendingPathComponent("Untitled.horizontal")
-        try HorizontalProjectArchive.newProject().write(to: packageURL)
+        try HorizontalProjectArchive.newProject(blankBoard: true).write(to: packageURL)
     }
 
     override func tearDown() async throws {
