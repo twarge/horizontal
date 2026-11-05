@@ -218,7 +218,8 @@ final class RuleViolationMarkerTests: XCTestCase {
 
     /// The marker's fill: the triangle inside its rim.
     private func fill(_ marker: HorizontalCanvasWarning) -> HorizontalMetalRGBA {
-        HorizontalCanvasWarningGeometry.triangles(for: [marker])[1].color
+        let index = HorizontalCanvasWarningGeometry.glyph.firstIndex { $0.part == .fill }!
+        return HorizontalCanvasWarningGeometry.triangles(for: [marker])[index].color
     }
 
     func testASheetsFindingsShareAMarkerWithItsWarningsAndAnErrorMakesItRed() throws {

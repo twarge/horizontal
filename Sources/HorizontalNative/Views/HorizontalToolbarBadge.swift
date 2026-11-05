@@ -48,6 +48,12 @@ extension HorizontalBoardRulesResultState {
         messages.count + (clearanceFindings?.count ?? 0) + (boardFindings?.count ?? 0) + (schematicFindings?.count ?? 0)
     }
 
+    /// The badge as the toolbar draws it: none while the rules window's
+    /// Display warnings on canvas is off.
+    func toolbarBadgeCount(displayingWarnings: Bool) -> Int {
+        displayingWarnings ? badgeCount : 0
+    }
+
     var badgeColor: Color {
         messages.contains { $0.level == .error } || !(clearanceFindings ?? []).isEmpty
             || (boardFindings ?? []).contains { $0.level == .error }

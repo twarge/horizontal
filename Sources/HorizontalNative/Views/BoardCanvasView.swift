@@ -1117,7 +1117,7 @@ struct BoardCanvasView: View {
             selectionToolSettings: selectionToolSettings,
             selectionSelectables: boardSelectables(),
             // Where the copper is, not where a move is taking it.
-            warnings: moveState == nil ? ruleMarkers : [],
+            warnings: moveState == nil && appearanceSettings.shouldDisplayCanvasWarnings ? ruleMarkers : [],
             handlesSelectionDeletion: canDeleteSelection,
             undoManager: undoManager,
             ignoresCanvasMouseEvents: ignoresCanvasMouseEvents,

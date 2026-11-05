@@ -19,6 +19,10 @@ struct HorizontalRulesResultsSidebarView: View {
     var onShowSchematicFinding: (HorizontalSchematicRuleFinding) -> Void = { _ in }
     /// Opens the rules window at the schematic's Connectivity rule.
     var onShowSchematicRule: () -> Void = {}
+    /// The sections closed by their disclosure triangles, by
+    /// `HorizontalBoardRulesResultState` section id: their rows are folded
+    /// away and no canvas marks their findings.
+    var collapsedSections: Binding<Set<String>> = .constant([])
 
     var body: some View {
         List {
@@ -57,14 +61,14 @@ struct HorizontalRulesResultsSidebarView: View {
                         Label {
                             Text("No issues")
                         } icon: {
-                            Image(systemName: "checkmark.seal")
+                            Image(systemName: "checkmark.seal.fill")
                                 .foregroundStyle(.green)
                         }
                         .padding(.vertical, 4)
                     }
                 }
                 if !result.messages.isEmpty {
-                    Section("Rules") {
+                    disclosureSection("Rules", id: HorizontalBoardRulesResultState.rulesSectionID) {
                         ForEach(result.messages) { message in
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: message.level.iconName)
@@ -83,7 +87,7 @@ struct HorizontalRulesResultsSidebarView: View {
                     }
                 }
                 if let findings = result.schematicFindings, !findings.isEmpty {
-                    Section("Schematic (\(findings.count))") {
+                    disclosureSection("Schematic (\(findings.count))", id: HorizontalBoardRulesResultState.schematicSectionID) {
                         ForEach(findings) { finding in
                             HorizontalSchematicRuleFindingRow(finding: finding, onShow: onShowSchematicFinding)
                                 .padding(.vertical, 4)
@@ -99,7 +103,7 @@ struct HorizontalRulesResultsSidebarView: View {
                     }
                 }
                 ForEach(result.boardFindingSections) { section in
-                    Section("\(section.title) (\(section.findings.count))") {
+                    disclosureSection("\(section.title) (\(section.findings.count))", id: section.id) {
                         ForEach(section.findings) { finding in
                             Group {
                                 if let clearance = finding.clearance {
@@ -136,6 +140,47 @@ struct HorizontalRulesResultsSidebarView: View {
                 .frame(width: 0.7)
         }
     }
+
+    /// A section headed by its title in body text beside a disclosure
+    /// triangle, which closes it: its rows go, and so do its markers on the
+    /// canvases.
+    private func disclosureSection<Content: View>(_ title: String, id: String,
+                                                  @ViewBuilder content: () -> Content) -> some View {
+        let isExpanded = !collapsedSections.wrappedValue.contains(id)
+        return Section {
+            if isExpanded {
+                content()
+            }
+        } header: {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    if isExpanded {
+                        collapsedSections.wrappedValue.insert(id)
+                    } else {
+                        collapsedSections.wrappedValue.remove(id)
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .frame(width: 12)
+                    Text(title)
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .textCase(nil)
+            .help(isExpanded ? "Hide these here and on the canvas" : "Show these here and on the canvas")
+            .accessibilityLabel(title)
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+        }
+    }
 }
 
 extension HorizontalBoardRulesResultState {
@@ -155,12 +200,32 @@ extension HorizontalBoardRulesResultState {
         HorizontalBoardRulesCheck.sorted((clearanceFindings ?? []).map(HorizontalBoardRuleFinding.init) + (boardFindings ?? []))
     }
 
+    /// The sidebar's sections that aren't a kind of board rule.
+    static let rulesSectionID = "rules"
+    static let schematicSectionID = "schematic"
+
+    /// The board findings the canvas marks: those of every section the
+    /// sidebar has open.
+    func canvasBoardFindings(collapsedSections: Set<String>) -> [HorizontalBoardRuleFinding] {
+        let findings = allBoardFindings
+        guard !collapsedSections.isEmpty else { return findings }
+        return findings.filter { !collapsedSections.contains(HorizontalBoardFindingSection.id(of: $0.kind)) }
+    }
+
+    /// The schematic findings the canvas marks: none while the sidebar has
+    /// their section closed.
+    func canvasSchematicFindings(collapsedSections: Set<String>) -> [HorizontalSchematicRuleFinding] {
+        collapsedSections.contains(Self.schematicSectionID) ? [] : schematicFindings ?? []
+    }
+
     /// The board findings a section a kind of rule, as the sidebar lists
     /// them; Horizontal's own copper checks first, as "Copper".
     var boardFindingSections: [HorizontalBoardFindingSection] {
         var sections = [HorizontalBoardFindingSection]()
         for finding in allBoardFindings {
-            if sections.last?.kind == finding.kind {
+            // Not `sections.last?.kind == finding.kind`: the chain flattens,
+            // so with no section yet it is nil and matches a Copper finding.
+            if let last = sections.last, last.kind == finding.kind {
                 sections[sections.count - 1].findings.append(finding)
             } else {
                 sections.append(HorizontalBoardFindingSection(kind: finding.kind, findings: [finding]))
@@ -184,7 +249,9 @@ struct HorizontalBoardFindingSection: Identifiable {
     var kind: HorizontalBoardRuleKind?
     var findings: [HorizontalBoardRuleFinding]
 
-    var id: String { kind?.rawValue ?? "copper" }
+    var id: String { Self.id(of: kind) }
+
+    static func id(of kind: HorizontalBoardRuleKind?) -> String { kind?.rawValue ?? "copper" }
 
     var title: String { kind?.title ?? "Copper" }
 }

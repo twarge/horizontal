@@ -573,7 +573,9 @@ final class HorizontalMetalCanvasLayer {
     private var currentAnchoredRectKey: Int?
     private var screenTriangleBuffer: MTLBuffer?
     private var screenTriangleBufferStorage = HorizontalMetalBufferStorage<HorizontalMetalScreenTriangleShaderPrimitive>()
-    private var screenTrianglePrimitiveCount = 0
+    /// The screen-space triangles last uploaded (the warning markers among
+    /// them); read by mounted-canvas tests.
+    private(set) var screenTrianglePrimitiveCount = 0
     private var currentScreenTriangleKey: Int?
     private var screenLineBuffer: MTLBuffer?
     private var screenLineBufferStorage = HorizontalMetalBufferStorage<HorizontalMetalScreenLineShaderPrimitive>()

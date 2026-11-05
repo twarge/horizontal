@@ -463,6 +463,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
     @Published private var showsHoverPopover: Bool
     @Published private var fillsNetLabelBackground: Bool
     @Published private var drawsWireHops: Bool
+    @Published private var displaysCanvasWarnings: Bool
     @Published private var fillsClosedSymbolBackground: Bool
     @Published private var swapsViewControlsAndUnplacedReferences: Bool
     @Published private var transparentToolbar: Bool
@@ -491,6 +492,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
         showsHoverPopover = Self.loadShowsHoverPopover(defaults: defaults)
         fillsNetLabelBackground = Self.loadFillsNetLabelBackground(defaults: defaults)
         drawsWireHops = defaults.object(forKey: Self.wireHopsDefaultsKey) as? Bool ?? true
+        displaysCanvasWarnings = defaults.object(forKey: Self.canvasWarningsDefaultsKey) as? Bool ?? true
         fillsClosedSymbolBackground = defaults.bool(forKey: Self.closedSymbolBackgroundDefaultsKey)
         swapsViewControlsAndUnplacedReferences = Self.loadSwapsViewControlsAndUnplacedReferences(defaults: defaults)
         transparentToolbar = Self.loadTransparentToolbar(defaults: defaults)
@@ -542,6 +544,14 @@ final class HorizontalAppearanceSettings: ObservableObject {
     /// Wires of different nets that cross draw a hop on the schematic.
     var shouldDrawWireHops: Bool {
         drawsWireHops
+    }
+
+    /// The rules window's Display warnings on canvas: the canvases' warning
+    /// markers, the schematic's own and the rules checks', and the count on
+    /// the rules results button. Off, the checks still run and their results
+    /// sidebar still lists what they find.
+    var shouldDisplayCanvasWarnings: Bool {
+        displaysCanvasWarnings
     }
 
     var shouldFillClosedSymbolBackground: Bool {
@@ -685,6 +695,15 @@ final class HorizontalAppearanceSettings: ObservableObject {
             self.objectWillChange.send()
             self.drawsWireHops = draws
             self.defaults.set(draws, forKey: Self.wireHopsDefaultsKey)
+        }
+    }
+
+    func canvasWarningsBinding() -> Binding<Bool> {
+        Binding {
+            self.displaysCanvasWarnings
+        } set: { displays in
+            self.displaysCanvasWarnings = displays
+            self.defaults.set(displays, forKey: Self.canvasWarningsDefaultsKey)
         }
     }
 
@@ -1220,6 +1239,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
     private static let hoverPopoverDefaultsKey = "appearance.showsHoverPopover"
     private static let netLabelBackgroundDefaultsKey = "appearance.fillNetLabelBackground"
     private static let wireHopsDefaultsKey = "appearance.schematicWireHops"
+    private static let canvasWarningsDefaultsKey = "appearance.displaysCanvasWarnings"
     private static let closedSymbolBackgroundDefaultsKey = "appearance.fillClosedSymbolBackground"
     private static let swapViewControlsAndUnplacedReferencesDefaultsKey = "appearance.swapViewControlsAndUnplacedReferences"
     private static let transparentToolbarDefaultsKey = "appearance.transparentToolbar"

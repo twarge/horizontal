@@ -13,30 +13,83 @@ enum HorizontalCanvasWarningGeometry {
         }
     }
 
-    /// A warning's triangle is yellow with a black mark; an error's red with
-    /// a white one, in the same black rim.
+    /// The marker is exclamationmark.triangle.fill, as the rules results
+    /// sidebar draws an error, in a black rim: red with a white mark for an
+    /// error, yellow with a black one for a warning.
     static func triangles(for warnings: [HorizontalCanvasWarning]) -> [HorizontalMetalScreenTrianglePrimitive] {
+        let red = HorizontalMetalRGBA(red: 1, green: 0.23, blue: 0.19, alpha: 1)
         let yellow = HorizontalMetalRGBA(red: 1, green: 0.8, blue: 0.05, alpha: 1)
-        let red = HorizontalMetalRGBA(red: 0.9, green: 0.16, blue: 0.13, alpha: 1)
         let black = HorizontalMetalRGBA(red: 0.08, green: 0.08, blue: 0.08, alpha: 1)
         let white = HorizontalMetalRGBA(red: 1, green: 1, blue: 1, alpha: 1)
         return warnings.flatMap { warning in
-            func triangle(_ a: CGPoint, _ b: CGPoint, _ c: CGPoint, _ color: HorizontalMetalRGBA) -> HorizontalMetalScreenTrianglePrimitive {
-                func shifted(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x + offset.x, y: p.y + offset.y) }
-                return .init(a: shifted(a), b: shifted(b), c: shifted(c), color: color, worldAnchor: warning.position)
-            }
-            let fill = warning.isError ? red : yellow
-            let mark = warning.isError ? white : black
-            return [
-                triangle(.init(x: 0, y: -8), .init(x: -9, y: 8), .init(x: 9, y: 8), black),
-                triangle(.init(x: 0, y: -6), .init(x: -7, y: 7), .init(x: 7, y: 7), fill),
-                triangle(.init(x: -1, y: -2), .init(x: 1, y: -2), .init(x: 1, y: 3), mark),
-                triangle(.init(x: -1, y: -2), .init(x: 1, y: 3), .init(x: -1, y: 3), mark),
-                triangle(.init(x: -1, y: 4), .init(x: 1, y: 4), .init(x: 1, y: 6), mark),
-                triangle(.init(x: -1, y: 4), .init(x: 1, y: 6), .init(x: -1, y: 6), mark)
+            let colors: [GlyphPart: HorizontalMetalRGBA] = [
+                .rim: black, .fill: warning.isError ? red : yellow, .mark: warning.isError ? white : black,
             ]
+            return glyph.map { triangle in
+                func shifted(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x + offset.x, y: p.y + offset.y) }
+                return HorizontalMetalScreenTrianglePrimitive(a: shifted(triangle.a), b: shifted(triangle.b), c: shifted(triangle.c),
+                                                              color: colors[triangle.part]!, worldAnchor: warning.position)
+            }
         }
     }
+
+    enum GlyphPart: Hashable {
+        case rim, fill, mark
+    }
+
+    struct GlyphTriangle {
+        var part: GlyphPart
+        var a, b, c: CGPoint
+    }
+
+    /// The symbol's shape in points about the marker's centre, y down, the
+    /// size the old marker was, drawn in order: a rounded triangle 18 wide
+    /// and 16 high, the rim; one 1.2 inside it, the fill; and over them the
+    /// exclamation mark's bar and dot. Made once.
+    static let glyph: [GlyphTriangle] = {
+        // Evenly spaced, with the quarter turns between added, so the outline
+        // reaches its extremes exactly.
+        func arc(_ center: CGPoint, _ radius: Double, from start: Double, to end: Double, steps: Int) -> [CGPoint] {
+            var angles = (0...steps).map { start + (end - start) * Double($0) / Double(steps) }
+            var quarter = (start / (.pi / 2)).rounded(.up) * (.pi / 2)
+            while quarter < end {
+                if !angles.contains(where: { abs($0 - quarter) < 1e-9 }) { angles.append(quarter) }
+                quarter += .pi / 2
+            }
+            return angles.sorted().map { CGPoint(x: center.x + radius * cos($0), y: center.y + radius * sin($0)) }
+        }
+        // A rounded triangle is its corners' circles and what lies between
+        // them: round each centre, from the outward normal of the edge coming
+        // in to that of the edge going out, the centres going anticlockwise in
+        // the plane's own sense. The rim and the fill share the centres, so
+        // the rim is as wide all round.
+        let rimRadius = 2.4
+        let rimWidth = 1.2
+        let centers = [CGPoint(x: 0, y: -8 + rimRadius), CGPoint(x: 9 - rimRadius, y: 8 - rimRadius),
+                       CGPoint(x: -9 + rimRadius, y: 8 - rimRadius)]
+        func roundedTriangle(radius: Double) -> [CGPoint] {
+            centers.indices.flatMap { index -> [CGPoint] in
+                let center = centers[index]
+                let previous = centers[(index + centers.count - 1) % centers.count]
+                let next = centers[(index + 1) % centers.count]
+                // An edge along (x, y) faces out along (y, -x).
+                let start = atan2(-(center.x - previous.x), center.y - previous.y)
+                var end = atan2(-(next.x - center.x), next.y - center.y)
+                if end < start { end += 2 * .pi }
+                return arc(center, radius, from: start, to: end, steps: 6)
+            }
+        }
+        // The bar a stadium, its ends' centres 3.6 apart; the dot below it.
+        let bar = arc(CGPoint(x: 0, y: -2.4), 1.1, from: .pi, to: 2 * .pi, steps: 8)
+            + arc(CGPoint(x: 0, y: 1.2), 1.1, from: 0, to: .pi, steps: 8)
+        let dot = Array(arc(CGPoint(x: 0, y: 4.6), 1.2, from: 0, to: 2 * .pi, steps: 16).dropLast())
+        // Each shape is convex, so a fan from its first point covers it.
+        func fan(_ points: [CGPoint], _ part: GlyphPart) -> [GlyphTriangle] {
+            (1..<(points.count - 1)).map { GlyphTriangle(part: part, a: points[0], b: points[$0], c: points[$0 + 1]) }
+        }
+        return fan(roundedTriangle(radius: rimRadius), .rim) + fan(roundedTriangle(radius: rimRadius - rimWidth), .fill)
+            + fan(bar, .mark) + fan(dot, .mark)
+    }()
 }
 
 extension HorizontalCanvasWarning {
@@ -116,7 +169,8 @@ struct HorizontalCanvasWarningMarker: View {
         Button { isPresented.toggle() } label: {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(warning.isError ? .red : .yellow, warning.isError ? .white : .black)
+                // With two colours the first is the mark's, the second the triangle's.
+                .foregroundStyle(warning.isError ? .white : .black, warning.isError ? .red : .yellow)
                 .frame(width: 20, height: 20)
         }
         .buttonStyle(.plain)
