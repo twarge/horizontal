@@ -2241,7 +2241,11 @@ private struct ThreeDViewControlsPanel: View {
                     }
                 }
                 viaPlatingControl
-                modelModeControl
+                segmentedPickerRow("3D Models", selection: modelModeBinding) {
+                    ForEach(HorizontalBoardSceneModelMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
                 colorToggleRow(
                     "Background",
                     isOn: $displayOptions.threeDBackground,
@@ -2285,25 +2289,20 @@ private struct ThreeDViewControlsPanel: View {
 
     private var viaPlatingControl: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
+            HStack(spacing: 6) {
                 Text("Via plating")
                 Spacer()
-                Text("\(displayOptions.threeDViaPlatingMicrons.formatted(.number.precision(.fractionLength(0)))) µm")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            HStack(spacing: 6) {
                 TextField(
                     "Via plating",
                     value: viaPlatingBinding,
                     format: .number.precision(.fractionLength(0))
                 )
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 86)
+                .multilineTextAlignment(.trailing)
+                .labelsHidden()
+                .frame(width: 56)
                 Text("µm")
                     .foregroundStyle(.secondary)
-                Stepper("Via plating", value: viaPlatingBinding, in: 0...250, step: 1)
-                    .labelsHidden()
             }
             Text("Applies to via wall thickness and top/bottom protrusion.")
                 .font(.caption)
@@ -2324,44 +2323,6 @@ private struct ThreeDViewControlsPanel: View {
             displayOptions.threeDSolderMaskTransparency
         } set: { value in
             displayOptions.threeDSolderMaskTransparency = value.clamped(to: 0...1)
-        }
-    }
-
-    private var modelModeControl: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("3D Models")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 3) {
-                ForEach(HorizontalBoardSceneModelMode.allCases) { mode in
-                    let isSelected = displayOptions.threeDModelMode == mode
-                    Button {
-                        modelModeBinding.wrappedValue = mode
-                    } label: {
-                        Text(mode.title)
-                            .font(.caption.weight(.semibold))
-                            .frame(maxWidth: .infinity, minHeight: 24)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(isSelected ? .primary : .secondary)
-                    .background {
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(isSelected ? Color.accentColor.opacity(0.24) : Color.clear)
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .stroke(isSelected ? Color.accentColor.opacity(0.45) : Color.clear, lineWidth: 0.75)
-                    }
-                }
-            }
-            .padding(3)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(Color.secondary.opacity(0.2), lineWidth: 0.75)
-            }
         }
     }
 
@@ -2425,15 +2386,18 @@ private struct ThreeDViewControlsPanel: View {
         selection: Binding<Selection>,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
             Picker(title, selection: selection) {
                 content()
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            // A segmented picker on the Mac is only as wide as its labels:
+            // None / Placed / All and Perspective / Orthogonal would stop
+            // short of Copper's Off / On / Layer Color.
+            .buttonSizing(.flexible)
+            .frame(maxWidth: .infinity)
         }
     }
 
