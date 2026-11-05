@@ -3781,26 +3781,35 @@ struct BoardCanvasView: View {
     /// Smash extracts an unsmashed package's own silk text into
     /// independently editable `fromSmash` board text and hides the package
     /// silk; Unsmash removes a smashed one's copies and re-derives the
-    /// package silk from the pool.
+    /// package silk from the pool. H on a package smashed already selects
+    /// its smashed refdes, to move or edit, and changes nothing.
     private func smashSelection(_ smashing: Bool) {
         guard !isReadOnly else { return }
         let packageRefs = uniqueRefs(selectedObjects).filter { $0.type == .boardPackage }
         guard !packageRefs.isEmpty else { return }
 
         let previous = editedBoard ?? sourceBoard
+        let refdesRefs = smashing ? smashedRefdesRefs(of: packageRefs, in: previous) : []
         var draft = previous
         var changedPackageIDs = Set<String>()
         for ref in packageRefs where smash(ref, smashing: smashing, in: &draft) {
             changedPackageIDs.insert(normalizedID(ref.id))
         }
-        guard !changedPackageIDs.isEmpty else { return }
+        guard !changedPackageIDs.isEmpty else {
+            guard !refdesRefs.isEmpty else { return }
+            hoveredObject = nil
+            selectedObjects = refdesRefs
+            publishSelectionContext()
+            return
+        }
 
         registerUndoSnapshot(previous, actionName: smashing ? "Smash" : "Unsmash")
         editedBoard = draft
         invalidateSelectableCache()
         hoveredObject = nil
         // After smashing, select the new editable from-smash texts so they can be
-        // immediately repositioned / edited.
+        // immediately repositioned / edited, with the refdes of any package
+        // smashed already.
         if smashing {
             selectedObjects = draft.packageTexts.compactMap { text in
                 guard text.fromSmash,
@@ -3809,10 +3818,26 @@ struct BoardCanvasView: View {
                     return nil
                 }
                 return HorizontalSelectableRef(id: text.id, type: .text, layer: text.layer)
-            }
+            } + refdesRefs
         }
         publishConnectivityResolvedEdit(draft)
         publishSelectionContext()
+    }
+
+    /// The refdes texts the smashed packages among `packageRefs` own: the
+    /// `fromSmash` texts that store $RD.
+    private func smashedRefdesRefs(of packageRefs: [HorizontalSelectableRef], in board: HorizontalBoard) -> [HorizontalSelectableRef] {
+        let smashedIDs = Set(board.packages.filter(\.smashed).map { normalizedID($0.id) })
+            .intersection(packageRefs.map { normalizedID($0.id) })
+        guard !smashedIDs.isEmpty else { return [] }
+        return board.packageTexts.compactMap { text in
+            guard text.fromSmash, HorizontalSmash.isRefdes(text),
+                  let pkg = packageID(forGeometryID: text.id).map(normalizedID),
+                  smashedIDs.contains(pkg) else {
+                return nil
+            }
+            return HorizontalSelectableRef(id: text.id, type: .text, layer: text.layer)
+        }
     }
 
     /// Smashes or unsmashes one package. Returns whether anything changed:

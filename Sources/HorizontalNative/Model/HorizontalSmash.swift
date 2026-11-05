@@ -57,6 +57,14 @@ enum HorizontalSmash {
             return text(from: item, placement: storedPlacement(drawing: placement.accumulatedText(with: textPlacement)), layer: layer)
         }
     }
+
+    /// Whether a smashed text is its component's reference designator: what
+    /// it stores names it, as $RD, $REFDES or $REF, braced or not and in any
+    /// case, the names the board's loader draws the refdes for.
+    static func isRefdes(_ text: HorizontalText) -> Bool {
+        let stored = text.placeholder?.stored ?? text.text
+        return stored.range(of: #"\$\{?(RD|REFDES|REF)(\}|\b)"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
 }
 
 extension HorizontalSchematicSheet {
