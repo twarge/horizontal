@@ -55,6 +55,33 @@ struct HorizontalRouteInspectorState: Equatable {
     var nearest: [HorizontalRouteClearanceProbe.Measurement]
     var nearestRadius: Double
     var via: Via
+    /// The route's net's diff pair, where it is in one.
+    var diffpair: Diffpair? = nil
+
+    /// A pair's partner and the diffpair rule taking the pair on the
+    /// route's layer (`HorizontalBoardRules.diffpair`).
+    struct Diffpair: Equatable {
+        var partnerName: String
+        var isPrimary: Bool
+        var rule: HorizontalRuleDiffpair?
+        /// "Net class HS on any layer".
+        var ruleBrief: String?
+        /// The copper clearance the rules ask between the two nets' tracks
+        /// on the layer, which the pair's own gap has to keep too.
+        var clearance: Double
+
+        /// The gap the pair routes at: the rule's, or the clearance where
+        /// that is wider, since the rules check holds the two nets to it.
+        var gap: Double? {
+            rule.map { max($0.trackGap, clearance) }
+        }
+
+        var gapWarning: String? {
+            guard let rule, rule.trackGap < clearance else { return nil }
+            return "The rule's \(HorizontalRouteInspectorState.millimetres(rule.trackGap)) gap is less than the "
+                + "\(HorizontalRouteInspectorState.millimetres(clearance)) clearance between the two nets, which the pair keeps."
+        }
+    }
 
     var layerName: String {
         layerOptions.first { $0.id == layer }?.title ?? HorizontalBoardLayers.name(for: layer)
@@ -95,6 +122,37 @@ struct HorizontalRouteInspectorState: Equatable {
 
     static func millimetres(_ nanometres: Double) -> String {
         (nanometres / 1_000_000).formatted(.number.precision(.fractionLength(3))) + " mm"
+    }
+}
+
+/// What the inspector shows while the tune tool is in use: the track being
+/// tuned, its net's length now, the target and where it comes from, and what
+/// the meander under the cursor makes of it.
+struct HorizontalTuneInspectorState: Equatable {
+    enum TargetSource: Equatable {
+        /// The Length Tuning window's reference row.
+        case reference
+        /// Typed, with Return or here.
+        case typed
+        /// Neither: the window has no reference.
+        case none
+    }
+
+    var netName: String?
+    var layerName: String?
+    var netLength: Double?
+    var target: Double?
+    var targetSource: TargetSource
+    var tunedLength: Double?
+    var cells = 0
+    var blocked = 0
+    /// What the tune does or why it doesn't, in a sentence.
+    var status: String
+    var isShort = false
+
+    static func waiting(target: Double?, source: TargetSource) -> HorizontalTuneInspectorState {
+        HorizontalTuneInspectorState(target: target, targetSource: source,
+                                     status: "Click a straight track where the meander should start.")
     }
 }
 
@@ -155,6 +213,9 @@ final class HorizontalRouteInspectorModel: ObservableObject {
     @Published private(set) var state: HorizontalRouteInspectorState?
     /// The track tool is in use; the host shows the inspector while it is.
     @Published private(set) var isRouting = false
+    /// The tune tool's state while it is in use, when the inspector shows it
+    /// in the route's place; the host shows the inspector as for a route.
+    @Published private(set) var tune: HorizontalTuneInspectorState?
 
     private var probe: HorizontalRouteClearanceProbe?
     private var spacingCache: (key: String, spacing: HorizontalRouteSpacing)?
@@ -178,8 +239,21 @@ final class HorizontalRouteInspectorModel: ObservableObject {
         }
     }
 
-    /// The track tool ended.
+    /// The tune tool started, or its state changed.
+    func updateTune(_ tune: HorizontalTuneInspectorState) {
+        if self.tune != tune {
+            self.tune = tune
+        }
+        if !isRouting {
+            isRouting = true
+        }
+    }
+
+    /// The track tool ended, or the tune tool.
     func endRoute() {
+        if tune != nil {
+            tune = nil
+        }
         flushTask?.cancel()
         flushTask = nil
         pending = nil
@@ -310,8 +384,27 @@ final class HorizontalRouteInspectorModel: ObservableObject {
             spacing: spacing,
             nearest: nearest,
             nearestRadius: radius,
-            via: viaState(input, names: names)
+            via: viaState(input, names: names),
+            diffpair: diffpairState(input)
         )
+    }
+
+    private func diffpairState(_ input: HorizontalRouteInspectorInput) -> HorizontalRouteInspectorState.Diffpair? {
+        let board = input.board
+        guard let net = input.netID?.lowercased(), let detail = board.netDetails[net], let partner = detail.diffpairID else {
+            return nil
+        }
+        let rule = board.rules.diffpair(net: net, layer: input.layer)
+        let brief = rule.map { rule -> String in
+            let className = input.netClasses.first { $0.id.lowercased() == rule.netClassID }?.name ?? String(rule.netClassID.prefix(8))
+            let layer = rule.layer == 10000 ? "any layer" : HorizontalBoardLayers.name(for: rule.layer)
+            return "Net class \(className) on \(layer)"
+        }
+        let clearance = board.rules.clearanceCopper(net1: net, net2: partner, layer: input.layer).clearance(.track, .track)
+        let partnerName = board.netDetails[partner].map { $0.name.isEmpty ? String($0.id.prefix(8)) : $0.name } ?? String(partner.prefix(8))
+        return HorizontalRouteInspectorState.Diffpair(
+            partnerName: partnerName, isPrimary: detail.isDiffpairPrimary, rule: rule, ruleBrief: brief,
+            clearance: Double(clearance))
     }
 
     private func viaState(_ input: HorizontalRouteInspectorInput, names: HorizontalRouteRuleNames) -> HorizontalRouteInspectorState.Via {
@@ -344,6 +437,14 @@ struct HorizontalRouteInspectorView: View {
     var onCommand: (HorizontalRouteInspectorCommand) -> Void
 
     var body: some View {
+        if let tune = model.tune {
+            HorizontalTuneInspectorSection(state: tune, settings: toolSettings, isReadOnly: isReadOnly)
+        } else {
+            routeBody
+        }
+    }
+
+    private var routeBody: some View {
         VStack(alignment: .leading, spacing: 14) {
             HorizontalRouteToolSettingsSection(settings: toolSettings)
             Divider()
@@ -355,6 +456,154 @@ struct HorizontalRouteInspectorView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+/// The tune tool's settings and readout: the meander's amplitude, spacing,
+/// corners and style, the target, and what the meander under the cursor
+/// reaches. The settings hold for this tune and the next.
+private struct HorizontalTuneInspectorSection: View {
+    var state: HorizontalTuneInspectorState
+    @ObservedObject var settings: HorizontalBoardToolSettings
+    var isReadOnly: Bool
+
+    private let labelWidth: CGFloat = 96
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Meander")
+                    .font(.subheadline.weight(.semibold))
+                row("Style") {
+                    Picker("Style", selection: $settings.meanderStyle) {
+                        ForEach(HorizontalMeander.Style.allCases) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .fixedSize()
+                    .focusable(false)
+                }
+                row("Corners") {
+                    Picker("Corners", selection: $settings.meanderCorner) {
+                        ForEach(HorizontalMeander.Corner.allCases) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .fixedSize()
+                    .focusable(false)
+                }
+                row("Amplitude") {
+                    millimetreField(settings.meanderAmplitude, help: "The tallest a cell grows, baseline to join, centre to centre") {
+                        if $0 > 0 { settings.meanderAmplitude = $0 }
+                    }
+                }
+                row("Spacing") {
+                    millimetreField(settings.meanderSpacing, help: "Leg centre to leg centre; the gap between legs is this less the track's width") {
+                        if $0 > 0 { settings.meanderSpacing = $0 }
+                    }
+                }
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Target")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Picker("Target from", selection: Binding(
+                        get: { settings.tuneTarget == nil },
+                        set: { fromReference in
+                            if fromReference {
+                                settings.tuneTarget = nil
+                            } else if settings.tuneTarget == nil {
+                                settings.tuneTarget = state.target ?? state.netLength ?? 0
+                            }
+                        }
+                    )) {
+                        Text("Reference").tag(true)
+                        Text("Custom").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .fixedSize()
+                    .focusable(false)
+                    .help("The Length Tuning window's reference length, or a length of your own (Return)")
+                }
+                if settings.tuneTarget != nil {
+                    row("Length") {
+                        millimetreField(settings.tuneTarget ?? 0, help: "The length the tune makes its net") {
+                            settings.tuneTarget = $0
+                        }
+                    }
+                } else if let target = state.target {
+                    row("Reference") { Text(HorizontalLengthText.millimetres(target)) }
+                } else {
+                    caption("No reference: set one in the Length Tuning window (Design ▸ Length Tuning…), or type a length.")
+                }
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Tune")
+                    .font(.subheadline.weight(.semibold))
+                if let netName = state.netName {
+                    row("Net") { Text(netName).fontWeight(.medium) }
+                }
+                if let layerName = state.layerName {
+                    row("Layer") { Text(layerName) }
+                }
+                if let netLength = state.netLength {
+                    row("Length now") { Text(HorizontalLengthText.millimetres(netLength)) }
+                }
+                if let tuned = state.tunedLength, state.cells > 0 {
+                    row("Tuned") { Text(HorizontalLengthText.millimetres(tuned)) }
+                    row("Cells") { Text(state.blocked > 0 ? "\(state.cells), \(state.blocked) blocked" : "\(state.cells)") }
+                }
+                Label(state.status, systemImage: state.isShort ? "exclamationmark.triangle.fill" : "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(state.isShort ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .font(.callout)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func row<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .foregroundStyle(.secondary)
+                .frame(width: labelWidth, alignment: .leading)
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func millimetreField(_ nanometres: Double, help: String, onCommit: @escaping (Double) -> Void) -> some View {
+        HStack(spacing: 4) {
+            NumericPropertyField(
+                value: nanometres / 1_000_000,
+                fractionDigits: 3,
+                font: .callout.monospacedDigit()
+            ) { millimetres in
+                guard millimetres.isFinite, millimetres >= 0 else { return }
+                onCommit((millimetres * 1_000_000).rounded())
+            }
+            .frame(width: 76)
+            .disabled(isReadOnly)
+            Text("mm")
+                .foregroundStyle(.secondary)
+        }
+        .help(help)
     }
 }
 
@@ -415,6 +664,10 @@ private struct HorizontalRouteInspectorContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             routeSection
+            if let diffpair = state.diffpair {
+                Divider()
+                diffpairSection(diffpair)
+            }
             Divider()
             widthSection
             Divider()
@@ -468,6 +721,39 @@ private struct HorizontalRouteInspectorContent: View {
                     Text(state.hasStarted ? "No net" : "The net of what it starts on")
                         .foregroundStyle(.secondary)
                 }
+            }
+        }
+    }
+
+    // MARK: Diff pair
+
+    /// The pair the route's net is in, and the diffpair rule a pair router
+    /// will route it by: width, gap and via gap.
+    private func diffpairSection(_ pair: HorizontalRouteInspectorState.Diffpair) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("Diff Pair")
+            row("Partner") {
+                Text((pair.isPrimary ? "Pri: " : "Sec: ") + pair.partnerName)
+            }
+            if let rule = pair.rule {
+                row("Track width") { Text(HorizontalRouteInspectorState.millimetres(rule.trackWidth)) }
+                row("Gap") { Text(pair.gap.map(HorizontalRouteInspectorState.millimetres) ?? "") }
+                row("Via gap") { Text(HorizontalRouteInspectorState.millimetres(rule.viaGap)) }
+                caption("Diffpair rule \(pair.ruleBrief ?? ""). Tracks are routed one at a time for now.")
+                if let warning = pair.gapWarning {
+                    Label(warning, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            } else {
+                caption("No diffpair rule takes this pair's net class on \(state.layerName).")
+            }
+            if canShowRules {
+                Button("Show Diffpair Rules…") {
+                    onCommand(.showRules(.diffpair, ruleID: pair.rule?.id))
+                }
+                .routeInspectorLinkStyle()
+                .font(.caption)
             }
         }
     }

@@ -104,6 +104,7 @@ struct HorizontalCanvasCommandActions {
     var canPlaceShape: Bool = false
     var canPlaceHole: Bool = false
     var canDrawDimension: Bool = false
+    var canTuneTrack: Bool = false
     var canPlacePin: Bool = false
     var canPlaceRefdesAndValue: Bool = false
     var canPlaceDot: Bool = false
@@ -657,6 +658,11 @@ struct HorizontalViewCommands: Commands {
                     canvasCommandActions?.dispatch(.showToolSettings)
                 }
                 .disabled(canvasCommandActions?.canShowToolSettings != true)
+
+                Button("Tune Track") {
+                    canvasCommandActions?.dispatch(.tuneTrack)
+                }
+                .disabled(canvasCommandActions?.canTuneTrack != true)
 
                 Divider()
                 // Horizon's Set Diff Pair pairs the two nets selected, and its

@@ -589,6 +589,21 @@ struct DrawDimensionToolButton: View {
     }
 }
 
+/// Horizon's Tune track: a meander on a straight track, to the Length
+/// Tuning window's reference.
+struct TuneTrackToolButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "Tune track") {
+            Button(action: action) {
+                Image(systemName: "waveform.path")
+            }
+            .help("Lengthen a track's net with a meander, to the Length Tuning window's reference")
+        }
+    }
+}
+
 struct PlacePadToolButton: View {
     var action: () -> Void
 
