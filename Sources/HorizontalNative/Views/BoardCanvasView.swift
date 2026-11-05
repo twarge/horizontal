@@ -1168,12 +1168,13 @@ struct BoardCanvasView: View {
                 if drawTrackState != nil {
                     // A double-click ends the route where its first click
                     // left it: the second lays nothing, so a cursor that
-                    // moved a grid step between them adds no stub. Not
-                    // before the route has drawn anything, so a double-click
-                    // on the start point doesn't end the tool having drawn
-                    // nothing.
-                    if clickCount >= 2, drawTrackState?.hasDrawn == true {
-                        commitDrawTrack()
+                    // moved a grid step between them adds no stub, and starts
+                    // nothing, so one whose first click ended the route on a
+                    // pad or a track doesn't begin the next route there.
+                    if clickCount >= 2 {
+                        if drawTrackState?.hasDrawn == true {
+                            commitDrawTrack()
+                        }
                         return
                     }
                     // ⌘-click starts a route anywhere, where the tool would
@@ -1776,16 +1777,16 @@ struct BoardCanvasView: View {
                     let start = toolSettings.startsOnCopper
                         ? "click a pad, track or via to start, ⌘-click anywhere"
                         : "click to start"
-                    return "Autoroute \(kind) (\(layerName), \(widthMM) mm): \(start)   W width   Esc cancels"
+                    return "Autoroute \(kind) (\(layerName), \(widthMM) mm): \(start)   W width   Esc leaves the tool"
                 }
                 let viaHint = canToggleVia ? "   V via" : ""
-                return "Autoroute \(kind) (\(layerName), \(widthMM) mm): click to route   / posture\(viaHint)   ⌫ back   Return/double-click finishes   Esc cancels"
+                return "Autoroute \(kind) (\(layerName), \(widthMM) mm): click to route   / posture\(viaHint)   ⌫ back   Return, Esc or double-click finishes"
             }
             if state.anchor == nil {
                 let start = toolSettings.startsOnCopper
                     ? "click a pad, track or via to start, ⌘-click anywhere"
                     : "click to start"
-                return "Track (\(layerName), \(widthMM) mm): \(start)   W width   Esc cancels"
+                return "Track (\(layerName), \(widthMM) mm): \(start)   W width   Esc leaves the tool"
             }
             let undoHint = trackRouteHistory.isEmpty ? "" : "   ⌫ back"
             // Horizon's tip says where an armed via's shape comes from.
@@ -1801,7 +1802,7 @@ struct BoardCanvasView: View {
                     viaArmed = ", via \(diameter)/\(hole) mm\(via.fromRules ? " from rules" : "")"
                 }
             }
-            return "Track (\(layerName), \(widthMM) mm, \(state.cornerStyle.label)\(viaArmed)): click to route   / posture   C corner (90/45/arc)   W width\(viaHint)\(undoHint)   Return/double-click finishes   Esc cancels"
+            return "Track (\(layerName), \(widthMM) mm, \(state.cornerStyle.label)\(viaArmed)): click to route   / posture   C corner (90/45/arc)   W width\(viaHint)\(undoHint)   Return, Esc or double-click finishes"
         }
         // Ahead of the move hint: placing a package rides the move tool.
         if let state = packagePlacementState {
@@ -3098,7 +3099,7 @@ struct BoardCanvasView: View {
                 } else if drawGraphicsState != nil {
                     commitDrawGraphicsAtCursor()
                 } else if drawTrackState != nil {
-                    commitDrawTrack()
+                    endDrawTrack()
                 } else {
                     commitMove()
                 }
@@ -4733,6 +4734,7 @@ struct BoardCanvasView: View {
         textRenderDebounce?.cancel()
         editingTextState = nil
         #endif
+        let routing = drawTrackState != nil
         editedBoard = nil
         moveState = nil
         drawGraphicsState = nil
@@ -4743,6 +4745,13 @@ struct BoardCanvasView: View {
         roundOffVertexState = nil
         packagePlacementState = nil
         invalidateSelectableCache()
+        // The track tool stays, as it does when a route ends: only a route
+        // under way, laid on the board from before, goes, and the next one
+        // starts on this board.
+        if routing, !isReadOnly {
+            armDrawTrack()
+            routeInspector?.beginRoute(on: board)
+        }
         // invalidateSelectableCache also rebuilds the Metal scene.
         publishSelectionContext()
     }
@@ -4762,13 +4771,15 @@ struct BoardCanvasView: View {
     /// Whether a tool is in use, with a board of its own to commit or to put
     /// back on cancel. New fills wait until it is done: spliced in now, they
     /// would be lost when it commits or cancels from its own copy, and a move
-    /// draws from that copy meanwhile anyway.
+    /// draws from that copy meanwhile anyway. The track tool has one only
+    /// once its route has laid something: waiting for a route, or for the
+    /// route's second click, it takes the fills (`takePlaneFillDelivery`).
     private var holdsPlaneFills: Bool {
         var editingText = false
         #if os(macOS)
         editingText = editingTextState != nil
         #endif
-        return moveState != nil || drawGraphicsState != nil || drawTrackState != nil
+        return moveState != nil || drawGraphicsState != nil || drawTrackState?.hasDrawn == true
             || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || tuneState != nil
             || packagePlacementState != nil || planeEditorState != nil || editingText
     }
@@ -4800,6 +4811,11 @@ struct BoardCanvasView: View {
         // longer has, is tessellated here, and the scene built again with it.
         selectableCache.startBackgroundTessellation(planes: filled.planes)
         editedBoard = filled
+        // A route that has laid nothing starts from the board as filled.
+        if var state = drawTrackState {
+            state.originalBoard = filled
+            drawTrackState = state
+        }
         metalSceneRevision &+= 1
         guard let builtBuckets else {
             return
@@ -5375,13 +5391,22 @@ struct BoardCanvasView: View {
               drawTrackState == nil else {
             return
         }
-        // Extract and index the obstacle world ONCE for the gesture. It costs
+        armDrawTrack()
+    }
+
+    /// The track tool waiting for the click that starts a route: when it is
+    /// picked, and again each time a route ends, so the next one starts with
+    /// a click, as Horizon's router goes back to waiting once a route is done.
+    /// It routes on `layer`, or on the pane's working layer.
+    private func armDrawTrack(layer: Int? = nil) {
+        // Extract and index the obstacle world ONCE for the route. It costs
         // about a millisecond on a real board — fine here, wasteful per frame,
         // and the board does not change while the user is dragging.
         trackRouterSession = toolSettings.routerMode
             ? HorizontalBoardTrackRouterSession(board: board)
             : nil
-        let layer = HorizontalBoardLayers.isCopper(drawingLayer) ? drawingLayer : HorizontalBoardLayers.topCopper
+        let picked = layer ?? drawingLayer
+        let layer = HorizontalBoardLayers.isCopper(picked) ? picked : HorizontalBoardLayers.topCopper
         // Width may take a hint from the highlighted net, but the track's NET is
         // never seeded from the selection — it's derived from what the route
         // actually connects to (see publishConnectivityResolvedEdit). A track
@@ -5551,14 +5576,14 @@ struct BoardCanvasView: View {
 
         // The armed via goes at the end of what this click lays. A click on a
         // pad ends the route in the pad instead, and drops no via in it; so
-        // does a click that closes a loop, back on copper already joined to
-        // where the stretch began (`BoardTrackLoops`).
-        let closesLoop = layRoute(
+        // does a click on other copper the route joins there, a track of its
+        // net, a via, or copper that closes a loop (`BoardTrackLoops`).
+        let endsRoute = layRoute(
             specs, to: arrives ? routeTarget : routeEnd, endsOnPad: endsOnPad, netID: netID, state: &state)
         state.cursor = routeTarget
         drawTrackState = state
 
-        if endsOnPad || closesLoop, state.segmentCount > 0 {
+        if endsOnPad || endsRoute, state.segmentCount > 0 {
             commitDrawTrack()
         }
     }
@@ -5566,7 +5591,7 @@ struct BoardCanvasView: View {
     /// Lays one click's worth of route on the draft board, with the via `v`
     /// armed (`BoardTrackRouting.lay`), and moves the route's head on. One
     /// step for Backspace to take back, when it laid anything. Returns whether
-    /// it closed a loop, which ends the route.
+    /// it joined copper on its layer, or closed a loop, which ends the route.
     @discardableResult
     private func layRoute(
         _ specs: [BoardTrackSegmentSpec],
@@ -5633,7 +5658,7 @@ struct BoardCanvasView: View {
         if laid.vias > 0 {
             followRouteLayer(state.layer)
         }
-        return step.closesLoop
+        return step.endsRoute
     }
 
     /// Works out whether a click at the cursor would close a loop, and what
@@ -5747,6 +5772,9 @@ struct BoardCanvasView: View {
         )
     }
 
+    /// Ends the route: what its clicks laid goes to the document as one
+    /// undoable step, and the tool waits for the click that starts the next
+    /// route (`armDrawTrack`). A route that laid nothing just ends.
     private func commitDrawTrack() {
         guard !isReadOnly,
               let state = drawTrackState else {
@@ -5761,29 +5789,35 @@ struct BoardCanvasView: View {
             endRouterSession()
         }
         #endif
-        drawTrackState = nil
-        trackRouterSession = nil
         trackRouteHistory = []
         clearRouteLoopPreview()
-        guard state.hasDrawn else {
-            return
+        if state.hasDrawn {
+            registerUndoSnapshot(state.originalBoard, actionName: "Draw Track")
+            publishConnectivityResolvedEdit(board)
         }
-        registerUndoSnapshot(state.originalBoard, actionName: "Draw Track")
-        publishConnectivityResolvedEdit(board)
-        publishSelectionContext()
+        armDrawTrack()
+        // The route inspector measures the next route against the board this
+        // one left; the tool never stopped, so nothing else tells it.
+        routeInspector?.beginRoute(on: board)
     }
 
-    /// Escape: keeps what the route's clicks laid, up to the last of them,
-    /// wherever it ends, and drops the rubber band to the cursor. A route that
-    /// has laid nothing is cancelled.
+    /// Return, Escape, a right-click, and the iPad's Finish and Cancel: end
+    /// the route under way, keeping what its clicks laid, up to the last of
+    /// them, wherever it ends, and drop the rubber band to the cursor, and
+    /// the tool waits for the next route. With no route under way they
+    /// leave the tool.
     private func endDrawTrack() {
-        if drawTrackState?.hasDrawn == true {
+        guard let state = drawTrackState else {
+            return
+        }
+        if state.anchor != nil || state.hasDrawn {
             commitDrawTrack()
         } else {
             cancelDrawTrack()
         }
     }
 
+    /// Leaves the tool, and takes off what a route under way has laid.
     private func cancelDrawTrack() {
         guard let state = drawTrackState else {
             return
@@ -5791,7 +5825,11 @@ struct BoardCanvasView: View {
         #if canImport(HorizontalPushShoveRouter)
         endRouterSession()
         #endif
-        editedBoard = state.originalBoard
+        // A route that laid nothing left the board as it was, or as a pour
+        // has filled it since the tool started waiting.
+        if state.hasDrawn {
+            editedBoard = state.originalBoard
+        }
         drawTrackState = nil
         trackRouterSession = nil
         trackRouteHistory = []
@@ -5824,7 +5862,7 @@ struct BoardCanvasView: View {
 
     /// `Backspace`: revert the last routing step. Pops one history entry,
     /// restoring the draft board and the route head; with no history left it
-    /// clears the start anchor (back to "click to start"). Esc still cancels.
+    /// clears the start anchor (back to "click to start").
     private func undoLastTrackStep() {
         guard var state = drawTrackState else {
             return
@@ -8378,6 +8416,14 @@ struct BoardCanvasView: View {
                 moveState = nil
                 packagePlacementState = nil
                 hoveredObject = nil
+                // The track tool waits on, for a route on the board put back,
+                // as it does when a route ends, with a route under way dropped:
+                // the next route's undo step starts from this board, not from
+                // the one the tool had, which still held what was undone.
+                if let route = drawTrackState {
+                    armDrawTrack(layer: route.layer)
+                    routeInspector?.beginRoute(on: value)
+                }
                 onBoardChange(value)
                 reportNetClassDifferences(from: previousDetails, to: value.netDetails)
                 reportComponentRefdesDifferences(from: previousPackages, to: value.packages)

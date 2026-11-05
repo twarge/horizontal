@@ -76,6 +76,8 @@ final class BoardTrackLoopTests: XCTestCase {
         var split: [String] = []
         /// Whether each click closed a loop, in order.
         var closed: [Bool] = []
+        /// Whether each click ended the route, in order.
+        var ended: [Bool] = []
     }
 
     private func route(from anchor: HorizontalPoint, onPad: Bool = false, layer: Int? = nil, in board: HorizontalBoard) -> Route {
@@ -110,6 +112,7 @@ final class BoardTrackLoopTests: XCTestCase {
         route.removedVias += step.removedViaIDs
         route.split += step.splitTrackIDs
         route.closed.append(step.closesLoop)
+        route.ended.append(step.endsRoute)
         return step
     }
 
@@ -297,6 +300,7 @@ final class BoardTrackLoopTests: XCTestCase {
         click(point(10, 5), &replacing, on: &board)
         click(j2, &replacing, on: &board)
         XCTAssertEqual(replacing.closed, [false, true], "a click in the open closes nothing; the click back does")
+        XCTAssertEqual(replacing.ended, [false, true], "and ends the route")
         XCTAssertEqual(replacing.removedTracks, ["j1-j2"])
 
         var branched = emptyBoard()
@@ -335,7 +339,7 @@ final class BoardTrackLoopTests: XCTestCase {
     }
 
     /// Copper of the route's net that nothing joins to where the stretch began
-    /// closes no loop: the route joins it, and goes on.
+    /// closes no loop: the route joins it, which ends the route all the same.
     func testCopperNotJoinedToTheStretchsStartClosesNoLoop() {
         var board = emptyBoard()
         let a = point(0, 0), j1 = point(10, 0), k1 = point(20, 0), k2 = point(30, 0)
@@ -346,9 +350,108 @@ final class BoardTrackLoopTests: XCTestCase {
         click(point(10, 5), &route, on: &board)
         let step = click(k1, &route, on: &board)
         XCTAssertEqual(route.closed, [false, false])
+        XCTAssertEqual(route.ended, [false, true], "the route reached copper, and ends there")
         XCTAssertTrue(route.removedTracks.isEmpty)
-        XCTAssertEqual(step.loopStart?.point, k1, "the route reached copper, and the next stretch starts there")
+        XCTAssertEqual(step.laid.head.anchor, k1)
         XCTAssertTrue(ids(board).isSuperset(of: ["a-j1", "island"]))
+    }
+
+    /// A route drawn up to a track of its net ends there, as one drawn into a
+    /// pad does, rather than going on from it: to the track's end, to the
+    /// middle of it, which the click cuts so the route joins it, and to a via.
+    /// A click in the open goes on, as does one back on the route's own
+    /// copper. (The canvas never lays a route onto another net's copper.)
+    func testARouteDrawnUpToATrackOfItsNetEnds() {
+        let a = point(0, 0)
+        func board() -> HorizontalBoard {
+            var board = emptyBoard()
+            pad("pkg/a", at: a, on: &board)
+            chain([point(20, 0), point(20, 20)], layer: top, ids: ["other"], on: &board)
+            via("v", at: point(10, -10), on: &board)
+            return board
+        }
+
+        var toEnd = board()
+        var reaching = route(from: a, onPad: true, in: toEnd)
+        click(point(10, 0), &reaching, on: &toEnd)
+        click(point(20, 0), &reaching, on: &toEnd)
+        XCTAssertEqual(reaching.ended, [false, true], "on the track's end")
+        XCTAssertEqual(reaching.closed, [false, false], "which is joined to nothing the route began on")
+
+        var toMiddle = board()
+        var crossing = route(from: a, onPad: true, in: toMiddle)
+        click(point(10, 10), &crossing, on: &toMiddle)
+        click(point(20, 10), &crossing, on: &toMiddle)
+        XCTAssertEqual(crossing.ended, [false, true], "on the middle of it")
+        XCTAssertEqual(crossing.split, ["other"], "cut there, so the route joins it")
+        XCTAssertTrue(joins(toMiddle.tracks, point(20, 0), point(20, 10)))
+        XCTAssertTrue(joins(toMiddle.tracks, point(20, 10), point(20, 20)))
+
+        var toVia = board()
+        var dropping = route(from: a, onPad: true, in: toVia)
+        click(point(0, -10), &dropping, on: &toVia)
+        click(point(10, -10), &dropping, on: &toVia)
+        XCTAssertEqual(dropping.ended, [false, true], "on a via")
+
+        var own = board()
+        var back = route(from: a, onPad: true, in: own)
+        click(point(10, 0), &back, on: &own)
+        click(point(10, 10), &back, on: &own)
+        click(point(5, 10), &back, on: &own)
+        click(point(5, 0), &back, on: &own)
+        XCTAssertEqual(back.ended, [false, false, false, false], "the route's own tracks end nothing")
+        XCTAssertTrue(back.split.isEmpty, "nor are they cut")
+    }
+
+    /// The route that reaches a track ends there, so it drops no via armed
+    /// for it, where it would have gone on from the track on the far layer.
+    func testARouteThatReachesATrackDropsNoArmedVia() {
+        let armed = HorizontalBoardViaTemplate(padstackID: "route-via", diameter: 500_000, holeDiameter: 200_000)
+        var board = emptyBoard()
+        let a = point(0, 0), k1 = point(20, 0)
+        pad("pkg/a", at: a, on: &board)
+        chain([k1, point(20, 20)], layer: top, ids: ["island"], on: &board)
+        var route = route(from: a, onPad: true, in: board)
+        click(point(10, 0), &route, on: &board)
+        route.head.placesVia = true
+        let reaching = click(k1, via: armed, &route, on: &board)
+        XCTAssertTrue(reaching.endsRoute)
+        XCTAssertEqual(reaching.laid.vias, 0)
+        XCTAssertTrue(board.vias.isEmpty)
+        XCTAssertEqual(reaching.laid.head.layer, top)
+    }
+
+    /// A pad on the far side, under the route, is no end of it: the route
+    /// doesn't join it on its own layer, so it goes on, and a via armed for
+    /// the click drops into the pad. Nor is a via that doesn't reach the
+    /// route's layer.
+    func testCopperOnlyOnTheFarSideEndsNoRoute() {
+        let armed = HorizontalBoardViaTemplate(padstackID: "route-via", diameter: 500_000, holeDiameter: 200_000)
+        var board = emptyBoard()
+        let a = point(0, 0), under = point(20, 0), buried = point(20, 10)
+        pad("pkg/a", at: a, on: &board)
+        pad("bottom/b", at: under, on: &board)
+        board.packagePads.append(HorizontalPolygon(
+            id: "bottom/pad/b", vertices: [point(19, -1), point(21, -1), point(21, 1), point(19, 1)], layer: bottom))
+
+        var route = route(from: a, onPad: true, in: board)
+        click(point(10, 0), &route, on: &board)
+        route.head.placesVia = true
+        let into = click(under, via: armed, &route, on: &board)
+        XCTAssertFalse(into.endsRoute, "the pad is on the bottom; the route is on top")
+        XCTAssertEqual(into.laid.vias, 1, "so the armed via drops into it")
+        XCTAssertEqual(into.laid.head.layer, bottom)
+
+        var past = emptyBoard()
+        pad("pkg/a", at: a, on: &past)
+        BoardTrackRouting.mergeJunctions(at: buried, preferredID: nil, netID: net, board: &past)
+        past.vias.append(HorizontalMarker(
+            id: "bottom-only", position: buried, size: 500_000, holeSize: 200_000, layer: nil,
+            connectedLayers: [bottom], netID: net, netSetID: net))
+        var over = self.route(from: a, onPad: true, in: past)
+        click(point(20, 0), &over, on: &past)
+        click(buried, &over, on: &past)
+        XCTAssertEqual(over.ended, [false, false], "a via the top doesn't reach")
     }
 
     /// The click that closes a loop ends the route there, so it drops no via
@@ -365,6 +468,7 @@ final class BoardTrackLoopTests: XCTestCase {
         route.head.placesVia = true
         let closing = click(j2, via: armed, &route, on: &board)
         XCTAssertTrue(closing.closesLoop)
+        XCTAssertTrue(closing.endsRoute)
         XCTAssertEqual(closing.laid.vias, 0)
         XCTAssertTrue(board.vias.isEmpty)
         XCTAssertEqual(closing.laid.head.layer, top, "and the route stays where it is")
@@ -376,6 +480,7 @@ final class BoardTrackLoopTests: XCTestCase {
         onward.head.placesVia = true
         let dropped = click(point(10, 5), via: armed, &onward, on: &open)
         XCTAssertFalse(dropped.closesLoop)
+        XCTAssertFalse(dropped.endsRoute)
         XCTAssertEqual(dropped.laid.vias, 1, "where the route goes on, the via drops")
         XCTAssertEqual(open.vias.map(\.position), [point(10, 5)])
     }

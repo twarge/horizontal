@@ -25,8 +25,13 @@ struct BoardTrackLoopStepResult: Equatable {
     /// middle of one, by their old ids.
     var splitTrackIDs: [String]
     /// The click closed a loop: it reached copper already joined to where the
-    /// stretch began, which ends the route as reaching a pad does.
+    /// stretch began.
     var closesLoop: Bool
+    /// The click laid the route onto copper it joins on its layer, other than
+    /// its own tracks: a pad, a via or plated hole, or the end or middle of a
+    /// track. That ends the route, as Horizon's router ends one on what it
+    /// connects to; so does a click that closes a loop.
+    var endsRoute: Bool
 }
 
 /// Loop removal for the route tool: a route that leaves its net's copper and
@@ -43,14 +48,14 @@ struct BoardTrackLoopStepResult: Equatable {
 /// A route that leaves or reaches the middle of a track cuts it there first,
 /// at a junction, so the route joins it, and only the part it replaces goes.
 ///
-/// A click that closes a loop, replacing copper or not, ends the route, as a
-/// click on a pad does, and drops no via there.
+/// A click that joins copper on the route's layer ends the route, as a click
+/// on a pad does, and drops no via there; so does one that closes a loop.
 enum BoardTrackLoops {
     /// One click: `BoardTrackRouting.lay`, after cutting a track whose middle
     /// the route leaves from or reaches, and then, when `removesLoops`, the
     /// copper the route makes redundant between `loopStart` and `target`
     /// taken off. `routeTrackIDs` are the tracks the route laid before. A
-    /// click that closes a loop drops no via, since it ends the route.
+    /// click that joins copper drops no via, since it ends the route.
     static func lay(
         _ specs: [BoardTrackSegmentSpec],
         to target: HorizontalPoint,
@@ -65,6 +70,7 @@ enum BoardTrackLoops {
         var head = head
         var splitTrackIDs = [String]()
         var reachesCopper = false
+        var joinsCopper = false
         if !specs.isEmpty {
             if !head.anchorOnPad,
                let split = split(at: head.anchor, layer: head.layer, sparing: routeTrackIDs, on: &board) {
@@ -77,13 +83,15 @@ enum BoardTrackLoops {
             }
             // Asked before the legs go down, so that only what was there counts.
             reachesCopper = endsOnPad || touchesCopper(target, layer: head.layer, sparing: routeTrackIDs, in: board)
+            joinsCopper = endsOnPad || joins(target, layer: head.layer, sparing: routeTrackIDs, in: board)
         }
         let closesLoop = reachesCopper && loopStart.map {
             joined($0, BoardTrackLoopEnd(point: target, layer: head.layer), sparing: routeTrackIDs, in: board)
         } == true
+        let endsRoute = joinsCopper || closesLoop
 
         let laid = BoardTrackRouting.lay(
-            specs, to: target, endsOnPad: endsOnPad, via: closesLoop ? nil : via, from: head, on: &board)
+            specs, to: target, endsOnPad: endsOnPad, via: endsRoute ? nil : via, from: head, on: &board)
         let routeIDs = routeTrackIDs.union(laid.trackIDs)
 
         var removedTrackIDs = [String]()
@@ -110,7 +118,8 @@ enum BoardTrackLoops {
             removedTrackIDs: removedTrackIDs,
             removedViaIDs: removedViaIDs,
             splitTrackIDs: splitTrackIDs,
-            closesLoop: closesLoop
+            closesLoop: closesLoop,
+            endsRoute: laid.segments > 0 && endsRoute
         )
     }
 
@@ -369,6 +378,28 @@ enum BoardTrackLoops {
     }
 
     // MARK: - Helpers
+
+    /// Whether the route, on `layer`, joins copper at `point` that is not its
+    /// own: a via or plated hole that reaches the layer, or a track ending
+    /// there on it, which a track the click cut there now does. A pad is the
+    /// canvas's to say (`endsOnPad`), and it asks for copper on the layer too,
+    /// so a pad on the other side under the route is no end: a via armed for
+    /// the click drops into it.
+    private static func joins(
+        _ point: HorizontalPoint,
+        layer: Int,
+        sparing routeTrackIDs: Set<String>,
+        in board: HorizontalBoard
+    ) -> Bool {
+        let key = Key(point)
+        return board.vias.contains { Key($0.position) == key && layersContain(viaLayers($0, in: board), layer) }
+            || board.packageHoles.contains { $0.plated && Key($0.position) == key }
+            || board.tracks.contains { track in
+                (Key(track.from) == key || Key(track.to) == key)
+                    && layerMatches(track.layer, layer)
+                    && !routeTrackIDs.contains(track.id)
+            }
+    }
 
     /// Copper other than the route's at `point`: a pad, a via or a hole
     /// there, or a track ending there on `layer`.

@@ -481,10 +481,17 @@ treatment the pour got:
    takes it off, vias and their holes included, and the board is drawn
    without it while the cursor rests where that click would be made — both
    through the same function, so the preview is what the click does. A click
-   that closes a loop — back on copper already joined to where the stretch
-   began, whether or not anything is replaced — ends the route, as a click on
-   a pad does, and drops no armed via; plane fills aren't followed in deciding
-   that. A route from or to the middle of a track cuts it there at a junction
+   that joins copper on the route's layer other than its own tracks — a pad,
+   a via or plated hole, or the end or middle of a track, of its net or of
+   none — ends the route and drops no armed via, as Horizon's router ends a
+   route on what it connects to; a pad or via only on another layer is no end,
+   so an armed via drops into a pad on the far side. A click that closes a
+   loop, back on copper already joined to where the stretch began, ends it
+   too, whether or not anything is replaced; plane fills aren't followed in
+   deciding that. A route that ends leaves the tool waiting for the click that
+   starts the next; Return, Esc, a right-click or a double-click end a route
+   under way the same way, and with none under way Esc leaves the tool. A
+   route from or to the middle of a track cuts it there at a junction
    first, where it used to end on the track without joining it. Removed vias
    are flagged (`HorizontalBoard.removedViaIDs`) because the writer keeps a
    via entry the model lacks. Delete on a via now flags it too: its entry used to stay in
