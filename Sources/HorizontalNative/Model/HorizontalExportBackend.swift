@@ -787,7 +787,8 @@ enum HorizontalExportBackend {
         try HorizontalArchiveWriter.zipData(entries: entries).write(to: url)
     }
 
-    private static func exportODB(
+    /// Internal (not private) so the ODB tests can drive it directly.
+    static func exportODB(
         project: HorizontalProject,
         settings: HorizontalODBExportSettings,
         to directoryURL: URL,
@@ -842,7 +843,7 @@ enum HorizontalExportBackend {
         guard let board = project.board?.omittingPackageArtwork() else {
             throw HorizontalExportError("No board loaded.")
         }
-        let outline = boardProfileContours(for: board).first ?? []
+        let outline = boardProfile(for: board)?.outline ?? []
         guard outline.count >= 3 else {
             throw HorizontalExportError("No board outline available.")
         }
@@ -1383,6 +1384,57 @@ enum HorizontalExportBackend {
         context.restoreGState()
     }
 
+    /// The lines a dimension is drawn with, as the canvas draws it: the two
+    /// extension lines, the measuring line (broken for its label where the
+    /// label fits between the arrows) and the arrowheads. Its label is
+    /// `labelText`. The board drawing, the DXF and the Gerber and ODB
+    /// Dimensions layer draw these.
+    private static func dimensionLines(_ dimension: HorizontalDimension) -> [(HorizontalPoint, HorizontalPoint)] {
+        let geometry = dimension.measurementGeometry
+        let vector = geometry.p1Projected - geometry.p0Projected
+        let length = hypot(vector.x, vector.y)
+        guard length > 0 else {
+            return []
+        }
+
+        let direction = vector.normalized
+        let normal = geometry.normal
+        let sign = dimension.labelDistance >= 0 ? 1.0 : -1.0
+        let q0 = geometry.p0Projected + normal * dimension.labelDistance
+        let q1 = geometry.p1Projected + normal * dimension.labelDistance
+        let extensionLength = dimension.labelDistance + sign * dimension.labelSize / 2
+
+        var lines = [
+            (dimension.p0, geometry.p0Projected + normal * extensionLength),
+            (dimension.p1, geometry.p1Projected + normal * extensionLength)
+        ]
+
+        let labelWidth = HorizontalOutlineTextRenderer.textWidth(
+            dimension.label,
+            font: .simplex,
+            size: dimension.labelSize
+        )
+        let center = q0 + vector * 0.5
+        let lineGap = labelWidth / 2 + dimension.labelSize * 0.45
+        let labelFitsBetweenArrows = labelWidth + dimension.labelSize * 2 <= length
+
+        if !labelFitsBetweenArrows {
+            lines.append((q0, q1))
+        } else {
+            lines.append((q0, center - direction * lineGap))
+            lines.append((center + direction * lineGap, q1))
+        }
+
+        let arrowMul = length > dimension.labelSize * 2 ? 1.0 : -1.0
+        let angle = atan2(direction.y, direction.x)
+        let size = dimension.labelSize
+        for (origin, arrowDirection) in [(q0, arrowMul), (q1, -arrowMul)] {
+            lines.append((origin, origin + rotate(HorizontalPoint(x: arrowDirection * size, y: size / 2), angle: angle)))
+            lines.append((origin, origin + rotate(HorizontalPoint(x: arrowDirection * size, y: -size / 2), angle: angle)))
+        }
+        return lines
+    }
+
     private static func drawDimensions(
         _ dimensions: [HorizontalDimension],
         color: HorizontalRGBColor,
@@ -1392,90 +1444,9 @@ enum HorizontalExportBackend {
     ) {
         let lineWidth = max(width, 70_000)
         for dimension in dimensions {
-            let geometry = dimension.measurementGeometry
-            let vector = geometry.p1Projected - geometry.p0Projected
-            let length = hypot(vector.x, vector.y)
-            guard length > 0 else {
-                continue
+            for (from, to) in dimensionLines(dimension) {
+                drawDimensionLine(from: from, to: to, color: color, width: lineWidth, context: context, transform: transform)
             }
-
-            let direction = vector.normalized
-            let normal = geometry.normal
-            let sign = dimension.labelDistance >= 0 ? 1.0 : -1.0
-            let q0 = geometry.p0Projected + normal * dimension.labelDistance
-            let q1 = geometry.p1Projected + normal * dimension.labelDistance
-            let extensionLength = dimension.labelDistance + sign * dimension.labelSize / 2
-
-            drawDimensionLine(
-                from: dimension.p0,
-                to: geometry.p0Projected + normal * extensionLength,
-                color: color,
-                width: lineWidth,
-                context: context,
-                transform: transform
-            )
-            drawDimensionLine(
-                from: dimension.p1,
-                to: geometry.p1Projected + normal * extensionLength,
-                color: color,
-                width: lineWidth,
-                context: context,
-                transform: transform
-            )
-
-            let labelWidth = HorizontalOutlineTextRenderer.textWidth(
-                dimension.label,
-                font: .simplex,
-                size: dimension.labelSize
-            )
-            let center = q0 + vector * 0.5
-            let lineGap = labelWidth / 2 + dimension.labelSize * 0.45
-            let labelFitsBetweenArrows = labelWidth + dimension.labelSize * 2 <= length
-
-            if !labelFitsBetweenArrows {
-                drawDimensionLine(from: q0, to: q1, color: color, width: lineWidth, context: context, transform: transform)
-            } else {
-                drawDimensionLine(
-                    from: q0,
-                    to: center - direction * lineGap,
-                    color: color,
-                    width: lineWidth,
-                    context: context,
-                    transform: transform
-                )
-                drawDimensionLine(
-                    from: center + direction * lineGap,
-                    to: q1,
-                    color: color,
-                    width: lineWidth,
-                    context: context,
-                    transform: transform
-                )
-            }
-
-            let arrowMul = length > dimension.labelSize * 2 ? 1.0 : -1.0
-            let angle = atan2(direction.y, direction.x)
-            drawDimensionArrowhead(
-                at: q0,
-                angle: angle,
-                direction: arrowMul,
-                size: dimension.labelSize,
-                color: color,
-                width: lineWidth,
-                context: context,
-                transform: transform
-            )
-            drawDimensionArrowhead(
-                at: q1,
-                angle: angle,
-                direction: -arrowMul,
-                size: dimension.labelSize,
-                color: color,
-                width: lineWidth,
-                context: context,
-                transform: transform
-            )
-
             if let labelText = dimension.labelText {
                 drawText(labelText, color: color, context: context, transform: transform, width: lineWidth)
             }
@@ -1500,22 +1471,6 @@ enum HorizontalExportBackend {
         )
     }
 
-    private static func drawDimensionArrowhead(
-        at origin: HorizontalPoint,
-        angle: Double,
-        direction: Double,
-        size: Double,
-        color: HorizontalRGBColor,
-        width: Double,
-        context: CGContext,
-        transform: PDFWorldTransform
-    ) {
-        let first = origin + rotate(HorizontalPoint(x: direction * size, y: size / 2), angle: angle)
-        let second = origin + rotate(HorizontalPoint(x: direction * size, y: -size / 2), angle: angle)
-        drawDimensionLine(from: origin, to: first, color: color, width: width, context: context, transform: transform)
-        drawDimensionLine(from: origin, to: second, color: color, width: width, context: context, transform: transform)
-    }
-
     private static func appendDXFDimensions(
         _ dimensions: [HorizontalDimension],
         writer: inout HorizontalDXFWriter,
@@ -1523,61 +1478,10 @@ enum HorizontalExportBackend {
     ) {
         let color = HorizontalRGBColor(red: 0, green: 0, blue: 0)
         let lineWidth = max(width, 70_000)
-
-        func appendLine(from: HorizontalPoint, to: HorizontalPoint) {
-            writer.addPolyline([from, to], layer: "Dimensions", color: color, width: lineWidth)
-        }
-
-        func appendArrowhead(at origin: HorizontalPoint, angle: Double, direction: Double, size: Double) {
-            let first = origin + rotate(HorizontalPoint(x: direction * size, y: size / 2), angle: angle)
-            let second = origin + rotate(HorizontalPoint(x: direction * size, y: -size / 2), angle: angle)
-            appendLine(from: origin, to: first)
-            appendLine(from: origin, to: second)
-        }
-
         for dimension in dimensions {
-            let geometry = dimension.measurementGeometry
-            let vector = geometry.p1Projected - geometry.p0Projected
-            let length = hypot(vector.x, vector.y)
-            guard length > 0 else {
-                continue
-            }
-
-            let direction = vector.normalized
-            let normal = geometry.normal
-            let sign = dimension.labelDistance >= 0 ? 1.0 : -1.0
-            let q0 = geometry.p0Projected + normal * dimension.labelDistance
-            let q1 = geometry.p1Projected + normal * dimension.labelDistance
-            let extensionLength = dimension.labelDistance + sign * dimension.labelSize / 2
-
-            appendLine(from: dimension.p0, to: geometry.p0Projected + normal * extensionLength)
-            appendLine(from: dimension.p1, to: geometry.p1Projected + normal * extensionLength)
-
-            let labelWidth = HorizontalOutlineTextRenderer.textWidth(
-                dimension.label,
-                font: .simplex,
-                size: dimension.labelSize
-            )
-            let center = q0 + vector * 0.5
-            let lineGap = labelWidth / 2 + dimension.labelSize * 0.45
-            let labelFitsBetweenArrows = labelWidth + dimension.labelSize * 2 <= length
-
-            if !labelFitsBetweenArrows {
-                appendLine(from: q0, to: q1)
-            } else {
-                appendLine(from: q0, to: center - direction * lineGap)
-                appendLine(from: center + direction * lineGap, to: q1)
-            }
-
-            let arrowMul = length > dimension.labelSize * 2 ? 1.0 : -1.0
-            let angle = atan2(direction.y, direction.x)
-            appendArrowhead(at: q0, angle: angle, direction: arrowMul, size: dimension.labelSize)
-            appendArrowhead(at: q1, angle: angle, direction: -arrowMul, size: dimension.labelSize)
-
-            if let labelText = dimension.labelText {
-                for (from, to) in HorizontalOutlineTextRenderer.outlineSegments(for: labelText) {
-                    appendLine(from: from, to: to)
-                }
+            let labelLines = dimension.labelText.map(HorizontalOutlineTextRenderer.outlineSegments(for:)) ?? []
+            for (from, to) in dimensionLines(dimension) + labelLines {
+                writer.addPolyline([from, to], layer: "Dimensions", color: color, width: lineWidth)
             }
         }
     }
@@ -1851,23 +1755,43 @@ enum HorizontalExportBackend {
             }
         }
 
-        for plane in board.planes where plane.layer == targetLayer {
-            for fragment in plane.renderFragments {
-                for path in fragment.paths where path.count >= 3 {
-                    objects.append(.region(path))
-                }
+        // A plane fragment's first path is its outline and the rest are its
+        // holes. The fills lead the layer, larger outlines first, so a fill
+        // inside another's hole comes after it (see GerberPrimitive.fill).
+        let fills = board.planes
+            .filter { $0.layer == targetLayer }
+            .flatMap(\.renderFragments)
+            .compactMap { fragment -> (outline: [HorizontalPoint], holes: [[HorizontalPoint]])? in
+                guard let outline = fragment.paths.first, outline.count >= 3 else { return nil }
+                return (outline, fragment.paths.dropFirst().filter { $0.count >= 3 })
             }
+        for fill in fills.sorted(by: { abs(signedArea($0.outline)) > abs(signedArea($1.outline)) }) {
+            objects.append(.fill(fill.outline, holes: fill.holes))
         }
         for polygon in board.polygons + board.packagePolygons where polygon.layer == targetLayer {
             if appendClippedSilk(polygon.id) { continue }
+            // The outline is where the board is cut, so it is drawn as its
+            // edges at the outline width, as Horizon's CanvasGerber draws an
+            // outline or outline notes polygon; filled, it read as a solid
+            // board-sized region.
+            if HorizontalBoardLayers.isOutline(targetLayer) {
+                for index in polygon.polygonVertices.indices {
+                    let edge = polygon.edgePolyline(at: index, arcPrecision: 32)
+                    if edge.count == 2 {
+                        objects.append(.line(edge[0], edge[1], defaultWidth))
+                    } else if edge.count > 2 {
+                        objects.append(.polyline(edge, defaultWidth))
+                    }
+                }
+                continue
+            }
             let vertices = polygon.renderVertices(arcPrecision: 32)
             guard vertices.count >= 3 else { continue }
             objects.append(.region(vertices))
         }
         for pad in horizonPadOutlineFragments(board.packagePads) where pad.layer == targetLayer {
-            for path in pad.paths where path.count >= 3 {
-                objects.append(.region(path))
-            }
+            guard let outline = pad.paths.first, outline.count >= 3 else { continue }
+            objects.append(.region(outline, holes: pad.paths.dropFirst().filter { $0.count >= 3 }))
         }
         // Via annular rings. A via's padstack copper is a circle of its
         // diameter on every copper layer of its span (Horizon's via padstacks
@@ -1922,6 +1846,22 @@ enum HorizontalExportBackend {
             decal.texts.forEach(appendText)
         }
         (board.texts + board.packageTexts).forEach(appendText)
+        // Dimensions belong to no board layer. Their own layer draws them as
+        // the canvas does, at the outline width (Horizon draws them 10 µm
+        // wide).
+        if targetLayer == HorizontalBoardLayers.dimensions {
+            for dimension in board.dimensions {
+                for (from, to) in dimensionLines(dimension) {
+                    objects.append(.line(from, to, defaultWidth))
+                }
+                if let label = dimension.labelText {
+                    let width = max(label.width, defaultWidth)
+                    for (from, to) in HorizontalOutlineTextRenderer.outlineSegments(for: label) {
+                        objects.append(.line(from, to, width))
+                    }
+                }
+            }
+        }
         return objects
     }
 
@@ -1932,7 +1872,7 @@ enum HorizontalExportBackend {
             switch object {
             case .line(_, _, let width), .polyline(_, let width):
                 widths.insert(max(width, 10_000))
-            case .region:
+            case .region, .fill:
                 break
             }
         }
@@ -1964,7 +1904,43 @@ enum HorizontalExportBackend {
             lines.append("D\(code)*")
         }
 
+        func appendRegion(_ points: [HorizontalPoint]) {
+            guard let first = points.first else {
+                return
+            }
+            lines.append("G36*")
+            lines.append("\(coordinate(first))D02*")
+            for point in points.dropFirst() {
+                lines.append("\(coordinate(point))D01*")
+            }
+            lines.append("\(coordinate(first))D01*")
+            lines.append("G37*")
+        }
+
+        // Clear polarity takes its hole out of everything drawn before it, so
+        // only the fills that lead the layer use it, as Horizon's GerberWriter
+        // writes plane fragments: outline dark, holes clear. A region with
+        // holes anywhere else goes out as one contour bridged to its holes.
+        var clear = false
+        func setClear(_ value: Bool) {
+            if clear != value {
+                lines.append(value ? "%LPC*%" : "%LPD*%")
+                clear = value
+            }
+        }
+        var fillsLead = true
         for object in objects {
+            if case .fill(let outline, let holes) = object, fillsLead {
+                setClear(false)
+                appendRegion(outline)
+                if !holes.isEmpty {
+                    setClear(true)
+                    holes.forEach(appendRegion)
+                }
+                continue
+            }
+            fillsLead = false
+            setClear(false)
             switch object {
             case .line(let from, let to, let width):
                 selectAperture(width)
@@ -1979,19 +1955,11 @@ enum HorizontalExportBackend {
                 for point in points.dropFirst() {
                     lines.append("\(coordinate(point))D01*")
                 }
-            case .region(let points):
-                guard let first = points.first else {
-                    continue
-                }
-                lines.append("G36*")
-                lines.append("\(coordinate(first))D02*")
-                for point in points.dropFirst() {
-                    lines.append("\(coordinate(point))D01*")
-                }
-                lines.append("\(coordinate(first))D01*")
-                lines.append("G37*")
+            case .region(let points, let holes), .fill(let points, let holes):
+                appendRegion(holes.isEmpty ? points : HorizontalSilkscreenClipper.bridgedContour([points] + holes))
             }
         }
+        setClear(false)
         lines.append("M02*")
         try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: url, options: [.atomic])
     }
@@ -2063,12 +2031,22 @@ enum HorizontalExportBackend {
         try FileManager.default.createDirectory(at: jobURL, withIntermediateDirectories: true)
         let stepName = odbLegalEntityName(project.displayTitle.isEmpty ? "pcb" : project.displayTitle)
         let layerIDs = boardLayerIDs(for: board)
+        var usedNames = Set<String>()
         let layers = layerIDs.compactMap { layer -> ODBLayer? in
             let objects = gerberObjects(for: board, layer: layer, outlineWidthMM: 0.01, silkscreenClipping: silkscreenClipping)
             guard !objects.isEmpty else {
                 return nil
             }
-            return ODBLayer(id: layer, name: odbLayerName(for: layer, board: board), type: odbLayerType(for: layer), context: odbLayerContext(for: layer), objects: objects)
+            // A layer's name is its directory and its matrix key, so two
+            // layers may not share one (a user layer called Outline, say).
+            let baseName = odbLayerName(for: layer, board: board)
+            var name = baseName
+            var suffix = 2
+            while !usedNames.insert(name).inserted {
+                name = "\(baseName)_\(suffix)"
+                suffix += 1
+            }
+            return ODBLayer(id: layer, name: name, type: odbLayerType(for: layer), context: odbLayerContext(for: layer), objects: objects)
         }
 
         try writeODBMatrix(stepName: stepName, layers: layers, to: jobURL.appendingPathComponent("matrix/matrix"))
@@ -2146,7 +2124,7 @@ enum HorizontalExportBackend {
             switch object {
             case .line(_, _, let width), .polyline(_, let width):
                 widths.insert(max(width, 10_000))
-            case .region:
+            case .region, .fill:
                 break
             }
         }
@@ -2172,36 +2150,40 @@ enum HorizontalExportBackend {
                 for pair in zip(points, points.dropFirst()) {
                     lines.append("L \(odbPoint(pair.0)) \(odbPoint(pair.1)) \(symbol) P 0")
                 }
-            case .region(let points):
-                guard let last = points.last else {
+            case .region(let points, let holes), .fill(let points, let holes):
+                guard points.count >= 3 else {
                     continue
                 }
+                // One surface: its island (I), clockwise, then its holes (H),
+                // counterclockwise, as ODB++ has them and Horizon's
+                // SurfaceData writes them. Written as holes, a surface with no
+                // island drew nothing.
                 lines.append("S P 0")
-                lines.append("OB \(odbPoint(last)) H")
-                for point in points {
-                    lines.append("OS \(odbPoint(point))")
+                for (contour, island) in [(points, true)] + holes.map({ ($0, false) }) where contour.count >= 3 {
+                    let clockwise = signedArea(contour) < 0
+                    let oriented = clockwise == island ? contour : Array(contour.reversed())
+                    lines.append("OB \(odbPoint(oriented[oriented.count - 1])) \(island ? "I" : "H")")
+                    for point in oriented {
+                        lines.append("OS \(odbPoint(point))")
+                    }
+                    lines.append("OE")
                 }
-                lines.append("OE")
                 lines.append("SE")
             }
         }
         try writeODBText(lines.joined(separator: "\r\n") + "\r\n", to: url)
     }
 
+    /// The step's profile is a features file holding one surface, the board
+    /// outline less its cutouts, as Horizon's ODB export writes it. It was
+    /// written as bare contours with no units (read as inches) and the
+    /// outline marked a hole.
     private static func writeODBProfile(board: HorizontalBoard, to url: URL) throws {
-        let contours = boardProfileContours(for: board)
-        var lines = [String]()
-        for (index, contour) in contours.enumerated() {
-            guard let last = contour.last else {
-                continue
-            }
-            lines.append("OB \(odbPoint(last)) \(index == 0 ? "H" : "I")")
-            for point in contour {
-                lines.append("OS \(odbPoint(point))")
-            }
-            lines.append("OE")
+        guard let profile = boardProfile(for: board) else {
+            try writeODBText("", to: url)
+            return
         }
-        try writeODBText(lines.joined(separator: "\r\n") + "\r\n", to: url)
+        try writeODBFeatures([.region(profile.outline, holes: profile.cutouts)], to: url)
     }
 
     private static func writeODBEDAData(board: HorizontalBoard, to url: URL) throws {
@@ -2229,25 +2211,35 @@ enum HorizontalExportBackend {
         return lines
     }
 
-    private static func boardProfileContours(for board: HorizontalBoard) -> [[HorizontalPoint]] {
+    /// The board's shape: the outline polygon around the others and the
+    /// cutouts it holds, as Horizon's Board::get_outline takes them. The one
+    /// around the others is the largest, which picks one whatever order the
+    /// loader lists them in; taking the first, a cutout could be the board.
+    /// A board with no outline polygons is its bounds.
+    private static func boardProfile(for board: HorizontalBoard) -> (outline: [HorizontalPoint], cutouts: [[HorizontalPoint]])? {
         let outlinePolygons = (board.polygons + board.packagePolygons)
             .filter { $0.layer == HorizontalBoardLayers.outline }
             .map { $0.renderVertices(arcPrecision: 32) }
             .filter { $0.count >= 3 }
-        if !outlinePolygons.isEmpty {
-            return outlinePolygons
+        if let outer = outlinePolygons.indices.max(by: { abs(signedArea(outlinePolygons[$0])) < abs(signedArea(outlinePolygons[$1])) }) {
+            return (outlinePolygons[outer], outlinePolygons.indices.filter { $0 != outer }.map { outlinePolygons[$0] })
         }
 
         let bounds = board.physicalBounds.isEmpty ? board.bounds : board.physicalBounds
         guard !bounds.isEmpty else {
-            return []
+            return nil
         }
-        return [[
+        return ([
             HorizontalPoint(x: bounds.minX, y: bounds.minY),
             HorizontalPoint(x: bounds.maxX, y: bounds.minY),
             HorizontalPoint(x: bounds.maxX, y: bounds.maxY),
             HorizontalPoint(x: bounds.minX, y: bounds.maxY)
-        ]]
+        ], [])
+    }
+
+    /// Twice a contour's signed area: positive counterclockwise.
+    private static func signedArea(_ points: [HorizontalPoint]) -> Double {
+        zip(points, points.dropFirst() + points.prefix(1)).reduce(0) { $0 + $1.0.x * $1.1.y - $1.1.x * $1.0.y }
     }
 
     private static func boardLayerIDs(for board: HorizontalBoard) -> [Int] {
@@ -2285,6 +2277,7 @@ enum HorizontalExportBackend {
                 + board.packageTexts.compactMap(\.layer)
         )
         return HorizontalBoardLayers.all.filter { layers.contains($0) }
+            + (board.dimensions.isEmpty ? [] : [HorizontalBoardLayers.dimensions])
     }
 
     private static func odbLayerName(for layer: Int, board: HorizontalBoard?) -> String {
@@ -2311,10 +2304,33 @@ enum HorizontalExportBackend {
             return "assembly_top"
         case HorizontalBoardLayers.bottomAssembly:
             return "assembly_bottom"
-        default:
-            if HorizontalBoardLayers.isUser(layer), let board, let userLayer = board.userLayers.first(where: { $0.id == layer }) {
-                return odbLegalEntityName(userLayer.name)
+        // Horizon exports none of these and names what it doesn't know
+        // layer_id_<n>; they get names in the same scheme here.
+        case HorizontalBoardLayers.outline:
+            return "outline"
+        case HorizontalBoardLayers.outlineNotes:
+            return "outline_notes"
+        case HorizontalBoardLayers.topNotes:
+            return "notes_top"
+        case HorizontalBoardLayers.bottomNotes:
+            return "notes_bottom"
+        case HorizontalBoardLayers.topCourtyard:
+            return "courtyard_top"
+        case HorizontalBoardLayers.bottomCourtyard:
+            return "courtyard_bottom"
+        case HorizontalBoardLayers.topPackage:
+            return "package_top"
+        case HorizontalBoardLayers.bottomPackage:
+            return "package_bottom"
+        case HorizontalBoardLayers.dimensions:
+            return "dimensions"
+        case HorizontalBoardLayers.firstUserLayer...HorizontalBoardLayers.lastUserLayer:
+            let fallback = "user_\(layer - HorizontalBoardLayers.firstUserLayer + 1)"
+            guard let name = board?.userLayers.first(where: { $0.id == layer })?.name else {
+                return fallback
             }
+            return odbLegalEntityName(name, fallback: fallback)
+        default:
             return "layer_id_\(layer)"
         }
     }
@@ -2335,8 +2351,19 @@ enum HorizontalExportBackend {
         }
     }
 
+    /// Drawings that make nothing on the board are MISC, as Horizon has its
+    /// assembly and documentation layers; the outline stays with the board.
     private static func odbLayerContext(for layer: Int) -> String {
-        HorizontalBoardLayers.isUser(layer) || layer == HorizontalBoardLayers.topAssembly || layer == HorizontalBoardLayers.bottomAssembly ? "MISC" : "BOARD"
+        switch layer {
+        case HorizontalBoardLayers.topAssembly, HorizontalBoardLayers.bottomAssembly,
+             HorizontalBoardLayers.topNotes, HorizontalBoardLayers.bottomNotes,
+             HorizontalBoardLayers.topCourtyard, HorizontalBoardLayers.bottomCourtyard,
+             HorizontalBoardLayers.topPackage, HorizontalBoardLayers.bottomPackage,
+             HorizontalBoardLayers.outlineNotes, HorizontalBoardLayers.dimensions:
+            return "MISC"
+        default:
+            return HorizontalBoardLayers.isUser(layer) ? "MISC" : "BOARD"
+        }
     }
 
     private static func odbPoint(_ point: HorizontalPoint) -> String {
@@ -2354,7 +2381,7 @@ enum HorizontalExportBackend {
         return output.isEmpty ? "_" : output
     }
 
-    private static func odbLegalEntityName(_ value: String) -> String {
+    private static func odbLegalEntityName(_ value: String, fallback: String = "pcb") -> String {
         let mapped = value.lowercased().unicodeScalars.map { scalar -> Character in
             if CharacterSet.lowercaseLetters.contains(scalar)
                 || CharacterSet.decimalDigits.contains(scalar)
@@ -2364,7 +2391,7 @@ enum HorizontalExportBackend {
             return "_"
         }
         let output = String(mapped).trimmingCharacters(in: CharacterSet(charactersIn: "_"))
-        return output.isEmpty ? "pcb" : output
+        return output.isEmpty ? fallback : output
     }
 }
 
@@ -2678,7 +2705,12 @@ private struct PDFWorldTransform {
 private enum GerberPrimitive {
     case line(HorizontalPoint, HorizontalPoint, Double)
     case polyline([HorizontalPoint], Double)
-    case region([HorizontalPoint])
+    /// A filled contour less the holes inside it.
+    case region([HorizontalPoint], holes: [[HorizontalPoint]] = [])
+    /// A plane fragment: its outline less its holes. Fills lead their layer,
+    /// larger outlines first, so the Gerber writer can clear their holes:
+    /// whatever a hole falls on is fill it is cut from.
+    case fill([HorizontalPoint], holes: [[HorizontalPoint]])
 }
 
 private struct HorizontalDXFLayer {
