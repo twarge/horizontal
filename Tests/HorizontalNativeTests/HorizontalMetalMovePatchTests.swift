@@ -95,6 +95,49 @@ final class HorizontalMetalMovePatchTests: XCTestCase {
         XCTAssertEqual(layer.residentLineEndpoints(compositeGroup: 4).first?.from, SIMD2(0, 0))
     }
 
+    /// A buffer uploaded whole again during a move starts its runs over from
+    /// the new base, and only it: the others stay where the move put them.
+    /// The top overlay's lines are uploaded anew on every step of a package's
+    /// move, its live airwires being among them, and that used to start every
+    /// buffer over, so the selection's handles, which had not been uploaded
+    /// again, were moved by the whole move once more each step: a track's end
+    /// marks ran ahead of the package and track moved with them.
+    func testABufferUploadedAgainDuringAMoveLeavesTheOthersWhereTheMovePutThem() throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
+        let layer = HorizontalMetalCanvasLayer(device: MTLCreateSystemDefaultDevice())
+        let handle = HorizontalMetalHandlePrimitive(
+            center: .init(x: 0, y: 1_000_000), outerColor: HorizontalMetalRGBA(Color.yellow), innerColor: HorizontalMetalRGBA(Color.black))
+        func step(shift: Double, lineKey: Int, handleKey: Int) {
+            var patches = HorizontalMetalBufferPatches()
+            patches.lineTranslationPatches = [.init(compositeGroup: 0, start: 0, count: 1, delta: .init(x: shift, y: 0))]
+            patches.handleTranslationPatches = [.init(start: 0, count: 1, delta: .init(x: shift, y: 0))]
+            // The selection's outline first, then an airwire that follows the move.
+            let airwire = line(y: 5_000_000 + shift, group: 0)
+            _ = layer.update(
+                HorizontalMetalCanvasLayerContent(
+                    minimumLineWidth: 1, gridLineWidth: 1,
+                    lines: [line(y: 0, group: 0), airwire], lineKey: lineKey,
+                    handles: [handle], handleKey: handleKey,
+                    bufferPatches: patches, bufferPatchKey: patches.hashValue),
+                frame: HorizontalMetalCanvasFrame(
+                    bounds: .init(points: [.init(x: -10_000_000, y: -10_000_000), .init(x: 10_000_000, y: 10_000_000)]),
+                    viewportSize: SIMD2(800, 600)),
+                loadProfileID: nil)
+        }
+
+        for (index, shift) in [1_000_000.0, 2_000_000, 3_000_000].enumerated() {
+            step(shift: shift, lineKey: 10 + index, handleKey: 1)
+            XCTAssertEqual(layer.residentHandleCenters(), [SIMD2(Float(shift), 1_000_000)], "the handle where the move put it")
+            XCTAssertEqual(layer.residentLineEndpoints(compositeGroup: 0).first?.from, SIMD2(Float(shift), 0), "and the outline")
+        }
+        // And the other way round: the handles uploaded again, the lines not.
+        for (index, shift) in [4_000_000.0, 5_000_000].enumerated() {
+            step(shift: shift, lineKey: 12, handleKey: 2 + index)
+            XCTAssertEqual(layer.residentHandleCenters(), [SIMD2(Float(shift), 1_000_000)])
+            XCTAssertEqual(layer.residentLineEndpoints(compositeGroup: 0).first?.from, SIMD2(Float(shift), 0))
+        }
+    }
+
     private func line(y: Double, group: Int = 4) -> HorizontalMetalLinePrimitive {
         .init(from: .init(x: 0, y: y), to: .init(x: 2_500_000, y: y),
               color: HorizontalMetalRGBA(Color.yellow), width: 0, minimumWidth: 1,
