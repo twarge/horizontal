@@ -632,7 +632,7 @@ enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
         case .thermals:
             return "Thermals"
         case .diffpair:
-            return "Diffpair"
+            return "Differential pair"
         case .parameters:
             return "Parameters"
         case .shortedPads:
@@ -1337,7 +1337,7 @@ private struct HorizontalBoardRuleEditorView: View {
                         .padding(6)
                     }
                 case .diffpair:
-                    GroupBox("Diffpair") {
+                    GroupBox("Differential pair") {
                         VStack(alignment: .leading, spacing: 10) {
                             HorizontalRuleNetClassPicker(label: "Net class", value: stringBinding("net_class", default: context.defaultNetClassID), context: context)
                             HorizontalRuleLayerPicker(label: "Layer", value: intBinding("layer", default: horizonRuleAnyLayer), context: context)

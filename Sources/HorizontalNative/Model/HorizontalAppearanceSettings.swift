@@ -205,7 +205,7 @@ enum HorizontalColorRole: String, CaseIterable, Identifiable {
         case .noPopulate: "Do Not Populate"
         case .projection: "Projection"
         case .netTie: "Net Tie"
-        case .diffPair: "Diff Pair"
+        case .diffPair: "Differential Pair"
         case .selectableOuter: "Selection Outer"
         case .selectableInner: "Selection Inner"
         case .selectablePrelight: "Selection Hover"

@@ -25,7 +25,7 @@ clean-room implementation.
 - **The model.** `HorizontalNetDetails.diffpairID` and `isDiffpairPrimary`, on the
   schematic's nets and the board's, so the board knows each net's partner.
 - **Set Diff Pair and Clear Diff Pair**, as Horizon's tools are:
-  - the inspector's **Diff pair** row on a schematic net (wire, label,
+  - the inspector's **Differential pair** row on a schematic net (wire, label,
     junction, bus ripper) and a board net (track, pad, via) — Horizon's
     Diffpair property, "Pri: TX-", "Sec: TX+" or "None", as a choice of
     partner. Choosing a net pairs this one with it as the primary, as Horizon's
@@ -35,8 +35,9 @@ clean-room implementation.
     block's, paired in that block's schematic.
   - **Design ▸ Set Differential Pair** for two selected nets (the one whose
     name sorts first is the primary, so TX+ before TX-) and **Clear
-    Differential Pair** for one; the menus spell it out where Horizon says
-    Diff Pair.
+    Differential Pair** for one. Horizontal spells out what Horizon calls a
+    diff pair or diffpair: in these menus and their undo steps, the inspector
+    row, the route inspector, the rules window and the colour setting.
   - the same two in a net's right-click menu on the schematic and the board:
     Set Differential Pair on anything of either net when the selection is two
     nets that can pair, Clear Differential Pair on anything of a paired net.
@@ -49,7 +50,7 @@ clean-room implementation.
   refuses it; clearing first is explicit. Retiring or merging away one net of a
   pair leaves no `diffpair` naming it, as Horizon's next save would.
 - **Drawing.** The schematic draws a pair's wires, junctions and labels in the
-  Diff Pair colour, its wires 0.2 mm wide, as Horizon's canvas does
+  Differential Pair colour, its wires 0.2 mm wide, as Horizon's canvas does
   (Canvas::render). Horizon's highlight does not reach the partner, and neither
   does Horizontal's.
 
@@ -82,8 +83,8 @@ clean-room implementation.
 `HorizontalBoardRules.diffpair(net:layer:)` reads it: the first enabled rule
 by order whose net class is the pair's, its primary's for either net, and
 whose layer is the route's or any (`HorizontalRuleDiffpair`: track width, track
-gap, via gap). While a net in a pair is routed, the route inspector's Diff Pair
-section shows the partner, the rule and its numbers, and the gap the pair will
+gap, via gap). While a net in a pair is routed, the route inspector's Differential
+Pair section shows the partner, the rule and its numbers, and the gap the pair will
 route at: the rule's, or the copper clearance between the two nets where that
 is wider, with a warning, since the rules check holds the two nets to it. The
 coupled router below is what will route by it; the track tool still routes one

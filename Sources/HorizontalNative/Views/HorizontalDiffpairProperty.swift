@@ -1,17 +1,17 @@
 import Foundation
 
-/// The Diff pair row the schematic's and the board's net inspectors show:
+/// The Differential pair row the schematic's and the board's net inspectors show:
 /// Horizon's Diffpair property ("Pri: TX-", "Sec: TX+", "None") as a choice
 /// of partner, which is its Set Diff Pair and Clear Diff Pair. Choosing a
 /// net pairs this one with it, this one the primary, as Horizon's Set Diff
 /// Pair does with the net its dialog picks; choosing None clears the pair.
 /// The partners offered are the named nets in no pair, power nets left out.
-/// The menus say Set Differential Pair and Clear Differential Pair, and so
-/// do their undo steps.
+/// The row, the menus (Set Differential Pair and Clear Differential Pair)
+/// and their undo steps spell out what Horizon calls a diff pair.
 enum HorizontalDiffpairProperty {
     static let id = "diffpair"
     static let noneID = "none"
-    static let label = "Diff pair"
+    static let label = "Differential pair"
     static let setTitle = "Set Differential Pair"
     static let clearTitle = "Clear Differential Pair"
 
