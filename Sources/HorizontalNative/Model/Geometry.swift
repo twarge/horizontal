@@ -842,6 +842,9 @@ struct HorizontalBusLabel: Identifiable, Hashable {
     var size: Double
     var orientation: String
     var netID: String? = nil
+    /// The bus it names, by id: the bus of the wiring it stands on, as
+    /// Horizon gives a junction the bus of the labels on its net segment.
+    var busID: String? = nil
 }
 
 struct HorizontalSchematicNetLabel: Identifiable, Hashable {

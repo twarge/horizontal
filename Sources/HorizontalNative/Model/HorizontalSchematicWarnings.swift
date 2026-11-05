@@ -180,8 +180,24 @@ enum HorizontalSchematicWarnings {
                 warn(center, "Net tie connected to incorrect net")
             }
         }
+        // Horizon stores no bus on a junction: opening the schematic gives
+        // each the bus of the bus labels on its net segment, so a ripper is on
+        // the right bus line when a label of its bus stands on the wiring its
+        // junction is on.
+        let sheetSegments = netSegments(sheet)
+        var labelBusIDs = [HorizontalSchematicEndpoint: [String]]()
+        for label in sheet.busLabels {
+            guard let busID = label.busID, let junction = junctionAt[key(label.position)] else { continue }
+            labelBusIDs[.junction(junction), default: []].append(busID.lowercased())
+        }
+        var junctionBusIDs = [String: Set<String>]()
+        for segment in sheetSegments {
+            let busIDs = Set(segment.nodes.flatMap { labelBusIDs[$0] ?? [] })
+            guard !busIDs.isEmpty else { continue }
+            for case .junction(let id) in segment.nodes { junctionBusIDs[id.lowercased()] = busIDs }
+        }
         for ripper in sheet.warningContext.busRippers.values {
-            if sheet.warningContext.junctionBusIDs[ripper.junctionID] != ripper.busID,
+            if junctionBusIDs[ripper.junctionID.lowercased()]?.contains(ripper.busID.lowercased()) != true,
                let point = sheet.junctions[ripper.junctionID] { warn(point, "Bus ripper connected to wrong net line") }
         }
         for (id, names) in sheet.warningContext.missingPorts {
@@ -271,7 +287,7 @@ enum HorizontalSchematicWarnings {
                      title: "Wired to another net", net: seed.netID, component: seed.component, pin: seed.pin)
             }
         }
-        for segment in netSegments(sheet) {
+        for segment in sheetSegments {
             warnJoinedNets(segment.nodes)
             guard let netID = segment.netID else { continue }
             segments.append(.init(position: segment.position, netID: netID,

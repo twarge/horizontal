@@ -141,22 +141,22 @@ extension HorizontalCanvasWarning {
     }
 }
 
+/// What a marker's popover says: its messages, the marker it stands at
+/// already telling an error from a warning. The popover is thick material,
+/// where its glass let the canvas through clearly enough to drown the text;
+/// it covers the arrow too, as a background inside the content would not.
 struct HorizontalCanvasWarningMessages: View {
     var warning: HorizontalCanvasWarning
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(warning.messages, id: \.self) { message in
-                Label {
-                    Text(message)
-                } icon: {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(warning.errorMessages.contains(message) ? .red : .yellow)
-                }
+                Text(message)
             }
         }
         .font(.callout)
         .padding(12)
+        .presentationBackground(.thickMaterial)
         .presentationCompactAdaptation(.popover)
     }
 }
