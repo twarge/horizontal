@@ -462,7 +462,7 @@ final class HorizontalVoiceCommandTests: XCTestCase {
             .appendingPathComponent("horizontal-voice-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let url = root.appendingPathComponent("Untitled.horizontal")
-        try HorizontalProjectArchive.newProject().write(to: url)
+        try HorizontalProjectArchive.newProject(blankBoard: true).write(to: url)
         let project = try HorizontalProject.load(from: url)
         let archive = try HorizontalProjectArchive.snapshot(from: url)
         let document = HorizontalLiveDocument(url: url, title: "Untitled", project: project, archive: archive)

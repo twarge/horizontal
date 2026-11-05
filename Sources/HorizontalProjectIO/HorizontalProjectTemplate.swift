@@ -89,7 +89,15 @@ public extension HorizontalProjectArchive {
     /// default via until a part placed from the Pools pane is cached into it
     /// (Horizon's project pool layout); the project file names it as
     /// `pool_directory` the way Horizon does.
-    static func newProject(named name: String = "Untitled", pool: HorizontalProjectPoolTemplate = HorizontalProjectPoolTemplate()) -> HorizontalProjectArchive {
+    ///
+    /// The board is 50 mm square with a GND plane over each side, unless
+    /// `blankBoard`, which leaves it with no outline, planes or nets, for
+    /// whatever starts from nothing.
+    static func newProject(
+        named name: String = "Untitled",
+        pool: HorizontalProjectPoolTemplate = HorizontalProjectPoolTemplate(),
+        blankBoard: Bool = false
+    ) -> HorizontalProjectArchive {
         let safeName = name
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
@@ -101,6 +109,7 @@ public extension HorizontalProjectArchive {
         let sheetID = newID()
         let boardID = newID()
         let netClassID = newID()
+        let groundID = newID()
 
         let project: [String: Any] = [
             "type": "project",
@@ -126,11 +135,26 @@ public extension HorizontalProjectArchive {
             ]
         ]
 
+        // The ground the board's two planes pour, a power net as Horizon
+        // writes one (`Net::serialize`).
+        var nets = [String: Any]()
+        if !blankBoard {
+            nets[groundID] = [
+                "name": "GND",
+                "is_power": true,
+                "net_class": netClassID,
+                "power_symbol_name_visible": true,
+                "power_symbol_style": "gnd",
+                "is_port": false,
+                "port_direction": "bidirectional"
+            ] as [String: Any]
+        }
+
         let block: [String: Any] = [
             "type": "block",
             "uuid": blockID,
             "name": "Top",
-            "nets": [String: Any](),
+            "nets": nets,
             "buses": [String: Any](),
             "components": [String: Any](),
             "net_classes": [
@@ -197,6 +221,38 @@ public extension HorizontalProjectArchive {
             poolFiles["padstacks"] = .directory(["cache": .directory(["\(via).json": .regularFile(padstack)])])
         }
 
+        // A 50 mm square board, its corner at the origin, with a GND plane
+        // over all of each side: three polygons of the one square, the
+        // outline's and the planes', as Horizon draws a plane on a polygon of
+        // its own (`Polygon::serialize`, `Plane::serialize`). The planes take
+        // their settings from the rules and are poured when the board is.
+        let side = 50_000_000
+        func square(layer: Int) -> [String: Any] {
+            [
+                "layer": layer,
+                "parameter_class": "",
+                "vertices": [[0, 0], [side, 0], [side, side], [0, side]].map { position -> [String: Any] in
+                    ["type": "line", "position": position, "arc_center": [0, 0], "arc_reverse": false]
+                }
+            ]
+        }
+        var polygons = [String: Any]()
+        var boardPlanes = [String: Any]()
+        if !blankBoard {
+            polygons[newID()] = square(layer: 100)
+        }
+        for layer in blankBoard ? [] : [0, -100] {
+            let polygonID = newID()
+            polygons[polygonID] = square(layer: layer)
+            boardPlanes[newID()] = [
+                "net": groundID,
+                "polygon": polygonID,
+                "priority": 0,
+                "from_rules": true,
+                "settings": newPlaneSettings
+            ] as [String: Any]
+        }
+
         let board: [String: Any] = [
             "type": "board",
             "uuid": boardID,
@@ -215,8 +271,8 @@ public extension HorizontalProjectArchive {
             "packages": [String: Any](),
             "tracks": [String: Any](),
             "vias": [String: Any](),
-            "polygons": [String: Any](),
-            "planes": [String: Any](),
+            "polygons": polygons,
+            "planes": boardPlanes,
             "keepouts": [String: Any](),
             "holes": [String: Any](),
             "lines": [String: Any](),
@@ -254,6 +310,27 @@ public extension HorizontalProjectArchive {
 }
 
 extension HorizontalProjectArchive {
+    /// Horizon's `PlaneSettings` defaults, as `PlaneSettings::serialize`
+    /// writes them: what the plane rule gives a plane, and what a new board's
+    /// planes keep as their own.
+    static var newPlaneSettings: [String: Any] {
+        [
+            "min_width": 200_000,
+            "keep_orphans": false,
+            "style": "round",
+            "connect_style": "solid",
+            "thermal_gap_width": 200_000,
+            "thermal_spoke_width": 200_000,
+            "n_spokes": 4,
+            "angle": 0,
+            "text_style": "expand",
+            "fill_style": "solid",
+            "hatch_border_width": 500_000,
+            "hatch_line_spacing": 500_000,
+            "hatch_line_width": 200_000
+        ]
+    }
+
     /// A new board's rules: every family Horizon's `BoardRules::serialize`
     /// writes, and in each family whose last rule must match everything
     /// (`RuleDescription::NEEDS_MATCH_ALL`) one rule that does. Horizon's own
@@ -351,21 +428,7 @@ extension HorizontalProjectArchive {
             "plane": rule([
                 "match": matchAll,
                 "layer": 10000,
-                "settings": [
-                    "min_width": 200_000,
-                    "keep_orphans": false,
-                    "style": "round",
-                    "connect_style": "solid",
-                    "thermal_gap_width": 200_000,
-                    "thermal_spoke_width": 200_000,
-                    "n_spokes": 4,
-                    "angle": 0,
-                    "text_style": "expand",
-                    "fill_style": "solid",
-                    "hatch_border_width": 500_000,
-                    "hatch_line_spacing": 500_000,
-                    "hatch_line_width": 200_000
-                ]
+                "settings": newPlaneSettings
             ]),
             "thermals": [String: Any](),
             "diffpair": [String: Any](),

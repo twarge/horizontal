@@ -140,7 +140,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.structured_content["meta"]["snapshot_id"], self.opened["data"]["snapshot_id"])
         await self.call("apply_ops", project_ref=self.ref, expected_revision=self.opened["data"]["revision"], operation_id="change",
                         ops=[{"op": "ensure_net", "name": "new"}])
-        self.assertEqual((await self.call("list_nets", project_ref=frozen_ref))["data"], [])
+        self.assertEqual([net["name"] for net in (await self.call("list_nets", project_ref=frozen_ref))["data"]], ["GND"])
         await self.call("release_analysis_snapshot", snapshot_ref=pinned["data"]["snapshot_ref"])
 
     async def test_search_pool_follows_links_both_ways(self):
@@ -317,8 +317,10 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(created.exists())
         self.assertEqual(summary["source"], "disk")
         self.assertTrue(summary["editable"])
-        # It opens as a context of its own, usable straight away.
-        self.assertEqual((await self.call("list_nets", project_ref=summary["project_ref"]))["data"], [])
+        # It opens as a context of its own, usable straight away, its one net
+        # the GND its board's planes pour.
+        nets = (await self.call("list_nets", project_ref=summary["project_ref"]))["data"]
+        self.assertEqual([net["name"] for net in nets], ["GND"])
         self.assertEqual(len((await self.call("list_sheets", project_ref=summary["project_ref"]))["data"]), 1)
 
         # It will not write over something that is already there.
@@ -838,21 +840,29 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(tools["pour_planes"].annotations.read_only_hint)
         self.assertIn("expected_revision", tools["pour_planes"].input_schema["properties"])
 
-        # A fresh board has no shape, and of rules only the via rule Horizon
-        # gives every new board, with the tented via Horizontal ships, so a
-        # route has a via to drop.
+        # A fresh board is 50 mm square with a GND plane over each side, and
+        # among its rules is the via rule Horizon gives every new board, with
+        # the tented via Horizontal ships, so a route has a via to drop.
         rules = (await self.call("board_rules", project_ref=self.ref))["data"]
-        self.assertEqual([rule["kind"] for rule in rules["rules"]], ["via"])
-        self.assertEqual(rules["rules"][0]["rule"]["padstack"], "8b6dee4b-af88-4c0f-b38b-c5364649e65e")
-        self.assertEqual((await self.call("list_polygons", project_ref=self.ref))["data"], [])
-        self.assertEqual((await self.call("list_planes", project_ref=self.ref))["data"], [])
+        vias = [rule for rule in rules["rules"] if rule["kind"] == "via"]
+        self.assertEqual(len(vias), 1)
+        self.assertEqual(vias[0]["rule"]["padstack"], "8b6dee4b-af88-4c0f-b38b-c5364649e65e")
+        square = [(0, 0), (50, 0), (50, 50), (0, 50)]
+        fresh = (await self.call("list_polygons", project_ref=self.ref))["data"]
+        self.assertEqual([polygon["layer"] for polygon in fresh], [-100, 0, 100])
+        for polygon in fresh:
+            self.assertEqual([(v["x_mm"], v["y_mm"]) for v in polygon["vertices"]], square)
+        self.assertEqual([polygon["is_board_outline"] for polygon in fresh], [False, False, True])
+        planes = (await self.call("list_planes", project_ref=self.ref))["data"]
+        self.assertEqual(len(planes), 2)
 
         current = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
         await self.call("apply_ops", project_ref=self.ref, expected_revision=current, operation_id="outline",
                         ops=[{"op": "place_polygon", "layer": 100,
                               "vertices": [{"x_mm": 0, "y_mm": 0}, {"x_mm": 30, "y_mm": 0},
                                            {"x_mm": 30, "y_mm": 20}, {"x_mm": 0, "y_mm": 20}]}])
-        polygons = (await self.call("list_polygons", project_ref=self.ref))["data"]
+        polygons = [polygon for polygon in (await self.call("list_polygons", project_ref=self.ref))["data"]
+                    if polygon["id"] not in {fresh_polygon["id"] for fresh_polygon in fresh}]
         self.assertTrue(polygons[0]["is_board_outline"])
         self.assertEqual(len(polygons[0]["vertices"]), 4)
 
@@ -863,10 +873,11 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             "ops": [{"op": "place_polygon", "layer": 100, "vertices": [{"x_mm": 0, "y_mm": 0}]}]})
         self.assertTrue(bad.is_error)
 
-        # Pouring a board with no planes is not an error.
+        # Pouring planes with nothing of their net to pour from is not an
+        # error: they pour nothing.
         poured = (await self.call("pour_planes", project_ref=self.ref, expected_revision=after,
                                   operation_id=str(uuid.uuid4())))["data"]
-        self.assertEqual(poured["poured"], 0)
+        self.assertEqual((poured["poured"], poured["fragments"]), (2, 0))
 
     async def test_hierarchy_stackup_and_autoroute_are_advertised(self):
         tools = {t.name: t for t in await server.mcp.list_tools()}
@@ -1077,11 +1088,11 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         preview = await rename(dry_run=True)
         self.assertEqual(preview["status"], "preview")
         self.assertEqual(preview["written"], [])
-        self.assertEqual([n["name"] for n in (await self.call("list_nets", project_ref=self.ref))["data"]], ["OLD"])
+        self.assertEqual([n["name"] for n in (await self.call("list_nets", project_ref=self.ref))["data"]], ["GND", "OLD"])
         committed = await rename(plan_digest=preview["plan_digest"])
         self.assertEqual(committed["status"], "committed")
         self.assertTrue(committed["timing"].get("reused_dry_run"), committed["timing"])
-        self.assertEqual([n["name"] for n in (await self.call("list_nets", project_ref=self.ref))["data"]], ["NEW"])
+        self.assertEqual([n["name"] for n in (await self.call("list_nets", project_ref=self.ref))["data"]], ["GND", "NEW"])
 
     async def test_the_bom_says_what_it_leaves_out(self):
         # A part flagged exclude_bom is left out, as Horizon leaves it out;
@@ -1097,7 +1108,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         project.session.transport._process.kill()
         project.session.transport._process.wait(timeout=2)
         result = await self.call("list_nets", project_ref=self.ref)
-        self.assertEqual(result["data"], [])
+        self.assertEqual([net["name"] for net in result["data"]], ["GND"])
         self.assertEqual(result["meta"]["source"], "disk")
         self.assertNotEqual(result["meta"]["instance_id"], before)
 

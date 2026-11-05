@@ -15,7 +15,7 @@ final class HorizontalPlaneEditorTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let packageURL = root.appendingPathComponent("Untitled.horizontal")
-        try HorizontalProjectArchive.newProject().write(to: packageURL)
+        try HorizontalProjectArchive.newProject(blankBoard: true).write(to: packageURL)
         return packageURL
     }
 

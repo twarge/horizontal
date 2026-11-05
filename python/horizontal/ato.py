@@ -650,7 +650,8 @@ def validate(project: horizontal_client.Project, plan: Plan) -> list[str]:
 def sync(board: Path, project_path: Path, create: bool = False, dry_run: bool = False, sync_positions: bool = False, prefer_live: bool = True) -> dict[str, Any]:
     footprints, _ = read_kicad_pcb(board)
     if create and not project_path.exists():
-        project = horizontal_client.new_project(project_path, name=project_path.stem)
+        # The layout brings its own board: no starter outline or planes.
+        project = horizontal_client.new_project(project_path, name=project_path.stem, blank_board=True)
     else:
         project = horizontal_client.open(project_path, prefer_live=prefer_live)
     plan = plan_sync(project, footprints, sync_positions=sync_positions)

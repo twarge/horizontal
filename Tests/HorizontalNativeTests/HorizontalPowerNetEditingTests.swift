@@ -82,7 +82,7 @@ final class HorizontalPowerNetEditingTests: XCTestCase {
         let root = temporaryRoot.appendingPathComponent("doc-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let packageURL = root.appendingPathComponent("Untitled.horizontal")
-        try HorizontalProjectArchive.newProject().write(to: packageURL)
+        try HorizontalProjectArchive.newProject(blankBoard: true).write(to: packageURL)
         return packageURL
     }
 
