@@ -114,13 +114,53 @@ final class BoardRouteInspectorTests: XCTestCase {
         XCTAssertEqual(shown.width, 350_000)
         XCTAssertEqual(shown.widthRule?.widths.def, 350_000)
 
+        // A custom width typed while the rules' showed, then Define Rule, as
+        // the host makes it: the rule's default becomes the custom width and
+        // the route takes it from the rules.
+        let typed = try XCTUnwrap(shown.command(typingWidth: 480_000))
+        XCTAssertEqual(typed, .useCustomWidth(480_000))
+        state.toolSettings.explicitTrackWidth = 480_000
+        let typedCustom = await settle { state.model.state?.widthSource == .custom }
+        XCTAssertTrue(typedCustom)
+        let defineWidth = try XCTUnwrap(state.model.state?.defineWidthRule)
+        var rulesJSON = try XCTUnwrap(HorizontalRouteRuleEditing.applying(
+            defineWidth, to: Self.rules(bottomWidth: 350_000), copperLayers: [Self.top, Self.bottom]))
+        changed = state.board
+        changed.takeRules(rulesJSON)
+        state.board = changed
+        state.rulesRevision += 1
+        state.toolSettings.explicitTrackWidth = nil
+        state.widthCommand = HorizontalRouteWidthCommand()
+        let defined = await settle { state.model.state?.widthSource == .rule(id: "all") }
+        XCTAssertTrue(defined)
+        shown = try XCTUnwrap(state.model.state)
+        XCTAssertEqual(shown.width, 480_000)
+        XCTAssertEqual(shown.widthRule?.widths.def, 480_000)
+        XCTAssertNil(shown.defineWidthRule)
+
         // The via: the rules', then one of the tool's own size.
         XCTAssertEqual(shown.via.isCustom, false)
         XCTAssertNotNil(shown.via.rule, "the via rule the board is given at load")
+        XCTAssertNil(shown.via.defineRule)
         state.toolSettings.viaDiameter = 650_000
         state.toolSettings.viaHoleDiameter = 300_000
         let ownVia = await settle { state.model.state?.via.isCustom == true }
         XCTAssertTrue(ownVia)
+        XCTAssertEqual(state.model.state?.via.diameter, 650_000)
+        XCTAssertEqual(state.model.state?.via.holeDiameter, 300_000)
+
+        // Define Rule for the via: the via rule takes the size, and the via
+        // comes from the rules at it.
+        let defineVia = try XCTUnwrap(state.model.state?.via.defineRule)
+        rulesJSON = try XCTUnwrap(HorizontalRouteRuleEditing.applying(
+            defineVia, to: rulesJSON, copperLayers: [Self.top, Self.bottom]))
+        changed = state.board
+        changed.takeRules(rulesJSON)
+        state.board = changed
+        state.rulesRevision += 1
+        state.toolSettings.setVia(diameter: nil, holeDiameter: nil)
+        let ruledVia = await settle { state.model.state?.via.isCustom == false }
+        XCTAssertTrue(ruledVia)
         XCTAssertEqual(state.model.state?.via.diameter, 650_000)
         XCTAssertEqual(state.model.state?.via.holeDiameter, 300_000)
 

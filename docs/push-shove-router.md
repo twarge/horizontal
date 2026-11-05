@@ -510,7 +510,10 @@ treatment the pour got:
    on a track continues the track's width, or takes the rules' where the
    track's is theirs, as Horizon's router inherits a track's width and whether
    it is explicit. Either clears a custom width (W, the tool settings), which
-   otherwise gives the width of a route started anywhere else. Only with no
+   otherwise gives the width of a route started anywhere else; one that starts
+   on a pad clears a custom via size too, so its via is the rules' again. A
+   track says nothing of a via, so one started on a track keeps the via it
+   had. Only with no
    rule taking the net does the width fall back to the one most of the net's
    tracks have, as it always did before the rules were read. A width from the
    rules follows the route onto the layer a via takes it to and the net it
@@ -558,17 +561,22 @@ treatment the pour got:
    most other nets get with this one, and the others are listed with how many
    nets they take), and the nearest thing of each kind to the route preview,
    measured copper to copper on the real shapes, with what the rules ask
-   between them (`HorizontalRouteClearanceProbe`). Its fields change the
-   rules: the width the matching track width rule's default on the layer (or a
-   new rule taking every net where none does), its range the rule's, each
-   clearance its rule's entry (a new catch-all rule where none matches), each
-   clearance rule's routing offset, and
-   the via's diameter and hole the matching via rule's parameters (a new via
-   rule with the board's default via where none takes the net)
+   between them (`HorizontalRouteClearanceProbe`). Its clearance fields
+   change the rules: each clearance its rule's entry (a new catch-all rule
+   where none matches), and each clearance rule's routing offset
    (`HorizontalRouteRuleEditing`). Width and via each have Rules / Custom:
    Custom is the tool settings' own size (W, or the via size in the settings);
    Rules clears it, and gives a route that continued a track's width the
-   rules' instead. A via dropped from the rules
+   rules' instead. A width, diameter or hole typed in is the route's own and
+   never changes a rule, even typed while the rules' showed: the picker turns
+   to Custom with it. While the width or via isn't the rules', Define Rule in
+   front of the picker makes it theirs: the width the default of the track
+   width rule taking the net on the layer, its range widened to take it (a
+   new rule taking every net where none does), the via's diameter and hole
+   the matching via rule's parameters (a new via rule with the board's default
+   via where none takes the net); then the picker goes back to Rules. The rule's
+   minimum and maximum widths are the rules window's to edit, not the
+   inspector's. A via dropped from the rules
    keeps taking its shape from them (`from_rules`), as Horizon's router places
    one; a custom one is its own. Each change is one undoable step, written
    to the archive and taken into the board without a reload

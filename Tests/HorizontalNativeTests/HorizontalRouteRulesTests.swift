@@ -333,6 +333,96 @@ final class HorizontalRouteRulesTests: XCTestCase {
         XCTAssertEqual(none.defaultPadstackID, board.defaultViaPadstackID)
     }
 
+    /// A width or via size typed in the inspector is a custom one, never a
+    /// change to the rules, even typed while it shows the rules' values; Define
+    /// Rule then makes the custom value the rule's.
+    @MainActor
+    func testATypedWidthOrViaIsCustomAndDefineRuleMakesItTheRules() throws {
+        var board = HorizontalGerberExportFixture.board()
+        board.netDetails = netDetails
+        board.takeRules(trackWidthRules)
+        let model = HorizontalRouteInspectorModel()
+        func state(net: String = "vcc", width: Double, source: HorizontalRouteWidthSource,
+                   rules: HorizontalBoard? = nil) -> HorizontalRouteInspectorState {
+            model.makeState(HorizontalRouteInspectorInput(
+                board: rules ?? board, netClasses: [], layer: top, netID: net, width: width,
+                widthSource: source, hasStarted: true, isRouterMode: false, route: [],
+                connecting: [], via: board.routeVia(netID: net), viaArmed: false, customVia: false, rulesRevision: 0))
+        }
+
+        // Shown the rules' width, a typed one is custom; the one shown changes nothing.
+        let ruled = state(width: 500_000, source: .rule(id: "power"))
+        XCTAssertEqual(ruled.command(typingWidth: 600_000), .useCustomWidth(600_000))
+        XCTAssertNil(ruled.command(typingWidth: 500_000))
+        XCTAssertNil(ruled.command(typingWidth: 0))
+        XCTAssertNil(ruled.defineWidthRule, "the width is already the rules'")
+
+        // A custom width: Define Rule makes it the default of the rule that
+        // takes the net on the layer, which then gives it.
+        let custom = state(width: 2_500_000, source: .custom)
+        let define = try XCTUnwrap(custom.defineWidthRule)
+        XCTAssertEqual(define, .trackWidth(ruleID: "power", layer: top,
+                                           widths: .init(min: 300_000, max: 2_000_000, def: 2_500_000)))
+        let defined = try XCTUnwrap(HorizontalRouteRuleEditing.applying(define, to: trackWidthRules, copperLayers: [top, bottom]))
+        let rules = HorizontalBoardRules(rules: defined, netDetails: netDetails)
+        XCTAssertEqual(HorizontalRouteWidth.fromRules(net: "vcc", layer: top, rules: rules, tracks: []),
+                       .init(width: 2_500_000, source: .rule(id: "power")))
+        XCTAssertEqual(rules.trackWidth(net: "vcc", layer: top)?.widths.max, 2_500_000, "the range takes it")
+        // The width of the track the route continues is defined the same way.
+        XCTAssertEqual(state(width: 330_000, source: .track(id: "t")).defineWidthRule,
+                       .trackWidth(ruleID: "power", layer: top, widths: .init(min: 300_000, max: 2_000_000, def: 330_000)))
+        // With no rule taking the net, Define Rule adds one taking every net.
+        var unruled = board
+        unruled.takeRules([:])
+        XCTAssertEqual(state(width: 420_000, source: .custom, rules: unruled).defineWidthRule,
+                       .addTrackWidthRule(layer: top, width: 420_000))
+
+        // The via: a typed size is the via's own, whether it showed the rules' or not.
+        var via = ruled.via
+        XCTAssertFalse(via.isCustom)
+        let diameter = try XCTUnwrap(via.diameter)
+        let hole = try XCTUnwrap(via.holeDiameter)
+        XCTAssertEqual(via.command(diameter: 700_000, holeDiameter: hole), .useCustomVia(diameter: 700_000, holeDiameter: hole))
+        XCTAssertNil(via.command(diameter: diameter, holeDiameter: hole))
+        XCTAssertNil(via.defineRule, "the via is already the rules'")
+        via.isCustom = true
+        via.diameter = 700_000
+        let rule = try XCTUnwrap(via.rule)
+        XCTAssertEqual(via.defineRule, .viaParameters(rule: rule, diameter: 700_000, holeDiameter: hole))
+        let viaDefined = try XCTUnwrap(HorizontalRouteRuleEditing.applying(
+            try XCTUnwrap(via.defineRule), to: trackWidthRules, copperLayers: [top]))
+        XCTAssertEqual(HorizontalBoardRules(rules: viaDefined, netDetails: netDetails).via(net: "vcc")?
+            .parameterSet["via_diameter"], 700_000)
+        via.rule = nil
+        XCTAssertEqual(via.defineRule, .addViaRule(padstackID: via.defaultPadstackID, diameter: 700_000, holeDiameter: hole))
+    }
+
+    /// A route started on a pad sizes its width and via from the rules, one
+    /// started on a track its width; anywhere else a custom width and via hold.
+    @MainActor
+    func testARouteStartedOnCopperClearsTheCustomWidthAndOnAPadTheCustomVia() {
+        let settings = HorizontalBoardToolSettings(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        func custom() {
+            settings.setExplicitTrackWidth(420_000)
+            settings.setVia(diameter: 650_000, holeDiameter: 300_000)
+        }
+        custom()
+        settings.startRoute(onPad: false, onTrack: false)
+        XCTAssertEqual(settings.explicitTrackWidth, 420_000)
+        XCTAssertEqual(settings.viaDiameter, 650_000)
+
+        settings.startRoute(onPad: false, onTrack: true)
+        XCTAssertNil(settings.explicitTrackWidth)
+        XCTAssertEqual(settings.viaDiameter, 650_000, "a track says nothing of the via")
+        XCTAssertEqual(settings.viaHoleDiameter, 300_000)
+
+        custom()
+        settings.startRoute(onPad: true, onTrack: false)
+        XCTAssertNil(settings.explicitTrackWidth)
+        XCTAssertNil(settings.viaDiameter)
+        XCTAssertNil(settings.viaHoleDiameter)
+    }
+
     func testABoardTakesItsRulesWithoutAReload() {
         var board = HorizontalGerberExportFixture.board()
         board.netDetails = netDetails
