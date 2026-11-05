@@ -6739,8 +6739,10 @@ extension HorizontalBoard {
 
     /// The moving-airwire model for a move of these: packages (all their
     /// pads), vias and junctions, by normalized id, and tracks or net ties
-    /// whose ends follow. Empty when the move drags too much copper for a
-    /// live rats' nest to be worth it, as when the whole board moves.
+    /// whose ends follow. A junction at an end that follows moves with it,
+    /// listed or not, as the move's plan never lists one. Empty when the move
+    /// drags too much copper for a live rats' nest to be worth it, as when the
+    /// whole board moves.
     func movingAirwires(
         packageIDs: Set<String>,
         viaIDs: Set<String>,
@@ -6769,14 +6771,37 @@ extension HorizontalBoard {
             }
             nodesByNet[netID, default: []].append(Node(point: point, layers: layers, moves: moves))
         }
+        var segmentsByNet = [String: [(segment: HorizontalSegment, ends: (from: Bool, to: Bool))]]()
+        var netsWithMovingSegments = Set<String>()
+        var movingEndKeysByNet = [String: Set<String>]()
+        for segment in tracks + netTies {
+            guard let netID = segment.netID.map(Self.normalizedID) else {
+                continue
+            }
+            let ends = segmentEnds[Self.normalizedID(segment.id)] ?? (false, false)
+            segmentsByNet[netID, default: []].append((segment, ends))
+            if ends.from || ends.to {
+                netsWithMovingSegments.insert(netID)
+            }
+            if ends.from {
+                movingEndKeysByNet[netID, default: []].insert(Self.pointKey(segment.from))
+            }
+            if ends.to {
+                movingEndKeysByNet[netID, default: []].insert(Self.pointKey(segment.to))
+            }
+        }
+
         let junctionLayers = Self.airwireJunctionLayers(tracks: tracks)
         for (junctionID, point) in junctions {
             let netID = junctionNetIDs[junctionID].map(Self.normalizedID)
+            // A junction left behind by the track ends on it would be a piece
+            // of the net on its own, and draw an airwire to where it was.
+            let carried = netID.flatMap { movingEndKeysByNet[$0]?.contains(Self.pointKey(point)) } ?? false
             add(
                 point,
                 netID: netID,
                 layers: netID.flatMap { junctionLayers[$0]?[Self.pointKey(point)] },
-                moves: junctionIDs.contains(Self.normalizedID(junctionID))
+                moves: carried || junctionIDs.contains(Self.normalizedID(junctionID))
             )
         }
         for (padPath, point) in packagePadPositions {
@@ -6798,19 +6823,6 @@ extension HorizontalBoard {
                 layers = [Self.airwireAnyLayer]
             }
             add(via.position, netID: via.netID, layers: layers, moves: viaIDs.contains(Self.normalizedID(via.id)))
-        }
-
-        var segmentsByNet = [String: [(segment: HorizontalSegment, ends: (from: Bool, to: Bool))]]()
-        var netsWithMovingSegments = Set<String>()
-        for segment in tracks + netTies {
-            guard let netID = segment.netID.map(Self.normalizedID) else {
-                continue
-            }
-            let ends = segmentEnds[Self.normalizedID(segment.id)] ?? (false, false)
-            segmentsByNet[netID, default: []].append((segment, ends))
-            if ends.from || ends.to {
-                netsWithMovingSegments.insert(netID)
-            }
         }
 
         let movedNetIDs = Set(nodesByNet.filter { $0.value.contains(where: \.moves) }.keys).union(netsWithMovingSegments)

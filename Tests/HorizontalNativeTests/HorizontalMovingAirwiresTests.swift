@@ -185,6 +185,44 @@ final class HorizontalMovingAirwiresTests: XCTestCase {
         }
     }
 
+    /// Two parts joined by a track with a bend, all moved together: the move's
+    /// plan moves both tracks' ends and never lists the bend's junction, which
+    /// went with them all the same. Left behind, it was a piece of the net on
+    /// its own, and an airwire ran to where it had been.
+    func testTheJunctionOfATrackMovedWholeGoesWithIt() {
+        var board = HorizontalGerberExportFixture.board()
+        let bend = HorizontalPoint(x: 10 * mm, y: 5 * mm)
+        addPad("a", "p1", at: HorizontalPoint(x: 0, y: 0), net: "n", to: &board)
+        addPad("b", "p1", at: HorizontalPoint(x: 20 * mm, y: 0), net: "n", to: &board)
+        addPad("s", "p1", at: HorizontalPoint(x: 10 * mm, y: 30 * mm), net: "n", to: &board)
+        board.junctions = ["j": bend]
+        board.junctionNetIDs = ["j": "n"]
+        board.tracks = [
+            HorizontalSegment(id: "t1", from: HorizontalPoint(x: 0, y: 0), to: bend, width: 0.2 * mm, layer: top, netID: "n"),
+            HorizontalSegment(id: "t2", from: bend, to: HorizontalPoint(x: 20 * mm, y: 0), width: 0.2 * mm, layer: top, netID: "n"),
+        ]
+        board.regenerateAirwires()
+        XCTAssertEqual(board.airwires.count, 1, "a, the bend and b are one piece; only s needs joining")
+
+        let ends: [String: (from: Bool, to: Bool)] = ["t1": (true, true), "t2": (true, true)]
+        let live = board.movingAirwires(packageIDs: ["a", "b"], viaIDs: [], junctionIDs: [], segmentEnds: ends)
+        for offset in [
+            HorizontalPoint(x: 0, y: 0),
+            HorizontalPoint(x: 0, y: 2 * mm),
+            HorizontalPoint(x: -7 * mm, y: 4 * mm),
+            HorizontalPoint(x: 15 * mm, y: 25 * mm),
+        ] {
+            var expected = moved(board, packageIDs: ["a", "b"], segmentEnds: ends, by: offset)
+            expected.junctions["j"] = bend + offset
+            expected.regenerateAirwires()
+            let airwires = live.airwires(offset: offset)
+            XCTAssertEqual(airwires.count, 1, "offset \(offset): still only s needs joining")
+            XCTAssertFalse(airwires.contains { $0.from == bend || $0.to == bend } && offset != .zero,
+                           "offset \(offset): no airwire to where the bend was")
+            assertSameRatsNest(live: airwires, regenerated: expected.airwires, nets: ["n"])
+        }
+    }
+
     /// R and T during a move (122) turn the moving copper, and its live rats'
     /// nest follows: each pad's airwire leaves from where the turn put it.
     func testFollowsAPackageTurnedOnTheWay() {
