@@ -437,6 +437,12 @@ struct CanvasViewport: Codable, Equatable {
 
 struct InteractiveCanvasView: View {
     var bounds: HorizontalRect
+    /// What `bounds` are the bounds of, such as a sheet. While it stays the
+    /// same, bounds that change with an edit leave the view where it was: the
+    /// viewport is rebased onto them. When it changes, the viewport is kept
+    /// as it is, measured from the new thing's bounds. nil lets the view
+    /// follow the bounds.
+    var boundsIdentity: AnyHashable? = nil
     @Binding var viewport: CanvasViewport
     var backgroundColor: Color
     var foregroundColor = Color.horizonPlatformLabel
@@ -612,6 +618,12 @@ struct InteractiveCanvasView: View {
     /// Spatial index over `snapTargets`, rebuilt only when they change, so cursor
     /// snapping stays O(1)-ish per move (held in @State to persist across renders).
     @State private var snapIndexCache = HorizontalSnapIndexCache()
+    /// The bounds the viewport is measured from, and what they belong to.
+    private struct IdentifiedBounds: Equatable {
+        var bounds: HorizontalRect
+        var identity: AnyHashable
+    }
+    @State private var viewedBounds: IdentifiedBounds?
     #if canImport(MetalKit)
     @State private var viewportDriver = HorizontalCanvasViewportDriver()
     @State private var liveChromeViewport: CanvasViewport?
@@ -645,6 +657,21 @@ struct InteractiveCanvasView: View {
         #endif
     }
 
+    private var identifiedBounds: IdentifiedBounds? {
+        boundsIdentity.map { IdentifiedBounds(bounds: bounds, identity: $0) }
+    }
+
+    /// The bounds the canvas draws and measures zoom and pan from: the ones
+    /// the viewport was made for. A body that first sees new bounds of the
+    /// same thing still draws from the old, with the viewport made for them,
+    /// until `adoptBounds` rebases the viewport and takes the new together.
+    private var viewBounds: HorizontalRect {
+        if let viewedBounds, viewedBounds.identity == boundsIdentity {
+            return viewedBounds.bounds
+        }
+        return bounds
+    }
+
     private var effectiveZoom: CGFloat {
         effectiveViewport.zoom
     }
@@ -660,7 +687,7 @@ struct InteractiveCanvasView: View {
                 let overlayInsets = overlayInsets(for: proxy)
                 let mouseExclusionInsets = canvasMouseExclusionInsets(for: proxy)
                 let transform = HorizontalCanvasTransform(
-                    bounds: bounds,
+                    bounds: viewBounds,
                     size: proxy.size,
                     fitInsets: fitInsets,
                     zoom: effectiveZoom,
@@ -712,9 +739,22 @@ struct InteractiveCanvasView: View {
                         .allowsHitTesting(false)
                         .onAppear { onCanvasDisplayTransformChange(transform) }
                         .onChange(of: effectiveViewport) { _, _ in onCanvasDisplayTransformChange(transform) }
+                        .onChange(of: viewBounds) { _, _ in onCanvasDisplayTransformChange(transform) }
                         .onChange(of: proxy.size) { _, _ in onCanvasDisplayTransformChange(transform) }
                         .onChange(of: fitInsets) { _, _ in onCanvasDisplayTransformChange(transform) }
                         .onChange(of: canvasDisplayTransformReportTrigger) { _, _ in onCanvasDisplayTransformChange(transform) }
+                }
+
+                // A paste, a delete or a drop past the edge changes the
+                // bounds; the view stays where it was.
+                if boundsIdentity != nil {
+                    Color.clear
+                        .frame(width: 0, height: 0)
+                        .allowsHitTesting(false)
+                        .onAppear { viewedBounds = identifiedBounds }
+                        .onChange(of: identifiedBounds) { _, newValue in
+                            adoptBounds(newValue, size: proxy.size, fitInsets: fitInsets)
+                        }
                 }
 
                 #if canImport(MetalKit)
@@ -728,7 +768,7 @@ struct InteractiveCanvasView: View {
                     // a view each, presenting on their own, and the highlight
                     // trailed the copper by a frame while zooming.
                     HorizontalMetalBackdropView(
-                        bounds: bounds,
+                        bounds: viewBounds,
                         viewport: effectiveViewport,
                         viewportDriver: usesViewportDriver ? viewportDriver : nil,
                         fitInsets: fitInsets,
@@ -845,7 +885,7 @@ struct InteractiveCanvasView: View {
                 // selection chrome.
                 CursorReadoutLayer(
                     cursorInput: cursorInput,
-                    bounds: bounds,
+                    bounds: viewBounds,
                     effectiveViewport: effectiveViewport,
                     effectiveZoom: effectiveZoom,
                     effectivePan: effectivePan,
@@ -897,7 +937,7 @@ struct InteractiveCanvasView: View {
                                     magnification,
                                     anchor: anchor,
                                     size: size,
-                                    bounds: bounds,
+                                    bounds: viewBounds,
                                     fitInsets: fitInsets
                                 )
                             }
@@ -927,7 +967,7 @@ struct InteractiveCanvasView: View {
                                     step,
                                     anchor: anchor,
                                     size: size,
-                                    bounds: bounds,
+                                    bounds: viewBounds,
                                     fitInsets: fitInsets
                                 )
                             }
@@ -1046,7 +1086,7 @@ struct InteractiveCanvasView: View {
                                     scale,
                                     anchor: anchor,
                                     size: size,
-                                    bounds: bounds,
+                                    bounds: viewBounds,
                                     fitInsets: fitInsets
                                 )
                                 viewport.pan(by: panDelta)
@@ -1289,6 +1329,24 @@ struct InteractiveCanvasView: View {
         #endif
     }
 
+    /// Takes `newValue` as the bounds the viewport is measured from. New
+    /// bounds of the thing already shown rebase the viewport onto them, on
+    /// the binding and the Metal driver at once, so what is on screen stays
+    /// put; another thing's keep the viewport as it is.
+    private func adoptBounds(_ newValue: IdentifiedBounds?, size: CGSize, fitInsets: HorizontalCanvasInsets) {
+        defer { viewedBounds = newValue }
+        guard let newValue, let viewedBounds, viewedBounds.identity == newValue.identity else {
+            return
+        }
+        let current = interactionViewport
+        let rebased = current.rebased(from: viewedBounds.bounds, to: newValue.bounds, size: size, fitInsets: fitInsets)
+        guard rebased != current else {
+            return
+        }
+        viewport = rebased
+        synchronizeLiveViewportFromBinding(rebased)
+    }
+
     private func synchronizeLiveViewportFromBinding(_ newValue: CanvasViewport) {
         #if canImport(MetalKit)
         guard usesViewportDriver else {
@@ -1498,7 +1556,7 @@ struct InteractiveCanvasView: View {
     private func currentTransform(size: CGSize, fitInsets: HorizontalCanvasInsets) -> HorizontalCanvasTransform {
         let viewport = interactionViewport
         return HorizontalCanvasTransform(
-            bounds: bounds,
+            bounds: viewBounds,
             size: size,
             fitInsets: fitInsets,
             zoom: viewport.zoom,

@@ -35,6 +35,33 @@ final class CanvasViewportFramingTests: XCTestCase {
         XCTAssertTrue(framed.visibleBounds.minX <= rect.minX && framed.visibleBounds.maxX >= rect.maxX)
     }
 
+    /// Bounds that grow or shrink with an edit: the rebased viewport, measured
+    /// from the new bounds, puts every world point where the old one did,
+    /// seen from either side.
+    func testARebasedViewportShowsEveryPointWhereItWas() {
+        let grown = HorizontalRect(points: [HorizontalPoint(x: -20_000_000, y: 0), HorizontalPoint(x: 180_000_000, y: 70_000_000)])
+        let shrunk = HorizontalRect(points: [HorizontalPoint(x: 10_000_000, y: 5_000_000), HorizontalPoint(x: 60_000_000, y: 45_000_000)])
+        let points = [HorizontalPoint(x: 0, y: 0), HorizontalPoint(x: 37_000_000, y: 21_000_000), HorizontalPoint(x: 150_000_000, y: -9_000_000)]
+        for mirrored in [false, true] {
+            let viewport = CanvasViewport(zoom: 2.5, pan: CGSize(width: -140, height: 65), mirrored: mirrored)
+            let before = HorizontalCanvasTransform(bounds: bounds, size: size, fitInsets: .defaultFit,
+                                                   zoom: viewport.zoom, pan: viewport.pan, mirrored: mirrored)
+            for newBounds in [grown, shrunk] {
+                let rebased = viewport.rebased(from: bounds, to: newBounds, size: size, fitInsets: .defaultFit)
+                XCTAssertEqual(rebased.mirrored, mirrored)
+                let after = HorizontalCanvasTransform(bounds: newBounds, size: size, fitInsets: .defaultFit,
+                                                      zoom: rebased.zoom, pan: rebased.pan, mirrored: mirrored)
+                for point in points {
+                    XCTAssertEqual(after.point(point).x, before.point(point).x, accuracy: 0.001)
+                    XCTAssertEqual(after.point(point).y, before.point(point).y, accuracy: 0.001)
+                }
+            }
+            XCTAssertEqual(viewport.rebased(from: bounds, to: bounds, size: size, fitInsets: .defaultFit), viewport)
+            XCTAssertEqual(viewport.rebased(from: bounds, to: .empty, size: size, fitInsets: .defaultFit), viewport)
+            XCTAssertEqual(viewport.rebased(from: bounds, to: grown, size: .zero, fitInsets: .defaultFit), viewport)
+        }
+    }
+
     func testZoomIsClampedAndEmptyInputsAreSafe() {
         let tiny = HorizontalRect(points: [HorizontalPoint(x: 1_000, y: 1_000), HorizontalPoint(x: 2_000, y: 2_000)])
         let viewport = CanvasViewport.framing(tiny, in: transform(CanvasViewport()))

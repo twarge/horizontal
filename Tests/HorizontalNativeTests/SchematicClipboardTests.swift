@@ -816,6 +816,70 @@ extension SchematicClipboardTests {
         XCTAssertEqual(state.fixture.archive, pasted)
     }
 
+    /// A sheet's bounds are its content's, and zoom and pan are measured from
+    /// their fit. A paste dropped past the content grows them, and undoing it
+    /// shrinks them again; neither moves the view.
+    @MainActor func testAPastePastTheSheetsContentLeavesTheViewWhereItWas() async throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required for the canvas") }
+        _ = NSApplication.shared
+        let state = CanvasState(try fixture())
+        let originalBounds = state.fixture.sheet.bounds
+        let defaults = UserDefaults(suiteName: "clipboard-canvas-\(UUID().uuidString)")!
+        let hosted = NSHostingView(rootView: ClipboardCanvas(state: state)
+            .environmentObject(HorizontalAppearanceSettings(defaults: defaults)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 650),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosted
+        window.orderFront(nil)
+        defer { window.close() }
+        func settle(_ predicate: () -> Bool) async -> Bool {
+            let deadline = Date().addingTimeInterval(5)
+            while !predicate(), Date() < deadline { try? await Task.sleep(for: .milliseconds(30)) }
+            return predicate()
+        }
+        let mounted = await settle { state.actions?.visibleWorldBounds?() != nil }
+        XCTAssertTrue(mounted)
+        let view = try XCTUnwrap(state.actions?.visibleWorldBounds?())
+        func shownView() -> [Double] {
+            guard let shown = state.actions?.visibleWorldBounds?() else { return [] }
+            return [shown.minX, shown.minY, shown.maxX, shown.maxY]
+        }
+        func assertTheViewStayed(_ message: String) {
+            let shown = shownView()
+            XCTAssertEqual(shown.count, 4, message)
+            for (shown, wanted) in zip(shown, [view.minX, view.minY, view.maxX, view.maxY]) {
+                XCTAssertEqual(shown, wanted, accuracy: 1_000, message)
+            }
+        }
+
+        state.actions?.dispatch(.selectAll)
+        let selected = await settle { state.actions?.canDuplicateSelection == true }
+        XCTAssertTrue(selected)
+        state.actions?.dispatch(.duplicateSelection)
+        let previewing = await settle { state.actions?.canCommitInteraction == true }
+        XCTAssertTrue(previewing)
+        state.actions?.dispatch(.moveSelectionBy(HorizontalPoint(x: 100_000_000, y: 0)))
+        state.undo.beginUndoGrouping()
+        state.actions?.dispatch(.commitInteraction)
+        state.undo.endUndoGrouping()
+        let committed = await settle { state.revision == 1 }
+        XCTAssertTrue(committed)
+        XCTAssertNil(state.error)
+        XCTAssertGreaterThan(state.fixture.sheet.bounds.maxX, originalBounds.maxX + 50_000_000,
+                             "The paste must reach past what the sheet held")
+        // The canvas takes the new sheet over a few passes.
+        try await Task.sleep(for: .milliseconds(300))
+        assertTheViewStayed("Pasting past the content moved the view")
+
+        state.undo.undo()
+        let undone = await settle { state.revision == 2 }
+        XCTAssertTrue(undone)
+        XCTAssertEqual(state.fixture.sheet.bounds, originalBounds)
+        try await Task.sleep(for: .milliseconds(300))
+        assertTheViewStayed("Undoing the paste moved the view")
+    }
+
     /// The selection and the which-object menu name what is on the sheet as
     /// Horizon does, never by an id's first eight digits: a symbol by its
     /// refdes, a wire, a power symbol or a label by its net, a pin as
