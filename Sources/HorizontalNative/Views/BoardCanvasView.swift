@@ -1220,7 +1220,14 @@ struct BoardCanvasView: View {
                 // Label LOD is sampled from the live transform but APPLIED only
                 // once zooming stops. Sampling is just arithmetic; applying
                 // writes @State, which re-runs this body and re-concatenates the
-                // buckets, so doing it per frame made pinch-zoom lag.
+                // buckets, so doing it per frame made pinch-zoom lag. A canvas
+                // with no area (the board kept mounted while the schematic
+                // shows) keeps the threshold it was shown at, so its labels
+                // are there the moment it is shown again.
+                guard transform.size.width >= 1, transform.size.height >= 1 else {
+                    labelLODDebouncer.canvasHasNoArea()
+                    return
+                }
                 labelLODDebouncer.schedule(Self.minimumLegibleLabelSize(for: transform)) { settled in
                     if settled != minimumLabelSize {
                         minimumLabelSize = settled

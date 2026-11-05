@@ -281,6 +281,23 @@ final class BoardLabelZoomCullTests: XCTestCase {
         XCTAssertEqual(applied.values, [5.0], "the excursion to 9 must never land")
     }
 
+    /// A canvas with no area (a pane kept mounted while hidden) schedules
+    /// nothing, and the first threshold once it has one again lands at once,
+    /// not after the quiet period: being shown is no gesture to sit out.
+    @MainActor
+    func testTheFirstThresholdAfterTheCanvasHadNoAreaAppliesAtOnce() async {
+        let debouncer = BoardLabelLODDebouncer(quietPeriod: .seconds(30))
+        let applied = AppliedValues()
+
+        debouncer.schedule(1.0) { applied.values.append($0) }
+        debouncer.canvasHasNoArea()
+        debouncer.schedule(2.0) { applied.values.append($0) }
+        XCTAssertEqual(applied.values, [2.0], "shown again, the threshold for its size applies at once, and the one pending from before goes")
+
+        debouncer.schedule(3.0) { applied.values.append($0) }
+        XCTAssertEqual(applied.values, [2.0], "after that, zooming waits for the quiet period again")
+    }
+
     func testDegenerateTransformDisablesCulling() {
         // An empty/zero-size canvas must not cull everything on the way to a
         // first real layout.
