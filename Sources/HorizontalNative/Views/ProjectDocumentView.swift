@@ -8,6 +8,13 @@ struct ProjectDocumentView: View {
     @Binding var document: HorizontalProjectDocument
 
     @State private var state = ProjectLoadState.loading
+    /// The project a new document was loaded from until its first save: the
+    /// copy in a temporary folder.
+    @State private var untitledProjectURL: URL?
+    /// What the workspace was made for, the loaded project's URL. A first
+    /// save moves the project without making a new workspace, so this keeps
+    /// the temporary folder's.
+    @State private var workspaceIdentity: URL?
     @State private var visiblePanes: Set<HorizontalPane> = [.schematic, .board]
     @State private var selectedNetIDs = Set<String>()
     @State private var highlightedNetIDs = Set<String>()
@@ -113,6 +120,7 @@ struct ProjectDocumentView: View {
         case .loaded(let project):
             ProjectWorkspaceView(
                 project: project,
+                projectURL: project.url,
                 document: $document,
                 visiblePanes: $visiblePanes,
                 selectedNetIDs: $selectedNetIDs,
@@ -120,7 +128,7 @@ struct ProjectDocumentView: View {
                 selectedComponentIDs: $selectedComponentIDs,
                 highlightedComponentIDs: $highlightedComponentIDs
             )
-                .id(Self.documentIdentity(project.url))
+                .id(workspaceIdentity ?? Self.documentIdentity(project.url))
                 .navigationTitle(project.displayTitle)
         case .pool(let poolURL):
             HorizontalPoolBrowserView(root: .pool(poolURL))
@@ -161,6 +169,10 @@ struct ProjectDocumentView: View {
             await loadUntitledProject()
             return
         }
+        if moveSavedUntitledProject(to: url) {
+            return
+        }
+        untitledProjectURL = nil
 
         if Self.isPoolManifest(url) {
             await loadPool(manifestURL: url)
@@ -217,6 +229,7 @@ struct ProjectDocumentView: View {
                 // file watcher's) put there.
                 if case .regularFile = document.archive.root { return await loadProject() }
             }
+            workspaceIdentity = Self.documentIdentity(project.url)
             state = .loaded(project)
         } catch {
             guard !Task.isCancelled else { return }
@@ -278,7 +291,7 @@ struct ProjectDocumentView: View {
     /// (the iPad view does the same for URL-less documents). The archive is
     /// already a complete package, so there is no folder-access or
     /// `completeProject` step; the first save writes it wherever the user
-    /// chooses and the `.task(id: configuration.fileURL)` reload takes over.
+    /// chooses, and the project moves there (`moveSavedUntitledProject`).
     private func loadUntitledProject() async {
         state = .loading
         do {
@@ -291,10 +304,35 @@ struct ProjectDocumentView: View {
             let project = try await Task.detached(priority: .userInitiated) {
                 try HorizontalProject.load(from: url)
             }.value
+            untitledProjectURL = project.url
+            workspaceIdentity = Self.documentIdentity(project.url)
             state = .loaded(project)
         } catch {
             state = .failed(error.localizedDescription)
         }
+    }
+
+    /// A new document's first save wrote the files the window shows, so the
+    /// project moves to them where it is: the workspace keeps its canvases,
+    /// tools and undo, and nothing is read back. A save that wrote anything
+    /// but the package the project came from is loaded as any document is.
+    private func moveSavedUntitledProject(to url: URL) -> Bool {
+        guard let untitledProjectURL, case .loaded(var project) = state,
+              Self.documentIdentity(project.url) == Self.documentIdentity(untitledProjectURL),
+              url.pathExtension.caseInsensitiveCompare("horizontal") == .orderedSame,
+              case .directory = document.archive.root,
+              FileManager.default.fileExists(
+                atPath: HorizontalProject.file(project.projectFileURL, movedFrom: project.url, to: url).path
+              ) else {
+            return false
+        }
+        self.untitledProjectURL = nil
+        // The workspace follows `project.url` and moves its own project,
+        // whose design has moved on since it was loaded; this one names the
+        // window.
+        project.move(to: url)
+        state = .loaded(project)
+        return true
     }
 }
 
@@ -603,6 +641,9 @@ private struct ToolbarFindControl: View {
 
 struct ProjectWorkspaceView: View {
     @State private var project: HorizontalProject
+    /// Where the document's files are: the project's own URL, until a new
+    /// document's first save moves them out of their temporary folder.
+    let projectURL: URL
     @Binding var document: HorizontalProjectDocument
     @Binding var visiblePanes: Set<HorizontalPane>
     @Binding var selectedNetIDs: Set<String>
@@ -782,6 +823,7 @@ struct ProjectWorkspaceView: View {
 
     init(
         project: HorizontalProject,
+        projectURL: URL? = nil,
         document: Binding<HorizontalProjectDocument>,
         visiblePanes: Binding<Set<HorizontalPane>>,
         selectedNetIDs: Binding<Set<String>>,
@@ -791,6 +833,7 @@ struct ProjectWorkspaceView: View {
     ) {
         let fileViewState = HorizontalFileViewStateStore.shared.load(for: project.url, projectID: project.uuid)
         _project = State(initialValue: project)
+        self.projectURL = projectURL ?? project.url
         _document = document
         _visiblePanes = visiblePanes
         _selectedNetIDs = selectedNetIDs
@@ -941,7 +984,7 @@ struct ProjectWorkspaceView: View {
     /// and the updates sheet the Parts pane and the info bar open.
     private var workspaceWithPartLibrary: some View {
         workspaceWithRouteInspector
-            .task(id: "\(boardEditRevision):\(schematicEditRevision):\(project.poolDirectory ?? ""):\(isReadOnly)") {
+            .task(id: "\(boardEditRevision):\(schematicEditRevision):\(project.baseURL.path):\(project.poolDirectory ?? ""):\(isReadOnly)") {
                 partLibrary.update(partLibraryInputs)
             }
             .sheet(isPresented: $showsPartUpdates) {
@@ -1025,6 +1068,9 @@ struct ProjectWorkspaceView: View {
             .background(WindowSizeObserver(savedSize: windowSize, onSizeChange: updateWindowSize))
             .onAppear(perform: appear)
             .onDisappear(perform: disappear)
+            .onChange(of: projectURL) { _, url in
+                moveProject(to: url)
+            }
     }
 
     /// What the panes and the window show.
@@ -1541,6 +1587,37 @@ struct ProjectWorkspaceView: View {
         diskConflict = nil
     }
 
+    /// A new document's first save put its files at `url`: the project, the
+    /// live channel and the file watcher go there, and the canvases, tools
+    /// and undo stay as they are.
+    private func moveProject(to url: URL) {
+        guard ProjectDocumentView.documentIdentity(url) != ProjectDocumentView.documentIdentity(project.url) else {
+            return
+        }
+        let previous = project
+        let previousLiveHandle = liveHandle
+        fileWatcher?.stop()
+        fileWatcher = nil
+        project.move(to: url)
+        // Export settings no one changed are named and placed for the saved
+        // project; changed ones keep what was chosen, and the folder moves
+        // when it was still the one beside the old project.
+        let previousExportSettings = HorizontalExportSettings(project: previous)
+        if exportSettings == previousExportSettings {
+            exportSettings = HorizontalExportSettings(project: project)
+        } else if exportSettings.targetDirectory == previousExportSettings.targetDirectory {
+            exportSettings.targetDirectory = HorizontalExportSettings(project: project).targetDirectory
+        }
+        // Served at the new URL before the old one goes, so the live channel
+        // always has a document and keeps listening on its port.
+        liveHandle = nil
+        registerLiveDocument()
+        if let previousLiveHandle {
+            HorizontalDispatchSession.shared.unregisterLive(handle: previousLiveHandle)
+        }
+        startFileWatcher()
+    }
+
     // MARK: - Changes on disk
 
     /// The document autosaves in place, but nothing told it when something
@@ -1551,7 +1628,7 @@ struct ProjectWorkspaceView: View {
     private func startFileWatcher() {
         guard fileWatcher == nil, HorizontalDocumentSaving.document(for: project.url) != nil else {
             // An untitled document lives in a temporary folder of its own
-            // until its first save gives it a URL, and a new workspace.
+            // until its first save gives it a URL (`moveProject`).
             return
         }
         let watcher = HorizontalProjectFileWatcher(projectURL: project.url, handlers: .init(
@@ -1975,7 +2052,13 @@ struct ProjectWorkspaceView: View {
         if installsArchive {
             document.archive = snapshot.archive
         }
-        project = snapshot.project
+        var installed = snapshot.project
+        // An undo past a new document's first save takes back a project
+        // that still names the temporary folder it was made in.
+        if ProjectDocumentView.documentIdentity(installed.url) != ProjectDocumentView.documentIdentity(project.url) {
+            installed.rebaseURLs(onto: project)
+        }
+        project = installed
         boardEditRevision += 1
         boardSyncRevision += 1
         schematicEditRevision += 1
@@ -3066,6 +3149,17 @@ struct ProjectWorkspaceView: View {
             return value
         }
 
+        var board = board
+        // A board from before a new document's first save, a canvas's copy or
+        // an undo's, still names the temporary folder it was made in.
+        if let current = project.board?.url, board.url != current,
+           ProjectDocumentView.documentIdentity(board.url) != ProjectDocumentView.documentIdentity(current) {
+            board.url = current
+            if let boardPoolURL {
+                board.rebasePackageModelURLs(poolURL: boardPoolURL)
+            }
+            project.poolModelFiles?.apply(to: &board)
+        }
         let previousPackageIDs = Set(project.board?.packages.map(\.id) ?? [])
         measure("assign project board") {
             project.board = board

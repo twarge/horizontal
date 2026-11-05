@@ -636,4 +636,47 @@ extension HorizontalProject {
             }
         }
     }
+
+    /// The project at `newURL`, where a save wrote the files it was read
+    /// from: every file it names is where it was, but under `newURL` instead
+    /// of `url`. A new document's first save moves it out of the temporary
+    /// folder it was made in this way, without reading it again.
+    mutating func move(to newURL: URL) {
+        let oldURL = url
+        func moved(_ file: URL) -> URL {
+            Self.file(file, movedFrom: oldURL, to: newURL)
+        }
+        url = newURL
+        projectFileURL = moved(projectFileURL)
+        baseURL = projectFileURL.deletingLastPathComponent()
+        if var board {
+            board.url = moved(board.url)
+            if let poolURL = poolDirectory.map({ baseURL.appendingPathComponent($0) }) {
+                board.rebasePackageModelURLs(poolURL: poolURL)
+            }
+            poolModelFiles?.apply(to: &board)
+            self.board = board
+        }
+        if let schematicURL = schematic?.url {
+            schematic?.url = moved(schematicURL)
+        }
+        for index in schematics.indices {
+            schematics[index].schematic.url = moved(schematics[index].schematic.url)
+        }
+        for index in poolParts.indices {
+            poolParts[index].fileURL = poolParts[index].fileURL.map(moved)
+        }
+    }
+
+    /// `file` at the same place under `newURL` as it is under `oldURL`, or
+    /// `file` itself when it is not under `oldURL`. The two spellings of a
+    /// temporary folder, /var and /private/var, are one place.
+    static func file(_ file: URL, movedFrom oldURL: URL, to newURL: URL) -> URL {
+        let old = oldURL.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        let components = file.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        guard components.count >= old.count, Array(components.prefix(old.count)) == old else {
+            return file
+        }
+        return components.dropFirst(old.count).reduce(newURL) { $0.appendingPathComponent($1) }
+    }
 }
