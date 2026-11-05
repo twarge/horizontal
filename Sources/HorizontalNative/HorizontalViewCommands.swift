@@ -126,9 +126,9 @@ struct HorizontalCanvasCommandActions {
     /// Zooms the view about its centre; 2 is twice as close.
     var zoomBy: ((Double) -> Void)? = nil
     /// Selects these components — the board's packages, the schematic's
-    /// symbols — and nothing else, so a selection made in one view lands in
-    /// the others. A no-op when they are already the selection, which is
-    /// what keeps the canvases' reports from looping back into them. Returns
+    /// symbols — and nothing else, so a selection made outside the canvas
+    /// (the 3D view, Find, the live channel) lands in it; one made in the
+    /// other canvas does not. A no-op when they are already the selection. Returns
     /// whether the canvas's selection changed, and so whether it will report
     /// one the workspace gave it rather than one made there.
     var selectComponents: ((Set<String>) -> Bool)? = nil

@@ -2727,13 +2727,15 @@ struct HorizontalIPadProjectView: View {
     }
 
 
-    /// One selection for every view: see the macOS workspace's
-    /// `selectComponents`. A canvas already showing the set ignores it, and every canvas
-    /// it changes other than `origin` is marked so its report doesn't take the focus.
+    /// The last selection made, as the macOS workspace's `selectComponents`:
+    /// a canvas (`origin`) keeps its own, so a part picked on the board is not
+    /// selected in the schematic or the other way round, and one from
+    /// anywhere else lands in both. A canvas already showing the set ignores
+    /// it, and every canvas it changes is marked so its report doesn't take the focus.
     private func selectComponents(_ componentIDs: Set<String>, from origin: HorizontalPane? = nil) {
         selectedComponentIDs = componentIDs
-        for pane in [HorizontalPane.board, .schematic] {
-            if canvasActions(for: pane)?.selectComponents?(componentIDs) == true, pane != origin {
+        for pane in HorizontalPane.componentSelectionTargets(from: origin) {
+            if canvasActions(for: pane)?.selectComponents?(componentIDs) == true {
                 crossProbedPanes.insert(pane)
             }
         }
