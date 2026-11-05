@@ -154,6 +154,12 @@ enum HorizontalCanvasCommand {
     /// Schematic: mark the selected symbols' components do not populate, or
     /// populate again (Horizon's "Mark do not populate" / "Mark populate").
     case toggleNoPopulate
+    /// The right-click menu's Set Differential Pair: these two nets paired,
+    /// the one whose name sorts first the primary (Horizon's Set Diff Pair).
+    case setDiffpair([String])
+    /// The right-click menu's Clear Differential Pair: this net taken out of
+    /// its pair (Horizon's Clear Diff Pair).
+    case clearDiffpair(String)
     /// Schematic: take the selection, and everything drawn connected to it,
     /// to the sheet with this id (Horizon's "Move to other sheet").
     case moveToOtherSheet(String)

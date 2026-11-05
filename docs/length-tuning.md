@@ -33,8 +33,14 @@ clean-room implementation.
     partners offered are the named nets in no pair, power nets left out. On the
     board only the top block's own nets can be paired; an instance's net is its
     block's, paired in that block's schematic.
-  - **Design ▸ Set Diff Pair** for two selected nets (the one whose name sorts
-    first is the primary, so TX+ before TX-) and **Clear Diff Pair** for one.
+  - **Design ▸ Set Differential Pair** for two selected nets (the one whose
+    name sorts first is the primary, so TX+ before TX-) and **Clear
+    Differential Pair** for one; the menus spell it out where Horizon says
+    Diff Pair.
+  - the same two in a net's right-click menu on the schematic and the board:
+    Set Differential Pair on anything of either net when the selection is two
+    nets that can pair, Clear Differential Pair on anything of a paired net.
+    Both leave the selection as it is.
   - the MCP ops `set_diffpair` (net, partner) and `clear_diffpair` (net).
     `list_nets` and `get_net` give each net's `diffpair` (partner name, id, and
     whether it is the primary) and its `routed_length_mm`.

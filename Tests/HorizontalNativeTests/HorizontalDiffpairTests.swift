@@ -100,7 +100,7 @@ final class HorizontalDiffpairTests: XCTestCase {
         XCTAssertEqual(property.value, .choice(HorizontalDiffpairProperty.noneID))
 
         let set = try XCTUnwrap(HorizontalDiffpairProperty.operations(for: tx, choice: txn, in: details))
-        XCTAssertEqual(set.actionName, "Set Diff Pair")
+        XCTAssertEqual(set.actionName, "Set Differential Pair")
         XCTAssertEqual(set.ops.map { $0.string("op") }, ["set_diffpair"])
         XCTAssertEqual(set.ops.first?.string("partner"), txn)
         XCTAssertNil(HorizontalDiffpairProperty.operations(for: tx, choice: HorizontalDiffpairProperty.noneID, in: details))

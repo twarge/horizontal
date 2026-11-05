@@ -969,6 +969,10 @@ struct SchematicCanvasView: View {
                     return
                 case .copySelection, .duplicateSelection, .moveToOtherSheet:
                     if !selectedObjects.contains(ref) { setSelectedObject(ref) }
+                case .setDiffpair, .clearDiffpair:
+                    // They name the nets they edit, so the selection, two
+                    // nets' to pair, stays as it is.
+                    break
                 default:
                     setSelectedObject(ref)
                 }
@@ -8604,6 +8608,8 @@ struct SchematicCanvasView: View {
         if !editorProfile.isPoolMode, onApplyProjectEdit != nil {
             handlers.setAllUnconnectedPinsNC = { setAllNoConnect(true) }
             handlers.clearAllNCPins = { setAllNoConnect(false) }
+            handlers.setDiffpair = { editDiffpair(HorizontalDiffpairProperty.pairing(of: Set($0), in: sheet.netDetails)) }
+            handlers.clearDiffpair = { editDiffpair(HorizontalDiffpairProperty.clearing(of: [$0], in: sheet.netDetails)) }
             if selectedObjects.contains(where: { $0.type == .schematicSymbol }) {
                 handlers.setSmashed = { smashSelection($0) }
             }
@@ -8803,6 +8809,11 @@ struct SchematicCanvasView: View {
             if !isReadOnly, onPreparePaste != nil { entries.append(.command(title: "Duplicate", .duplicateSelection)) }
         }
         if let moveToOtherSheet = moveToOtherSheetEntry(for: ref) { entries.append(moveToOtherSheet) }
+        let diffpair = diffpairEntries(for: ref)
+        if !diffpair.isEmpty {
+            entries.append(.separator)
+            entries.append(contentsOf: diffpair)
+        }
         let info = symbolInfoEntries(for: ref)
         if !info.isEmpty {
             entries.append(.separator)
@@ -8825,6 +8836,11 @@ struct SchematicCanvasView: View {
         if let smash = smashEntry(for: ref) { entries.append(smash) }
         entries.append(contentsOf: blockSymbolEntries(for: ref))
         if let moveToOtherSheet = moveToOtherSheetEntry(for: ref) { entries.append(moveToOtherSheet) }
+        let diffpair = diffpairEntries(for: ref)
+        if !diffpair.isEmpty {
+            entries.append(.separator)
+            entries.append(contentsOf: diffpair)
+        }
         let info = symbolInfoEntries(for: ref)
         if !info.isEmpty {
             entries.append(.separator)
@@ -8833,6 +8849,29 @@ struct SchematicCanvasView: View {
         if let alternates = alternatePartsEntry(for: ref) { entries.append(alternates) }
         return entries.count > 1 ? entries : []
         #endif
+    }
+
+    /// Set and Clear Differential Pair, on anything drawn on a net
+    /// (`HorizontalDiffpairProperty.menuEntries`), where the block can be
+    /// edited.
+    private func diffpairEntries(for ref: HorizontalSelectableRef) -> [HorizontalTargetItemMenuEntry] {
+        guard !isReadOnly, !editorProfile.isPoolMode, onApplyProjectEdit != nil else {
+            return []
+        }
+        return HorizontalDiffpairProperty.menuEntries(
+            for: netID(for: ref), selectedNetIDs: selectedNetIDs, in: sheet.netDetails, canEdit: { _ in true })
+    }
+
+    /// Set or Clear Differential Pair from the right-click menu, made as the
+    /// inspector's Diff pair row makes it, the selection surviving as a
+    /// rename's does.
+    private func editDiffpair(_ edit: (ops: [JSONDictionary], actionName: String)?) {
+        guard !isReadOnly, let edit else {
+            return
+        }
+        hoveredObject = nil
+        adoptExternallyUpdatedSheet()
+        onApplyProjectEdit?(edit.ops, edit.actionName)
     }
 
     /// Alternate Parts…: the Pools pane on the parts that can replace the
