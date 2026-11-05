@@ -555,6 +555,9 @@ struct HorizontalBoard {
     /// The board rules' `parameters` (courtyard expansion, mask expansions…)
     /// as loaded, for baking a package placed after the load.
     var ruleParameters: [String: Int] = [:]
+    /// What the rules checks read of the block and the file that the board
+    /// doesn't draw: partless components, net ties, height restrictions.
+    var checkFacts = HorizontalBoardCheckFacts()
     var physicalBounds: HorizontalRect
     var bounds: HorizontalRect
     /// Package editor only: the package's pads as editable objects. Their
@@ -851,6 +854,23 @@ struct HorizontalBoard {
             ),
             physicalBounds: physicalBounds,
             bounds: HorizontalRect(points: points).padded().orEmptyContentCanvasRegion()
+        )
+        loadedBoard.checkFacts = HorizontalBoardCheckFacts(
+            componentsWithoutPart: blockMetadata.components
+                .filter { $0.value.partID == nil }
+                .map { .init(id: $0.key, label: nonEmpty($0.value.displayLabel) ?? String($0.key.prefix(8))) }
+                .sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending },
+            blockNetTies: blockMetadata.netTies,
+            netTieBlockIDs: json.dictionaryMap("net_ties").reduce(into: [String: String]()) { result, item in
+                if let tie = item.value.string("net_tie") {
+                    result[normalizedID(item.key)] = normalizedID(tie)
+                }
+            },
+            heightRestrictions: json.dictionaryMap("height_restrictions").compactMap { id, item in
+                guard let polygon = item.string("polygon") else { return nil }
+                return HorizontalHeightRestriction(id: id, polygonID: normalizedID(polygon), height: item.double("height") ?? 0)
+            }.sorted { $0.id < $1.id },
+            hasBlock: blockMetadata.isLoaded
         )
         loadedBoard.ruleParameters = (json.dictionary("rules")?.dictionary("parameters") ?? [:])
             .reduce(into: [String: Int]()) { result, item in
@@ -3446,9 +3466,20 @@ struct HorizontalBoard {
         // Each net's partner: the board routes and tunes a pair together.
         HorizontalDiffpairs.annotate(&netDetails, nets: json.dictionaryMap("nets"))
 
+        let netTies = json.dictionaryMap("net_ties").map { id, item -> HorizontalNetTieDetails in
+            let primary = item.string("net_primary").map(normalizedID)
+            let secondary = item.string("net_secondary").map(normalizedID)
+            func name(_ net: String?) -> String {
+                nonEmpty(net.flatMap { netDetails[$0]?.name }) ?? net.map { String($0.prefix(8)) } ?? "no net"
+            }
+            return HorizontalNetTieDetails(id: normalizedID(id), primaryID: primary, secondaryID: secondary,
+                                           primaryName: name(primary), secondaryName: name(secondary))
+        }.sorted { $0.id < $1.id }
+
         return BoardBlockMetadata(
             components: components,
             netDetails: netDetails,
+            netTies: netTies,
             titleValues: parseProjectMeta(from: json.dictionary("project_meta")),
             isLoaded: true
         )
@@ -5705,6 +5736,7 @@ struct HorizontalBoard {
     private struct BoardBlockMetadata {
         var components = [String: BoardComponentInfo]()
         var netDetails = [String: HorizontalNetDetails]()
+        var netTies = [HorizontalNetTieDetails]()
         var titleValues = [String: String]()
         /// False when there was no block to read, so its nets are unknown
         /// rather than none.

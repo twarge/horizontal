@@ -78,7 +78,7 @@ enum HorizontalSilkscreenClipper {
     /// openings, and mask polygons drawn on the board, in packages or decals.
     static func maskOpenings(on maskLayer: Int, board: HorizontalBoard) -> [[HorizontalPoint]] {
         var openings = [[HorizontalPoint]]()
-        for pad in horizonPadOutlineFragments(board.packagePads) where pad.layer == maskLayer {
+        for pad in horizonPadOutlineFragments(board.packagePads.filter { $0.layer == maskLayer }) {
             openings.append(contentsOf: pad.paths.filter { $0.count >= 3 })
         }
         for via in board.vias {

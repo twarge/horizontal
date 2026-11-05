@@ -979,4 +979,46 @@ void HorizontalClipperFreePath(HorizontalClipperPath path)
     std::free(path.points);
 }
 
+HorizontalClipperFragmentList HorizontalClipperBoolean(
+    const HorizontalClipperPath *subjects,
+    int subjectCount,
+    const HorizontalClipperPath *clips,
+    int clipCount,
+    int operation,
+    int subjectFill,
+    int clipFill
+)
+{
+    HorizontalClipperFragmentList empty {};
+    auto subjectPaths = to_paths(subjects, subjectCount);
+    auto clipPaths = to_paths(clips, clipCount);
+    if (subjectPaths.empty() && (operation != 1 || clipPaths.empty())) {
+        return empty;
+    }
+
+    ClipperLib::ClipType type;
+    switch (operation) {
+    case 0: type = ClipperLib::ctIntersection; break;
+    case 1: type = ClipperLib::ctUnion; break;
+    case 2: type = ClipperLib::ctDifference; break;
+    default: type = ClipperLib::ctXor; break;
+    }
+    auto fill = [](int value) { return value == 0 ? ClipperLib::pftEvenOdd : ClipperLib::pftNonZero; };
+
+    try {
+        ClipperLib::PolyTree tree;
+        ClipperLib::Clipper clipper;
+        if (!subjectPaths.empty()) {
+            clipper.AddPaths(subjectPaths, ClipperLib::ptSubject, true);
+        }
+        if (!clipPaths.empty()) {
+            clipper.AddPaths(clipPaths, ClipperLib::ptClip, true);
+        }
+        clipper.Execute(type, tree, fill(subjectFill), fill(clipFill));
+        return fragments_from_tree(tree);
+    } catch (const std::exception &) {
+        return empty;
+    }
+}
+
 #include "../../Vendor/Clipper/clipper.cpp"

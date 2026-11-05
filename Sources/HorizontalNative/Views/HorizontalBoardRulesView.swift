@@ -599,8 +599,10 @@ enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
 
     var id: String { rawValue }
 
+    /// The kinds the rules window lists: every one, now that height
+    /// restrictions are checked too.
     static var visibleCases: [HorizontalBoardRuleKind] {
-        allCases.filter { $0 != .heightRestrictions }
+        allCases
     }
 
     var title: String {
@@ -663,6 +665,22 @@ enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
              .clearanceSilkscreenExposedCopper, .heightRestrictions, .trackWidth, .holeSize, .plane,
              .shortedPads, .netTies, .preflightChecks, .boardConnectivity:
             return true
+        case .via, .viaDefinitions, .thermals, .diffpair, .parameters, .layerPair:
+            return false
+        }
+    }
+
+    /// Whether Horizontal's checks (`HorizontalBoardRulesCheck`) check the
+    /// board against this kind's rules, which the window's "Check" says.
+    /// Horizon checks every kind `canCheck` names; here so does Horizontal,
+    /// the shorted pads rule through the connectivity check, which joins
+    /// the pads it names.
+    var checksInHorizontal: Bool {
+        switch self {
+        case .clearanceCopper, .clearanceCopperOther, .clearanceCopperKeepout, .clearanceSameNet,
+             .clearanceSilkscreenExposedCopper, .heightRestrictions, .trackWidth, .holeSize, .plane,
+             .shortedPads, .netTies, .preflightChecks, .boardConnectivity:
+            return canCheck
         case .via, .viaDefinitions, .thermals, .diffpair, .parameters, .layerPair:
             return false
         }
@@ -1105,7 +1123,7 @@ private struct HorizontalBoardRuleFamilyRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: iconName)
-                .foregroundStyle(kind.canCheck ? .green : .secondary)
+                .foregroundStyle(kind.checksInHorizontal ? .green : .secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
                 Text(kind.title)
@@ -1114,7 +1132,7 @@ private struct HorizontalBoardRuleFamilyRow: View {
                     if kind.listsEntries {
                         Text("\(count)")
                     }
-                    if kind.canCheck {
+                    if kind.checksInHorizontal {
                         Text("Check")
                     }
                     if kind.appliesInHorizontal {
@@ -1132,7 +1150,7 @@ private struct HorizontalBoardRuleFamilyRow: View {
         if kind.appliesInHorizontal {
             return "wand.and.stars"
         }
-        if kind.canCheck {
+        if kind.checksInHorizontal {
             return "checkmark.seal"
         }
         return "slider.horizontal.3"
@@ -1256,7 +1274,7 @@ private struct HorizontalBoardRuleEditorView: View {
                 case .clearanceSilkscreenExposedCopper:
                     GroupBox("Clearance") {
                         VStack(alignment: .leading, spacing: 10) {
-                            Toggle("Pads only", isOn: boolBinding("pads_only", default: true))
+                            Toggle("Pads only", isOn: boolBinding("pads_only", default: false))
                                 .padding(.leading, 158)
                             HorizontalRuleDimensionField(label: "Top clearance", value: mmBinding("clearance_top", defaultNanometers: 100_000))
                             HorizontalRuleDimensionField(label: "Bottom clearance", value: mmBinding("clearance_bottom", defaultNanometers: 100_000))
@@ -1264,7 +1282,7 @@ private struct HorizontalBoardRuleEditorView: View {
                         .padding(6)
                     }
                 case .heightRestrictions:
-                    TextRuleExplanation("Checks packages against the height restrictions drawn on the board. This rule has no settings.")
+                    TextRuleExplanation("Checks packages against the height restrictions drawn on the board, by the heights of their 3D models. This rule has no settings.")
                 case .trackWidth:
                     HorizontalRuleMatchEditor(title: "Match", match: dictionaryBinding("match", default: context.defaultMatch()), context: context)
                     HorizontalRuleTrackWidthsEditor(widths: dictionaryBinding("widths", default: context.defaultTrackWidths()), context: context)
@@ -1344,14 +1362,14 @@ private struct HorizontalBoardRuleEditorView: View {
                     HorizontalRuleMatchComponentEditor(match: dictionaryBinding("match_component", default: HorizontalBoardRuleContext.defaultComponentMatch()))
                     HorizontalRuleMatchEditor(title: "Net Match", match: dictionaryBinding("match", default: context.defaultMatch()), context: context)
                 case .netTies:
-                    TextRuleExplanation("Checks the net ties on the board. This rule has no settings.")
+                    TextRuleExplanation("Checks that every net tie of the schematic is drawn on the board, and that each one drawn overlaps the copper of both its nets on its layer, once each, by at least a disc as wide as the tie. This rule has no settings.")
                 case .layerPair:
                     HorizontalRuleMatchEditor(title: "Match", match: dictionaryBinding("match", default: context.defaultMatch()), context: context)
                     HorizontalRuleLayerPairEditor(layers: arrayBinding("layers"), context: context)
                 case .preflightChecks:
-                    TextRuleExplanation("Checks that the board is ready for fabrication. This rule has no settings.")
+                    TextRuleExplanation("Checks that the board is ready for fabrication: no airwires, every plane poured, every component placed and given a part, packages' own text on their side's silkscreen, every track on a net, no copper polygon that is neither plane nor keepout, and an outline of polygons that makes one board. This rule has no settings.")
                 case .boardConnectivity:
-                    TextRuleExplanation("Compares the board's copper connectivity with the schematic netlist. This rule has no settings.")
+                    TextRuleExplanation("Checks that each net's copper on the board is one piece: joined where it touches, through vias and plated holes, and where a shorted pads rule joins a part's pads. This rule has no settings.")
                 }
             }
             .padding(16)
@@ -3310,6 +3328,9 @@ struct HorizontalBoardRulesResultState {
     /// The clearance check is running again; `clearanceFindings` are the
     /// last run's until it finishes.
     var isCheckingClearance = false
+    /// The other board checks' findings (`HorizontalBoardRulesCheck`), from
+    /// the same run as `clearanceFindings`; nil where it wasn't run.
+    var boardFindings: [HorizontalBoardRuleFinding]? = nil
     /// The schematic Connectivity rule's findings, as it last finished; nil
     /// where it wasn't run, empty where it found nothing or is off.
     var schematicFindings: [HorizontalSchematicRuleFinding]? = nil

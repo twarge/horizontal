@@ -1391,9 +1391,9 @@ struct ProjectWorkspaceView: View {
                 result: rulesResultsState,
                 safeAreaInsets: safeAreaInsets,
                 onOpenRules: { showBoardRulesWindow() },
-                onShowFinding: showClearanceFinding,
+                onShowFinding: showBoardFinding,
                 onShowRule: { finding in
-                    showBoardRulesWindow(focus: HorizontalBoardRuleFocus(kind: finding.ruleKind, ruleID: finding.ruleID))
+                    showBoardRulesWindow(focus: finding.kind.map { HorizontalBoardRuleFocus(kind: $0, ruleID: finding.ruleID) })
                 },
                 onShowSchematicFinding: showSchematicFinding,
                 onShowSchematicRule: { showBoardRulesWindow(focus: .schematicConnectivity()) }
@@ -1531,8 +1531,8 @@ struct ProjectWorkspaceView: View {
         guard let result = rulesResultsState, result.badgeCount > 0 else {
             return rulesResultsSidebarToggleTitle
         }
-        let errors = result.messages.filter { $0.level == .error }.count + (result.clearanceFindings?.count ?? 0)
-        let warnings = result.messages.count - result.messages.filter { $0.level == .error }.count
+        let errors = result.errorCount
+        let warnings = result.warningCount
         let found = [errors > 0 ? "\(errors) error\(errors == 1 ? "" : "s")" : nil,
                      warnings > 0 ? "\(warnings) warning\(warnings == 1 ? "" : "s")" : nil].compactMap { $0 }
         return "\(rulesResultsSidebarToggleTitle) — the last rules check found \(found.joined(separator: " and "))"
@@ -2619,7 +2619,7 @@ struct ProjectWorkspaceView: View {
                                 onRevealPoolPackage: { packageID, target in
                                     revealPoolItem(.package, uuid: packageID, in: target)
                                 },
-                                ruleMarkers: HorizontalCanvasWarning.markers(clearanceFindings: rulesResultsState?.clearanceFindings ?? [])
+                                ruleMarkers: HorizontalCanvasWarning.markers(boardFindings: rulesResultsState?.allBoardFindings ?? [])
                             )
                             .id(boardLoadID)
                         }
@@ -3415,25 +3415,24 @@ struct ProjectWorkspaceView: View {
         }
     }
 
-    /// Where a clearance finding is: the board framed on it, with the nets
-    /// and parts of both sides highlighted, turned to its side when the view
-    /// shows one side and the finding is on the other's copper only. A net
-    /// with a plane lights up most of the board, so it is highlighted only
-    /// where the plane is one of the two, or both nets have one.
-    private func showClearanceFinding(_ finding: HorizontalClearanceFinding) {
+    /// Where a board finding is: the board framed on it, with the nets and
+    /// parts it is about highlighted, turned to its side when the view shows
+    /// one side and the finding is on the other's copper only. A net with a
+    /// plane lights up most of the board, so it is highlighted only where a
+    /// plane is what the finding is about, or every net it names has one.
+    private func showBoardFinding(_ finding: HorizontalBoardRuleFinding) {
         let planeNets = Set(project.board?.planes.compactMap { $0.netID?.lowercased() } ?? [])
-        let nets = [finding.first.netID, finding.second.netID].compactMap { $0 }
-        let showsPlane = finding.first.type == .plane || finding.second.type == .plane
+        let nets = finding.netIDs
         let quiet = nets.filter { !planeNets.contains($0) }
-        highlightSelectedNet(Set(showsPlane || quiet.isEmpty ? nets : quiet))
-        highlightSelectedComponents(Set([finding.first.componentID, finding.second.componentID].compactMap { $0 }))
+        highlightSelectedNet(Set(finding.showsPlane || quiet.isEmpty ? nets : quiet))
+        highlightSelectedComponents(Set(finding.componentIDs))
         if let side = boardDisplayOptions.visibleSide {
             let layers = Set(finding.layers)
             if !layers.contains(side.copperLayer), layers.contains(side.other.copperLayer) {
                 showBoardSide(side.other)
             }
         }
-        let region = finding.region
+        guard let region = finding.region else { return }
         if visiblePanes.contains(.board), let frame = canvasCommandActionsByPane[.board]?.frameWorldRect {
             frame(region)
             return
@@ -3717,6 +3716,7 @@ struct ProjectWorkspaceView: View {
             ruleTitle: "Design Rules",
             messages: HorizontalBoardRulesValidator.validateAll(rules: rules, context: context),
             clearanceFindings: rulesResultsState?.clearanceFindings,
+            boardFindings: rulesResultsState?.boardFindings,
             schematicFindings: rulesResultsState?.schematicFindings
         )
         scheduleClearanceCheck()
@@ -3752,10 +3752,11 @@ struct ProjectWorkspaceView: View {
         }
     }
 
-    /// The copper clearance checks, in the background, on the board as it
-    /// stands, for the results sidebar and its badge. An edit often comes
-    /// with others, so the check waits for them to settle; a later one
-    /// cancels it. The last findings stay up until the new ones are in.
+    /// The board's rules checks (`HorizontalBoardRulesCheck`), in the
+    /// background, on the board as it stands, for the results sidebar, its
+    /// badge and the board's markers. An edit often comes with others, so
+    /// the check waits for them to settle; a later one cancels it. The last
+    /// findings stay up until the new ones are in.
     private func scheduleClearanceCheck() {
         clearanceCheckTask?.cancel()
         guard let board = project.board, rulesResultsState != nil else {
@@ -3767,11 +3768,12 @@ struct ProjectWorkspaceView: View {
         clearanceCheckTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled,
-                  let findings = await HorizontalBoardClearanceCheck.findings(board: board, tiedNets: tiedNets),
+                  let results = await HorizontalBoardRulesCheck.results(board: board, tiedNets: tiedNets),
                   !Task.isCancelled else {
                 return
             }
-            rulesResultsState?.clearanceFindings = findings
+            rulesResultsState?.clearanceFindings = results.clearance
+            rulesResultsState?.boardFindings = results.findings
             rulesResultsState?.isCheckingClearance = false
             clearanceCheckTask = nil
         }

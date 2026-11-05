@@ -128,12 +128,16 @@ final class HorizontalDispatchTests: XCTestCase {
         XCTAssertThrowsError(try HorizontalDispatchRender.resolveBoardLayers(project: project, names: [], ids: []))
     }
 
-    func testCheckOnTheTemplatePasses() throws {
+    /// A new board has no outline yet, which Horizon's preflight check fails,
+    /// and that is all `check` finds wrong with it.
+    func testCheckOnTheTemplateFindsOnlyTheMissingOutline() throws {
         let handle = try openTemplate()
-        let check = try XCTUnwrap(try result("check", ["handle": handle]) as? [String: Any])
-        XCTAssertEqual(check["ok"] as? Bool, true)
+        let check = try XCTUnwrap(try result("check", ["handle": handle, "full": true]) as? [String: Any])
         let counts = try XCTUnwrap(check["counts"] as? [String: Int])
-        XCTAssertEqual(counts["error"], 0)
+        XCTAssertEqual(counts["error"], 1)
+        let errors = (check["messages"] as? [[String: Any]] ?? []).filter { $0["level"] as? String == "error" }
+        XCTAssertEqual(errors.map { $0["category"] as? String }, ["preflight_checks"])
+        XCTAssertEqual(errors.map { $0["check"] as? String }, ["no_outline"])
     }
 
     func testRenderingTheFirstSheetProducesAPNG() throws {

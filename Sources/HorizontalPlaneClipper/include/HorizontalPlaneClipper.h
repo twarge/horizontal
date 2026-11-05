@@ -126,6 +126,22 @@ HorizontalClipperPath HorizontalClipperOffsetPolygon(
 
 void HorizontalClipperFreePath(HorizontalClipperPath path);
 
+// One of Clipper's boolean operations on two sets of closed paths, as
+// fragments (each an outer contour followed by its holes). `operation`:
+// 0 = intersection, 1 = union, 2 = difference (subjects minus clips),
+// 3 = xor. Each set is filled by its own rule: 0 = even-odd, 1 = nonzero.
+// The board checks use it where Horizon's own compare areas: exposed
+// copper, overlapping plane outlines, a net tie's overlap with its nets.
+HorizontalClipperFragmentList HorizontalClipperBoolean(
+    const HorizontalClipperPath *subjects,
+    int subjectCount,
+    const HorizontalClipperPath *clips,
+    int clipCount,
+    int operation,
+    int subjectFill,
+    int clipFill
+);
+
 #ifdef __cplusplus
 }
 #endif
