@@ -849,16 +849,40 @@ final class BoardLabelLODDebouncer: ObservableObject, @unchecked Sendable {
     /// enough that no scheduling delay can reach it.
     private let quietPeriod: Duration
 
+    /// Set while the canvas has no area, from `canvasHasNoArea` until the next
+    /// `schedule`.
+    private var isWithoutArea = false
+
     init(quietPeriod: Duration = .milliseconds(160)) {
         self.quietPeriod = quietPeriod
+    }
+
+    /// The canvas has no area, as a pane kept mounted while hidden has none.
+    /// Its transform then fits the board into the one point its clamped fit
+    /// leaves, a threshold past which every label would be culled, so it
+    /// schedules nothing: the threshold stays the one it was shown at, and the
+    /// labels stay built for when it is shown again.
+    func canvasHasNoArea() {
+        isWithoutArea = true
     }
 
     /// Records the threshold for the current transform and (re)arms the quiet
     /// timer. Superseding `pendingValue` is also how a threshold that wanders
     /// away and comes back collapses into no work at all.
+    ///
+    /// The first threshold after the canvas had no area lands at once: being
+    /// shown is no gesture to sit out, and the labels come up with the pane.
     func schedule(_ value: Double, apply: @escaping (Double) -> Void) {
-        pendingValue = value
         self.apply = apply
+        if isWithoutArea {
+            isWithoutArea = false
+            // A waiter still running finds no deadline and applies nothing.
+            pendingValue = nil
+            deadline = nil
+            apply(value)
+            return
+        }
+        pendingValue = value
         deadline = ContinuousClock().now.advanced(by: quietPeriod)
 
         guard task == nil else {
