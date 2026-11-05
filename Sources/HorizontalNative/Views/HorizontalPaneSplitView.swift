@@ -17,9 +17,14 @@ struct ResizablePaneSplitView<Content: View>: View {
     /// leading pane dragged narrow still shows `minimumPaneWidth` of itself
     /// beside the sidebar rather than a sliver.
     var leadingInset: CGFloat = 0
+    /// Panes that stay mounted once shown. One of them hidden keeps its place
+    /// among the slots, at no width and out of sight, so it is the same view
+    /// when it comes back, with its state, rather than one built afresh.
+    var keepsMounted: Set<HorizontalPane> = []
     @ViewBuilder var content: (HorizontalPane, Bool) -> Content
 
     @State private var activeDrag: SplitDrag?
+    @State private var shownPanes = ShownPanes()
 
     var body: some View {
         GeometryReader { proxy in
@@ -28,7 +33,7 @@ struct ResizablePaneSplitView<Content: View>: View {
 
             HStack(spacing: 0) {
                 ForEach(slots) { slot in
-                    let index = slot.index
+                    let isShown = slot.index != nil
                     let pane = slot.pane
 
                     // A pane never paints past its own width. Content wider
@@ -37,11 +42,21 @@ struct ResizablePaneSplitView<Content: View>: View {
                     // the Parts pane's background covered the right of the
                     // Pools pane, a band left of its own table, and the
                     // divider between them, which then couldn't be grabbed.
-                    content(pane, index == panes.startIndex)
-                        .frame(width: layout.widths[index])
+                    //
+                    // Shown or kept hidden, a pane goes through the same
+                    // modifiers, which only take other values: a branch would
+                    // make it another view, and hiding it would unmount it.
+                    // Hidden, what the pane can't shrink (its rail) is moved
+                    // far past the window's edge, where no click finds it.
+                    content(pane, slot.index == panes.startIndex)
+                        .frame(width: slot.index.map { layout.widths[$0] } ?? 0)
                         .clipped()
+                        .opacity(isShown ? 1 : 0)
+                        .offset(x: isShown ? 0 : Self.hiddenPaneOffset)
+                        .allowsHitTesting(isShown)
+                        .accessibilityHidden(!isShown)
 
-                    if index < panes.index(before: panes.endIndex) {
+                    if let index = slot.index, index < panes.index(before: panes.endIndex) {
                         // Above both its panes, so it is always the divider
                         // that takes a drag there.
                         SplitHandle()
@@ -78,9 +93,18 @@ struct ResizablePaneSplitView<Content: View>: View {
         return PaneLayout(widths: widths, contentWidth: contentWidth)
     }
 
+    /// The shown panes, in order, then the kept panes hidden now. Being in
+    /// the same `ForEach` under the same id is what keeps a pane mounted
+    /// from shown to hidden and back.
     private func paneSlots() -> [PaneSlot] {
-        panes.enumerated().map { PaneSlot(index: $0.offset, pane: $0.element) }
+        let hidden = shownPanes.record(panes, keeping: keepsMounted)
+        return panes.enumerated().map { PaneSlot(index: $0.offset, pane: $0.element) }
+            + hidden.map { PaneSlot(index: nil, pane: $0) }
     }
+
+    /// How far right a hidden pane is drawn: past any window, so nothing in it
+    /// that overflows its zero width lies over a shown pane.
+    private static var hiddenPaneOffset: CGFloat { 100_000 }
 
     private func paneWidths(contentWidth: CGFloat) -> [CGFloat] {
         guard !panes.isEmpty else {
@@ -205,12 +229,28 @@ struct ResizablePaneSplitView<Content: View>: View {
         var contentWidth: CGFloat
     }
 
+    /// A pane's place in the split: its index among the shown panes, or nil
+    /// for a kept pane that is hidden.
     private struct PaneSlot: Identifiable {
-        var index: Int
+        var index: Int?
         var pane: HorizontalPane
 
         var id: HorizontalPane {
             pane
+        }
+    }
+
+    /// The kept panes the split has shown. Recorded as the slots are built,
+    /// rather than in state set afterwards, so the pass that hides a pane
+    /// already knows to keep it: a pass without it would unmount it.
+    private final class ShownPanes {
+        private var panes = Set<HorizontalPane>()
+
+        /// Takes note of `shown` and gives the kept panes shown before and
+        /// hidden now.
+        func record(_ shown: [HorizontalPane], keeping kept: Set<HorizontalPane>) -> [HorizontalPane] {
+            panes.formUnion(shown.filter { kept.contains($0) })
+            return HorizontalPane.allCases.filter { panes.contains($0) && kept.contains($0) && !shown.contains($0) }
         }
     }
 

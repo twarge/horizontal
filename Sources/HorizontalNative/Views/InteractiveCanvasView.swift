@@ -755,6 +755,13 @@ struct InteractiveCanvasView: View {
                         .onChange(of: identifiedBounds) { _, newValue in
                             adoptBounds(newValue, size: proxy.size, fitInsets: fitInsets)
                         }
+                        // Bounds that changed while it was hidden, at no
+                        // width, are taken once it is shown.
+                        .onChange(of: proxy.size) { _, size in
+                            if viewedBounds != identifiedBounds {
+                                adoptBounds(identifiedBounds, size: size, fitInsets: fitInsets)
+                            }
+                        }
                 }
 
                 #if canImport(MetalKit)
@@ -1332,12 +1339,19 @@ struct InteractiveCanvasView: View {
     /// Takes `newValue` as the bounds the viewport is measured from. New
     /// bounds of the thing already shown rebase the viewport onto them, on
     /// the binding and the Metal driver at once, so what is on screen stays
-    /// put; another thing's keep the viewport as it is.
+    /// put; another thing's keep the viewport as it is. A canvas with no
+    /// size, kept mounted in a hidden pane, has nothing on screen to keep in
+    /// place and no size to rebase at: it keeps the bounds it has until it is
+    /// shown again.
     private func adoptBounds(_ newValue: IdentifiedBounds?, size: CGSize, fitInsets: HorizontalCanvasInsets) {
-        defer { viewedBounds = newValue }
         guard let newValue, let viewedBounds, viewedBounds.identity == newValue.identity else {
+            self.viewedBounds = newValue
             return
         }
+        guard size.width > 0, size.height > 0 else {
+            return
+        }
+        self.viewedBounds = newValue
         let current = interactionViewport
         let rebased = current.rebased(from: viewedBounds.bounds, to: newValue.bounds, size: size, fitInsets: fitInsets)
         guard rebased != current else {
@@ -3959,6 +3973,11 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
 
         private func handle(_ event: NSEvent) -> NSEvent? {
             guard let window, event.window === window else {
+                return event
+            }
+            // A canvas with no area, kept mounted in a hidden pane, takes
+            // nothing, not even the keys of an interaction it was left in.
+            guard bounds.width > 0, bounds.height > 0 else {
                 return event
             }
 
