@@ -667,12 +667,13 @@ struct HorizontalViewCommands: Commands {
                 Divider()
                 // Horizon's Set Diff Pair pairs the two nets selected, and its
                 // Clear Diff Pair the one; the inspector's Diff pair row picks
-                // a partner for one.
-                Button("Set Diff Pair") {
+                // a partner for one, and the canvases' right-click menus offer
+                // both on a net.
+                Button(HorizontalDiffpairProperty.setTitle) {
                     lengthTuningActions?.setDiffpair?()
                 }
                 .disabled(lengthTuningActions?.setDiffpair == nil)
-                Button("Clear Diff Pair") {
+                Button(HorizontalDiffpairProperty.clearTitle) {
                     lengthTuningActions?.clearDiffpair?()
                 }
                 .disabled(lengthTuningActions?.clearDiffpair == nil)

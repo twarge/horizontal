@@ -127,7 +127,7 @@ final class BoardTrackReadoutsTests: XCTestCase {
             value: .choice(HorizontalDiffpairProperty.noneID), applyToAll: false))
         let edited = await settle { !state.edits.isEmpty }
         XCTAssertTrue(edited)
-        XCTAssertEqual(state.edits.first?.actionName, "Clear Diff Pair")
+        XCTAssertEqual(state.edits.first?.actionName, "Clear Differential Pair")
         XCTAssertEqual(state.edits.first?.ops.first?.string("op"), "clear_diffpair")
         XCTAssertEqual(state.edits.first?.ops.first?.string("net"), tx)
         XCTAssertEqual(state.board.tracks.count, 2, "the board itself is left to the project edit's reload")

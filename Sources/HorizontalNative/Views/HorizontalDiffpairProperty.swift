@@ -6,10 +6,14 @@ import Foundation
 /// net pairs this one with it, this one the primary, as Horizon's Set Diff
 /// Pair does with the net its dialog picks; choosing None clears the pair.
 /// The partners offered are the named nets in no pair, power nets left out.
+/// The menus say Set Differential Pair and Clear Differential Pair, and so
+/// do their undo steps.
 enum HorizontalDiffpairProperty {
     static let id = "diffpair"
     static let noneID = "none"
     static let label = "Diff pair"
+    static let setTitle = "Set Differential Pair"
+    static let clearTitle = "Clear Differential Pair"
 
     /// Horizon's text for a net's pair: "Pri: name", "Sec: name" or "None".
     static func summary(for netID: String, in details: [String: HorizontalNetDetails]) -> String {
@@ -61,14 +65,14 @@ enum HorizontalDiffpairProperty {
             return nil
         }
         if choice == noneID {
-            return current == nil ? nil : ([["op": "clear_diffpair", "net": netID]], "Clear Diff Pair")
+            return current == nil ? nil : ([["op": "clear_diffpair", "net": netID]], clearTitle)
         }
         var ops = [JSONDictionary]()
         if current != nil {
             ops.append(["op": "clear_diffpair", "net": netID])
         }
         ops.append(["op": "set_diffpair", "net": netID, "partner": choice])
-        return (ops, "Set Diff Pair")
+        return (ops, setTitle)
     }
 
     /// Horizon's Set Diff Pair for two selected nets: the pair, the one whose
@@ -89,7 +93,7 @@ enum HorizontalDiffpairProperty {
         if sorted[0].diffpairID == secondary, sorted[0].isDiffpairPrimary {
             return nil
         }
-        return ([["op": "set_diffpair", "net": primary, "partner": secondary]], "Set Diff Pair")
+        return ([["op": "set_diffpair", "net": primary, "partner": secondary]], setTitle)
     }
 
     /// Horizon's Clear Diff Pair for one selected net in a pair.
@@ -97,7 +101,35 @@ enum HorizontalDiffpairProperty {
         guard netIDs.count == 1, let netID = netIDs.first?.lowercased(), details[netID]?.diffpairID != nil else {
             return nil
         }
-        return ([["op": "clear_diffpair", "net": netID]], "Clear Diff Pair")
+        return ([["op": "clear_diffpair", "net": netID]], clearTitle)
+    }
+
+    /// The right-click menu's entries for an object on `netID`, the
+    /// selection's nets `selectedNetIDs`: Set Differential Pair when the
+    /// selection is two nets that can pair and the object is on one of them,
+    /// and Clear Differential Pair when its own net is in a pair. Each names
+    /// the nets it edits, so running it leaves the selection as it is.
+    /// `canEdit` says which nets the canvas can edit (on the board, the top
+    /// block's own); none for an object on no net, or a power net.
+    static func menuEntries(
+        for netID: String?,
+        selectedNetIDs: Set<String>,
+        in details: [String: HorizontalNetDetails],
+        canEdit: (String) -> Bool
+    ) -> [HorizontalTargetItemMenuEntry] {
+        guard let netID = netID?.lowercased(), let detail = details[netID], !detail.isPower else {
+            return []
+        }
+        var entries = [HorizontalTargetItemMenuEntry]()
+        let selected = Set(selectedNetIDs.map { $0.lowercased() })
+        if selected.count == 2, selected.contains(netID), selected.allSatisfy(canEdit),
+           pairing(of: selected, in: details) != nil {
+            entries.append(.command(title: setTitle, .setDiffpair(selected.sorted())))
+        }
+        if canEdit(netID), clearing(of: [netID], in: details) != nil {
+            entries.append(.command(title: clearTitle, .clearDiffpair(netID)))
+        }
+        return entries
     }
 
     /// Nets by name as Finder sorts them (D2 before D10), then by the

@@ -288,6 +288,8 @@ struct HorizontalCanvasCommandHandlerSet {
     var setAllUnconnectedPinsNC: (() -> Void)? = nil
     var clearAllNCPins: (() -> Void)? = nil
     var toggleNoPopulate: (() -> Void)? = nil
+    var setDiffpair: (([String]) -> Void)? = nil
+    var clearDiffpair: ((String) -> Void)? = nil
     var moveToOtherSheet: ((String) -> Void)? = nil
     /// Where Move to Other Sheet can take the selection; empty when it can't.
     var moveToOtherSheetTargets: [HorizontalCanvasSheetTarget] = []
@@ -499,6 +501,12 @@ struct HorizontalCanvasCommandHandlerSet {
         case .toggleNoPopulate:
             guard !isReadOnly else { return }
             toggleNoPopulate?()
+        case .setDiffpair(let netIDs):
+            guard !isReadOnly else { return }
+            setDiffpair?(netIDs)
+        case .clearDiffpair(let netID):
+            guard !isReadOnly else { return }
+            clearDiffpair?(netID)
         case .moveToOtherSheet(let sheetID):
             guard !isReadOnly else { return }
             moveToOtherSheet?(sheetID)

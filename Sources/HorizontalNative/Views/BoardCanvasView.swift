@@ -1230,7 +1230,14 @@ struct BoardCanvasView: View {
                 }
             },
             onTargetMenuCommand: { ref, command in
-                setSelectedObject(ref)
+                switch command {
+                case .setDiffpair, .clearDiffpair:
+                    // They name the nets they edit, so the selection, two
+                    // nets' to pair, stays as it is.
+                    break
+                default:
+                    setSelectedObject(ref)
+                }
                 dispatchCanvasCommand(command)
             },
             onUnplacedObjectSelection: { object in
@@ -3155,6 +3162,18 @@ struct BoardCanvasView: View {
             // one, and Horizon offers the tool only there.
             handlers.drawDimension = { beginDrawDimension() }
             handlers.tuneTrack = { beginTuneTrack() }
+            if let onEditDiffpair {
+                handlers.setDiffpair = { netIDs in
+                    guard netIDs.allSatisfy(onEditDiffpair.canEdit),
+                          let edit = HorizontalDiffpairProperty.pairing(of: Set(netIDs), in: board.netDetails) else { return }
+                    onEditDiffpair.apply(edit.ops, edit.actionName)
+                }
+                handlers.clearDiffpair = { netID in
+                    guard onEditDiffpair.canEdit(netID),
+                          let edit = HorizontalDiffpairProperty.clearing(of: [netID], in: board.netDetails) else { return }
+                    onEditDiffpair.apply(edit.ops, edit.actionName)
+                }
+            }
             handlers.filterAirwires = onFilterAirwires
             if selectedObjects.contains(where: canDisconnect) {
                 handlers.disconnect = { disconnectSelection() }
@@ -3442,6 +3461,12 @@ struct BoardCanvasView: View {
             entries.append(.separator)
             entries.append(.command(title: "Highlight Net", .highlightNet))
             entries.append(.command(title: "Select Net", .selectNet))
+            // Set and Clear Differential Pair, for the top block's nets.
+            if writable, modeProfile.mode == .board, let onEditDiffpair {
+                entries.append(contentsOf: HorizontalDiffpairProperty.menuEntries(
+                    for: netID(for: ref), selectedNetIDs: selectedNetIDs, in: board.netDetails,
+                    canEdit: { onEditDiffpair.canEdit($0) }))
+            }
         }
 
         // Pool / datasheet (packages)
