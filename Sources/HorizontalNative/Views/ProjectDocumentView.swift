@@ -819,6 +819,10 @@ struct ProjectWorkspaceView: View {
     @State private var isWindowToolbarHidden = false
     @State private var distractionFreeRestoreState: DistractionFreeRestoreState?
     @State private var boardRulesWindowController: HorizontalBoardRulesWindowController?
+    /// Horizon's Length Tuning list, kept while the document is open, and
+    /// its window.
+    @StateObject private var lengthTuning = HorizontalLengthTuningModel()
+    @State private var lengthTuningWindowController: HorizontalLengthTuningWindowController?
     @StateObject private var boardUndoTarget = HorizontalUndoTarget<HorizontalBoard>()
     @Environment(\.undoManager) private var documentUndoManager
     @Environment(\.colorScheme) private var colorScheme
@@ -960,6 +964,12 @@ struct ProjectWorkspaceView: View {
             .focusedSceneValue(\.horizonLeaveBlockAction, canLeaveBlock ? { leaveBlock() } : nil)
             .focusedSceneValue(\.horizonClearAllPlanesAction, clearAllBoardPlanes)
             .focusedSceneValue(\.horizonBoardRulesAction, showBoardRulesWindow)
+            .focusedSceneValue(\.horizonLengthTuningActions, lengthTuningActions)
+            .onChange(of: boardEditRevision) { _, _ in
+                // The window's lengths follow the board, as Horizon updates
+                // its tuning window on every canvas update.
+                lengthTuning.update(board: project.board)
+            }
             .focusedSceneValue(\.horizonCleanUpProjectPoolAction, poolCleanupAction)
             .sheet(isPresented: Binding(get: { poolCleanupReview != nil }, set: { if !$0 { poolCleanupReview = nil } })) {
                 if let poolCleanupReview {
@@ -2566,6 +2576,10 @@ struct ProjectWorkspaceView: View {
                                         )
                                     }
                                 },
+                                onEditDiffpair: boardDiffpairEditing,
+                                onMeasureTracks: { tracks, allTracks in
+                                    measureTracks(tracks, allTracks: allTracks)
+                                },
                                 onComponentRefdesChange: { componentID, refdes in
                                     if let selectedSchematic {
                                         applyEditedComponentRefdes(
@@ -3060,7 +3074,8 @@ struct ProjectWorkspaceView: View {
     }
 
     private func applySelectionPropertyChange(_ change: HorizontalSelectionPropertyChange, in pane: HorizontalPane) {
-        guard !isReadOnly else {
+        // Measuring a track changes nothing, so a locked document measures too.
+        guard !isReadOnly || HorizontalTrackSelectionSummary.measuresAllTracks(change.propertyID) != nil else {
             return
         }
         selectionPropertyChangeCommands[pane] = HorizontalSelectionPropertyChangeCommand(change: change)
@@ -3301,6 +3316,77 @@ struct ProjectWorkspaceView: View {
 
     private func showBoardRulesWindow() {
         showBoardRulesWindow(focus: nil)
+    }
+
+    // MARK: - Length tuning and diff pairs
+
+    /// The tracks selected on the board, by id, as its inspector lists them.
+    private var selectedBoardTrackIDs: Set<String> {
+        Set(selectionDetailsByPane[.board]?.groups.first { $0.type == .track }?.items.map { $0.ref.id.lowercased() } ?? [])
+    }
+
+    /// The Design menu's Length Tuning…, Measure Tracks, Measure All
+    /// Tracks, Set Diff Pair and Clear Diff Pair.
+    private var lengthTuningActions: HorizontalLengthTuningActions? {
+        guard project.board != nil else {
+            return nil
+        }
+        let tracks = selectedBoardTrackIDs
+        // Only a selection of one or two nets can pair or clear.
+        let details = (1...2).contains(selectedNetIDs.count) ? selectedNetDetails : [:]
+        let pairing = isReadOnly ? nil : HorizontalDiffpairProperty.pairing(of: selectedNetIDs, in: details)
+        let clearing = isReadOnly ? nil : HorizontalDiffpairProperty.clearing(of: selectedNetIDs, in: details)
+        return HorizontalLengthTuningActions(
+            showWindow: showLengthTuningWindow,
+            measure: tracks.isEmpty ? nil : { allTracks in measureTracks(tracks, allTracks: allTracks) },
+            setDiffpair: pairing.map { edit in { applyProjectEdit(edit.ops, actionName: edit.actionName) } },
+            clearDiffpair: clearing.map { edit in { applyProjectEdit(edit.ops, actionName: edit.actionName) } }
+        )
+    }
+
+    /// The nets of the top block the selection can name: the schematic's,
+    /// with the board's for any it lacks.
+    private var selectedNetDetails: [String: HorizontalNetDetails] {
+        var details = project.schematic?.netDetails ?? [:]
+        for (id, detail) in project.board?.netDetails ?? [:] where details[id] == nil && boardNetIsTopBlocks(id) {
+            details[id] = detail
+        }
+        return details
+    }
+
+    /// Whether a board net is one of the top block's own, which its
+    /// schematic pairs; an instance's net is its block's.
+    private func boardNetIsTopBlocks(_ netID: String) -> Bool {
+        guard let flattened = project.flattenedBlock, flattened.isHierarchical else {
+            return true
+        }
+        return flattened.netPaths[netID.lowercased()]?.contains { $0.count == 1 } ?? false
+    }
+
+    /// The board inspector's Diff pair row edits the top block's nets.
+    private var boardDiffpairEditing: HorizontalDiffpairEditing? {
+        guard !isReadOnly else {
+            return nil
+        }
+        return HorizontalDiffpairEditing(
+            canEdit: { boardNetIsTopBlocks($0) },
+            apply: { ops, actionName in applyProjectEdit(ops, actionName: actionName) }
+        )
+    }
+
+    private func showLengthTuningWindow() {
+        lengthTuning.update(board: project.board)
+        let controller = lengthTuningWindowController ?? HorizontalLengthTuningWindowController()
+        lengthTuningWindowController = controller
+        controller.show(projectName: project.name, model: lengthTuning)
+    }
+
+    /// Horizon's Measure Track and Measure All Tracks: the tracks into the
+    /// list, and the window up.
+    private func measureTracks(_ trackIDs: Set<String>, allTracks: Bool) {
+        lengthTuning.update(board: project.board)
+        lengthTuning.add(trackIDs: trackIDs, allTracks: allTracks)
+        showLengthTuningWindow()
     }
 
     /// The rules window, at `focus` when there is one.

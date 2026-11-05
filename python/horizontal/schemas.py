@@ -381,6 +381,16 @@ class SetNetClass(NetOp):
     net_class: StrictStr
 
 
+class SetDiffpair(NetOp):
+    """Horizon's Set Diff Pair: net the primary, partner the secondary."""
+    op: Literal["set_diffpair"]
+    partner: StrictStr
+
+
+class ClearDiffpair(NetOp):
+    op: Literal["clear_diffpair"]
+
+
 class RetireNet(NetOp):
     op: Literal["retire_net"]
     remove_routing: bool | None = None
@@ -1205,7 +1215,7 @@ class CopyLayout(Input):
 
 
 EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | SetValue | SetRefdes | SetPart | SetPopulation |
-                          SetGroup | EnsureNet | RenameNet | SetNetClass | RetireNet | Connect | Disconnect |
+                          SetGroup | EnsureNet | RenameNet | SetNetClass | SetDiffpair | ClearDiffpair | RetireNet | Connect | Disconnect |
                           Place | PlaceSymbol | MoveSymbols | MoveToOtherSheet | RemoveSymbol | DrawNetLine | PlaceJunction | SetNetLineEndpoint | RemapPart | PlaceText | RemoveText |
                           RemoveNetLine | RemoveJunction | PruneSheet | TerminatePin | SetSymbolDisplay | SetCustomValue | Smash | SetNoConnect | SetPinAlternate |
                           PlaceTrack | RemoveTrack | SetTrackWidth | PlaceVia | RemoveVia |

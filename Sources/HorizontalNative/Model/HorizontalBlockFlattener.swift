@@ -232,6 +232,7 @@ enum HorizontalBlockFlattener {
             let netClasses = flat["net_classes"] as? JSONDictionary ?? [:]
             let defaultClass = flat["net_class_default"]
             var diffpairs = [(netID: String, partner: String)]()
+            let pairings = HorizontalDiffpairs.resolve(block: block)
             for (rawID, net) in HorizontalBlockFlattener.sorted(block.dictionaryMap("nets")) {
                 let id = rawID.lowercased()
                 let localPath = path + [id]
@@ -250,22 +251,24 @@ enum HorizontalBlockFlattener {
                 var flatNet = net
                 flatNet["name"] = name + "/" + Self.netName(id, in: block)
                 flatNet["is_port"] = false
+                // The pair is the instance's own: its primary names its
+                // partner's flat net once both are in (below).
                 flatNet.removeValue(forKey: "diffpair")
-                flatNet["diffpair_primary"] = false
                 if let netClass = net.string("net_class"), netClasses.keys.contains(where: { $0.lowercased() == netClass.lowercased() }) {
                     flatNet["net_class"] = netClass
                 } else {
                     flatNet["net_class"] = defaultClass
                 }
                 nets[flatID] = flatNet
-                if net.bool("diffpair_primary") == true, let partner = net.string("diffpair")?.lowercased() {
-                    diffpairs.append((flatID, partner))
+                // A primary is the net whose `diffpair` names a net of the
+                // block, as Horizon's Net reads it; the file has no other mark.
+                if let pairing = pairings[id], pairing.isPrimary {
+                    diffpairs.append((flatID, pairing.partnerID))
                 }
             }
             for pair in diffpairs {
                 guard let partner = netMap[path + [pair.partner]], var net = nets[pair.netID] as? JSONDictionary else { continue }
                 net["diffpair"] = partner
-                net["diffpair_primary"] = true
                 nets[pair.netID] = net
             }
             flat["nets"] = nets

@@ -49,6 +49,9 @@ struct SchematicMetalLineCacheKey: Hashable {
     var pinColor: HorizontalMetalRGBA
     var pinAnnotationColor: HorizontalMetalRGBA
     var netColor: HorizontalMetalRGBA
+    /// A diff pair's colour, and the nets in one, which draw in it.
+    var diffPairColor: HorizontalMetalRGBA
+    var diffpairNetIDs: Set<String> = []
     var netTieColor: HorizontalMetalRGBA
     var isolatedColor: HorizontalMetalRGBA
     var busColor: HorizontalMetalRGBA

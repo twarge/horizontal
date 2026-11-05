@@ -25,6 +25,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case renameNetClass = "rename_net_class"
     case renameNet = "rename_net"
     case setNetClass = "set_net_class"
+    case setDiffpair = "set_diffpair"
+    case clearDiffpair = "clear_diffpair"
     case retireNet = "retire_net"
     case connect = "connect"
     case disconnect = "disconnect"
@@ -128,6 +130,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .renameNetClass: "Rename a net class."
         case .renameNet: "Rename a net."
         case .setNetClass: "Put a net in a net class, by name or id."
+        case .setDiffpair: "Horizon's Set Diff Pair: pair two nets as a differential pair, net the primary and partner the secondary. The block file names the pair on the primary (its diffpair). Two nets paired already take the roles given; a net in a pair with another is refused until clear_diffpair takes it out. list_nets and get_net give each net's diffpair."
+        case .clearDiffpair: "Horizon's Clear Diff Pair: take a net, primary or secondary, out of its differential pair. A net in none is left as it is."
         case .retireNet: "Remove a net, every connection to it, and the labels, power symbols, wires and junctions drawn for it. Its planes go too, since a plane needs a net; their outlines stay as polygons. Tracks and vias on it are reported, or removed with remove_routing."
         case .connect: "Connect a component pin to a net."
         case .disconnect: "Remove a pin's connection."
@@ -284,6 +288,10 @@ enum HorizontalEditOperationKind: String, CaseIterable {
             return ["net": "Net name or id.", "name": "New name."]
         case .setNetClass:
             return ["net": "Net name or id.", "net_class": "Net class name or id."]
+        case .setDiffpair:
+            return ["net": "Net name or id: the pair's primary.", "partner": "Net name or id: the secondary."]
+        case .clearDiffpair:
+            return ["net": "Net name or id, either side of its pair."]
         case .retireNet:
             return ["net": "Net name or id.",
                     "remove_routing": "Also remove the board tracks and vias on the net, and its planes' outlines (default false: tracks and vias are counted in the result and left alone, on no net)."]
@@ -937,6 +945,34 @@ final class HorizontalProjectEditor {
             try updateNet(id) { $0["net_class"] = classID }
             change["net"] = id
             change["net_class"] = classID
+        case .setDiffpair:
+            let id = try netID(params)
+            guard let partnerReference = params.string("partner"), !partnerReference.isEmpty else {
+                throw HorizontalDispatchError.invalidParams("set_diffpair needs \"partner\", the secondary net's name or id.")
+            }
+            let partner = try netID(reference: partnerReference)
+            var all = block["nets"] as? JSONDictionary ?? [:]
+            let changed: Bool
+            do {
+                changed = try HorizontalDiffpairs.pair(id, with: partner, in: &all)
+            } catch let error as HorizontalDiffpairs.PairingError {
+                throw HorizontalDispatchError.invalidParams(error.errorDescription ?? "Can't pair those nets.")
+            }
+            if changed {
+                block["nets"] = all
+            }
+            change["changed"] = changed
+            change["net"] = id
+            change["partner"] = partner.lowercased()
+        case .clearDiffpair:
+            let id = try netID(params)
+            var all = block["nets"] as? JSONDictionary ?? [:]
+            let partner = HorizontalDiffpairs.unpair(id, in: &all)
+            if partner != nil {
+                block["nets"] = all
+            }
+            change["net"] = id
+            change["partner"] = partner ?? NSNull()
         case .retireNet:
             let id = try netID(params)
             change["net"] = id
@@ -1572,6 +1608,8 @@ final class HorizontalProjectEditor {
 
         var all = block["nets"] as? JSONDictionary ?? [:]
         all.removeValue(forKey: all.keys.first { $0.lowercased() == id } ?? id)
+        // Its partner, if it had one, is in no pair now.
+        HorizontalDiffpairs.dropReferences(to: [id], in: &all)
         block["nets"] = all
 
         var disconnected = 0

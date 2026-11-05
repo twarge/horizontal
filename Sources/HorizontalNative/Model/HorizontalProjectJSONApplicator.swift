@@ -931,6 +931,8 @@ enum HorizontalProjectJSONApplicator {
                 nets.removeValue(forKey: key)
             }
         }
+        // A pair with a net gone is no pair, and Horizon writes none.
+        HorizontalDiffpairs.dropReferences(to: removedNetIDs, in: &nets)
         for detail in netDetails.values where !removedNetIDs.contains(normalizedID(detail.id)) {
             let netID = normalizedID(detail.id)
             let key = matchingKey(netID, in: nets) ?? netID

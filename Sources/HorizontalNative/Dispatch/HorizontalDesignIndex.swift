@@ -198,6 +198,10 @@ struct HorizontalDesignNet {
     var blockName: String? = nil
     /// The block instances in the net's own block whose ports are wired to it.
     var ports: [HorizontalDesignNetPort] = []
+    /// The net it is in a differential pair with, and whether it is the
+    /// pair's primary (`HorizontalDiffpairs`).
+    var diffpairID: String? = nil
+    var isDiffpairPrimary: Bool = false
 }
 
 struct HorizontalDesignSheet {
@@ -532,7 +536,9 @@ struct HorizontalDesignIndex {
                 netClassName: details.netClassName,
                 isPower: details.isPower,
                 isPort: details.isPort,
-                pins: []
+                pins: [],
+                diffpairID: details.diffpairID,
+                isDiffpairPrimary: details.isDiffpairPrimary
             )
         }
         for component in components.values {

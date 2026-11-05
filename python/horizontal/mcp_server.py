@@ -781,13 +781,16 @@ def get_component(refdes: str | None = None, path: str | None = None, id: str | 
 
 @_tool
 def list_nets(path: str | None = None) -> list[dict[str, Any]]:
-    """Every net with its class, power/port flags, pin count, and routing counts."""
+    """Every net with its class, power/port flags, pin count, and routing counts: tracks, airwires and
+    routed_length_mm, every track on it with arcs along their circles. A net in a differential pair
+    gives diffpair: its partner's name and id, and whether this is the primary (set_diffpair)."""
     return _resolve(path).nets()
 
 
 @_tool
 def get_net(name: str | None = None, path: str | None = None, id: str | None = None) -> dict[str, Any]:
-    """One net in full: the pins on it and how much of it is routed."""
+    """One net in full: the pins on it, how much of it is routed (routed_length_mm) and, in a
+    differential pair, its partner (diffpair)."""
     return _resolve(path).net(name=name, id=id)
 
 

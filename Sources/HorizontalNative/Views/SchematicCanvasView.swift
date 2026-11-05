@@ -1980,6 +1980,16 @@ struct SchematicCanvasView: View {
         return properties
     }
 
+    /// Horizon's Diffpair property, a choice of partner where the block can
+    /// be edited (`HorizontalDiffpairProperty`): Set and Clear Diff Pair.
+    private func netDiffpairProperties(for netID: String?) -> [HorizontalSelectionProperty] {
+        guard !editorProfile.isPoolMode else {
+            return []
+        }
+        let editable = !isReadOnly && onApplyProjectEdit != nil
+        return [HorizontalDiffpairProperty.property(for: netID, in: sheet.netDetails, editable: editable)].compactMap { $0 }
+    }
+
     /// Renames a net in the block, as Horizon's net name property does: every
     /// label, power symbol and wire on it, on every sheet, shows the new name
     /// at once, the labels with their other-sheet references worked out
@@ -2047,8 +2057,9 @@ struct SchematicCanvasView: View {
                 noPopulateProperty(for: symbol),
             ].compactMap { $0 } + editableSymbolPinNameProperties(for: symbol)
         case .lineNet:
+            let netID = sheet.netLines.first { normalizedID($0.id) == normalizedID(ref.id) }?.netID
             return segmentProperties(for: ref, segments: sheet.netLines, title: "Net", editsNetName: true)
-                + netPortProperties(for: sheet.netLines.first { normalizedID($0.id) == normalizedID(ref.id) }?.netID)
+                + netDiffpairProperties(for: netID) + netPortProperties(for: netID)
         case .drawingLine:
             return segmentProperties(for: ref, segments: sheet.drawingLines, title: "Drawing line")
         case .drawingArc:
@@ -2071,7 +2082,7 @@ struct SchematicCanvasView: View {
                 editableNetClassProperty(for: label.netID),
                 // Horizon's "Show port": the label reads the port's direction.
                 showsPort ? editableBoolProperty("showPort", "Show port", label.showsPort) : nil,
-            ].compactMap { $0 } + netPortProperties(for: label.netID)
+            ].compactMap { $0 } + netDiffpairProperties(for: label.netID) + netPortProperties(for: label.netID)
         case .busLabel:
             guard let label = sheet.busLabels.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return []
@@ -2093,7 +2104,8 @@ struct SchematicCanvasView: View {
             return [
                 readOnlyProperty("net", "Net", netDisplayName(netID(forJunctionID: junction.key))),
                 editableNetClassProperty(for: netID(forJunctionID: junction.key)),
-            ].compactMap { $0 } + netPortProperties(for: netID(forJunctionID: junction.key))
+            ].compactMap { $0 } + netDiffpairProperties(for: netID(forJunctionID: junction.key))
+                + netPortProperties(for: netID(forJunctionID: junction.key))
         case .schematicNetTie:
             guard let tie = sheet.netTies.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return []
@@ -2108,7 +2120,7 @@ struct SchematicCanvasView: View {
             return [
                 readOnlyProperty("net", "Net", netDisplayName(netID)),
                 editableNetClassProperty(for: netID),
-            ].compactMap { $0 }
+            ].compactMap { $0 } + netDiffpairProperties(for: netID)
         case .schematicBlockSymbol:
             return blockSymbolProperties(for: ref)
         case .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .connectionLine, .dimension, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .track, .via:
@@ -6936,6 +6948,17 @@ struct SchematicCanvasView: View {
             renameNet(of: change.ref, to: name)
             return
         }
+        if change.propertyID == HorizontalDiffpairProperty.id, case .choice(let partner) = change.value {
+            if let netID = netID(for: change.ref),
+               let edit = HorizontalDiffpairProperty.operations(for: netID, choice: partner, in: sheet.netDetails) {
+                // The selection survives, as a rename's does, so the
+                // inspector shows the pair made.
+                hoveredObject = nil
+                adoptExternallyUpdatedSheet()
+                onApplyProjectEdit?(edit.ops, edit.actionName)
+            }
+            return
+        }
         if change.propertyID == Self.noPopulatePropertyID, case .bool(let noPopulate) = change.value {
             setNoPopulate(noPopulate, of: change.applyToAll ? selectedObjects : [change.ref])
             return
@@ -9128,6 +9151,10 @@ struct SchematicCanvasView: View {
         let pinAnnotationColor = HorizontalMetalRGBA(theme.pinAnnotation)
         let hiddenPinTextColor = HorizontalMetalRGBA(theme.pin.opacity(0.4))
         let netColor = HorizontalMetalRGBA(theme.net)
+        // Horizon draws a diff pair's wires, junctions and labels in the Diff
+        // Pair colour, its wires 0.2 mm wide (Canvas::render).
+        let diffPairColor = HorizontalMetalRGBA(theme.diffPair)
+        let diffpairNetIDs = HorizontalDiffpairs.pairedNetIDs(self.sheet.netDetails)
         let netTieColor = HorizontalMetalRGBA(theme.netTie)
         let isolatedColor = HorizontalMetalRGBA(theme.error)
         let busColor = HorizontalMetalRGBA(theme.bus)
@@ -9156,6 +9183,8 @@ struct SchematicCanvasView: View {
             pinColor: pinColor,
             pinAnnotationColor: pinAnnotationColor,
             netColor: netColor,
+            diffPairColor: diffPairColor,
+            diffpairNetIDs: diffpairNetIDs,
             netTieColor: netTieColor,
             isolatedColor: isolatedColor,
             busColor: busColor,
@@ -9399,8 +9428,8 @@ struct SchematicCanvasView: View {
                 if info.isIsolated {
                     return isolatedColor
                 }
-                if info.netID != nil {
-                    return netColor
+                if let netID = info.netID {
+                    return diffpairNetIDs.contains(netID.lowercased()) ? diffPairColor : netColor
                 }
                 return junctionColor
             }
@@ -9541,8 +9570,14 @@ struct SchematicCanvasView: View {
                 // Hops are found among all the sheet's wires, so a highlighted
                 // wire hops where it does on the sheet.
                 let hops = drawsWireHops ? HorizontalSchematicWireHops(lines: self.sheet.netLines) : .empty
-                for segment in sheet.netLines {
-                    let color = isolatedNetLineIDs.contains(normalizedID(segment.id)) ? isolatedColor : netColor
+                for line in sheet.netLines {
+                    var segment = line
+                    let paired = segment.netID.map { diffpairNetIDs.contains($0.lowercased()) } ?? false
+                    if paired {
+                        segment.width = max(segment.width, HorizontalDiffpairs.schematicLineWidth)
+                    }
+                    let color = isolatedNetLineIDs.contains(normalizedID(segment.id))
+                        ? isolatedColor : (paired ? diffPairColor : netColor)
                     let owner = HorizontalSelectableRef(id: segment.id, type: .lineNet)
                     if let lineHops = hops.hopsByLineID[segment.id.lowercased()] {
                         appendPolyline(
@@ -9610,8 +9645,8 @@ struct SchematicCanvasView: View {
 
             if displayOptions.netLabels {
                 currentGroup = 8; currentOpacity = 0.78
-                let labelColor = netColor
                 for label in sheet.netLabels {
+                    let labelColor = label.netID.map { diffpairNetIDs.contains($0.lowercased()) } == true ? diffPairColor : netColor
                     let text = netLabelText(for: label)
                     let owner = HorizontalSelectableRef(id: label.id, type: .netLabel)
                     appendClosedPolyline(netLabelOutlinePoints(for: label, text: text), color: labelColor, owner: owner)
@@ -9803,8 +9838,8 @@ struct SchematicCanvasView: View {
                 if info.isIsolated {
                     return isolatedColor
                 }
-                if info.netID != nil {
-                    return netColor
+                if let netID = info.netID {
+                    return diffpairNetIDs.contains(netID.lowercased()) ? diffPairColor : netColor
                 }
                 return junctionColor
             }
@@ -10547,11 +10582,14 @@ struct SchematicCanvasView: View {
             }
         case .lineNet:
             if let line = sheet.netLines.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) {
+                // A diff pair's wire as the scene draws it (schematicMetalScene).
+                let paired = line.netID.flatMap { self.sheet.netDetails[normalizedID($0)]?.diffpairID } != nil
                 appendLine(
                     from: line.from,
                     to: line.to,
-                    color: isolatedNetLineIDs.contains(normalizedID(line.id)) ? isolatedColor : netColor,
-                    width: line.width,
+                    color: isolatedNetLineIDs.contains(normalizedID(line.id))
+                        ? isolatedColor : (paired ? HorizontalMetalRGBA(theme.diffPair) : netColor),
+                    width: paired ? max(line.width, HorizontalDiffpairs.schematicLineWidth) : line.width,
                     minimumWidth: 1.4,
                     group: 5,
                     opacity: 0.75

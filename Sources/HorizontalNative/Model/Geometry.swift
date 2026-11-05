@@ -1228,6 +1228,11 @@ struct HorizontalNetDetails: Hashable {
     var portDirection: String?
     var powerSymbolStyle: String?
     var powerSymbolNameVisible: Bool = true
+    /// The net it is in a differential pair with, lowercased, and whether it
+    /// is the pair's primary, the one the file names the pair on
+    /// (`HorizontalDiffpairs`). Nil in no pair.
+    var diffpairID: String? = nil
+    var isDiffpairPrimary: Bool = false
 }
 
 struct HorizontalSchematicComponentRecord: Identifiable, Hashable {
