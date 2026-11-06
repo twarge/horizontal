@@ -28,7 +28,7 @@ struct HorizontalExportSidebarView: View {
                         Button {
                             onExportAll()
                         } label: {
-                            Label("Export All", systemImage: "square.and.arrow.up")
+                            Text("Export All")
                         }
                         .disabled(!canExportAll || isExporting)
 
@@ -290,7 +290,7 @@ struct HorizontalExportSidebarView: View {
                     Button {
                         onExport(section)
                     } label: {
-                        Label("Export", systemImage: "square.and.arrow.up")
+                        Text("Export")
                     }
                     .disabled(!isEnabled.wrappedValue || isExporting)
                     .padding(.top, 2)
