@@ -1684,6 +1684,7 @@ struct BoardCanvasView: View {
     private var inlineTextEditor: some View {
         BoardInlineTextEditorField(
             text: inlineTextEditorBinding,
+            textVariables: editingTextState.map { board.textVariables(forTextID: $0.ref).metadataItems } ?? [],
             onSubmit: { finalizeTextEdit() }
         )
     }
@@ -2721,8 +2722,11 @@ struct BoardCanvasView: View {
     }
 
     private func textProperties(_ text: HorizontalText) -> [HorizontalSelectionProperty] {
-        [
-            editableTextProperty("text", "Text", text.text, multiline: true),
+        // What the file stores, "$rev" rather than the revision it draws.
+        var textProperty = editableTextProperty("text", "Text", text.editableText, multiline: true)
+        textProperty.textVariables = board.textVariables(forTextID: text.id).metadataItems
+        return [
+            textProperty,
             editableLengthProperty("size", "Size", text.size),
             editableLengthProperty("width", "Width", text.width),
             editableLayerProperty("layer", "Layer", text.layer, copperOnly: false),
@@ -5465,13 +5469,14 @@ struct BoardCanvasView: View {
 
     private func placeText(_ content: String, editAfterCommit: Bool = false) {
         let position = lastCursorWorldPoint ?? board.bounds.center
-        let text = HorizontalText(
+        var text = HorizontalText(
             id: UUID().uuidString.lowercased(),
             text: content,
             position: position,
             size: 1_000_000,
             layer: drawingLayer
         )
+        text.setStoredText(content, variables: board.textVariables)
         let previous = editedBoard ?? sourceBoard
         var draft = previous
         draft.texts.append(text)
@@ -5520,7 +5525,7 @@ struct BoardCanvasView: View {
         editingTextState = EditTextState(
             ref: state.ref,
             worldPosition: placed?.position ?? state.worldPosition,
-            content: placed?.text ?? state.content,
+            content: placed?.editableText ?? state.content,
             preBoard: state.preBoard,
             isEditing: true,
             isNewPlacement: state.isNewPlacement,
@@ -5551,11 +5556,11 @@ struct BoardCanvasView: View {
         editingTextState = EditTextState(
             ref: text.id,
             worldPosition: text.position,
-            content: text.text,
+            content: text.editableText,
             preBoard: current,
             isEditing: true,
             isNewPlacement: false,
-            originalContent: text.text
+            originalContent: text.editableText
         )
     }
 
@@ -5585,8 +5590,8 @@ struct BoardCanvasView: View {
         guard let index = draft.texts.firstIndex(where: { normalizedID($0.id) == normalizedID(state.ref) }) else {
             return
         }
-        guard draft.texts[index].text != state.content else { return }
-        draft.texts[index].text = state.content
+        guard draft.texts[index].editableText != state.content else { return }
+        draft.texts[index].setStoredText(state.content, variables: draft.textVariables(forTextID: state.ref))
         editedBoard = draft
         invalidateSelectableCache()
         publishConnectivityResolvedEdit(draft)
@@ -5618,7 +5623,7 @@ struct BoardCanvasView: View {
         // never have fired, so apply state.content to the board here explicitly.
         var draft = editedBoard ?? sourceBoard
         if let index = draft.texts.firstIndex(where: { normalizedID($0.id) == normalizedID(state.ref) }) {
-            draft.texts[index].text = state.content
+            draft.texts[index].setStoredText(state.content, variables: draft.textVariables(forTextID: state.ref))
         }
         editedBoard = draft
         registerUndoSnapshot(state.preBoard, actionName: state.isNewPlacement ? "Add Text" : "Edit Text")
@@ -8859,8 +8864,9 @@ struct BoardCanvasView: View {
         case .dimension:
             updateDimension(&board.dimensions, ref: ref, propertyID: propertyID, value: value)
         case .text:
-            updateText(&board.texts, ref: ref, propertyID: propertyID, value: value)
-            updateText(&board.packageTexts, ref: ref, propertyID: propertyID, value: value)
+            let variables = board.textVariables(forTextID: ref.id)
+            updateText(&board.texts, ref: ref, propertyID: propertyID, value: value, variables: variables)
+            updateText(&board.packageTexts, ref: ref, propertyID: propertyID, value: value, variables: variables)
         case .polygonArcCenter, .polygonEdge, .polygonVertex:
             // A plane's outline too, whose layer is the plane's.
             let liftedOutlines = board.liftPlaneOutlines()
@@ -9363,7 +9369,8 @@ struct BoardCanvasView: View {
         _ texts: inout [HorizontalText],
         ref: HorizontalSelectableRef,
         propertyID: String,
-        value: HorizontalSelectionPropertyValue
+        value: HorizontalSelectionPropertyValue,
+        variables: HorizontalTextVariables
     ) {
         guard let index = texts.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
             return
@@ -9371,7 +9378,7 @@ struct BoardCanvasView: View {
 
         switch (propertyID, value) {
         case ("text", .text(let text)):
-            texts[index].text = text
+            texts[index].setStoredText(text, variables: variables)
         case ("size", .length(let size)):
             texts[index].size = max(size, 0)
         case ("width", .length(let width)):
@@ -16388,6 +16395,8 @@ struct BoardCanvasView: View {
 /// (click-away / Esc) is what finalizes a non-submit edit.
 struct BoardInlineTextEditorField: View {
     @Binding var text: String
+    /// What its Insert Metadata menu offers.
+    var textVariables: [HorizontalTextVariableItem] = []
     var onSubmit: () -> Void
     @FocusState private var focused: Bool
 
@@ -16402,6 +16411,7 @@ struct BoardInlineTextEditorField: View {
             .textFieldStyle(.roundedBorder)
             .lineLimit(1...10)
             .frame(width: fieldWidth)
+            .insertMetadataMenu(textVariables)
             .focused($focused)
             .onSubmit(onSubmit)
             .padding(10)

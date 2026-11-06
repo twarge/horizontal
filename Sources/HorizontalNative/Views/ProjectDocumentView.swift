@@ -5735,7 +5735,7 @@ struct ProjectMetadataRow: Identifiable, Equatable {
 
     var id: String { key }
 
-    static let preferredKeys = ["project_title", "project_name", "rev", "author", "date", "license"]
+    static let preferredKeys = HorizontalTextVariableItem.preferredKeys
 
     /// A field for every key: the usual ones always, empty or not, then any
     /// other key the project has a value for. Two keys holding the same value
@@ -5750,18 +5750,7 @@ struct ProjectMetadataRow: Identifiable, Equatable {
     }
 
     static func title(for key: String) -> String {
-        switch key {
-        case "project_title": "Title"
-        case "project_name": "Project"
-        case "rev": "Revision"
-        case "author": "Author"
-        case "date": "Date"
-        case "license": "License"
-        default:
-            key.split(separator: "_")
-                .map { $0.localizedCapitalized }
-                .joined(separator: " ")
-        }
+        HorizontalTextVariableItem.title(for: key)
     }
 }
 

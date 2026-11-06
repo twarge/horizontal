@@ -85,6 +85,9 @@ struct HorizontalSelectionProperty: Identifiable, Equatable {
     /// Properties sharing a section are listed together after the others,
     /// under a disclosure triangle with this title.
     var section: String? = nil
+    /// What the text field's Insert Metadata menu offers, `$key` and what it
+    /// stands for here; none, and the field has no such menu.
+    var textVariables: [HorizontalTextVariableItem] = []
 
     var isEditable: Bool {
         switch editor {
@@ -892,12 +895,14 @@ struct HorizontalSelectionPopoverView: View {
         switch property.editor {
         case .text:
             TextPropertyField(text: textBinding(for: property, group: group, item: item), font: editorFont)
+                .insertMetadataMenu(property.textVariables)
         case .committedText:
             CommittedTextPropertyField(value: textBinding(for: property, group: group, item: item).wrappedValue, font: editorFont) {
                 sendChange(.text($0), property: property, group: group, item: item)
             }
         case .multilineText:
             TextPropertyField(text: textBinding(for: property, group: group, item: item), font: editorFont)
+                .insertMetadataMenu(property.textVariables)
         case .bool:
             Toggle("", isOn: boolBinding(for: property, group: group, item: item))
                 .labelsHidden()

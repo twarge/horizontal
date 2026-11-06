@@ -1223,6 +1223,7 @@ struct SchematicCanvasView: View {
     private var inlineTextEditor: some View {
         BoardInlineTextEditorField(
             text: inlineTextEditorBinding,
+            textVariables: editingTextState.map { sheet.textVariables(forTextID: $0.ref).metadataItems } ?? [],
             onSubmit: { finalizeTextEdit() }
         )
     }
@@ -2240,8 +2241,11 @@ struct SchematicCanvasView: View {
     }
 
     private func textProperties(_ text: HorizontalText) -> [HorizontalSelectionProperty] {
-        [
-            editableTextProperty("text", "Text", text.text, multiline: true),
+        // What the file stores, "$rev" rather than the revision it draws.
+        var textProperty = editableTextProperty("text", "Text", text.editableText, multiline: true)
+        textProperty.textVariables = sheet.textVariables(forTextID: text.id).metadataItems
+        return [
+            textProperty,
             editableLengthProperty("size", "Size", text.size),
             editableLengthProperty("width", "Width", text.width),
             editableLengthProperty("positionX", "Position X", text.position.x),
@@ -3929,13 +3933,14 @@ struct SchematicCanvasView: View {
 
     private func placeText(_ content: String, editAfterCommit: Bool = false) {
         let position = lastCursorWorldPoint ?? sheet.bounds.center
-        let text = HorizontalText(
+        var text = HorizontalText(
             id: UUID().uuidString.lowercased(),
             text: content,
             position: position,
             size: 1_500_000,
             layer: nil
         )
+        text.setStoredText(content, variables: sheet.textVariables)
         let previousSheet = editedSheet ?? sourceSheet
         var draft = previousSheet
         draft.texts.append(text)
@@ -3984,7 +3989,7 @@ struct SchematicCanvasView: View {
         editingTextState = EditTextState(
             ref: state.ref,
             worldPosition: placed?.position ?? state.worldPosition,
-            content: placed?.text ?? state.content,
+            content: placed?.editableText ?? state.content,
             preSheet: state.preSheet,
             isEditing: true,
             isNewPlacement: state.isNewPlacement,
@@ -4015,11 +4020,11 @@ struct SchematicCanvasView: View {
         editingTextState = EditTextState(
             ref: text.id,
             worldPosition: text.position,
-            content: text.text,
+            content: text.editableText,
             preSheet: current,
             isEditing: true,
             isNewPlacement: false,
-            originalContent: text.text
+            originalContent: text.editableText
         )
     }
 
@@ -4049,8 +4054,8 @@ struct SchematicCanvasView: View {
         guard let index = draft.texts.firstIndex(where: { normalizedID($0.id) == normalizedID(state.ref) }) else {
             return
         }
-        guard draft.texts[index].text != state.content else { return }
-        draft.texts[index].text = state.content
+        guard draft.texts[index].editableText != state.content else { return }
+        draft.texts[index].setStoredText(state.content, variables: draft.textVariables(forTextID: state.ref))
         editedSheet = draft
         invalidateSelectableCache()
         onSheetChange(draft)
@@ -4082,7 +4087,7 @@ struct SchematicCanvasView: View {
         // never have fired, so apply state.content to the sheet here explicitly.
         var draft = editedSheet ?? sourceSheet
         if let index = draft.texts.firstIndex(where: { normalizedID($0.id) == normalizedID(state.ref) }) {
-            draft.texts[index].text = state.content
+            draft.texts[index].setStoredText(state.content, variables: draft.textVariables(forTextID: state.ref))
         }
         editedSheet = draft
         registerUndoSnapshot(state.preSheet, actionName: state.isNewPlacement ? "Add Text" : "Edit Text")
@@ -7168,7 +7173,8 @@ struct SchematicCanvasView: View {
         case .busLabel:
             updateBusLabel(&sheet.busLabels, ref: ref, propertyID: propertyID, value: value)
         case .text:
-            updateText(&sheet.texts, ref: ref, propertyID: propertyID, value: value)
+            let variables = sheet.textVariables(forTextID: ref.id)
+            updateText(&sheet.texts, ref: ref, propertyID: propertyID, value: value, variables: variables)
         case .blockSymbolPort, .boardPackage, .boardDecal, .boardHole, .boardArc, .boardLine, .boardNetTie, .boardPanel, .busRipper, .connectionLine, .dimension, .junction, .keepout, .pad, .padstackShape, .plane, .polygonArcCenter, .polygonEdge, .polygonVertex, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .symbolPin, .track, .via:
             break
         }
@@ -7695,7 +7701,8 @@ struct SchematicCanvasView: View {
         _ texts: inout [HorizontalText],
         ref: HorizontalSelectableRef,
         propertyID: String,
-        value: HorizontalSelectionPropertyValue
+        value: HorizontalSelectionPropertyValue,
+        variables: HorizontalTextVariables
     ) {
         guard let index = texts.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
             return
@@ -7703,7 +7710,7 @@ struct SchematicCanvasView: View {
 
         switch (propertyID, value) {
         case ("text", .text(let text)):
-            texts[index].text = text
+            texts[index].setStoredText(text, variables: variables)
         case ("size", .length(let size)):
             texts[index].size = max(size, 0)
         case ("width", .length(let width)):
