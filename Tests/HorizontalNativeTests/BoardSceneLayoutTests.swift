@@ -37,4 +37,49 @@ final class BoardSceneLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(silkGap, 0.01 - 1e-9)
         XCTAssertLessThan(silkGap, 0.05)
     }
+
+    /// The bottom silkscreen hangs under the bottom mask as the top
+    /// silkscreen stands on the top mask: its lines, fills and texts as far
+    /// out from the mask's outer face, and as thick, clipped or not. They
+    /// were lifted towards the core like the top's, which put the bottom's
+    /// lines half inside the mask and its texts on the mask's face.
+    func testTheBottomSilkscreenMirrorsTheTop() {
+        let mm = 1_000_000.0
+        func point(_ x: Double, _ y: Double) -> HorizontalPoint { HorizontalPoint(x: x * mm, y: y * mm) }
+        var board = board(bottomSubstrate: 0)
+        // An edge the lines run over, so clipping cuts them and draws them
+        // as clipped sheets while the fills and texts, well inside, stay as
+        // they are.
+        board.polygons.append(HorizontalPolygon(
+            id: "outline", vertices: [point(-1, -1), point(3, -1), point(3, 10), point(-1, 10)], layer: HorizontalBoardLayers.outline
+        ))
+        for layer in [HorizontalBoardLayers.topSilkscreen, HorizontalBoardLayers.bottomSilkscreen] {
+            board.lines.append(HorizontalSegment(id: "line:\(layer)", from: point(0, 2), to: point(4, 2), width: 150_000, layer: layer, netID: nil))
+            board.polygons.append(HorizontalPolygon(
+                id: "polygon:\(layer)", vertices: [point(0, 4), point(2, 4), point(2, 6), point(0, 6)], layer: layer
+            ))
+            board.texts.append(HorizontalText(id: "text:\(layer)", text: "R1", position: point(0, 8), size: mm, layer: layer))
+        }
+        let layout = BoardSceneFactory.sceneLayout(for: board)
+
+        for clipping in [nil, HorizontalSilkscreenClipping(clearance: HorizontalSilkscreenClipping.defaultClearanceMM)] {
+            let meshes = BoardSceneFactory.describeScene(for: board, silkscreenClipping: clipping).meshes
+                .filter { $0.group == .silkscreen && !$0.mesh.isEmpty }
+            if clipping != nil {
+                XCTAssertTrue(meshes.contains { $0.name.hasPrefix("clipped:") }, "the lines are clipped at the edge")
+            }
+            // Each mesh's near and far faces, measured out from its own side's mask.
+            func spans(top: Bool) -> [String] {
+                meshes.filter { (($0.explodeFactor ?? 0) > 0) == top }.map { item in
+                    let near = top ? Double(item.mesh.boundsMin.y) - layout.topMaskTopY : layout.bottomMaskBottomY - Double(item.mesh.boundsMax.y)
+                    let far = top ? Double(item.mesh.boundsMax.y) - layout.topMaskTopY : layout.bottomMaskBottomY - Double(item.mesh.boundsMin.y)
+                    XCTAssertGreaterThanOrEqual(near, 0.01 - 1e-5, "\(item.name) clears its mask, clipping \(String(describing: clipping))")
+                    return String(format: "%.4f…%.4f", near, far)
+                }.sorted()
+            }
+            let top = spans(top: true)
+            XCTAssertFalse(top.isEmpty)
+            XCTAssertEqual(spans(top: false), top, "clipping \(String(describing: clipping))")
+        }
+    }
 }

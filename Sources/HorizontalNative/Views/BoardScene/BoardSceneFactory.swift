@@ -2502,8 +2502,10 @@ enum BoardSceneFactory {
         return baseHeight + layerSeparationOffset(for: layer, amount: layerSeparation)
     }
 
+    /// How far artwork stands off its layer's surface, away from the board:
+    /// up on the top side, down on the bottom.
     private static func overlayArtworkYOffset(for layer: Int?, fallback: Double) -> Double {
-        isSilkscreenLayer(layer) ? layerSurfaceGap : fallback
+        (isSilkscreenLayer(layer) ? layerSurfaceGap : fallback) * outwardSign(for: layer)
     }
 
     private static func textOverlayHeight(
@@ -2512,8 +2514,13 @@ enum BoardSceneFactory {
         boardThickness: Double,
         layerSeparation: Double = 0
     ) -> Double {
-        let offset = isSilkscreenLayer(layer) ? layerSurfaceGap : 0.045
+        let offset = (isSilkscreenLayer(layer) ? layerSurfaceGap : 0.045) * outwardSign(for: layer)
         return overlayHeight(for: layer, board: board, boardThickness: boardThickness, layerSeparation: layerSeparation) + offset
+    }
+
+    /// Away from the board's core: -1 for a bottom-side layer, else 1.
+    private static func outwardSign(for layer: Int?) -> Double {
+        layer.map(isBottomSideLayer) == true ? -1 : 1
     }
 
     private static func isBoardBodyLayer(_ layer: Int?) -> Bool {
