@@ -922,7 +922,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("expected_revision", tools["undo"].input_schema.get("required", []))
 
         mapping = tools["apply_ops"].input_schema["properties"]["ops"]["items"]["discriminator"]["mapping"]
-        for op in ("place_board_text", "place_dimension", "add_bus", "add_bus_member",
+        for op in ("place_board_text", "place_dimension", "place_decal", "add_bus", "add_bus_member",
                    "place_bus_label", "place_bus_ripper", "add_net_tie", "place_net_tie"):
             self.assertIn(op, mapping)
 
@@ -951,6 +951,32 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
                 {"x_mm": 0, "y_mm": 0, "arc_center_x_mm": 1},
                 {"x_mm": 1, "y_mm": 1}, {"x_mm": 2, "y_mm": 2}]}]})
         self.assertTrue(bad.is_error)
+
+    async def test_a_decal_from_a_pool_beside_the_project_is_placed_and_cached(self):
+        # A horizon-pool checkout beside the project is a pool it draws from;
+        # place_decal caches the decal it takes from there into the project pool.
+        decal_id = "5e0c1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b"
+        pool = Path(self.temp.name) / "horizon-pool"
+        (pool / "decals").mkdir(parents=True)
+        (pool / "pool.json").write_text(json.dumps({"type": "pool", "uuid": "0d7c6b5a-4f3e-4d2c-9b1a-8f7e6d5c4b3a",
+                                                     "name": "Test Pool", "pools_included": []}))
+        (pool / "decals" / "logo.json").write_text(json.dumps({
+            "type": "decal", "uuid": decal_id, "name": "Test Logo",
+            "junctions": {"a": {"position": [0, 0]}, "b": {"position": [2_000_000, 0]}},
+            "lines": {"x": {"from": "a", "to": "b", "layer": 20, "width": 100_000}},
+            "polygons": {}, "arcs": {}, "texts": {}}))
+        ops = [{"op": "place_decal", "decal": "Test Logo", "x_mm": 10, "y_mm": 20, "angle_deg": 90, "flip": True, "id": "logo"}]
+        dry = (await self.call("apply_ops", project_ref=self.ref, dry_run=True, ops=ops))["data"]
+        change = dry["changes"][0]
+        self.assertEqual(change["decal"], decal_id)
+        self.assertEqual(change["cached"], [f"pool/decals/cache/{decal_id}.json"])
+        self.assertFalse((self.path / "pool" / "decals" / "cache" / f"{decal_id}.json").exists())
+        await self.call("apply_ops", project_ref=self.ref, plan_digest=dry["plan_digest"],
+                        expected_revision=dry["before_revision"], operation_id="decal")
+        self.assertTrue((self.path / "pool" / "decals" / "cache" / f"{decal_id}.json").exists())
+        entry = json.loads((self.path / "board.json").read_text())["decals"][dry["handles"]["logo"]]
+        self.assertEqual(entry["placement"], {"shift": [10_000_000, 20_000_000], "angle": 49_152, "mirror": True})
+        self.assertTrue(entry["flip"])
 
     async def test_a_batch_names_what_it_makes_and_a_failure_names_its_op(self):
         revision = self.opened["data"]["revision"]

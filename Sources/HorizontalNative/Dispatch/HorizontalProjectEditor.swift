@@ -93,6 +93,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case removeBoardText = "remove_board_text"
     case placeDimension = "place_dimension"
     case removeDimension = "remove_dimension"
+    case placeDecal = "place_decal"
     case setSheetIndex = "set_sheet_index"
     case placeComponent = "place_component"
     case removePlacement = "remove_placement"
@@ -198,6 +199,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .removeBoardText: "Remove a board text. A text a package carries belongs to that package."
         case .placeDimension: "Measure between two points on the board, the way the dimension tool does."
         case .removeDimension: "Remove a dimension."
+        case .placeDecal: "Put a pool decal — a logo, a marking, artwork drawn once and placed as a whole — on the board, as Design ▸ Place Decal… and Horizon's place-decal tool do: a decal from the project pool or a pool it draws from, at a point, turned, flipped to the bottom and scaled. A decal from another pool is cached into the project pool with the edit, since the board draws a decal only from there; the reply says what was cached."
         case .setSheetIndex: "Move a schematic sheet to a page number, shifting the sheets between; swap exchanges it with the one there instead."
         case .placeComponent: "Place a component's package on the board, or move it if it is placed."
         case .removePlacement: "Take a component's package off the board, keeping its copper as junctions. A package whose component is in no block any more, which check reports, is named by its own id or the component id its refdes text draws."
@@ -531,6 +533,13 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "size_mm": "Label cap height (optional; default 1.5)."]
         case .removeDimension:
             return ["dimension": "Dimension id, from list_dimensions."]
+        case .placeDecal:
+            return ["decal": "The pool decal: its uuid (eight or more leading digits will do), or a name only one decal has. search_pool with kind decal finds one.",
+                    "x_mm": "X position of the decal's origin.", "y_mm": "Y position of the decal's origin.",
+                    "angle_deg": "Rotation, counterclockwise as Horizon turns it; R in the app turns it -90 (optional; default 0).",
+                    "flip": "Put it on the bottom side, mirrored onto the bottom layers, as E in the app does. The angle is inverted with it, as Horizon's tool inverts it, so angle_deg still turns it counterclockwise as the board is drawn from the top (optional; default false).",
+                    "scale": "Scale factor, more than zero (optional; default 1).",
+                    "id": "Board decal UUID to use, or a name for it, which the reply's handles maps to the UUID it became (optional)."]
         case .setSheetIndex:
             return ["sheet": "Sheet index, name or uuid.", "index": "The page number to give it.",
                     "swap": "Exchange page numbers with the sheet there rather than moving the sheets between (default false)."]
@@ -645,11 +654,12 @@ struct HorizontalEditOperation {
                     throw HorizontalDispatchError.invalidParams("\(key) must be an object.")
                 }
             } else if ["x_mm", "y_mm", "angle_deg", "size_mm", "width_mm", "copper_mm", "substrate_mm",
-                       "label_distance_mm", "length_mm", "texts_within_mm", "diameter_mm", "hole_mm", "dx_mm", "dy_mm"].contains(key) {
+                       "label_distance_mm", "length_mm", "texts_within_mm", "diameter_mm", "hole_mm", "dx_mm", "dy_mm", "scale"].contains(key) {
                 try HorizontalDispatchValidation.number(value, key: key)
             } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs", "exposed_copper_only",
                        "force", "cascade", "swap", "remove_routing", "display_all_pads", "no_connect", "disconnect",
-                       "unanchored", "stubs", "use_primary_name", "all", "keep_wiring", "board", "is_port", "nc", "show_port", "fill_gaps", "keep", "ignore_unknown"].contains(key) {
+                       "unanchored", "stubs", "use_primary_name", "all", "keep_wiring", "board", "is_port", "nc", "show_port", "fill_gaps", "keep", "ignore_unknown",
+                       "flip"].contains(key) {
                 try HorizontalDispatchValidation.boolean(value, key: key)
             } else if value is NSNull, ["part", "group", "tag"].contains(key) {
                 continue
@@ -767,6 +777,9 @@ final class HorizontalProjectEditor {
     private var dirty = Set<String>()
     /// Files an op took out of the project, by path from its base.
     private var removedFiles: [String] = []
+    /// Pool files an op caches into the project pool, written as the pool
+    /// cache importer made them rather than reformatted, by standardized path.
+    private var cachedPoolFiles: [String: HorizontalPoolCacheFile] = [:]
     private(set) var changes: [JSONDictionary] = []
 
     /// Which block this editor edits, and whether it is the top one. A board
@@ -1131,6 +1144,8 @@ final class HorizontalProjectEditor {
             change.merge(try placeDimension(params)) { _, new in new }
         case .removeDimension:
             change.merge(try removeBoardEntry(params, key: "dimensions", selector: "dimension", label: "dimension")) { _, new in new }
+        case .placeDecal:
+            change.merge(try placeDecal(params)) { _, new in new }
         case .setSheetIndex:
             change.merge(try setSheetIndex(params)) { _, new in new }
         case .placeTrack:
@@ -1201,6 +1216,10 @@ final class HorizontalProjectEditor {
             let url = project.baseURL.appendingPathComponent(path)
             try store.remove(url)
             written.append(url.path)
+        }
+        for (_, file) in cachedPoolFiles.sorted(by: { $0.key < $1.key }) {
+            try store.write(file.data, to: file.url)
+            written.append(file.url.path)
         }
         return written
     }
@@ -5981,6 +6000,148 @@ final class HorizontalProjectEditor {
         return ["dimension": id, "mode": mode,
                 "from": ["x_mm": Double(p0[0]) / 1_000_000, "y_mm": Double(p0[1]) / 1_000_000],
                 "to": ["x_mm": Double(p1[0]) / 1_000_000, "y_mm": Double(p1[1]) / 1_000_000]]
+    }
+
+    // MARK: - Board decals
+
+    /// Horizon's place-decal tool, as Design ▸ Place Decal… runs it: a decal
+    /// from the project pool or a pool it draws from goes on the board at a
+    /// point, turned (R turns it -90°), flipped (E mirrors it to the bottom
+    /// and inverts its angle) and scaled, written as BoardDecal::serialize
+    /// writes it. A decal from another pool is cached into the project pool
+    /// with the edit, as the app's writer caches one (`cacheBoardDecals`),
+    /// since the board draws a decal only from `decals/cache/` there.
+    private func placeDecal(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard let x = params.double("x_mm"), let y = params.double("y_mm") else {
+            throw HorizontalDispatchError.invalidParams("place_decal needs \"x_mm\" and \"y_mm\".")
+        }
+        guard let reference = params.string("decal")?.trimmingCharacters(in: .whitespaces), !reference.isEmpty else {
+            throw HorizontalDispatchError.invalidParams(
+                "place_decal needs \"decal\": a pool decal uuid or name. search_pool with kind decal finds one."
+            )
+        }
+        let scale = params.double("scale") ?? 1
+        guard scale > 0, scale.isFinite else { throw HorizontalDispatchError.invalidParams("scale must be more than zero.") }
+        let board = try board()
+        guard let poolURL else {
+            throw HorizontalDispatchError.failed("The project has no pool directory, which is where a board draws its decals from.")
+        }
+        let id = params.string("id")?.lowercased() ?? UUID().uuidString.lowercased()
+        guard UUID(uuidString: id) != nil else {
+            throw HorizontalDispatchError.invalidParams("id must be a UUID or a name for this batch to use.")
+        }
+        if (board["decals"] as? JSONDictionary ?? [:]).keys.contains(where: { $0.caseInsensitiveCompare(id) == .orderedSame }) {
+            throw HorizontalDispatchError.invalidParams("Decal \(id) is on the board already; give the new one an id of its own, or none.")
+        }
+
+        var placement = try poolDecal(reference, poolURL: poolURL)
+        let angle = Self.horizonAngle(params.double("angle_deg") ?? 0)
+        placement.angle = angle
+        if params.bool("flip") ?? false { placement.toggleFlip() }
+        placement.scale = scale
+        let position = HorizontalPoint(x: Double(Self.nanometres(x)), y: Double(Self.nanometres(y)))
+        guard let decal = placement.decal(id: id, at: position, nInnerLayers: board.int("n_inner_layers") ?? 0, projectPoolURL: poolURL),
+              let entry = decal.fileEntry else {
+            throw HorizontalDispatchError.failed("Decal \(placement.name) could not be placed.")
+        }
+        let cached = try decal.cacheSource.map { try cacheDecal($0, poolURL: poolURL) } ?? []
+        try updateBoard { board in
+            var decals = board["decals"] as? JSONDictionary ?? [:]
+            decals[id] = entry
+            board["decals"] = decals
+        }
+        var reply: JSONDictionary = ["id": id, "decal": placement.item.uuid, "name": placement.name, "pool": placement.item.poolName,
+                                     "x_mm": x, "y_mm": y, "angle_deg": Double(angle) * 360 / 65_536,
+                                     "flip": placement.flip, "scale": scale, "cached": cached]
+        let points = decal.points
+        if let minX = points.map(\.x).min(), let maxX = points.map(\.x).max(),
+           let minY = points.map(\.y).min(), let maxY = points.map(\.y).max() {
+            reply["extent_mm"] = ["min_x_mm": minX / 1_000_000, "min_y_mm": minY / 1_000_000,
+                                  "max_x_mm": maxX / 1_000_000, "max_y_mm": maxY / 1_000_000]
+        }
+        return reply
+    }
+
+    /// The decal `reference` names, by uuid, by eight or more of its leading
+    /// digits, or by a name only one decal has, ready to place: from the
+    /// project pool as this edit holds it — where a decal `pool_items` or a
+    /// live document's `pool_write` put is, before it is on disk — then from
+    /// the pools it draws from, as Horizon's decal chooser browses them.
+    private func poolDecal(_ reference: String, poolURL: URL) throws -> HorizontalBoardDecalPlacement {
+        var decals = [(item: HorizontalPoolLibraryItem, json: JSONDictionary?)]()
+        var seen = Set<String>()
+        let poolName = HorizontalPoolRegistryStore.poolInfo(at: poolURL).name
+        for url in snapshot?.jsonFiles(under: poolURL.appendingPathComponent("decals", isDirectory: true)) ?? [] {
+            guard let json = snapshot?.json(at: url), json.string("type") == "decal",
+                  let uuid = json.string("uuid")?.lowercased(), seen.insert(uuid).inserted else {
+                continue
+            }
+            let item = HorizontalPoolLibraryItem(
+                id: poolURL.standardizedFileURL.path + "|" + HorizontalPoolLibraryItem.key(.decal, uuid), uuid: uuid,
+                name: json.string("name") ?? "", detail: "", tags: "", category: .decal, poolName: poolName,
+                poolURL: poolURL.standardizedFileURL, url: url
+            )
+            decals.append((item, json))
+        }
+        for item in HorizontalBoardDecalPlacement.choices(projectPoolURL: poolURL).items(in: .decal) where seen.insert(item.uuid).inserted {
+            decals.append((item, nil))
+        }
+
+        var matches = decals.filter { $0.item.uuid == reference.lowercased() }
+        if matches.isEmpty {
+            matches = decals.filter { $0.item.name.caseInsensitiveCompare(reference) == .orderedSame }
+        }
+        if matches.isEmpty, let uuid = try HorizontalDispatchValidation.id(matchingPrefix: reference, in: decals.map(\.item.uuid), kind: "decal") {
+            matches = decals.filter { $0.item.uuid == uuid }
+        }
+        guard matches.count <= 1 else {
+            throw HorizontalDispatchError.ambiguous(
+                "\(matches.count) decals are called \(reference); give the uuid.",
+                candidates: matches.map { "\($0.item.uuid) (\($0.item.poolName))" }
+            )
+        }
+        guard let match = matches.first else {
+            throw HorizontalDispatchError.notFound(
+                "No decal \(reference) in the project pool or the pools it draws from. search_pool with kind decal lists the decals there are; "
+                    + "one in a pool this process cannot see — a worker process cannot see the pools registered in the app — "
+                    + "is brought in with get_pool_item and pool_write, or pool_items in this apply_ops."
+            )
+        }
+        if let json = match.json {
+            return HorizontalBoardDecalPlacement(item: match.item, decalJSON: json)
+        }
+        guard let placement = HorizontalBoardDecalPlacement(item: match.item) else {
+            throw HorizontalDispatchError.failed("Decal \(reference) could not be read from \(match.item.url.path).")
+        }
+        return placement
+    }
+
+    /// Stages `source`, a decal from a pool the project draws from, cached
+    /// into the project pool: what HorizontalPoolCacheImporter.planDecal adds,
+    /// seen through what this edit and the project already hold, so a decal
+    /// placed twice in a batch, or already cached, is cached once. Returns
+    /// the decal files staged, by path from the project, leaving out the
+    /// cache's provenance record.
+    private func cacheDecal(_ source: HorizontalPoolLibraryItem, poolURL: URL) throws -> [String] {
+        let destination = HorizontalPoolCacheDestination(
+            read: { [self] url in try cachedPoolFiles[url.standardizedFileURL.path]?.data ?? store.read(url) },
+            list: HorizontalPoolCacheDestination.disk.list
+        )
+        let files: [HorizontalPoolCacheFile]
+        do {
+            files = try HorizontalPoolCacheImporter.planDecal(source, into: poolURL, destination: destination)
+        } catch {
+            throw HorizontalDispatchError.failed(
+                "Decal \(source.name) could not be cached into the project pool from \(source.poolName): \(error.localizedDescription)"
+            )
+        }
+        for file in files {
+            cachedPoolFiles[file.url.standardizedFileURL.path] = file
+        }
+        let directory = project.poolDirectory ?? poolURL.lastPathComponent
+        return files.compactMap { try? HorizontalPoolCacheProvenance.relativePath($0.url, in: poolURL) }
+            .filter { $0 != HorizontalPoolCacheProvenance.path }
+            .map { "\(directory)/\($0)" }
     }
 
     // MARK: - Buses and net ties
