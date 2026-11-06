@@ -7060,16 +7060,70 @@ struct BoardCanvasView: View {
         guard deleteSelectedObjects(from: &draft) else {
             return
         }
+        // The scene and selectables built for the board as it is, which a
+        // delete that takes only copper off can be taken out of.
+        let renderLayers = boardMetalRenderLayers()
+        let builtBuckets = selectableCache.elementBuckets(ifBuiltFor: metalElementBucketsCacheKey(renderLayers: renderLayers))
+        let builtSelectables = selectableCache.allSelectables(ifBuiltFor: allSelectableCacheKey)
+        let builtScene = selectableCache.selectableScene(ifBuiltFor: selectableCacheKey)
 
         registerUndoSnapshot(previousBoard, actionName: "Delete")
         editedBoard = draft
         invalidateSelectableCache()
+        let invalidatedRevision = selectableCacheRevision
         // The neighbour (if any) wasn't deleted, so its ref stays valid through
         // the connectivity recompute below; selecting it renders it highlighted.
         selectedObjects = chainNext.map { [$0] } ?? []
         hoveredObject = nil
         publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previousBoard, kind: .delete))
+        // Rules that changed something, or block instances the delete reached,
+        // invalidated again: what was built no longer shows what is left.
+        if selectableCacheRevision == invalidatedRevision, let resolved = editedBoard,
+           let splice = BoardDeletionSplice(from: previousBoard, to: resolved) {
+            seedDeletion(
+                splice,
+                from: resolved,
+                builtBuckets: builtBuckets,
+                builtSelectables: builtSelectables,
+                builtScene: builtScene,
+                renderLayers: renderLayers
+            )
+        }
         publishSelectionContext()
+    }
+
+    /// Takes what a delete removed out of the scene, the selectables and the
+    /// selectable scene built for the board before it, and draws again only
+    /// the copper whose net it changed and the rats' nest, where the whole
+    /// board was built again: on Board K that was 2.6 s of a one-track delete
+    /// and the selectables another 1.1 s. Seeded under the keys the next body
+    /// pass asks for; should one not match, that pass simply builds.
+    private func seedDeletion(
+        _ splice: BoardDeletionSplice,
+        from resolved: HorizontalBoard,
+        builtBuckets: BoardMetalElementBuckets?,
+        builtSelectables: [HorizontalSelectable]?,
+        builtScene: HorizontalCanvasSelectableScene?,
+        renderLayers: [Int]
+    ) {
+        if let builtBuckets, boardMetalRenderLayers() == renderLayers {
+            let redrawn = buildBoardMetalElementBuckets(renderLayers: renderLayers, partialBoard: splice.redrawnBoard(of: resolved))
+            // The airwires change with the copper, so their batches are taken
+            // whole from the build of what is drawn again, which has all of them.
+            selectableCache.seedElementBuckets(
+                builtBuckets.spliced(splice, adding: redrawn, replacing: [\.connectionLines, \.connectionLabels]),
+                for: metalElementBucketsCacheKey(renderLayers: renderLayers)
+            )
+        }
+        if let builtSelectables {
+            selectableCache.seedAllSelectables(builtSelectables.filter { !splice.removes($0.ref) }, for: allSelectableCacheKey)
+        }
+        if let builtScene {
+            selectableCache.seedSelectableScene(
+                HorizontalCanvasSelectableScene(selectables: builtScene.selectables.filter { !splice.removes($0.ref) }),
+                for: selectableCacheKey
+            )
+        }
     }
 
     /// Removes a selected junction once nothing meets it any more: the tracks,

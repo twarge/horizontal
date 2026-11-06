@@ -463,6 +463,27 @@ final class HorizontalBoardRulesCheckTests: XCTestCase {
         XCTAssertEqual(findings(off, .preflightChecks).count, 0)
     }
 
+    /// A plane keeps only fill that joins copper of its net: on a net with
+    /// none on the board it pours nothing however often it is poured, and
+    /// the finding says so rather than asking for a pour. Board K's N12V Raw
+    /// and P12V Filtered planes, whose nets lost their pins, read "pour the
+    /// planes" after every Update All Planes.
+    func testAnEmptyPlaneOnANetWithNoCopperSaysAPourWontFillIt() {
+        let board = makeBoard(
+            pads: [pad("pkg/pad/p1/shape/s", at: p(10, 10), net: "net-a")],
+            planes: [
+                plane("unpinned", net: "net-c", outline: square(p(30, 30), 4), fragments: []),
+                plane("unpoured", net: "net-a", outline: square(p(10, 10), 4), fragments: []),
+            ],
+            rules: [:])
+        let found = findings(board, .preflightChecks).filter { $0.check == "plane_no_fragments" }
+        XCTAssertEqual(found.count, 2)
+        XCTAssertEqual(found.first { $0.objectIDs == ["unpinned"] }?.detail,
+                       "Its net has no pads, tracks or vias on the board, so all the plane pours is orphaned copper, which it doesn't keep; pouring again changes nothing.")
+        XCTAssertEqual(found.first { $0.objectIDs == ["unpoured"] }?.detail,
+                       "Nothing of it is poured: pour the planes, or the plane's outline holds no copper.")
+    }
+
     func testPreflightChecksTheBoardOutline() {
         func outlineFindings(_ polygons: [HorizontalPolygon]) -> [String] {
             findings(makeBoard(polygons: polygons), .preflightChecks).map(\.message)
