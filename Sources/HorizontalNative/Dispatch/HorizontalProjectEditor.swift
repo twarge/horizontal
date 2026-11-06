@@ -67,6 +67,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case setNetPort = "set_net_port"
     case placeBlockPort = "place_block_port"
     case removeBlockPort = "remove_block_port"
+    case setBlockSymbolBox = "set_block_symbol_box"
     case annotate = "annotate"
     case setStackup = "set_stackup"
     case addRule = "add_rule"
@@ -174,6 +175,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .setNetPort: "Make a net of a sub-block one of its ports, which the blocks using it wire to their own nets, or stop it being one — which takes its port off the symbol, the instances' connections to it, and the wires that ended on it. Edit the sub-block with block. Power nets can't be ports."
         case .placeBlockPort: "Draw one of the edited block's ports on its symbol, as Horizon's Place Port does, or move or change it there. Its uuid is derived from its net."
         case .removeBlockPort: "Take a port off the edited block's symbol. The net stays a port; the instances' connections to it and the wires that ended on it go."
+        case .setBlockSymbolBox: "Redraw the edited block's symbol box, the rectangle every instance of it is drawn with, as the app's Edit Block Symbol would: its four corners move to min_x_mm, min_y_mm and max_x_mm, max_y_mm, keeping their uuids and the lines between them, and $REFDES goes 1.25 mm above its top-left corner and $NAME 1.25 mm below its bottom-left, where Horizon's template puts them. A side not given stays where it is. fit_ports runs each side through the inner ends of the ports that point out of it, and puts a side no port points out of margin_mm beyond the furthest port, so the topmost and bottommost ports land inside; a side given as well wins. Of several rectangles the largest is the box; a symbol with no drawing gets one, and one whose lines make no rectangle is refused, as is the top block, which has no symbol. The reply gives the box before and after, the texts moved, and ports_off_box: ports whose inner end is not on the side they point out of."
         case .annotate: "Horizon's Annotate: number every component's refdes from its prefix, sheet by sheet in the order given, across the whole design — each instance of a block numbered on its own, under its instance mapping. The options default to the schematic's own and are kept there."
         case .addRule: "Add a board design rule of a kind, with the defaults the app's own rules editor would give it and the fields given merged in, ordered after the rules of its kind already there. A via rule gets the padstack the board's via rules already use unless fields names one."
         case .setRule: "Change fields of a board design rule, merging objects key by key. The board is refused if the change makes the rules invalid. A change to the via rules gives the vias that take their shape from them the padstack and parameters of the rule that now matches."
@@ -455,6 +457,12 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "length_mm": "Length (optional; default 2.5).", "name_orientation": "in_line, perpendicular or horizontal (optional; default in_line)."]
         case .removeBlockPort:
             return ["net": "The port's net in the edited block."]
+        case .setBlockSymbolBox:
+            return ["min_x_mm": "The box's left side (optional; default where it is, or fitted with fit_ports).",
+                    "min_y_mm": "Its bottom side (optional).", "max_x_mm": "Its right side (optional).", "max_y_mm": "Its top side (optional).",
+                    "fit_ports": "Fit the sides not given to the ports' inner ends (optional; default false).",
+                    "margin_mm": "With fit_ports, how far a side no port points out of lies beyond the furthest port's inner end (optional; default 2.5).",
+                    "move_texts": "Move $REFDES above the box's top-left corner and $NAME below its bottom-left (optional; default true)."]
         case .annotate:
             return ["mode": "sequential, sheet_100 or sheet_1000: numbers running on, or starting at 100 or 1000 times the sheet's page (optional).",
                     "order": "right_down or down_right: the order a sheet's symbols are taken in (optional).",
@@ -658,12 +666,13 @@ struct HorizontalEditOperation {
                     throw HorizontalDispatchError.invalidParams("\(key) must be an object.")
                 }
             } else if ["x_mm", "y_mm", "angle_deg", "size_mm", "width_mm", "copper_mm", "substrate_mm",
-                       "label_distance_mm", "length_mm", "texts_within_mm", "diameter_mm", "hole_mm", "dx_mm", "dy_mm", "scale"].contains(key) {
+                       "label_distance_mm", "length_mm", "texts_within_mm", "diameter_mm", "hole_mm", "dx_mm", "dy_mm", "scale",
+                       "min_x_mm", "min_y_mm", "max_x_mm", "max_y_mm", "margin_mm"].contains(key) {
                 try HorizontalDispatchValidation.number(value, key: key)
             } else if ["no_populate", "is_power", "create_net", "bottom", "include_routing", "mirror", "offsheet_refs", "exposed_copper_only",
                        "force", "cascade", "swap", "remove_routing", "display_all_pads", "no_connect", "disconnect",
                        "unanchored", "stubs", "use_primary_name", "all", "keep_wiring", "board", "is_port", "nc", "show_port", "fill_gaps", "keep", "ignore_unknown",
-                       "flip"].contains(key) {
+                       "flip", "fit_ports", "move_texts"].contains(key) {
                 try HorizontalDispatchValidation.boolean(value, key: key)
             } else if value is NSNull, ["part", "group", "tag"].contains(key) {
                 continue
@@ -1112,6 +1121,8 @@ final class HorizontalProjectEditor {
             change.merge(try placeBlockPort(params)) { _, new in new }
         case .removeBlockPort:
             change.merge(try removeBlockPort(params)) { _, new in new }
+        case .setBlockSymbolBox:
+            change.merge(try setBlockSymbolBox(params)) { _, new in new }
         case .annotate:
             change.merge(try annotate(params)) { _, new in new }
         case .addRule:
@@ -5750,6 +5761,243 @@ final class HorizontalProjectEditor {
             throw HorizontalDispatchError.notFound("The symbol draws no port for \(nets()[net]?.string("name") ?? net).")
         }
         return ["net": net].merging(try dropPort(net: net)) { _, new in new }
+    }
+
+    /// A block symbol's box, in nanometres.
+    private struct SymbolBox: Equatable {
+        var minX: Int, minY: Int, maxX: Int, maxY: Int
+
+        var json: JSONDictionary {
+            ["min_x_mm": Double(minX) / 1_000_000, "min_y_mm": Double(minY) / 1_000_000,
+             "max_x_mm": Double(maxX) / 1_000_000, "max_y_mm": Double(maxY) / 1_000_000]
+        }
+    }
+
+    /// The box a block symbol draws: four junctions joined in a ring by four
+    /// lines along the axes, as Horizon's template and a rectangle drawn in
+    /// the symbol editor both are. Of several, the largest, which is the
+    /// outline the rest sit in. Each corner junction says which corner it is.
+    private static func symbolRectangle(junctions: JSONDictionary, lines: JSONDictionary)
+        -> (box: SymbolBox, corners: [String: (right: Bool, top: Bool)])? {
+        var positions = [String: (x: Int, y: Int)]()
+        var keys = [String: String]()
+        for (id, value) in junctions {
+            guard let position = (value as? JSONDictionary)?.point("position") else { continue }
+            positions[id.lowercased()] = (Int(position.x.rounded()), Int(position.y.rounded()))
+            keys[id.lowercased()] = id
+        }
+        var neighbours = [String: [(line: String, junction: String)]]()
+        for (id, value) in lines {
+            guard let line = value as? JSONDictionary, let from = line.string("from")?.lowercased(), let to = line.string("to")?.lowercased(),
+                  from != to, positions[from] != nil, positions[to] != nil else { continue }
+            neighbours[from, default: []].append((id, to))
+            neighbours[to, default: []].append((id, from))
+        }
+        var best: (area: Double, key: String, ring: [String])?
+        // Each ring is found from its least junction, going either way round.
+        for a in neighbours.keys.sorted() {
+            for (l1, b) in neighbours[a] ?? [] where b > a {
+                for (l2, c) in neighbours[b] ?? [] where l2 != l1 && c > a && c != b {
+                    for (l3, d) in neighbours[c] ?? [] where l3 != l2 && l3 != l1 && d > a && d != b && d != c {
+                        guard (neighbours[d] ?? []).contains(where: { $0.junction == a && ![l1, l2, l3].contains($0.line) }) else { continue }
+                        let ring = [a, b, c, d]
+                        let points = ring.compactMap { positions[$0] }
+                        let xs = Set(points.map(\.x)), ys = Set(points.map(\.y))
+                        guard xs.count == 2, ys.count == 2, Set(points.map { [$0.x, $0.y] }).count == 4,
+                              (0..<4).allSatisfy({ (points[$0].x == points[($0 + 1) % 4].x) != (points[$0].y == points[($0 + 1) % 4].y) }),
+                              let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() else { continue }
+                        let area = Double(maxX - minX) * Double(maxY - minY)
+                        let key = ring.sorted().joined(separator: ",")
+                        if let current = best, area < current.area || (area == current.area && key >= current.key) { continue }
+                        best = (area, key, ring)
+                    }
+                }
+            }
+        }
+        guard let ring = best?.ring else { return nil }
+        let points = ring.compactMap { positions[$0] }
+        let box = SymbolBox(minX: points.map(\.x).min()!, minY: points.map(\.y).min()!, maxX: points.map(\.x).max()!, maxY: points.map(\.y).max()!)
+        var corners = [String: (right: Bool, top: Bool)]()
+        for id in ring {
+            guard let key = keys[id], let point = positions[id] else { continue }
+            corners[key] = (point.x == box.maxX, point.y == box.maxY)
+        }
+        return (box, corners)
+    }
+
+    /// Where a block symbol port's line ends inside the symbol: its position
+    /// is the outer end, where wires join it, and it runs its length back
+    /// against the way it points.
+    private static func portInnerEnd(_ port: JSONDictionary) -> (x: Int, y: Int, orientation: String)? {
+        guard let position = port.point("position") else { return nil }
+        let length = Int((port.double("length") ?? 2_500_000).rounded())
+        let x = Int(position.x.rounded()), y = Int(position.y.rounded())
+        switch port.string("orientation") ?? "right" {
+        case "left": return (x + length, y, "left")
+        case "up": return (x, y - length, "up")
+        case "down": return (x, y + length, "down")
+        default: return (x - length, y, "right")
+        }
+    }
+
+    /// The box through the ports' inner ends: a side ports point out of runs
+    /// through the furthest of their inner ends, and a side none points out
+    /// of lies `margin` beyond the furthest inner end of all.
+    private static func fittedBox(ports: [JSONDictionary], margin: Int) -> SymbolBox? {
+        let ends = ports.compactMap(portInnerEnd)
+        guard !ends.isEmpty else { return nil }
+        let faces = Set(ends.map(\.orientation))
+        let xs = ends.map(\.x), ys = ends.map(\.y)
+        return SymbolBox(minX: xs.min()! - (faces.contains("left") ? 0 : margin),
+                         minY: ys.min()! - (faces.contains("down") ? 0 : margin),
+                         maxX: xs.max()! + (faces.contains("right") ? 0 : margin),
+                         maxY: ys.max()! + (faces.contains("up") ? 0 : margin))
+    }
+
+    /// The texts Horizon fills in on a block symbol, as the sheet loader
+    /// substitutes them: the instance's refdes and the block's name.
+    private static let blockSymbolRefdesTexts: Set<String> = ["$REFDES", "$RD", "${refdes}"]
+    private static let blockSymbolNameTexts: Set<String> = ["$NAME", "${name}"]
+
+    /// The edited block's symbol box, redrawn where it is asked for or around
+    /// its ports, as the app's Edit Block Symbol redraws it: the rectangle's
+    /// corners move, so its junctions and lines keep their uuids, and the
+    /// refdes and name texts go back where Horizon's template puts them, a
+    /// grid step above the top-left corner and below the bottom-left.
+    private func setBlockSymbolBox(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard !isTopBlock else {
+            throw HorizontalDispatchError.invalidParams(
+                "The top block has no symbol: only a block used inside another is drawn as a box. Name that block with apply_ops' block."
+            )
+        }
+        let path = try editedSymbolPath()
+        let name = knownBlock(blockID)?.displayName ?? blockID
+        guard let original = try projectFile(path) else {
+            throw HorizontalDispatchError.notFound("Could not read \(name)'s symbol \(path).")
+        }
+        var symbol = original
+        let sides = ["min_x_mm", "min_y_mm", "max_x_mm", "max_y_mm"].map { params.double($0).map(Self.nanometres) }
+        let fit = params.bool("fit_ports") ?? false
+        guard fit || sides.contains(where: { $0 != nil }) else {
+            throw HorizontalDispatchError.invalidParams(
+                "set_block_symbol_box needs the box: min_x_mm, min_y_mm, max_x_mm and max_y_mm (any of them moves only those sides), or fit_ports."
+            )
+        }
+        let marginMM = params.double("margin_mm") ?? 2.5
+        guard marginMM >= 0 else {
+            throw HorizontalDispatchError.invalidParams("margin_mm can't be negative: it is how far a side lies beyond the ports.")
+        }
+        if params["margin_mm"] != nil, !fit {
+            throw HorizontalDispatchError.invalidParams("margin_mm is the fit's margin; pass fit_ports with it.")
+        }
+
+        var junctions = symbol["junctions"] as? JSONDictionary ?? [:]
+        var lines = symbol["lines"] as? JSONDictionary ?? [:]
+        let current = Self.symbolRectangle(junctions: junctions, lines: lines)
+        let arcs = symbol["arcs"] as? JSONDictionary ?? [:]
+        if current == nil, !lines.isEmpty || !arcs.isEmpty {
+            throw HorizontalDispatchError.invalidParams(
+                "\(name)'s symbol draws \(lines.count) line\(lines.count == 1 ? "" : "s") and \(arcs.count) arc\(arcs.count == 1 ? "" : "s") "
+                    + "but no rectangle of four lines along the axes, so it has no box to resize. Redraw it with the app's Edit Block Symbol."
+            )
+        }
+        let portsMap = symbol["ports"] as? JSONDictionary ?? [:]
+        let ports = portsMap.values.compactMap { $0 as? JSONDictionary }
+        var base = current?.box
+        if fit {
+            guard let fitted = Self.fittedBox(ports: ports, margin: Self.nanometres(marginMM)) else {
+                throw HorizontalDispatchError.invalidParams("\(name)'s symbol draws no ports to fit its box to; place_block_port draws them.")
+            }
+            base = fitted
+        }
+        guard let minX = sides[0] ?? base?.minX, let minY = sides[1] ?? base?.minY,
+              let maxX = sides[2] ?? base?.maxX, let maxY = sides[3] ?? base?.maxY else {
+            throw HorizontalDispatchError.invalidParams(
+                "\(name)'s symbol has no box whose other sides could stay; give all of min_x_mm, min_y_mm, max_x_mm and max_y_mm, or fit_ports."
+            )
+        }
+        let box = SymbolBox(minX: minX, minY: minY, maxX: maxX, maxY: maxY)
+        guard box.minX < box.maxX, box.minY < box.maxY else {
+            let mm = box.json
+            throw HorizontalDispatchError.invalidParams(
+                "The box would run from (\(mm["min_x_mm"]!), \(mm["min_y_mm"]!)) to (\(mm["max_x_mm"]!), \(mm["max_y_mm"]!)) mm, "
+                    + "which encloses nothing: each min has to be less than its max."
+            )
+        }
+
+        var change: JSONDictionary = ["block": blockID, "symbol_filename": path, "box_mm": box.json,
+                                      "previous_box_mm": current?.box.json ?? NSNull()]
+        if fit { change["fitted_to_ports"] = ports.count }
+        if let current {
+            for (id, corner) in current.corners {
+                var junction = junctions[id] as? JSONDictionary ?? [:]
+                junction["position"] = [corner.right ? box.maxX : box.minX, corner.top ? box.maxY : box.minY]
+                junctions[id] = junction
+            }
+        } else {
+            // Nothing drawn yet: Horizon's template box, at this size.
+            let corners = [(box.minX, box.maxY), (box.maxX, box.maxY), (box.maxX, box.minY), (box.minX, box.minY)]
+            let ids = corners.map { _ in UUID().uuidString.lowercased() }
+            for (index, corner) in corners.enumerated() {
+                junctions[ids[index]] = ["position": [corner.0, corner.1]]
+                lines[UUID().uuidString.lowercased()] = ["from": ids[index], "to": ids[(index + 1) % 4], "layer": 0, "width": 0]
+            }
+            change["drawn"] = true
+        }
+        symbol["junctions"] = junctions
+        symbol["lines"] = lines
+
+        if params.bool("move_texts") ?? true {
+            var texts = symbol["texts"] as? JSONDictionary ?? [:]
+            var moved = [String]()
+            for id in texts.keys.sorted() {
+                guard var text = texts[id] as? JSONDictionary,
+                      let content = text.string("text")?.trimmingCharacters(in: .whitespacesAndNewlines) else { continue }
+                let y: Int
+                if Self.blockSymbolRefdesTexts.contains(content) {
+                    y = box.maxY + 1_250_000
+                } else if Self.blockSymbolNameTexts.contains(content) {
+                    y = box.minY - 1_250_000
+                } else {
+                    continue
+                }
+                var placement = text["placement"] as? JSONDictionary ?? ["angle": 0, "mirror": false]
+                placement["shift"] = [box.minX, y]
+                text["placement"] = placement
+                texts[id] = text
+                moved.append(content)
+            }
+            symbol["texts"] = texts
+            change["texts_moved"] = moved.sorted()
+        }
+
+        // A port is on the box when its inner end is on the side it points
+        // out of; one that isn't stands off it or reaches into it.
+        var off = [String]()
+        for (id, value) in portsMap {
+            guard let port = value as? JSONDictionary, let end = Self.portInnerEnd(port) else { continue }
+            let on: Bool
+            switch end.orientation {
+            case "left": on = end.x == box.minX && (box.minY...box.maxY).contains(end.y)
+            case "up": on = end.y == box.maxY && (box.minX...box.maxX).contains(end.x)
+            case "down": on = end.y == box.minY && (box.minX...box.maxX).contains(end.x)
+            default: on = end.x == box.maxX && (box.minY...box.maxY).contains(end.y)
+            }
+            guard !on else { continue }
+            let net = port.string("net")?.lowercased()
+            let netName = net.flatMap { key in nets().first { $0.key.lowercased() == key }?.value.string("name") }
+            off.append(netName.flatMap { $0.isEmpty ? nil : $0 } ?? id)
+        }
+        if !off.isEmpty {
+            change["ports_off_box"] = off.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        }
+
+        let changed = NSDictionary(dictionary: original) != NSDictionary(dictionary: symbol)
+        change["changed"] = changed
+        if changed {
+            setProjectFile(path, symbol)
+        }
+        return change
     }
 
     private func setBlockInstance(_ params: JSONDictionary) throws -> JSONDictionary {

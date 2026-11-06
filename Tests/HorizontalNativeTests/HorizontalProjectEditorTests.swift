@@ -1805,6 +1805,56 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual(try HorizontalProject.load(from: packageURL).newBlockName, "Block 3")
     }
 
+    /// set_block_symbol_box plans in a dry run, commits by its plan digest as
+    /// one undo step, and is what the project draws once saved and reopened.
+    func testABlockSymbolBoxIsPlannedCommittedAndReopened() throws {
+        let added = try apply([["op": "add_block", "name": "Converter"]])
+        let block = try XCTUnwrap((added["changes"] as? [[String: Any]])?.first?["block"] as? String)
+        _ = try result("apply", ["block": "Converter", "ops": [
+            ["op": "ensure_net", "name": "AIN"], ["op": "set_net_port", "net": "AIN", "port_direction": "input"],
+            ["op": "place_block_port", "net": "AIN", "x_mm": -12.5, "y_mm": 7.5, "orientation": "left"],
+            ["op": "ensure_net", "name": "SDO"], ["op": "set_net_port", "net": "SDO", "port_direction": "output"],
+            ["op": "place_block_port", "net": "SDO", "x_mm": 12.5, "y_mm": -7.5, "orientation": "right"]
+        ]])
+        _ = try apply([
+            ["op": "add_block_instance", "id": "adc", "block": "Converter", "refdes": "ADC1"],
+            ["op": "place_block_symbol", "instance": "adc", "x_mm": 100, "y_mm": 100]
+        ])
+        let symbolURL = packageURL.appendingPathComponent("blocks/\(block)/symbol.json")
+        let template = try JSONHelper.loadDictionary(from: symbolURL)
+
+        let ops: [[String: Any]] = [["op": "set_block_symbol_box", "fit_ports": true]]
+        let dry = try XCTUnwrap(try result("apply", ["block": "Converter", "ops": ops, "dry_run": true, "detail": "compact"]) as? [String: Any])
+        let planned = try XCTUnwrap((dry["changes"] as? [[String: Any]])?.first)
+        XCTAssertEqual(planned["box_mm"] as? [String: Double], ["min_x_mm": -10, "min_y_mm": -10, "max_x_mm": 10, "max_y_mm": 10],
+                       "the compact reply keeps the box")
+        XCTAssertEqual(planned["previous_box_mm"] as? [String: Double], ["min_x_mm": -7.5, "min_y_mm": -5, "max_x_mm": 7.5, "max_y_mm": 5])
+        XCTAssertEqual(planned["texts_moved"] as? [String], ["$NAME", "$REFDES"])
+        XCTAssertEqual(try JSONHelper.loadDictionary(from: symbolURL) as NSDictionary, template as NSDictionary, "a dry run writes nothing")
+
+        let committed = try XCTUnwrap(try result("apply", ["block": "Converter", "ops": ops,
+                                                            "plan_digest": try XCTUnwrap(dry["plan_digest"] as? String)]) as? [String: Any])
+        XCTAssertEqual(committed["status"] as? String, "committed")
+        XCTAssertEqual(committed["undo_name"] as? String, "Set Block Symbol Box")
+        XCTAssertTrue((committed["written"] as? [String] ?? []).contains { $0.hasSuffix("blocks/\(block)/symbol.json") }, "\(committed)")
+
+        // Reopened from what was saved, the instance is drawn with the box.
+        let reopened = try HorizontalProject.load(from: packageURL)
+        let sheet = try XCTUnwrap(reopened.schematic?.sheets.first)
+        let symbol = try XCTUnwrap(sheet.blockSymbols.first)
+        let mm = 1_000_000.0
+        let drawn = Set(sheet.blockSymbolLines.filter { $0.id.hasPrefix(symbol.id + "/") }.flatMap { [$0.from, $0.to] })
+        XCTAssertEqual(drawn, Set([(90.0, 90.0), (110, 90), (110, 110), (90, 110)].map { HorizontalPoint(x: $0.0 * mm, y: $0.1 * mm) }))
+        XCTAssertEqual(sheet.blockSymbolTexts.first { $0.text == "ADC1" }?.position, HorizontalPoint(x: 90 * mm, y: 111.25 * mm))
+        XCTAssertEqual(sheet.blockSymbolTexts.first { $0.text == "Converter" }?.position, HorizontalPoint(x: 90 * mm, y: 88.75 * mm))
+        XCTAssertEqual(Set(sheet.blockSymbolPortEnds(symbol.id).values.map(\.point)),
+                       [HorizontalPoint(x: 87.5 * mm, y: 107.5 * mm), HorizontalPoint(x: 112.5 * mm, y: 92.5 * mm)], "the ports where they were")
+
+        // The top block draws no box of its own.
+        let refused = try call("apply", ["ops": ops])
+        XCTAssertTrue(((refused["error"] as? [String: Any])?["message"] as? String ?? "").contains("The top block has no symbol"), "\(refused)")
+    }
+
     /// A Channel block with a resistor whose pin 1 is the block's port IN, used
     /// twice on the top sheet (CHA and CHB, R1 there as R11 and R12) with both
     /// ports wired to a top net also called IN. Returns the block's uuid.

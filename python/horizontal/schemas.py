@@ -868,6 +868,32 @@ class RemoveBlockPort(Input):
     net: StrictStr
 
 
+class SetBlockSymbolBox(Input):
+    """The edited block's symbol box: sides in mm, a side not given staying where it is, or fit_ports to run the
+    sides through the ports' inner ends, margin_mm beyond them where no port points out. $REFDES and $NAME follow
+    the box unless move_texts is false."""
+    op: Literal["set_block_symbol_box"]
+    min_x_mm: float | None = None
+    min_y_mm: float | None = None
+    max_x_mm: float | None = None
+    max_y_mm: float | None = None
+    fit_ports: bool | None = None
+    margin_mm: float | None = Field(default=None, ge=0)
+    move_texts: bool | None = None
+
+    @model_validator(mode="after")
+    def a_box(self):
+        if not self.fit_ports and all(v is None for v in (self.min_x_mm, self.min_y_mm, self.max_x_mm, self.max_y_mm)):
+            raise ValueError("Give the box's sides (min_x_mm, min_y_mm, max_x_mm, max_y_mm), or fit_ports.")
+        if self.margin_mm is not None and not self.fit_ports:
+            raise ValueError("margin_mm is the fit's margin; pass fit_ports with it.")
+        for low, high in (("min_x_mm", "max_x_mm"), ("min_y_mm", "max_y_mm")):
+            a, b = getattr(self, low), getattr(self, high)
+            if a is not None and b is not None and a >= b:
+                raise ValueError(f"{low} must be less than {high}.")
+        return self
+
+
 class Annotate(Input):
     """Horizon's Annotate, over the whole design; the options default to the schematic's own."""
     op: Literal["annotate"]
@@ -1243,7 +1269,7 @@ EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | 
                           AddNetClass | RenameNetClass |
                           AddBlockInstance | RemoveBlockInstance | ConnectBlockPort |
                           PlaceBlockSymbol | RemoveBlockSymbol | DisconnectBlockPort | SetBlockInstance |
-                          AddBlock | RenameBlock | RemoveBlock | SetNetPort | PlaceBlockPort | RemoveBlockPort | Annotate | SetStackup |
+                          AddBlock | RenameBlock | RemoveBlock | SetNetPort | PlaceBlockPort | RemoveBlockPort | SetBlockSymbolBox | Annotate | SetStackup |
                           AddRule | SetRule | RemoveRule |
                           PlaceHole | RemoveHole | PlaceKeepout | RemoveKeepout | SetSheetIndex |
                           PlaceBoardText | RemoveBoardText | PlaceDimension | RemoveDimension | PlaceDecal | RemoveDecal |

@@ -370,6 +370,153 @@ final class SchematicBlocksTests: XCTestCase {
         XCTAssertFalse(messages.contains { $0.contains("reference designators") }, "the template has its $REFDES")
     }
 
+    // MARK: - The symbol's box
+
+    private var symbolPath: String { "blocks/\(channelID)/symbol.json" }
+
+    private func boxMM(_ change: JSONDictionary?, _ key: String = "box_mm") -> [Double]? {
+        guard let box = change?[key] as? JSONDictionary else { return nil }
+        return ["min_x_mm", "min_y_mm", "max_x_mm", "max_y_mm"].compactMap { box.double($0) }
+    }
+
+    private func corners(_ symbol: JSONDictionary) -> Set<HorizontalPoint> {
+        Set(symbol.dictionaryMap("junctions").values.compactMap { $0.point("position") })
+    }
+
+    private func textShift(_ symbol: JSONDictionary, _ text: String) -> HorizontalPoint? {
+        symbol.dictionaryMap("texts").values.first { $0.string("text") == text }?.dictionary("placement")?.point("shift")
+    }
+
+    /// Writes the Channel's symbol as given, as the block symbol editor saves one.
+    private func writeSymbol(_ json: JSONDictionary) throws {
+        try HorizontalProjectJSONApplicator.apply(blockSymbol: json, symbolURL: project.baseURL.appendingPathComponent(symbolPath),
+                                                  in: project, to: &archive)
+        try reload()
+    }
+
+    /// Board A's ADC Converter, as the template left it: ports 2.5 mm long at
+    /// x = ±12.5, from y = -7.5 to 7.5, so their inner ends at ±10 sit
+    /// outside the template's 15 × 10 mm box.
+    private func portsOutsideTheTemplate() throws {
+        var ops: [JSONDictionary] = [["op": "place_block_port", "net": "In", "x_mm": -12.5, "y_mm": 5, "orientation": "left"]]
+        for (name, x, y, side) in [("Clk", -12.5, -7.5, "left"), ("Out", 12.5, 7.5, "right"), ("Ref", 12.5, 0.0, "right")] {
+            ops += [["op": "ensure_net", "name": name], ["op": "set_net_port", "net": name],
+                    ["op": "place_block_port", "net": name, "x_mm": x, "y_mm": y, "orientation": side]]
+        }
+        try apply(ops, block: "Channel")
+    }
+
+    func testABlockSymbolBoxIsRedrawnAndItsTextsFollow() throws {
+        _ = try placeChannel()
+        let before = try file(symbolPath)
+        let change = try XCTUnwrap(try apply([["op": "set_block_symbol_box", "min_x_mm": -10, "min_y_mm": -10,
+                                               "max_x_mm": 10, "max_y_mm": 10]], block: "Channel").first)
+        XCTAssertEqual(boxMM(change), [-10, -10, 10, 10])
+        XCTAssertEqual(boxMM(change, "previous_box_mm"), [-7.5, -5, 7.5, 5], "the template's")
+        XCTAssertEqual(change["texts_moved"] as? [String], ["$NAME", "$REFDES"])
+        XCTAssertEqual(change["ports_off_box"] as? [String], ["In"], "In's inner end, at x = -7.5, is inside the box now")
+        XCTAssertEqual(change["changed"] as? Bool, true)
+
+        let symbol = try file(symbolPath)
+        XCTAssertEqual(Set(symbol.dictionaryMap("junctions").keys), Set(before.dictionaryMap("junctions").keys), "the corners keep their uuids")
+        XCTAssertEqual(symbol["lines"] as? NSDictionary, before["lines"] as? NSDictionary, "and so do the lines between them")
+        XCTAssertEqual(corners(symbol), [point(-10, -10), point(10, -10), point(10, 10), point(-10, 10)])
+        XCTAssertEqual(textShift(symbol, "$REFDES"), point(-10, 11.25), "a grid step above the top-left corner")
+        XCTAssertEqual(textShift(symbol, "$NAME"), point(-10, -11.25), "and below the bottom-left")
+        XCTAssertEqual(Set(symbol.dictionaryMap("texts").values.compactMap { $0.string("origin") }), ["center"], "as they were")
+        XCTAssertEqual(symbol["ports"] as? NSDictionary, before["ports"] as? NSDictionary, "the ports stay")
+
+        // The instance at (50, 50) is drawn with the new box.
+        let sheet = try topSheet
+        let id = try XCTUnwrap(sheet.blockSymbols.first?.id)
+        let drawn = Set(sheet.blockSymbolLines.filter { $0.id.hasPrefix(id + "/") }.flatMap { [$0.from, $0.to] })
+        XCTAssertEqual(drawn, [point(40, 40), point(60, 40), point(60, 60), point(40, 60)])
+        XCTAssertEqual(sheet.blockSymbolTexts.first { $0.text == "Channel" }?.position, point(40, 38.75))
+        XCTAssertEqual(sheet.blockSymbolTexts.first { $0.text == "I?" }?.position, point(40, 61.25))
+
+        // Edit Block Symbol opens it as that box, and saves it unchanged.
+        let editor = try editorSymbol()
+        let editorSheet = editor.makeSheet(poolURL: project.baseURL.appendingPathComponent("pool"))
+        XCTAssertEqual(Set(editorSheet.drawingLines.flatMap { [$0.from, $0.to] }), [point(-10, -10), point(10, -10), point(10, 10), point(-10, 10)])
+        XCTAssertEqual(corners(editor.applying(sheet: editorSheet).json()), corners(symbol))
+
+        // The same box again changes nothing.
+        let again = try XCTUnwrap(try apply([["op": "set_block_symbol_box", "max_x_mm": 10]], block: "Channel").first)
+        XCTAssertEqual(again["changed"] as? Bool, false)
+    }
+
+    func testABlockSymbolBoxFitsItsPorts() throws {
+        _ = try placeChannel()
+        try portsOutsideTheTemplate()
+        let fitted = try XCTUnwrap(try apply([["op": "set_block_symbol_box", "fit_ports": true]], block: "Channel").first)
+        XCTAssertEqual(boxMM(fitted), [-10, -10, 10, 10],
+                       "the left and right sides through the ports' inner ends, the top and bottom 2.5 mm past the outermost ports")
+        XCTAssertEqual(fitted["fitted_to_ports"] as? Int, 4)
+        XCTAssertNil(fitted["ports_off_box"], "every port ends on its side")
+        XCTAssertEqual(textShift(try file(symbolPath), "$REFDES"), point(-10, 11.25))
+        XCTAssertEqual(textShift(try file(symbolPath), "$NAME"), point(-10, -11.25))
+
+        // A margin of its own, and a side given wins over the fit.
+        let wider = try XCTUnwrap(try apply([["op": "set_block_symbol_box", "fit_ports": true, "margin_mm": 5, "max_x_mm": 15]],
+                                            block: "Channel").first)
+        XCTAssertEqual(boxMM(wider), [-10, -12.5, 15, 12.5])
+        XCTAssertEqual(wider["ports_off_box"] as? [String], ["Out", "Ref"], "their inner ends stop 5 mm short of the right side")
+
+        // A side alone moves alone, and the texts can stay.
+        let taller = try XCTUnwrap(try apply([["op": "set_block_symbol_box", "max_y_mm": 20, "move_texts": false]], block: "Channel").first)
+        XCTAssertEqual(boxMM(taller), [-10, -12.5, 15, 20])
+        XCTAssertNil(taller["texts_moved"])
+        XCTAssertEqual(textShift(try file(symbolPath), "$REFDES"), point(-10, 13.75), "where the last box put it")
+    }
+
+    func testTheTopBlockHasNoSymbolBoxAndABoxNeedsSides() throws {
+        _ = try placeChannel()
+        func refusal(_ op: JSONDictionary, block: String? = "Channel") -> String {
+            do {
+                try apply([op], block: block)
+                return "applied"
+            } catch {
+                return (error as? HorizontalDispatchError)?.message ?? "\(error)"
+            }
+        }
+        XCTAssertTrue(refusal(["op": "set_block_symbol_box", "fit_ports": true], block: nil).contains("The top block has no symbol"))
+        XCTAssertTrue(refusal(["op": "set_block_symbol_box"]).contains("needs the box"))
+        XCTAssertTrue(refusal(["op": "set_block_symbol_box", "min_x_mm": 10, "max_x_mm": -10]).contains("encloses nothing"))
+        XCTAssertTrue(refusal(["op": "set_block_symbol_box", "max_y_mm": 10, "margin_mm": 1]).contains("pass fit_ports"))
+        XCTAssertTrue(refusal(["op": "set_block_symbol_box", "fit_ports": true, "margin_mm": -1]).contains("negative"))
+        XCTAssertTrue(refusal(["op": "set_block_symbol_box", "max_y_mm": "10"]).contains("number"))
+        XCTAssertEqual(corners(try file(symbolPath)), [point(-7.5, -5), point(7.5, -5), point(7.5, 5), point(-7.5, 5)], "nothing written")
+    }
+
+    func testASymbolWithoutABoxGetsOneAndADrawingWithoutOneIsRefused() throws {
+        _ = try placeChannel()
+        var bare = try file(symbolPath)
+        bare["junctions"] = JSONDictionary()
+        bare["lines"] = JSONDictionary()
+        try writeSymbol(bare)
+        XCTAssertThrowsError(try apply([["op": "set_block_symbol_box", "max_y_mm": 10]], block: "Channel"), "no box to keep the other sides of")
+        let drawn = try XCTUnwrap(try apply([["op": "set_block_symbol_box", "min_x_mm": -10, "min_y_mm": -5, "max_x_mm": 10, "max_y_mm": 5]],
+                                            block: "Channel").first)
+        XCTAssertEqual(drawn["drawn"] as? Bool, true)
+        XCTAssertTrue(drawn["previous_box_mm"] is NSNull)
+        XCTAssertEqual(try file(symbolPath).dictionaryMap("lines").count, 4)
+        let again = try XCTUnwrap(try apply([["op": "set_block_symbol_box", "max_y_mm": 7.5]], block: "Channel").first)
+        XCTAssertNil(again["drawn"], "the box it drew is the box it finds")
+        XCTAssertEqual(boxMM(again, "previous_box_mm"), [-10, -5, 10, 5])
+
+        // A triangle is a drawing, but no box to resize.
+        var triangle = try file(symbolPath)
+        let ids = ["a", "b", "c"].map { _ in UUID().uuidString.lowercased() }
+        triangle["junctions"] = Dictionary(uniqueKeysWithValues: zip(ids, [[0, 0], [5_000_000, 0], [0, 5_000_000]].map { ["position": $0] as JSONDictionary }))
+        triangle["lines"] = Dictionary(uniqueKeysWithValues: (0..<3).map {
+            (UUID().uuidString.lowercased(), ["from": ids[$0], "to": ids[($0 + 1) % 3], "layer": 0, "width": 0] as JSONDictionary)
+        })
+        try writeSymbol(triangle)
+        XCTAssertThrowsError(try apply([["op": "set_block_symbol_box", "fit_ports": true]], block: "Channel")) { error in
+            XCTAssertTrue(((error as? HorizontalDispatchError)?.message ?? "").contains("no rectangle"), "\(error)")
+        }
+    }
+
     // MARK: - Pages
 
     func testPagesFollowEachInstanceAsHorizonPrintsThem() throws {

@@ -914,6 +914,43 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             "operation_id": str(uuid.uuid4())})
         self.assertTrue(nothing.is_error)
 
+    async def test_a_block_symbol_box_is_typed_and_fits_its_ports(self):
+        tools = {t.name: t for t in await server.mcp.list_tools()}
+        mapping = tools["apply_ops"].input_schema["properties"]["ops"]["items"]["discriminator"]["mapping"]
+        self.assertIn("set_block_symbol_box", mapping)
+        self.assertIn("set_block_symbol_box", tools["apply_ops"].description)
+
+        async def revision():
+            return (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
+        await self.call("apply_ops", project_ref=self.ref, expected_revision=await revision(), operation_id="block",
+                        ops=[{"op": "add_block", "name": "Converter"}])
+        await self.call("apply_ops", project_ref=self.ref, expected_revision=await revision(), operation_id="ports",
+                        block="Converter", ops=[
+                            {"op": "ensure_net", "name": "AIN"}, {"op": "set_net_port", "net": "AIN"},
+                            {"op": "place_block_port", "net": "AIN", "x_mm": -12.5, "y_mm": 7.5, "orientation": "left"},
+                            {"op": "ensure_net", "name": "SDO"}, {"op": "set_net_port", "net": "SDO"},
+                            {"op": "place_block_port", "net": "SDO", "x_mm": 12.5, "y_mm": -7.5, "orientation": "right"}])
+        fitted = await self.call("apply_ops", project_ref=self.ref, expected_revision=await revision(), operation_id="box",
+                                 block="Converter", ops=[{"op": "set_block_symbol_box", "fit_ports": True}])
+        change = fitted["data"]["changes"][0]
+        self.assertEqual(change["box_mm"], {"min_x_mm": -10, "min_y_mm": -10, "max_x_mm": 10, "max_y_mm": 10})
+        self.assertEqual(change["previous_box_mm"], {"min_x_mm": -7.5, "min_y_mm": -5, "max_x_mm": 7.5, "max_y_mm": 5})
+        self.assertEqual(change["texts_moved"], ["$NAME", "$REFDES"])
+
+        # A box the schema can see is wrong never reaches the engine; the top
+        # block, which has no symbol, is the engine's to refuse.
+        for op in ({"op": "set_block_symbol_box"}, {"op": "set_block_symbol_box", "min_x_mm": 5, "max_x_mm": -5},
+                   {"op": "set_block_symbol_box", "fit_ports": True, "margin_mm": -1},
+                   {"op": "set_block_symbol_box", "max_y_mm": 10, "margin_mm": 2}):
+            bad = await server.mcp.call_tool("apply_ops", {"project_ref": self.ref, "expected_revision": await revision(),
+                                                           "operation_id": str(uuid.uuid4()), "block": "Converter", "ops": [op]})
+            self.assertTrue(bad.is_error, op)
+        top = await server.mcp.call_tool("apply_ops", {"project_ref": self.ref, "expected_revision": await revision(),
+                                                       "operation_id": str(uuid.uuid4()),
+                                                       "ops": [{"op": "set_block_symbol_box", "fit_ports": True}]})
+        self.assertTrue(top.is_error)
+        self.assertIn("top block has no symbol", str(top.structured_content))
+
     async def test_undo_buses_ties_and_arcs_are_advertised(self):
         tools = {t.name: t for t in await server.mcp.list_tools()}
         for name in ("list_board_texts", "list_dimensions", "list_buses", "list_net_ties"):
