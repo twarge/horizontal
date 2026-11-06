@@ -199,7 +199,10 @@ struct HorizontalGerberExportSettings: Hashable {
     var prefix: String
     var zipOutput = true
     var removeIndividualFilesAfterZip = true
-    var drillMode: HorizontalGerberDrillMode = .merged
+    /// Plated and unplated through holes apart, where Horizon merges them:
+    /// the Gerber spec asks for PTH and NPTH in two files (§6.6), and only
+    /// then can each file state its function (Plated or NonPlated).
+    var drillMode: HorizontalGerberDrillMode = .individual
     var drillPTHSuffix = " Drills.drl"
     var drillNPTHSuffix = " NPTH Drills.drl"
     /// A file of its own for each blind or buried via span the board has,
