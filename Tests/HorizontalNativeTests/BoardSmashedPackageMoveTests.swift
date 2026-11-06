@@ -210,12 +210,15 @@ final class BoardSmashedPackageMoveTests: XCTestCase {
         let previewed = await settle { self.rise(self.silkStrokes(renderer), from: before) != nil }
         XCTAssertTrue(previewed, "the refdes go up with their packages")
         // The first step uploads the scene's resident metadata once; from then
-        // on a patched move draws each step on the scene it has.
+        // on a patched move draws each step on the scene it has. That upload
+        // can land after the moved strokes show, so let it settle first.
+        try await Task.sleep(for: .milliseconds(300))
         let firstStep = silkStrokes(renderer)
         let uploads = renderer.residentSceneUploads
         try key(126, "\u{f700}")
         let stepped = await settle { self.rise(self.silkStrokes(renderer), from: firstStep) != nil }
         XCTAssertTrue(stepped, "and again")
+        try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(renderer.residentSceneUploads, uploads,
                        "the second step patches the scene; it is not built again with the board moved")
 
