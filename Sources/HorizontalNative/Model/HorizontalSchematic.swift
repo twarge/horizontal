@@ -153,6 +153,10 @@ struct HorizontalSchematicSheet: Identifiable {
     /// page of a hierarchy can be numbered as Horizon numbers it.
     var frameNumberTemplates: [String: String] = [:]
     var texts: [HorizontalText]
+    /// What `$key` in one of the sheet's texts stands for: the title-block
+    /// values its frame draws. A text smashed out of a symbol adds its
+    /// component's (`textVariables(forTextID:)`).
+    var textVariables = HorizontalTextVariables()
     /// Pool editors only: the symbol's or frame's own polygons, editable as
     /// whole objects (`sheet/polygon/<uuid>` ids).
     var drawingPolygons: [HorizontalPolygon] = []
@@ -907,6 +911,7 @@ struct HorizontalSchematic {
             }
             let symbolMap = sheet.dictionaryMap("symbols")
             let sheetTexts = sheet.dictionaryMap("texts")
+            let sheetVariables = textVariables(sheet: sheet, projectMeta: blockInfo.projectMeta)
             var symbols = BoardLoadTimer.measure("schematic sheets: placements") {
                 parsePlacements(from: symbolMap, componentInfo: blockInfo.components)
             }
@@ -914,6 +919,7 @@ struct HorizontalSchematic {
                 parseSymbolArtwork(
                     from: symbolMap,
                     sheetTexts: sheetTexts,
+                    sheetVariables: sheetVariables,
                     poolURL: poolURL,
                     componentInfo: blockInfo.components,
                     symbolCache: &symbolCache,
@@ -980,7 +986,8 @@ struct HorizontalSchematic {
                 )
             }
             let texts = BoardLoadTimer.measure("schematic sheets: texts") {
-                parseTexts(from: sheetTexts, excluding: symbolTextIDs(from: symbolMap)) + artwork.smashedTexts
+                parseTexts(from: sheetTexts, excluding: symbolTextIDs(from: symbolMap), variables: sheetVariables)
+                    + artwork.smashedTexts
             }
             let netLabels = BoardLoadTimer.measure("schematic sheets: net labels") {
                 parseNetLabels(
@@ -1115,6 +1122,7 @@ struct HorizontalSchematic {
                 frameName: sheetFrameID.flatMap { frameCache[$0]?.string("name") },
                 frameNumberTemplates: frameArtwork.numberTemplates,
                 texts: texts,
+                textVariables: sheetVariables,
                 netLabels: netLabels,
                 powerSymbols: powerSymbols.symbols,
                 powerSymbolLines: powerSymbols.lines,
@@ -1275,6 +1283,7 @@ struct HorizontalSchematic {
     private static func parseSymbolArtwork(
         from map: [String: JSONDictionary],
         sheetTexts: [String: JSONDictionary],
+        sheetVariables: HorizontalTextVariables,
         poolURL: URL?,
         componentInfo: [String: SchematicComponentInfo],
         symbolCache: inout [String: JSONDictionary],
@@ -1318,6 +1327,7 @@ struct HorizontalSchematic {
                     symbolResource: symbolResource,
                     symbolTransform: symbolTransform,
                     sheetTextsByID: sheetTextsByID,
+                    sheetVariables: sheetVariables,
                     component: component,
                     poolURL: poolURL,
                     unitCache: &unitCache,
@@ -1337,6 +1347,7 @@ struct HorizontalSchematic {
         symbolResource: SchematicSymbolResource,
         symbolTransform: HorizontalPlacementTransform,
         sheetTextsByID: [String: JSONDictionary],
+        sheetVariables: HorizontalTextVariables = HorizontalTextVariables(),
         component: SchematicComponentInfo?,
         poolURL: URL,
         unitCache: inout [String: JSONDictionary],
@@ -1371,7 +1382,10 @@ struct HorizontalSchematic {
             ? parseSmashedSymbolTexts(
                 from: symbolItem,
                 sheetTextsByID: sheetTextsByID,
-                component: component
+                variables: sheetVariables.merging(symbolTextVariables(
+                    component: component,
+                    customValue: symbolItem.string("custom_value")
+                ))
             )
             : []
         let symbolTexts = symbolItem.bool("smashed") == true
@@ -2296,7 +2310,7 @@ struct HorizontalSchematic {
             }
             return HorizontalText(
                 id: "\(symbolInstanceID)/text/\(id)",
-                text: substituteSymbolText(text, component: component, customValue: customValue),
+                text: symbolTextVariables(component: component, customValue: customValue).resolve(text),
                 position: transformed.shift,
                 size: item.double("size") ?? 1_000_000,
                 layer: item.int("layer"),
@@ -2351,7 +2365,7 @@ struct HorizontalSchematic {
     private static func parseSmashedSymbolTexts(
         from symbolItem: JSONDictionary,
         sheetTextsByID: [String: JSONDictionary],
-        component: SchematicComponentInfo?
+        variables: HorizontalTextVariables
     ) -> [HorizontalText] {
         symbolTextIDs(from: symbolItem).compactMap { textID in
             // One the sheet no longer has draws nothing; Horizon drops it
@@ -2360,8 +2374,7 @@ struct HorizontalSchematic {
                   var text = parseAbsoluteText(
                     id: textID,
                     item: item,
-                    component: component,
-                    customValue: symbolItem.string("custom_value"),
+                    variables: variables,
                     keepingEmpty: true
                   ) else {
                 return nil
@@ -2452,7 +2465,8 @@ struct HorizontalSchematic {
 
     private static func parseTexts(
         from map: [String: JSONDictionary],
-        excluding excludedIDs: Set<String> = []
+        excluding excludedIDs: Set<String> = [],
+        variables: HorizontalTextVariables
     ) -> [HorizontalText] {
         map.compactMap { id, item in
             guard !excludedIDs.contains(normalizedID(id)),
@@ -2460,7 +2474,7 @@ struct HorizontalSchematic {
                 return nil
             }
 
-            return parseAbsoluteText(id: id, item: item, component: nil)
+            return parseAbsoluteText(id: id, item: item, variables: variables)
         }
     }
 
@@ -2469,7 +2483,7 @@ struct HorizontalSchematic {
         substitutions: [String: String]
     ) -> [HorizontalText] {
         map.compactMap { id, item in
-            guard var text = parseAbsoluteText(id: "frame/text/\(id)", item: item, component: nil) else {
+            guard var text = parseAbsoluteText(id: "frame/text/\(id)", item: item, variables: HorizontalTextVariables()) else {
                 return nil
             }
 
@@ -2485,16 +2499,63 @@ struct HorizontalSchematic {
         sheetTotal: Int,
         projectMeta: [String: String]
     ) -> [String: String] {
-        var substitutions = projectMeta
-        for (key, value) in sheet.dictionary("title_block_values") ?? [:] {
-            if let value = value as? String {
-                substitutions[key] = value
-            }
-        }
+        var substitutions = titleBlockValues(sheet: sheet, projectMeta: projectMeta)
         substitutions["sheet_idx"] = "\(sheetIndex)"
         substitutions["sheet_total"] = "\(sheetTotal)"
         substitutions["sheet_title"] = sheetName
         return substitutions
+    }
+
+    /// The title-block values a sheet's frame draws: the block's, with the
+    /// sheet's own on top.
+    private static func titleBlockValues(sheet: JSONDictionary, projectMeta: [String: String]) -> [String: String] {
+        var values = projectMeta
+        for (key, value) in sheet.dictionary("title_block_values") ?? [:] {
+            if let value = value as? String {
+                values[key] = value
+            }
+        }
+        return values
+    }
+
+    /// What `$key` in one of a sheet's own texts stands for: the title-block
+    /// values its frame draws. Horizon leaves a sheet text as typed and fills
+    /// them in only in a frame's.
+    private static func textVariables(sheet: JSONDictionary, projectMeta: [String: String]) -> HorizontalTextVariables {
+        .project(titleBlockValues(sheet: sheet, projectMeta: projectMeta))
+    }
+
+    /// What `$key` stands for in a text a symbol draws, its own or one smashed
+    /// out of it: its component's refdes, value and MPN, and a `$VALUE` alone
+    /// the symbol's custom value, where it has one.
+    static func symbolTextVariables(
+        refdes: String,
+        value: String,
+        details: HorizontalComponentDetails?,
+        customValue: String?
+    ) -> HorizontalTextVariables {
+        var variables = HorizontalTextVariables.component(refdes: refdes, value: value, mpn: details?.mpn)
+        if nonEmpty(customValue) != nil {
+            variables.customValue = HorizontalSymbolCustomValue.drawnValue(
+                customValue: customValue,
+                details: details ?? HorizontalComponentDetails(componentID: nil, refdes: refdes, value: value, partID: nil)
+            )
+        }
+        return variables
+    }
+
+    private static func symbolTextVariables(component: SchematicComponentInfo?, customValue: String?) -> HorizontalTextVariables {
+        guard let component else {
+            return HorizontalTextVariables()
+        }
+        return symbolTextVariables(
+            refdes: component.refdes,
+            value: component.value,
+            details: component.details ?? HorizontalComponentDetails(
+                componentID: nil, refdes: component.refdes, value: component.value, partID: component.partID
+            ),
+            customValue: customValue
+        )
     }
 
     private static func substituteFrameText(_ text: String, substitutions: [String: String]) -> String {
@@ -2564,8 +2625,7 @@ struct HorizontalSchematic {
     private static func parseAbsoluteText(
         id: String,
         item: JSONDictionary,
-        component: SchematicComponentInfo?,
-        customValue: String? = nil,
+        variables: HorizontalTextVariables,
         keepingEmpty: Bool = false
     ) -> HorizontalText? {
         guard let placement = HorizontalPlacementTransform(json: item.dictionary("placement")),
@@ -2573,7 +2633,7 @@ struct HorizontalSchematic {
             return nil
         }
 
-        let substitutedText = substituteSymbolText(text, component: component, customValue: customValue)
+        let substitutedText = variables.resolve(text)
         guard keepingEmpty || !substitutedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
@@ -2590,7 +2650,9 @@ struct HorizontalSchematic {
             width: item.double("width") ?? 0,
             origin: item.horizonTextOrigin(),
             font: item.horizonTextFont(),
-            allowUpsideDown: item.bool("allow_upside_down") ?? false
+            allowUpsideDown: item.bool("allow_upside_down") ?? false,
+            // A save writes "$rev" back, not the revision it drew.
+            placeholder: substitutedText == text ? nil : HorizontalTextPlaceholder(stored: text, drawn: substitutedText)
         )
     }
 
@@ -4155,56 +4217,6 @@ struct HorizontalSchematic {
         default:
             return point
         }
-    }
-
-    private static func substituteSymbolText(
-        _ text: String,
-        component: SchematicComponentInfo?,
-        customValue: String? = nil
-    ) -> String {
-        guard let component else {
-            return text
-        }
-
-        if text == "$VALUE", nonEmpty(customValue) != nil {
-            return HorizontalSymbolCustomValue.drawnValue(customValue: customValue, details: component.details ?? HorizontalComponentDetails(
-                componentID: nil, refdes: component.refdes, value: component.value, partID: component.partID
-            ))
-        }
-
-        let values = symbolSubstitutionValues(for: component)
-        return values.keys.sorted { $0.count > $1.count }.reduce(text) { result, key in
-            guard let value = values[key] else {
-                return result
-            }
-
-            return result
-                .replacingOccurrences(of: "${\(key)}", with: value)
-                .replacingOccurrences(of: "$\(key)", with: value)
-        }
-    }
-
-    private static func symbolSubstitutionValues(for component: SchematicComponentInfo) -> [String: String] {
-        var values = [String: String]()
-        insertTextSubstitution(key: "RD", value: component.refdes, into: &values)
-        insertTextSubstitution(key: "REFDES", value: component.refdes, into: &values)
-        insertTextSubstitution(key: "REF", value: component.refdes, into: &values)
-        insertTextSubstitution(key: "VALUE", value: component.value, into: &values)
-        insertTextSubstitution(key: "VAL", value: component.value, into: &values)
-        if let mpn = component.details?.mpn {
-            insertTextSubstitution(key: "MPN", value: mpn, into: &values)
-        }
-        return values
-    }
-
-    private static func insertTextSubstitution(
-        key: String,
-        value: String,
-        into values: inout [String: String]
-    ) {
-        values[key] = value
-        values[key.lowercased()] = value
-        values[key.uppercased()] = value
     }
 
     private static func substituteBlockSymbolText(_ text: String, refdes: String, name: String) -> String {

@@ -556,6 +556,10 @@ struct HorizontalBoard {
     var packageArcs: [HorizontalArc]
     var packageTexts: [HorizontalText]
     var texts: [HorizontalText]
+    /// What `$key` in a text stands for here: the block's title-block values,
+    /// project_title, rev and the rest. A package's texts add its
+    /// component's (`textVariables(forTextID:)`).
+    var textVariables = HorizontalTextVariables()
     var boardPanels: [HorizontalBoardPanel]
     var placeableObjects: [HorizontalUnplacedObject] = []
     var unplacedObjects: [HorizontalUnplacedObject] = []
@@ -867,6 +871,7 @@ struct HorizontalBoard {
             boardTexts: boardTexts,
             drawn: packageGeometry.texts
         )
+        loadedBoard.textVariables = .project(blockMetadata.titleValues)
         loadedBoard.checkFacts = HorizontalBoardCheckFacts(
             componentsWithoutPart: blockMetadata.components
                 .filter { $0.value.partID == nil }
@@ -5977,50 +5982,20 @@ struct HorizontalBoard {
     }
 
     private static func substituteText(_ text: String, context: BoardTextContext) -> String {
-        let values = textSubstitutionValues(for: context)
-        return values.keys.sorted { $0.count > $1.count }.reduce(text) { result, key in
-            guard let value = values[key] else {
-                return result
-            }
-
-            return result
-                .replacingOccurrences(of: "${\(key)}", with: value)
-                .replacingOccurrences(of: "$\(key)", with: value)
-        }
+        textVariables(for: context).resolve(text)
     }
 
-    private static func textSubstitutionValues(for context: BoardTextContext) -> [String: String] {
-        var values = [String: String]()
-
-        for (key, value) in context.titleValues {
-            insertTextSubstitution(key: key, value: value, into: &values)
+    private static func textVariables(for context: BoardTextContext) -> HorizontalTextVariables {
+        let project = HorizontalTextVariables.project(context.titleValues)
+        guard let component = context.component else {
+            return project
         }
-
-        if let component = context.component {
-            insertTextSubstitution(key: "RD", value: component.refdes, into: &values)
-            insertTextSubstitution(key: "REFDES", value: component.refdes, into: &values)
-            insertTextSubstitution(key: "REF", value: component.refdes, into: &values)
-            insertTextSubstitution(key: "VALUE", value: component.value, into: &values)
-            insertTextSubstitution(key: "VAL", value: component.value, into: &values)
-            if let mpn = component.details?.mpn {
-                insertTextSubstitution(key: "MPN", value: mpn, into: &values)
-            }
-            if let manufacturer = component.details?.manufacturer {
-                insertTextSubstitution(key: "MFR", value: manufacturer, into: &values)
-            }
-        }
-
-        return values
-    }
-
-    private static func insertTextSubstitution(
-        key: String,
-        value: String,
-        into values: inout [String: String]
-    ) {
-        values[key] = value
-        values[key.lowercased()] = value
-        values[key.uppercased()] = value
+        return project.merging(.component(
+            refdes: component.refdes,
+            value: component.value,
+            mpn: component.details?.mpn,
+            manufacturer: component.details?.manufacturer
+        ))
     }
 
     private static func nonEmpty(_ value: String?) -> String? {
