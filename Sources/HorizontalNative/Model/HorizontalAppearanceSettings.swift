@@ -546,10 +546,11 @@ final class HorizontalAppearanceSettings: ObservableObject {
         drawsWireHops
     }
 
-    /// The rules window's Display warnings on canvas: the canvases' warning
-    /// markers, the schematic's own and the rules checks', and the count on
-    /// the rules results button. Off, the checks still run and their results
-    /// sidebar still lists what they find.
+    /// Display warnings on canvas, the rules window's and the rules results
+    /// sidebar's: the canvases' warning markers, the schematic's own and the
+    /// rules checks', and the count on the rules results button. Off, the
+    /// checks run only when asked (`HorizontalRulesCheckDefaults`), and their
+    /// results sidebar still lists what they find.
     var shouldDisplayCanvasWarnings: Bool {
         displaysCanvasWarnings
     }

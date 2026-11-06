@@ -54,11 +54,19 @@ struct HorizontalSettingsView: View {
                 Toggle("Update Planes Automatically", isOn: $updatesPlanesAutomatically)
             }
 
+            // As in the rules results sidebar: with the warnings off the
+            // checks pause, and Check Rules Automatically hides.
             Section("Design Rules") {
-                Toggle("Check Rules Automatically", isOn: $checksRulesAutomatically)
-                Text("Checks the schematic and board against their rules again after every change. Off, the rules results sidebar checks when you click Check Now, and says when the design has changed since.")
+                Toggle("Display Warnings on Canvas", isOn: appearanceSettings.canvasWarningsBinding())
+                Text("Marks warnings and rules check findings on the schematic and board, and counts them on the rules results button. Off, the rules are checked only when you click Check Now.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if appearanceSettings.shouldDisplayCanvasWarnings {
+                    Toggle("Check Rules Automatically", isOn: $checksRulesAutomatically)
+                    Text("Checks the schematic and board against their rules again after every change. Off, the rules results sidebar checks when you click Check Now, and says when the design has changed since.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             // Off is the standard chrome on both platforms: the system toolbar

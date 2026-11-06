@@ -818,8 +818,12 @@ struct HorizontalViewCommands: Commands {
             .disabled(boardRulesAction == nil || boardAvailable != true)
             // The rules results sidebar's Automatically check rules. Checking
             // writes nothing, so it stays when the document is locked, and as
-            // a preference it is offered whether or not a board is open.
-            Toggle("Check Rules Automatically", isOn: $checksRulesAutomatically)
+            // a preference it is offered whether or not a board is open; as
+            // in the sidebar, it hides while Display warnings on canvas is
+            // off, which pauses the checks.
+            if appearanceSettings.shouldDisplayCanvasWarnings {
+                Toggle("Check Rules Automatically", isOn: $checksRulesAutomatically)
+            }
 
             Divider()
             Menu("Default View") {

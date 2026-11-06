@@ -6,7 +6,9 @@ import HorizontalProjectIO
 @testable import HorizontalNative
 
 /// Automatically check rules: the setting, on unless turned off, and the
-/// rules results sidebar's checkbox, Check Now and out-of-date note.
+/// rules results sidebar's checkbox, Check Now and out-of-date note; and
+/// Display warnings on canvas before it, which off hides it and pauses the
+/// checks.
 @MainActor
 final class HorizontalRulesCheckAutomaticallyTests: XCTestCase {
     func testRulesAreCheckedAutomaticallyUntilTurnedOff() throws {
@@ -18,7 +20,16 @@ final class HorizontalRulesCheckAutomaticallyTests: XCTestCase {
         XCTAssertTrue(HorizontalRulesCheckDefaults.checksAutomatically(defaults: defaults))
     }
 
+    func testTheChecksRunOnTheirOwnOnlyWhileWarningsAreDisplayed() {
+        XCTAssertTrue(HorizontalRulesCheckDefaults.runsAutomatically(checksAutomatically: true, displaysCanvasWarnings: true))
+        XCTAssertFalse(HorizontalRulesCheckDefaults.runsAutomatically(checksAutomatically: true, displaysCanvasWarnings: false),
+                       "the warnings off pause them")
+        XCTAssertFalse(HorizontalRulesCheckDefaults.runsAutomatically(checksAutomatically: false, displaysCanvasWarnings: true))
+        XCTAssertFalse(HorizontalRulesCheckDefaults.runsAutomatically(checksAutomatically: false, displaysCanvasWarnings: false))
+    }
+
     private final class SidebarState: ObservableObject {
+        @Published var displaysCanvasWarnings = true
         @Published var checksAutomatically: Bool
         @Published var result: HorizontalBoardRulesResultState?
         var checks = 0
@@ -35,6 +46,7 @@ final class HorizontalRulesCheckAutomaticallyTests: XCTestCase {
             HorizontalRulesResultsSidebarView(
                 result: state.result,
                 safeAreaInsets: EdgeInsets(),
+                displaysCanvasWarnings: $state.displaysCanvasWarnings,
                 checksAutomatically: $state.checksAutomatically,
                 onCheckNow: { state.checks += 1 },
                 onOpenRules: { state.opened += 1 }
@@ -49,13 +61,14 @@ final class HorizontalRulesCheckAutomaticallyTests: XCTestCase {
         let (window, hosted) = mount(Sidebar(state: state))
         defer { window.close() }
 
-        let shown = await settle { self.controls(in: hosted).count == 2 }
-        XCTAssertTrue(shown, "the checkbox and Open Rules…, and no Check Now: \(controls(in: hosted).count) controls")
-        try click(controls(in: hosted)[0], in: window)
+        let shown = await settle { self.controls(in: hosted).count == 3 }
+        XCTAssertTrue(shown, "the two checkboxes and Open Rules…, and no Check Now: \(controls(in: hosted).count) controls")
+        try click(controls(in: hosted)[1], in: window)
         let off = await settle { !state.checksAutomatically }
         XCTAssertTrue(off, "the checkbox turns the setting off")
+        XCTAssertTrue(state.displaysCanvasWarnings, "and leaves the warnings on")
 
-        let offered = await settle { self.controls(in: hosted).count == 3 }
+        let offered = await settle { self.controls(in: hosted).count == 4 }
         XCTAssertTrue(offered, "Check Now beside Open Rules…: \(controls(in: hosted).count) controls")
         try click(try XCTUnwrap(controls(in: hosted).last), in: window)
         let checked = await settle { state.checks == 1 }
@@ -63,11 +76,49 @@ final class HorizontalRulesCheckAutomaticallyTests: XCTestCase {
         XCTAssertEqual(state.opened, 0, "and opens no rules window")
         XCTAssertFalse(state.checksAutomatically, "and leaves the setting off")
 
-        try click(controls(in: hosted)[0], in: window)
+        try click(controls(in: hosted)[1], in: window)
         let on = await settle { state.checksAutomatically }
         XCTAssertTrue(on, "the checkbox turns the setting back on")
-        let gone = await settle { self.controls(in: hosted).count == 2 }
+        let gone = await settle { self.controls(in: hosted).count == 3 }
         XCTAssertTrue(gone, "Check Now goes: \(controls(in: hosted).count) controls")
+    }
+
+    /// Display warnings on canvas comes first; off, Automatically check
+    /// rules hides, its row with it, and Check Now runs the checks while it
+    /// stays on; back on, it returns and Check Now goes.
+    func testWithTheWarningsOffAutomaticallyCheckRulesHidesAndCheckNowRunsTheChecks() async throws {
+        let state = SidebarState(checksAutomatically: true, result: result(isOutOfDate: false))
+        let (window, hosted) = mount(Sidebar(state: state))
+        defer { window.close() }
+
+        let shown = await settle { self.controls(in: hosted).count == 3 && !self.tables(in: hosted).isEmpty }
+        XCTAssertTrue(shown, "the two checkboxes and Open Rules…: \(controls(in: hosted).count) controls")
+        let table = try XCTUnwrap(tables(in: hosted).first)
+        let rowsWithBoth = table.numberOfRows
+        try click(controls(in: hosted)[0], in: window)
+        let off = await settle { !state.displaysCanvasWarnings }
+        XCTAssertTrue(off, "the first checkbox turns the warnings off")
+        XCTAssertTrue(state.checksAutomatically, "and leaves Automatically check rules on")
+
+        // The warnings' checkbox, then Open Rules… and Check Now on one row.
+        let hidden = await settle { table.numberOfRows == rowsWithBoth - 1 && self.controls(in: hosted).count == 3 }
+        XCTAssertTrue(hidden, "Automatically check rules hides and Check Now comes: \(table.numberOfRows) rows of \(rowsWithBoth), "
+                      + "\(controls(in: hosted).count) controls")
+        try click(try XCTUnwrap(controls(in: hosted).last), in: window)
+        let checked = await settle { state.checks == 1 }
+        XCTAssertTrue(checked, "Check Now runs the checks: \(state.checks) runs")
+        XCTAssertFalse(state.displaysCanvasWarnings, "and leaves the warnings off")
+        XCTAssertTrue(state.checksAutomatically)
+
+        try click(controls(in: hosted)[0], in: window)
+        let on = await settle { state.displaysCanvasWarnings }
+        XCTAssertTrue(on, "the checkbox turns the warnings back on")
+        let back = await settle { table.numberOfRows == rowsWithBoth && self.controls(in: hosted).count == 3 }
+        XCTAssertTrue(back, "Automatically check rules returns and Check Now goes: \(table.numberOfRows) rows of \(rowsWithBoth), "
+                      + "\(controls(in: hosted).count) controls")
+        try click(controls(in: hosted)[1], in: window)
+        let automaticOff = await settle { !state.checksAutomatically }
+        XCTAssertTrue(automaticOff, "the second checkbox is Automatically check rules again")
     }
 
     /// Results found before the latest change say so, a row of their own;
@@ -76,8 +127,8 @@ final class HorizontalRulesCheckAutomaticallyTests: XCTestCase {
         let state = SidebarState(checksAutomatically: false, result: result(isOutOfDate: true))
         let (window, hosted) = mount(Sidebar(state: state))
         defer { window.close() }
-        let mounted = await settle { self.controls(in: hosted).count == 3 }
-        XCTAssertTrue(mounted, "the checkbox, Open Rules… and Check Now")
+        let mounted = await settle { self.controls(in: hosted).count == 4 }
+        XCTAssertTrue(mounted, "the checkboxes, Open Rules… and Check Now")
         let table = try XCTUnwrap(tables(in: hosted).first)
         let outOfDateRows = table.numberOfRows
 
@@ -116,6 +167,41 @@ final class HorizontalRulesCheckAutomaticallyTests: XCTestCase {
     /// or after an edit, Check Now checks, an edit since marks the results
     /// out of date and leaves them, and turning the setting on checks again.
     func testWithTheSettingOffTheWorkspaceChecksOnlyWhenAsked() async throws {
+        // The two checkboxes, Open Rules… and Check Now; turned on, Check
+        // Now goes.
+        try await checkTheWorkspaceChecksOnlyWhenAsked(controlsWhilePaused: 4, resumedRows: 0, resumedControls: -1) { defaults, _ in
+            defaults.set(false, forKey: HorizontalRulesCheckDefaults.checksAutomaticallyKey)
+        } resume: { defaults, _ in
+            defaults.set(true, forKey: HorizontalRulesCheckDefaults.checksAutomaticallyKey)
+        }
+    }
+
+    /// The same with Automatically check rules on and Display warnings on
+    /// canvas off, which pauses the checks just as well; back on, they catch
+    /// up.
+    func testWithTheWarningsOffTheWorkspaceChecksOnlyWhenAsked() async throws {
+        // The warnings' checkbox, Open Rules… and Check Now; turned on,
+        // Automatically check rules comes back, a row of its own, and
+        // Check Now goes.
+        try await checkTheWorkspaceChecksOnlyWhenAsked(controlsWhilePaused: 3, resumedRows: 1, resumedControls: 0) { _, settings in
+            settings.canvasWarningsBinding().wrappedValue = false
+        } resume: { _, settings in
+            settings.canvasWarningsBinding().wrappedValue = true
+        }
+    }
+
+    /// Opens a document window with the checks paused by `pause`, checks
+    /// nothing is checked on open or after an edit, Check Now checks, an edit
+    /// since marks the results out of date and leaves them, and `resume`
+    /// checks again, the sidebar gaining `resumedRows` rows and
+    /// `resumedControls` controls over what it had while paused.
+    private func checkTheWorkspaceChecksOnlyWhenAsked(
+        controlsWhilePaused: Int,
+        resumedRows: Int,
+        resumedControls: Int,
+        pause: (UserDefaults, HorizontalAppearanceSettings) -> Void,
+        resume: (UserDefaults, HorizontalAppearanceSettings) -> Void
+    ) async throws {
         guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required for the canvas") }
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("rules-check-\(UUID().uuidString).horizontal")
@@ -139,11 +225,12 @@ final class HorizontalRulesCheckAutomaticallyTests: XCTestCase {
         defer { UserDefaults.standard.removeObject(forKey: viewStateKey) }
         let defaults = try freshDefaults()
         defaults.set(false, forKey: HorizontalOperationDefaults.readOnlyOperationKey)
-        defaults.set(false, forKey: HorizontalRulesCheckDefaults.checksAutomaticallyKey)
+        let settings = HorizontalAppearanceSettings(defaults: defaults)
+        pause(defaults, settings)
 
         let state = DocumentState(try HorizontalProjectArchive.snapshot(from: root))
         let hosted = NSHostingView(rootView: Workspace(state: state, project: project)
-            .environmentObject(HorizontalAppearanceSettings(defaults: defaults))
+            .environmentObject(settings)
             .defaultAppStorage(defaults))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 700),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
@@ -152,12 +239,12 @@ final class HorizontalRulesCheckAutomaticallyTests: XCTestCase {
         window.orderFront(nil)
         defer { window.close() }
 
-        // The rules results sidebar: the list furthest right, its checkbox,
-        // Open Rules… and Check Now under No checks run.
+        // The rules results sidebar: the list furthest right, its
+        // checkboxes, Open Rules… and Check Now under No checks run.
         var sidebar: NSTableView?
         let opened = await settle(timeout: 10) {
             sidebar = self.tables(in: hosted).max { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX }
-            return sidebar.map { self.controls(in: $0).count == 3 } ?? false
+            return sidebar.map { self.controls(in: $0).count == controlsWhilePaused } ?? false
         }
         XCTAssertTrue(opened, "the sidebar with Check Now: \(sidebar.map { controls(in: $0).count } ?? -1) controls")
         let list = try XCTUnwrap(sidebar)
@@ -185,15 +272,15 @@ final class HorizontalRulesCheckAutomaticallyTests: XCTestCase {
         try await Task.sleep(for: .seconds(2))
         XCTAssertEqual(list.numberOfRows, results + 1, "and nothing checks again on its own")
 
-        // A finding's row has buttons of its own, so Check Now is the one
-        // control fewer.
+        // A finding's row has buttons of its own, so the controls are
+        // counted from what the sidebar has now.
         let controlsWhileOff = controls(in: list).count
-        defaults.set(true, forKey: HorizontalRulesCheckDefaults.checksAutomaticallyKey)
+        resume(defaults, settings)
         let rechecked = await settle(timeout: 10) {
-            list.numberOfRows == results && self.controls(in: list).count == controlsWhileOff - 1
+            list.numberOfRows == results + resumedRows && self.controls(in: list).count == controlsWhileOff + resumedControls
         }
-        XCTAssertTrue(rechecked, "turned on, the checks catch up and Check Now goes: \(list.numberOfRows) rows of \(results), "
-                      + "\(controls(in: list).count) controls of \(controlsWhileOff)")
+        XCTAssertTrue(rechecked, "turned on, the checks catch up and Check Now goes: \(list.numberOfRows) rows of \(results + resumedRows), "
+                      + "\(controls(in: list).count) controls of \(controlsWhileOff + resumedControls)")
     }
 
     private func result(isOutOfDate: Bool) -> HorizontalBoardRulesResultState {

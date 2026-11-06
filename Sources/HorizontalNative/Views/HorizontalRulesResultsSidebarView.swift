@@ -4,12 +4,15 @@ import SwiftUI
 /// the rules' own structure, the schematic's connectivity and the board
 /// against every kind of board rule Horizontal checks, a section a kind —
 /// which the rules window's Apply & Check runs and the document keeps up to
-/// date as the design changes, or, with Automatically check rules off, runs
-/// when Check Now asks. macOS shows it as the window's right sidebar, the
-/// iPad as its right-hand panel.
+/// date as the design changes, or, with Automatically check rules or Display
+/// warnings on canvas off, runs when Check Now asks. macOS shows it as the
+/// window's right sidebar, the iPad as its right-hand panel.
 struct HorizontalRulesResultsSidebarView: View {
     var result: HorizontalBoardRulesResultState?
     var safeAreaInsets: EdgeInsets
+    /// Display warnings on canvas (`HorizontalAppearanceSettings`). Off,
+    /// Automatically check rules hides and the checks wait for Check Now.
+    var displaysCanvasWarnings: Binding<Bool> = .constant(true)
     /// Automatically check rules (`HorizontalRulesCheckDefaults`).
     var checksAutomatically: Binding<Bool> = .constant(true)
     /// Runs every check now; nil where there is nothing to check.
@@ -70,15 +73,25 @@ struct HorizontalRulesResultsSidebarView: View {
                         .foregroundStyle(.secondary)
                         .padding(.vertical, 4)
                 }
-                Toggle("Automatically check rules", isOn: checksAutomatically)
+                Toggle("Display warnings on canvas", isOn: displaysCanvasWarnings)
                     #if os(macOS)
                     .toggleStyle(.checkbox)
                     #endif
-                    .help("Check the design against its rules again after every change")
+                    .help(HorizontalCanvasWarningsToggle.help)
+                if displaysCanvasWarnings.wrappedValue {
+                    Toggle("Automatically check rules", isOn: checksAutomatically)
+                        #if os(macOS)
+                        .toggleStyle(.checkbox)
+                        #endif
+                        .help("Check the design against its rules again after every change")
+                }
                 HStack {
                     Button("Open Rules…", action: onOpenRules)
                         .help("Open the board's rules")
-                    if !checksAutomatically.wrappedValue {
+                    if !HorizontalRulesCheckDefaults.runsAutomatically(
+                        checksAutomatically: checksAutomatically.wrappedValue,
+                        displaysCanvasWarnings: displaysCanvasWarnings.wrappedValue
+                    ) {
                         Button("Check Now") { onCheckNow?() }
                             .disabled(onCheckNow == nil)
                             .help("Check the design against its rules")
