@@ -745,12 +745,11 @@ camera moves to look at the thing's footprint from the direction it was
 already looking. When none of the showing panes can show it, the default rule
 picks one and reveals it. Highlight is every view too: the 3D scene marks each
 highlighted component's model with a red, self-lit box inside a faint red halo
-— the spill of light on the board and the parts beside it, drawn rather than
-lit, because adding an `SCNLight` at runtime, even one, makes SceneKit's
-fragment shader ask for a light-indices buffer it never binds and Metal aborts
-the app on the next draw (`BoardSceneRenderSmokeTests` renders a real project
-offscreen under Metal API validation to keep that from coming back) — so
-"highlight C50" is one highlight in the schematic, the board and the 3D board.
+— the spill of light on the board and the parts beside it, drawn unlit so it
+reads as its colour whatever the light (`BoardSceneRenderSmokeTests` renders
+a real project offscreen, every part highlighted, under Metal API validation)
+— so "highlight C50" is one highlight in the schematic, the board and the 3D
+board.
 The workspace holds one component selection, the last one made — a click on
 the board, on a symbol in the schematic, on a part in the 3D view (shift or
 command to extend, empty space to clear), a tap on the iPad, or `select` from

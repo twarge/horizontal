@@ -30,23 +30,23 @@ final class BoardSceneSceneCacheTests: XCTestCase {
     func testFirstSceneBuildsAtOnceAndIsReturnedAfterwards() async {
         let cache = BoardSceneSceneCache()
         var readyRevisions = [Int]()
-        let first = cache.nodes(for: board(polygonCount: 1), revision: 0) { _ in readyRevisions.append(cache.builtRevision ?? -1) }
+        let first = cache.scene(for: board(polygonCount: 1), revision: 0) { _ in readyRevisions.append(cache.builtRevision ?? -1) }
         XCTAssertNil(first, "nothing to show before the first build")
         XCTAssertTrue(cache.isBuilding)
         await waitForBuilds(cache)
         XCTAssertEqual(readyRevisions, [0])
-        XCTAssertNotNil(cache.nodes(for: board(polygonCount: 1), revision: 0) { _ in XCTFail("nothing to build") })
+        XCTAssertNotNil(cache.scene(for: board(polygonCount: 1), revision: 0) { _ in XCTFail("nothing to build") })
         XCTAssertFalse(cache.isBuilding)
     }
 
     func testAnEditKeepsTheOldSceneUpUntilTheNewOneIsReady() async {
         let cache = BoardSceneSceneCache()
-        _ = cache.nodes(for: board(polygonCount: 1), revision: 0) { _ in }
+        _ = cache.scene(for: board(polygonCount: 1), revision: 0) { _ in }
         await waitForBuilds(cache)
-        let shown = cache.nodes(for: board(polygonCount: 1), revision: 0) { _ in }
+        let shown = cache.scene(for: board(polygonCount: 1), revision: 0) { _ in }
 
         var readyRevisions = [Int]()
-        let standIn = cache.nodes(for: board(polygonCount: 2), revision: 1) { _ in readyRevisions.append(cache.builtRevision ?? -1) }
+        let standIn = cache.scene(for: board(polygonCount: 2), revision: 1) { _ in readyRevisions.append(cache.builtRevision ?? -1) }
         XCTAssertTrue(standIn === shown, "the previous scene stands in")
         XCTAssertTrue(cache.isBuilding)
         // Nothing happens until the edits settle.
@@ -55,17 +55,17 @@ final class BoardSceneSceneCacheTests: XCTestCase {
         await waitForBuilds(cache)
         XCTAssertEqual(cache.builtRevision, 1)
         XCTAssertEqual(readyRevisions, [1])
-        XCTAssertFalse(cache.nodes(for: board(polygonCount: 2), revision: 1) { _ in } === shown)
+        XCTAssertFalse(cache.scene(for: board(polygonCount: 2), revision: 1) { _ in } === shown)
     }
 
     func testABurstOfEditsCostsOneRebuildAndOneCatchUp() async {
         let cache = BoardSceneSceneCache()
-        _ = cache.nodes(for: board(polygonCount: 1), revision: 0) { _ in }
+        _ = cache.scene(for: board(polygonCount: 1), revision: 0) { _ in }
         await waitForBuilds(cache)
 
         var readyRevisions = [Int]()
         for revision in 1...5 {
-            _ = cache.nodes(for: board(polygonCount: revision + 1), revision: revision) { _ in readyRevisions.append(cache.builtRevision ?? -1) }
+            _ = cache.scene(for: board(polygonCount: revision + 1), revision: revision) { _ in readyRevisions.append(cache.builtRevision ?? -1) }
             try? await Task.sleep(for: .milliseconds(30))
         }
         await waitForBuilds(cache)
@@ -76,9 +76,9 @@ final class BoardSceneSceneCacheTests: XCTestCase {
         // during or right after that build) is picked up by one more pass;
         // a tiny board builds too fast to pin down which.
         readyRevisions = []
-        _ = cache.nodes(for: board(polygonCount: 40), revision: 6) { _ in readyRevisions.append(cache.builtRevision ?? -1) }
+        _ = cache.scene(for: board(polygonCount: 40), revision: 6) { _ in readyRevisions.append(cache.builtRevision ?? -1) }
         try? await Task.sleep(for: .milliseconds(450))
-        _ = cache.nodes(for: board(polygonCount: 3), revision: 7) { _ in readyRevisions.append(cache.builtRevision ?? -1) }
+        _ = cache.scene(for: board(polygonCount: 3), revision: 7) { _ in readyRevisions.append(cache.builtRevision ?? -1) }
         await waitForBuilds(cache)
         XCTAssertEqual(cache.builtRevision, 7)
         XCTAssertEqual(readyRevisions.last, 7)
@@ -87,11 +87,11 @@ final class BoardSceneSceneCacheTests: XCTestCase {
 
     func testReturningToTheBuiltRevisionCancelsThePendingRebuild() async {
         let cache = BoardSceneSceneCache()
-        _ = cache.nodes(for: board(polygonCount: 1), revision: 0) { _ in }
+        _ = cache.scene(for: board(polygonCount: 1), revision: 0) { _ in }
         await waitForBuilds(cache)
-        _ = cache.nodes(for: board(polygonCount: 1), silkscreenClipping: HorizontalSilkscreenClipping(clearance: 100_000), revision: 0) { _ in XCTFail("cancelled") }
+        _ = cache.scene(for: board(polygonCount: 1), silkscreenClipping: HorizontalSilkscreenClipping(clearance: 100_000), revision: 0) { _ in XCTFail("cancelled") }
         XCTAssertTrue(cache.isBuilding)
-        _ = cache.nodes(for: board(polygonCount: 1), revision: 0) { _ in XCTFail("nothing to build") }
+        _ = cache.scene(for: board(polygonCount: 1), revision: 0) { _ in XCTFail("nothing to build") }
         XCTAssertFalse(cache.isBuilding)
         try? await Task.sleep(for: .milliseconds(600))
         XCTAssertEqual(cache.builtRevision, 0)
@@ -101,8 +101,8 @@ final class BoardSceneSceneCacheTests: XCTestCase {
         let cache = BoardSceneSceneCache()
         var published = [Int]()
         // Both requests run before a background completion can reenter MainActor.
-        _ = cache.nodes(for: board(polygonCount: 40), revision: 1) { _ in published.append(cache.builtRevision ?? -1) }
-        _ = cache.nodes(for: board(polygonCount: 1), revision: 2) { _ in published.append(cache.builtRevision ?? -1) }
+        _ = cache.scene(for: board(polygonCount: 40), revision: 1) { _ in published.append(cache.builtRevision ?? -1) }
+        _ = cache.scene(for: board(polygonCount: 1), revision: 2) { _ in published.append(cache.builtRevision ?? -1) }
         await waitForBuilds(cache)
         XCTAssertEqual(published, [2])
     }
