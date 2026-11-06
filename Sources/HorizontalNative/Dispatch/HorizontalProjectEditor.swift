@@ -1184,14 +1184,16 @@ final class HorizontalProjectEditor {
     /// Writes every changed file and returns their paths. Files are written
     /// the way Horizon writes them (four-space indent, byte-ordered keys, no
     /// trailing newline), so an edit shows up in `git diff` as the lines it
-    /// touched rather than a reformatted file.
+    /// touched rather than a reformatted file, and as Horizon's save leaves
+    /// them, its file version and the keys it always writes
+    /// (`HorizontalHorizonFileConformance`).
     func write() throws -> [String] {
         var written = [String]()
         for key in dirty.sorted() {
             guard let json = files[key], let url = fileURLs[key] else {
                 continue
             }
-            let data = try HorizontalHorizonJSONWriter.data(json)
+            let data = try HorizontalHorizonJSONWriter.data(HorizontalHorizonFileConformance.conformed(json))
             try store.write(data, to: url)
             written.append(url.path)
         }

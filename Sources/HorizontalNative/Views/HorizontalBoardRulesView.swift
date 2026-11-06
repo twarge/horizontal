@@ -1,3 +1,4 @@
+import HorizontalProjectIO
 import SwiftUI
 #if canImport(AppKit)
 import AppKit
@@ -560,7 +561,7 @@ struct HorizontalBoardRulesWindow: View {
         if selectedKind == .viaDefinitions {
             var definitions = HorizontalBoardRuleKind.viaDefinitions(in: rules)
             let id = UUID().uuidString.lowercased()
-            definitions[id] = HorizontalRuleViaDefinitionEditor.defaultDefinition()
+            definitions[id] = HorizontalRuleViaDefinitionEditor.defaultDefinition(padstack: context.board?.defaultViaPadstackID)
             selectedRuleID = id
             setViaDefinitions(definitions)
             return
@@ -802,8 +803,10 @@ enum HorizontalBoardRuleKind: String, CaseIterable, Identifiable, Hashable {
         case .via:
             rule["match"] = context.defaultMatch()
             // The board's default via, as Horizon's rule editor starts one
-            // from the pool's; blank with no board to take it from.
-            rule["padstack"] = context.board?.defaultViaPadstackID ?? ""
+            // from the pool's; with no board to take it from, none: the null
+            // uuid, as Horizon writes a padstack not chosen, since it refuses
+            // an empty one.
+            rule["padstack"] = context.board?.defaultViaPadstackID ?? HorizontalProjectArchive.nullUUID
             rule["parameter_set"] = [
                 "via_diameter": 500_000,
                 "hole_diameter": 200_000
@@ -1331,7 +1334,7 @@ private struct HorizontalBoardRuleEditorView: View {
                     HorizontalRuleMatchEditor(title: "Match", match: dictionaryBinding("match", default: context.defaultMatch()), context: context)
                     GroupBox("Via") {
                         VStack(alignment: .leading, spacing: 10) {
-                            HorizontalRuleTextField(label: "Padstack", value: stringBinding("padstack", default: ""))
+                            HorizontalRuleTextField(label: "Padstack", value: padstackBinding("padstack", in: $rule))
                             HorizontalRuleParameterSetEditor(parameters: dictionaryBinding("parameter_set", default: ["via_diameter": 500_000, "hole_diameter": 200_000]))
                         }
                         .padding(6)
@@ -1523,6 +1526,19 @@ private struct HorizontalBoardRuleEditorView: View {
         } set: { value in
             rule[key] = value
         }
+    }
+}
+
+/// A rule's padstack as text: the null uuid, Horizon's for none, reads as
+/// blank, and a field left blank stores it, since Horizon refuses an empty
+/// uuid and drops what names one.
+private func padstackBinding(_ key: String, in dictionary: Binding<JSONDictionary>) -> Binding<String> {
+    Binding {
+        let value = dictionary.wrappedValue.string(key) ?? ""
+        return value == HorizontalProjectArchive.nullUUID ? "" : value
+    } set: { value in
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        dictionary.wrappedValue[key] = trimmed.isEmpty ? HorizontalProjectArchive.nullUUID : trimmed
     }
 }
 
@@ -3201,10 +3217,15 @@ private struct HorizontalRuleViaDefinitionEditor: View {
     @Binding var definition: JSONDictionary
     var context: HorizontalBoardRuleContext
 
-    static func defaultDefinition() -> JSONDictionary {
+    /// Horizon's `ViaDefinition`: a 0.5 mm via with a 0.2 mm hole, through
+    /// the board. Its padstack is the board's default via, as a new via
+    /// rule's is; with none, the null uuid, Horizon's for a padstack not
+    /// chosen, since it can't read an empty one ("couldn't load Via
+    /// definition … invalid UUID").
+    static func defaultDefinition(padstack: String?) -> JSONDictionary {
         [
             "name": "Via",
-            "padstack": "",
+            "padstack": padstack ?? HorizontalProjectArchive.nullUUID,
             "parameters": ["via_diameter": 500_000, "hole_diameter": 200_000] as JSONDictionary,
             "span": ["start": HorizontalBoardLayers.topCopper, "end": HorizontalBoardLayers.bottomCopper] as JSONDictionary
         ]
@@ -3214,7 +3235,7 @@ private struct HorizontalRuleViaDefinitionEditor: View {
         GroupBox("Via Definition") {
             VStack(alignment: .leading, spacing: 10) {
                 HorizontalRuleTextField(label: "Name", value: stringBinding("name", default: "Via"))
-                HorizontalRuleTextField(label: "Padstack", value: stringBinding("padstack", default: ""))
+                HorizontalRuleTextField(label: "Padstack", value: padstackBinding("padstack", in: $definition))
                 HorizontalRuleLayerRangeEditor(title: "Span", span: dictionaryBinding("span", default: ["start": HorizontalBoardLayers.topCopper, "end": HorizontalBoardLayers.bottomCopper]), context: context)
                 HorizontalRuleParameterSetEditor(parameters: dictionaryBinding("parameters", default: ["via_diameter": 500_000, "hole_diameter": 200_000]))
             }
@@ -3470,6 +3491,12 @@ enum HorizontalBoardRulesValidator {
                     messages.append(.init(level: .error, title: "Via rule has no padstack", detail: "The vias it matches would take their padstack from it and get none. Choose one."))
                 }
             }
+        }
+        if selectedKind == .viaDefinitions,
+           HorizontalBoardRuleKind.viaDefinitions(in: rules).values.contains(where: {
+               ["", HorizontalProjectArchive.nullUUID].contains(($0 as? JSONDictionary)?.string("padstack") ?? "")
+           }) {
+            messages.append(.init(level: .error, title: "Via definition has no padstack", detail: "A via it shapes would get none. Choose one."))
         }
 
         return messages

@@ -373,7 +373,8 @@ enum HorizontalSchematicClipboardEditor {
     }
 
     static func write(_ json: JSONDictionary, path: String, archive: inout HorizontalProjectArchive) throws {
-        try archive.replaceRegularFileData(relativePath: path, with: HorizontalHorizonJSONWriter.data(json))
+        try archive.replaceRegularFileData(
+            relativePath: path, with: HorizontalHorizonJSONWriter.data(HorizontalHorizonFileConformance.conformed(json)))
     }
 
     private static func map(_ json: JSONDictionary, _ key: String) -> [String: JSONDictionary] {
