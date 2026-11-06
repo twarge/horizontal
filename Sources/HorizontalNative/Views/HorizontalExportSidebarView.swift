@@ -200,7 +200,8 @@ struct HorizontalExportSidebarView: View {
     }
 
     /// The single status line shown to the right of "Export All": a spinner while
-    /// exporting, then a green check + "Export complete" (or the error) when done.
+    /// exporting, then a green check + "Export complete" (or the error) when done,
+    /// with a Reveal in Finder button after a success on the Mac.
     @ViewBuilder
     private var exportStatusIndicator: some View {
         if isExporting {
@@ -218,11 +219,37 @@ struct HorizontalExportSidebarView: View {
                 Text(status.kind == .success ? "Export complete" : status.message)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                    .textSelection(.enabled)
+                // The iPad hands its export to the document picker instead:
+                // there is no Finder to reveal it in.
+                #if os(macOS)
+                if status.kind == .success, !status.outputs.isEmpty {
+                    Button {
+                        revealInFinder(status.outputs)
+                    } label: {
+                        Image(systemName: "folder")
+                    }
+                    .help("Reveal in Finder")
+                    .accessibilityLabel("Reveal in Finder")
+                }
+                #endif
             }
             .font(.callout)
-            .textSelection(.enabled)
         }
     }
+
+    #if os(macOS)
+    /// Selects what the export wrote in a Finder window, or opens its folder
+    /// when those files have since gone.
+    private func revealInFinder(_ outputs: [URL]) {
+        let existing = outputs.filter { FileManager.default.fileExists(atPath: $0.path) }
+        if existing.isEmpty, let folder = outputs.first?.deletingLastPathComponent() {
+            NSWorkspace.shared.open(folder)
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting(existing)
+        }
+    }
+    #endif
 
     private var targetDirectoryError: String? {
         do {

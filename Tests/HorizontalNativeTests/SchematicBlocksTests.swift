@@ -394,6 +394,7 @@ final class SchematicBlocksTests: XCTestCase {
         settings.targetDirectory = directory.path
         let status = HorizontalExportBackend.export(sections: [.schematicPDF], settings: settings, project: project)
         XCTAssertNotEqual(status.kind, .error, status.message)
+        XCTAssertEqual(status.outputs.map(\.lastPathComponent), [settings.schematicPDF.filename], "what Reveal in Finder selects")
         let pdf = try XCTUnwrap(PDFDocument(url: directory.appendingPathComponent(settings.schematicPDF.filename)))
         XCTAssertEqual(pdf.pageCount, 3)
         let links = try XCTUnwrap(pdf.page(at: 0)).annotations.compactMap { $0.destination?.page.map(pdf.index(for:)) }
