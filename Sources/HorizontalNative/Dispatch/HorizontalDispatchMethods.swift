@@ -1437,6 +1437,12 @@ enum HorizontalDispatchMethods {
             }
         }
         let byDigestAlone = HorizontalDispatchMutation.committingByDigestAlone(params, payload: "ops")
+        // A decal cached into the project pool changes what a scan of it finds.
+        defer {
+            if params.bool("dry_run") != true, operations.contains(where: { $0.kind == .placeDecal }) {
+                HorizontalPoolLibrary.invalidateCache()
+            }
+        }
         return try HorizontalDispatchMutation.execute(session: session, entry: entry, params: params, byDigestAlone: byDigestAlone,
                                                       syncsBlockInstances: true) { store in
             if let items = params["pool_items"] as? [JSONDictionary] {
@@ -1458,6 +1464,7 @@ enum HorizontalDispatchMethods {
                 if operation.kind == .ensureNet { json["id"] = change["net"] }
                 if operation.kind == .drawNetLine { json["id"] = change["net_line"] }
                 if operation.kind == .placeJunction { json["id"] = change["junction"] }
+                if operation.kind == .placeDecal { json["id"] = change["id"] }
                 return json
             }
             var result: JSONDictionary = ["applied": editor.changes.count, "changes": editor.changes, "normalized_ops": normalized,

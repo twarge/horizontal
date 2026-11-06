@@ -1453,8 +1453,14 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
     the via rules reshapes the vias they shape. warnings says when a pin moves to another net with copper on its pad,
     and check reports copper joining two nets.
 
+    Decals: place_decal puts a pool decal on the board, as Place Decal… in the app does — by uuid or a name only one
+    decal has, from the project pool or a pool it draws from (search_pool with kind decal finds one) — at x_mm, y_mm,
+    turned by angle_deg (R in the app turns it -90), flipped to the bottom with flip (E) and scaled by scale. A decal
+    from another pool is cached into the project pool with the edit, since the board draws a decal only from there;
+    the reply's cached names the files, and extent_mm the box it covers.
+
     An op that makes something — place_junction, place_symbol, draw_net_line, place_text, place_board_text,
-    ensure_component, ensure_net and the add_ ops — may give a short name as its id instead of a UUID
+    place_decal, ensure_component, ensure_net and the add_ ops — may give a short name as its id instead of a UUID
     ("id": "j1"), and later ops in the batch use that name where they refer to that kind of thing
     ({"kind": "junction", "junction": "j1"}; remove_text's id). The reply's handles maps each name to the UUID it
     became; a junction placed where one stands is that one, which handles gives and reused_handles names. A

@@ -951,6 +951,19 @@ class RemoveDimension(Targeted):
     dimension: StrictStr | None = None
 
 
+class PlaceDecal(Input):
+    """A pool decal on the board, as Place Decal… puts one: by uuid or a unique name, from the project pool or a
+    pool it draws from, which is cached into the project pool."""
+    op: Literal["place_decal"]
+    decal: StrictStr
+    x_mm: float
+    y_mm: float
+    angle_deg: float | None = None
+    flip: bool | None = None
+    scale: float | None = Field(default=None, gt=0)
+    id: str | None = None
+
+
 class AddBus(Input):
     op: Literal["add_bus"]
     name: StrictStr
@@ -1228,7 +1241,7 @@ EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | 
                           AddBlock | RenameBlock | RemoveBlock | SetNetPort | PlaceBlockPort | RemoveBlockPort | Annotate | SetStackup |
                           AddRule | SetRule | RemoveRule |
                           PlaceHole | RemoveHole | PlaceKeepout | RemoveKeepout | SetSheetIndex |
-                          PlaceBoardText | RemoveBoardText | PlaceDimension | RemoveDimension |
+                          PlaceBoardText | RemoveBoardText | PlaceDimension | RemoveDimension | PlaceDecal |
                           AddBus | RemoveBus | AddBusMember | PlaceBusLabel | PlaceBusRipper |
                           AddNetTie | RemoveNetTie | PlaceNetTie | CopyLayout | SetProjectMeta | SetExportSettings,
                           Field(discriminator="op")]
