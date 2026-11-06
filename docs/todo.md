@@ -129,10 +129,13 @@ Built:
       (88401a5).
 - [x] Airwire filter: a board rail button and popover, saved with the board's
       view (80c82fb).
+- [x] Place decal: Design ▸ Place Decal… chooses one from the pools, R turns
+      it, E flips it, S sets its scale, and the decal is cached into the
+      project pool. The Pools pane can't place one yet, and a placed decal's
+      scale and flip can't be changed afterwards.
 
 Not built at all:
 
-- [ ] Place decal. Decals draw, move and delete, but none can be added.
 - [ ] Pictures on the board: not modelled or drawn.
 - [ ] Draw a net tie on the board.
 - [ ] Draw connection lines, and back-annotate them to the schematic.

@@ -188,6 +188,9 @@ enum HorizontalCanvasCommand {
     case placeShape(HorizontalPadstackShapeForm)
     /// Padstack editor: place a round or slot hole.
     case placeHole(HorizontalHoleShape)
+    /// Board: choose a decal from the pools and place it (Horizon's
+    /// place-decal tool).
+    case placeDecal
     /// Symbol editor: place the next unplaced unit pin (Horizon's map-pin).
     case placePin
     /// Symbol editor: place `$REFDES` and `$VALUE` texts together.

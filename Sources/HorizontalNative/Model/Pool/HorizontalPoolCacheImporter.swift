@@ -107,6 +107,20 @@ enum HorizontalPoolCacheImporter {
         return session.planned
     }
 
+    /// The files caching a decal would add: the decal, in
+    /// `decals/cache/<uuid>.json` where a board decal is drawn from, and its
+    /// provenance. A decal depends on nothing else.
+    static func planDecal(
+        _ item: HorizontalPoolLibraryItem,
+        into projectPoolURL: URL,
+        destination: HorizontalPoolCacheDestination = .disk
+    ) throws -> [HorizontalPoolCacheFile] {
+        var session = Session(projectPoolURL: projectPoolURL, index: HorizontalPoolLibraryIndex(items: [item]), destination: destination)
+        try session.cacheDecal(item.uuid)
+        try session.finishProvenance()
+        return session.planned
+    }
+
     /// `plan` with the destination reading through a caller's own store.
     static func plan(
         _ item: HorizontalPoolLibraryItem,
@@ -178,6 +192,10 @@ enum HorizontalPoolCacheImporter {
 
         mutating func cacheFrame(_ frameID: String) throws {
             _ = try cacheFlatItem(.frame, uuid: frameID)
+        }
+
+        mutating func cacheDecal(_ decalID: String) throws {
+            _ = try cacheFlatItem(.decal, uuid: decalID)
         }
 
         // MARK: Parts

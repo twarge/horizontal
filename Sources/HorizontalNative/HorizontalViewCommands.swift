@@ -107,6 +107,7 @@ struct HorizontalCanvasCommandActions {
     var canPlacePad: Bool = false
     var canPlaceShape: Bool = false
     var canPlaceHole: Bool = false
+    var canPlaceDecal: Bool = false
     var canDrawDimension: Bool = false
     var canTuneTrack: Bool = false
     var canPlacePin: Bool = false
@@ -142,6 +143,11 @@ struct HorizontalCanvasCommandActions {
     var deletePlaneInEditor: (() -> Void)? = nil
     /// Presses the open plane editor's Cancel, for the same reason.
     var cancelPlaneEditor: (() -> Void)? = nil
+    /// The decals the open Place Decal chooser lists, nil while none is
+    /// open, and choosing one there as its Choose button does, for the same
+    /// reason: a sheet's button can't be pressed from a test either.
+    var decalChoices: [HorizontalPoolLibraryItem]? = nil
+    var chooseDecal: ((HorizontalPoolLibraryItem) -> Void)? = nil
     /// Frames a world rectangle in the canvas, for the live channel's zoom-to.
     var frameWorldRect: ((HorizontalRect) -> Void)? = nil
     /// Zooms the view about its centre; 2 is twice as close.
@@ -579,6 +585,10 @@ struct HorizontalViewCommands: Commands {
                     canvasCommandActions?.dispatch(.drawDimension)
                 }
                 .disabled(canvasCommandActions?.canDrawDimension != true)
+                Button("Place Decal…") {
+                    canvasCommandActions?.dispatch(.placeDecal)
+                }
+                .disabled(canvasCommandActions?.canPlaceDecal != true)
                 Button("Add Text…") {
                     canvasCommandActions?.dispatch(.addText)
                 }

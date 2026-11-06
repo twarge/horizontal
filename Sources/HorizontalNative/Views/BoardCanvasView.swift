@@ -39,15 +39,18 @@ private struct PastePlacementState {
 }
 
 /// Live placement of a pool object — a pad in the package editor, a shape or
-/// a hole in the padstack editor — following the cursor until a click places
-/// it. The tool then re-arms with the same padstack / form / angle so a row of
-/// pads is one click each, as Horizon's place tools do. Render-only until the
-/// commit, so Esc simply drops it.
+/// a hole in the padstack editor, a decal on the board — following the cursor
+/// until a click places it. The pad, shape and hole tools then re-arm with the
+/// same padstack / form / angle so a row of pads is one click each, as
+/// Horizon's place tools do; a decal's ends with the one, as Horizon's does.
+/// Render-only until the commit, so Esc simply drops it.
 private enum PoolPlacementKind {
     /// The pad, and its copper/mask/paste/holes baked at the origin.
     case pad(HorizontalPad, geometry: HorizontalPackageGeometry)
     case shape(HorizontalPadstackShape)
     case hole(HorizontalHole)
+    /// The decal, and the board decal it makes drawn at the origin.
+    case decal(HorizontalBoardDecalPlacement, geometry: HorizontalBoardDecal)
 }
 
 private struct PoolPlacementState {
@@ -629,6 +632,8 @@ struct BoardCanvasView: View {
     @State private var packagePlacementState: PackagePlacementState?
     @State private var planeEditorState: PlaneEditorState?
     @State private var padstackPickerPresented = false
+    /// Place Decal…'s chooser, while it is up: the decals the board can take.
+    @State private var decalPickerIndex: HorizontalPoolLibraryIndex?
     /// Step-back history for the in-progress route (Backspace pops one).
     @State private var trackRouteHistory: [BoardTrackRouteStep] = []
     @State private var lastCursorWorldPoint: HorizontalPoint?
@@ -1351,6 +1356,21 @@ struct BoardCanvasView: View {
                 onCancel: { padstackPickerPresented = false }
             )
         }
+        .sheet(isPresented: Binding(
+            get: { decalPickerIndex != nil },
+            set: { if !$0 { decalPickerIndex = nil } }
+        )) {
+            HorizontalPoolItemPickerSheet(
+                title: "Place Decal",
+                category: .decal,
+                index: decalPickerIndex ?? .empty,
+                onPick: { item in
+                    decalPickerIndex = nil
+                    beginPlaceDecal(item)
+                },
+                onCancel: { decalPickerIndex = nil }
+            )
+        }
         .onChange(of: sourceBoard.uuid) { _, _ in
             undoTarget.removeAllActions(from: undoManager)
             editedBoard = nil
@@ -1706,6 +1726,9 @@ struct BoardCanvasView: View {
         hasher.combine(canToggleVia)
         hasher.combine(boardClipboard.isEmpty)
         hasher.combine(pastePlacementState != nil)
+        hasher.combine(poolPlacementState != nil)
+        // The Place Decal chooser coming up or going.
+        hasher.combine(decalPickerIndex != nil)
         return hasher.finalize()
     }
 
@@ -1848,6 +1871,9 @@ struct BoardCanvasView: View {
                 return "Place \(shape.form.displayName.lowercased()) shape: click places   R rotates   Esc ends"
             case .hole(let hole):
                 return "Place \(hole.shape == .slot ? "slot" : "round") hole: click places   R rotates   Esc ends"
+            case .decal(let placement, _):
+                let scale = placement.scale == 1 ? "" : String(format: ", scale %g", placement.scale)
+                return "Place decal \(placement.name)\(scale): click places   R rotates   E flips to the other side   S sets the scale   Esc cancels"
             }
         }
         if let tuneState {
@@ -3113,6 +3139,14 @@ struct BoardCanvasView: View {
         actions.confirmPlaneEditor = { confirmPlaneEditor($0) }
         actions.deletePlaneInEditor = { deletePlaneFromEditor() }
         actions.cancelPlaneEditor = { cancelPlaneEditor() }
+        actions.decalChoices = decalPickerIndex?.items(in: .decal)
+        actions.chooseDecal = { item in
+            guard decalPickerIndex != nil else {
+                return
+            }
+            decalPickerIndex = nil
+            beginPlaceDecal(item)
+        }
         actions.frameWorldRect = { rect in
             guard let transform = liveCanvasTransform.transform else {
                 return
@@ -3298,6 +3332,12 @@ struct BoardCanvasView: View {
             // Dimensions are the board's: a package or padstack has no use for
             // one, and Horizon offers the tool only there.
             handlers.drawDimension = { beginDrawDimension() }
+            if canPlaceDecal {
+                handlers.placeDecal = { requestPlaceDecal() }
+            }
+            if case .decal? = poolPlacementState?.kind {
+                handlers.enterSize = { enterDecalScale() }
+            }
             handlers.tuneTrack = { beginTuneTrack() }
             if let onEditDiffpair {
                 handlers.setDiffpair = { netIDs in
@@ -17079,6 +17119,93 @@ extension BoardCanvasView {
         armPoolPlacement(.hole(hole))
     }
 
+    /// Place Decal…: Horizon's decal chooser, over every decal the project
+    /// pool and the pools it draws from hold; the one chosen then follows the
+    /// cursor. The pools are read off the main thread, and once read again
+    /// only when something writes to them.
+    private func requestPlaceDecal() {
+        guard canPlaceDecal, let poolURL else {
+            return
+        }
+        Task { @MainActor in
+            let index = await Task.detached(priority: .userInitiated) {
+                HorizontalBoardDecalPlacement.choices(projectPoolURL: poolURL)
+            }.value
+            // A tool taken up while the pools were read keeps the canvas.
+            guard canPlaceDecal else {
+                return
+            }
+            decalPickerIndex = index
+        }
+    }
+
+    /// Whether a decal can be put on the board now: on a board, not a pool
+    /// item, with a pool to take it from, and nothing else under way.
+    private var canPlaceDecal: Bool {
+        !isReadOnly && modeProfile.mode == .board && poolURL != nil
+            && moveState == nil && drawGraphicsState == nil && drawTrackState == nil && pastePlacementState == nil
+            && poolPlacementState == nil && roundOffVertexState == nil && tuneState == nil && packagePlacementState == nil
+    }
+
+    private func beginPlaceDecal(_ item: HorizontalPoolLibraryItem) {
+        guard canPlaceDecal,
+              let placement = HorizontalBoardDecalPlacement(item: item),
+              let geometry = placementDecal(placement, at: .zero) else {
+            return
+        }
+        armPoolPlacement(.decal(placement, geometry: geometry))
+    }
+
+    /// The board decal `placement` makes at `position`, drawn as the loader
+    /// will draw it from the file.
+    private func placementDecal(
+        _ placement: HorizontalBoardDecalPlacement,
+        at position: HorizontalPoint,
+        id: String = "place-preview-decal"
+    ) -> HorizontalBoardDecal? {
+        placement.decal(id: id, at: position, nInnerLayers: boardInnerLayerCount, projectPoolURL: poolURL)
+    }
+
+    /// S while a decal follows the cursor: the scale it goes down with, as
+    /// Horizon's place-decal tool takes it in its enter-scale window.
+    private func enterDecalScale() {
+        guard case .decal(let placement, _)? = poolPlacementState?.kind else {
+            return
+        }
+        #if os(macOS)
+        guard let scale = HorizontalTrackWidthPrompt.runNumber(
+            title: "Decal Scale",
+            message: "Enter the scale to place \(placement.name) at; 1 is its own size.",
+            current: placement.scale,
+            placeholder: "1"
+        ) else {
+            return
+        }
+        applyDecalScale(scale)
+        #else
+        promptRequest = HorizontalCanvasPromptRequest(
+            title: "Decal Scale",
+            confirmTitle: "Set",
+            content: .number(seed: placement.scale, unit: "×") { scale in
+                guard let scale, scale.isFinite, scale > 0 else { return }
+                applyDecalScale(scale)
+            }
+        )
+        #endif
+    }
+
+    private func applyDecalScale(_ scale: Double) {
+        guard var state = poolPlacementState, case .decal(var placement, _) = state.kind else {
+            return
+        }
+        placement.scale = scale
+        guard let geometry = placementDecal(placement, at: .zero) else {
+            return
+        }
+        state.kind = .decal(placement, geometry: geometry)
+        poolPlacementState = state
+    }
+
     private func armPoolPlacement(_ kind: PoolPlacementKind) {
         guard moveState == nil, drawGraphicsState == nil, drawTrackState == nil, pastePlacementState == nil,
               roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil else {
@@ -17130,6 +17257,8 @@ extension BoardCanvasView {
             hole.id = "place-preview-hole"
             hole.position = cursor
             preview.packageHoles.append(hole)
+        case .decal(_, let geometry):
+            preview.decals.append(shifted(geometry, by: cursor))
         }
     }
 
@@ -17141,6 +17270,16 @@ extension BoardCanvasView {
             return 2_000_000 + shape.placement.angle + (shape.placement.mirrored ? 100_000 : 0) + shape.layer
         case .hole(let hole):
             return 3_000_000 + hole.angle + (hole.shape == .slot ? 100_000 : 0)
+        case .decal(let placement, _):
+            // Which decal and its scale too, which a count of its own can't
+            // carry: another decal, or the same one at another scale, at the
+            // same angle is another ghost.
+            var hasher = Hasher()
+            hasher.combine(placement.item.uuid)
+            hasher.combine(placement.angle)
+            hasher.combine(placement.flip)
+            hasher.combine(placement.scale)
+            return hasher.finalize()
         }
     }
 
@@ -17158,6 +17297,12 @@ extension BoardCanvasView {
         case .hole(var hole):
             hole.angle = wrappedAngle(hole.angle + Self.quarterTurnAngle)
             state.kind = .hole(hole)
+        case .decal(var placement, _):
+            placement.rotate()
+            guard let geometry = placementDecal(placement, at: .zero) else {
+                return
+            }
+            state.kind = .decal(placement, geometry: geometry)
         }
         poolPlacementState = state
     }
@@ -17177,12 +17322,18 @@ extension BoardCanvasView {
             state.kind = .shape(shape)
         case .hole:
             return
+        case .decal(var placement, _):
+            placement.toggleFlip()
+            guard let geometry = placementDecal(placement, at: .zero) else {
+                return
+            }
+            state.kind = .decal(placement, geometry: geometry)
         }
         poolPlacementState = state
     }
 
     /// Places the ghost at `point`, then re-arms with a fresh object of the
-    /// same kind so the next click places another.
+    /// same kind so the next click places another; a decal's tool ends there.
     private func commitPoolPlacement(at point: HorizontalPoint?) {
         guard let state = poolPlacementState else {
             return
@@ -17192,7 +17343,7 @@ extension BoardCanvasView {
         var draft = previous
         let ref: HorizontalSelectableRef
         let actionName: String
-        var nextKind: PoolPlacementKind
+        var nextKind: PoolPlacementKind?
 
         switch state.kind {
         case .pad(var pad, _):
@@ -17227,6 +17378,16 @@ extension BoardCanvasView {
             next.id = UUID().uuidString.lowercased()
             next.position = .zero
             nextKind = .hole(next)
+        case .decal(let placement, _):
+            // On whole nanometres, as the file holds it.
+            let at = HorizontalPoint(x: position.x.rounded(), y: position.y.rounded())
+            guard let decal = placementDecal(placement, at: at, id: UUID().uuidString.lowercased()) else {
+                return
+            }
+            draft.decals.append(decal)
+            ref = HorizontalSelectableRef(id: decal.id, type: .boardDecal)
+            actionName = "Place Decal"
+            nextKind = nil
         }
 
         registerUndoSnapshot(previous, actionName: actionName)
@@ -17234,7 +17395,7 @@ extension BoardCanvasView {
         publishConnectivityResolvedEdit(draft)
         selectedObjects = [ref]
         hoveredObject = nil
-        poolPlacementState = PoolPlacementState(kind: nextKind, cursor: position)
+        poolPlacementState = nextKind.map { PoolPlacementState(kind: $0, cursor: position) }
         publishSelectionContext()
         publishCanvasCommandActions()
     }
