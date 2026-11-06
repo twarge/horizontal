@@ -482,18 +482,23 @@ enum BoardMovePlanner {
     ) -> [HorizontalSelectableRef] {
         var expanded = [HorizontalSelectableRef]()
         var padEnds = BoardTrackPadEnds(padPositions: padPositions)
+        // Built at the first track, for all of them: a whole-board selection
+        // looked each one up and scanned every junction and via per end.
+        var segmentEnds: SegmentEndOwners?
+        func endpointOwners(of ref: HorizontalSelectableRef) -> [HorizontalSelectableRef] {
+            if segmentEnds == nil {
+                segmentEnds = SegmentEndOwners(
+                    tracks: tracks, netTies: netTies, junctions: junctions, junctionNetIDs: junctionNetIDs, vias: vias,
+                    packages: [], packagePads: [], packageHoles: [], includesPackages: false
+                )
+            }
+            return segmentEnds?.refs(of: ref) { !padEnds.isOnPad($0) } ?? []
+        }
         for ref in refs {
             switch ref.type {
-            case .track:
+            case .track, .boardNetTie:
                 expanded.append(ref)
-                expanded.append(contentsOf: trackEndpointOwnerRefs(
-                    for: ref, in: tracks, junctions: junctions, junctionNetIDs: junctionNetIDs, vias: vias,
-                    padEnds: &padEnds))
-            case .boardNetTie:
-                expanded.append(ref)
-                expanded.append(contentsOf: trackEndpointOwnerRefs(
-                    for: ref, in: netTies, junctions: junctions, junctionNetIDs: junctionNetIDs, vias: vias,
-                    padEnds: &padEnds))
+                expanded.append(contentsOf: endpointOwners(of: ref))
             default:
                 expanded.append(ref)
             }
@@ -501,30 +506,9 @@ enum BoardMovePlanner {
         return HorizontalCanvasModeSupport.uniqueRefs(expanded)
     }
 
-    private static func trackEndpointOwnerRefs(
-        for ref: HorizontalSelectableRef,
-        in segments: [HorizontalSegment],
-        junctions: [String: HorizontalPoint],
-        junctionNetIDs: [String: String],
-        vias: [HorizontalMarker],
-        padEnds: inout BoardTrackPadEnds
-    ) -> [HorizontalSelectableRef] {
-        guard let segment = segments.first(where: {
-            HorizontalCanvasModeSupport.normalizedID($0.id) == HorizontalCanvasModeSupport.normalizedID(ref.id)
-        }) else {
-            return []
-        }
-        var owners = [HorizontalSelectableRef]()
-        for end in [segment.from, segment.to] where !padEnds.isOnPad(end) {
-            owners += movableEndpointOwnerRefs(at: end, netID: segment.netID, junctions: junctions,
-                                               junctionNetIDs: junctionNetIDs, vias: vias, packages: [],
-                                               packagePads: [], packageHoles: [], includesPackages: false)
-        }
-        return HorizontalCanvasModeSupport.uniqueRefs(owners)
-    }
-
     /// The refs (junctions, vias, packages) that "own" a movable endpoint at a
-    /// point on a net. Mirrors `BoardCanvasView.boardMovableEndpointOwnerRefs`.
+    /// point on a net. A move asking this of many ends builds `EndpointOwners`
+    /// (or `SegmentEndOwners`) once instead.
     static func movableEndpointOwnerRefs(
         at point: HorizontalPoint,
         netID: String?,
@@ -536,51 +520,141 @@ enum BoardMovePlanner {
         packageHoles: [HorizontalHole],
         includesPackages: Bool
     ) -> [HorizontalSelectableRef] {
-        let key = HorizontalCanvasModeSupport.pointKey(point)
-        var refs = [HorizontalSelectableRef]()
-
-        for (junctionID, junction) in junctions where HorizontalCanvasModeSupport.pointKey(junction) == key {
-            if let junctionNetID = junctionNetIDs[junctionID], !netsMatch(junctionNetID, netID) {
-                continue
-            }
-            refs.append(HorizontalSelectableRef(id: junctionID, type: .junction))
-        }
-
-        for via in vias where HorizontalCanvasModeSupport.pointKey(via.position) == key && netsMatch(via.netID, netID) {
-            refs.append(HorizontalSelectableRef(id: via.id, type: .via))
-        }
-
-        if includesPackages {
-            for package in packages where packageConnectionAnchors(
-                packageID: package.id, packagePads: packagePads, packageHoles: packageHoles
-            ).contains(where: {
-                HorizontalCanvasModeSupport.pointKey($0.point) == key && netsMatch($0.netID, netID)
-            }) {
-                refs.append(HorizontalSelectableRef(id: package.id, type: .boardPackage))
-            }
-        }
-
-        return HorizontalCanvasModeSupport.uniqueRefs(refs)
+        EndpointOwners(
+            junctions: junctions, junctionNetIDs: junctionNetIDs, vias: vias,
+            packages: packages, packagePads: packagePads, packageHoles: packageHoles,
+            includesPackages: includesPackages
+        ).refs(at: point, netID: netID)
     }
 
-    /// Pad/hole anchor points (with net) belonging to a package. Mirrors
-    /// `BoardCanvasView.boardPackageConnectionAnchors` (returns tuples instead of
-    /// the View-private MovingConnectionPoint).
-    private static func packageConnectionAnchors(
-        packageID: String,
-        packagePads: [HorizontalPolygon],
-        packageHoles: [HorizontalHole]
-    ) -> [(point: HorizontalPoint, netID: String?)] {
-        let normalizedPackageID = HorizontalCanvasModeSupport.normalizedID(packageID)
-        func belongsToPackage(_ geometryID: String) -> Bool {
-            BoardMovePlanner.packageID(forGeometryID: geometryID).map(HorizontalCanvasModeSupport.normalizedID) == normalizedPackageID
+    /// What `movableEndpointOwnerRefs` finds, filed once by the point each
+    /// owner stands on: a junction, a via, and a package at each of its pads'
+    /// centres and holes, with their nets. A move asks it of every end of
+    /// every selected track; asking `movableEndpointOwnerRefs` instead gathered
+    /// every package's anchors from all the pads again for each end, which on
+    /// Board C (213 tracks, 26 packages, 768 pads) read 8.5 million pad ids a
+    /// Select All nudge, 22 to 88 s in Debug.
+    struct EndpointOwners {
+        private var ownersByPoint = [String: [BoardMovePointOwner]]()
+
+        init(
+            junctions: [String: HorizontalPoint],
+            junctionNetIDs: [String: String],
+            vias: [HorizontalMarker],
+            packages: [HorizontalPlacement],
+            packagePads: [HorizontalPolygon],
+            packageHoles: [HorizontalHole],
+            includesPackages: Bool
+        ) {
+            func key(_ point: HorizontalPoint) -> String { HorizontalCanvasModeSupport.pointKey(point) }
+            // Junctions, then vias, then packages in the board's order, as the
+            // refs at a point have always been listed.
+            for (junctionID, junction) in junctions {
+                ownersByPoint[key(junction), default: []].append(BoardMovePointOwner(
+                    ref: HorizontalSelectableRef(id: junctionID, type: .junction), netID: junctionNetIDs[junctionID]
+                ))
+            }
+            for via in vias {
+                ownersByPoint[key(via.position), default: []].append(BoardMovePointOwner(
+                    ref: HorizontalSelectableRef(id: via.id, type: .via), netID: via.netID
+                ))
+            }
+            guard includesPackages, !packages.isEmpty else {
+                return
+            }
+            var anchorsByPackageID = [String: [(key: String, netID: String?)]]()
+            for pad in packagePads {
+                if let packageID = BoardMovePlanner.packageID(forGeometryID: pad.id) {
+                    anchorsByPackageID[HorizontalCanvasModeSupport.normalizedID(packageID), default: []]
+                        .append((key(HorizontalRect(points: pad.vertices).center), pad.netID))
+                }
+            }
+            for hole in packageHoles {
+                if let packageID = BoardMovePlanner.packageID(forGeometryID: hole.id) {
+                    anchorsByPackageID[HorizontalCanvasModeSupport.normalizedID(packageID), default: []]
+                        .append((key(hole.position), hole.netID))
+                }
+            }
+            for package in packages {
+                let ref = HorizontalSelectableRef(id: package.id, type: .boardPackage)
+                for anchor in anchorsByPackageID[HorizontalCanvasModeSupport.normalizedID(package.id)] ?? [] {
+                    ownersByPoint[anchor.key, default: []].append(BoardMovePointOwner(ref: ref, netID: anchor.netID))
+                }
+            }
         }
-        let padAnchors = packagePads
-            .filter { belongsToPackage($0.id) }
-            .map { (point: HorizontalRect(points: $0.vertices).center, netID: $0.netID) }
-        let holeAnchors = packageHoles
-            .filter { belongsToPackage($0.id) }
-            .map { (point: $0.position, netID: $0.netID) }
-        return padAnchors + holeAnchors
+
+        /// The owners at `point` on `netID`, or on no net either side.
+        func refs(at point: HorizontalPoint, netID: String?) -> [HorizontalSelectableRef] {
+            guard let owners = ownersByPoint[HorizontalCanvasModeSupport.pointKey(point)] else {
+                return []
+            }
+            return HorizontalCanvasModeSupport.uniqueRefs(
+                owners.filter { BoardMovePlanner.netsMatch($0.netID, netID) }.map(\.ref)
+            )
+        }
+    }
+
+    /// The owners of a board's track and net tie ends (`EndpointOwners`), for a
+    /// move to ask of each segment it is given.
+    struct SegmentEndOwners {
+        private let tracks: SegmentsByID
+        private let netTies: SegmentsByID
+        private let owners: EndpointOwners
+
+        init(
+            tracks: [HorizontalSegment],
+            netTies: [HorizontalSegment],
+            junctions: [String: HorizontalPoint],
+            junctionNetIDs: [String: String],
+            vias: [HorizontalMarker],
+            packages: [HorizontalPlacement],
+            packagePads: [HorizontalPolygon],
+            packageHoles: [HorizontalHole],
+            includesPackages: Bool
+        ) {
+            self.tracks = SegmentsByID(tracks)
+            self.netTies = SegmentsByID(netTies)
+            owners = EndpointOwners(
+                junctions: junctions, junctionNetIDs: junctionNetIDs, vias: vias,
+                packages: packages, packagePads: packagePads, packageHoles: packageHoles,
+                includesPackages: includesPackages
+            )
+        }
+
+        /// The owners at the ends of the track or net tie `ref` names that
+        /// `includesEnd` keeps, on its net; none for one the board lacks.
+        func refs(
+            of ref: HorizontalSelectableRef,
+            includesEnd: (HorizontalPoint) -> Bool = { _ in true }
+        ) -> [HorizontalSelectableRef] {
+            guard let segment = (ref.type == .boardNetTie ? netTies : tracks)[ref.id] else {
+                return []
+            }
+            var refs = [HorizontalSelectableRef]()
+            for end in [segment.from, segment.to] where includesEnd(end) {
+                refs += owners.refs(at: end, netID: segment.netID)
+            }
+            return HorizontalCanvasModeSupport.uniqueRefs(refs)
+        }
+    }
+
+    /// Segments by their id, ignoring case, the first of each id as
+    /// `first(where:)` finds it.
+    private struct SegmentsByID {
+        private var segments = [String: HorizontalSegment]()
+
+        init(_ segments: [HorizontalSegment]) {
+            self.segments.reserveCapacity(segments.count)
+            for segment in segments {
+                let id = HorizontalCanvasModeSupport.normalizedID(segment.id)
+                if self.segments[id] == nil {
+                    self.segments[id] = segment
+                }
+            }
+        }
+
+        subscript(id: String) -> HorizontalSegment? {
+            segments[HorizontalCanvasModeSupport.normalizedID(id)]
+        }
     }
 }

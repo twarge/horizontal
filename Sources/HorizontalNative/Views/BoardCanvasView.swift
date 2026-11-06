@@ -954,6 +954,11 @@ struct BoardCanvasView: View {
         #endif
     }
 
+    /// Whether the move is drawn by patching the resident scene. Every read of
+    /// `board` asks this during a move, so it reads only the plan, which has
+    /// what the patches can't draw (`isBoardMetalMovePatchable`) among its
+    /// unsupported refs. Checking the selection here, once per selection
+    /// detail item, cost the first nudge of Board C's Select All 2 s.
     private var canPatchBoardMoveInMetal: Bool {
         guard let moveState,
               !selectedObjects.isEmpty,
@@ -961,10 +966,11 @@ struct BoardCanvasView: View {
             return false
         }
         return moveState.residentMovePlan.isPatchable
-            && selectedObjects.allSatisfy(isBoardMetalMovePatchable)
     }
 
-    private func isBoardMetalMovePatchable(_ ref: HorizontalSelectableRef) -> Bool {
+    /// Whether the resident scene's patches draw `ref` moved, given the
+    /// packages that move with it (normalized ids).
+    private func isBoardMetalMovePatchable(_ ref: HorizontalSelectableRef, movingPackageIDs: Set<String>) -> Bool {
         switch ref.type {
         case .boardPackage,
              .track,
@@ -988,10 +994,14 @@ struct BoardCanvasView: View {
             return true
         case .text:
             // Standalone board text owns an individually-patchable resident span.
-            // A smashed package's `fromSmash` text renders as package geometry
-            // (no per-text span), so its move must rebuild the scene to re-render
-            // the glyphs — fall off the fast in-place patch path.
-            return packageID(forGeometryID: ref.id) == nil
+            // A smashed package's `fromSmash` text is drawn as its package's
+            // (no span of its own), so, as a pad, it moves with the package's
+            // spans when the package moves too (Select All, where every smashed
+            // refdes is selected), and alone falls back to a rebuilt scene.
+            guard let packageID = packageID(forGeometryID: ref.id) else {
+                return true
+            }
+            return movingPackageIDs.contains(normalizedID(packageID))
         case .pad:
             // A pad has no resident span of its own — its geometry lives in its
             // package's spans. When the package is also selected (e.g. Select All
@@ -1003,7 +1013,7 @@ struct BoardCanvasView: View {
             guard let packageID = packageID(forGeometryID: ref.id) else {
                 return false
             }
-            return selectedObjects.contains(HorizontalSelectableRef(id: packageID, type: .boardPackage))
+            return movingPackageIDs.contains(normalizedID(packageID))
         case .blockSymbolPort, .boardPanel, .busLabel, .busRipper, .drawingArc, .drawingLine, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .padstackShape, .symbolPin:
             return false
         }
@@ -7769,6 +7779,12 @@ struct BoardCanvasView: View {
         plan.unsupportedRefs.formUnion(refs.filter {
             $0.type == .dimension && !BoardDimensionParts.movesWhole(dimensionParts[normalizedID($0.id)] ?? [])
         })
+        // And whatever else the patches don't draw: a pad or smashed text whose
+        // package stays, anything of the schematic's.
+        let movingPackageIDs = Set(refs.filter { $0.type == .boardPackage }.map { normalizedID($0.id) })
+        plan.unsupportedRefs.formUnion(refs.filter {
+            !isBoardMetalMovePatchable($0, movingPackageIDs: movingPackageIDs)
+        })
         // And a junction that carries the end of a line or arc the selection
         // doesn't move whole, which the plan's track patches leave behind.
         let junctionRefs = refs.filter { $0.type == .junction }
@@ -7795,6 +7811,22 @@ struct BoardCanvasView: View {
         return plan
     }
 
+    /// The packages of `selectedObjects` that move (a fixed one stays),
+    /// normalized. Each carries its texts, smashed refdes too, so a selected
+    /// text of one is not moved, turned or mirrored again
+    /// (`isCarriedByPackage`), as Horizon's move adds a package's texts to the
+    /// selection and moves each once.
+    private func movingPackageIDs(in board: HorizontalBoard) -> Set<String> {
+        Set(selectedObjects.filter { $0.type == .boardPackage && !isFixedPackage($0, in: board) }.map { normalizedID($0.id) })
+    }
+
+    private func isCarriedByPackage(_ ref: HorizontalSelectableRef, movingPackageIDs: Set<String>) -> Bool {
+        guard !movingPackageIDs.isEmpty, let packageID = packageID(forGeometryID: ref.id) else {
+            return false
+        }
+        return movingPackageIDs.contains(normalizedID(packageID))
+    }
+
     private func moveSelectedObjects(by delta: HorizontalPoint, board: inout HorizontalBoard) {
         // A plane's outline moves as a polygon, with the board's own.
         let liftedOutlines = board.liftPlaneOutlines()
@@ -7809,6 +7841,7 @@ struct BoardCanvasView: View {
         var movedPolygonPoints = Set<String>()
         let dimensionParts = BoardDimensionParts.selectedParts(in: selectedObjects)
         var movedDimensionIDs = Set<String>()
+        let movingPackageIDs = self.movingPackageIDs(in: original)
         // Lines, arcs and connection lines the selection moves whole; a
         // selected junction carries the ends of the rest.
         let graphicsMovedWhole = Set(
@@ -7817,17 +7850,34 @@ struct BoardCanvasView: View {
                 .map { normalizedID($0.id) }
         )
 
+        // A track or net tie with a junction, via or package the selection
+        // moves at either end goes with that. Who owns the ends is gathered
+        // once, at the first: asked end by end, every package's pads were read
+        // again for each (Select All on Board C, 22 s a nudge).
+        var segmentEnds: BoardMovePlanner.SegmentEndOwners?
+        func hasSelectedEndpointOwner(_ ref: HorizontalSelectableRef) -> Bool {
+            if segmentEnds == nil {
+                segmentEnds = BoardMovePlanner.SegmentEndOwners(
+                    tracks: original.tracks, netTies: original.netTies,
+                    junctions: original.junctions, junctionNetIDs: original.junctionNetIDs, vias: original.vias,
+                    packages: original.packages, packagePads: original.packagePads, packageHoles: original.packageHoles,
+                    includesPackages: true
+                )
+            }
+            return segmentEnds?.refs(of: ref).contains { selectedRefSet.contains($0) } ?? false
+        }
+
         for ref in selectedObjects {
             switch ref.type {
             case .boardPackage:
                 moveBoardPackage(ref: ref, by: delta, board: &board)
             case .track:
-                if boardSegmentHasSelectedEndpointOwner(ref: ref, in: original.tracks, selectedRefs: selectedRefSet, board: original) {
+                if hasSelectedEndpointOwner(ref) {
                     break
                 }
                 moveBoardTrack(ref: ref, by: delta, in: \.tracks, original: original, board: &board, points: &movingPoints, padEnds: &padEnds)
             case .boardNetTie:
-                if boardSegmentHasSelectedEndpointOwner(ref: ref, in: original.netTies, selectedRefs: selectedRefSet, board: original) {
+                if hasSelectedEndpointOwner(ref) {
                     break
                 }
                 moveBoardTrack(ref: ref, by: delta, in: \.netTies, original: original, board: &board, points: &movingPoints, padEnds: &padEnds)
@@ -7844,6 +7894,9 @@ struct BoardCanvasView: View {
                 moveHole(&board.packageHoles, ref: ref, by: delta)
                 moveHole(&board.viaHoles, ref: ref, by: delta)
             case .text:
+                if isCarriedByPackage(ref, movingPackageIDs: movingPackageIDs) {
+                    break
+                }
                 moveText(&board.texts, ref: ref, by: delta)
                 moveText(&board.packageTexts, ref: ref, by: delta)
             case .polygonArcCenter, .polygonEdge, .polygonVertex:
@@ -7893,6 +7946,7 @@ struct BoardCanvasView: View {
         let original = board
         var movingPoints = BoardMovingPoints()
         var mirroredPolygonPoints = Set<String>()
+        let movingPackageIDs = self.movingPackageIDs(in: original)
         for ref in selectedObjects {
             switch ref.type {
             case .boardPackage:
@@ -7912,6 +7966,9 @@ struct BoardCanvasView: View {
                 mirrorHole(&board.packageHoles, ref: ref, around: center)
                 mirrorHole(&board.viaHoles, ref: ref, around: center)
             case .text:
+                if isCarriedByPackage(ref, movingPackageIDs: movingPackageIDs) {
+                    break
+                }
                 mirrorText(&board.texts, ref: ref, around: center)
                 mirrorText(&board.packageTexts, ref: ref, around: center)
             case .polygonArcCenter, .polygonEdge, .polygonVertex:
@@ -7962,6 +8019,7 @@ struct BoardCanvasView: View {
         var movingPoints = BoardMovingPoints()
         var padEnds = BoardTrackPadEnds(padPositions: original.packagePadPositions)
         var turnedPolygonPoints = Set<String>()
+        let movingPackageIDs = self.movingPackageIDs(in: original)
 
         for ref in selectedObjects {
             guard let center = refOrigin(ref) else {
@@ -7985,6 +8043,9 @@ struct BoardCanvasView: View {
                 rotateHole(&board.packageHoles, ref: ref, around: center, by: angleDelta)
                 rotateHole(&board.viaHoles, ref: ref, around: center, by: angleDelta)
             case .text:
+                if isCarriedByPackage(ref, movingPackageIDs: movingPackageIDs) {
+                    break
+                }
                 rotateText(&board.texts, ref: ref, around: center, by: angleDelta)
                 rotateText(&board.packageTexts, ref: ref, around: center, by: angleDelta)
             case .polygonArcCenter, .polygonEdge, .polygonVertex:
@@ -8235,39 +8296,6 @@ struct BoardCanvasView: View {
             return
         }
         points.add(entry.value, to: entry.value + delta, netID: board.junctionNetIDs[entry.key], carriesGraphics: true)
-    }
-
-    private func boardSegmentHasSelectedEndpointOwner(
-        ref: HorizontalSelectableRef,
-        in segments: [HorizontalSegment],
-        selectedRefs: Set<HorizontalSelectableRef>,
-        board: HorizontalBoard
-    ) -> Bool {
-        guard let segment = segments.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
-            return false
-        }
-        let owners = boardMovableEndpointOwnerRefs(at: segment.from, netID: segment.netID, board: board, includesPackages: true)
-            + boardMovableEndpointOwnerRefs(at: segment.to, netID: segment.netID, board: board, includesPackages: true)
-        return owners.contains { selectedRefs.contains($0) }
-    }
-
-    private func boardMovableEndpointOwnerRefs(
-        at point: HorizontalPoint,
-        netID: String?,
-        board: HorizontalBoard,
-        includesPackages: Bool
-    ) -> [HorizontalSelectableRef] {
-        BoardMovePlanner.movableEndpointOwnerRefs(
-            at: point,
-            netID: netID,
-            junctions: board.junctions,
-            junctionNetIDs: board.junctionNetIDs,
-            vias: board.vias,
-            packages: board.packages,
-            packagePads: board.packagePads,
-            packageHoles: board.packageHoles,
-            includesPackages: includesPackages
-        )
     }
 
     private func moveBoardTrackEndpoints(

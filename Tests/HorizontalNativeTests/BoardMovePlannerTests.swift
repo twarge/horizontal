@@ -202,6 +202,70 @@ final class BoardMovePlannerTests: XCTestCase {
         XCTAssertTrue(owners.contains(HorizontalSelectableRef(id: "v1", type: .via)))
     }
 
+    /// The owners filed once, as a whole-board move asks them: a junction on no
+    /// net or the end's, a via on the end's, and a package at a pad's centre or
+    /// a hole, listed junctions, vias, then packages in the board's order.
+    func testEndpointOwnersFindWhatTheScanFound() {
+        let end = HorizontalPoint(x: 1000, y: 1000)
+        let pad = HorizontalPolygon(id: "PB/pad/p1/shape/s", vertices: [
+            HorizontalPoint(x: 900, y: 900), HorizontalPoint(x: 1100, y: 900),
+            HorizontalPoint(x: 1100, y: 1100), HorizontalPoint(x: 900, y: 1100),
+        ], layer: 0, netID: "n")
+        let packages = [
+            HorizontalPlacement(id: "pa", position: .zero, angle: 0, mirrored: false, label: "A"),
+            HorizontalPlacement(id: "pb", position: .zero, angle: 0, mirrored: false, label: "B"),
+            HorizontalPlacement(id: "pc", position: .zero, angle: 0, mirrored: false, label: "C"),
+        ]
+        let holes = [
+            HorizontalHole(id: "pa/hole/h1", position: end, diameter: 300, plated: true, netID: nil),
+            HorizontalHole(id: "pc/hole/h1", position: end, diameter: 300, plated: true, netID: "other"),
+        ]
+        let junctions = ["j-any": end, "j-n": end, "j-other": end, "j-away": HorizontalPoint(x: 0, y: 0)]
+        let junctionNetIDs = ["j-n": "N", "j-other": "other", "j-away": "n"]
+        let vias = [
+            HorizontalMarker(id: "v-n", position: end, size: 200, layer: 0, netID: "n"),
+            HorizontalMarker(id: "v-other", position: end, size: 200, layer: 0, netID: "other"),
+        ]
+        let owners = BoardMovePlanner.EndpointOwners(
+            junctions: junctions, junctionNetIDs: junctionNetIDs, vias: vias,
+            packages: packages, packagePads: [pad], packageHoles: holes, includesPackages: true)
+
+        let refs = owners.refs(at: end, netID: "n")
+        XCTAssertEqual(Set(refs.prefix(2)), [
+            HorizontalSelectableRef(id: "j-any", type: .junction), HorizontalSelectableRef(id: "j-n", type: .junction),
+        ])
+        XCTAssertEqual(Array(refs.dropFirst(2)), [
+            HorizontalSelectableRef(id: "v-n", type: .via),
+            HorizontalSelectableRef(id: "pa", type: .boardPackage),
+            HorizontalSelectableRef(id: "pb", type: .boardPackage),
+        ], "the hole on no net and the pad on n, not the hole on another net")
+        XCTAssertEqual(owners.refs(at: end, netID: nil).count, 8, "an end on no net takes everything there")
+        XCTAssertEqual(owners.refs(at: HorizontalPoint(x: 0, y: 0), netID: "n"), [HorizontalSelectableRef(id: "j-away", type: .junction)])
+        XCTAssertEqual(owners.refs(at: HorizontalPoint(x: 5, y: 5), netID: "n"), [])
+
+        let withoutPackages = BoardMovePlanner.EndpointOwners(
+            junctions: junctions, junctionNetIDs: junctionNetIDs, vias: vias,
+            packages: packages, packagePads: [pad], packageHoles: holes, includesPackages: false)
+        XCTAssertFalse(withoutPackages.refs(at: end, netID: "n").contains { $0.type == .boardPackage })
+    }
+
+    /// A segment's owners, at the ends asked for, found by its id in any case.
+    func testSegmentEndOwnersAskBothEndsOfTheSegmentNamed() {
+        let from = HorizontalPoint(x: 0, y: 0), to = HorizontalPoint(x: 1000, y: 0)
+        let track = HorizontalSegment(id: "T1", from: from, to: to, width: 100, layer: 0, netID: "n")
+        let tie = HorizontalSegment(id: "t1", from: to, to: from, width: 100, layer: 0, netID: "n")
+        let owners = BoardMovePlanner.SegmentEndOwners(
+            tracks: [track], netTies: [tie], junctions: ["ja": from, "jb": to], junctionNetIDs: [:], vias: [],
+            packages: [], packagePads: [], packageHoles: [], includesPackages: false)
+        let a = HorizontalSelectableRef(id: "ja", type: .junction), b = HorizontalSelectableRef(id: "jb", type: .junction)
+
+        XCTAssertEqual(owners.refs(of: HorizontalSelectableRef(id: "t1", type: .track, layer: 0)), [a, b])
+        XCTAssertEqual(owners.refs(of: HorizontalSelectableRef(id: "T1", type: .boardNetTie, layer: 0)), [b, a],
+                       "a net tie is looked up among the net ties")
+        XCTAssertEqual(owners.refs(of: HorizontalSelectableRef(id: "t1", type: .track, layer: 0)) { $0 != from }, [b])
+        XCTAssertEqual(owners.refs(of: HorizontalSelectableRef(id: "gone", type: .track, layer: 0)), [])
+    }
+
     func testPackageIDParsing() {
         XCTAssertEqual(BoardMovePlanner.packageID(forGeometryID: "pkg-abc/pad/pad-1"), "pkg-abc")
         XCTAssertEqual(BoardMovePlanner.packageID(forGeometryID: "pkg-abc/hole/h-2"), "pkg-abc")
