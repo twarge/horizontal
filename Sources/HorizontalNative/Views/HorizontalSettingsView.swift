@@ -5,31 +5,17 @@ import AppKit
 
 struct HorizontalSettingsView: View {
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
-    @State private var confirmingEditingUnlock = false
     @AppStorage(HorizontalPlaneFillDefaults.updatesAutomaticallyKey) private var updatesPlanesAutomatically = false
     @AppStorage(HorizontalRulesCheckDefaults.checksAutomaticallyKey) private var checksRulesAutomatically = true
 
     var body: some View {
         Form {
             Section("Operation") {
-                // Turning it off asks first: editing is in beta.
-                Toggle("Read-only", isOn: Binding {
-                    appearanceSettings.isReadOnlyOperationEnabled
-                } set: { isReadOnly in
-                    if isReadOnly {
-                        appearanceSettings.readOnlyOperationBinding().wrappedValue = true
-                    } else {
-                        confirmingEditingUnlock = true
-                    }
-                })
+                Toggle("Read-only", isOn: appearanceSettings.readOnlyOperationBinding())
                 Text("Prevents project files from being modified. Selection, search, view options, and app preferences still work.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if !appearanceSettings.isReadOnlyOperationEnabled {
-                    HorizontalEditingBetaWarning()
-                }
             }
-            .editingUnlockConfirmation(isPresented: $confirmingEditingUnlock, appearanceSettings: appearanceSettings)
 
             Section("App Theme") {
                 Picker("Theme", selection: appearanceSettings.appThemeBinding()) {

@@ -2,8 +2,7 @@ import Foundation
 import XCTest
 @testable import HorizontalNative
 
-/// Every build starts read-only, and anyone can turn it off, warned first
-/// that editing is in beta and a risk to their data.
+/// Every build starts read-only, and anyone can turn it off.
 final class HorizontalReadOnlyBuildTests: XCTestCase {
     private func isolatedDefaults() throws -> UserDefaults {
         let name = "horizontal-readonly-tests-\(UUID().uuidString)"
@@ -29,13 +28,6 @@ final class HorizontalReadOnlyBuildTests: XCTestCase {
         settings.readOnlyOperationBinding().wrappedValue = false
         XCTAssertFalse(settings.isReadOnlyOperationEnabled)
         XCTAssertFalse(HorizontalOperationDefaults.readOnlyOperation(defaults: defaults), "and it stays off on the next launch")
-    }
-
-    func testUnlockingWarnsThatEditingIsBetaAndRisksData() {
-        let warning = HorizontalOperationDefaults.editingBetaWarning
-        XCTAssertTrue(warning.contains("beta"), warning)
-        XCTAssertTrue(warning.contains("risk to your data"), warning)
-        XCTAssertTrue(warning.contains("backup"), warning)
     }
 
     // The document's write guard itself isn't reachable from a test:

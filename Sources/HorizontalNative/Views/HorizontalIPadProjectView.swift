@@ -154,7 +154,6 @@ struct HorizontalIPadProjectView: View {
     @StateObject private var partLibrary = HorizontalPartLibraryMonitor()
     @State private var showsPartUpdates = false
     @State private var pendingPoolCopy: HorizontalPoolPartCopy?
-    @State private var confirmingEditingUnlock = false
     // Per-file view-state persistence (the same store the macOS workspace
     // uses): which panes are open, the split-separator positions, and the
     // right slide-over. Restored in loadProject; the flag keeps the save
@@ -378,7 +377,6 @@ struct HorizontalIPadProjectView: View {
         .alert("Library Review", isPresented: Binding(get: { partLibrary.error != nil }, set: { if !$0 { partLibrary.error = nil } })) {
             Button("OK") { partLibrary.error = nil }
         } message: { Text(partLibrary.error ?? "") }
-        .editingUnlockConfirmation(isPresented: $confirmingEditingUnlock, appearanceSettings: appearanceSettings)
         .alert(pendingPoolCopy.map { "Copy \($0.partName) to \($0.targetName)?" } ?? "",
                isPresented: Binding(get: { pendingPoolCopy != nil }, set: { if !$0 { pendingPoolCopy = nil } }),
                presenting: pendingPoolCopy) { copy in
@@ -1530,13 +1528,9 @@ struct HorizontalIPadProjectView: View {
         )
     }
 
-    /// The lock: unlocking asks first, since editing is in beta.
+    /// The lock.
     private func toggleReadOnly() {
-        if isReadOnly {
-            confirmingEditingUnlock = true
-        } else {
-            appearanceSettings.readOnlyOperationBinding().wrappedValue = true
-        }
+        appearanceSettings.readOnlyOperationBinding().wrappedValue = !isReadOnly
     }
 
     /// The attached pools a part can go to, for one no attached pool has.
