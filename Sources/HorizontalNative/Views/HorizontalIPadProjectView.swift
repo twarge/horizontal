@@ -37,6 +37,8 @@ struct HorizontalIPadProjectView: View {
     /// Pours the planes off the main thread, as on macOS.
     @StateObject private var planePourScheduler = HorizontalPlanePourScheduler()
     @AppStorage(HorizontalPlaneFillDefaults.updatesAutomaticallyKey) private var updatesPlanesAutomatically = false
+    /// The rules checks run again on every change; off, when asked.
+    @AppStorage(HorizontalRulesCheckDefaults.checksAutomaticallyKey) private var checksRulesAutomatically = true
     @State private var planesNeedUpdate = false
     /// What the board's fills were poured from; nil until the board is first
     /// seen, when the fills its files hold are taken to be its own.
@@ -393,17 +395,23 @@ struct HorizontalIPadProjectView: View {
         // already, and this catches the rest.
         .onChange(of: boardEditRevision) { _, _ in
             checkPlaneFills()
-            scheduleClearanceCheck()
+            boardChangedForRules()
         }
         .onChange(of: boardSyncRevision, initial: true) { _, _ in
-            refreshRulesResults()
+            rulesInputsChanged()
         }
         // A pour's fills are copper too.
         .onChange(of: planeFillRevision) { _, _ in
-            scheduleClearanceCheck()
+            boardChangedForRules()
         }
         .onChange(of: updatesPlanesAutomatically) { _, _ in
             checkPlaneFills(again: true)
+        }
+        // Turned back on, the checks catch up with what changed while off.
+        .onChange(of: checksRulesAutomatically) { _, checksAutomatically in
+            if checksAutomatically {
+                refreshRulesResults()
+            }
         }
         .onChange(of: isReadOnly) { _, _ in
             checkPlaneFills(again: true)
@@ -757,6 +765,8 @@ struct HorizontalIPadProjectView: View {
             HorizontalRulesResultsSidebarView(
                 result: rulesResultsState,
                 safeAreaInsets: EdgeInsets(),
+                checksAutomatically: $checksRulesAutomatically,
+                onCheckNow: project?.board == nil ? nil : { refreshRulesResults() },
                 onOpenRules: {
                     rulesFocus = nil
                     rulesSheetPresented = true
@@ -2364,9 +2374,29 @@ struct HorizontalIPadProjectView: View {
         rightPane = .rulesResults
     }
 
+    /// A change to the design or its rules, as on macOS: every check again
+    /// while they run on their own, the results marked out of date while
+    /// they run only when asked.
+    private func rulesInputsChanged() {
+        if checksRulesAutomatically {
+            refreshRulesResults()
+        } else {
+            rulesResultsState?.isOutOfDate = true
+        }
+    }
+
+    /// A change to the board's copper or fills alone, as on macOS.
+    private func boardChangedForRules() {
+        if checksRulesAutomatically {
+            scheduleClearanceCheck()
+        } else {
+            rulesResultsState?.isOutOfDate = true
+        }
+    }
+
     /// The rules checks over every kind, as the board's rules now stand, as
     /// on macOS: the rules' own structure at once, the board's copper against
-    /// the clearance rules behind it.
+    /// the clearance rules behind it; what Check Now runs.
     private func refreshRulesResults() {
         guard let project, project.board != nil,
               let rules = try? HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive) else {
@@ -2524,7 +2554,7 @@ struct HorizontalIPadProjectView: View {
         boardRulesRevision += 1
         boardEditRevision += 1
         checkPlaneFills()
-        refreshRulesResults()
+        rulesInputsChanged()
     }
 
     private func registerBoardRulesUndo(from previous: JSONDictionary, actionName: String) {
