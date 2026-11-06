@@ -8972,16 +8972,36 @@ struct SchematicCanvasView: View {
     /// them, to move on their own, and smashes again one whose texts were
     /// lost; an unsmash deletes a smashed one's, and it draws its own again.
     /// It goes through `smash` and `unsmash`, so it is one undo step and the
-    /// sheet reloads with the texts the files now hold.
+    /// sheet reloads with the texts the files now hold. H on symbols smashed
+    /// already selects their smashed refdes, to move or edit, and changes
+    /// nothing, as the board's H does for a package.
     private func smashSelection(_ smashing: Bool) {
         guard !isReadOnly else { return }
-        let symbols = uniqueSelectedObjectRefs()
+        let selected = uniqueSelectedObjectRefs()
             .filter { $0.type == .schematicSymbol }
             .compactMap { ref in sheet.symbols.first { normalizedID($0.id) == normalizedID(ref.id) } }
-            .filter { smashing ? !$0.smashed || $0.smashedTextIDs.isEmpty : $0.smashed }
-        guard !symbols.isEmpty else { return }
+        let symbols = selected.filter { smashing ? !$0.smashed || $0.smashedTextIDs.isEmpty : $0.smashed }
+        guard !symbols.isEmpty else {
+            guard smashing else { return }
+            let refdes = smashedRefdesRefs(of: selected)
+            guard !refdes.isEmpty else { return }
+            hoveredObject = nil
+            selectedObjects = refdes
+            publishSelectionContext()
+            return
+        }
         let operations: [JSONDictionary] = symbols.map { ["op": smashing ? "smash" : "unsmash", "symbol_instance": $0.id] }
         applyProjectEdit(operations, actionName: smashing ? "Smash" : "Unsmash")
+    }
+
+    /// The refdes texts the smashed symbols among `symbols` own: their sheet
+    /// texts that store $REFDES.
+    private func smashedRefdesRefs(of symbols: [HorizontalPlacement]) -> [HorizontalSelectableRef] {
+        let owned = sheet.smashedTextIDs(ownedBy: Set(symbols.filter(\.smashed).map { $0.id.lowercased() }))
+        guard !owned.isEmpty else { return [] }
+        return sheet.texts
+            .filter { owned.contains($0.id.lowercased()) && HorizontalSmash.isRefdes($0) }
+            .map { HorizontalSelectableRef(id: $0.id, type: .text) }
     }
 
     /// The sheets Move to Other Sheet lists: every other page of this
