@@ -26,7 +26,7 @@ final class BoardPasteJunctionTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("Paste.horizontal")
-        try HorizontalProjectArchive.newProject(pool: HorizontalProjectPoolTemplate(defaultViaUUID: HorizontalProjectArchive.horizonPoolCircularVia)).write(to: url)
+        try HorizontalProjectArchive.newProject(pool: HorizontalProjectPoolTemplate(defaultViaUUID: HorizontalProjectArchive.horizonPoolCircularVia), blankBoard: true).write(to: url)
         archive = try HorizontalProjectArchive.completeProject(from: url)
         project = try HorizontalProject.load(from: url)
     }

@@ -346,12 +346,13 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         for name in ("list_symbols", "list_net_lines", "list_tracks", "list_vias"):
             self.assertTrue(tools[name].annotations.read_only_hint, name)
 
-        # An empty project answers with shapes, not errors.
+        # A new project, with no symbols, wires or tracks and only the via its
+        # board starts with, answers with shapes, not errors.
         self.assertEqual((await self.call("list_symbols", project_ref=self.ref))["data"], [])
         self.assertEqual((await self.call("list_net_lines", project_ref=self.ref))["data"], [])
         tracks = (await self.call("list_tracks", project_ref=self.ref))["data"]
         self.assertEqual((tracks["total"], tracks["truncated"], tracks["tracks"]), (0, False, []))
-        self.assertEqual((await self.call("list_vias", project_ref=self.ref))["data"]["total"], 0)
+        self.assertEqual((await self.call("list_vias", project_ref=self.ref))["data"]["total"], 1)
 
         # The bounds are enforced where the tool advertises them.
         for bad in ({"limit": 0}, {"limit": 10_000}, {"layer": "top"}, {"net": "no-such-net"}):
@@ -842,14 +843,16 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(tools["pour_planes"].annotations.read_only_hint)
         self.assertIn("expected_revision", tools["pour_planes"].input_schema["properties"])
 
-        # A fresh board is 50 mm square with a GND plane over each side, and
-        # among its rules is the via rule Horizon gives every new board, with
-        # the tented via Horizontal ships, so a route has a via to drop.
+        # A fresh board is 50 mm square, the middle of its left edge at the
+        # origin, with a GND plane over each side, poured, and a GND via in its
+        # middle, and among its rules is the via rule Horizon gives every new
+        # board, with the tented via Horizontal ships, so a route has a via to
+        # drop.
         rules = (await self.call("board_rules", project_ref=self.ref))["data"]
         vias = [rule for rule in rules["rules"] if rule["kind"] == "via"]
         self.assertEqual(len(vias), 1)
         self.assertEqual(vias[0]["rule"]["padstack"], "8b6dee4b-af88-4c0f-b38b-c5364649e65e")
-        square = [(0, 0), (50, 0), (50, 50), (0, 50)]
+        square = [(0, -25), (50, -25), (50, 25), (0, 25)]
         fresh = (await self.call("list_polygons", project_ref=self.ref))["data"]
         self.assertEqual([polygon["layer"] for polygon in fresh], [-100, 0, 100])
         for polygon in fresh:
@@ -857,6 +860,9 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([polygon["is_board_outline"] for polygon in fresh], [False, False, True])
         planes = (await self.call("list_planes", project_ref=self.ref))["data"]
         self.assertEqual(len(planes), 2)
+        self.assertTrue(all(plane["poured"] for plane in planes), planes)
+        vias = (await self.call("list_vias", project_ref=self.ref))["data"]["vias"]
+        self.assertEqual([(via["x_mm"], via["y_mm"], via["net_name"]) for via in vias], [(25, 0, "GND")])
 
         current = (await self.call("project_files", project_ref=self.ref))["meta"]["revision"]
         await self.call("apply_ops", project_ref=self.ref, expected_revision=current, operation_id="outline",
@@ -875,8 +881,9 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             "ops": [{"op": "place_polygon", "layer": 100, "vertices": [{"x_mm": 0, "y_mm": 0}]}]})
         self.assertTrue(bad.is_error)
 
-        # Pouring planes with nothing of their net to pour from is not an
-        # error: they pour nothing.
+        # Pouring planes that keep nothing is not an error: the outline drawn
+        # above cuts a hole whose edge runs through the board's GND via, so no
+        # fill reaches copper of its net, and they pour nothing.
         poured = (await self.call("pour_planes", project_ref=self.ref, expected_revision=after,
                                   operation_id=str(uuid.uuid4())))["data"]
         self.assertEqual((poured["poured"], poured["fragments"]), (2, 0))

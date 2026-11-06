@@ -52,13 +52,15 @@ final class HorizontalNewProjectLoadTests: XCTestCase {
         XCTAssertTrue(board.packages.isEmpty)
     }
 
-    /// A new board is a 50 mm square, its corner at the origin, with a GND
-    /// plane over each side of it: three polygons of the one square, and a
-    /// power net for the planes, which take their settings from the rules.
+    /// A new board is a 50 mm square, the middle of its left edge at the
+    /// origin, with a GND plane over each side of it: three polygons of the
+    /// one square, and a power net for the planes, which take their settings
+    /// from the rules. A via in its middle, its net set to GND, gives them
+    /// copper of their net to keep, and they come poured.
     func testTemplateBoardIsA50MillimetreSquareWithGroundPlanesOnBothSides() throws {
         let board = try XCTUnwrap(HorizontalProject.load(from: writtenTemplate()).board)
-        let square = [HorizontalPoint(x: 0, y: 0), HorizontalPoint(x: 50_000_000, y: 0),
-                      HorizontalPoint(x: 50_000_000, y: 50_000_000), HorizontalPoint(x: 0, y: 50_000_000)]
+        let square = [HorizontalPoint(x: 0, y: -25_000_000), HorizontalPoint(x: 50_000_000, y: -25_000_000),
+                      HorizontalPoint(x: 50_000_000, y: 25_000_000), HorizontalPoint(x: 0, y: 25_000_000)]
 
         XCTAssertEqual(board.polygons.map(\.layer), [HorizontalBoardLayers.outline])
         XCTAssertEqual(board.polygons.first?.vertices, square)
@@ -74,9 +76,50 @@ final class HorizontalNewProjectLoadTests: XCTestCase {
             XCTAssertEqual(plane.fallbackPolygon?.vertices, square)
             XCTAssertEqual(plane.priority, 0)
             XCTAssertTrue(plane.fromRules)
-            // Nothing of its net to pour from yet.
-            XCTAssertTrue(plane.fragments.isEmpty)
+            // One fill, kept by the via: the square less the rules' 0.25 mm
+            // clearance to the board's edge and the pour's two 5 µm twiddles
+            // (Horizon's `plane_update.cpp`).
+            XCTAssertEqual(plane.fragments.map(\.orphan), [false])
+            XCTAssertEqual(plane.fragments.first?.paths.count, 1, "a fill with no holes")
+            let fill = HorizontalRect(points: plane.fragments.first?.paths.first ?? [])
+            XCTAssertEqual([fill.minX, fill.minY, fill.maxX, fill.maxY], [260_000, -24_740_000, 49_740_000, 24_740_000])
         }
+
+        XCTAssertEqual(board.vias.count, 1)
+        let via = try XCTUnwrap(board.vias.first)
+        XCTAssertEqual(via.position, HorizontalPoint(x: 25_000_000, y: 0))
+        XCTAssertEqual(via.netSetID, ground.id)
+        XCTAssertEqual(via.netID, ground.id)
+        XCTAssertTrue(via.fromRules)
+        XCTAssertEqual(via.size, 500_000)
+        XCTAssertEqual(via.holeSize, 200_000)
+        XCTAssertEqual(via.padstackID, HorizontalProjectArchive.horizonPoolTentedCircularVia)
+    }
+
+    /// The template has no pour to fill its planes; the project the app hands
+    /// out has them poured, as a pour of its board fills them, so pouring it
+    /// again, by hand or on its own, changes nothing.
+    func testANewProjectsPlanesArePouredAsAPourFillsThem() throws {
+        let template = try XCTUnwrap(HorizontalProject.load(from: writtenTemplate(poured: false)).board)
+        XCTAssertEqual(template.planes.count, 2)
+        XCTAssertTrue(template.planes.allSatisfy { $0.fragments.isEmpty })
+
+        let board = try XCTUnwrap(HorizontalProject.load(from: writtenTemplate()).board)
+        var unpoured = board
+        for index in unpoured.planes.indices {
+            unpoured.planes[index].fragments = []
+        }
+        let poured = HorizontalBoardPlaneUpdater.pour(in: unpoured, cache: HorizontalPlanePourCache())
+        XCTAssertTrue(poured.isComplete)
+        for plane in board.planes {
+            let again = try XCTUnwrap(poured.board.planes.first { $0.id == plane.id })
+            XCTAssertFalse(plane.fragments.isEmpty)
+            XCTAssertEqual(plane.fragments.map(\.paths), again.fragments.map(\.paths), plane.id)
+            XCTAssertEqual(plane.fragments.map(\.orphan), again.fragments.map(\.orphan), plane.id)
+        }
+        XCTAssertEqual(try HorizontalProjectJSONApplicator.planeCacheData(board: poured.board),
+                       try HorizontalProjectJSONApplicator.planeCacheData(board: board),
+                       "a pour writes the planes file the new project has")
     }
 
     /// The rules results sidebar has nothing to say about a new board's rules:
@@ -183,14 +226,17 @@ final class HorizontalNewProjectLoadTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func writtenTemplate(blankBoard: Bool = false) throws -> URL {
+    private func writtenTemplate(blankBoard: Bool = false, poured: Bool = true) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("horizontal-new-project-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
 
         let packageURL = root.appendingPathComponent("Untitled.horizontal")
-        try HorizontalProjectArchive.newProject(blankBoard: blankBoard).write(to: packageURL)
+        let archive = poured
+            ? HorizontalProjectArchive.newPouredProject(blankBoard: blankBoard)
+            : HorizontalProjectArchive.newProject(blankBoard: blankBoard)
+        try archive.write(to: packageURL)
         return packageURL
     }
 }

@@ -100,7 +100,7 @@ final class BoardRouteViaTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("Test.horizontal")
         let pool = HorizontalProjectPoolTemplate(defaultViaUUID: HorizontalProjectArchive.horizonPoolCircularVia)
-        try HorizontalProjectArchive.newProject(pool: pool).write(to: url)
+        try HorizontalProjectArchive.newProject(pool: pool, blankBoard: true).write(to: url)
         let boardURL = url.appendingPathComponent("board.json")
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: boardURL)) as? [String: Any])
         json["rules"] = rules
@@ -358,7 +358,7 @@ final class BoardRouteViaTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("Untitled.horizontal")
         let defaultVia = "1c4d3f0a-8e7b-4a6e-9c3d-2b1a0f9e8d7c"
-        try HorizontalProjectArchive.newProject(pool: HorizontalProjectPoolTemplate(defaultViaUUID: defaultVia)).write(to: url)
+        try HorizontalProjectArchive.newProject(pool: HorizontalProjectPoolTemplate(defaultViaUUID: defaultVia), blankBoard: true).write(to: url)
         var archive = try HorizontalProjectArchive.completeProject(from: url)
         let project = try HorizontalProject.load(from: url)
 

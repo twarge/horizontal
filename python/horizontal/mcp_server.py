@@ -627,9 +627,10 @@ def open_project(path: str, source: Literal["auto", "live", "disk"] = "auto") ->
 def new_project(path: str, name: str | None = None, blank_board: bool = False) -> dict[str, Any]:
     """Create a project from the new-document template as a .horizontal package and open it. path must not exist
     and must end in .horizontal. The project it makes has a pool, a top block whose one net is GND, one schematic
-    sheet, and a board 50 mm square, its corner at the origin, with a GND plane over each side of it; the planes
-    pour nothing until GND has copper on the board to pour from; blank_board leaves out the outline, the planes
-    and GND, for a design that brings its own. The board has the via
+    sheet, and a board 50 mm square, the middle of its left edge at the origin, with a GND plane over each side of
+    it, poured, and a via with its net set to GND in the middle, at (25, 0) mm, which gives the planes copper to keep,
+    so check finds nothing wrong with it; blank_board leaves out the outline, the planes, the via and GND, for a
+    design that brings its own. The board has the via
     rule Horizon gives a new board, with horizon-pool's tented Circular via, which its pool carries, and a rule that
     matches everything in every family that needs one: 0.125 mm between copper of different nets, 0.25 mm to the
     board edge, 0.15 mm to unplated holes, 0.25 mm tracks no narrower than 0.125 mm, and solid planes. board_rules

@@ -43,12 +43,13 @@ final class HorizontalBuiltInViaTests: XCTestCase {
     }
 
     /// A new document as File > New makes one with no pools registered, on
-    /// disk at `directory/Untitled.horizontal`, its board edited by `edit`.
+    /// disk at `directory/Untitled.horizontal`, its board blank (the starter
+    /// board's own via would be one more) and edited by `edit`.
     private func newDocument(in directory: URL? = nil, edit: (inout [String: Any]) -> Void = { _ in }) throws -> URL {
         let pool = HorizontalProjectDocument.projectPoolTemplate()
         XCTAssertEqual(pool, HorizontalProjectPoolTemplate(), "no pool to include or take a default via from")
         let url = try (directory ?? temporaryRoot()).appendingPathComponent("Untitled.horizontal")
-        try HorizontalProjectArchive.newProject(pool: pool).write(to: url)
+        try HorizontalProjectArchive.newProject(pool: pool, blankBoard: true).write(to: url)
         let boardURL = url.appendingPathComponent("board.json")
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: boardURL)) as? [String: Any])
         edit(&json)

@@ -114,7 +114,7 @@ final class BoardOrphanedCopperNetTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("Test.horizontal")
-        try HorizontalProjectArchive.newProject().write(to: url)
+        try HorizontalProjectArchive.newProject(blankBoard: true).write(to: url)
         let poolURL = url.appendingPathComponent("pool")
         var unit = HorizontalPoolItemFactory.newUnit()
         let pin = HorizontalPoolItemFactory.newUUID()
