@@ -89,7 +89,7 @@ struct HorizontalProjectDocument: FileDocument {
     /// as a `.horizontal` bundle without needing an in-place `.hprj` manifest.
     static func newProject() -> HorizontalProjectDocument {
         var document = HorizontalProjectDocument()
-        document.archive = .newProject(pool: projectPoolTemplate())
+        document.archive = .newPouredProject(pool: projectPoolTemplate())
         return document
     }
 

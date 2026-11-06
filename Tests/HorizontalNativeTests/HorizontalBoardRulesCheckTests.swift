@@ -747,22 +747,21 @@ final class HorizontalBoardRulesCheckTests: XCTestCase {
         XCTAssertTrue((width["detail"] as? String)?.hasPrefix("Track width 0.100 mm is less than 0.200 mm.") ?? false)
     }
 
-    /// The whole pipeline on the new-document template: its GND planes have
-    /// nothing to pour from yet, which preflight says, and MCP `check`
-    /// reports.
+    /// The whole pipeline on the new-document template: its GND via gives
+    /// its GND planes copper to keep, they come poured, and MCP `check`
+    /// finds nothing wrong with it.
     func testMCPCheckRunsTheBoardChecksOnARealProject() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("rules-check-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let packageURL = root.appendingPathComponent("Untitled.horizontal")
-        try HorizontalProjectArchive.newProject().write(to: packageURL)
+        try HorizontalProjectArchive.newPouredProject().write(to: packageURL)
         let project = try HorizontalProject.load(from: packageURL)
 
         let report = HorizontalDispatchChecks.run(entry: HorizontalDispatchProjectEntry(handle: 1, url: project.baseURL, project: project), full: true)
         let messages = report["messages"] as? [JSONDictionary] ?? []
-        let preflight = messages.filter { $0.string("category") == "preflight_checks" }
-        XCTAssertEqual(preflight.map { $0.string("title") }, ["Plane has no fragments", "Plane has no fragments"], "\(messages)")
-        XCTAssertEqual(preflight.first?.string("level"), "error")
+        XCTAssertEqual(messages.filter { $0.string("level") == "error" }.map { $0.string("title") }, [], "\(messages)")
+        XCTAssertEqual(messages.filter { $0.string("category") == "preflight_checks" }.map { $0.string("title") }, [], "\(messages)")
     }
 }
 

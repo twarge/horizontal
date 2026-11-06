@@ -42,7 +42,7 @@ connection diagnostics, typed models, numerical tools and operational limits.
 | Method | What it answers |
 |---|---|
 | `version`, `methods` | API version; the build's executable, its path and modification time, and in an app its `.app` `bundle` and `bundle_version`, which tell an installed copy from an Xcode build; and `ops`/`ops_digest` fingerprinting the edit vocabulary; the method table |
-| `open_project`, `new_project`, `close_project`, `reload_project`, `list_projects` | project handles; opening a path twice returns the same handle; `new_project` writes the template to a path that does not exist yet: a 50 mm square board with a GND plane on each side, or with `blank_board` a board of nothing, for a design that brings its own |
+| `open_project`, `new_project`, `close_project`, `reload_project`, `list_projects` | project handles; opening a path twice returns the same handle; `new_project` writes the template to a path that does not exist yet: a 50 mm square board, the middle of its left edge at the origin, with a GND plane on each side, poured, and a GND via in its middle, which checks clean, or with `blank_board` a board of nothing, for a design that brings its own |
 | `save` | writes an open document to its file; a disk context reports `saved: false` because its edits were already written |
 | `project_info`, `project_files` | blocks, sheets, counts, diagnostics; files in the captured source |
 | `freeze_project`, `analysis_snapshot`, `transaction_status` | immutable read context; electrical evidence; mutation receipt lookup — `committed`, `not_committed` with the error, or `unknown` when the document never saw that id |

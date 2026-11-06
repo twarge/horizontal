@@ -69,7 +69,9 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
 
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("field-\(UUID().uuidString).horizontal")
-        try HorizontalProjectArchive.newProject().write(to: root)
+        // Blank: the starter board's GND via would be one more end of the
+        // GND airwires these name.
+        try HorizontalProjectArchive.newProject(blankBoard: true).write(to: root)
         session = HorizontalDispatchSession()
         handle = try session.open(url: root).handle
     }

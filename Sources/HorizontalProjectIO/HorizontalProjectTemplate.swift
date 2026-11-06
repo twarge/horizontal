@@ -90,9 +90,12 @@ public extension HorizontalProjectArchive {
     /// (Horizon's project pool layout); the project file names it as
     /// `pool_directory` the way Horizon does.
     ///
-    /// The board is 50 mm square with a GND plane over each side, unless
-    /// `blankBoard`, which leaves it with no outline, planes or nets, for
-    /// whatever starts from nothing.
+    /// The board is 50 mm square, the middle of its left edge at the origin,
+    /// with a GND plane over each side and a GND via in its middle for them
+    /// to pour from, unless `blankBoard`, which leaves it with no outline,
+    /// planes, vias or nets, for whatever starts from nothing. The planes
+    /// are unpoured here, which has no pour to fill them; the app pours them
+    /// before it hands a new board out (`newPouredProject`).
     static func newProject(
         named name: String = "Untitled",
         pool: HorizontalProjectPoolTemplate = HorizontalProjectPoolTemplate(),
@@ -225,17 +228,18 @@ public extension HorizontalProjectArchive {
             poolFiles["padstacks"] = .directory(["cache": .directory(["\(via).json": .regularFile(padstack)])])
         }
 
-        // A 50 mm square board, its corner at the origin, with a GND plane
-        // over all of each side: three polygons of the one square, the
-        // outline's and the planes', as Horizon draws a plane on a polygon of
-        // its own (`Polygon::serialize`, `Plane::serialize`). The planes take
-        // their settings from the rules and are poured when the board is.
+        // A 50 mm square board, the middle of its left edge at the origin,
+        // with a GND plane over all of each side: three polygons of the one
+        // square, the outline's and the planes', as Horizon draws a plane on
+        // a polygon of its own (`Polygon::serialize`, `Plane::serialize`). The
+        // planes take their settings from the rules.
         let side = 50_000_000
-        func square(layer: Int) -> [String: Any] {
+        let half = side / 2
+        func polygon(layer: Int) -> [String: Any] {
             [
                 "layer": layer,
                 "parameter_class": "",
-                "vertices": [[0, 0], [side, 0], [side, side], [0, side]].map { position -> [String: Any] in
+                "vertices": [[0, -half], [side, -half], [side, half], [0, half]].map { position -> [String: Any] in
                     ["type": "line", "position": position, "arc_center": [0, 0], "arc_reverse": false]
                 }
             ]
@@ -243,17 +247,36 @@ public extension HorizontalProjectArchive {
         var polygons = [String: Any]()
         var boardPlanes = [String: Any]()
         if !blankBoard {
-            polygons[newID()] = square(layer: 100)
+            polygons[newID()] = polygon(layer: 100)
         }
         for layer in blankBoard ? [] : [0, -100] {
             let polygonID = newID()
-            polygons[polygonID] = square(layer: layer)
+            polygons[polygonID] = polygon(layer: layer)
             boardPlanes[newID()] = [
                 "net": groundID,
                 "polygon": polygonID,
                 "priority": 0,
                 "from_rules": true,
                 "settings": newPlaneSettings
+            ] as [String: Any]
+        }
+
+        // A via in the middle of the board with its net set to GND
+        // (`Via::serialize`), on the via rule, so the planes have copper of
+        // their net to keep, and a new board, poured, checks clean.
+        var junctions = [String: Any]()
+        var vias = [String: Any]()
+        if !blankBoard {
+            let junctionID = newID()
+            junctions[junctionID] = ["position": [half, 0]]
+            vias[newID()] = [
+                "junction": junctionID,
+                "padstack": via,
+                "parameter_set": ["via_diameter": newBoardViaDiameter, "hole_diameter": newBoardViaHoleDiameter],
+                "from_rules": true,
+                "source": "rules",
+                "locked": false,
+                "net_set": groundID
             ] as [String: Any]
         }
 
@@ -271,10 +294,10 @@ public extension HorizontalProjectArchive {
                 "-100": ["thickness": 35_000, "substrate_thickness": 0]
             ],
             "rules": rules,
-            "junctions": [String: Any](),
+            "junctions": junctions,
             "packages": [String: Any](),
             "tracks": [String: Any](),
-            "vias": [String: Any](),
+            "vias": vias,
             "polygons": polygons,
             "planes": boardPlanes,
             "keepouts": [String: Any](),
@@ -334,6 +357,11 @@ extension HorizontalProjectArchive {
             "hatch_line_width": 200_000
         ]
     }
+
+    /// The via a new board's via rule gives, RuleVia's own defaults, and the
+    /// one the new board has.
+    static let newBoardViaDiameter = 500_000
+    static let newBoardViaHoleDiameter = 200_000
 
     /// A new board's rules: every family Horizon's `BoardRules::serialize`
     /// writes, and in each family whose last rule must match everything
@@ -427,7 +455,7 @@ extension HorizontalProjectArchive {
             "via": rule([
                 "match": matchAll,
                 "padstack": viaPadstack,
-                "parameter_set": ["via_diameter": 500_000, "hole_diameter": 200_000]
+                "parameter_set": ["via_diameter": newBoardViaDiameter, "hole_diameter": newBoardViaHoleDiameter]
             ]),
             "plane": rule([
                 "match": matchAll,

@@ -604,7 +604,7 @@ enum HorizontalDispatchMethods {
             throw HorizontalDispatchError.invalidParams("\(url.path) already exists.")
         }
         let name = params.string("name") ?? url.deletingPathExtension().lastPathComponent
-        try HorizontalProjectArchive.newProject(named: name, blankBoard: params.bool("blank_board") ?? false).write(to: url)
+        try HorizontalProjectArchive.newPouredProject(named: name, blankBoard: params.bool("blank_board") ?? false).write(to: url)
         return projectSummary(try session.open(url: url))
     }
 

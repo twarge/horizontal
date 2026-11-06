@@ -65,7 +65,8 @@ final class HorizontalHorizonFileConformanceTests: XCTestCase {
         let point = HorizontalPoint(x: 10 * mm, y: 10 * mm)
         let dropped = BoardTrackRouting.dropVia(via, at: point, netID: nil, preferredJunctionID: nil, on: &board)
         board = try fixture.save(board)
-        let viaID = try XCTUnwrap(board.vias.first?.id)
+        // The one dropped, not the starter board's GND via.
+        let viaID = try XCTUnwrap(board.vias.first { $0.position == point }?.id)
         XCTAssertEqual(viaJunction(viaID, in: try fixture.json("board.json")), dropped)
 
         board.junctions["moved"] = point
@@ -87,7 +88,8 @@ final class HorizontalHorizonFileConformanceTests: XCTestCase {
         let point = HorizontalPoint(x: 5 * mm, y: 20 * mm)
         let dropped = BoardTrackRouting.dropVia(via, at: point, netID: nil, preferredJunctionID: nil, on: &board)
         board = try fixture.save(board)
-        let viaID = try XCTUnwrap(board.vias.first?.id)
+        // The one dropped, not the starter board's GND via.
+        let viaID = try XCTUnwrap(board.vias.first { $0.position == point }?.id)
 
         board.junctions.removeValue(forKey: dropped)
         board = try fixture.save(board)

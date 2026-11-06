@@ -105,7 +105,7 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
     var threeDProjection: HorizontalBoardSceneProjection = .perspective
     var threeDExplode = 0.0
     var threeDBackground = true
-    var threeDSolderMaskTransparency = 0.30
+    var threeDSolderMaskTransparency = 0.10
     var threeDViaPlatingMicrons = 12.0
     var threeDCopperMode: HorizontalBoardSceneCopperMode = .on {
         didSet {

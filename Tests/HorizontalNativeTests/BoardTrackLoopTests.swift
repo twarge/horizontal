@@ -493,7 +493,7 @@ final class BoardTrackLoopTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("Loops.horizontal")
-        try HorizontalProjectArchive.newProject(pool: HorizontalProjectPoolTemplate(defaultViaUUID: HorizontalProjectArchive.horizonPoolCircularVia)).write(to: url)
+        try HorizontalProjectArchive.newProject(pool: HorizontalProjectPoolTemplate(defaultViaUUID: HorizontalProjectArchive.horizonPoolCircularVia), blankBoard: true).write(to: url)
         var archive = try HorizontalProjectArchive.completeProject(from: url)
         let project = try HorizontalProject.load(from: url)
 
@@ -534,7 +534,7 @@ final class BoardTrackLoopTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("Vias.horizontal")
-        try HorizontalProjectArchive.newProject(pool: HorizontalProjectPoolTemplate(defaultViaUUID: HorizontalProjectArchive.horizonPoolCircularVia)).write(to: url)
+        try HorizontalProjectArchive.newProject(pool: HorizontalProjectPoolTemplate(defaultViaUUID: HorizontalProjectArchive.horizonPoolCircularVia), blankBoard: true).write(to: url)
         var archive = try HorizontalProjectArchive.completeProject(from: url)
         let project = try HorizontalProject.load(from: url)
 
