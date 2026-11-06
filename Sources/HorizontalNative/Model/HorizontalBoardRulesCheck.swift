@@ -492,12 +492,21 @@ enum HorizontalBoardRulesCheck {
                 region: ordered.flatMap { [$0.from, $0.to] }, nets: net.isEmpty ? [] : [net])
         }
 
+        // A plane keeps only what joins copper of its net, unless it keeps
+        // orphans; a net with no copper on the board leaves it nothing to
+        // keep, however often it is poured.
+        let copperNets = Set(board.packagePads.compactMap { $0.netID?.lowercased() }
+            + board.tracks.compactMap { $0.netID?.lowercased() }
+            + board.vias.compactMap { $0.netID?.lowercased() })
         for plane in board.planes where plane.fragments.isEmpty {
             let layer = plane.layer.map(HorizontalBoardLayers.name(for:)) ?? "no layer"
             let outline = plane.fallbackPolygon?.vertices ?? []
+            let netless = plane.netID.map { !copperNets.contains($0.lowercased()) } ?? false
             add(.error, "plane_no_fragments", "Plane has no fragments",
                 "Plane of net \(netName(plane.netID, in: board)) on layer \(layer) has no fragments",
-                detail: "Nothing of it is poured: pour the planes, or the plane's outline holds no copper.",
+                detail: netless
+                    ? "Its net has no pads, tracks or vias on the board, so all the plane pours is orphaned copper, which it doesn't keep; pouring again changes nothing."
+                    : "Nothing of it is poured: pour the planes, or the plane's outline holds no copper.",
                 at: outline.first, region: outline, layers: plane.layer.map { [$0] } ?? [],
                 nets: plane.netID.map { [$0.lowercased()] } ?? [], objects: [plane.id])
         }

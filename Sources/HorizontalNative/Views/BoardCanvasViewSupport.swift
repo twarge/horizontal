@@ -1103,6 +1103,15 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         selectableSceneCache.scene(key: key, build: build)
     }
 
+    /// The selectable scene built for `key`, if it is still here.
+    func selectableScene(ifBuiltFor key: BoardSelectableCacheKey) -> HorizontalCanvasSelectableScene? {
+        selectableSceneCache.scene(ifBuiltFor: key)
+    }
+
+    func seedSelectableScene(_ scene: HorizontalCanvasSelectableScene, for key: BoardSelectableCacheKey) {
+        selectableSceneCache.seed(scene, for: key)
+    }
+
     func snapTargets(
         key: BoardSelectableCacheKey,
         build: () -> [HorizontalPoint]

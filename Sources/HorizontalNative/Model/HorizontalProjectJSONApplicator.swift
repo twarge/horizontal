@@ -1497,6 +1497,7 @@ enum HorizontalProjectJSONApplicator {
         }
         // Net ties name a junction outright; tracks as a connection.
         let namesJunctionOutright = key == "net_ties"
+        let index = JunctionIndex(junctions)
         var changed = false
         for segment in segments where !segment.id.contains("/") {
             guard let entryKey = matchingKey(segment.id, in: map),
@@ -1507,7 +1508,7 @@ enum HorizontalProjectJSONApplicator {
                 ("from", segment.from, segment.fromJunctionID), ("to", segment.to, segment.toJunctionID)
             ] {
                 guard let named,
-                      let junction = junctions.first(where: { $0.key.lowercased() == named.lowercased() }),
+                      let junction = index.junction(named: named),
                       jsonPointKey(junction.value) == jsonPointKey(point) else {
                     continue
                 }
@@ -1543,6 +1544,7 @@ enum HorizontalProjectJSONApplicator {
     ) {
         var map = json["vias"] as? JSONDictionary ?? [:]
         var junctionMap = json["junctions"] as? JSONDictionary ?? [:]
+        let index = JunctionIndex(junctions)
         for via in vias where !via.id.contains("/") {
             guard matchingKey(via.id, in: map) == nil else {
                 continue
@@ -1552,7 +1554,7 @@ enum HorizontalProjectJSONApplicator {
             guard let padstack = via.padstackID ?? padstackID else {
                 continue
             }
-            let junctionID = viaJunction(via, named: nil, points: junctions, junctions: &junctionMap)
+            let junctionID = viaJunction(via, named: nil, points: index, junctions: &junctionMap)
             var parameterSet = via.parameterSet.reduce(into: JSONDictionary()) { result, item in
                 result[item.key] = jsonNumber(item.value)
             }
@@ -1847,13 +1849,14 @@ enum HorizontalProjectJSONApplicator {
         }
 
         var junctions = json["junctions"] as? JSONDictionary ?? [:]
+        let index = JunctionIndex(points)
         for via in vias {
             guard let itemKey = matchingKey(via.id, in: map),
                   var item = map[itemKey] as? JSONDictionary else {
                 continue
             }
             item = viaJSONEntry(via, existing: item)
-            item["junction"] = viaJunction(via, named: item["junction"] as? String, points: points, junctions: &junctions)
+            item["junction"] = viaJunction(via, named: item["junction"] as? String, points: index, junctions: &junctions)
             map[itemKey] = item
         }
         json["vias"] = map
@@ -1872,15 +1875,15 @@ enum HorizontalProjectJSONApplicator {
     private static func viaJunction(
         _ via: HorizontalMarker,
         named current: String?,
-        points: [String: HorizontalPoint],
+        points: JunctionIndex,
         junctions: inout JSONDictionary
     ) -> String {
         let here = jsonPointKey(via.position)
-        let named = current.flatMap { current in points.first { normalizedID($0.key) == normalizedID(current) } }
+        let named = current.flatMap { points.junction(named: $0) }
         if let current, let named, jsonPointKey(named.value) == here {
             return current
         }
-        if let id = points.filter({ jsonPointKey($0.value) == here }).map(\.key).sorted().first {
+        if let id = points.junctionIDs(at: here).min() {
             return matchingKey(id, in: junctions) ?? id
         }
         let id = named == nil ? current ?? UUID().uuidString.lowercased() : UUID().uuidString.lowercased()
@@ -2852,5 +2855,35 @@ enum HorizontalProjectJSONApplicator {
 
     private static func jsonPointKey(_ point: HorizontalPoint) -> String {
         "\(Int64(point.x.rounded())):\(Int64(point.y.rounded()))"
+    }
+
+    /// The board's junctions by lowercased id and by the point each is at,
+    /// made once per write. Found by scanning every junction instead, for
+    /// each end of each track and for each via, they took a third of a second
+    /// of every edit on Caleb's 1065 junctions and 1028 tracks.
+    private struct JunctionIndex {
+        private let byID: [String: (key: String, value: HorizontalPoint)]
+        private let idsByPoint: [String: [String]]
+
+        init(_ junctions: [String: HorizontalPoint]) {
+            var byID = [String: (key: String, value: HorizontalPoint)]()
+            var idsByPoint = [String: [String]]()
+            for (key, point) in junctions {
+                byID[key.lowercased()] = byID[key.lowercased()] ?? (key, point)
+                idsByPoint[jsonPointKey(point), default: []].append(key)
+            }
+            self.byID = byID
+            self.idsByPoint = idsByPoint
+        }
+
+        /// The junction `id` names, whatever its case.
+        func junction(named id: String) -> (key: String, value: HorizontalPoint)? {
+            byID[id.lowercased()]
+        }
+
+        /// The ids of the junctions at `pointKey` (`jsonPointKey`).
+        func junctionIDs(at pointKey: String) -> [String] {
+            idsByPoint[pointKey] ?? []
+        }
     }
 }

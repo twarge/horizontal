@@ -87,6 +87,24 @@ final class HorizontalCanvasSelectableSceneCache<Key: Hashable> {
         return sceneValue
     }
 
+    /// The scene built for `key`, if it is still here.
+    func scene(ifBuiltFor key: Key) -> HorizontalCanvasSelectableScene? {
+        if sceneKey == key {
+            return sceneValue
+        }
+        return previous?.key == key ? previous?.scene : nil
+    }
+
+    /// Installs a scene made some other way than a build (one with a delete's
+    /// objects taken out), so the next pass that asks for `key` finds it.
+    func seed(_ scene: HorizontalCanvasSelectableScene, for key: Key) {
+        previous = current ?? previous
+        sceneKey = key
+        sceneValue = scene
+        snapTargetsKey = nil
+        snapTargetsValue = []
+    }
+
     func selectables(
         key: Key,
         build: () -> [HorizontalSelectable]
