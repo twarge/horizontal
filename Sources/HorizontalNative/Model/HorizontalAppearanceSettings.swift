@@ -107,19 +107,13 @@ enum HorizontalOperationDefaults {
     static let readOnlyOperationKey = "operation.readOnly"
 
     /// Every build starts read-only, a fresh install included, and anyone can
-    /// turn it off: editing is in beta, so turning it off is confirmed with
-    /// the warning below, and Settings says so in red while it is off.
+    /// turn it off, in Settings or with a window's lock.
     static func readOnlyOperation(defaults: UserDefaults = .standard) -> Bool {
         guard defaults.object(forKey: readOnlyOperationKey) != nil else {
             return true
         }
         return defaults.bool(forKey: readOnlyOperationKey)
     }
-
-    static let editingUnlockTitle = "Allow Editing?"
-    /// What turning read-only off is warned with, wherever it is turned off.
-    static let editingBetaWarning = "Editing is in beta and is a risk to your data. Horizontal writes your project files "
-        + "directly, and a fault can damage or lose part of a design. Keep a backup, or commit the project to git, before you edit."
 }
 
 /// The board's lines that Settings gives a width of their own, in pixels on
