@@ -3368,6 +3368,24 @@ struct HorizontalBoardRulesResultState {
     var schematicFindings: [HorizontalSchematicRuleFinding]? = nil
     /// The schematic check is running again, as `isCheckingClearance`.
     var isCheckingSchematic = false
+    /// The design has changed since these were found, while the checks run
+    /// only when asked (`HorizontalRulesCheckDefaults`): what they show is
+    /// the last run's, until Check Now runs them again.
+    var isOutOfDate = false
+}
+
+/// Whether the rules checks run again on every change to the design, or only
+/// when asked: the rules results sidebar's Automatically check rules, and
+/// Check Rules Automatically in the View menu and Settings. On unless turned
+/// off. Off, the sidebar's Check Now and the rules window's Apply & Check run
+/// them, and an edit marks the results out of date instead; MCP `check` runs
+/// its own checks either way.
+enum HorizontalRulesCheckDefaults {
+    static let checksAutomaticallyKey = "rules.checkAutomatically"
+
+    static func checksAutomatically(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: checksAutomaticallyKey) as? Bool ?? true
+    }
 }
 
 struct HorizontalBoardRuleCheckMessage: Identifiable {

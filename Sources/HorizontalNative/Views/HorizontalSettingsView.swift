@@ -7,6 +7,7 @@ struct HorizontalSettingsView: View {
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
     @State private var confirmingEditingUnlock = false
     @AppStorage(HorizontalPlaneFillDefaults.updatesAutomaticallyKey) private var updatesPlanesAutomatically = false
+    @AppStorage(HorizontalRulesCheckDefaults.checksAutomaticallyKey) private var checksRulesAutomatically = true
 
     var body: some View {
         Form {
@@ -51,6 +52,13 @@ struct HorizontalSettingsView: View {
             // and its context menu was the iPad's only other way back.
             Section("Board") {
                 Toggle("Update Planes Automatically", isOn: $updatesPlanesAutomatically)
+            }
+
+            Section("Design Rules") {
+                Toggle("Check Rules Automatically", isOn: $checksRulesAutomatically)
+                Text("Checks the schematic and board against their rules again after every change. Off, the rules results sidebar checks when you click Check Now, and says when the design has changed since.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             // Off is the standard chrome on both platforms: the system toolbar

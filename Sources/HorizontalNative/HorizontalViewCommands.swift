@@ -320,6 +320,7 @@ struct HorizontalViewCommands: Commands {
     @FocusedValue(\.horizonToggleRightSidebarAction) private var toggleRightSidebarAction
     @FocusedValue(\.horizonUpdateAllPlanesAction) private var updateAllPlanesAction
     @AppStorage(HorizontalPlaneFillDefaults.updatesAutomaticallyKey) private var updatesPlanesAutomatically = false
+    @AppStorage(HorizontalRulesCheckDefaults.checksAutomaticallyKey) private var checksRulesAutomatically = true
     @FocusedValue(\.horizonCleanUpProjectPoolAction) private var cleanUpProjectPoolAction
     @FocusedValue(\.horizonPowerNetsAction) private var powerNetsAction
     @FocusedValue(\.horizonLeaveBlockAction) private var leaveBlockAction
@@ -805,6 +806,10 @@ struct HorizontalViewCommands: Commands {
             }
             .keyboardShortcut("r", modifiers: [.command, .option])
             .disabled(boardRulesAction == nil || boardAvailable != true)
+            // The rules results sidebar's Automatically check rules. Checking
+            // writes nothing, so it stays when the document is locked, and as
+            // a preference it is offered whether or not a board is open.
+            Toggle("Check Rules Automatically", isOn: $checksRulesAutomatically)
 
             Divider()
             Menu("Default View") {

@@ -793,6 +793,8 @@ struct ProjectWorkspaceView: View {
     /// every change when they update automatically.
     @StateObject private var planePourScheduler = HorizontalPlanePourScheduler()
     @AppStorage(HorizontalPlaneFillDefaults.updatesAutomaticallyKey) private var updatesPlanesAutomatically = false
+    /// The rules checks run again on every change; off, when asked.
+    @AppStorage(HorizontalRulesCheckDefaults.checksAutomaticallyKey) private var checksRulesAutomatically = true
     /// The board changed in a way that invalidates the current fills. Set from
     /// the edit funnel rather than recomputed while rendering, so the (whole
     /// board) fingerprint is taken once per edit instead of once per frame.
@@ -1093,20 +1095,26 @@ struct ProjectWorkspaceView: View {
     private var workspaceWithSelectionObservers: some View {
         workspaceWithWindowObservers
             .onChange(of: boardSyncRevision, initial: true) { _, _ in
-                refreshRulesResults()
+                rulesInputsChanged()
             }
             // Every change to the board passes here; most asked for their pour
             // already, and this catches the rest.
             .onChange(of: boardEditRevision) { _, _ in
                 checkPlaneFills()
-                scheduleClearanceCheck()
+                boardChangedForRules()
             }
             // A pour's fills are copper too.
             .onChange(of: planeFillRevision) { _, _ in
-                scheduleClearanceCheck()
+                boardChangedForRules()
             }
             .onChange(of: updatesPlanesAutomatically) { _, _ in
                 checkPlaneFills(again: true)
+            }
+            // Turned back on, the checks catch up with what changed while off.
+            .onChange(of: checksRulesAutomatically) { _, checksAutomatically in
+                if checksAutomatically {
+                    refreshRulesResults()
+                }
             }
             .onChange(of: isReadOnly) { _, _ in
                 checkPlaneFills(again: true)
@@ -1393,6 +1401,8 @@ struct ProjectWorkspaceView: View {
             HorizontalRulesResultsSidebarView(
                 result: rulesResultsState,
                 safeAreaInsets: safeAreaInsets,
+                checksAutomatically: $checksRulesAutomatically,
+                onCheckNow: project.board == nil ? nil : { refreshRulesResults() },
                 onOpenRules: { showBoardRulesWindow() },
                 onShowFinding: showBoardFinding,
                 onShowRule: { finding in
@@ -1543,7 +1553,8 @@ struct ProjectWorkspaceView: View {
         let warnings = result.warningCount
         let found = [errors > 0 ? "\(errors) error\(errors == 1 ? "" : "s")" : nil,
                      warnings > 0 ? "\(warnings) warning\(warnings == 1 ? "" : "s")" : nil].compactMap { $0 }
-        return "\(rulesResultsSidebarToggleTitle) — the last rules check found \(found.joined(separator: " and "))"
+        let since = result.isOutOfDate ? ", before the latest changes" : ""
+        return "\(rulesResultsSidebarToggleTitle) — the last rules check found \(found.joined(separator: " and "))\(since)"
     }
 
     private var rulesResultsSidebarToggleTitle: String {
@@ -3610,7 +3621,7 @@ struct ProjectWorkspaceView: View {
         }
         boardRulesRevision += 1
         boardEditRevision += 1
-        refreshRulesResults()
+        rulesInputsChanged()
         if refreshesWindow {
             boardRulesWindowController?.refresh(rules: rules, board: project.board, schematicRules: schematicRules(in: document.archive))
         }
@@ -3730,9 +3741,30 @@ struct ProjectWorkspaceView: View {
         rightSidebarPane = .rulesResults
     }
 
+    /// A change to the design or its rules: every check runs again while
+    /// they run on their own, and while they run only when asked, what the
+    /// sidebar shows is marked out of date.
+    private func rulesInputsChanged() {
+        if checksRulesAutomatically {
+            refreshRulesResults()
+        } else {
+            rulesResultsState?.isOutOfDate = true
+        }
+    }
+
+    /// A change to the board's copper or fills alone: the board checks run
+    /// again, as `rulesInputsChanged` has them.
+    private func boardChangedForRules() {
+        if checksRulesAutomatically {
+            scheduleClearanceCheck()
+        } else {
+            rulesResultsState?.isOutOfDate = true
+        }
+    }
+
     /// The rules checks over every kind, as the board's rules now stand, so
     /// the results sidebar and its toolbar badge say what is wrong without a
-    /// run in the rules window first.
+    /// run in the rules window first; what Check Now runs.
     private func refreshRulesResults() {
         guard project.board != nil, let rules = try? HorizontalProjectJSONApplicator.boardRules(in: project, from: document.archive) else {
             clearanceCheckTask?.cancel()

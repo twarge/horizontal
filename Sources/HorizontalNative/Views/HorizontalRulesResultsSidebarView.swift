@@ -4,11 +4,16 @@ import SwiftUI
 /// the rules' own structure, the schematic's connectivity and the board
 /// against every kind of board rule Horizontal checks, a section a kind —
 /// which the rules window's Apply & Check runs and the document keeps up to
-/// date as the design changes. macOS shows it as the window's right sidebar,
-/// the iPad as its right-hand panel.
+/// date as the design changes, or, with Automatically check rules off, runs
+/// when Check Now asks. macOS shows it as the window's right sidebar, the
+/// iPad as its right-hand panel.
 struct HorizontalRulesResultsSidebarView: View {
     var result: HorizontalBoardRulesResultState?
     var safeAreaInsets: EdgeInsets
+    /// Automatically check rules (`HorizontalRulesCheckDefaults`).
+    var checksAutomatically: Binding<Bool> = .constant(true)
+    /// Runs every check now; nil where there is nothing to check.
+    var onCheckNow: (() -> Void)? = nil
     /// Opens the board's rules window.
     var onOpenRules: () -> Void = {}
     /// Shows where a board finding is on the board.
@@ -28,9 +33,10 @@ struct HorizontalRulesResultsSidebarView: View {
         List {
             Section {
                 if let result {
-                    // The checks run again on every change, so there is no
+                    // While the checks run again on every change there is no
                     // run to ask for and no time to give: only the spinner
-                    // while one is under way.
+                    // while one is under way. While they run when asked,
+                    // Check Now asks, and a change since the last run says so.
                     HStack {
                         Text(result.ruleTitle)
                             .fontWeight(.semibold)
@@ -44,15 +50,41 @@ struct HorizontalRulesResultsSidebarView: View {
                         }
                     }
                     .padding(.vertical, 4)
+                    if result.isOutOfDate {
+                        Label {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Out of date")
+                                Text("The design has changed since the last check.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 2)
+                    }
                 } else {
                     Label("No checks run", systemImage: "checklist")
                         .font(.body)
                         .foregroundStyle(.secondary)
                         .padding(.vertical, 4)
                 }
-                Button("Open Rules…", action: onOpenRules)
-                    .controlSize(.small)
-                    .help("Open the board's rules")
+                Toggle("Automatically check rules", isOn: checksAutomatically)
+                    #if os(macOS)
+                    .toggleStyle(.checkbox)
+                    #endif
+                    .help("Check the design against its rules again after every change")
+                HStack {
+                    Button("Open Rules…", action: onOpenRules)
+                        .help("Open the board's rules")
+                    if !checksAutomatically.wrappedValue {
+                        Button("Check Now") { onCheckNow?() }
+                            .disabled(onCheckNow == nil)
+                            .help("Check the design against its rules")
+                    }
+                }
+                .controlSize(.small)
             }
 
             if let result {
