@@ -259,6 +259,7 @@ as sent would be refused again.
 | `place_plane`, `remove_plane` | A copper pour: a polygon on a copper layer, filled with one net. Defining it does not fill it; `pour_planes` does, and drops fill that reaches nothing on its net |
 | `add_block`, `rename_block`, `remove_block` | Blocks themselves, as Horizon's Add Block makes them: files in `blocks/<uuid>/`, one empty sheet, the template symbol. A block still used, or the top one, isn't removed |
 | `set_net_port`, `place_block_port`, `remove_block_port` | A sub-block's ports: a net made one (with its direction) or no longer one, and drawn on the block's symbol, keyed by UUID5 of its net as Horizon keys it |
+| `set_block_symbol_box` | A sub-block's symbol box, as the app's Edit Block Symbol redraws it: the rectangle's corners moved to `min_x_mm`, `min_y_mm`, `max_x_mm`, `max_y_mm` (a side not given stays), keeping their junctions' and lines' uuids, and `$REFDES` and `$NAME` put 1.25 mm above its top-left and below its bottom-left corner, where Horizon's template has them, unless `move_texts` is false. `fit_ports` runs each side through the inner ends of the ports pointing out of it and puts a side no port points out of `margin_mm` (2.5) beyond the furthest one. A symbol with no drawing gets a box; lines that make no rectangle, and the top block, are refused. The reply gives `box_mm`, `previous_box_mm`, `texts_moved` and `ports_off_box`, the ports whose inner end isn't on the side they point out of |
 | `add_block_instance`, `remove_block_instance`, `set_block_instance`, `connect_block_port`, `disconnect_block_port` | Using one block inside another, naming the instance, and wiring its ports to nets here — or marking one not connected with `nc`. Removing an instance takes the board packages of the components it brought, however deep, with it |
 | `place_block_symbol`, `remove_block_symbol` | Drawing a block instance on a sheet, with the symbol that block defines for itself |
 | `annotate` | Horizon's Annotate over the whole design: refdes numbered from their prefixes, sheet by sheet (`mode`: sequential, sheet_100, sheet_1000; `order`: right_down, down_right; `fill_gaps`, `keep`, `ignore_unknown`), each block instance's components under its own instance mapping. The options default to the schematic's and are kept there |
@@ -404,7 +405,8 @@ project, so an edit made in a sub-block is visible in a read that names no
 block at all. `written` in the result says which file actually changed.
 
 `add_block` makes a block to use: run the next batch with `block` naming it
-to give it parts, `set_net_port` and `place_block_port` to give it ports. Then
+to give it parts, `set_net_port` and `place_block_port` to give it ports, and
+`set_block_symbol_box` (with `fit_ports`) to size its symbol's box to them. Then
 `add_block_instance` uses it inside another block — refused when it already
 uses that block, however deep, since a block can't contain itself — and writes
 the top block's `block_instance_mappings` entry for every new instance path,

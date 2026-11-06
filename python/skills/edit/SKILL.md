@@ -47,6 +47,7 @@ Send each batch to `apply_ops` with `dry_run: true`, an `expected_revision` and 
 - `terminate_pin` runs a short stub to a power symbol or label. Copy the sheet's existing layout (shared rails, power-symbol style and orientation) where there is one.
 - `remove_symbol` removes the wires that end on the symbol, but leaves junction-to-junction pieces behind. Clean them up with `remove_net_line` by id, or `prune_sheet` with `stubs` and `unanchored` once your baseline showed nothing dangling.
 - A named net drawn without a label is flagged "Label missing". Leave internal nodes unnamed, as most sheets do, or label them where the label fits.
+- A sub-block is drawn with its own symbol, a box with its ports. `place_block_port` draws a port, but the box stays the template's 15 × 10 mm until `set_block_symbol_box` (with `block` naming the block) redraws it: `fit_ports` runs its sides through the ports' inner ends, or give the corners. Its reply's `ports_off_box` names ports left off the box; render a sheet that uses the block to check.
 
 ## 6. Copper
 

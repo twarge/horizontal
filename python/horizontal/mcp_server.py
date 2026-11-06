@@ -1494,6 +1494,13 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
     Custom Value does: "${value}\\n${mpn}" shows the value over the MPN; ${mfr}, ${desc}, ${pkg} and ${p:<column>}
     work too, and "" or null clears it.
 
+    Block symbols: a sub-block is drawn wherever it is used with the symbol it defines, a box with its ports, edited
+    with block naming it. place_block_port draws a port; set_block_symbol_box redraws the box, its corners at
+    min_x_mm, min_y_mm and max_x_mm, max_y_mm (a side not given stays) or, with fit_ports, through the ports' inner
+    ends and margin_mm (2.5) beyond them where no port points out, and moves $REFDES above its top-left corner and
+    $NAME below its bottom-left. Its reply gives box_mm and previous_box_mm, and names in ports_off_box any port
+    whose inner end isn't on the side it points out of. The top block has no symbol, and is refused.
+
     A batch that leaves every file as it was, such as an alternate a pin already has, replies unchanged: true and
     adds no undo step when committed; set_pin_alternate names such pins in unchanged_pins. warnings says when a
     symbol showing pins custom_only hides a chosen alternate, and when a part's own value hides one set_value set.
