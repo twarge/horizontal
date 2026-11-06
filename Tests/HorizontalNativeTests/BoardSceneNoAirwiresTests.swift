@@ -1,5 +1,5 @@
 import Foundation
-import SceneKit
+import RealityKit
 import XCTest
 @testable import HorizontalNative
 
@@ -29,26 +29,23 @@ final class BoardSceneNoAirwiresTests: XCTestCase {
 
     private func nodeCount(of board: HorizontalBoard) async -> Int {
         let cache = BoardSceneSceneCache()
-        let nodes: BoardSceneNodes = await withCheckedContinuation { continuation in
-            if let ready = cache.nodes(for: board, onReady: { built in continuation.resume(returning: built) }) {
+        let scene: BoardSceneEntities = await withCheckedContinuation { continuation in
+            if let ready = cache.scene(for: board, onReady: { built in continuation.resume(returning: built) }) {
                 continuation.resume(returning: ready)
             }
         }
         var options = BoardDisplayOptions()
         options.connectionLines = true
-        nodes.applyDisplayOptions(
+        scene.applyDisplayOptions(
             options,
-            backgroundColor: HorizontalDefaultTheme.background,
             copperColor: HorizontalDefaultTheme.background,
             materialColors: HorizontalBoardColors(silkscreen: nil, solderMask: nil, substrate: nil),
-            layerColors: [:],
-            board: board
+            layerColors: [:]
         )
-        var count = 0
-        nodes.scene.rootNode.enumerateHierarchy { node, _ in
-            if node.geometry != nil { count += 1 }
+        func models(in entity: Entity) -> Int {
+            entity.children.reduce(entity.components.has(ModelComponent.self) ? 1 : 0) { $0 + models(in: $1) }
         }
-        return count
+        return models(in: scene.root)
     }
 
     func testAirwiresAndConnectionLinesAddNothingToTheScene() async {

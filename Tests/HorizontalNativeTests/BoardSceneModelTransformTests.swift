@@ -1,5 +1,4 @@
-#if os(macOS)
-import SceneKit
+import simd
 import XCTest
 @testable import HorizontalNative
 
@@ -13,32 +12,28 @@ final class BoardSceneModelTransformTests: XCTestCase {
         )
     }
 
-    /// SceneKit transforms row vectors: `v * M`.
-    private func apply(_ m: SCNMatrix4, _ v: SCNVector3) -> SCNVector3 {
-        SCNVector3(
-            v.x * m.m11 + v.y * m.m21 + v.z * m.m31 + m.m41,
-            v.x * m.m12 + v.y * m.m22 + v.z * m.m32 + m.m42,
-            v.x * m.m13 + v.y * m.m23 + v.z * m.m33 + m.m43
-        )
+    /// simd transforms column vectors: `M * v`.
+    private func apply(_ m: simd_float4x4, _ v: SIMD3<Float>) -> SIMD3<Float> {
+        m.transformPoint(v)
     }
 
-    /// Horizon's z-up point in SceneKit's y-up frame, the way the scene
+    /// Horizon's z-up point in the scene's y-up frame, the way the scene
     /// places everything: x stays, z becomes y, y becomes -z.
-    private func scene(_ x: Double, _ y: Double, _ z: Double) -> SCNVector3 {
-        SCNVector3(x, z, -y)
+    private func scene(_ x: Float, _ y: Float, _ z: Float) -> SIMD3<Float> {
+        SIMD3(x, z, -y)
     }
 
-    private func assertEqual(_ actual: SCNVector3, _ expected: SCNVector3, _ message: String, file: StaticString = #filePath, line: UInt = #line) {
-        XCTAssertEqual(Double(actual.x), Double(expected.x), accuracy: 1e-5, message, file: file, line: line)
-        XCTAssertEqual(Double(actual.y), Double(expected.y), accuracy: 1e-5, message, file: file, line: line)
-        XCTAssertEqual(Double(actual.z), Double(expected.z), accuracy: 1e-5, message, file: file, line: line)
+    private func assertEqual(_ actual: SIMD3<Float>, _ expected: SIMD3<Float>, _ message: String, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(actual.x, expected.x, accuracy: 1e-5, message, file: file, line: line)
+        XCTAssertEqual(actual.y, expected.y, accuracy: 1e-5, message, file: file, line: line)
+        XCTAssertEqual(actual.z, expected.z, accuracy: 1e-5, message, file: file, line: line)
     }
 
-    func testSceneKitConventionsAssumedByTheHelper() {
-        let quarter = SCNMatrix4MakeRotation(.pi / 2, 0, 0, 1)
-        assertEqual(apply(quarter, SCNVector3(1, 0, 0)), SCNVector3(0, 1, 0), "positive angles turn counter-clockwise")
-        let moved = SCNMatrix4Mult(quarter, SCNMatrix4MakeTranslation(5, 0, 0))
-        assertEqual(apply(moved, SCNVector3(1, 0, 0)), SCNVector3(5, 1, 0), "Mult(a, b) applies a first")
+    func testConventionsAssumedByTheHelper() {
+        let quarter = simd_float4x4(rotationAbout: SIMD3(0, 0, 1), angle: .pi / 2)
+        assertEqual(apply(quarter, SIMD3(1, 0, 0)), SIMD3(0, 1, 0), "positive angles turn counter-clockwise")
+        let moved = simd_float4x4(translation: SIMD3(5, 0, 0)) * quarter
+        assertEqual(apply(moved, SIMD3(1, 0, 0)), SIMD3(5, 1, 0), "a * b applies b first")
     }
 
     /// The Phoenix MC 1,5 header: pitch 90° and yaw 90°. Upstream turns the
@@ -69,4 +64,3 @@ final class BoardSceneModelTransformTests: XCTestCase {
         assertEqual(apply(transform, scene(1, 0, 0)), scene(1, 1, 3), "rotated point plus the unrotated offset")
     }
 }
-#endif
