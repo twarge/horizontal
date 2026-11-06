@@ -75,6 +75,10 @@ struct BoardSceneView: View {
     /// A click or tap on a part: its component id, and whether the click
     /// extends the selection (shift or command). Nil id is empty space.
     var onSelectComponent: ((String?, Bool) -> Void)? = nil
+    /// The insets of the bars and the home indicator, for a pane that runs
+    /// under them and is handed them instead of a safe area: the status
+    /// overlay keeps clear of them.
+    var safeAreaInsets = EdgeInsets()
     @Binding var cameraState: HorizontalSceneCameraState?
     @State private var buildState: BoardSceneBuildState = .idle
 
@@ -112,19 +116,24 @@ struct BoardSceneView: View {
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
         }
-        .overlay(alignment: .bottomTrailing) {
+        .overlay {
             if buildState == .updating {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Updating…")
-                }
-                .font(.caption)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.regularMaterial, in: Capsule())
-                .padding(12)
-                .allowsHitTesting(false)
+                // Moved in from a rounded window or display corner, which
+                // would otherwise cut into it.
+                Color.clear
+                    .cornerAdaptiveOverlay(alignment: .bottomTrailing, padding: 12) {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Updating…")
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.regularMaterial, in: Capsule())
+                    }
+                    .safeAreaPadding(safeAreaInsets)
+                    .allowsHitTesting(false)
             }
         }
     }

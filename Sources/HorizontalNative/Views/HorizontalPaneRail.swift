@@ -44,23 +44,33 @@ struct PaneOverlayContainer<
         // Room for the badge whether or not this pane has the keyboard, so
         // the scale bar stays put as focus moves between panes.
         .environment(\.horizonScaleBarLeadingClearance, showsTools ? PaneKeyboardFocusBadge.scaleBarClearance : 0)
-        .overlay(alignment: .bottomLeading) {
+        .overlay {
             // In the corner rather than atop the rail, where it pushed every
             // rail button down a place each time focus moved between panes;
-            // in the same place on every pane, scale bar or not.
+            // in the same place on every pane, scale bar or not. Lifted, not
+            // pushed along, out of a rounded window or display corner, so the
+            // scale bar beside it keeps its place and still runs past the
+            // badge's lower edge.
             if showsTools, isKeyboardFocused {
-                // Its 3 pt padding and the symbol's side bearing taken off, so
-                // the scope's edge lines up with where a canvas without one
-                // starts its scale bar.
-                PaneKeyboardFocusBadge()
-                    .padding(.leading, safeAreaInsets.leading + 7)
-                    .padding(.bottom, safeAreaInsets.bottom + 9)
-                    #if os(macOS)
-                    .onHover(perform: onToolbarHover)
-                    .onDisappear {
-                        onToolbarHover(false)
+                Color.clear
+                    .allowsHitTesting(false)
+                    .cornerAdaptiveOverlay(alignment: .bottomLeading, padding: 9, axis: .vertical) {
+                        // Its 3 pt padding and the symbol's side bearing taken
+                        // off, so the scope's edge lines up with where a canvas
+                        // without one starts its scale bar.
+                        PaneKeyboardFocusBadge()
+                            .padding(.leading, -2)
+                            #if os(macOS)
+                            .onHover(perform: onToolbarHover)
+                            .onDisappear {
+                                onToolbarHover(false)
+                            }
+                            #endif
                     }
-                    #endif
+                    // The pane runs under the bars and is handed their insets
+                    // instead; given back here, the corner is measured from the
+                    // same edges as the padding.
+                    .safeAreaPadding(safeAreaInsets)
             }
         }
         .overlay(alignment: toolColumnAlignment) {

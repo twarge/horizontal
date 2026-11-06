@@ -92,19 +92,40 @@ struct CursorReadoutLayer: View {
 
     var body: some View {
         GeometryReader { proxy in
-            content(size: proxy.size)
+            content(size: proxy.size, readoutTrailingMargin: coordinateReadoutTrailingMargin(in: proxy))
         }
         .allowsHitTesting(false)
     }
 
+    /// How far the readout's box stands in from the trailing edge: its margin,
+    /// or, where the rounded corner of the window or display there would cut
+    /// into the box — an iPad's display, which the canvas runs out to — far
+    /// enough along the bottom edge to clear it, as `cornerAdaptiveOverlay`
+    /// moves an overlay.
+    private func coordinateReadoutTrailingMargin(in proxy: GeometryProxy) -> CGFloat {
+        let corner = proxy.containerCornerInsets.bottomTrailing
+        // The box hangs 4 pt below the label's margin.
+        let boxBottomMargin = Self.coordinateReadoutBottomMargin - 4
+        guard corner.width > Self.coordinateReadoutTrailingMargin, corner.height > boxBottomMargin else {
+            return Self.coordinateReadoutTrailingMargin
+        }
+        return corner.width
+    }
+
     private func cursorScreenBatches(
         size: CGSize,
-        transform: HorizontalCanvasTransform
+        transform: HorizontalCanvasTransform,
+        readoutTrailingMargin: CGFloat
     ) -> (lines: [HorizontalMetalScreenLinePrimitive], triangles: [HorizontalMetalScreenTrianglePrimitive]) {
         guard let cursorLocation = cursorInput.location else {
             return ([], [])
         }
-        let box = metalCoordinateReadoutBatch(cursorLocation: cursorLocation, size: size, transform: transform)
+        let box = metalCoordinateReadoutBatch(
+            cursorLocation: cursorLocation,
+            size: size,
+            transform: transform,
+            trailingMargin: readoutTrailingMargin
+        )
         let crosshair = drawsCursorInMetal
             ? metalInteractiveScreenLines(cursorLocation: cursorLocation, size: size, transform: transform)
             : []
@@ -112,7 +133,7 @@ struct CursorReadoutLayer: View {
     }
 
     @ViewBuilder
-    private func content(size: CGSize) -> some View {
+    private func content(size: CGSize, readoutTrailingMargin: CGFloat) -> some View {
         let cursorLocation = cursorInput.location
         let transform = HorizontalCanvasTransform(
             bounds: bounds,
@@ -125,7 +146,7 @@ struct CursorReadoutLayer: View {
         )
         // Batches are empty when there's no cursor; the backdrop stays mounted
         // regardless (below) so its Metal Renderer + pipeline states persist.
-        let batches = cursorScreenBatches(size: size, transform: transform)
+        let batches = cursorScreenBatches(size: size, transform: transform, readoutTrailingMargin: readoutTrailingMargin)
         let screenLines = batches.lines
         let screenTriangles = batches.triangles
 
@@ -184,7 +205,7 @@ struct CursorReadoutLayer: View {
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.primary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                        .padding(.trailing, Self.coordinateReadoutTrailingMargin + Self.coordinateReadoutHorizontalPadding)
+                        .padding(.trailing, readoutTrailingMargin + Self.coordinateReadoutHorizontalPadding)
                         .padding(.bottom, Self.coordinateReadoutBottomMargin)
                         .allowsHitTesting(false)
                 }
@@ -325,7 +346,8 @@ struct CursorReadoutLayer: View {
     private func metalCoordinateReadoutBatch(
         cursorLocation: CGPoint,
         size: CGSize,
-        transform: HorizontalCanvasTransform
+        transform: HorizontalCanvasTransform,
+        trailingMargin: CGFloat
     ) -> HorizontalMetalInteractiveOverlayBatch {
         #if canImport(MetalKit)
         guard HorizontalMetalBackdropView.isSupported, showsCoordinateReadout else {
@@ -337,7 +359,7 @@ struct CursorReadoutLayer: View {
         let label = coordinateReadoutLabel(for: worldPoint, maxWidth: maxWidth)
         let labelWidth = readoutTextWidth(label)
         let backgroundWidth = min(labelWidth + Self.coordinateReadoutHorizontalPadding * 2, maxWidth)
-        let backgroundMaxX = size.width - Self.coordinateReadoutTrailingMargin
+        let backgroundMaxX = size.width - trailingMargin
         let backgroundMaxY = size.height - Self.coordinateReadoutBottomMargin
         let rect = CGRect(
             x: backgroundMaxX - backgroundWidth,
