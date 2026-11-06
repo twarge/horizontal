@@ -248,7 +248,7 @@ as sent would be refused again.
 | `place_track`, `remove_track`, `set_track_width` | One straight copper segment per op, between pads, junctions or points; a point becomes a junction, and a junction nothing holds any more is removed with the copper that held it. A junction joins only copper on one layer unless a via is on it: a point where only tracks on another layer end gets a junction of its own, and naming such a junction is refused |
 | `place_board_text`, `remove_board_text` | Free text on a board layer — silkscreen, assembly, fabrication notes |
 | `place_dimension`, `remove_dimension` | A measurement between two points, in distance, horizontal or vertical mode |
-| `place_decal` | A pool decal on the board, as Design ▸ Place Decal… puts one: `decal` by uuid or a name only one decal has, from the project pool or a pool it draws from (`search_pool` with kind decal), at `x_mm`, `y_mm`, turned by `angle_deg` (R turns it -90), put on the bottom by `flip` (E: mirrored onto the bottom layers, its angle inverted as Horizon's tool inverts it) and scaled by `scale`. A decal from another pool is cached into the project pool's `decals/cache/` with the edit, since the board draws a decal only from there; the reply's `cached` names the files and `extent_mm` gives the box it covers |
+| `place_decal`, `remove_decal` | A pool decal on the board, as Design ▸ Place Decal… puts one: `decal` by uuid or a name only one decal has, from the project pool or a pool it draws from (`search_pool` with kind decal), at `x_mm`, `y_mm`, turned by `angle_deg` (R turns it -90), put on the bottom by `flip` (E: mirrored onto the bottom layers, its angle inverted as Horizon's tool inverts it) and scaled by `scale`. A decal from another pool is cached into the project pool's `decals/cache/` with the edit, since the board draws a decal only from there; the reply's `cached` names the files and `extent_mm` gives the box it covers. `remove_decal` takes one off by the `id` `place_decal` gave it; its pool item stays cached until `clean_up_project_pool`, and an id the board has no decal under is refused with the decals it has |
 | `add_bus`, `add_bus_member`, `remove_bus` | A named bundle the nets in it travel as one line. The nets stay separate nets; the bus is how they are drawn |
 | `place_bus_label`, `place_bus_ripper` | Naming a bus on a sheet, and taking one member off it so that net can be wired alone. `place_bus_label` with the `id` of a bus label changes or moves it, as `place_net_label` does |
 | `add_net_tie`, `remove_net_tie`, `place_net_tie` | Two nets joined on the board and kept apart in the schematic — a single-point ground join, say |
@@ -318,7 +318,7 @@ An op that makes something under an id — `place_junction`, `place_symbol`,
 `place_bus_label`, `place_decal`, `ensure_component`, `ensure_net` and the `add_` ops — may give a short name instead of a UUID
 (`"id": "j1"`), and later ops in the batch use the name wherever they refer to
 that kind of thing: a wire end's `junction` or `symbol`, a `line`, a
-`component` or `net`, the `id` of `remove_text`. A name stands only for its own
+`component` or `net`, the `id` of `remove_text` or `remove_decal`. A name stands only for its own
 kind, so a junction called `GND` leaves every net field alone. Each name
 becomes a UUID before anything runs, derived from the revision and the name,
 so a dry run and its commit agree; the reply's `handles` maps each name to its

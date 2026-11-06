@@ -94,6 +94,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case placeDimension = "place_dimension"
     case removeDimension = "remove_dimension"
     case placeDecal = "place_decal"
+    case removeDecal = "remove_decal"
     case setSheetIndex = "set_sheet_index"
     case placeComponent = "place_component"
     case removePlacement = "remove_placement"
@@ -200,6 +201,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .placeDimension: "Measure between two points on the board, the way the dimension tool does."
         case .removeDimension: "Remove a dimension."
         case .placeDecal: "Put a pool decal — a logo, a marking, artwork drawn once and placed as a whole — on the board, as Design ▸ Place Decal… and Horizon's place-decal tool do: a decal from the project pool or a pool it draws from, at a point, turned, flipped to the bottom and scaled. A decal from another pool is cached into the project pool with the edit, since the board draws a decal only from there; the reply says what was cached."
+        case .removeDecal: "Take a decal off the board. Its pool item stays cached in the project pool, as Horizon leaves it; clean_up_project_pool removes a cached decal nothing on the board uses any more."
         case .setSheetIndex: "Move a schematic sheet to a page number, shifting the sheets between; swap exchanges it with the one there instead."
         case .placeComponent: "Place a component's package on the board, or move it if it is placed."
         case .removePlacement: "Take a component's package off the board, keeping its copper as junctions. A package whose component is in no block any more, which check reports, is named by its own id or the component id its refdes text draws."
@@ -540,6 +542,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "flip": "Put it on the bottom side, mirrored onto the bottom layers, as E in the app does. The angle is inverted with it, as Horizon's tool inverts it, so angle_deg still turns it counterclockwise as the board is drawn from the top (optional; default false).",
                     "scale": "Scale factor, more than zero (optional; default 1).",
                     "id": "Board decal UUID to use, or a name for it, which the reply's handles maps to the UUID it became (optional)."]
+        case .removeDecal:
+            return ["id": "Board decal id: the one place_decal gave it, or the name a place_decal earlier in the batch gave it. An id the board has no decal under is refused with the decals it has."]
         case .setSheetIndex:
             return ["sheet": "Sheet index, name or uuid.", "index": "The page number to give it.",
                     "swap": "Exchange page numbers with the sheet there rather than moving the sheets between (default false)."]
@@ -1152,6 +1156,8 @@ final class HorizontalProjectEditor {
             change.merge(try removeBoardEntry(params, key: "dimensions", selector: "dimension", label: "dimension")) { _, new in new }
         case .placeDecal:
             change.merge(try placeDecal(params)) { _, new in new }
+        case .removeDecal:
+            change.merge(try removeDecal(params)) { _, new in new }
         case .setSheetIndex:
             change.merge(try setSheetIndex(params)) { _, new in new }
         case .placeTrack:
@@ -6068,6 +6074,48 @@ final class HorizontalProjectEditor {
                                   "max_x_mm": maxX / 1_000_000, "max_y_mm": maxY / 1_000_000]
         }
         return reply
+    }
+
+    /// A decal off the board, by its board id. Its pool item stays cached, as
+    /// Horizon's delete leaves the project pool alone; an id the board has no
+    /// decal under is answered with the decals it has, since no read lists
+    /// them.
+    private func removeDecal(_ params: JSONDictionary) throws -> JSONDictionary {
+        guard let reference = params.string("id")?.trimmingCharacters(in: .whitespaces), !reference.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("remove_decal needs \"id\": the board decal's id, which place_decal gives.")
+        }
+        let decals = try board().dictionaryMap("decals")
+        guard let id = decals.keys.first(where: { $0.caseInsensitiveCompare(reference) == .orderedSame }),
+              let entry = decals[id] else {
+            let placed = decals.sorted { $0.key < $1.key }.map { id, entry -> String in
+                let (x, y) = Self.shift(entry.dictionary("placement") ?? [:])
+                let name = entry.string("decal").flatMap(boardDecalName) ?? entry.string("decal") ?? "?"
+                return "\(id) (\(name) at \(x / 1_000_000), \(y / 1_000_000) mm)"
+            }
+            throw HorizontalDispatchError.notFound(
+                "No decal \(reference) on the board. "
+                    + (placed.isEmpty ? "The board has no decals." : "Its decals: \(placed.joined(separator: "; ")).")
+            )
+        }
+        try updateBoard { board in
+            var decals = board["decals"] as? JSONDictionary ?? [:]
+            decals.removeValue(forKey: id)
+            board["decals"] = decals
+        }
+        let decalID = entry.string("decal")?.lowercased()
+        return ["id": id, "decal": decalID as Any? as Any, "name": decalID.flatMap(boardDecalName) as Any? as Any]
+    }
+
+    /// The name of the pool decal a board decal draws, from the project pool
+    /// as this edit holds it, where the board draws it from.
+    private func boardDecalName(_ decalID: String) -> String? {
+        guard let poolURL else { return nil }
+        let url = poolURL.appendingPathComponent("decals/cache/\(decalID.lowercased()).json")
+        if let data = (try? cachedPoolFiles[url.standardizedFileURL.path]?.data ?? store.read(url)) ?? nil,
+           let name = (try? JSONHelper.loadDictionary(from: data))?.string("name") {
+            return name
+        }
+        return project.board?.decals.first { $0.decalID.caseInsensitiveCompare(decalID) == .orderedSame }?.name
     }
 
     /// The decal `reference` names, by uuid, by eight or more of its leading

@@ -1457,14 +1457,16 @@ def apply_ops(ops: list[EditOperation] = [], path: str | None = None, dry_run: b
     decal has, from the project pool or a pool it draws from (search_pool with kind decal finds one) — at x_mm, y_mm,
     turned by angle_deg (R in the app turns it -90), flipped to the bottom with flip (E) and scaled by scale. A decal
     from another pool is cached into the project pool with the edit, since the board draws a decal only from there;
-    the reply's cached names the files, and extent_mm the box it covers.
+    the reply's cached names the files, and extent_mm the box it covers. remove_decal takes one off by the id
+    place_decal gave it, leaving its pool item cached; an id the board has no decal under is refused with the
+    decals it has.
 
     An op that makes something — place_junction, place_symbol, draw_net_line, place_text, place_board_text,
     place_decal, ensure_component, ensure_net and the add_ ops — may give a short name as its id instead of a UUID
     ("id": "j1"), and later ops in the batch use that name where they refer to that kind of thing
-    ({"kind": "junction", "junction": "j1"}; remove_text's id). The reply's handles maps each name to the UUID it
-    became; a junction placed where one stands is that one, which handles gives and reused_handles names. A
-    failing op is named in the error: "ops[3] place_junction: …", and so is a name it involved, with the earlier op
+    ({"kind": "junction", "junction": "j1"}; remove_text's and remove_decal's id). The reply's handles maps each
+    name to the UUID it became; a junction placed where one stands is that one, which handles gives and
+    reused_handles names. A failing op is named in the error: "ops[3] place_junction: …", and so is a name it involved, with the earlier op
     that removed the thing if one did — removing a wire takes the junctions it leaves bare.
 
     Texts: place_text and place_board_text also change a text that is already there. Name it by the id list_texts
