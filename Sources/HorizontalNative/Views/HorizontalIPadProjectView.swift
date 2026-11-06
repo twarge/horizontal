@@ -1056,7 +1056,6 @@ struct HorizontalIPadProjectView: View {
     /// titles, which the bar's overflow menu shows when it takes a button.
     @ViewBuilder
     private func documentToolbarItems(for project: HorizontalProject) -> some View {
-        readOnlyLockButton
         if HorizontalVoiceControl.isAvailable {
             HorizontalVoiceControlButton(control: voiceControl)
         }
@@ -1159,18 +1158,6 @@ struct HorizontalIPadProjectView: View {
             },
             apply: { ops, actionName in applyProjectEdit(ops, actionName: actionName) }
         )
-    }
-
-    private var readOnlyLockButton: some View {
-        Button {
-            toggleReadOnly()
-        } label: {
-            Label(
-                isReadOnly ? "Read-Only" : "Editable",
-                systemImage: isReadOnly ? "lock.fill" : "lock.open"
-            )
-        }
-        .accessibilityLabel(isReadOnly ? "Read-only. Tap to allow editing." : "Editable. Tap to make read-only.")
     }
 
     /// The shared settings form (the same one the macOS Settings window hosts),
