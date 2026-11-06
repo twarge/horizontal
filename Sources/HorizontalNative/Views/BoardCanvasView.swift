@@ -3254,13 +3254,17 @@ struct BoardCanvasView: View {
             selectedObjects = boardSelectableScene().refs().filter { ref in
                 ref.type == .boardPackage && componentID(for: ref).map { wanted.contains(normalizedID($0)) } == true
             }
-            selectedUnplacedObjectID = nil
+            // A part with no package on the board is picked in the unplaced
+            // column instead, which scrolls to it: the first of them there,
+            // since the column picks one.
+            selectedUnplacedObjectID = currentUnplacedObjects.first { object in
+                object.componentID.map { wanted.contains(normalizedID($0)) } == true
+            }?.id
             hoveredObject = nil
             // No report back: the workspace asked for this, so it knows. A
-            // report would carry whatever this canvas could show of it — an
-            // empty set, when the symbol is on another sheet or the part is
-            // not placed — and the workspace would take that as the new
-            // selection and clear every other view.
+            // report would carry whatever this canvas could show of it — one
+            // of several parts not on the board, say — and the workspace
+            // would take that as the new selection and clear every other view.
             return before != (selectedObjects, selectedUnplacedObjectID)
         }
         return actions
