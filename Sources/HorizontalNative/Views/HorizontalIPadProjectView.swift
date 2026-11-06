@@ -1366,7 +1366,7 @@ struct HorizontalIPadProjectView: View {
         case .board:
             boardView(for: project, safeAreaInsets: safeAreaInsets)
         case .threeD:
-            threeDView(for: project)
+            threeDView(for: project, safeAreaInsets: safeAreaInsets)
         }
     }
 
@@ -2633,7 +2633,7 @@ struct HorizontalIPadProjectView: View {
     }
 
     @ViewBuilder
-    private func threeDView(for project: HorizontalProject) -> some View {
+    private func threeDView(for project: HorizontalProject, safeAreaInsets: EdgeInsets) -> some View {
         if let board = project.board {
             BoardSceneView(
                 board: board,
@@ -2654,6 +2654,7 @@ struct HorizontalIPadProjectView: View {
                         selectComponents([])
                     }
                 },
+                safeAreaInsets: safeAreaInsets,
                 cameraState: $threeDCameraState
             )
         } else {

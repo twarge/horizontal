@@ -2751,6 +2751,7 @@ struct ProjectWorkspaceView: View {
                                     selectComponents([])
                                 }
                             },
+                            safeAreaInsets: fitSafeAreaInsets,
                             cameraState: $threeDCameraState
                         )
                     } else {
