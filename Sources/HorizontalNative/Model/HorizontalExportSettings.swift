@@ -202,8 +202,19 @@ struct HorizontalGerberExportSettings: Hashable {
     var drillMode: HorizontalGerberDrillMode = .merged
     var drillPTHSuffix = " Drills.drl"
     var drillNPTHSuffix = " NPTH Drills.drl"
+    /// A file of its own for each blind or buried via span the board has,
+    /// whatever the drill mode, as Horizon's blind_buried_drills_filenames.
+    var spanDrills: [HorizontalGerberSpanDrillFile] = []
     var outlineWidthMM = 0.01
     var layers: [HorizontalExportLayerSetting] = []
+}
+
+/// The drill file of a blind or buried via span, named by its suffix.
+struct HorizontalGerberSpanDrillFile: Identifiable, Hashable {
+    var span: HorizontalViaSpan
+    var suffix: String
+
+    var id: HorizontalViaSpan { span }
 }
 
 struct HorizontalODBExportSettings: Hashable {
@@ -308,6 +319,16 @@ struct HorizontalExportSettings: Hashable {
         let gerberLayers = Self.gerberLayers(for: board)
         if gerber.layers.map(\.layer) != gerberLayers.map(\.layer) {
             gerber.layers = gerberLayers
+        }
+
+        // A span keeps the suffix it was given while the board has it, as
+        // Horizon's update_blind_buried_drills_filenames keeps a filename.
+        let spans = Self.spanDrillSpans(for: board)
+        if gerber.spanDrills.map(\.span) != spans {
+            gerber.spanDrills = spans.map { span in
+                gerber.spanDrills.first { $0.span == span }
+                    ?? HorizontalGerberSpanDrillFile(span: span, suffix: Self.defaultDrillSuffix(for: span))
+            }
         }
 
         let pdfLayers = Self.pdfLayers(for: board)
@@ -495,6 +516,31 @@ struct HorizontalExportSettings: Hashable {
 
     private static func defaultPDFLayerColor(for layer: Int) -> HorizontalRGBColor {
         HorizontalRGBColor(red: 0, green: 0, blue: 0)
+    }
+
+    /// The board's blind and buried via spans, the upper first; only vias
+    /// span less than the whole board, as in Horizon's get_drill_spans.
+    private static func spanDrillSpans(for board: HorizontalBoard?) -> [HorizontalViaSpan] {
+        Set((board?.vias ?? []).map(\.drillSpan).filter { !$0.isThrough })
+            .sorted { ($0.start, $0.end) > ($1.start, $1.end) }
+    }
+
+    /// A span by its ends, the upper first: "Top-Inner 1".
+    static func drillSpanName(_ span: HorizontalViaSpan) -> String {
+        func name(_ layer: Int) -> String {
+            switch layer {
+            case HorizontalBoardLayers.topCopper: "Top"
+            case HorizontalBoardLayers.bottomCopper: "Bottom"
+            default: HorizontalBoardLayers.name(for: layer)
+            }
+        }
+        return "\(name(span.start))-\(name(span.end))"
+    }
+
+    /// A span's drill file suffix, as Horizon's "-top-inner1.txt" in the PTH
+    /// file's style: " Top-Inner 1 Drills.drl".
+    static func defaultDrillSuffix(for span: HorizontalViaSpan) -> String {
+        " \(drillSpanName(span)) Drills.drl"
     }
 
     private static func defaultGerberSuffix(for layer: Int) -> String {

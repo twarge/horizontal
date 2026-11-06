@@ -558,6 +558,20 @@ struct HorizontalMarker: Identifiable, Hashable {
             .sorted()
     }
 
+    /// The copper the via's hole is drilled through, as the drill files and
+    /// the ODB++ drill layers group holes: the span the rules gave it, else
+    /// its upper to its lower copper layer, else top to bottom.
+    var drillSpan: HorizontalViaSpan {
+        if let span {
+            return span
+        }
+        let layers = copperLayers
+        guard let upper = layers.last, let lower = layers.first, upper != lower else {
+            return .through
+        }
+        return HorizontalViaSpan(start: upper, end: lower)
+    }
+
     /// The ring's outline as a closed polygon (first vertex at angle 0, counter-
     /// clockwise), in the same tessellation the padstack circles use. Empty when
     /// the via has no copper diameter.

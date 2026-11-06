@@ -97,6 +97,11 @@ struct HorizontalExportSidebarView: View {
                 if settings.gerber.drillMode == .individual {
                     TextField("NPTH suffix", text: $settings.gerber.drillNPTHSuffix)
                 }
+                // Each blind or buried via span gets its own drill file, as
+                // in Horizon's Blind and buried drills list.
+                ForEach($settings.gerber.spanDrills) { $file in
+                    TextField("\(HorizontalExportSettings.drillSpanName(file.span)) suffix", text: $file.suffix)
+                }
                 dimensionField("Outline width", value: $settings.gerber.outlineWidthMM)
                 layerSuffixList(layers: $settings.gerber.layers)
             }

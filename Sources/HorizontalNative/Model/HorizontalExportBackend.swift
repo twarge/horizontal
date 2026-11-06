@@ -746,7 +746,10 @@ enum HorizontalExportBackend {
         }
 
         let prefix = nonEmpty(settings.prefix) ?? HorizontalExportSettings.sanitizedFilename(project.displayTitle)
-        let innerLayerCount = HorizontalGerberFileAttributes.innerLayerCount(of: board, exporting: settings.layers.map(\.layer))
+        let innerLayerCount = HorizontalGerberFileAttributes.innerLayerCount(
+            of: board,
+            exporting: settings.layers.map(\.layer) + board.vias.flatMap { [$0.drillSpan.start, $0.drillSpan.end] }
+        )
         let softwareVersion = HorizontalGerberFileAttributes.applicationVersion
         var written = [URL]()
         for layer in settings.layers where layer.enabled {
@@ -766,7 +769,10 @@ enum HorizontalExportBackend {
             written.append(url)
         }
 
-        let drillURLs = try writeDrillFiles(board: board, settings: settings, prefix: prefix, to: directoryURL)
+        let drillURLs = try writeDrillFiles(
+            board: board, settings: settings, prefix: prefix,
+            innerLayerCount: innerLayerCount, softwareVersion: softwareVersion, to: directoryURL
+        )
         written.append(contentsOf: drillURLs)
 
         let staleManifestURL = directoryURL.appendingPathComponent("\(prefix)-gerber-files.txt")
@@ -1982,49 +1988,70 @@ enum HorizontalExportBackend {
         try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: url, options: [.atomic])
     }
 
+    /// The through holes in one file, or plated and unplated in two, and each
+    /// blind or buried via span in a file of its own whatever the mode, as
+    /// Horizon's GerberExporter::get_drill_writer sorts them: a fab drills a
+    /// span from its own layers, so its holes can't share a file with the
+    /// through holes. Every hole went in the one file.
     private static func writeDrillFiles(
         board: HorizontalBoard,
         settings: HorizontalGerberExportSettings,
         prefix: String,
+        innerLayerCount: Int,
+        softwareVersion: String?,
         to directoryURL: URL
     ) throws -> [URL] {
-        let hits = (board.holes + board.viaHoles + board.packageHoles).map {
-            DrillHit(position: $0.position, diameter: $0.diameter, plated: $0.plated, slot: slotEnds(of: $0))
-        }
-        guard !hits.isEmpty else {
-            return []
+        let viaSpans = viaHoleSpans(of: board)
+        var through = [DrillHit]()
+        var bySpan = [HorizontalViaSpan: [DrillHit]]()
+        for hole in board.holes + board.viaHoles + board.packageHoles where hole.diameter > 0 {
+            let hit = DrillHit(position: hole.position, diameter: hole.diameter, plated: hole.plated, slot: slotEnds(of: hole))
+            let span = viaSpans[hole.id.lowercased()] ?? .through
+            if span.isThrough {
+                through.append(hit)
+            } else {
+                bySpan[span, default: []].append(hit)
+            }
         }
 
-        func write(_ hits: [DrillHit], filename: String) throws -> URL? {
+        func write(_ hits: [DrillHit], span: HorizontalViaSpan, suffix: String) throws -> URL? {
             guard !hits.isEmpty else {
                 return nil
             }
-            let url = directoryURL.appendingPathComponent(filename)
-            try writeExcellon(hits, to: url)
+            let url = directoryURL.appendingPathComponent("\(prefix)\(suffix)")
+            let plated: Bool? = hits.allSatisfy(\.plated) ? true : hits.contains(where: \.plated) ? nil : false
+            let comments = HorizontalGerberFileAttributes.drillHeader(
+                span: span, plated: plated, innerLayerCount: innerLayerCount, softwareVersion: softwareVersion
+            )
+            try writeExcellon(hits, comments: comments, to: url)
             return url
         }
 
+        var written: [URL?]
         switch settings.drillMode {
         case .merged:
-            return [try write(hits, filename: "\(prefix)\(settings.drillPTHSuffix)")].compactMap { $0 }
+            written = [try write(through, span: .through, suffix: settings.drillPTHSuffix)]
         case .individual:
-            return try [
-                write(hits.filter(\.plated), filename: "\(prefix)\(settings.drillPTHSuffix)"),
-                write(hits.filter { !$0.plated }, filename: "\(prefix)\(settings.drillNPTHSuffix)")
-            ].compactMap { $0 }
+            written = try [
+                write(through.filter(\.plated), span: .through, suffix: settings.drillPTHSuffix),
+                write(through.filter { !$0.plated }, span: .through, suffix: settings.drillNPTHSuffix)
+            ]
         }
+        for span in bySpan.keys.sorted(by: { ($0.start, $0.end) > ($1.start, $1.end) }) {
+            let suffix = settings.spanDrills.first { $0.span == span }?.suffix
+                ?? HorizontalExportSettings.defaultDrillSuffix(for: span)
+            written.append(try write(bySpan[span] ?? [], span: span, suffix: suffix))
+        }
+        return written.compactMap { $0 }
     }
 
-    private static func writeExcellon(_ hits: [DrillHit], to url: URL) throws {
+    private static func writeExcellon(_ hits: [DrillHit], comments: [String], to url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let sortedDiameters = Array(Set(hits.map(\.diameter))).sorted()
         let toolCodes = Dictionary(uniqueKeysWithValues: sortedDiameters.enumerated().map { index, diameter in
             (diameter, index + 1)
         })
-        var lines = [
-            "M48",
-            "METRIC,TZ"
-        ]
+        var lines = ["M48"] + comments + ["METRIC,TZ"]
         for diameter in sortedDiameters {
             let code = toolCodes[diameter] ?? 1
             lines.append("T\(String(format: "%02d", code))C\(String(format: "%.4f", diameter / 1_000_000))")
@@ -2226,13 +2253,8 @@ enum HorizontalExportBackend {
     /// span first: a via's hole runs its via's span, every other hole the
     /// board's, as Horizon's Board::get_drill_spans has them.
     private static func odbDrills(for board: HorizontalBoard) -> [(span: HorizontalViaSpan, drills: [ODBDrill])] {
-        let through = HorizontalViaSpan(start: HorizontalBoardLayers.topCopper, end: HorizontalBoardLayers.bottomCopper)
-        var viaSpans = [String: HorizontalViaSpan]()
-        for via in board.vias {
-            let layers = via.copperLayers
-            viaSpans["\(via.id)/hole".lowercased()] = via.span
-                ?? (layers.count >= 2 ? HorizontalViaSpan(start: layers.max() ?? 0, end: layers.min() ?? 0) : through)
-        }
+        let through = HorizontalViaSpan.through
+        let viaSpans = viaHoleSpans(of: board)
         func drill(_ hole: HorizontalHole, _ kind: ODBDrill.Kind) -> ODBDrill {
             ODBDrill(position: hole.position, diameter: hole.diameter, kind: kind, slot: slotEnds(of: hole))
         }
@@ -2246,6 +2268,11 @@ enum HorizontalExportBackend {
         return bySpan
             .sorted { ($0.key != through ? 1 : 0, -$0.key.start, $0.key.end) < ($1.key != through ? 1 : 0, -$1.key.start, $1.key.end) }
             .map { ($0.key, $0.value) }
+    }
+
+    /// Each via hole's span, by its hole id (`<via id>/hole`, lowercased).
+    private static func viaHoleSpans(of board: HorizontalBoard) -> [String: HorizontalViaSpan] {
+        Dictionary(board.vias.map { ("\($0.id)/hole".lowercased(), $0.drillSpan) }, uniquingKeysWith: { first, _ in first })
     }
 
     /// A slot's two ends' centres, half its length less its radius either
