@@ -109,6 +109,22 @@ final class HorizontalDrillFileSpanTests: XCTestCase {
         XCTAssertEqual(fileFunction(try XCTUnwrap(platedOnly["fixture Drills.drl"])), "Plated,1,4,PTH")
     }
 
+    /// Plated and unplated holes go apart unless asked otherwise, so each
+    /// file states its function, as the spec asks; Horizon merges them.
+    func testTheDefaultSplitsPlating() throws {
+        let project = Fixture.project(board: Fixture.board(holes: holes))
+        var settings = HorizontalExportSettings(project: project).gerber
+        XCTAssertEqual(settings.drillMode, .individual)
+        settings.prefix = "fixture"
+        settings.zipOutput = false
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HorizontalDrillFileSpanTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let written = try HorizontalExportBackend.exportGerber(project: project, settings: settings, to: directory)
+        let functions = try written.filter { $0.pathExtension == "drl" }.map { try fileFunction(String(contentsOf: $0, encoding: .utf8)) }
+        XCTAssertEqual(Set(functions), ["Plated,1,4,PTH", "NonPlated,1,4,NPTH"])
+    }
+
     /// A two-layer board's through holes run from L1 to L2.
     func testATwoLayerBoardDrillsFromL1ToL2() throws {
         var board = Fixture.board(holes: [holes[0]])
