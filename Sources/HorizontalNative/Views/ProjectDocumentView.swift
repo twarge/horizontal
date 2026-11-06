@@ -1398,7 +1398,6 @@ struct ProjectWorkspaceView: View {
                 status: exportStatus,
                 isExporting: isExporting,
                 safeAreaInsets: safeAreaInsets,
-                onExport: exportSection,
                 onExportAll: exportAllEnabledSections
             )
         case .rulesResults:
@@ -2167,13 +2166,6 @@ struct ProjectWorkspaceView: View {
     private func activateFind() {
         findIsPresented = true
         findActivationID += 1
-    }
-
-    private func exportSection(_ section: HorizontalExportSection) {
-        Task { @MainActor in
-            await prepareExportFolderAccess()
-            await runExport(sections: [section])
-        }
     }
 
     private func exportAllEnabledSections() {

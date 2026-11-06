@@ -11,7 +11,6 @@ struct HorizontalExportSidebarView: View {
     /// material + edge. Inside the iOS slide-over the container provides those, so the
     /// caller passes `false` to avoid doubling them up.
     var providesChrome = true
-    var onExport: (HorizontalExportSection) -> Void
     var onExportAll: () -> Void
 
     // Disclosure state, independent of each section's enabled flag (so a section can be
@@ -287,13 +286,6 @@ struct HorizontalExportSidebarView: View {
             DisclosureGroup(isExpanded: expansionBinding(for: section)) {
                 VStack(alignment: .leading, spacing: 10) {
                     content()
-                    Button {
-                        onExport(section)
-                    } label: {
-                        Text("Export")
-                    }
-                    .disabled(!isEnabled.wrappedValue || isExporting)
-                    .padding(.top, 2)
                 }
                 .textFieldStyle(.roundedBorder)
                 .pickerStyle(.menu)
