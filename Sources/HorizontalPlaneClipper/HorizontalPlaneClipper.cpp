@@ -1021,4 +1021,45 @@ HorizontalClipperFragmentList HorizontalClipperBoolean(
     }
 }
 
+HorizontalClipperFragmentList HorizontalClipperSimpleDifference(
+    const HorizontalClipperPath *subjects,
+    int subjectCount,
+    const HorizontalClipperPath *clips,
+    int clipCount,
+    double inset
+)
+{
+    HorizontalClipperFragmentList empty {};
+    auto subjectPaths = to_paths(subjects, subjectCount);
+    if (subjectPaths.empty()) {
+        return empty;
+    }
+    auto clipPaths = to_paths(clips, clipCount);
+
+    try {
+        ClipperLib::Paths difference;
+        {
+            ClipperLib::Clipper clipper;
+            clipper.AddPaths(subjectPaths, ClipperLib::ptSubject, true);
+            if (!clipPaths.empty()) {
+                clipper.AddPaths(clipPaths, ClipperLib::ptClip, true);
+            }
+            clipper.Execute(ClipperLib::ctDifference, difference, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+        }
+        // Mitred, so a corner keeps its one point instead of gaining an arc.
+        auto shrunk = offset_paths(difference, -std::max(0.0, inset), ClipperLib::jtMiter);
+        if (shrunk.empty()) {
+            return empty;
+        }
+        ClipperLib::PolyTree tree;
+        ClipperLib::Clipper clipper;
+        clipper.StrictlySimple(true);
+        clipper.AddPaths(shrunk, ClipperLib::ptSubject, true);
+        clipper.Execute(ClipperLib::ctUnion, tree, ClipperLib::pftNonZero);
+        return fragments_from_tree(tree);
+    } catch (const std::exception &) {
+        return empty;
+    }
+}
+
 #include "../../Vendor/Clipper/clipper.cpp"

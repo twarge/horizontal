@@ -68,10 +68,9 @@ enum HorizontalExportBackend {
                     messages.append("Pick and Place -> \(urls.map(\.lastPathComponent).joined(separator: ", "))")
                 case .boardSTEP:
                     let url = targetURL.appendingPathComponent(settings.boardSTEP.filename)
-                    try exportBoardSTEP(project: project, settings: settings.boardSTEP, to: url)
+                    let report = try exportBoardSTEP(project: project, settings: settings.boardSTEP, to: url)
                     outputs.append(url)
-                    let note = settings.boardSTEP.include3DModels ? " (with component models)" : " (board body only)"
-                    messages.append("3D Model -> \(url.lastPathComponent)\(note)")
+                    messages.append("3D Model -> \(url.lastPathComponent)\(stepExportNote(settings.boardSTEP, report: report))")
                 case .boardDrawing:
                     let url = targetURL.appendingPathComponent(settings.boardDrawing.filename)
                     try exportBoardDrawingPDF(project: project, settings: settings.boardDrawing, palette: boardPDFPalette, to: url, silkscreenClipping: silkscreenClipping)
@@ -858,11 +857,52 @@ enum HorizontalExportBackend {
         }
     }
 
-    private static func exportBoardSTEP(
+    /// What a STEP export put with the board, for the status line: " (board
+    /// body only)", or what it was with, and how many models it left out for
+    /// being small.
+    static func stepExportNote(_ settings: HorizontalSTEPExportSettings, report: STEPExportReport) -> String {
+        var parts = [String]()
+        switch settings.copperLayers {
+        case .none: break
+        case .outer: parts.append("top and bottom copper")
+        case .all: parts.append("all copper layers")
+        }
+        if settings.include3DModels {
+            parts.append("component models")
+        }
+        guard !parts.isEmpty else {
+            return " (board body only)"
+        }
+        var note = " (with " + parts.joined(separator: " and ")
+        if report.omittedComponentCount > 0 {
+            let size = String(format: "%g", settings.minimumComponentSizeMM)
+            note += ", \(report.omittedComponentCount) smaller than \(size) mm left out"
+        }
+        return note + ")"
+    }
+
+    /// What a STEP export wrote beside the board.
+    struct STEPExportReport: Equatable {
+        /// Placed models left out for being smaller than the settings'
+        /// minimum size in every dimension.
+        var omittedComponentCount = 0
+    }
+
+    /// One copper layer of a STEP export: its slabs' outlines and holes, in
+    /// nanometres, and where they stand, in millimetres.
+    struct STEPCopperLayer {
+        var layer: Int
+        var z: Double
+        var thickness: Double
+        var fragments: [[[HorizontalPoint]]]
+    }
+
+    @discardableResult
+    static func exportBoardSTEP(
         project: HorizontalProject,
         settings: HorizontalSTEPExportSettings,
         to url: URL
-    ) throws {
+    ) throws -> STEPExportReport {
         guard let board = project.board?.omittingPackageArtwork() else {
             throw HorizontalExportError("No board loaded.")
         }
@@ -875,16 +915,16 @@ enum HorizontalExportBackend {
             HNStepPoint(x: point.x / 1_000_000, y: point.y / 1_000_000)
         }
         let minimumHoleDiameter = max(settings.minimumHoleDiameterMM, 0)
-        let holes = (board.holes + board.viaHoles + board.packageHoles)
+        let drilledHoles = (board.holes + board.viaHoles + board.packageHoles)
             .filter { $0.diameter / 1_000_000 >= minimumHoleDiameter }
-            .map { hole in
-                HNStepHole(
-                    x: hole.position.x / 1_000_000,
-                    y: hole.position.y / 1_000_000,
-                    diameter: hole.diameter / 1_000_000,
-                    plated: hole.plated
-                )
-            }
+        let holes = drilledHoles.map { hole in
+            HNStepHole(
+                x: hole.position.x / 1_000_000,
+                y: hole.position.y / 1_000_000,
+                diameter: hole.diameter / 1_000_000,
+                plated: hole.plated
+            )
+        }
         let thicknessMM = max(board.totalSubstrateThickness / 1_000_000, 0.2)
         let label = nonEmpty(settings.labelPrefix) ?? project.displayTitle
 
@@ -927,23 +967,74 @@ enum HorizontalExportBackend {
             }
         }
 
+        // Each copper layer's paths in millimetres, laid end to end as
+        // HNStepCopperLayer takes them; the arrays outlive the export call.
+        let copperLayers = stepCopperLayers(
+            for: board, selection: settings.copperLayers, boardThickness: thicknessMM, holes: drilledHoles
+        )
+        let copperPoints = copperLayers.map { layer in
+            layer.fragments.flatMap { $0.flatMap { $0 } }.map { HNStepPoint(x: $0.x / 1_000_000, y: $0.y / 1_000_000) }
+        }
+        let copperPathPointCounts = copperLayers.map { layer in
+            layer.fragments.flatMap { $0.map { UInt32($0.count) } }
+        }
+        let copperFragmentPathCounts = copperLayers.map { layer in
+            layer.fragments.map { UInt32($0.count) }
+        }
+        let copperPointBuffers = copperPoints.map { points in
+            let buffer = UnsafeMutableBufferPointer<HNStepPoint>.allocate(capacity: max(points.count, 1))
+            _ = buffer.initialize(from: points)
+            return buffer
+        }
+        let copperCountBuffers = (copperPathPointCounts + copperFragmentPathCounts).map { counts in
+            let buffer = UnsafeMutableBufferPointer<UInt32>.allocate(capacity: max(counts.count, 1))
+            _ = buffer.initialize(from: counts)
+            return buffer
+        }
+        defer {
+            copperPointBuffers.forEach { $0.deallocate() }
+            copperCountBuffers.forEach { $0.deallocate() }
+        }
+        let nativeCopperLayers = copperLayers.indices.map { index in
+            HNStepCopperLayer(
+                name: cString(HorizontalBoardLayers.name(for: copperLayers[index].layer)),
+                z: copperLayers[index].z,
+                thickness: copperLayers[index].thickness,
+                points: UnsafePointer(copperPointBuffers[index].baseAddress),
+                pathPointCounts: UnsafePointer(copperCountBuffers[index].baseAddress),
+                fragmentPathCounts: UnsafePointer(copperCountBuffers[copperLayers.count + index].baseAddress),
+                fragmentCount: UInt32(copperLayers[index].fragments.count)
+            )
+        }
+        let minimumModelSize = settings.omitSmallComponents ? max(settings.minimumComponentSizeMM, 0) : 0
+
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var report = HNStepExportReport()
         let success = url.path.withCString { pathPointer in
             label.withCString { labelPointer in
                 outlinePoints.withUnsafeBufferPointer { outlineBuffer in
                     holes.withUnsafeBufferPointer { holeBuffer in
                         modelInstances.withUnsafeBufferPointer { modelBuffer in
-                            HNStepExportBoardWithModels(
-                                pathPointer,
-                                outlineBuffer.baseAddress,
-                                UInt32(outlineBuffer.count),
-                                holeBuffer.baseAddress,
-                                UInt32(holeBuffer.count),
-                                thicknessMM,
-                                labelPointer,
-                                modelBuffer.baseAddress,
-                                UInt32(modelBuffer.count)
-                            )
+                            nativeCopperLayers.withUnsafeBufferPointer { copperBuffer in
+                                var options = HNStepExportOptions(
+                                    copperLayers: copperBuffer.baseAddress,
+                                    copperLayerCount: UInt32(copperBuffer.count),
+                                    minimumModelSize: minimumModelSize
+                                )
+                                return HNStepExportBoardWithOptions(
+                                    pathPointer,
+                                    outlineBuffer.baseAddress,
+                                    UInt32(outlineBuffer.count),
+                                    holeBuffer.baseAddress,
+                                    UInt32(holeBuffer.count),
+                                    thicknessMM,
+                                    labelPointer,
+                                    modelBuffer.baseAddress,
+                                    UInt32(modelBuffer.count),
+                                    &options,
+                                    &report
+                                )
+                            }
                         }
                     }
                 }
@@ -952,6 +1043,132 @@ enum HorizontalExportBackend {
         guard success else {
             throw HorizontalExportError("OCCT could not write the board STEP file.")
         }
+        return STEPExportReport(omittedComponentCount: Int(report.omittedModelCount))
+    }
+
+    /// The copper layers a STEP export asks for, top first, each where it
+    /// stands on a board body `boardThickness` thick, which is its substrate
+    /// alone: the top copper on the body's top face, the bottom copper under
+    /// its bottom face, and an inner layer inside the body, under the
+    /// substrate of the layers above it. A layer's copper is what its Gerber
+    /// file draws, every track, pad, via ring, fill and text made one, less
+    /// the holes drilled through the board, so a hole the board leaves out
+    /// for being smaller than the minimum diameter leaves the copper whole.
+    static func stepCopperLayers(
+        for board: HorizontalBoard,
+        selection: HorizontalSTEPCopperLayers,
+        boardThickness: Double,
+        holes: [HorizontalHole]
+    ) -> [STEPCopperLayer] {
+        guard selection != .none else {
+            return []
+        }
+        let stackup = board.stackupLayers.filter { HorizontalBoardLayers.isCopper($0.layer) }
+        let boardLayers = stackup.isEmpty
+            ? [HorizontalBoardLayers.topCopper, HorizontalBoardLayers.bottomCopper]
+            : Array(Set(stackup.map(\.layer) + [HorizontalBoardLayers.topCopper, HorizontalBoardLayers.bottomCopper]))
+        let layers = boardLayers
+            .filter { selection == .all || $0 == HorizontalBoardLayers.topCopper || $0 == HorizontalBoardLayers.bottomCopper }
+            .sorted(by: >)
+
+        let drills = holes.compactMap(stepDrillOutline)
+        return layers.compactMap { layer in
+            let stackupThickness = stackup.first { $0.layer == layer }?.copperThickness ?? 0
+            let copperThickness = stackupThickness > 0 ? stackupThickness / 1_000_000 : 0.035
+            let z: Double
+            switch layer {
+            case HorizontalBoardLayers.topCopper:
+                z = boardThickness
+            case HorizontalBoardLayers.bottomCopper:
+                z = -copperThickness
+            default:
+                let above = stackup
+                    .filter { $0.layer > layer }
+                    .reduce(0) { $0 + max($1.substrateThickness, 0) } / 1_000_000
+                z = max(boardThickness - above - copperThickness, 0)
+            }
+            let fragments = stepCopperFragments(on: layer, of: board, drills: drills)
+            guard !fragments.isEmpty else {
+                return nil
+            }
+            return STEPCopperLayer(layer: layer, z: z, thickness: copperThickness, fragments: fragments)
+        }
+    }
+
+    /// A layer's copper as fragments, each an outline and the holes inside
+    /// it: the objects its Gerber file draws made closed paths, strokes as
+    /// capsules, outlines counterclockwise and holes clockwise, so filled
+    /// non-zero they are what the layer draws, less `drills`, 3 µm in from
+    /// every edge.
+    private static func stepCopperFragments(
+        on layer: Int,
+        of board: HorizontalBoard,
+        drills: [[HorizontalPoint]]
+    ) -> [[[HorizontalPoint]]] {
+        var paths = [[HorizontalPoint]]()
+        func appendStroke(_ from: HorizontalPoint, _ to: HorizontalPoint, width: Double) {
+            if let capsule = gerberApertureCapsule(from: from, to: to, width: width) {
+                paths.append(oriented(capsule, counterclockwise: true))
+            } else if width > 0 {
+                paths.append(circlePath(center: from, radius: width / 2, segments: 24))
+            }
+        }
+        func appendArea(_ outline: [HorizontalPoint], holes: [[HorizontalPoint]]) {
+            guard outline.count >= 3 else { return }
+            paths.append(oriented(outline, counterclockwise: true))
+            paths += holes.filter { $0.count >= 3 }.map { oriented($0, counterclockwise: false) }
+        }
+        for object in gerberObjects(for: board, layer: layer, outlineWidthMM: 0) {
+            switch object {
+            case let .line(from, to, width):
+                appendStroke(from, to, width: width)
+            case let .polyline(points, width):
+                for (from, to) in zip(points, points.dropFirst()) {
+                    appendStroke(from, to, width: width)
+                }
+            case let .region(outline, holes), let .fill(outline, holes):
+                appendArea(outline, holes: holes)
+            }
+        }
+        guard !paths.isEmpty else {
+            return []
+        }
+        // Shrunk a little, which opens the points where copper narrows to
+        // nothing: no hole of a fragment touches its outline or another hole.
+        return HorizontalPolygonBoolean.simpleDifference(paths, drills, inset: stepCopperInset)
+    }
+
+    /// How much a STEP export's copper is shrunk, in nanometres: more than
+    /// the STEP writer lets an arc stand off the chords it draws in their
+    /// place (arcMaximumSagitta), so arcs bulging into a gap the shrinking
+    /// opened cannot meet.
+    static let stepCopperInset = 3_000.0
+
+    /// The outline a hole cuts from copper: a circle as wide as the hole, or a
+    /// slot from one end's centre to the other's, its edge outside the
+    /// hole's so no copper is left in it.
+    private static func stepDrillOutline(_ hole: HorizontalHole) -> [HorizontalPoint]? {
+        guard hole.diameter > 0 else {
+            return nil
+        }
+        let segments = 32
+        let radius = hole.diameter / 2 / cos(Double.pi / Double(segments))
+        if let ends = slotEnds(of: hole),
+           let slot = gerberApertureCapsule(from: ends.from, to: ends.to, width: radius * 2, segments: segments / 2) {
+            return oriented(slot, counterclockwise: true)
+        }
+        return circlePath(center: hole.position, radius: radius, segments: segments)
+    }
+
+    private static func circlePath(center: HorizontalPoint, radius: Double, segments: Int) -> [HorizontalPoint] {
+        (0..<segments).map { index in
+            let angle = Double(index) / Double(segments) * Double.pi * 2
+            return HorizontalPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
+        }
+    }
+
+    private static func oriented(_ path: [HorizontalPoint], counterclockwise: Bool) -> [HorizontalPoint] {
+        (signedArea(path) > 0) == counterclockwise ? path : path.reversed()
     }
 
     private static func writePDF(

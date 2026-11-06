@@ -57,6 +57,36 @@ typedef struct HNStepModelInstance {
     double orientYaw;
 } HNStepModelInstance;
 
+// One copper layer, as slabs standing on z for thickness millimetres. Its
+// copper is fragments, each an outline counterclockwise and the holes inside
+// it clockwise: fragmentPathCounts gives each fragment's number of paths, its
+// outline first, pathPointCounts each path's number of points, and points
+// every path's points one after another, in millimetres.
+typedef struct HNStepCopperLayer {
+    const char *name;
+    double z;
+    double thickness;
+    const HNStepPoint *points;
+    const uint32_t *pathPointCounts;
+    const uint32_t *fragmentPathCounts;
+    uint32_t fragmentCount;
+} HNStepCopperLayer;
+
+// What HNStepExportBoardWithOptions adds to the board and its models.
+// minimumModelSize leaves out a model smaller than that many millimetres in
+// every dimension, each side of its bounding box as its file draws it; 0 keeps
+// every model.
+typedef struct HNStepExportOptions {
+    const HNStepCopperLayer *copperLayers;
+    uint32_t copperLayerCount;
+    double minimumModelSize;
+} HNStepExportOptions;
+
+// What an export left out.
+typedef struct HNStepExportReport {
+    uint32_t omittedModelCount;
+} HNStepExportReport;
+
 // Component placement as a row-major 3x4 matrix, so tests can pin the
 // transform without loading a STEP file.
 void HNStepModelPlacement(
@@ -89,6 +119,23 @@ bool HNStepExportBoardWithModels(
     const char *name,
     const HNStepModelInstance *models,
     uint32_t modelCount
+);
+
+// Like HNStepExportBoardWithModels, with copper layers and a minimum model
+// size from options (which may be null), and what was left out in report
+// (which may be null).
+bool HNStepExportBoardWithOptions(
+    const char *path,
+    const HNStepPoint *outline,
+    uint32_t outlineCount,
+    const HNStepHole *holes,
+    uint32_t holeCount,
+    double thickness,
+    const char *name,
+    const HNStepModelInstance *models,
+    uint32_t modelCount,
+    const HNStepExportOptions *options,
+    HNStepExportReport *report
 );
 
 #ifdef __cplusplus

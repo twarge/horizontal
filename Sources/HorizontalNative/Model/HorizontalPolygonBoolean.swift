@@ -36,6 +36,38 @@ enum HorizontalPolygonBoolean {
             clipStorage.pointer, Int32(clipStorage.count),
             operation.rawValue, subjectFill.rawValue, clipFill.rawValue
         )
+        return fragments(taking: raw)
+        #else
+        return []
+        #endif
+    }
+
+    /// `subjects` less `clips`, each filled non-zero, shrunk by `inset` and
+    /// made strictly simple: where copper narrows to nothing, so that a hole
+    /// would touch its outline or another hole, shrinking opens it, and no
+    /// fragment's paths touch, as a solid's face needs.
+    static func simpleDifference(
+        _ subjects: [[HorizontalPoint]],
+        _ clips: [[HorizontalPoint]],
+        inset: Double
+    ) -> [[[HorizontalPoint]]] {
+        #if canImport(HorizontalPlaneClipper)
+        let subjectStorage = BooleanPathStorage(subjects)
+        let clipStorage = BooleanPathStorage(clips)
+        let raw = HorizontalClipperSimpleDifference(
+            subjectStorage.pointer, Int32(subjectStorage.count),
+            clipStorage.pointer, Int32(clipStorage.count),
+            inset
+        )
+        return fragments(taking: raw)
+        #else
+        return []
+        #endif
+    }
+
+    #if canImport(HorizontalPlaneClipper)
+    /// The fragments a Clipper call returned, which it frees.
+    private static func fragments(taking raw: HorizontalClipperFragmentList) -> [[[HorizontalPoint]]] {
         defer {
             HorizontalClipperFreeFragments(raw)
         }
@@ -61,10 +93,8 @@ enum HorizontalPolygonBoolean {
             }
         }
         return fragments
-        #else
-        return []
-        #endif
     }
+    #endif
 
     static func intersection(_ subjects: [[HorizontalPoint]], _ clips: [[HorizontalPoint]]) -> [[[HorizontalPoint]]] {
         apply(.intersection, subjects, clips)
