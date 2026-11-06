@@ -242,12 +242,34 @@ struct HorizontalPnPExportSettings: Hashable {
     var columns: Set<HorizontalPnPColumn> = [.refdes, .x, .y, .angle, .side]
 }
 
+/// The copper a STEP export puts on its board.
+enum HorizontalSTEPCopperLayers: String, CaseIterable, Identifiable {
+    case none
+    case outer
+    case all
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .none: "None"
+        case .outer: "Top and bottom"
+        case .all: "All layers"
+        }
+    }
+}
+
 struct HorizontalSTEPExportSettings: Hashable {
     var enabled = true
     var filename: String
     var labelPrefix: String
     var include3DModels = true
     var minimumHoleDiameterMM = 0.0
+    var copperLayers = HorizontalSTEPCopperLayers.none
+    /// Leaves out the models of components smaller than
+    /// `minimumComponentSizeMM` in every dimension: small passives.
+    var omitSmallComponents = false
+    var minimumComponentSizeMM = 2.0
 }
 
 struct HorizontalBoardDrawingExportSettings: Hashable {

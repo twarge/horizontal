@@ -150,8 +150,17 @@ struct HorizontalExportSidebarView: View {
             exportSection(.boardSTEP, isEnabled: $settings.boardSTEP.enabled) {
                 TextField("File name", text: $settings.boardSTEP.filename)
                 Toggle("Include 3D Models", isOn: $settings.boardSTEP.include3DModels)
+                Toggle("Omit small components", isOn: $settings.boardSTEP.omitSmallComponents)
+                    .disabled(!settings.boardSTEP.include3DModels)
+                dimensionField("Minimum size", value: $settings.boardSTEP.minimumComponentSizeMM)
+                    .disabled(!settings.boardSTEP.include3DModels || !settings.boardSTEP.omitSmallComponents)
                 TextField("Label prefix", text: $settings.boardSTEP.labelPrefix)
                 dimensionField("Minimum hole/via diameter", value: $settings.boardSTEP.minimumHoleDiameterMM)
+                Picker("Copper", selection: $settings.boardSTEP.copperLayers) {
+                    ForEach(HorizontalSTEPCopperLayers.allCases) { layers in
+                        Text(layers.title).tag(layers)
+                    }
+                }
             }
 
             exportSection(.boardDrawing, isEnabled: $settings.boardDrawing.enabled) {

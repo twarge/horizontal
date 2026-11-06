@@ -142,6 +142,19 @@ HorizontalClipperFragmentList HorizontalClipperBoolean(
     int clipFill
 );
 
+// Subjects less clips, each filled non-zero, shrunk by `inset` and made
+// strictly simple, as fragments: shrinking opens the points where copper
+// narrows to nothing, where a hole would touch its outline or another hole,
+// so no fragment's paths touch, which a solid's face cannot have. The STEP
+// export's copper uses it.
+HorizontalClipperFragmentList HorizontalClipperSimpleDifference(
+    const HorizontalClipperPath *subjects,
+    int subjectCount,
+    const HorizontalClipperPath *clips,
+    int clipCount,
+    double inset
+);
+
 #ifdef __cplusplus
 }
 #endif

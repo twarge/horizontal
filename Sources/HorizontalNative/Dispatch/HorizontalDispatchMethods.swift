@@ -3594,6 +3594,16 @@ enum HorizontalDispatchMethods {
         if let step = options.dictionary("board_step") {
             if let flag = step.bool("include_3d_models") { settings.boardSTEP.include3DModels = flag }
             if let name = step.string("filename") { settings.boardSTEP.filename = name }
+            // "none", "outer" (or "top_bottom") or "all".
+            if let copper = step.string("copper")?.lowercased() {
+                settings.boardSTEP.copperLayers = copper == "top_bottom" ? .outer : HorizontalSTEPCopperLayers(rawValue: copper) ?? .none
+            }
+            // A size leaves out the models smaller than it in every
+            // dimension; 0 keeps them all.
+            if let size = step.double("omit_components_smaller_than_mm") {
+                settings.boardSTEP.omitSmallComponents = size > 0
+                if size > 0 { settings.boardSTEP.minimumComponentSizeMM = size }
+            }
         }
         if let gerber = options.dictionary("gerber") {
             if let flag = gerber.bool("zip_output") { settings.gerber.zipOutput = flag }
