@@ -24,6 +24,10 @@ final class BoardPlaceDecalTests: XCTestCase {
             return undo
         }()
         let toolSettings = HorizontalBoardToolSettings()
+        /// The Pools pane's Place on a decal, as a project window passes it.
+        @Published var placeDecalRequest: HorizontalBoardDecalPlacementRequest?
+        /// Whether the board's pane has the keyboard, as the window tracks it.
+        @Published var hasKeyboard = true
         init(_ board: HorizontalBoard, poolURL: URL) {
             source = board
             self.poolURL = poolURL
@@ -42,6 +46,9 @@ final class BoardPlaceDecalTests: XCTestCase {
             BoardCanvasView(board: board, viewport: $viewport, displayOptions: BoardDisplayOptions(), undoManager: state.undo,
                 onBoardChange: { state.committed.append($0); board = $0 },
                 onCanvasCommandActionsChange: { state.actions = $0 },
+                hasKeyboardFocus: state.hasKeyboard,
+                onRequestKeyboardFocus: { state.hasKeyboard = true },
+                placeDecalRequest: state.placeDecalRequest,
                 toolSettings: state.toolSettings,
                 poolURL: state.poolURL)
         }
@@ -328,6 +335,59 @@ final class BoardPlaceDecalTests: XCTestCase {
         XCTAssertNil(archive.regularFileData(relativePath: cachedDecalPath), "nothing cached beside it")
         let read = try XCTUnwrap(try HorizontalProject.loadSnapshot(of: archive).board?.decals.first)
         assertSameGeometry(read, placed)
+    }
+
+    /// The Pools pane's Place on a decal, Return in its list or a
+    /// double-click: the board takes it up as the chooser hands one over,
+    /// takes the keyboard from the pane so R, E, S and Esc reach the tool,
+    /// and Return puts the decal down.
+    func testTheRequestFromThePoolsPaneArmsThePlacementAndReturnPutsTheDecalDown() async throws {
+        let state = State(try fixture(), poolURL: projectPoolURL)
+        state.hasKeyboard = false
+        let (window, key) = try await mount(state)
+        defer { window.close() }
+        let item = try XCTUnwrap(HorizontalBoardDecalPlacement.choices(projectPoolURL: projectPoolURL)
+            .items(in: .decal).first { $0.uuid == decalID })
+
+        state.placeDecalRequest = HorizontalBoardDecalPlacementRequest(item: item)
+        let placing = await settle { state.actions?.canCommitInteraction == true }
+        XCTAssertTrue(placing, "the decal follows the cursor")
+        XCTAssertEqual(state.actions?.canPlaceDecal, false, "one tool at a time")
+        let tookKeyboard = await settle { state.hasKeyboard }
+        XCTAssertTrue(tookKeyboard, "the board asks for the keyboard the Pools pane had")
+
+        try key(15, "r")
+        let commits = state.committed.count
+        state.undo.beginUndoGrouping()
+        try key(36, "\r")
+        state.undo.endUndoGrouping()
+        let committed = await settle { state.committed.count == commits + 1 }
+        XCTAssertTrue(committed, "Return puts it down")
+        XCTAssertEqual(state.actions?.canCommitInteraction, false, "and the tool ends with the one decal")
+        let placed = try XCTUnwrap(state.committed.last?.decals.first)
+        XCTAssertEqual(placed.decalID, decalID)
+        XCTAssertEqual(placed.angle, 49_152, "turned by R on the way")
+        XCTAssertEqual(placed.cacheSource?.uuid, decalID, "cached from the pool the pane showed it in")
+    }
+
+    /// A request the board can't take now, with another tool under way,
+    /// is dropped rather than starting once that tool is done.
+    func testARequestWhileAnotherToolIsInUseIsDropped() async throws {
+        let state = State(try fixture(), poolURL: projectPoolURL)
+        let (window, _) = try await mount(state)
+        defer { window.close() }
+        let item = try XCTUnwrap(HorizontalBoardDecalPlacement.choices(projectPoolURL: projectPoolURL)
+            .items(in: .decal).first { $0.uuid == decalID })
+        state.actions?.dispatch(.drawDimension)
+        let drawing = await settle { state.actions?.canCancelInteraction == true }
+        XCTAssertTrue(drawing)
+
+        state.placeDecalRequest = HorizontalBoardDecalPlacementRequest(item: item)
+        try await Task.sleep(for: .milliseconds(100))
+        state.actions?.dispatch(.cancelInteraction)
+        let idle = await settle { state.actions?.canPlaceDecal == true }
+        XCTAssertTrue(idle, "the dimension tool let go, and nothing else taken up")
+        XCTAssertEqual(state.actions?.canCommitInteraction, false)
     }
 
     func testPlaceDecalIsOffWhileAnotherToolIsInUse() async throws {

@@ -1,5 +1,12 @@
 import Foundation
 
+/// A decal for the board canvas to take up as Place Decal…'s chooser hands
+/// one over: the Pools pane's Place, Return or double-click on a decal.
+struct HorizontalBoardDecalPlacementRequest: Identifiable, Equatable {
+    var id = UUID()
+    var item: HorizontalPoolLibraryItem
+}
+
 /// Horizon's place-decal tool (`ToolPlaceDecal`) in flight: a decal taken
 /// from a pool, with the angle, flip and scale it goes on the board with. R
 /// turns it a quarter turn clockwise (`inc_angle_deg(-90)`), E flips it to

@@ -131,8 +131,8 @@ Built:
       view (80c82fb).
 - [x] Place decal: Design ▸ Place Decal… chooses one from the pools, R turns
       it, E flips it, S sets its scale, and the decal is cached into the
-      project pool. The Pools pane can't place one yet, and a placed decal's
-      scale and flip can't be changed afterwards.
+      project pool; the Pools pane's Place puts one on the board too. A
+      placed decal's scale and flip can't be changed afterwards.
 
 Not built at all:
 

@@ -529,6 +529,9 @@ struct BoardCanvasView: View {
     var selectionPropertyChangeCommand: HorizontalSelectionPropertyChangeCommand?
     var drawingToolCommand: HorizontalDrawingToolCommand?
     var drawTrackCommand: HorizontalDrawTrackCommand?
+    /// A decal from the Pools pane, taken up as one chosen in Place Decal…'s
+    /// chooser is.
+    var placeDecalRequest: HorizontalBoardDecalPlacementRequest?
     /// The route inspector's "Rules" width: the route in progress takes the
     /// rules' width again, even one continuing a track's.
     var routeWidthCommand: HorizontalRouteWidthCommand?
@@ -634,6 +637,9 @@ struct BoardCanvasView: View {
     @State private var padstackPickerPresented = false
     /// Place Decal…'s chooser, while it is up: the decals the board can take.
     @State private var decalPickerIndex: HorizontalPoolLibraryIndex?
+    /// The last `placeDecalRequest` taken up, so the mount doesn't take up
+    /// again one its change already did.
+    @State private var handledPlaceDecalRequestID: UUID?
     /// Step-back history for the in-progress route (Backspace pops one).
     @State private var trackRouteHistory: [BoardTrackRouteStep] = []
     @State private var lastCursorWorldPoint: HorizontalPoint?
@@ -709,6 +715,7 @@ struct BoardCanvasView: View {
         selectionPropertyChangeCommand: HorizontalSelectionPropertyChangeCommand? = nil,
         drawingToolCommand: HorizontalDrawingToolCommand? = nil,
         drawTrackCommand: HorizontalDrawTrackCommand? = nil,
+        placeDecalRequest: HorizontalBoardDecalPlacementRequest? = nil,
         routeWidthCommand: HorizontalRouteWidthCommand? = nil,
         routeInspector: HorizontalRouteInspectorModel? = nil,
         rulesRevision: Int = 0,
@@ -761,6 +768,7 @@ struct BoardCanvasView: View {
         self.selectionPropertyChangeCommand = selectionPropertyChangeCommand
         self.drawingToolCommand = drawingToolCommand
         self.drawTrackCommand = drawTrackCommand
+        self.placeDecalRequest = placeDecalRequest
         self.routeWidthCommand = routeWidthCommand
         self.routeInspector = routeInspector
         self.rulesRevision = rulesRevision
@@ -1395,6 +1403,8 @@ struct BoardCanvasView: View {
             publishCanvasCommandActions()
             // A canvas mounted after a pour starts from a board that has it.
             takenPlaneFillRevision = planeFillDelivery?.revision ?? 0
+            // A board first shown for the Pools pane's Place.
+            takeUpPlaceDecalRequest()
         }
         .onDisappear {
             onSelectionDetailsChange(.empty)
@@ -1431,6 +1441,9 @@ struct BoardCanvasView: View {
             if !isReadOnly, drawTrackCommand != nil {
                 beginDrawTrack()
             }
+        }
+        .onChange(of: placeDecalRequest?.id) { _, _ in
+            takeUpPlaceDecalRequest()
         }
         .onChange(of: isReadOnly) { _, readOnly in
             if readOnly {
@@ -17154,6 +17167,24 @@ extension BoardCanvasView {
             return
         }
         armPoolPlacement(.decal(placement, geometry: geometry))
+    }
+
+    /// The Pools pane's Place on a decal: it follows the cursor as one chosen
+    /// in Place Decal…'s chooser does. Taken up once, whether or not the
+    /// board could take it then (another tool under way), so it doesn't
+    /// start later on its own; the hosts drop it when the board goes.
+    private func takeUpPlaceDecalRequest() {
+        guard let request = placeDecalRequest, handledPlaceDecalRequestID != request.id else {
+            return
+        }
+        handledPlaceDecalRequestID = request.id
+        guard canPlaceDecal else {
+            #if os(macOS)
+            NSSound.beep()
+            #endif
+            return
+        }
+        beginPlaceDecal(request.item)
     }
 
     /// The board decal `placement` makes at `position`, drawn as the loader
