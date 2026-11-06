@@ -3105,7 +3105,6 @@ struct HorizontalExportPanel: View {
                 isExporting: isExporting,
                 safeAreaInsets: EdgeInsets(),
                 providesChrome: false,
-                onExport: { section in Task { await runExport(sections: [section]) } },
                 onExportAll: {
                     Task { await runExport(sections: HorizontalExportSection.allCases.filter { settings.isEnabled($0) }) }
                 }
