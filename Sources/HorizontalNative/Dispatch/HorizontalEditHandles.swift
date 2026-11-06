@@ -47,7 +47,8 @@ enum HorizontalEditHandles {
         "remove_net_line": .netLine, "set_net_line_endpoint": .netLine, "remove_junction": .junction,
         "remove_bus": .bus, "remove_net_tie": .netTie,
         "remove_block_instance": .blockInstance, "remove_block_symbol": .blockInstance,
-        "set_block_instance": .blockInstance, "rename_block": .block, "remove_block": .block
+        "set_block_instance": .blockInstance, "rename_block": .block, "remove_block": .block,
+        "remove_decal": .boardDecal
     ]
 
     /// Fields that name an existing thing of a kind, on any op.

@@ -924,7 +924,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("expected_revision", tools["undo"].input_schema.get("required", []))
 
         mapping = tools["apply_ops"].input_schema["properties"]["ops"]["items"]["discriminator"]["mapping"]
-        for op in ("place_board_text", "place_dimension", "place_decal", "add_bus", "add_bus_member",
+        for op in ("place_board_text", "place_dimension", "place_decal", "remove_decal", "add_bus", "add_bus_member",
                    "place_bus_label", "place_bus_ripper", "add_net_tie", "place_net_tie"):
             self.assertIn(op, mapping)
 

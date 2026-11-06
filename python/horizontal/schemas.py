@@ -964,6 +964,11 @@ class PlaceDecal(Input):
     id: str | None = None
 
 
+class RemoveDecal(Input):
+    op: Literal["remove_decal"]
+    id: StrictStr
+
+
 class AddBus(Input):
     op: Literal["add_bus"]
     name: StrictStr
@@ -1241,7 +1246,7 @@ EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | 
                           AddBlock | RenameBlock | RemoveBlock | SetNetPort | PlaceBlockPort | RemoveBlockPort | Annotate | SetStackup |
                           AddRule | SetRule | RemoveRule |
                           PlaceHole | RemoveHole | PlaceKeepout | RemoveKeepout | SetSheetIndex |
-                          PlaceBoardText | RemoveBoardText | PlaceDimension | RemoveDimension | PlaceDecal |
+                          PlaceBoardText | RemoveBoardText | PlaceDimension | RemoveDimension | PlaceDecal | RemoveDecal |
                           AddBus | RemoveBus | AddBusMember | PlaceBusLabel | PlaceBusRipper |
                           AddNetTie | RemoveNetTie | PlaceNetTie | CopyLayout | SetProjectMeta | SetExportSettings,
                           Field(discriminator="op")]

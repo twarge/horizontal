@@ -284,5 +284,47 @@ final class HorizontalDispatchPlaceDecalTests: XCTestCase {
         XCTAssertEqual(currentArchive.regularFileData(relativePath: cachePath), decalData)
         XCTAssertEqual(current.board?.decals.first { $0.id == id }?.position, HorizontalPoint(x: 4 * mm, y: 6 * mm))
         XCTAssertEqual(try HorizontalProjectArchive.snapshot(from: packageURL), original, "a live edit never writes the saved project")
+
+        _ = try result(try apply(live, ["ops": [["op": "remove_decal", "id": id]]]))
+        XCTAssertEqual(applied, ["Place Decal", "Remove Decal"])
+        XCTAssertNil(current.board?.decals.first { $0.id == id })
+        XCTAssertEqual(currentArchive.regularFileData(relativePath: cachePath), decalData, "the cached decal stays")
+        XCTAssertEqual(try HorizontalProjectArchive.snapshot(from: packageURL), original)
+    }
+
+    /// remove_decal takes a decal off the board by its id, a short one or a
+    /// name the batch gave it, and leaves its pool item cached, as Horizon
+    /// does; an id the board has no decal under is refused with the decals
+    /// it has, since nothing else lists them.
+    func testARemovedDecalLeavesTheBoardAndItsCacheStays() throws {
+        try openDisk()
+        let none = try apply(handle, ["ops": [["op": "remove_decal", "id": UUID().uuidString]]])
+        XCTAssertTrue(errorMessage(none)?.contains("The board has no decals.") == true, "\(none)")
+
+        let placed = try result(try apply(handle, ["ops": [
+            ["op": "place_decal", "decal": "Test Logo", "x_mm": 10, "y_mm": 20, "id": "kept"],
+            ["op": "place_decal", "decal": "Test Logo", "x_mm": 30, "y_mm": 40, "id": "gone"],
+            ["op": "place_decal", "decal": "Test Logo", "x_mm": 50, "y_mm": 60, "id": "brief"],
+            ["op": "remove_decal", "id": "brief"],
+        ]]))
+        let handles = try XCTUnwrap(placed["handles"] as? JSONDictionary)
+        let changes = try XCTUnwrap(placed["changes"] as? [JSONDictionary])
+        XCTAssertEqual(changes.last?.string("id"), handles.string("brief"), "a name stands for the decal its batch placed")
+        XCTAssertEqual(changes.last?.string("name"), "Test Logo")
+        let kept = try XCTUnwrap(handles.string("kept")), gone = try XCTUnwrap(handles.string("gone"))
+        XCTAssertEqual(Set(try HorizontalProject.load(from: packageURL).board?.decals.map(\.id) ?? []), [kept, gone])
+
+        let unknown = try apply(handle, ["ops": [["op": "remove_decal", "id": "no-such-decal"]]])
+        let message = try XCTUnwrap(errorMessage(unknown), "\(unknown)")
+        XCTAssertTrue(message.contains("\(kept) (Test Logo at 10.0, 20.0 mm)") && message.contains("\(gone) (Test Logo at 30.0, 40.0 mm)"), message)
+
+        let removed = try result(try apply(handle, ["ops": [["op": "remove_decal", "id": String(gone.prefix(8))]]]))
+        XCTAssertEqual((removed["changes"] as? [JSONDictionary])?.first?.string("id"), gone)
+        XCTAssertEqual((removed["changes"] as? [JSONDictionary])?.first?.string("decal"), decalID)
+        XCTAssertEqual(removed.string("undo_name"), "Remove Decal")
+        let saved = try HorizontalProjectArchive.snapshot(from: packageURL)
+        XCTAssertNil(try HorizontalProject.loadSnapshot(of: saved).board?.decals.first { $0.id == gone })
+        XCTAssertNotNil(try HorizontalProject.loadSnapshot(of: saved).board?.decals.first { $0.id == kept })
+        XCTAssertEqual(saved.regularFileData(relativePath: cachePath), decalData, "the cached decal stays")
     }
 }

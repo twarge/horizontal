@@ -132,8 +132,8 @@ Built:
 - [x] Place decal: Design ▸ Place Decal… chooses one from the pools, R turns
       it, E flips it, S sets its scale, and the decal is cached into the
       project pool; the Pools pane's Place puts one on the board too, and
-      MCP's `place_decal` places one the same way. A placed decal's scale and
-      flip can't be changed afterwards.
+      MCP's `place_decal` places one the same way (`remove_decal` takes it
+      off). A placed decal's scale and flip can't be changed afterwards.
 
 Not built at all:
 
