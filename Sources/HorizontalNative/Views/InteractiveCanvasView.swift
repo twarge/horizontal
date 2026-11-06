@@ -2593,20 +2593,29 @@ private struct HorizontalUnplacedObjectColumn: View {
             title
             Divider()
                 .padding(.horizontal, Self.inset)
-            ScrollView(.vertical) {
-                LazyVStack(alignment: .leading, spacing: Self.rowSpacing) {
-                    ForEach(objects) { object in
-                        row(for: object)
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    LazyVStack(alignment: .leading, spacing: Self.rowSpacing) {
+                        ForEach(objects) { object in
+                            row(for: object)
+                        }
                     }
+                    .padding(Self.inset)
                 }
-                .padding(Self.inset)
+                .scrollBounceBehavior(.basedOnSize)
+                // A scroll view takes all the height it is offered: held to its
+                // rows, the list is no taller than they are, and what the canvas
+                // leaves under the title (less its safe areas) caps it, past which
+                // it scrolls.
+                .frame(maxHeight: rowsHeight)
+                // A row picked from elsewhere, the part selected on the
+                // schematic, is scrolled to as well as marked, as little as
+                // brings it into view.
+                .onChange(of: selectedID, initial: true) { _, id in
+                    guard let id else { return }
+                    proxy.scrollTo(id)
+                }
             }
-            .scrollBounceBehavior(.basedOnSize)
-            // A scroll view takes all the height it is offered: held to its
-            // rows, the list is no taller than they are, and what the canvas
-            // leaves under the title (less its safe areas) caps it, past which
-            // it scrolls.
-            .frame(maxHeight: rowsHeight)
         }
         .frame(width: width)
         .background { material }
