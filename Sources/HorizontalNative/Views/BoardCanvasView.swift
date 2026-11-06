@@ -7842,6 +7842,7 @@ struct BoardCanvasView: View {
         let dimensionParts = BoardDimensionParts.selectedParts(in: selectedObjects)
         var movedDimensionIDs = Set<String>()
         let movingPackageIDs = self.movingPackageIDs(in: original)
+        let packageGeometry = BoardPackageGeometry.index(of: original, packageIDs: movingPackageIDs)
         // Lines, arcs and connection lines the selection moves whole; a
         // selected junction carries the ends of the rest.
         let graphicsMovedWhole = Set(
@@ -7870,7 +7871,7 @@ struct BoardCanvasView: View {
         for ref in selectedObjects {
             switch ref.type {
             case .boardPackage:
-                moveBoardPackage(ref: ref, by: delta, board: &board)
+                moveBoardPackage(ref: ref, by: delta, board: &board, geometry: packageGeometry[normalizedID(ref.id)])
             case .track:
                 if hasSelectedEndpointOwner(ref) {
                     break
@@ -7947,10 +7948,11 @@ struct BoardCanvasView: View {
         var movingPoints = BoardMovingPoints()
         var mirroredPolygonPoints = Set<String>()
         let movingPackageIDs = self.movingPackageIDs(in: original)
+        let packageGeometry = BoardPackageGeometry.index(of: original, packageIDs: movingPackageIDs)
         for ref in selectedObjects {
             switch ref.type {
             case .boardPackage:
-                mirrorBoardPackage(ref: ref, around: center, board: &board)
+                mirrorBoardPackage(ref: ref, around: center, board: &board, geometry: packageGeometry[normalizedID(ref.id)])
             case .track:
                 mirrorSegment(&board.tracks, ref: ref, around: center, flipsLayer: true)
             case .boardNetTie:
@@ -8020,6 +8022,7 @@ struct BoardCanvasView: View {
         var padEnds = BoardTrackPadEnds(padPositions: original.packagePadPositions)
         var turnedPolygonPoints = Set<String>()
         let movingPackageIDs = self.movingPackageIDs(in: original)
+        let packageGeometry = BoardPackageGeometry.index(of: original, packageIDs: movingPackageIDs)
 
         for ref in selectedObjects {
             guard let center = refOrigin(ref) else {
@@ -8027,7 +8030,9 @@ struct BoardCanvasView: View {
             }
             switch ref.type {
             case .boardPackage:
-                rotateBoardPackage(ref: ref, around: center, by: angleDelta, board: &board)
+                rotateBoardPackage(
+                    ref: ref, around: center, by: angleDelta, board: &board, geometry: packageGeometry[normalizedID(ref.id)]
+                )
             case .track:
                 rotateBoardTrack(ref: ref, around: center, by: angleDelta, in: \.tracks, original: original, board: &board, points: &movingPoints, padEnds: &padEnds)
             case .boardNetTie:
@@ -8069,28 +8074,43 @@ struct BoardCanvasView: View {
         movingPoints.apply(from: original, to: &board)
     }
 
-    private func moveBoardPackage(ref: HorizontalSelectableRef, by delta: HorizontalPoint, board: inout HorizontalBoard) {
+    /// `geometry` is where the package's geometry sits on `board`
+    /// (`BoardPackageGeometry`), when the caller has found it for many
+    /// packages at once; left out, it is looked up.
+    private func moveBoardPackage(
+        ref: HorizontalSelectableRef,
+        by delta: HorizontalPoint,
+        board: inout HorizontalBoard,
+        geometry: BoardPackageGeometry? = nil
+    ) {
         guard let index = board.packages.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }),
               !board.packages[index].fixed else {
             return
         }
 
-        keepBoardTracksConnectedToMovingPackage(packageID: ref.id, delta: delta, board: &board)
+        let geometry = geometry ?? BoardPackageGeometry(packageID: ref.id, in: board)
+        keepBoardTracksConnectedToMovingPackage(packageID: ref.id, delta: delta, board: &board, geometry: geometry)
         board.packages[index].position = board.packages[index].position + delta
-        shiftBoardPackageGeometry(packageID: ref.id, by: delta, board: &board)
+        shiftBoardPackageGeometry(packageID: ref.id, by: delta, board: &board, geometry: geometry)
     }
 
-    private func mirrorBoardPackage(ref: HorizontalSelectableRef, around center: HorizontalPoint, board: inout HorizontalBoard) {
+    private func mirrorBoardPackage(
+        ref: HorizontalSelectableRef,
+        around center: HorizontalPoint,
+        board: inout HorizontalBoard,
+        geometry: BoardPackageGeometry? = nil
+    ) {
         guard let index = board.packages.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }),
               !board.packages[index].fixed else {
             return
         }
 
-        let anchors = boardPackageConnectionAnchors(packageID: ref.id, board: board)
+        let geometry = geometry ?? BoardPackageGeometry(packageID: ref.id, in: board)
+        let anchors = boardPackageConnectionAnchors(packageID: ref.id, board: board, geometry: geometry)
         board.packages[index].position = mirrored(board.packages[index].position, around: center)
         board.packages[index].angle = wrappedAngle(-board.packages[index].angle)
         board.packages[index].mirrored.toggle()
-        mirrorBoardPackageGeometry(packageID: ref.id, around: center, board: &board)
+        mirrorBoardPackageGeometry(packageID: ref.id, around: center, board: &board, geometry: geometry)
         for anchor in anchors {
             moveBoardTrackEndpoints(
                 at: anchor.point,
@@ -8101,17 +8121,24 @@ struct BoardCanvasView: View {
         }
     }
 
-    private func rotateBoardPackage(ref: HorizontalSelectableRef, around center: HorizontalPoint, by angleDelta: Int, board: inout HorizontalBoard) {
+    private func rotateBoardPackage(
+        ref: HorizontalSelectableRef,
+        around center: HorizontalPoint,
+        by angleDelta: Int,
+        board: inout HorizontalBoard,
+        geometry: BoardPackageGeometry? = nil
+    ) {
         guard let index = board.packages.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }),
               !board.packages[index].fixed else {
             return
         }
 
-        let anchors = boardPackageConnectionAnchors(packageID: ref.id, board: board)
+        let geometry = geometry ?? BoardPackageGeometry(packageID: ref.id, in: board)
+        let anchors = boardPackageConnectionAnchors(packageID: ref.id, board: board, geometry: geometry)
         let original = board.packages[index]
         board.packages[index].position = rotated(original.position, around: center, by: angleDelta)
         board.packages[index].angle = wrappedAngle(original.angle + angleDelta)
-        rotateBoardPackageGeometry(packageID: ref.id, around: center, by: angleDelta, board: &board)
+        rotateBoardPackageGeometry(packageID: ref.id, around: center, by: angleDelta, board: &board, geometry: geometry)
         for anchor in anchors {
             let rotatedPoint = rotated(anchor.point, around: center, by: angleDelta)
             moveBoardTrackEndpoints(
@@ -8143,10 +8170,11 @@ struct BoardCanvasView: View {
         }
         let center = board.packages[index].position
         let rotation = 2 * board.packages[index].angle
-        let anchors = boardPackageConnectionAnchors(packageID: ref.id, board: board)
+        let geometry = BoardPackageGeometry(packageID: ref.id, in: board)
+        let anchors = boardPackageConnectionAnchors(packageID: ref.id, board: board, geometry: geometry)
 
-        mirrorBoardPackageGeometry(packageID: ref.id, around: center, board: &board)
-        rotateBoardPackageGeometry(packageID: ref.id, around: center, by: rotation, board: &board)
+        mirrorBoardPackageGeometry(packageID: ref.id, around: center, board: &board, geometry: geometry)
+        rotateBoardPackageGeometry(packageID: ref.id, around: center, by: rotation, board: &board, geometry: geometry)
         board.packages[index].mirrored.toggle()
 
         for anchor in anchors {
@@ -8163,9 +8191,10 @@ struct BoardCanvasView: View {
     private func keepBoardTracksConnectedToMovingPackage(
         packageID: String,
         delta: HorizontalPoint,
-        board: inout HorizontalBoard
+        board: inout HorizontalBoard,
+        geometry: BoardPackageGeometry? = nil
     ) {
-        let anchors = boardPackageConnectionAnchors(packageID: packageID, board: board)
+        let anchors = boardPackageConnectionAnchors(packageID: packageID, board: board, geometry: geometry)
         guard !anchors.isEmpty else {
             return
         }
@@ -8236,18 +8265,19 @@ struct BoardCanvasView: View {
         }
     }
 
-    private func boardPackageConnectionAnchors(packageID: String, board: HorizontalBoard) -> [MovingConnectionPoint] {
-        let normalizedPackageID = normalizedID(packageID)
-        func belongsToPackage(_ geometryID: String) -> Bool {
-            BoardMovePlanner.geometryID(geometryID, belongsToPackage: normalizedPackageID)
+    private func boardPackageConnectionAnchors(
+        packageID: String,
+        board: HorizontalBoard,
+        geometry: BoardPackageGeometry? = nil
+    ) -> [MovingConnectionPoint] {
+        let geometry = geometry ?? BoardPackageGeometry(packageID: packageID, in: board)
+        let padAnchors = geometry.pads.map { index in
+            let pad = board.packagePads[index]
+            return MovingConnectionPoint(point: HorizontalRect(points: pad.vertices).center, netID: pad.netID)
         }
-
-        let padAnchors = board.packagePads
-            .filter { belongsToPackage($0.id) }
-            .map { MovingConnectionPoint(point: HorizontalRect(points: $0.vertices).center, netID: $0.netID) }
-        let holeAnchors = board.packageHoles
-            .filter { belongsToPackage($0.id) }
-            .map { MovingConnectionPoint(point: $0.position, netID: $0.netID) }
+        let holeAnchors = geometry.holes.map { index in
+            MovingConnectionPoint(point: board.packageHoles[index].position, netID: board.packageHoles[index].netID)
+        }
         return padAnchors + holeAnchors
     }
 
@@ -9635,52 +9665,52 @@ struct BoardCanvasView: View {
     /// Applies a geometric transform to the retained pad-center map for one
     /// package, keeping `packagePadPositions` consistent with the pad polygons
     /// when a package is shifted/mirrored/rotated. Pad-path keys are
-    /// "packageID/padID" (normalized), so a prefix match selects the package.
+    /// "packageID/padID" (normalized); `geometry.padPositionKeys` are the
+    /// package's.
     private func updatePackagePadPositions(
-        packageID normalizedPackageID: String,
+        _ geometry: BoardPackageGeometry,
         board: inout HorizontalBoard,
         transform: (HorizontalPoint) -> HorizontalPoint
     ) {
-        let prefix = normalizedPackageID + "/"
-        for (path, position) in board.packagePadPositions where path.hasPrefix(prefix) {
-            board.packagePadPositions[path] = transform(position)
+        for key in geometry.padPositionKeys {
+            if let position = board.packagePadPositions[key] {
+                board.packagePadPositions[key] = transform(position)
+            }
         }
     }
 
     private func shiftBoardPackageGeometry(
         packageID: String,
         by delta: HorizontalPoint,
-        board: inout HorizontalBoard
+        board: inout HorizontalBoard,
+        geometry: BoardPackageGeometry? = nil
     ) {
         guard delta != .zero else {
             return
         }
 
-        let normalizedPackageID = normalizedID(packageID)
-        func belongsToPackage(_ geometryID: String) -> Bool {
-            BoardMovePlanner.geometryID(geometryID, belongsToPackage: normalizedPackageID)
-        }
+        let geometry = geometry ?? BoardPackageGeometry(packageID: packageID, in: board)
 
-        for index in board.packagePads.indices where belongsToPackage(board.packagePads[index].id) {
+        for index in geometry.pads {
             board.packagePads[index] = shifted(board.packagePads[index], by: delta)
         }
-        updatePackagePadPositions(packageID: normalizedPackageID, board: &board) { $0 + delta }
-        for index in board.packageHoles.indices where belongsToPackage(board.packageHoles[index].id) {
+        updatePackagePadPositions(geometry, board: &board) { $0 + delta }
+        for index in geometry.holes {
             board.packageHoles[index] = shifted(board.packageHoles[index], by: delta)
         }
-        for index in board.packagePolygons.indices where belongsToPackage(board.packagePolygons[index].id) {
+        for index in geometry.polygons {
             board.packagePolygons[index] = shifted(board.packagePolygons[index], by: delta)
         }
-        for index in board.packageLines.indices where belongsToPackage(board.packageLines[index].id) {
+        for index in geometry.lines {
             board.packageLines[index] = shifted(board.packageLines[index], by: delta)
         }
-        for index in board.packageArcs.indices where belongsToPackage(board.packageArcs[index].id) {
+        for index in geometry.arcs {
             board.packageArcs[index] = shifted(board.packageArcs[index], by: delta)
         }
-        for index in board.packageTexts.indices where belongsToPackage(board.packageTexts[index].id) {
+        for index in geometry.texts {
             board.packageTexts[index] = shifted(board.packageTexts[index], by: delta)
         }
-        for index in board.keepouts.indices where belongsToPackage(board.keepouts[index].id) {
+        for index in geometry.keepouts {
             board.keepouts[index] = shifted(board.keepouts[index], by: delta)
         }
     }
@@ -9688,33 +9718,31 @@ struct BoardCanvasView: View {
     private func mirrorBoardPackageGeometry(
         packageID: String,
         around center: HorizontalPoint,
-        board: inout HorizontalBoard
+        board: inout HorizontalBoard,
+        geometry: BoardPackageGeometry? = nil
     ) {
-        let normalizedPackageID = normalizedID(packageID)
-        func belongsToPackage(_ geometryID: String) -> Bool {
-            BoardMovePlanner.geometryID(geometryID, belongsToPackage: normalizedPackageID)
-        }
+        let geometry = geometry ?? BoardPackageGeometry(packageID: packageID, in: board)
 
-        for index in board.packagePads.indices where belongsToPackage(board.packagePads[index].id) {
+        for index in geometry.pads {
             board.packagePads[index] = mirrored(board.packagePads[index], around: center, flipsLayer: true)
         }
-        updatePackagePadPositions(packageID: normalizedPackageID, board: &board) { mirrored($0, around: center) }
-        for index in board.packageHoles.indices where belongsToPackage(board.packageHoles[index].id) {
+        updatePackagePadPositions(geometry, board: &board) { mirrored($0, around: center) }
+        for index in geometry.holes {
             board.packageHoles[index] = mirrored(board.packageHoles[index], around: center)
         }
-        for index in board.packagePolygons.indices where belongsToPackage(board.packagePolygons[index].id) {
+        for index in geometry.polygons {
             board.packagePolygons[index] = mirrored(board.packagePolygons[index], around: center, flipsLayer: true)
         }
-        for index in board.packageLines.indices where belongsToPackage(board.packageLines[index].id) {
+        for index in geometry.lines {
             board.packageLines[index] = mirrored(board.packageLines[index], around: center, flipsLayer: true)
         }
-        for index in board.packageArcs.indices where belongsToPackage(board.packageArcs[index].id) {
+        for index in geometry.arcs {
             board.packageArcs[index] = mirrored(board.packageArcs[index], around: center, flipsLayer: true)
         }
-        for index in board.packageTexts.indices where belongsToPackage(board.packageTexts[index].id) {
+        for index in geometry.texts {
             board.packageTexts[index] = mirrored(board.packageTexts[index], around: center, flipsLayer: true)
         }
-        for index in board.keepouts.indices where belongsToPackage(board.keepouts[index].id) {
+        for index in geometry.keepouts {
             board.keepouts[index] = mirrored(board.keepouts[index], around: center, flipsLayer: true)
         }
     }
@@ -9723,37 +9751,35 @@ struct BoardCanvasView: View {
         packageID: String,
         around origin: HorizontalPoint,
         by angleDelta: Int,
-        board: inout HorizontalBoard
+        board: inout HorizontalBoard,
+        geometry: BoardPackageGeometry? = nil
     ) {
         guard wrappedAngle(angleDelta) != 0 else {
             return
         }
 
-        let normalizedPackageID = normalizedID(packageID)
-        func belongsToPackage(_ geometryID: String) -> Bool {
-            BoardMovePlanner.geometryID(geometryID, belongsToPackage: normalizedPackageID)
-        }
+        let geometry = geometry ?? BoardPackageGeometry(packageID: packageID, in: board)
 
-        for index in board.packagePads.indices where belongsToPackage(board.packagePads[index].id) {
+        for index in geometry.pads {
             board.packagePads[index] = rotated(board.packagePads[index], around: origin, by: angleDelta)
         }
-        updatePackagePadPositions(packageID: normalizedPackageID, board: &board) { rotated($0, around: origin, by: angleDelta) }
-        for index in board.packageHoles.indices where belongsToPackage(board.packageHoles[index].id) {
+        updatePackagePadPositions(geometry, board: &board) { rotated($0, around: origin, by: angleDelta) }
+        for index in geometry.holes {
             board.packageHoles[index] = rotated(board.packageHoles[index], around: origin, by: angleDelta)
         }
-        for index in board.packagePolygons.indices where belongsToPackage(board.packagePolygons[index].id) {
+        for index in geometry.polygons {
             board.packagePolygons[index] = rotated(board.packagePolygons[index], around: origin, by: angleDelta)
         }
-        for index in board.packageLines.indices where belongsToPackage(board.packageLines[index].id) {
+        for index in geometry.lines {
             board.packageLines[index] = rotated(board.packageLines[index], around: origin, by: angleDelta)
         }
-        for index in board.packageArcs.indices where belongsToPackage(board.packageArcs[index].id) {
+        for index in geometry.arcs {
             board.packageArcs[index] = rotated(board.packageArcs[index], around: origin, by: angleDelta)
         }
-        for index in board.packageTexts.indices where belongsToPackage(board.packageTexts[index].id) {
+        for index in geometry.texts {
             board.packageTexts[index] = rotated(board.packageTexts[index], around: origin, by: angleDelta)
         }
-        for index in board.keepouts.indices where belongsToPackage(board.keepouts[index].id) {
+        for index in geometry.keepouts {
             board.keepouts[index] = rotated(board.keepouts[index], around: origin, by: angleDelta)
         }
     }
