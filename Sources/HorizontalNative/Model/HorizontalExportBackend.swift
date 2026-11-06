@@ -2031,30 +2031,46 @@ enum HorizontalExportBackend {
         try FileManager.default.createDirectory(at: jobURL, withIntermediateDirectories: true)
         let stepName = odbLegalEntityName(project.displayTitle.isEmpty ? "pcb" : project.displayTitle)
         let layerIDs = boardLayerIDs(for: board)
+        // A layer's name is its directory and its matrix key, so two layers
+        // may not share one (a user layer called Outline, say).
         var usedNames = Set<String>()
-        let layers = layerIDs.compactMap { layer -> ODBLayer? in
-            let objects = gerberObjects(for: board, layer: layer, outlineWidthMM: 0.01, silkscreenClipping: silkscreenClipping)
-            guard !objects.isEmpty else {
-                return nil
-            }
-            // A layer's name is its directory and its matrix key, so two
-            // layers may not share one (a user layer called Outline, say).
-            let baseName = odbLayerName(for: layer, board: board)
+        func uniqueName(_ baseName: String) -> String {
             var name = baseName
             var suffix = 2
             while !usedNames.insert(name).inserted {
                 name = "\(baseName)_\(suffix)"
                 suffix += 1
             }
-            return ODBLayer(id: layer, name: name, type: odbLayerType(for: layer), context: odbLayerContext(for: layer), objects: objects)
+            return name
         }
+        let layers = layerIDs.compactMap { layer -> ODBLayer? in
+            let objects = gerberObjects(for: board, layer: layer, outlineWidthMM: 0.01, silkscreenClipping: silkscreenClipping)
+            guard !objects.isEmpty else {
+                return nil
+            }
+            return ODBLayer(name: uniqueName(odbLayerName(for: layer, board: board)), type: odbLayerType(for: layer), context: odbLayerContext(for: layer), objects: objects)
+        }
+        // A drill layer for each span of copper holes run through, named
+        // for its ends as Horizon's get_drills_layer_name names it, follows
+        // the board's layers, and the drawings come last, as in Horizon's
+        // matrix.
+        let drillLayers = odbDrills(for: board).map { span, drills in
+            let start = odbLayerName(for: span.start, board: board)
+            let end = odbLayerName(for: span.end, board: board)
+            return ODBLayer(name: uniqueName("drills-\(start)-\(end)"), type: "DRILL", context: "BOARD", drills: drills, span: (start, end))
+        }
+        let matrixLayers = layers.filter { $0.context != "MISC" } + drillLayers + layers.filter { $0.context == "MISC" }
 
-        try writeODBMatrix(stepName: stepName, layers: layers, to: jobURL.appendingPathComponent("matrix/matrix"))
+        try writeODBMatrix(stepName: stepName, layers: matrixLayers, to: jobURL.appendingPathComponent("matrix/matrix"))
         try writeODBInfo(project: project, jobName: jobName, to: jobURL.appendingPathComponent("misc/info"))
         try writeODBStepHeader(to: jobURL.appendingPathComponent("steps/\(stepName)/stephdr"))
-        for layer in layers {
+        for layer in matrixLayers {
             let url = jobURL.appendingPathComponent("steps/\(stepName)/layers/\(layer.name)/features")
-            try writeODBFeatures(layer.objects, to: url)
+            if layer.span != nil {
+                try writeODBDrillFeatures(layer.drills, to: url)
+            } else {
+                try writeODBFeatures(layer.objects, to: url)
+            }
         }
         try writeODBProfile(board: board, to: jobURL.appendingPathComponent("steps/\(stepName)/profile"))
         try writeODBEDAData(board: board, to: jobURL.appendingPathComponent("steps/\(stepName)/eda/data"))
@@ -2075,9 +2091,11 @@ enum HorizontalExportBackend {
                 ("NAME", layer.name),
                 ("POLARITY", "POSITIVE")
             ]
-            if HorizontalBoardLayers.isCopper(layer.id), layer.id != HorizontalBoardLayers.topCopper {
-                fields.append(("START_NAME", odbLayerName(for: HorizontalBoardLayers.bottomCopper, board: nil)))
-                fields.append(("END_NAME", odbLayerName(for: HorizontalBoardLayers.topCopper, board: nil)))
+            // Only a drill layer has a span; the copper layers below the top
+            // were given one from bottom to top, which no layer has.
+            if let span = layer.span {
+                fields.append(("START_NAME", span.start))
+                fields.append(("END_NAME", span.end))
             }
             lines += odbArray("LAYER", fields)
             row += 1
@@ -2169,6 +2187,69 @@ enum HorizontalExportBackend {
                     lines.append("OE")
                 }
                 lines.append("SE")
+            }
+        }
+        try writeODBText(lines.joined(separator: "\r\n") + "\r\n", to: url)
+    }
+
+    /// The board's holes by the span of copper each runs through, the through
+    /// span first: a via's hole runs its via's span, every other hole the
+    /// board's, as Horizon's Board::get_drill_spans has them.
+    private static func odbDrills(for board: HorizontalBoard) -> [(span: HorizontalViaSpan, drills: [ODBDrill])] {
+        let through = HorizontalViaSpan(start: HorizontalBoardLayers.topCopper, end: HorizontalBoardLayers.bottomCopper)
+        var viaSpans = [String: HorizontalViaSpan]()
+        for via in board.vias {
+            let layers = via.copperLayers
+            viaSpans["\(via.id)/hole".lowercased()] = via.span
+                ?? (layers.count >= 2 ? HorizontalViaSpan(start: layers.max() ?? 0, end: layers.min() ?? 0) : through)
+        }
+        func drill(_ hole: HorizontalHole, _ kind: ODBDrill.Kind) -> ODBDrill {
+            // A slot is a line between the centres of its two ends.
+            let offset = hole.shape == .slot ? (hole.effectiveLength - hole.diameter) / 2 : 0
+            let transform = HorizontalPlacementTransform(shift: hole.position, angle: hole.angle, mirrored: false)
+            return ODBDrill(
+                position: hole.position,
+                diameter: hole.diameter,
+                kind: kind,
+                slot: offset > 0
+                    ? (transform.applying(to: HorizontalPoint(x: -offset, y: 0)), transform.applying(to: HorizontalPoint(x: offset, y: 0)))
+                    : nil
+            )
+        }
+        var bySpan = [HorizontalViaSpan: [ODBDrill]]()
+        for hole in board.viaHoles where hole.diameter > 0 {
+            bySpan[viaSpans[hole.id.lowercased()] ?? through, default: []].append(drill(hole, .via))
+        }
+        for hole in board.holes + board.packageHoles where hole.diameter > 0 {
+            bySpan[through, default: []].append(drill(hole, hole.plated ? .plated : .nonPlated))
+        }
+        return bySpan
+            .sorted { ($0.key != through ? 1 : 0, -$0.key.start, $0.key.end) < ($1.key != through ? 1 : 0, -$1.key.start, $1.key.end) }
+            .map { ($0.key, $0.value) }
+    }
+
+    /// A drill layer's features: a pad flashed for each round hole and a line
+    /// along each slot, as wide as the hole, each with its `.drill`
+    /// attribute, as Horizon's CanvasODB::img_hole writes them.
+    private static func writeODBDrillFeatures(_ drills: [ODBDrill], to url: URL) throws {
+        let diameters = Set(drills.map(\.diameter)).sorted()
+        let symbolIDs = Dictionary(uniqueKeysWithValues: diameters.enumerated().map { index, diameter in
+            (diameter, index)
+        })
+        var lines = [
+            "UNITS=MM",
+            "#Symbols"
+        ]
+        for diameter in diameters {
+            lines.append("$\(symbolIDs[diameter] ?? 0) r\(String(format: "%.3f", diameter / 1_000)) M")
+        }
+        lines.append("@0 .drill")
+        for drill in drills {
+            let symbol = symbolIDs[drill.diameter] ?? 0
+            if let slot = drill.slot {
+                lines.append("L \(odbPoint(slot.from)) \(odbPoint(slot.to)) \(symbol) P 0 ;0=\(drill.kind.rawValue)")
+            } else {
+                lines.append("P \(odbPoint(drill.position)) \(symbol) P 0 8 0 ;0=\(drill.kind.rawValue)")
             }
         }
         try writeODBText(lines.joined(separator: "\r\n") + "\r\n", to: url)
@@ -3103,11 +3184,29 @@ private struct DrillHit {
 }
 
 private struct ODBLayer {
-    var id: Int
     var name: String
     var type: String
     var context: String
-    var objects: [GerberPrimitive]
+    var objects: [GerberPrimitive] = []
+    /// A drill layer's holes and the layers its span runs from and to, the
+    /// upper first.
+    var drills: [ODBDrill] = []
+    var span: (start: String, end: String)? = nil
+}
+
+/// A hole on an ODB++ drill layer.
+private struct ODBDrill {
+    /// The `.drill` attribute's options, in Horizon's order.
+    enum Kind: Int {
+        case plated = 0
+        case nonPlated = 1
+        case via = 2
+    }
+
+    var position: HorizontalPoint
+    var diameter: Double
+    var kind: Kind
+    var slot: (from: HorizontalPoint, to: HorizontalPoint)?
 }
 
 private extension HorizontalRGBColor {

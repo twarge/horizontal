@@ -174,4 +174,87 @@ final class HorizontalODBExportTests: XCTestCase {
         XCTAssertEqual(outline.components(separatedBy: "\r\nL ").count - 1, 4)
         XCTAssertTrue(try XCTUnwrap(job.features["dimensions"]).contains("\r\nL 0.000000 0.000000 0.000000 -2.250000 "))
     }
+
+    // MARK: Drills
+
+    private func via(_ id: String, at position: HorizontalPoint, layers: [Int]) -> HorizontalMarker {
+        HorizontalMarker(id: id, position: position, size: 600_000, holeSize: 300_000, layer: nil, connectedLayers: layers)
+    }
+
+    /// The features lines of a layer that flash or draw something.
+    private func featureLines(_ features: String) -> [String] {
+        features.components(separatedBy: "\r\n").filter { $0.hasPrefix("P ") || $0.hasPrefix("L ") }
+    }
+
+    private func matrixBlock(of name: String, in matrix: String) -> [String] {
+        let block = matrix.components(separatedBy: "LAYER {").first { $0.contains("NAME=\(name)\r\n") } ?? ""
+        return block.components(separatedBy: "\r\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { $0.contains("=") }
+    }
+
+    /// Every hole is on the drill layer of the copper it runs through, named
+    /// for its ends and spanning them, as Horizon's ODB export has it: a
+    /// through via, a plated and a non-plated hole and a slot on the through
+    /// layer, a blind via on its own. The job had no drill layer at all.
+    func testHolesAreOnTheDrillLayerOfTheirSpan() throws {
+        let throughVia = via("v1", at: point(1, 1), layers: [Fixture.top, Fixture.inner1, Fixture.inner2, Fixture.bottom])
+        let blindVia = via("v2", at: point(2, 1), layers: [Fixture.top, Fixture.inner1])
+        let plated = HorizontalHole(id: "h1", position: point(3, 1), diameter: 1_000_000, plated: true)
+        let mounting = HorizontalHole(id: "h2", position: point(4, 1), diameter: 3_200_000, plated: false)
+        let slot = HorizontalHole(
+            id: "h3", position: point(10, 5), diameter: 800_000, length: 2_800_000, shape: .slot, angle: 16_384, plated: true
+        )
+        let job = try export(Fixture.board(vias: [throughVia, blindVia], holes: [plated, mounting, slot]))
+
+        let through = "drills-signal_top-signal_bottom"
+        let blind = "drills-signal_top-signal_inner_1"
+        let throughBlock = matrixBlock(of: through, in: job.matrix)
+        for field in ["CONTEXT=BOARD", "TYPE=DRILL", "START_NAME=signal_top", "END_NAME=signal_bottom"] {
+            XCTAssertTrue(throughBlock.contains(field), "\(field) is missing from \(throughBlock)")
+        }
+        XCTAssertTrue(matrixBlock(of: blind, in: job.matrix).contains("END_NAME=signal_inner_1"))
+
+        let throughFeatures = try XCTUnwrap(job.features[through])
+        XCTAssertTrue(throughFeatures.hasPrefix("UNITS=MM\r\n#Symbols\r\n"))
+        XCTAssertTrue(throughFeatures.contains("\r\n@0 .drill\r\n"))
+        for diameter in ["r300.000 M", "r800.000 M", "r1000.000 M", "r3200.000 M"] {
+            XCTAssertTrue(throughFeatures.contains(diameter), "no symbol \(diameter)")
+        }
+        let lines = featureLines(throughFeatures)
+        XCTAssertEqual(lines.count, 4, "\(lines)")
+        XCTAssertTrue(lines.contains { $0.hasPrefix("P 1.000000 1.000000 ") && $0.hasSuffix(";0=2") }, "the through via")
+        XCTAssertTrue(lines.contains { $0.hasPrefix("P 3.000000 1.000000 ") && $0.hasSuffix(";0=0") }, "the plated hole")
+        XCTAssertTrue(lines.contains { $0.hasPrefix("P 4.000000 1.000000 ") && $0.hasSuffix(";0=1") }, "the mounting hole")
+        // The slot stands on end: its ends' centres are 1 mm either side.
+        XCTAssertTrue(lines.contains { $0.hasPrefix("L 10.000000 4.000000 10.000000 6.000000 ") && $0.hasSuffix(";0=0") },
+                      "the slot, in \(lines)")
+
+        let blindLines = featureLines(try XCTUnwrap(job.features[blind]))
+        XCTAssertEqual(blindLines.count, 1)
+        XCTAssertTrue(blindLines[0].hasPrefix("P 2.000000 1.000000 ") && blindLines[0].hasSuffix(";0=2"))
+    }
+
+    /// Drill layers follow the board's layers and come before its drawings,
+    /// and only they have a span: the copper layers below the top were given
+    /// one from the bottom to the top.
+    func testDrillLayersFollowTheBoardsLayersAndOnlyTheyHaveASpan() throws {
+        let track = HorizontalSegment(id: "t", from: point(0, 0), to: point(5, 0), width: 200_000, layer: Fixture.bottom, netID: nil)
+        let job = try export(Fixture.board(
+            tracks: [track],
+            vias: [via("v1", at: point(1, 1), layers: [Fixture.top, Fixture.inner1, Fixture.inner2, Fixture.bottom])],
+            texts: [HorizontalText(id: "note", text: "NOTE", position: point(5, 5), size: 1_000_000, layer: HorizontalBoardLayers.topNotes)]
+        ))
+
+        let names = matrixNames(job.matrix).dropFirst() // the step's
+        let drill = try XCTUnwrap(names.firstIndex(of: "drills-signal_top-signal_bottom"))
+        XCTAssertLessThan(try XCTUnwrap(names.firstIndex(of: "signal_bottom")), drill)
+        XCTAssertGreaterThan(try XCTUnwrap(names.firstIndex(of: "notes_top")), drill)
+        XCTAssertFalse(matrixBlock(of: "signal_bottom", in: job.matrix).contains { $0.hasPrefix("START_NAME=") })
+        XCTAssertEqual(job.matrix.components(separatedBy: "START_NAME=").count - 1, 1)
+    }
+
+    func testABoardWithoutHolesHasNoDrillLayer() throws {
+        let track = HorizontalSegment(id: "t", from: point(0, 0), to: point(5, 0), width: 200_000, layer: Fixture.top, netID: nil)
+        let job = try export(Fixture.board(tracks: [track]))
+        XCTAssertFalse(job.matrix.contains("TYPE=DRILL"))
+    }
 }

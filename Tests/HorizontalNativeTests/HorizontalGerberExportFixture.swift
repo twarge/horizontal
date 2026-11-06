@@ -19,7 +19,8 @@ enum HorizontalGerberExportFixture {
         planes: [HorizontalPlane] = [],
         dimensions: [HorizontalDimension] = [],
         texts: [HorizontalText] = [],
-        userLayers: [HorizontalBoardUserLayer] = []
+        userLayers: [HorizontalBoardUserLayer] = [],
+        holes: [HorizontalHole] = []
     ) -> HorizontalBoard {
         HorizontalBoard(
             url: URL(fileURLWithPath: "/tmp/gerber-fixture/board.json"), uuid: "board", name: "gerber-fixture",
@@ -33,7 +34,7 @@ enum HorizontalGerberExportFixture {
             ],
             userLayers: userLayers, junctions: [:], junctionNetIDs: [:], netDetails: [:],
             tracks: tracks, netTies: [], lines: lines, arcs: [], connectionLines: [], airwires: [],
-            polygons: polygons, planes: planes, keepouts: keepouts, dimensions: dimensions, decals: [], holes: [],
+            polygons: polygons, planes: planes, keepouts: keepouts, dimensions: dimensions, decals: [], holes: holes,
             vias: vias,
             viaHoles: vias.map { via in
                 HorizontalHole(
