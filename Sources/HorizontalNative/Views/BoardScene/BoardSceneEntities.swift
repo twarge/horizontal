@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import Metal
 import RealityKit
 import simd
 import SwiftUI
@@ -579,26 +580,38 @@ final class BoardSceneEntities {
     // MARK: Highlight and selection
 
     /// Marks the packages of `componentIDs` with a translucent box around each
-    /// model, and unmarks the rest. The boxes sit in the models' containers,
-    /// so they explode, hide and show with them; the models themselves are
-    /// not touched, because their materials are shared by every instance.
+    /// model, and a light that lights what is around it, and unmarks the
+    /// rest. The marks sit in the models' containers, so they explode, hide
+    /// and show with them; the models themselves are not touched, because
+    /// their materials are shared by every instance.
     func applyHighlight(componentIDs: Set<String>) {
         mark(componentIDs: componentIDs, marks: &highlightMarks) { package in
-            self.markBox(around: package, color: Self.highlightColor, alpha: 0.45, pad: 0.5, halo: true)
+            self.markBox(around: package, color: Self.highlightColor, alpha: 0.45, pad: 0.5, lit: true)
+        }
+        // More lights than this flood the board, and cost more than the
+        // boxes need: past it, the boxes mark the parts alone.
+        let lit = highlightMarks.count <= Self.highlightLightBudget
+        for box in highlightMarks.values {
+            box.findEntity(named: Self.highlightLightName)?.isEnabled = lit
         }
     }
 
     /// Marks the packages of `componentIDs` as selected: a blue box, thinner
-    /// than the highlight's and without its halo, so both can show at once.
+    /// than the highlight's and without its light, so both can show at once.
     func applySelection(componentIDs: Set<String>) {
         mark(componentIDs: componentIDs, marks: &selectionMarks) { package in
-            self.markBox(around: package, color: Self.selectionColor, alpha: 0.34, pad: 0.3, halo: false)
+            self.markBox(around: package, color: Self.selectionColor, alpha: 0.34, pad: 0.3, lit: false)
         }
     }
 
     /// Every mark in the scene: the highlight's and the selection's.
     var markCount: Int {
         highlightMarks.count + selectionMarks.count
+    }
+
+    /// The highlight lights that light the scene.
+    var highlightLights: [Entity] {
+        highlightMarks.values.compactMap { $0.findEntity(named: Self.highlightLightName) }.filter(\.isEnabled)
     }
 
     private func mark(componentIDs: Set<String>, marks: inout [String: Entity], make: (PackagePlacement) -> Entity) {
@@ -624,6 +637,12 @@ final class BoardSceneEntities {
     private static let highlightColor = BoardSceneColor(red: 1.0, green: 0.16, blue: 0.10)
     private static let selectionColor = BoardSceneColor(red: 0.25, green: 0.56, blue: 1.0)
 
+    static let highlightLightName = "highlight-light"
+    /// How many highlighted parts light their surroundings. A GPU before
+    /// Apple's family 6 draws eight dynamic lights at most, and the scene's
+    /// own four take half of them.
+    static let highlightLightBudget = MTLCreateSystemDefaultDevice()?.supportsFamily(.apple6) == true ? 8 : 4
+
     /// The axis-aligned box the package's model fills where it stands, in
     /// its container's space.
     private func markBounds(of package: PackagePlacement) -> (min: SIMD3<Float>, max: SIMD3<Float>) {
@@ -646,10 +665,10 @@ final class BoardSceneEntities {
         return (low, high)
     }
 
-    /// A self-lit box around the part in `color`, and — with `halo` — a larger,
-    /// fainter sphere around that, the spill of light on the board and the
-    /// parts beside it. Unlit, so it reads as its colour whatever the light.
-    private func markBox(around package: PackagePlacement, color: BoardSceneColor, alpha: Double, pad: Float, halo: Bool) -> Entity {
+    /// A self-lit box around the part in `color`, and — with `lit` — a light
+    /// of that colour over it, which lights the board and the parts beside
+    /// it. The box is unlit, so it reads as its colour whatever the light.
+    private func markBox(around package: PackagePlacement, color: BoardSceneColor, alpha: Double, pad: Float, lit: Bool) -> Entity {
         var (low, high) = markBounds(of: package)
         if [low.x, low.y, low.z, high.x, high.y, high.z].contains(where: { !$0.isFinite }) || high.x < low.x || high.y < low.y || high.z < low.z {
             low = SIMD3(-0.5, 0, -0.5)
@@ -662,18 +681,38 @@ final class BoardSceneEntities {
             mesh: .generateBox(width: width, height: height, depth: length, cornerRadius: 0.12),
             materials: [BoardSceneMaterials.material(Self.glow(color, alpha: alpha))]
         )
-        box.name = halo ? "highlight" : "selection"
+        box.name = lit ? "highlight" : "selection"
         box.position = (low + high) / 2
         box.components.set(ModelSortGroupComponent(group: Self.sortGroup, order: BoardSceneDrawOrder.mark.rawValue))
-        if halo {
-            let sphere = ModelEntity(
-                mesh: .generateSphere(radius: max(width, length) * 0.9 + 1.5),
-                materials: [BoardSceneMaterials.material(Self.glow(color, alpha: 0.12))]
-            )
-            sphere.components.set(ModelSortGroupComponent(group: Self.sortGroup, order: BoardSceneDrawOrder.halo.rawValue))
-            box.addChild(sphere)
+        if lit {
+            box.addChild(Self.highlightLight(color: color, footprint: max(width, length), height: height, bottom: package.container.factorMilli < 0))
         }
         return box
+    }
+
+    /// A point light over the middle of a highlighted part — under it, for a
+    /// part on the bottom — so the part seems to light the board and the
+    /// parts around it, where SceneKit's view drew a translucent sphere. It
+    /// hangs higher over a bigger part, to spread wider, is bright enough to
+    /// light the board at the part's edge alike whatever the part's size, and
+    /// lights nothing on the board past a few millimetres beyond the part,
+    /// further for a bigger one.
+    private static func highlightLight(color: BoardSceneColor, footprint: Float, height: Float, bottom: Bool) -> Entity {
+        let lift = 1.5 + 0.35 * footprint
+        let overBoard = height + lift
+        let glowRadius = 5 + 1.2 * footprint
+        let toEdge = (footprint * footprint / 4 + overBoard * overBoard).squareRoot()
+        // Lux on the board at the part's edge; the key light gives 2,600.
+        let illuminance: Float = 14_000
+        let light = Entity()
+        light.name = highlightLightName
+        light.components.set(PointLightComponent(
+            color: color.opaque.platformColor,
+            intensity: illuminance * 4 * .pi * toEdge * toEdge * toEdge / overBoard,
+            attenuationRadius: (overBoard * overBoard + glowRadius * glowRadius).squareRoot()
+        ))
+        light.position = SIMD3(0, (bottom ? -1 : 1) * (height / 2 + lift), 0)
+        return light
     }
 
     private static func glow(_ color: BoardSceneColor, alpha: Double) -> BoardSceneMaterialSpec {

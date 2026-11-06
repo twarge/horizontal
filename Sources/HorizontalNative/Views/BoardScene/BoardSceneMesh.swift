@@ -159,7 +159,6 @@ enum BoardSceneDrawOrder: Int32, Sendable {
     case text = 25
     case keepout = 30
     case outline = 35
-    case halo = 40
     case mark = 41
 }
 

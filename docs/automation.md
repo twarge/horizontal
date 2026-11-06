@@ -744,12 +744,13 @@ the schematic on the thing's sheet, the board, and the 3D view, where the
 camera moves to look at the thing's footprint from the direction it was
 already looking. When none of the showing panes can show it, the default rule
 picks one and reveals it. Highlight is every view too: the 3D scene marks each
-highlighted component's model with a red, self-lit box inside a faint red halo
-— the spill of light on the board and the parts beside it, drawn unlit so it
-reads as its colour whatever the light (`BoardSceneRenderSmokeTests` renders
-a real project offscreen, every part highlighted, under Metal API validation)
-— so "highlight C50" is one highlight in the schematic, the board and the 3D
-board.
+highlighted component's model with a red, self-lit box, and hangs a red point
+light over it that lights the board and the parts beside it; past eight
+highlighted parts (four on a GPU older than Apple's family 6) the boxes go
+without their lights, which would flood the board (`BoardSceneRenderSmokeTests`
+renders a real project offscreen, every part highlighted and then eight lit,
+under Metal API validation) — so "highlight C50" is one highlight in the
+schematic, the board and the 3D board.
 The workspace holds one component selection, the last one made — a click on
 the board, on a symbol in the schematic, on a part in the 3D view (shift or
 command to extend, empty space to clear), a tap on the iPad, or `select` from

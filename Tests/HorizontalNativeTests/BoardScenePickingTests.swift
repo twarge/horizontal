@@ -7,7 +7,7 @@ import XCTest
 /// picked. Models drawn as instances of one mesh are picked one by one.
 @MainActor
 final class BoardScenePickingTests: XCTestCase {
-    private func scene() -> BoardSceneEntities {
+    private func scene(extraParts: Int = 0) -> BoardSceneEntities {
         let board = HorizontalBoard.poolEditorBoard(uuid: "pick", name: "Pick", url: URL(fileURLWithPath: "/tmp/pick"))
         let asset = BoardSceneModelLibrary.shared.boxAsset(
             size: SIMD3(2, 1, 2),
@@ -24,6 +24,7 @@ final class BoardScenePickingTests: XCTestCase {
         }
         // Two of the same model on top (one mesh, two instances), one below.
         description.models = [placement("a", at: -5, y: 1.1), placement("b", at: 5, y: 1.1), placement("under", at: 0, y: -1.7, bottom: true)]
+        description.models += (0..<extraParts).map { placement("extra\($0)", at: Float($0) * 3 - 15, y: 1.1) }
         let scene = BoardSceneEntities(description: description)
         scene.applyDisplayOptions(BoardDisplayOptions(), copperColor: .orange, materialColors: HorizontalBoardColors(silkscreen: nil, solderMask: nil, substrate: nil), layerColors: [:])
         return scene
@@ -74,5 +75,28 @@ final class BoardScenePickingTests: XCTestCase {
         scene.applyHighlight(componentIDs: [])
         scene.applySelection(componentIDs: [])
         XCTAssertEqual(scene.markCount, 0)
+    }
+
+    func testAHighlightLightsTheSideOfTheBoardItsPartIsOn() {
+        let scene = scene()
+        scene.applyHighlight(componentIDs: ["c-a", "c-under"])
+        scene.applySelection(componentIDs: ["c-b"])
+        let heights = scene.highlightLights.map { $0.position(relativeTo: nil).y }.sorted()
+        XCTAssertEqual(heights.count, 2, "one light a highlighted part, none for the selection")
+        XCTAssertLessThan(heights[0], -2.2, "under the part on the bottom, which ends 2.2 mm down")
+        XCTAssertGreaterThan(heights[1], 1.6, "over the part on top, which stands 1.6 mm up")
+        scene.applyHighlight(componentIDs: [])
+        XCTAssertTrue(scene.highlightLights.isEmpty)
+    }
+
+    func testPastTheBudgetHighlightsAreBoxesAlone() {
+        let budget = BoardSceneEntities.highlightLightBudget
+        let scene = scene(extraParts: budget)
+        let all = Set((0..<budget).map { "c-extra\($0)" } + ["c-a"])
+        scene.applyHighlight(componentIDs: all)
+        XCTAssertEqual(scene.markCount, budget + 1)
+        XCTAssertTrue(scene.highlightLights.isEmpty, "\(budget + 1) lights would flood the board")
+        scene.applyHighlight(componentIDs: all.subtracting(["c-a"]))
+        XCTAssertEqual(scene.highlightLights.count, budget, "back within the budget, every part lights again")
     }
 }

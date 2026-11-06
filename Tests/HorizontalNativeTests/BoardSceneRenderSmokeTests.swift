@@ -4,7 +4,8 @@ import XCTest
 @testable import HorizontalNative
 
 /// Renders a real project's 3D scene offscreen, with every component
-/// highlighted and a few selected, the way the app would draw it. Opt-in: set
+/// highlighted and a few selected, then a few highlighted and lit, the way
+/// the app would draw it. Opt-in: set
 /// HORIZONTAL_SCENE_SMOKE_PROJECT to a project path. Run with
 /// METAL_DEVICE_WRAPPER_TYPE=1 in the environment and Metal's API validation
 /// layer checks every draw, which is how a degenerate mesh gets a message
@@ -45,6 +46,11 @@ final class BoardSceneRenderSmokeTests: XCTestCase {
         scene.applyHighlight(componentIDs: componentIDs)
         try await render()
         scene.applySelection(componentIDs: Set(componentIDs.prefix(3)))
+        try await render()
+        // As many as light their surroundings: each a point light as well.
+        let lit = Set(componentIDs.sorted().prefix(BoardSceneEntities.highlightLightBudget))
+        scene.applyHighlight(componentIDs: lit)
+        XCTAssertEqual(scene.highlightLights.count, lit.count)
         try await render()
         scene.applyHighlight(componentIDs: [])
         scene.applySelection(componentIDs: [])
