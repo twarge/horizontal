@@ -12,6 +12,7 @@ final class HorizontalSmashTests: XCTestCase {
     private var partID = ""
     private var refdesTextID = ""
     private var valueTextID = ""
+    private var packageID = ""
 
     override func setUpWithError() throws {
         let root = FileManager.default.temporaryDirectory
@@ -39,6 +40,7 @@ final class HorizontalSmashTests: XCTestCase {
         padstack.shapes = [shapeID: HorizontalPadstackShape(id: shapeID, form: .rectangle, params: [800_000, 900_000])]
         var package = HorizontalPoolItemFactory.newPackage()
         package.name = "0603"
+        packageID = package.uuid
         var padIDs = [String]()
         for (index, name) in ["1", "2"].enumerated() {
             let padID = HorizontalPoolItemFactory.newUUID()
@@ -238,6 +240,69 @@ final class HorizontalSmashTests: XCTestCase {
         let board = try JSONHelper.loadDictionary(from: XCTUnwrap(applying([["op": "unsmash", "component": "R1", "board": true]], to: smashed)
             .regularFileData(relativePath: "board.json")))
         XCTAssertTrue((board["texts"] as? JSONDictionary ?? [:]).isEmpty)
+    }
+
+    /// R1 placed on the board and its package smashed.
+    private func smashedOnTheBoard() throws -> HorizontalProjectArchive {
+        let placed = try applying([["op": "place_component", "component": "R1", "x_mm": 40, "y_mm": 25]], to: placed(angle: 0, mirror: false))
+        return try applying([["op": "smash", "component": "R1", "board": true]], to: placed)
+    }
+
+    private func boardJSON(_ archive: HorizontalProjectArchive) throws -> JSONDictionary {
+        try JSONHelper.loadDictionary(from: XCTUnwrap(archive.regularFileData(relativePath: "board.json")))
+    }
+
+    /// A smashed refdes deleted on the board leaves the file, as Horizon's
+    /// delete takes it, its package smashed with no texts. The save kept it
+    /// as it keeps a smashed text the load could not draw, and the next open
+    /// drew it again: Weevling's canvas lost its refdes that way while its
+    /// file and the 3D view still had them.
+    func testASmashedTextDeletedOnTheBoardLeavesTheFile() throws {
+        var archive = try smashedOnTheBoard()
+        let project = try HorizontalProject.loadSnapshot(of: archive)
+        var board = try XCTUnwrap(project.board)
+        XCTAssertEqual(board.packageTexts.filter(\.fromSmash).map(\.text), ["R1"])
+        XCTAssertEqual(board.unloadedSmashTextIDs, [:], "the load drew every smashed text")
+
+        // As the canvas's delete takes a selected text.
+        board.packageTexts.removeAll(where: \.fromSmash)
+        try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &archive)
+        let json = try boardJSON(archive)
+        XCTAssertEqual(json.dictionaryMap("texts").count, 0, "the text is gone from the file")
+        let package = try XCTUnwrap(json.dictionaryMap("packages").values.first)
+        XCTAssertEqual(package.bool("smashed"), true, "the package stays smashed, as Horizon's does")
+        XCTAssertEqual(package["texts"] as? [String], [])
+
+        let reopened = try XCTUnwrap(HorizontalProject.loadSnapshot(of: archive).board)
+        XCTAssertEqual(reopened.packageTexts.filter { $0.layer == HorizontalBoardLayers.topSilkscreen }.map(\.text), [],
+                       "nor does it come back when the board is opened again")
+    }
+
+    /// The smashed texts of a package the load cannot draw, its pool package
+    /// gone, stay in the file through a save, and go once it is unsmashed, as
+    /// Horizon's unsmash deletes them.
+    func testSmashedTextsTheLoadCouldNotDrawAreKept() throws {
+        var archive = try smashedOnTheBoard()
+        let textID = try XCTUnwrap(try boardJSON(archive).dictionaryMap("texts").keys.first)
+        try archive.removeRegularFile(relativePath: "pool/packages/cache/\(packageID)/package.json")
+        let project = try HorizontalProject.loadSnapshot(of: archive)
+        var board = try XCTUnwrap(project.board)
+        let package = try XCTUnwrap(board.packages.first)
+        XCTAssertEqual(board.packageTexts.count, 0, "nothing of the package is drawn")
+        XCTAssertEqual(board.unloadedSmashTextIDs, [package.id.lowercased(): [textID]])
+
+        try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &archive)
+        var json = try boardJSON(archive)
+        XCTAssertNotNil(json.dictionaryMap("texts")[textID], "a save keeps the text")
+        XCTAssertEqual(json.dictionaryMap("packages").values.first?["texts"] as? [String], [textID], "and the package names it")
+        XCTAssertEqual(json.dictionaryMap("packages").values.first?.bool("smashed"), true)
+
+        board.packages[0].smashed = false
+        try HorizontalProjectJSONApplicator.apply(board: board, in: project, to: &archive)
+        json = try boardJSON(archive)
+        XCTAssertEqual(json.dictionaryMap("texts").count, 0, "unsmashed, its texts go")
+        XCTAssertEqual(json.dictionaryMap("packages").values.first?["texts"] as? [String], [])
+        XCTAssertEqual(json.dictionaryMap("packages").values.first?.bool("smashed"), false)
     }
 
     func testSmashRefusesToMixASymbolInstanceWithAComponent() throws {

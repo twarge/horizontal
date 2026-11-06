@@ -513,6 +513,13 @@ struct HorizontalBoard {
     /// whose pool item could not be read is never loaded, and `patchDecals`
     /// keeps it.
     var removedDecalIDs: Set<String> = []
+    /// The texts a smashed package names, by package id, that the file has
+    /// and the load drew none of: its part or pool package could not be read,
+    /// or the text draws nothing. The writer keeps them as the file has them
+    /// while the package is smashed, so a save never drops smashed silk the
+    /// board never had. Every other smashed text is in `packageTexts`, and
+    /// one taken out of it (deleted) leaves the file.
+    var unloadedSmashTextIDs: [String: [String]] = [:]
     var planes: [HorizontalPlane]
     var keepouts: [HorizontalKeepout]
     var dimensions: [HorizontalDimension]
@@ -854,6 +861,11 @@ struct HorizontalBoard {
             ),
             physicalBounds: physicalBounds,
             bounds: HorizontalRect(points: points).padded().orEmptyContentCanvasRegion()
+        )
+        loadedBoard.unloadedSmashTextIDs = unloadedSmashTextIDs(
+            packages: packageMap,
+            boardTexts: boardTexts,
+            drawn: packageGeometry.texts
         )
         loadedBoard.checkFacts = HorizontalBoardCheckFacts(
             componentsWithoutPart: blockMetadata.components
@@ -4702,6 +4714,30 @@ struct HorizontalBoard {
 
     private static func packageTextIDs(from package: JSONDictionary) -> [String] {
         package["texts"] as? [String] ?? []
+    }
+
+    /// `HorizontalBoard.unloadedSmashTextIDs`: what each smashed package
+    /// names, in the file's order, that `texts` has and `drawn` doesn't. A
+    /// name with no text is left out, as Horizon's load prunes it
+    /// (`BoardPackage::update_texts`).
+    private static func unloadedSmashTextIDs(
+        packages: [String: JSONDictionary],
+        boardTexts: [String: JSONDictionary],
+        drawn: [HorizontalText]
+    ) -> [String: [String]] {
+        let present = Set(boardTexts.keys.map(normalizedID))
+        let loaded = Set(drawn.filter(\.fromSmash).map { normalizedID($0.id) })
+        return packages.reduce(into: [String: [String]]()) { result, entry in
+            guard entry.value.bool("smashed") == true else {
+                return
+            }
+            let unloaded = packageTextIDs(from: entry.value).filter { textID in
+                present.contains(normalizedID(textID)) && !loaded.contains(normalizedID("\(entry.key)/text/\(textID)"))
+            }
+            if !unloaded.isEmpty {
+                result[normalizedID(entry.key)] = unloaded
+            }
+        }
     }
 
     private static func parsePackagePads(

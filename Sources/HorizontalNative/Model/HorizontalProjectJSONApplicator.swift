@@ -159,31 +159,21 @@ enum HorizontalProjectJSONApplicator {
         patchKeepouts(&json, keepouts: board.keepouts, removing: board.removedKeepoutIDs)
         patchDecals(&json, decals: board.decals, removing: board.removedDecalIDs)
         patchDimensions(&json, dimensions: board.dimensions, removing: board.removedDimensionIDs)
-        // Packages smashed in-memory but whose from-smash texts weren't
-        // materialized (e.g. the board was opened without a resolvable pool):
-        // their `texts` map entries and package `texts[]` must be preserved
-        // verbatim so a save never silently drops smashed silk.
-        let materializedSmashPackageIDs = Set(
-            board.packageTexts
-                .filter(\.fromSmash)
-                .compactMap { smashedTextComponents($0.id)?.packageID }
-                .map(normalizedID)
-        )
-        let unmaterializedSmashPackageIDs = Set(
-            board.packages
-                .filter { $0.smashed && !materializedSmashPackageIDs.contains(normalizedID($0.id)) }
-                .map { normalizedID($0.id) }
-        )
-        let preservedSmashTextIDs = preservedSmashTextUUIDs(in: json, packageIDs: unmaterializedSmashPackageIDs)
-
+        // A smashed package's texts the load could not draw (its pool package
+        // missing, say) stay as the file has them while the package is
+        // smashed, so a save never drops smashed silk the board never had. A
+        // smashed text the board drew and no longer has was deleted, and
+        // leaves the file, as Horizon's delete takes it: kept along with
+        // those, it came back the next time the board was opened.
+        let unloadedSmashTexts = unloadedSmashTextIDs(of: board)
         let boardTexts = boardLevelTexts(texts: board.texts, packageTexts: board.packageTexts)
-        patchTexts(&json, key: "texts", texts: boardTexts, keepingAdditional: preservedSmashTextIDs)
+        patchTexts(&json, key: "texts", texts: boardTexts, keepingAdditional: Set(unloadedSmashTexts.values.joined()))
         patchNewTexts(&json, key: "texts", texts: boardTexts)
         patchPackageSmashState(
             &json,
             packages: board.packages,
             packageTexts: board.packageTexts,
-            preserving: unmaterializedSmashPackageIDs
+            unloadedTexts: unloadedSmashTexts
         )
         patchBoardPanels(&json, panels: board.boardPanels)
 
@@ -2290,13 +2280,14 @@ enum HorizontalProjectJSONApplicator {
     }
 
     /// Writes each package's `smashed` flag and, for smashed packages, the `texts`
-    /// array referencing its `fromSmash` text uuids (the inverse of the loader's
-    /// `packageTextIDs` / `smashed` read).
+    /// array referencing its `fromSmash` text uuids, then the ones the load
+    /// could not draw (the inverse of the loader's `packageTextIDs` / `smashed`
+    /// read).
     private static func patchPackageSmashState(
         _ json: inout JSONDictionary,
         packages: [HorizontalPlacement],
         packageTexts: [HorizontalText],
-        preserving: Set<String> = []
+        unloadedTexts: [String: [String]] = [:]
     ) {
         guard var map = json["packages"] as? JSONDictionary else {
             return
@@ -2321,32 +2312,26 @@ enum HorizontalProjectJSONApplicator {
             } else {
                 item.removeValue(forKey: "omit_outline")
             }
-            // Leave smashed packages whose texts weren't materialized untouched
-            // (their existing `smashed`/`texts` are preserved verbatim).
-            if !preserving.contains(normalizedID(package.id)) {
-                // Horizon always serializes both keys on a board package; `texts`
-                // is the (possibly empty) list of from-smash text uuids.
-                item["smashed"] = package.smashed
-                item["texts"] = uuidsByPackage[normalizedID(package.id)] ?? []
-            }
+            // Horizon always serializes both keys on a board package; `texts`
+            // is the (possibly empty) list of from-smash text uuids.
+            let packageID = normalizedID(package.id)
+            item["smashed"] = package.smashed
+            item["texts"] = (uuidsByPackage[packageID] ?? []) + (unloadedTexts[packageID] ?? [])
             map[itemKey] = item
         }
         json["packages"] = map
     }
 
-    /// The `texts`-map uuids referenced by the given (unmaterialized smashed)
-    /// packages, so a save preserves them instead of dropping them.
-    private static func preservedSmashTextUUIDs(in json: JSONDictionary, packageIDs: Set<String>) -> Set<String> {
-        guard !packageIDs.isEmpty, let map = json["packages"] as? JSONDictionary else {
-            return []
-        }
-        var ids = Set<String>()
-        for (key, value) in map where packageIDs.contains(normalizedID(key)) {
-            if let item = value as? JSONDictionary, let texts = item["texts"] as? [String] {
-                ids.formUnion(texts.map(normalizedID))
+    /// `HorizontalBoard.unloadedSmashTextIDs` of the packages still on the
+    /// board and still smashed: an unsmashed package's go, as Horizon's
+    /// unsmash deletes them.
+    private static func unloadedSmashTextIDs(of board: HorizontalBoard) -> [String: [String]] {
+        board.packages.reduce(into: [String: [String]]()) { result, package in
+            let packageID = normalizedID(package.id)
+            if package.smashed, let texts = board.unloadedSmashTextIDs[packageID] {
+                result[packageID] = texts
             }
         }
-        return ids
     }
 
     /// Splits a smashed package-text id "{packageID}/text/{uuid}" into its parts.
