@@ -40,38 +40,47 @@ enum HorizontalExportBackend {
         }
 
         var messages = [String]()
+        var outputs = [URL]()
         for section in sections {
             do {
                 switch section {
                 case .schematicPDF:
                     let url = targetURL.appendingPathComponent(settings.schematicPDF.filename)
                     try exportSchematicPDF(project: project, settings: settings.schematicPDF, palette: schematicPDFPalette, to: url)
+                    outputs.append(url)
                     messages.append("Schematic PDF -> \(url.lastPathComponent)")
                 case .bom:
                     let url = targetURL.appendingPathComponent(settings.bom.filename)
                     try exportBOM(project: project, settings: settings.bom, to: url)
+                    outputs.append(url)
                     messages.append("BOM -> \(url.lastPathComponent)")
                 case .gerber:
                     let urls = try exportGerber(project: project, settings: settings.gerber, to: targetURL, silkscreenClipping: silkscreenClipping)
+                    outputs += urls
                     messages.append("Gerber -> \(urls.map(\.lastPathComponent).joined(separator: ", "))")
                 case .odb:
                     let url = try exportODB(project: project, settings: settings.odb, to: targetURL, silkscreenClipping: silkscreenClipping)
+                    outputs.append(url)
                     messages.append("ODB -> \(url.lastPathComponent)")
                 case .pickAndPlace:
                     let urls = try exportPickAndPlace(project: project, settings: settings.pickAndPlace, to: targetURL)
+                    outputs += urls
                     messages.append("Pick and Place -> \(urls.map(\.lastPathComponent).joined(separator: ", "))")
                 case .boardSTEP:
                     let url = targetURL.appendingPathComponent(settings.boardSTEP.filename)
                     try exportBoardSTEP(project: project, settings: settings.boardSTEP, to: url)
+                    outputs.append(url)
                     let note = settings.boardSTEP.include3DModels ? " (with component models)" : " (board body only)"
                     messages.append("3D Model -> \(url.lastPathComponent)\(note)")
                 case .boardDrawing:
                     let url = targetURL.appendingPathComponent(settings.boardDrawing.filename)
                     try exportBoardDrawingPDF(project: project, settings: settings.boardDrawing, palette: boardPDFPalette, to: url, silkscreenClipping: silkscreenClipping)
+                    outputs.append(url)
                     messages.append("Board Drawing -> \(url.lastPathComponent)")
                 case .boardDXF:
                     let url = targetURL.appendingPathComponent(settings.boardDXF.filename)
                     try exportBoardDXF(project: project, settings: settings.boardDXF, to: url, silkscreenClipping: silkscreenClipping)
+                    outputs.append(url)
                     messages.append("Board DXF -> \(url.lastPathComponent)")
                 }
             } catch {
@@ -79,7 +88,7 @@ enum HorizontalExportBackend {
             }
         }
 
-        return HorizontalExportStatus(kind: .success, message: messages.joined(separator: " "))
+        return HorizontalExportStatus(kind: .success, message: messages.joined(separator: " "), outputs: outputs)
     }
 
     private static func exportBOM(

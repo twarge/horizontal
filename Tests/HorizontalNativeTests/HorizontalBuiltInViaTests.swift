@@ -80,6 +80,7 @@ final class HorizontalBuiltInViaTests: XCTestCase {
         settings.odb.directoryName = "odb"
         let status = HorizontalExportBackend.export(sections: [.odb], settings: settings, project: project)
         XCTAssertEqual(status.kind, .success, status.message)
+        XCTAssertEqual(status.outputs.map(\.lastPathComponent), ["odb"], "what Reveal in Finder selects")
         let steps = target.appendingPathComponent("odb/steps")
         let step = try XCTUnwrap(try FileManager.default.contentsOfDirectory(atPath: steps.path).first)
         return Set(try FileManager.default.contentsOfDirectory(atPath: steps.appendingPathComponent("\(step)/layers").path))

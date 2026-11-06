@@ -10,6 +10,9 @@ struct HorizontalExportStatus: Equatable {
 
     var kind: Kind
     var message: String
+    /// The files and folders a successful export wrote, which the sidebar's
+    /// Reveal in Finder selects.
+    var outputs: [URL] = []
 }
 
 enum HorizontalExportPathError: LocalizedError, Equatable {
