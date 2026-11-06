@@ -60,7 +60,7 @@ enum HorizontalDispatchBlockSync {
             throw HorizontalDispatchError.failed("The board file can't be read.")
         }
         write(changes, into: &json, board: board)
-        try store.write(try HorizontalHorizonJSONWriter.data(json), to: boardURL)
+        try store.write(try HorizontalHorizonJSONWriter.data(HorizontalHorizonFileConformance.conformed(json)), to: boardURL)
     }
 
     /// The change set written into a board file's JSON, as Horizon writes

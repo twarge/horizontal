@@ -121,7 +121,11 @@ public extension HorizontalProjectArchive {
             "blocks_filename": "blocks.json",
             "board_filename": "board.json",
             "planes_filename": "planes.json",
-            "pool_directory": projectPoolDirectoryName
+            "pool_directory": projectPoolDirectoryName,
+            // The pool a project drew from before projects had pools of their
+            // own, which Horizon still reads, with at(), and writes: the
+            // first one the project pool includes.
+            "pool_uuid": pool.includedPoolUUIDs.first ?? nullUUID
         ]
 
         let blocks: [String: Any] = [
@@ -188,7 +192,7 @@ public extension HorizontalProjectArchive {
         ]
 
         let schematic: [String: Any] = [
-            "type": "schematic",
+            "type": "schematic_block",
             "uuid": schematicID,
             "block": blockID,
             "name": "Top",
@@ -460,10 +464,13 @@ private func newID() -> String {
 }
 
 /// Written the way Horizon writes its files, as every edit writes them, so
-/// the first edit of a new project changes only what it changes. The template
-/// dictionaries are plist-safe literals, so serialization cannot actually
-/// fail; the fallback keeps the file valid JSON rather than crashing document
-/// creation.
+/// the first edit of a new project changes only what it changes: its format,
+/// and its file versions and keys as Horizon's save leaves them
+/// (`HorizontalHorizonFileConformance`), so Horizon opens a new project with
+/// no "created with an older version" bar, and a project file with no
+/// version as one to migrate. The template dictionaries are plist-safe
+/// literals, so serialization cannot actually fail; the fallback keeps the
+/// file valid JSON rather than crashing document creation.
 private func jsonData(_ object: [String: Any]) -> Data {
-    (try? HorizontalHorizonJSONWriter.data(object)) ?? Data("{}".utf8)
+    (try? HorizontalHorizonJSONWriter.data(HorizontalHorizonFileConformance.conformed(object))) ?? Data("{}".utf8)
 }

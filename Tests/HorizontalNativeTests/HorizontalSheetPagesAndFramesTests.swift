@@ -43,9 +43,13 @@ final class HorizontalSheetPagesAndFramesTests: XCTestCase {
         XCTAssertEqual(sheets[third]?.string("name"), "Sheet 3")
         XCTAssertEqual(sheets[third]?.int("index"), 3)
         XCTAssertEqual(sheets[third]?.string("frame"), frameID, "a new page takes the last page's frame")
-        for key in HorizontalSchematic.sheetCollectionKeys {
+        for key in HorizontalSchematic.sheetCollectionKeys where key != "net_ties" {
             XCTAssertNotNil(sheets[third]?[key] as? JSONDictionary, "\(key) is there, empty")
         }
+        // Horizon writes a sheet's net ties only when it has some
+        // (HorizontalHorizonFileConformance), and every writer takes none for a
+        // sheet that has none.
+        XCTAssertNil(sheets[third]?["net_ties"])
         XCTAssertEqual(try HorizontalProject.loadSnapshot(of: archive).schematic?.sheets.map(\.name), ["Sheet 1", "Sheet 2", "Sheet 3"])
 
         // A name a page already has is passed over.

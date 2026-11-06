@@ -152,7 +152,7 @@ enum HorizontalProjectJSONApplicator {
         patchSegments(&json, key: "connection_lines", segments: board.connectionLines, supportsLayer: false)
         patchPolygons(&json, key: "polygons", polygons: writtenPolygons(of: board), removing: board.removedPolygonIDs)
         patchHoles(&json, key: "holes", holes: board.holes, removing: board.removedHoleIDs)
-        patchVias(&json, vias: board.vias, removing: board.removedViaIDs)
+        patchVias(&json, vias: board.vias, junctions: board.junctions, removing: board.removedViaIDs)
         patchNewBoardVias(&json, vias: board.vias, junctions: board.junctions, padstackID: board.viaTemplate?.padstackID)
         patchUnstatedViaRules(&json, rules: board.rules)
         patchPlanes(&json, planes: board.planes, removing: board.removedPlaneIDs)
@@ -1548,7 +1548,8 @@ enum HorizontalProjectJSONApplicator {
     /// their own entry — junction reference + the supplied pool padstack +
     /// parameter_set, as `source: "local"` (from_rules false) so our geometry
     /// is honored. Field set mirrors Via::serialize. New junctions are
-    /// written by patchJunctions.
+    /// written by patchJunctions; a via with none at its point gets one
+    /// (`viaJunction`) rather than going unwritten.
     private static func patchNewBoardVias(
         _ json: inout JSONDictionary,
         vias: [HorizontalMarker],
@@ -1556,16 +1557,17 @@ enum HorizontalProjectJSONApplicator {
         padstackID: String?
     ) {
         var map = json["vias"] as? JSONDictionary ?? [:]
+        var junctionMap = json["junctions"] as? JSONDictionary ?? [:]
         for via in vias where !via.id.contains("/") {
             guard matchingKey(via.id, in: map) == nil else {
                 continue
             }
             // Its own padstack (a route's via has its rule's, a pasted one
             // the one it was copied with), else the board's.
-            guard let padstack = via.padstackID ?? padstackID,
-                  let junctionID = junctionID(at: via.position, in: junctions) else {
+            guard let padstack = via.padstackID ?? padstackID else {
                 continue
             }
+            let junctionID = viaJunction(via, named: nil, points: junctions, junctions: &junctionMap)
             var parameterSet = via.parameterSet.reduce(into: JSONDictionary()) { result, item in
                 result[item.key] = jsonNumber(item.value)
             }
@@ -1598,6 +1600,7 @@ enum HorizontalProjectJSONApplicator {
             map[via.id] = item
         }
         json["vias"] = map
+        json["junctions"] = junctionMap
     }
 
     /// A board whose rules say nothing about vias, as Horizontal's template
@@ -1843,6 +1846,7 @@ enum HorizontalProjectJSONApplicator {
     private static func patchVias(
         _ json: inout JSONDictionary,
         vias: [HorizontalMarker],
+        junctions points: [String: HorizontalPoint],
         removing removedIDs: Set<String> = []
     ) {
         guard var map = json["vias"] as? JSONDictionary else {
@@ -1857,14 +1861,49 @@ enum HorizontalProjectJSONApplicator {
             }
         }
 
+        var junctions = json["junctions"] as? JSONDictionary ?? [:]
         for via in vias {
             guard let itemKey = matchingKey(via.id, in: map),
-                  let item = map[itemKey] as? JSONDictionary else {
+                  var item = map[itemKey] as? JSONDictionary else {
                 continue
             }
-            map[itemKey] = viaJSONEntry(via, existing: item)
+            item = viaJSONEntry(via, existing: item)
+            item["junction"] = viaJunction(via, named: item["junction"] as? String, points: points, junctions: &junctions)
+            map[itemKey] = item
         }
         json["vias"] = map
+        json["junctions"] = junctions
+    }
+
+    /// The junction a via already in the file stands on. Horizon finds a via's
+    /// junction by its uuid alone (`brd->junctions.at`), and a board whose via
+    /// names one it lacks loses the via ("couldn't load Via … map::at"). The
+    /// model knows a via by its position, so when the junction the file names
+    /// went — folded into another at its point by a route or a move, as
+    /// `BoardTrackRouting.mergeJunctions` folds them — the via goes on the
+    /// junction now at its point, the one its tracks end on; with none there,
+    /// the one it names is written back at its point, or, where that one is
+    /// still elsewhere, a new one.
+    private static func viaJunction(
+        _ via: HorizontalMarker,
+        named current: String?,
+        points: [String: HorizontalPoint],
+        junctions: inout JSONDictionary
+    ) -> String {
+        let here = jsonPointKey(via.position)
+        let named = current.flatMap { current in points.first { normalizedID($0.key) == normalizedID(current) } }
+        if let current, let named, jsonPointKey(named.value) == here {
+            return current
+        }
+        if let id = points.filter({ jsonPointKey($0.value) == here }).map(\.key).sorted().first {
+            return matchingKey(id, in: junctions) ?? id
+        }
+        let id = named == nil ? current ?? UUID().uuidString.lowercased() : UUID().uuidString.lowercased()
+        let key = matchingKey(id, in: junctions) ?? id
+        var entry = junctions[key] as? JSONDictionary ?? [:]
+        entry["position"] = jsonPoint(via.position)
+        junctions[key] = entry
+        return key
     }
 
     /// Builds one via's on-disk entry from the model, merged over the existing
@@ -2713,13 +2752,21 @@ enum HorizontalProjectJSONApplicator {
     /// Writes `json` unless the file already holds exactly that, and says
     /// whether it wrote.
     @discardableResult
+    /// Writes a file an edit changed, as Horizon's save would leave it
+    /// (`HorizontalHorizonFileConformance`); one the edit left as it was stays
+    /// untouched, file version and all, as Horizon changes a file only when
+    /// it is saved.
     private static func saveJSON(
         _ json: JSONDictionary,
         relativePath: String,
         to archive: inout HorizontalProjectArchive
     ) throws -> Bool {
-        let data = try HorizontalHorizonJSONWriter.data(json)
-        guard archive.regularFileData(relativePath: relativePath) != data else {
+        let existing = archive.regularFileData(relativePath: relativePath)
+        guard try HorizontalHorizonJSONWriter.data(json) != existing else {
+            return false
+        }
+        let data = try HorizontalHorizonJSONWriter.data(HorizontalHorizonFileConformance.conformed(json))
+        guard data != existing else {
             return false
         }
         try archive.replaceRegularFileData(relativePath: relativePath, with: data)
