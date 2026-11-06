@@ -179,7 +179,8 @@ enum HorizontalProjectJSONApplicator {
 
         let boardChanged = try saveJSON(json, relativePath: path, to: &archive)
         let padstacksCached = cacheViaPadstacks(of: board, in: project, to: &archive)
-        return boardChanged || padstacksCached
+        let decalsCached = cacheBoardDecals(of: board, in: project, to: &archive)
+        return boardChanged || padstacksCached || decalsCached
     }
 
     /// The padstacks the board's vias, via rules and holes name, cached into the
@@ -687,6 +688,20 @@ enum HorizontalProjectJSONApplicator {
         in project: HorizontalProject,
         to archive: inout HorizontalProjectArchive
     ) throws {
+        try cachePoolItem(in: project, to: &archive) { poolURL, destination in
+            try HorizontalPoolCacheImporter.planFrame(item, into: poolURL, destination: destination)
+        }
+    }
+
+    /// The files `plan` would cache into the project pool, given the pool's
+    /// URL and what the archive already holds there, written into the
+    /// archive. Returns whether there were any.
+    @discardableResult
+    private static func cachePoolItem(
+        in project: HorizontalProject,
+        to archive: inout HorizontalProjectArchive,
+        plan: (URL, HorizontalPoolCacheDestination) throws -> [HorizontalPoolCacheFile]
+    ) throws -> Bool {
         let poolDirectory = project.poolDirectory ?? HorizontalProjectArchive.projectPoolDirectoryName
         let poolURL = project.baseURL.appendingPathComponent(poolDirectory, isDirectory: true)
         // The importer names every file by appending to poolURL, so its path
@@ -706,13 +721,18 @@ enum HorizontalProjectJSONApplicator {
             read: { url in poolPath(url, in: current).flatMap { current.regularFileData(relativePath: $0) } },
             list: HorizontalPoolCacheDestination.disk.list
         )
+        let files = try plan(poolURL, destination)
+        guard !files.isEmpty else {
+            return false
+        }
         try ensureProjectPool(at: poolURL, directory: poolDirectory, in: &archive)
-        for file in try HorizontalPoolCacheImporter.planFrame(item, into: poolURL, destination: destination) {
+        for file in files {
             guard let path = poolPath(file.url, in: archive) else {
                 throw HorizontalProjectJSONApplyError.missingArchivePath(file.url)
             }
             try archive.replaceRegularFileData(relativePath: path, with: file.data)
         }
+        return true
     }
 
     static func apply(
@@ -2104,28 +2124,34 @@ enum HorizontalProjectJSONApplicator {
 
     /// A board decal is written where the board has it (Horizon's
     /// BoardDecal::serialize: { decal, placement, flip, scale }). The canvas
-    /// moves and deletes decals and changes nothing else of them, so only the
-    /// placement's shift is written; its angle and mirror, the flip and the
-    /// scale stay as the file has them. A decal whose pool item could not be
-    /// read is not loaded, so its entry is kept, and a deletion comes through
-    /// `removedIDs`.
+    /// moves and deletes decals and changes nothing else of one the file has,
+    /// so only its placement's shift is written; its angle and mirror, the
+    /// flip and the scale stay as the file has them. One placed on the canvas
+    /// is written whole. A decal whose pool item could not be read is not
+    /// loaded, so its entry is kept, and a deletion comes through
+    /// `removedIDs`. A board that never had a decal gets no `decals`, as
+    /// Horizon writes none.
     private static func patchDecals(
         _ json: inout JSONDictionary,
         decals: [HorizontalBoardDecal],
         removing removedIDs: Set<String> = []
     ) {
-        guard var map = json["decals"] as? JSONDictionary else {
-            return
-        }
+        let hadDecals = json["decals"] != nil
+        var map = json["decals"] as? JSONDictionary ?? [:]
         for id in removedIDs {
             if let itemKey = matchingKey(id, in: map) {
                 map.removeValue(forKey: itemKey)
             }
         }
+        // A slash marks a panel's copy of another board's decal, which
+        // belongs to that board's file.
         for decal in decals where !decal.id.contains("/") {
-            guard let position = decal.position,
-                  let itemKey = matchingKey(decal.id, in: map),
+            guard let position = decal.position else {
+                continue
+            }
+            guard let itemKey = matchingKey(decal.id, in: map),
                   var item = map[itemKey] as? JSONDictionary else {
+                map[decal.id] = decal.fileEntry
                 continue
             }
             var placement = item["placement"] as? JSONDictionary ?? [:]
@@ -2133,7 +2159,37 @@ enum HorizontalProjectJSONApplicator {
             item["placement"] = placement
             map[itemKey] = item
         }
-        json["decals"] = map
+        if hadDecals || !map.isEmpty {
+            json["decals"] = map
+        }
+    }
+
+    /// The decals placed on the board from a pool the project pool lacks,
+    /// cached into the project pool where it has none, as a sheet's frame is
+    /// (`cacheFrame`): the loader draws a decal only from the project pool.
+    /// Written with the edit that places them, they are undone with it. A
+    /// decal that can no longer be read, or a pool the archive can't hold,
+    /// leaves it out without stopping the board's own save, as a via's
+    /// padstack is left out. Returns whether any was cached.
+    private static func cacheBoardDecals(
+        of board: HorizontalBoard,
+        in project: HorizontalProject,
+        to archive: inout HorizontalProjectArchive
+    ) -> Bool {
+        var sources = [String: HorizontalPoolLibraryItem]()
+        for decal in board.decals where !decal.id.contains("/") {
+            if let source = decal.cacheSource, sources[source.uuid] == nil {
+                sources[source.uuid] = source
+            }
+        }
+        var cached = false
+        for (_, source) in sources.sorted(by: { $0.key < $1.key }) {
+            let wrote = (try? cachePoolItem(in: project, to: &archive) { poolURL, destination in
+                try HorizontalPoolCacheImporter.planDecal(source, into: poolURL, destination: destination)
+            }) ?? false
+            cached = cached || wrote
+        }
+        return cached
     }
 
     private static func patchDimensions(

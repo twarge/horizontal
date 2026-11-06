@@ -1494,6 +1494,18 @@ struct HorizontalBoardDecal: Identifiable, Hashable {
     /// carries and the writer writes. Nil for a decal of no board file of its
     /// own, such as a panel's copy of another board's.
     var position: HorizontalPoint? = nil
+    /// The rest of what the board file has for it (Horizon's
+    /// BoardDecal::serialize): its placement's angle, the flip, which is its
+    /// placement's mirror too, and the scale. A decal placed on the canvas is
+    /// written with them; one the file has keeps the file's.
+    var angle = 0
+    var flip = false
+    var scale = 1.0
+    /// The pool item a decal placed from a pool the project pool lacks was
+    /// taken from: the writer caches it into the project pool with the edit
+    /// that places it, as Horizon's project pool caches what a project takes.
+    /// Nil for one the project pool has.
+    var cacheSource: HorizontalPoolLibraryItem? = nil
 
     var points: [HorizontalPoint] {
         polygons.flatMap(\.vertices)

@@ -15,6 +15,26 @@ enum HorizontalTrackWidthPrompt {
         currentWidthNM: Double,
         allowsZero: Bool = false
     ) -> Double? {
+        runNumber(
+            title: title,
+            message: message,
+            current: max(currentWidthNM, 0) / nmPerMM,
+            placeholder: "0.2",
+            allowsZero: allowsZero
+        ).map { ($0 * nmPerMM).rounded() }
+    }
+
+    /// A plain number, as typed: the place-decal tool's scale (Horizon's
+    /// enter-datum scale window). Nil if cancelled, or for anything but a
+    /// positive number (or zero, with `allowsZero`).
+    @MainActor
+    static func runNumber(
+        title: String,
+        message: String,
+        current: Double,
+        placeholder: String,
+        allowsZero: Bool = false
+    ) -> Double? {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
@@ -23,9 +43,8 @@ enum HorizontalTrackWidthPrompt {
 
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
         field.alignment = .right
-        let seed = max(currentWidthNM, 0) / nmPerMM
-        field.stringValue = String(format: "%g", seed)
-        field.placeholderString = "0.2"
+        field.stringValue = String(format: "%g", current)
+        field.placeholderString = placeholder
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
 
@@ -33,10 +52,10 @@ enum HorizontalTrackWidthPrompt {
             return nil
         }
         let text = field.stringValue.trimmingCharacters(in: .whitespaces)
-        guard let mm = Double(text), mm.isFinite, mm > 0 || (allowsZero && mm == 0) else {
+        guard let value = Double(text), value.isFinite, value > 0 || (allowsZero && value == 0) else {
             return nil
         }
-        return (mm * nmPerMM).rounded()
+        return value
     }
 }
 #endif

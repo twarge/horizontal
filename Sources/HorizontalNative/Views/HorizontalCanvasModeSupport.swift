@@ -287,6 +287,9 @@ struct HorizontalCanvasCommandHandlerSet {
     var enterTrackWidth: (() -> Void)? = nil
     var toggleVia: (() -> Void)? = nil
     var showToolSettings: (() -> Void)? = nil
+    /// S while a tool takes a size, in place of the tool's settings: the
+    /// scale of a decal being placed (Horizon's enter size).
+    var enterSize: (() -> Void)? = nil
     var moveNetSegmentToExistingNet: (() -> Void)? = nil
     var moveNetSegmentToNewNet: (() -> Void)? = nil
     var bendNetLine: (() -> Void)? = nil
@@ -306,6 +309,7 @@ struct HorizontalCanvasCommandHandlerSet {
     var placePad: (() -> Void)? = nil
     var placeShape: ((HorizontalPadstackShapeForm) -> Void)? = nil
     var placeHole: ((HorizontalHoleShape) -> Void)? = nil
+    var placeDecal: (() -> Void)? = nil
     var placePin: (() -> Void)? = nil
     var placeRefdesAndValue: (() -> Void)? = nil
     var placeDot: (() -> Void)? = nil
@@ -496,7 +500,12 @@ struct HorizontalCanvasCommandHandlerSet {
             guard !isReadOnly else { return }
             toggleVia?()
         case .showToolSettings:
-            showToolSettings?()
+            if let enterSize {
+                guard !isReadOnly else { return }
+                enterSize()
+            } else {
+                showToolSettings?()
+            }
         case .moveNetSegmentToExistingNet:
             guard !isReadOnly else { return }
             moveNetSegmentToExistingNet?()
@@ -547,6 +556,9 @@ struct HorizontalCanvasCommandHandlerSet {
         case .placeHole(let shape):
             guard !isReadOnly else { return }
             placeHole?(shape)
+        case .placeDecal:
+            guard !isReadOnly else { return }
+            placeDecal?()
         case .placePin:
             guard !isReadOnly else { return }
             placePin?()
@@ -616,6 +628,7 @@ struct HorizontalCanvasCommandHandlerSet {
             canPlacePad: writable && placePad != nil,
             canPlaceShape: writable && placeShape != nil,
             canPlaceHole: writable && placeHole != nil,
+            canPlaceDecal: writable && placeDecal != nil,
             canDrawDimension: writable && drawDimension != nil,
             canTuneTrack: writable && tuneTrack != nil,
             canPlacePin: writable && placePin != nil,

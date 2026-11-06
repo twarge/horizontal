@@ -2458,6 +2458,31 @@ struct HorizontalBoard {
         return decals
     }
 
+    /// A board decal drawn from an entry of the board file's `decals` and
+    /// the pool item it names, as the loader draws one: what the place-decal
+    /// tool shows following the cursor and puts on the board, so it draws as
+    /// the file will once read again. Nil for an entry naming no decal or
+    /// placement.
+    static func boardDecal(
+        id: String,
+        entry: JSONDictionary,
+        decalJSON: JSONDictionary,
+        nInnerLayers: Int
+    ) -> HorizontalBoardDecal? {
+        guard let decalID = entry.string("decal").map(normalizedID),
+              let placement = HorizontalPlacementTransform(json: entry.dictionary("placement"), mirrorOverride: entry.bool("flip")) else {
+            return nil
+        }
+        return parseSingleBoardDecal(
+            id: id,
+            decalID: decalID,
+            boardDecal: entry,
+            decalJSON: decalJSON,
+            placement: placement,
+            nInnerLayers: nInnerLayers
+        )
+    }
+
     private static func parseSingleBoardDecal(
         id: String,
         decalID: String,
@@ -2514,7 +2539,10 @@ struct HorizontalBoard {
                 scale: scale,
                 layerTransform: layerTransform
             ),
-            position: placement.shift
+            position: placement.shift,
+            angle: placement.angle,
+            flip: flipped,
+            scale: scale
         )
     }
 
