@@ -108,6 +108,8 @@ struct HorizontalCanvasCommandActions {
     var canPlaceShape: Bool = false
     var canPlaceHole: Bool = false
     var canPlaceDecal: Bool = false
+    var canPlaceVia: Bool = false
+    var canPlaceBoardHole: Bool = false
     var canDrawDimension: Bool = false
     var canTuneTrack: Bool = false
     var canPlacePin: Bool = false
@@ -148,6 +150,14 @@ struct HorizontalCanvasCommandActions {
     /// reason: a sheet's button can't be pressed from a test either.
     var decalChoices: [HorizontalPoolLibraryItem]? = nil
     var chooseDecal: ((HorizontalPoolLibraryItem) -> Void)? = nil
+    /// The nets the open net chooser lists (Set Net…, Place Via…), nil
+    /// while none is open, and choosing one there, for the same reason.
+    var netChoices: [HorizontalSelectionPropertyOption]? = nil
+    var chooseNet: ((String) -> Void)? = nil
+    /// The padstacks the open Place Hole chooser lists, nil while none is
+    /// open, and choosing one there, for the same reason.
+    var holePadstackChoices: [HorizontalPoolPadstackInfo]? = nil
+    var chooseHolePadstack: ((String) -> Void)? = nil
     /// Frames a world rectangle in the canvas, for the live channel's zoom-to.
     var frameWorldRect: ((HorizontalRect) -> Void)? = nil
     /// Zooms the view about its centre; 2 is twice as close.
@@ -524,6 +534,16 @@ struct HorizontalViewCommands: Commands {
                     canvasCommandActions?.dispatch(.drawTrack)
                 }
                 .disabled(canvasCommandActions?.canDrawTrack != true)
+
+                Button("Place Via…") {
+                    canvasCommandActions?.dispatch(.placeVia)
+                }
+                .disabled(canvasCommandActions?.canPlaceVia != true)
+
+                Button("Place Board Hole…") {
+                    canvasCommandActions?.dispatch(.placeBoardHole)
+                }
+                .disabled(canvasCommandActions?.canPlaceBoardHole != true)
 
                 Button("Draw Net Line") {
                     canvasCommandActions?.dispatch(.drawNetLine)

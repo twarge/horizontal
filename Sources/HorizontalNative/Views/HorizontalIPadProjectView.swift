@@ -1782,6 +1782,12 @@ struct HorizontalIPadProjectView: View {
                     DrawingToolButtonGroup(primitives: HorizontalDrawingPrimitive.polygonRail) { primitive in
                         boardDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
                     }
+                    PlaceViaToolButton(
+                        onPlaceVia: { boardCanvasActions?.dispatch(.placeVia) },
+                        canPlaceVia: boardCanvasActions?.canPlaceVia == true,
+                        onPlaceHole: { boardCanvasActions?.dispatch(.placeBoardHole) },
+                        canPlaceHole: boardCanvasActions?.canPlaceBoardHole == true
+                    )
                     // Pouring automatically leaves the button nothing to do;
                     // Settings turns it off again.
                     if !updatesPlanesAutomatically {

@@ -328,6 +328,9 @@ struct HorizontalCanvasCommandHandlerSet {
     var placeShape: ((HorizontalPadstackShapeForm) -> Void)? = nil
     var placeHole: ((HorizontalHoleShape) -> Void)? = nil
     var placeDecal: (() -> Void)? = nil
+    var placeVia: (() -> Void)? = nil
+    var placeBoardHole: (() -> Void)? = nil
+    var setNet: (() -> Void)? = nil
     var placePin: (() -> Void)? = nil
     var placeRefdesAndValue: (() -> Void)? = nil
     var placeDot: (() -> Void)? = nil
@@ -577,6 +580,15 @@ struct HorizontalCanvasCommandHandlerSet {
         case .placeDecal:
             guard !isReadOnly else { return }
             placeDecal?()
+        case .placeVia:
+            guard !isReadOnly else { return }
+            placeVia?()
+        case .placeBoardHole:
+            guard !isReadOnly else { return }
+            placeBoardHole?()
+        case .setNet:
+            guard !isReadOnly, !hasInteraction else { return }
+            setNet?()
         case .placePin:
             guard !isReadOnly else { return }
             placePin?()
@@ -647,6 +659,8 @@ struct HorizontalCanvasCommandHandlerSet {
             canPlaceShape: writable && placeShape != nil,
             canPlaceHole: writable && placeHole != nil,
             canPlaceDecal: writable && placeDecal != nil,
+            canPlaceVia: writable && placeVia != nil,
+            canPlaceBoardHole: writable && placeBoardHole != nil,
             canDrawDimension: writable && drawDimension != nil,
             canTuneTrack: writable && tuneTrack != nil,
             canPlacePin: writable && placePin != nil,

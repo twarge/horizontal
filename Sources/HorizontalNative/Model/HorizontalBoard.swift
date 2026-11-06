@@ -2882,20 +2882,14 @@ struct HorizontalBoard {
 
             if let padstackID = item.string("padstack"),
                let padstackJSON = loadPoolPadstack(padstackID, poolURL: poolURL) {
-                let holes = padstackHoles(
-                    padstackJSON,
-                    idPrefix: id,
-                    transform: placement,
-                    parameterSet: item.dictionary("parameter_set")
+                return boardHoles(
+                    id: id,
+                    padstackID: padstackID,
+                    padstackJSON: padstackJSON,
+                    placement: placement,
+                    parameterSet: item.dictionary("parameter_set"),
+                    netID: item.string("net")
                 )
-                return holes.enumerated().map { index, hole in
-                    var hole = hole
-                    hole.id = holes.count == 1 ? id : "\(id)/hole/\(index + 1)"
-                    hole.netID = item.string("net").map(normalizedID)
-                    hole.padstackID = padstackID
-                    hole.parameterSet = doubleParameters(item.dictionary("parameter_set"))
-                    return hole
-                }
             }
 
             guard let diameter = holeDiameter(for: item, parameterSet: item.dictionary("parameter_set")) else {
@@ -2914,6 +2908,29 @@ struct HorizontalBoard {
                 padstackID: item.string("padstack"),
                 parameterSet: doubleParameters(item.dictionary("parameter_set"))
             )]
+        }
+    }
+
+    /// A board hole on a padstack (Horizon's BoardHole), as the board draws
+    /// one: each of the padstack's holes, placed by `placement` at
+    /// `parameterSet`. A padstack with several holes numbers them
+    /// "<id>/hole/<n>"; with one, the hole is the board hole's own id.
+    static func boardHoles(
+        id: String,
+        padstackID: String,
+        padstackJSON: JSONDictionary,
+        placement: HorizontalPlacementTransform,
+        parameterSet: JSONDictionary?,
+        netID: String?
+    ) -> [HorizontalHole] {
+        let holes = padstackHoles(padstackJSON, idPrefix: id, transform: placement, parameterSet: parameterSet)
+        return holes.enumerated().map { index, hole in
+            var hole = hole
+            hole.id = holes.count == 1 ? id : "\(id)/hole/\(index + 1)"
+            hole.netID = netID.map(normalizedID)
+            hole.padstackID = padstackID
+            hole.parameterSet = doubleParameters(parameterSet)
+            return hole
         }
     }
 

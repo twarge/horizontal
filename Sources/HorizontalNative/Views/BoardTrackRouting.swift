@@ -687,38 +687,50 @@ enum BoardTrackRouting {
         on board: inout HorizontalBoard
     ) -> String {
         let junctionID = mergeJunctions(at: point, preferredID: preferredJunctionID, netID: netID, board: &board)
-        let viaID = UUID().uuidString.lowercased()
-        board.vias.append(
-            HorizontalMarker(
-                id: viaID,
-                position: point,
-                size: via.diameter,
-                holeSize: via.holeDiameter,
-                layer: nil,
-                connectedLayers: throughViaLayers(copperLayerCount: board.copperLayerCount),
-                netID: netID,
-                // Track-tool vias are pinned (patchNewBoardVias writes net_set),
-                // so the model pins them too.
-                netSetID: netID,
-                padstackID: via.padstackID,
-                fromRules: via.fromRules,
-                parameterSet: via.viaParameterSet,
-                topMaskExpansion: via.topMaskExpansion,
-                bottomMaskExpansion: via.bottomMaskExpansion
-            )
-        )
-        board.viaHoles.append(
-            HorizontalHole(
-                id: "\(viaID)/hole",
-                position: point,
-                diameter: via.holeDiameter,
-                length: via.holeDiameter,
-                shape: .round,
-                plated: true,
-                netID: netID
-            )
-        )
+        let made = throughVia(via, id: UUID().uuidString.lowercased(), at: point, netID: netID,
+                              copperLayerCount: board.copperLayerCount)
+        board.vias.append(made.via)
+        board.viaHoles.append(made.hole)
         return junctionID
+    }
+
+    /// A through via of `via`'s shape at `point`, pinned on `netID`, and its
+    /// hole, which `dropVia` puts on the board and the Place Via tool's ghost
+    /// draws.
+    static func throughVia(
+        _ via: HorizontalBoardViaTemplate,
+        id viaID: String,
+        at point: HorizontalPoint,
+        netID: String?,
+        copperLayerCount: Int
+    ) -> (via: HorizontalMarker, hole: HorizontalHole) {
+        let marker = HorizontalMarker(
+            id: viaID,
+            position: point,
+            size: via.diameter,
+            holeSize: via.holeDiameter,
+            layer: nil,
+            connectedLayers: throughViaLayers(copperLayerCount: copperLayerCount),
+            netID: netID,
+            // Track-tool vias are pinned (patchNewBoardVias writes net_set),
+            // so the model pins them too.
+            netSetID: netID,
+            padstackID: via.padstackID,
+            fromRules: via.fromRules,
+            parameterSet: via.viaParameterSet,
+            topMaskExpansion: via.topMaskExpansion,
+            bottomMaskExpansion: via.bottomMaskExpansion
+        )
+        let hole = HorizontalHole(
+            id: "\(viaID)/hole",
+            position: point,
+            diameter: via.holeDiameter,
+            length: via.holeDiameter,
+            shape: .round,
+            plated: true,
+            netID: netID
+        )
+        return (marker, hole)
     }
 
     /// Puts the ends of what was just pasted onto `board` on junctions, which
