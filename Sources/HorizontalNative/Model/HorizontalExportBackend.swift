@@ -746,6 +746,8 @@ enum HorizontalExportBackend {
         }
 
         let prefix = nonEmpty(settings.prefix) ?? HorizontalExportSettings.sanitizedFilename(project.displayTitle)
+        let innerLayerCount = HorizontalGerberFileAttributes.innerLayerCount(of: board, exporting: settings.layers.map(\.layer))
+        let softwareVersion = HorizontalGerberFileAttributes.applicationVersion
         var written = [URL]()
         for layer in settings.layers where layer.enabled {
             let layerObjects = gerberObjects(for: board, layer: layer.layer, outlineWidthMM: settings.outlineWidthMM, silkscreenClipping: silkscreenClipping)
@@ -754,7 +756,13 @@ enum HorizontalExportBackend {
             }
             let suffix = nonBlankPreservingWhitespace(layer.filename) ?? " \(HorizontalBoardLayers.name(for: layer.layer)).gbr"
             let url = directoryURL.appendingPathComponent("\(prefix)\(suffix)")
-            try writeGerberLayer(layerObjects, layerName: layer.name, to: url)
+            let attributes = HorizontalGerberFileAttributes.header(
+                for: layer.layer,
+                innerLayerCount: innerLayerCount,
+                userLayer: board.userLayers.first { $0.id == layer.layer },
+                softwareVersion: softwareVersion
+            )
+            try writeGerberLayer(layerObjects, layerName: layer.name, attributes: attributes, to: url)
             written.append(url)
         }
 
@@ -1874,7 +1882,7 @@ enum HorizontalExportBackend {
         return objects
     }
 
-    private static func writeGerberLayer(_ objects: [GerberPrimitive], layerName: String, to url: URL) throws {
+    private static func writeGerberLayer(_ objects: [GerberPrimitive], layerName: String, attributes: [String], to url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         var widths = Set<Double>()
         for object in objects {
@@ -1891,8 +1899,9 @@ enum HorizontalExportBackend {
             apertureCodes[width] = 10 + index
         }
 
-        var lines = [
-            "G04 Horizontal \(layerName)*",
+        // The X2 attributes belong in the header, before the first
+        // operation code.
+        var lines = ["G04 Horizontal \(HorizontalGerberFileAttributes.string(layerName))*"] + attributes + [
             "%FSLAX46Y46*%",
             "%MOMM*%",
             "%LPD*%"
