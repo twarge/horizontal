@@ -134,6 +134,8 @@ struct HorizontalIPadProjectView: View {
     // Part placement: the part browser sets a request, which the schematic canvas
     // picks up (via its onAppear/onChange) to start the place-on-canvas interaction.
     @State private var placePartRequest: HorizontalPartPlacementRequest?
+    /// The Pools pane's Place on a decal, for the board canvas to take up.
+    @State private var placeDecalRequest: HorizontalBoardDecalPlacementRequest?
     /// What Move to Other Sheet took across, for the canvas to select there.
     @State private var pendingSchematicMove: HorizontalSchematicMoveRequest?
     @State private var libraryPlacementError: String?
@@ -458,6 +460,10 @@ struct HorizontalIPadProjectView: View {
             // away.
             if !panes.contains(.schematic) {
                 placePartRequest = nil
+            }
+            // Likewise the board's decal from the Pools pane.
+            if !panes.contains(.board) {
+                placeDecalRequest = nil
             }
             if !panes.contains(focusedPane) {
                 focusedPane = orderedVisiblePanes.first ?? focusedPane
@@ -1347,7 +1353,11 @@ struct HorizontalIPadProjectView: View {
                         }
                         return poolCopyTargets(forPart: item.uuid, in: project)
                     },
-                    copyToPool: isReadOnly ? nil : { item, target in preparePoolCopy(partID: item.uuid, to: target) }
+                    copyToPool: isReadOnly ? nil : { item, target in preparePoolCopy(partID: item.uuid, to: target) },
+                    placeDecal: isReadOnly || project.board == nil ? nil : { item in placeDecalFromLibrary(item) },
+                    placeDecalUnavailableReason: isReadOnly
+                        ? "Read-only operation is enabled in Horizontal."
+                        : project.board == nil ? "This project has no board to place decals on." : nil
                 )
             )
         case .schematic:
@@ -1377,6 +1387,22 @@ struct HorizontalIPadProjectView: View {
         } catch {
             libraryPlacementError = HorizontalCanvasProjectEdit.message(for: error)
         }
+    }
+
+    /// The Pools pane's "Place on Board": the board is shown and given the
+    /// keyboard, and the decal follows the cursor there as one chosen in
+    /// Place Decal…'s chooser does.
+    private func placeDecalFromLibrary(_ item: HorizontalPoolLibraryItem) {
+        guard !isReadOnly else {
+            return
+        }
+        placeDecalRequest = HorizontalBoardDecalPlacementRequest(item: item)
+        if isCompact {
+            visiblePanes = [.board]
+        } else {
+            visiblePanes.insert(.board)
+        }
+        focusedPane = .board
     }
 
     private func refreshLibraryPartReplacement() {
@@ -1711,6 +1737,7 @@ struct HorizontalIPadProjectView: View {
                     selectionPropertyChangeCommand: selectionPropertyChangeCommands[.board],
                     drawingToolCommand: boardDrawingToolCommand,
                     drawTrackCommand: boardDrawTrackCommand,
+                    placeDecalRequest: placeDecalRequest,
                     routeWidthCommand: routeWidthCommand,
                     routeInspector: routeInspector,
                     rulesRevision: boardRulesRevision,

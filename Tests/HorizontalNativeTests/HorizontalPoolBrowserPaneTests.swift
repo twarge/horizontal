@@ -58,22 +58,25 @@ final class HorizontalPoolBrowserPaneTests: XCTestCase {
     private final class Calls {
         var placed = [String]()
         var replaced = [String]()
+        var placedDecals = [String]()
     }
 
     private func actions(_ calls: Calls, replacement: HorizontalPartReplacement?) -> HorizontalPoolPartActions {
         HorizontalPoolPartActions(
             place: { calls.placed.append($0.uuid) }, placeUnavailableReason: nil, replacement: replacement,
-            replace: { item, _, _ in calls.replaced.append(item.uuid) }
+            replace: { item, _, _ in calls.replaced.append(item.uuid) },
+            placeDecal: { calls.placedDecals.append($0.uuid) }
         )
     }
 
     /// The pane in a window, beside a canvas's event monitor holding the
     /// keyboard focus, as the schematic's does in a project window.
-    private func mount(_ actions: HorizontalPoolPartActions?, showingFilters: Bool = false)
+    private func mount(_ actions: HorizontalPoolPartActions?, showingFilters: Bool = false,
+                       reveal: HorizontalPoolRevealRequest? = nil)
         -> (window: NSWindow, canvas: TrackpadCanvasMonitor.MonitorView) {
         _ = NSApplication.shared
         defaults.set(showingFilters, forKey: "poolBrowser.showsParametricFilters")
-        let view = HorizontalPoolBrowserView(root: .pool(poolURL), partActions: actions)
+        let view = HorizontalPoolBrowserView(root: .pool(poolURL), revealRequest: reveal, partActions: actions)
             .environmentObject(HorizontalAppearanceSettings(defaults: defaults))
             .defaultAppStorage(defaults)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1300, height: 700), styleMask: [.titled],
@@ -280,12 +283,14 @@ final class HorizontalPoolBrowserPaneTests: XCTestCase {
         XCTAssertEqual(HorizontalPoolBrowserView.placeUnavailableReason(for: nil, actions: place, isReadOnly: false),
                        "Select a part to place it in the schematic.")
         XCTAssertEqual(HorizontalPoolBrowserView.placeUnavailableReason(for: package, actions: place, isReadOnly: false),
-                       "Only parts are placed. Choose Parts in the kind menu.")
+                       "Only parts and decals are placed. Choose Parts or Decals in the kind menu.")
         XCTAssertEqual(HorizontalPoolBrowserView.placeUnavailableReason(for: part, actions: place, isReadOnly: true),
                        "Read-only operation is enabled in Horizontal.")
         let noSchematic = HorizontalPoolPartActions(place: nil, placeUnavailableReason: "This project has no schematic to place parts in.")
         XCTAssertEqual(HorizontalPoolBrowserView.placeUnavailableReason(for: part, actions: noSchematic, isReadOnly: false),
                        "This project has no schematic to place parts in.")
+        XCTAssertEqual(HorizontalPoolBrowserView.placeUnavailableReason(for: part, actions: nil, isReadOnly: false),
+                       "Parts are placed from a project window.")
 
         let replace = actions(calls, replacement: replacement)
         XCTAssertNil(HorizontalPoolBrowserView.replaceRefusal(for: part, replacement, actions: replace, isReadOnly: false))
@@ -298,6 +303,72 @@ final class HorizontalPoolBrowserPaneTests: XCTestCase {
                        "R1 already uses “RES-1000”.")
         XCTAssertEqual(HorizontalPoolBrowserView.replaceRefusal(for: part, replacement, actions: replace, isReadOnly: true),
                        "Read-only operation is enabled in Horizontal.")
+    }
+
+    /// What Place says with Decals the kind shown: it puts a decal on the
+    /// board, and says so when it can't.
+    func testPlaceSaysWhyItCantPutADecalOnTheBoard() throws {
+        let calls = Calls()
+        let decal = HorizontalPoolLibraryItem(
+            id: "x|decal|d-logo", uuid: "d-logo", name: "Logo", detail: "", tags: "", category: .decal, poolName: "Pane Pool",
+            poolURL: poolURL, url: poolURL.appendingPathComponent("decals/logo.json"))
+        let place = actions(calls, replacement: nil)
+        XCTAssertNil(HorizontalPoolBrowserView.placeUnavailableReason(for: decal, actions: place, isReadOnly: false))
+        XCTAssertNil(HorizontalPoolBrowserView.placeUnavailableReason(for: decal, kind: .part, actions: place, isReadOnly: false),
+                     "the item's own kind decides")
+        XCTAssertEqual(HorizontalPoolBrowserView.placeUnavailableReason(for: nil, kind: .decal, actions: place, isReadOnly: false),
+                       "Select a decal to place it on the board.")
+        XCTAssertEqual(HorizontalPoolBrowserView.placeUnavailableReason(for: decal, actions: place, isReadOnly: true),
+                       "Read-only operation is enabled in Horizontal.")
+        XCTAssertEqual(HorizontalPoolBrowserView.placeUnavailableReason(for: decal, actions: nil, isReadOnly: false),
+                       "Decals are placed from a project window.")
+
+        // A project with a schematic and no board places parts, not decals.
+        var noBoard = place
+        noBoard.placeDecal = nil
+        noBoard.placeDecalUnavailableReason = "This project has no board to place decals on."
+        XCTAssertEqual(HorizontalPoolBrowserView.placeUnavailableReason(for: decal, actions: noBoard, isReadOnly: false),
+                       "This project has no board to place decals on.")
+        var part = decal
+        part.category = .part
+        XCTAssertNil(HorizontalPoolBrowserView.placeUnavailableReason(for: part, actions: noBoard, isReadOnly: false))
+        // And one with a board and no schematic, decals and not parts.
+        var noSchematic = place
+        noSchematic.place = nil
+        noSchematic.placeUnavailableReason = "This project has no schematic to place parts in."
+        XCTAssertNil(HorizontalPoolBrowserView.placeUnavailableReason(for: decal, actions: noSchematic, isReadOnly: false))
+        XCTAssertEqual(HorizontalPoolBrowserView.placeUnavailableReason(for: part, actions: noSchematic, isReadOnly: false),
+                       "This project has no schematic to place parts in.")
+    }
+
+    /// Return on a decal in the list places it on the board, even with
+    /// components selected in the workspace, where a part's Return replaces
+    /// theirs.
+    func testReturnOnADecalPlacesItOnTheBoardWhateverIsSelected() async throws {
+        try write(["type": "decal", "uuid": "d-logo", "name": "Logo", "junctions": [String: Any](), "lines": [String: Any](),
+                   "polygons": [String: Any](), "arcs": [String: Any](), "texts": [String: Any]()], to: "decals/logo.json")
+        let calls = Calls()
+        let (window, _) = mount(actions(calls, replacement: replacement),
+                                reveal: HorizontalPoolRevealRequest(category: .decal, uuid: "d-logo"))
+        defer { window.close() }
+        let table = try await list(in: window, columns: "Name", rows: 1)
+        let deadline = Date().addingTimeInterval(5)
+        while table.selectedRow != 0, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(40))
+        }
+        XCTAssertEqual(table.selectedRow, 0, "the decal shown and selected")
+        XCTAssertTrue(window.makeFirstResponder(table))
+        try await Task.sleep(for: .milliseconds(100))
+        let enter = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+            isARepeat: false, keyCode: 36))
+        if !window.performKeyEquivalent(with: enter) {
+            window.sendEvent(enter)
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(calls.placedDecals, ["d-logo"])
+        XCTAssertEqual(calls.placed, [])
+        XCTAssertEqual(calls.replaced, [])
     }
 }
 #endif

@@ -68,7 +68,8 @@ extension EnvironmentValues {
 
 /// What a project window's Pools pane can do with a part, as Horizon's part
 /// browser has Place Part and Assign Part: place it on the schematic, or give
-/// it to the components selected in the workspace.
+/// it to the components selected in the workspace. A decal it places on the
+/// board, as Horizon's Place Decal does.
 struct HorizontalPoolPartActions {
     /// Starts placing a part; nil when nothing can be placed, and then
     /// `placeUnavailableReason` says why.
@@ -85,6 +86,10 @@ struct HorizontalPoolPartActions {
     var copyTargets: ((HorizontalPoolLibraryItem) -> [HorizontalPoolCopyTarget])? = nil
     /// Copies a part into a pool (a plan the host confirms first).
     var copyToPool: ((HorizontalPoolLibraryItem, URL) -> Void)? = nil
+    /// Starts placing a decal on the board; nil when none can be placed, and
+    /// then `placeDecalUnavailableReason` says why.
+    var placeDecal: ((HorizontalPoolLibraryItem) -> Void)? = nil
+    var placeDecalUnavailableReason: String? = nil
 }
 
 /// The library browser: Horizon's pool manager for this app. Browses every
@@ -96,16 +101,18 @@ struct HorizontalPoolPartActions {
 /// in its own window. Parts can also be searched parametrically, by a table's
 /// values, in a bar under the toolbar.
 ///
-/// In a project window, Place puts the selected part on the schematic. With
-/// components selected in the workspace the list shows only the parts that
-/// fit them, and Place becomes Replace, as Horizon's part browser shows only
-/// the entity's parts and makes Assign Part the suggested action.
+/// In a project window, Place puts the selected part on the schematic, or
+/// the selected decal on the board. With components selected in the
+/// workspace the list shows only the parts that fit them, and Place becomes
+/// Replace, as Horizon's part browser shows only the entity's parts and makes
+/// Assign Part the suggested action.
 struct HorizontalPoolBrowserView: View {
     var root: HorizontalPoolBrowserRoot
     var safeAreaInsets: EdgeInsets = EdgeInsets()
     var revealRequest: HorizontalPoolRevealRequest? = nil
-    /// Set by a project window: Place and Replace for parts (the toolbar's
-    /// button, double-click, Return, the context menu). Nil in a pool window.
+    /// Set by a project window: Place and Replace for parts, and Place for
+    /// decals (the toolbar's button, double-click, Return, the context
+    /// menu). Nil in a pool window.
     var partActions: HorizontalPoolPartActions? = nil
 
     @ObservedObject private var registry = HorizontalPoolRegistry.shared
@@ -839,13 +846,14 @@ struct HorizontalPoolBrowserView: View {
         return "Show the parametric filters"
     }
 
-    /// Place, or Replace while components are selected: the pane's primary
-    /// action in a project window, there whether or not it can act now, its
-    /// help saying why not when it can't.
+    /// Place, or Replace while components are selected and parts are
+    /// listed: the pane's primary action in a project window, there whether
+    /// or not it can act now, its help saying why not when it can't. Decals
+    /// are placed whatever is selected.
     @ViewBuilder
     private func partButton(compact: Bool) -> some View {
         let item = selectedListedItem
-        if let replacement = activeReplacement {
+        if let replacement = activeReplacement, category != .decal {
             let refusal = replaceRefusal(for: item, replacement)
             Button {
                 if let item { replace(item, replacement) }
@@ -864,7 +872,9 @@ struct HorizontalPoolBrowserView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(reason != nil)
-            .help(reason ?? "Place the selected part in the schematic (also double-click or Return in the list)")
+            .help(reason ?? ((item?.category ?? category) == .decal
+                ? "Place the selected decal on the board (also double-click or Return in the list)"
+                : "Place the selected part in the schematic (also double-click or Return in the list)"))
         }
     }
 
@@ -1228,7 +1238,7 @@ struct HorizontalPoolBrowserView: View {
             }
         }
         if canPlace(item) {
-            Button("Place in Schematic") {
+            Button(item.category == .decal ? "Place on Board" : "Place in Schematic") {
                 place(item)
             }
         }
@@ -1394,9 +1404,13 @@ struct HorizontalPoolBrowserView: View {
     }
 
     /// Why Place can't place `item`, or nil when it can: what the Place
-    /// button's help says while it is disabled.
-    static func placeUnavailableReason(for item: HorizontalPoolLibraryItem?, actions: HorizontalPoolPartActions?,
-                                       isReadOnly: Bool) -> String? {
+    /// button's help says while it is disabled. `kind` is what the list
+    /// shows, for when nothing is selected.
+    static func placeUnavailableReason(for item: HorizontalPoolLibraryItem?, kind: HorizontalPoolItemCategory = .part,
+                                       actions: HorizontalPoolPartActions?, isReadOnly: Bool) -> String? {
+        if (item?.category ?? kind) == .decal {
+            return placeDecalUnavailableReason(for: item, actions: actions, isReadOnly: isReadOnly)
+        }
         guard let actions, actions.place != nil else {
             return actions?.placeUnavailableReason ?? "Parts are placed from a project window."
         }
@@ -1407,7 +1421,21 @@ struct HorizontalPoolBrowserView: View {
             return "Select a part to place it in the schematic."
         }
         guard item.category == .part else {
-            return "Only parts are placed. Choose Parts in the kind menu."
+            return "Only parts and decals are placed. Choose Parts or Decals in the kind menu."
+        }
+        return nil
+    }
+
+    private static func placeDecalUnavailableReason(for item: HorizontalPoolLibraryItem?, actions: HorizontalPoolPartActions?,
+                                                    isReadOnly: Bool) -> String? {
+        guard let actions, actions.placeDecal != nil else {
+            return actions?.placeDecalUnavailableReason ?? "Decals are placed from a project window."
+        }
+        if isReadOnly {
+            return "Read-only operation is enabled in Horizontal."
+        }
+        guard item != nil else {
+            return "Select a decal to place it on the board."
         }
         return nil
     }
@@ -1431,7 +1459,8 @@ struct HorizontalPoolBrowserView: View {
     }
 
     private func placeUnavailableReason(for item: HorizontalPoolLibraryItem?) -> String? {
-        Self.placeUnavailableReason(for: item, actions: partActions, isReadOnly: appearanceSettings.isReadOnlyOperationEnabled)
+        Self.placeUnavailableReason(for: item, kind: category, actions: partActions,
+                                    isReadOnly: appearanceSettings.isReadOnlyOperationEnabled)
     }
 
     private func replaceRefusal(for item: HorizontalPoolLibraryItem?, _ replacement: HorizontalPartReplacement) -> String? {
@@ -1442,7 +1471,11 @@ struct HorizontalPoolBrowserView: View {
         guard canPlace(item) else {
             return
         }
-        partActions?.place?(item)
+        if item.category == .decal {
+            partActions?.placeDecal?(item)
+        } else {
+            partActions?.place?(item)
+        }
     }
 
     private func replace(_ item: HorizontalPoolLibraryItem, _ replacement: HorizontalPartReplacement) {

@@ -706,6 +706,8 @@ struct ProjectWorkspaceView: View {
     /// second time). Nil is the normal, un-soloed state.
     @State private var soloedBoardLayer: Int?
     @State private var pendingPartPlacement: HorizontalPartPlacementRequest?
+    /// The Pools pane's Place on a decal, for the board canvas to take up.
+    @State private var pendingDecalPlacement: HorizontalBoardDecalPlacementRequest?
     @State private var pendingBlockPlacement: HorizontalBlockPlacementRequest?
     /// Horizon's instance path, as far as pushing into blocks goes: each
     /// block opened from a block symbol, with the sheet it was opened from,
@@ -1129,6 +1131,10 @@ struct ProjectWorkspaceView: View {
                 clearSelectionDetailsForHiddenPanes(panes)
                 saveFileViewState()
                 refreshLibraryPartReplacement()
+                // A board made afresh would take a still-set decal up again.
+                if !panes.contains(.board) {
+                    pendingDecalPlacement = nil
+                }
             }
             .onChange(of: selectedComponentIDs) { _, _ in
                 refreshLibraryPartReplacement()
@@ -2597,6 +2603,7 @@ struct ProjectWorkspaceView: View {
                                 selectionPropertyChangeCommand: selectionPropertyChangeCommands[.board],
                                 drawingToolCommand: boardDrawingToolCommand,
                                 drawTrackCommand: boardDrawTrackCommand,
+                                placeDecalRequest: pendingDecalPlacement,
                                 routeWidthCommand: routeWidthCommand,
                                 routeInspector: routeInspector,
                                 rulesRevision: boardRulesRevision,
@@ -5405,7 +5412,7 @@ struct ProjectWorkspaceView: View {
         )
     }
 
-    /// The Pools pane's Place and Replace.
+    /// The Pools pane's Place and Replace, and its Place for a decal.
     private var libraryPartActions: HorizontalPoolPartActions {
         HorizontalPoolPartActions(
             place: isReadOnly || selectedSchematic == nil ? nil : { item in placePartFromLibrary(item) },
@@ -5424,7 +5431,11 @@ struct ProjectWorkspaceView: View {
                 }
                 return poolCopyTargets(forPart: item.uuid)
             },
-            copyToPool: isReadOnly ? nil : { item, target in preparePoolCopy(partID: item.uuid, to: target) }
+            copyToPool: isReadOnly ? nil : { item, target in preparePoolCopy(partID: item.uuid, to: target) },
+            placeDecal: isReadOnly || project.board == nil ? nil : { item in placeDecalFromLibrary(item) },
+            placeDecalUnavailableReason: isReadOnly
+                ? "Read-only operation is enabled in Horizontal."
+                : project.board == nil ? "This project has no board to place decals on." : nil
         )
     }
 
@@ -5463,6 +5474,19 @@ struct ProjectWorkspaceView: View {
         } catch {
             libraryPlacementError = HorizontalCanvasProjectEdit.message(for: error)
         }
+    }
+
+    /// "Place on Board" from the Pools pane: the board is shown, given the
+    /// keyboard for R, E, S and Esc, and the decal follows the cursor there
+    /// as one chosen in Place Decal…'s chooser does. The board's writer
+    /// caches it into the project pool when it is put down.
+    private func placeDecalFromLibrary(_ item: HorizontalPoolLibraryItem) {
+        guard !isReadOnly, project.board != nil else {
+            return
+        }
+        visiblePanes.insert(.board)
+        activeCanvasCommandPane = .board
+        pendingDecalPlacement = HorizontalBoardDecalPlacementRequest(item: item)
     }
 
     /// Replace from the Pools pane, Horizon's Assign Part: the part is cached
