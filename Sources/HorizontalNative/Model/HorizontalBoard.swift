@@ -823,12 +823,12 @@ struct HorizontalBoard {
             stackupLayers: stackupLayers,
             userLayers: userLayers,
             junctions: junctions,
-            // A junction the file stores a net on keeps the one its copper
-            // gives it now, as the writer keeps that net up to date; the rest
-            // stay as Horizon writes them, with none.
-            junctionNetIDs: junctionNetIDs.keys.reduce(into: [String: String]()) { kept, id in
-                kept[id] = boardConnectivity.junctionNetIDs[id]
-            },
+            // Every junction is on the net its copper gives it, as Horizon's
+            // `Board::propagate_nets` puts it: the file stores none, and one
+            // Horizontal once cached there is no more than a stale guess.
+            // Planes anchor on a junction only on its layer range, so a
+            // junction's net no longer pours a fragment a layer it isn't on.
+            junctionNetIDs: boardConnectivity.junctionNetIDs,
             netDetails: blockMetadata.netDetails,
             rules: boardRules,
             tracks: tracks,

@@ -178,7 +178,11 @@ final class SchematicClipboardTests: XCTestCase {
         XCTAssertTrue(clipboard.json.dictionaryMap("components").isEmpty)
         let prepared = try paste(clipboard, into: source)
         XCTAssertEqual(prepared.sheet.symbols.count, 2)
-        XCTAssertEqual(prepared.sheet.netLines.filter { $0.netID == wire.netID }.count, 2)
+        // The labels keep their net. The wire, pasted without the pins it ran
+        // to and with no label on it, has none, as Horizon's own paste leaves
+        // one: a sheet stores no net on a wire or junction.
+        XCTAssertEqual(prepared.sheet.netLines.count, source.sheet.netLines.count + 1)
+        XCTAssertEqual(prepared.sheet.netLines.filter { $0.netID == wire.netID }.count, 1)
         XCTAssertEqual(prepared.sheet.netLabels.filter { $0.netID == wire.netID }.count, 2)
     }
 
@@ -500,7 +504,10 @@ extension SchematicClipboardTests {
             ["op": "ensure_net", "name": "OTHER"],
             ["op": "place_junction", "id": j1, "net": "OTHER", "sheet": destinationID, "x_mm": landing.x / 1_000_000, "y_mm": landing.y / 1_000_000],
             ["op": "place_junction", "id": j2, "net": "OTHER", "sheet": destinationID, "x_mm": landing.x / 1_000_000, "y_mm": landing.y / 1_000_000 + 20],
-            ["op": "draw_net_line", "sheet": destinationID, "from": ["kind": "junction", "junction": j1], "to": ["kind": "junction", "junction": j2]]
+            ["op": "draw_net_line", "sheet": destinationID, "from": ["kind": "junction", "junction": j1], "to": ["kind": "junction", "junction": j2]],
+            // A label keeps the wire on OTHER once the batch is over: Horizon
+            // stores no net on a junction or wire.
+            ["op": "place_net_label", "net": "OTHER", "sheet": destinationID, "x_mm": landing.x / 1_000_000, "y_mm": landing.y / 1_000_000 + 20]
         ], to: fixture)
         let edited = try HorizontalCanvasProjectEdit.archive(
             applying: [["op": "move_to_other_sheet", "items": [r1Symbol.id], "sheet": source.id, "to_sheet": destinationID]],

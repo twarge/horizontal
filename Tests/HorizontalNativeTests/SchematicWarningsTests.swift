@@ -104,8 +104,10 @@ final class SchematicWarningsTests: XCTestCase {
         XCTAssertEqual(try HorizontalProjectArchive.snapshot(from: root), baseline, "Loading must not modify project files")
         try HorizontalProjectJSONApplicator.apply(schematicSheet: sheet, schematicURL: project.schematic!.url, in: project, to: &archive)
         let saved = try HorizontalSchematicClipboardEditor.read("top_schematic.json", archive: archive)
-        XCTAssertTrue(saved.dictionaryMap("sheets")[id]!.dictionaryMap("net_lines").values.allSatisfy { $0.string("net") == "vref" })
+        XCTAssertTrue(saved.dictionaryMap("sheets")[id]!.dictionaryMap("net_lines").values.allSatisfy { $0["net"] == nil },
+                      "the stale wire nets go: Horizon stores none")
         let reloaded = try XCTUnwrap(HorizontalProject.loadSnapshot(of: archive).schematic?.sheets.first)
+        XCTAssertEqual(Set(reloaded.netLines.compactMap(\.netID)), ["vref"], "the label puts the wiring on its net")
         XCTAssertFalse(messages(reloaded).contains("Power sym missing"))
     }
 

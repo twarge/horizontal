@@ -1,9 +1,15 @@
 import Foundation
 
-/// Resolve a sheet's electrical graph by endpoint identity. Horizon files can
-/// omit net fields on both wires and junctions; the block's pin connections,
-/// power symbols and labels supply them. Conflicting or floating segments stay
-/// unresolved. Coordinates alone never join separate junctions.
+/// Resolve a sheet's electrical graph by endpoint identity. Horizon stores no
+/// net on a wire or junction; the block's pin and port connections, power
+/// symbols, bus rippers and labels' last nets supply them, as
+/// `Schematic::expand` assigns its net segments. Conflicting or floating
+/// segments stay unresolved, as a wire joined to none of those has no net in
+/// Horizon. Coordinates alone never join separate junctions.
+///
+/// `cachedNets` also takes a net written on a junction or wire, which only
+/// the MCP editor's ops do, for the rest of their batch
+/// (`HorizontalProjectEditor.load` takes any a file has away first).
 struct HorizontalSchematicNetConnectivity {
     private var netsByEndpoint: [String: String] = [:]
     /// Every endpoint's island — the endpoints wires join it to — and the
@@ -30,7 +36,7 @@ struct HorizontalSchematicNetConnectivity {
         return islands[island].nets
     }
 
-    init(sheet: JSONDictionary, block: JSONDictionary, requiresKnownNet: Bool = true) {
+    init(sheet: JSONDictionary, block: JSONDictionary, requiresKnownNet: Bool = true, cachedNets: Bool = false) {
         var neighbors = [String: Set<String>]()
         var seeds = [String: Set<String>]()
         var cachedWireNets = [String: Set<String>]()
@@ -42,7 +48,7 @@ struct HorizontalSchematicNetConnectivity {
             }
         }
         for (id, junction) in sheet.dictionaryMap("junctions") {
-            seed(["junc": id], junction.string("net"))
+            seed(["junc": id], cachedNets ? junction.string("net") : nil)
         }
         let components = block.dictionaryMap("components")
         for (id, symbol) in sheet.dictionaryMap("symbols") {
@@ -78,7 +84,7 @@ struct HorizontalSchematicNetConnectivity {
                   let a = Self.endpointID(from), let b = Self.endpointID(to) else { continue }
             neighbors[a, default: []].insert(b)
             neighbors[b, default: []].insert(a)
-            if let net = line.string("net"), net != HorizontalProjectEditor.nullUUID {
+            if cachedNets, let net = line.string("net"), net != HorizontalProjectEditor.nullUUID {
                 cachedWireNets[a, default: []].insert(net.lowercased())
             }
         }

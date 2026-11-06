@@ -4,9 +4,10 @@ import XCTest
 
 /// Copper whose pad goes, or whose pad's pin leaves its net, keeps no net
 /// when the board is read again: the canvas draws it orange. The tracks and
-/// junctions the track tool and `place_track` write carry the net they were
+/// junctions the track tool and `place_track` wrote carried the net they were
 /// drawn on, and the loader read it back as the copper's own, so a deleted
-/// symbol left its routing on the old net.
+/// symbol left its routing on the old net. Now, as Horizon writes them, they
+/// carry none, and the loader takes each from the pads its copper reaches.
 final class BoardOrphanedCopperNetTests: XCTestCase {
     private struct Fixture {
         var project: HorizontalProject
@@ -27,13 +28,13 @@ final class BoardOrphanedCopperNetTests: XCTestCase {
         XCTAssertEqual(board.packages.map(\.label), ["R3"])
         XCTAssertEqual(board.tracks.count, 2, "The routing stays on junctions where the pad was")
         XCTAssertTrue(board.tracks.allSatisfy { $0.netID == nil }, "No pad reaches the routing any more")
-        XCTAssertTrue(board.junctionNetIDs.isEmpty, "A junction's stored net is not its copper's")
+        XCTAssertTrue(board.junctionNetIDs.isEmpty, "No pad reaches a junction")
         XCTAssertTrue(board.airwires.isEmpty, "Net-less copper joins R3 to nothing")
         XCTAssertEqual(board.tracks.map(\.netID), HorizontalBoardConnectivity.recompute(board).tracks.map(\.netID),
                        "The board as read agrees with the editor's own pass")
     }
 
-    func testSavingTheBoardPutsRightTheNetsItsCopperStores() throws {
+    func testSavingTheBoardStoresNoNetOnItsCopper() throws {
         let fixture = try makeFixture()
         var (project, archive) = try reloadedProject(fixture, applying: [
             ["op": "remove_placement", "component": "R1"]
@@ -46,14 +47,19 @@ final class BoardOrphanedCopperNetTests: XCTestCase {
                       "A track's stored net goes with its pad")
         XCTAssertTrue(saved.dictionaryMap("junctions").values.allSatisfy { $0["net"] == nil })
 
-        // A track still on a pad stores the net the pad is on now.
+        // A track still on a pad stores no net either: the pad's, now
+        // another, is what it is read back on.
         (project, archive) = try reloadedProject(fixture, applying: [
             ["op": "connect", "component": "R1", "pin": "\(fixture.gate)/\(fixture.pin)", "net": "OTHER", "create_net": true]
         ])
-        let moved = try XCTUnwrap(project.board)
+        var moved = try XCTUnwrap(project.board)
         let other = try XCTUnwrap(moved.tracks.first?.netID)
+        moved.junctions[UUID().uuidString.lowercased()] = HorizontalPoint(x: 40_000_000, y: 40_000_000)
         XCTAssertTrue(try HorizontalProjectJSONApplicator.apply(board: moved, in: project, to: &archive))
-        XCTAssertEqual(Set(try boardJSON(in: archive).dictionaryMap("tracks").values.compactMap { $0.string("net") }), [other])
+        XCTAssertTrue(try boardJSON(in: archive).dictionaryMap("tracks").values.allSatisfy { $0["net"] == nil })
+        var reread = try HorizontalProject.loadSnapshot(of: archive)
+        reread.rebaseURLs(onto: project)
+        XCTAssertEqual(Set(try XCTUnwrap(reread.board).tracks.compactMap(\.netID)), [other])
     }
 
     func testRoutingOnAPinTakenOffItsNetHasNoNet() throws {
@@ -147,10 +153,12 @@ final class BoardOrphanedCopperNetTests: XCTestCase {
         reloaded.rebaseURLs(onto: project)
         let board = try boardJSON(in: seeded)
         XCTAssertEqual(board.dictionaryMap("tracks").count, 2)
-        XCTAssertTrue(board.dictionaryMap("tracks").values.allSatisfy { $0.string("net") != nil },
-                      "The fixture's tracks store their net")
-        XCTAssertTrue(board.dictionaryMap("junctions").values.allSatisfy { $0.string("net") != nil },
-                      "The fixture's junctions store their net")
+        XCTAssertTrue(board.dictionaryMap("tracks").values.allSatisfy { $0["net"] == nil },
+                      "The fixture's tracks store no net, as Horizon writes them")
+        XCTAssertTrue(board.dictionaryMap("junctions").values.allSatisfy { $0["net"] == nil },
+                      "The fixture's junctions store no net, as Horizon writes them")
+        XCTAssertEqual(Set(try XCTUnwrap(reloaded.board).tracks.compactMap(\.netID)).count, 1,
+                       "The loader puts the routing on the net of the pads it reaches")
         return Fixture(project: reloaded, archive: seeded, gate: gate, pin: pin)
     }
 }

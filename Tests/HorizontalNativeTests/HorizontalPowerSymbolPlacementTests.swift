@@ -101,7 +101,7 @@ final class HorizontalPowerSymbolPlacementTests: XCTestCase {
         XCTAssertEqual(symbol["mirror"] as? Bool, false)
         let junctions = try XCTUnwrap(sheetJSON["junctions"] as? [String: Any])
         let junction = try XCTUnwrap(junctions["junction-1"] as? [String: Any])
-        XCTAssertEqual(junction["net"] as? String, "net-gnd")
+        XCTAssertNil(junction["net"], "Horizon stores no net on a junction; the power symbol on it gives it one")
 
         let block = try json(in: archive, at: "top_block.json")
         let nets = try XCTUnwrap(block["nets"] as? [String: Any])
@@ -118,6 +118,7 @@ final class HorizontalPowerSymbolPlacementTests: XCTestCase {
         XCTAssertEqual(reloadedSheet.powerSymbols.first?.orientation, "up")
         XCTAssertEqual(reloadedSheet.powerSymbolLines.filter { $0.id.hasPrefix("power-1/") }.count, 4)
         XCTAssertEqual(reloadedSheet.netDetails["net-gnd"]?.isPower, true)
+        XCTAssertEqual(reloadedSheet.junctionNetIDs["junction-1"], "net-gnd", "the junction is on the power symbol's net")
     }
 
     private func json(in archive: HorizontalProjectArchive, at path: String) throws -> [String: Any] {

@@ -263,4 +263,163 @@ final class HorizontalHorizonFileConformanceTests: XCTestCase {
         XCTAssertNil(block["net_ties"])
         XCTAssertNil(block["version"], "Horizon versions no block")
     }
+
+    // MARK: - Nets
+
+    /// Horizon stores no net on a board junction or track, or on a sheet's
+    /// junctions and wires; what does carry one — a plane, a hole, a via's
+    /// net_set, a power symbol, a label's last net — keeps it.
+    func testNoNetIsStoredOnAJunctionTrackOrWire() throws {
+        let board = HorizontalHorizonFileConformance.conformed([
+            "type": "board",
+            "junctions": ["j": ["position": [0, 0], "net": "n"]],
+            "tracks": ["t": ["layer": 0, "net": "n"] as [String: Any]],
+            "vias": ["v": ["junction": "j", "net_set": "n"]],
+            "planes": ["p": ["net": "n"]],
+            "holes": ["h": ["net": "n"]],
+        ])
+        func item(_ json: [String: Any], _ table: String, _ id: String) -> [String: Any]? {
+            (json[table] as? [String: Any])?[id] as? [String: Any]
+        }
+        XCTAssertNil(item(board, "junctions", "j")?["net"])
+        XCTAssertNotNil(item(board, "junctions", "j")?["position"])
+        XCTAssertNil(item(board, "tracks", "t")?["net"])
+        XCTAssertEqual(item(board, "vias", "v")?["net_set"] as? String, "n")
+        XCTAssertEqual(item(board, "planes", "p")?["net"] as? String, "n")
+        XCTAssertEqual(item(board, "holes", "h")?["net"] as? String, "n")
+
+        let schematic = HorizontalHorizonFileConformance.conformed(["type": "schematic_block", "sheets": ["s": [
+            "junctions": ["j": ["position": [0, 0], "net": "n"]],
+            "net_lines": ["w": ["from": ["junc": "j"], "to": ["junc": "k"], "net": "n"] as [String: Any]],
+            "power_symbols": ["g": ["junction": "j", "net": "n"]],
+            "net_labels": ["l": ["junction": "j", "last_net": "n"]],
+        ] as [String: Any]]])
+        let sheet = try XCTUnwrap((schematic["sheets"] as? [String: Any])?["s"] as? [String: Any])
+        XCTAssertNil(item(sheet, "junctions", "j")?["net"])
+        XCTAssertNil(item(sheet, "net_lines", "w")?["net"])
+        XCTAssertEqual(item(sheet, "power_symbols", "g")?["net"] as? String, "n")
+        XCTAssertEqual(item(sheet, "net_labels", "l")?["last_net"] as? String, "n")
+        XCTAssertEqual(HorizontalHorizonFileConformance.withoutNetCaches(["type": "unit", "net": "n"])["net"] as? String, "n")
+    }
+
+    /// The board writer stores no net on a track it writes or a junction, as
+    /// it did, and takes away one an earlier save left.
+    func testTheBoardWriterStoresNoNetOnATrackOrJunction() throws {
+        var fixture = try fixture()
+        var board = try XCTUnwrap(fixture.project.board)
+        let a = HorizontalPoint(x: 1 * mm, y: 1 * mm), b = HorizontalPoint(x: 9 * mm, y: 1 * mm)
+        board.junctions = ["ja": a, "jb": b]
+        board.junctionNetIDs = ["ja": "gnd", "jb": "gnd"]
+        board.tracks = [HorizontalSegment(id: "t", from: a, to: b, width: 250_000, layer: HorizontalBoardLayers.topCopper,
+                                          netID: "gnd", fromJunctionID: "ja", toJunctionID: "jb")]
+        board = try fixture.save(board)
+        var file = try fixture.json("board.json")
+        XCTAssertNotNil((file["tracks"] as? [String: Any])?["t"])
+        XCTAssertNil(((file["tracks"] as? [String: Any])?["t"] as? [String: Any])?["net"])
+        XCTAssertNil(((file["junctions"] as? [String: Any])?["ja"] as? [String: Any])?["net"])
+
+        // A cache an earlier save wrote goes with the next edit.
+        var stale = file
+        var junctions = try XCTUnwrap(stale["junctions"] as? [String: Any])
+        junctions["ja"] = ["position": [1_000_000, 1_000_000], "net": "gnd"]
+        stale["junctions"] = junctions
+        try fixture.archive.replaceRegularFileData(relativePath: "board.json", with: HorizontalHorizonJSONWriter.data(stale))
+        var snapshot = try HorizontalProject.loadSnapshot(of: fixture.archive)
+        snapshot.rebaseURLs(onto: fixture.project)
+        var model = try XCTUnwrap(snapshot.board)
+        // A save that changes nothing leaves the file alone, cache and all.
+        XCTAssertFalse(try HorizontalProjectJSONApplicator.apply(board: model, in: fixture.project, to: &fixture.archive))
+        XCTAssertEqual(((try fixture.json("board.json")["junctions"] as? [String: Any])?["ja"] as? [String: Any])?["net"] as? String, "gnd")
+        model.junctions["jc"] = HorizontalPoint(x: 5 * mm, y: 5 * mm)
+        _ = try fixture.save(model)
+        file = try fixture.json("board.json")
+        XCTAssertNil(((file["junctions"] as? [String: Any])?["ja"] as? [String: Any])?["net"])
+    }
+
+    /// A schematic junction joined to nothing that carries a net has none,
+    /// whatever net an earlier save cached on it, as Horizon has it.
+    func testAStaleNetOnASchematicJunctionIsIgnored() throws {
+        var fixture = try fixture()
+        let ground = try XCTUnwrap((try fixture.json("top_block.json")["nets"] as? [String: Any])?.keys.first)
+        var schematic = try fixture.json("top_schematic.json")
+        var sheets = try XCTUnwrap(schematic["sheets"] as? [String: Any])
+        let sheetID = try XCTUnwrap(sheets.keys.first)
+        var sheet = try XCTUnwrap(sheets[sheetID] as? [String: Any])
+        sheet["junctions"] = ["floating": ["position": [0, 0], "net": ground]]
+        sheets[sheetID] = sheet
+        schematic["sheets"] = sheets
+        try fixture.archive.replaceRegularFileData(relativePath: "top_schematic.json", with: HorizontalHorizonJSONWriter.data(schematic))
+        let loaded = try XCTUnwrap(try HorizontalProject.loadSnapshot(of: fixture.archive).schematic?.sheets.first)
+        XCTAssertNotNil(loaded.junctions["floating"])
+        XCTAssertNil(loaded.junctionNetIDs["floating"])
+    }
+}
+
+/// Over MCP, a net `place_junction` gives a junction stands for the rest of
+/// its batch, so a wire drawn to it there carries it; nothing stores it, and
+/// in a later edit a junction joined to no pin, label or power symbol has no
+/// net, as in Horizon.
+final class HorizontalMCPJunctionNetTests: XCTestCase {
+    private var root: URL!
+    private var session: HorizontalDispatchSession!
+    private var handle = 0
+
+    override func setUpWithError() throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("junction-nets-\(UUID().uuidString).horizontal")
+        try HorizontalProjectArchive.newProject().write(to: root)
+        session = HorizontalDispatchSession()
+        handle = try session.open(url: root).handle
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    private func call(_ method: String, _ args: JSONDictionary = [:]) throws -> JSONDictionary {
+        var params = args
+        params["handle"] = handle
+        if method == "apply" {
+            params["expected_revision"] = try session.entry(handle: handle).revision
+            params["operation_id"] = UUID().uuidString
+        }
+        return try JSONHelper.loadDictionary(from: Data(HorizontalDispatch.serialize(HorizontalDispatch.call(
+            ["jsonrpc": "2.0", "id": 1, "method": method, "params": params], in: session), pretty: false).utf8))
+    }
+
+    private func sheet() throws -> JSONDictionary {
+        let data = try Data(contentsOf: root.appendingPathComponent("top_schematic.json"))
+        return try XCTUnwrap(try JSONHelper.loadDictionary(from: data).dictionaryMap("sheets").values.first)
+    }
+
+    func testAJunctionsNetHoldsForItsBatchAndIsNotStored() throws {
+        let drawn = try call("apply", ["ops": [
+            ["op": "place_junction", "id": "a", "net": "GND", "x_mm": 10, "y_mm": 10],
+            ["op": "place_junction", "id": "b", "net": "GND", "x_mm": 20, "y_mm": 10],
+            ["op": "draw_net_line", "from": ["kind": "junction", "junction": "a"], "to": ["kind": "junction", "junction": "b"]],
+        ]])
+        XCTAssertNil(drawn["error"], "\(drawn)")
+        let wires = try sheet().dictionaryMap("net_lines")
+        XCTAssertEqual(wires.count, 1)
+        XCTAssertNil(wires.values.first?["net"], "a wire's net isn't stored")
+        XCTAssertTrue(try sheet().dictionaryMap("junctions").values.allSatisfy { $0["net"] == nil })
+
+        // Joined to nothing that carries one, the wiring has no net now.
+        let listed = try XCTUnwrap(try call("list_junctions")["result"] as? [JSONDictionary])
+        XCTAssertEqual(listed.count, 2)
+        XCTAssertTrue(listed.allSatisfy { $0["net"] is NSNull || $0["net"] == nil }, "\(listed)")
+        let ids = listed.compactMap { $0.string("id") }
+        let refused = try call("apply", ["ops": [
+            ["op": "draw_net_line", "from": ["kind": "junction", "junction": ids[0]], "to": ["kind": "junction", "junction": ids[1]]],
+        ]])
+        let message = (refused["error"] as? JSONDictionary)?.string("message") ?? ""
+        XCTAssertTrue(message.contains("Neither end is on a net"), message)
+
+        // A power symbol on the wiring gives it its net, as Horizon gives it.
+        let marked = try call("apply", ["ops": [
+            ["op": "place_power_symbol", "net": "GND", "x_mm": 10, "y_mm": 10],
+        ]])
+        XCTAssertNil(marked["error"], "\(marked)")
+        let grounded = try XCTUnwrap(try call("list_junctions", ["net": "GND"])["result"] as? [JSONDictionary])
+        XCTAssertTrue(Set(ids).isSubset(of: Set(grounded.compactMap { $0.string("id") })), "\(grounded)")
+    }
 }
