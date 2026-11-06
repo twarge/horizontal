@@ -246,7 +246,9 @@ final class SchematicNetMergePersistenceTests: XCTestCase {
         XCTAssertEqual(Set(block.dictionaryMap("nets").keys), ["a"])
         XCTAssertEqual(block.dictionaryMap("components")["r2"]?.dictionaryMap("connections")["gate/a"]?.string("net"), "a")
         let schematic = try file("top_schematic.json", in: archive)
-        XCTAssertEqual(schematic.dictionaryMap("sheets")["second"]?.dictionaryMap("junctions")["far"]?.string("net"), "a")
+        XCTAssertNotNil(schematic.dictionaryMap("sheets")["second"]?.dictionaryMap("junctions")["far"])
+        XCTAssertNil(schematic.dictionaryMap("sheets")["second"]?.dictionaryMap("junctions")["far"]?["net"],
+                     "a junction stores no net, as Horizon writes it, so none names b")
         let board = try file("board.json", in: archive)
         XCTAssertEqual(board.dictionaryMap("planes")["p"]?.string("net"), "a")
         XCTAssertEqual(board.dictionaryMap("vias")["v"]?.string("net_set"), "a")

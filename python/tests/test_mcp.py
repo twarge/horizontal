@@ -479,6 +479,8 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
             {"op": "place_junction", "id": "a", "net": net, "x_mm": 0, "y_mm": 0},
             {"op": "place_junction", "id": "b", "net": net, "x_mm": 5, "y_mm": 0},
             {"op": "draw_net_line", "from": {"kind": "junction", "junction": "a"}, "to": {"kind": "junction", "junction": "b"}},
+            # Horizon stores no net on a wire: a label keeps this one on its net.
+            {"op": "place_net_label", "net": net, "x_mm": 0, "y_mm": 0},
             {"op": "rename_net", "net": "33b623e6", "name": ""}]))["data"]
         rows = (await self.call("list_net_lines", project_ref=self.ref))["data"]
         self.assertEqual(rows[0]["net_name"], "")

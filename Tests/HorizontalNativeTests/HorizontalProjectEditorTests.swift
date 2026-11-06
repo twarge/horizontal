@@ -919,22 +919,17 @@ final class HorizontalProjectEditorTests: XCTestCase {
             ["op": "place_track", "from": ["component": "R1", "pad": "1"], "to": ["x_mm": 20, "y_mm": 20], "layer": 0, "width_mm": 0.25],
             ["op": "place_track", "from": ["x_mm": 20, "y_mm": 20], "to": ["component": "R2", "pad": "1"], "layer": 0, "width_mm": 0.25]
         ])
-        // Write the junctions as Horizon does: a position and nothing else.
-        let boardURL = packageURL.appendingPathComponent("board.json")
-        var board = try JSONHelper.loadDictionary(from: boardURL)
-        var junctions = try XCTUnwrap(board["junctions"] as? JSONDictionary)
+        // The junctions are written as Horizon writes them: a position and
+        // nothing else.
+        let board = try JSONHelper.loadDictionary(from: packageURL.appendingPathComponent("board.json"))
+        let junctions = try XCTUnwrap(board["junctions"] as? JSONDictionary)
         XCTAssertFalse(junctions.isEmpty)
-        for (id, value) in junctions {
-            var junction = try XCTUnwrap(value as? JSONDictionary)
-            junction.removeValue(forKey: "net")
-            junctions[id] = junction
-        }
-        board["junctions"] = junctions
-        try JSONSerialization.data(withJSONObject: board, options: [.sortedKeys]).write(to: boardURL)
+        XCTAssertTrue(junctions.values.allSatisfy { ($0 as? JSONDictionary)?["net"] == nil })
 
         let loaded = try HorizontalProject.load(from: packageURL)
         let loadedBoard = try XCTUnwrap(loaded.board)
-        XCTAssertTrue(loadedBoard.junctionNetIDs.isEmpty, "the loader derives junction nets for the airwires, not the file")
+        let vcc = try XCTUnwrap(loadedBoard.tracks.first?.netID)
+        XCTAssertEqual(Set(loadedBoard.junctionNetIDs.values), [vcc], "each junction is on the net its copper reaches")
         let editor = try XCTUnwrap(HorizontalDispatchSession.withEditorConnectivity(loaded).board)
         XCTAssertEqual(loadedBoard.airwires.count, 0, "the pads are joined by copper through the bend")
         XCTAssertEqual(editor.airwires.count, loadedBoard.airwires.count)
@@ -949,11 +944,12 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual(placed.airwires.count, 0)
     }
 
-    /// A board as loaded has no junction nets, since Horizon writes none, and
+    /// A board as loaded had no junction nets, since Horizon writes none, and
     /// the placement draft made its rats' nest without the editor's
     /// connectivity pass, so every routed bend came apart: placing a package
     /// on Board A drew 327 airwires where the board had 31. A move's live
-    /// airwires skipped the bends the same way (125).
+    /// airwires skipped the bends the same way (125). The loader now gives
+    /// each junction the net its copper reaches, as the pass does.
     func testPlacingAPackageOnABoardAsLoadedKeepsItsRoutedCopperJoined() throws {
         try placedDivider()
         _ = try apply([
@@ -961,19 +957,14 @@ final class HorizontalProjectEditorTests: XCTestCase {
             ["op": "place_track", "from": ["component": "R1", "pad": "1"], "to": ["x_mm": 20, "y_mm": 20], "layer": 0, "width_mm": 0.25],
             ["op": "place_track", "from": ["x_mm": 20, "y_mm": 20], "to": ["component": "R2", "pad": "1"], "layer": 0, "width_mm": 0.25]
         ])
-        // The junctions as Horizon writes them: a position and nothing else.
-        let boardURL = packageURL.appendingPathComponent("board.json")
-        var file = try JSONHelper.loadDictionary(from: boardURL)
-        var junctions = try XCTUnwrap(file["junctions"] as? JSONDictionary)
-        for (id, value) in junctions {
-            junctions[id] = (value as? JSONDictionary)?.filter { $0.key != "net" }
-        }
-        file["junctions"] = junctions
-        try JSONSerialization.data(withJSONObject: file, options: [.sortedKeys]).write(to: boardURL)
+        // The junctions are written as Horizon writes them: a position and
+        // nothing else.
+        let file = try JSONHelper.loadDictionary(from: packageURL.appendingPathComponent("board.json"))
+        XCTAssertTrue((file["junctions"] as? JSONDictionary)?.values.allSatisfy { ($0 as? JSONDictionary)?["net"] == nil } == true)
 
         let loaded = try HorizontalProject.load(from: packageURL)
         let board = try XCTUnwrap(loaded.board)
-        XCTAssertTrue(board.junctionNetIDs.isEmpty)
+        XCTAssertFalse(board.junctionNetIDs.isEmpty, "the bend is on its copper's net")
         XCTAssertEqual(board.airwires.count, 0, "the loader joins R1 to R2 through the bend")
 
         let r3 = try XCTUnwrap(board.unplacedObjects.first { $0.label == "R3" })
@@ -992,7 +983,7 @@ final class HorizontalProjectEditorTests: XCTestCase {
             board.movingAirwires(packageIDs: [r1.id], viaIDs: [], junctionIDs: [], segmentEnds: ends)
                 .airwires(offset: .zero).count
         }
-        XCTAssertEqual(live(board), 1, "without the pass the bend joins nothing")
+        XCTAssertEqual(live(board), 0, "the bend joins R1 to R2 as the board is read")
         XCTAssertEqual(live(HorizontalBoardConnectivity.recompute(board)), 0)
     }
 

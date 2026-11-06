@@ -137,11 +137,11 @@ enum HorizontalProjectJSONApplicator {
         patchGridSettings(&json, grid: board.grid)
         patchStackup(&json, stackupLayers: board.stackupLayers)
         patchUserLayers(&json, userLayers: board.userLayers)
-        patchJunctions(&json, points: board.junctions, netIDs: board.junctionNetIDs)
+        patchJunctions(&json, points: board.junctions)
         patchPlacements(&json, key: "packages", placements: board.packages, boardPackages: true)
         removeConnectionLinesReferencingPackages(&json, packageIDs: removedPackageIDs)
         patchSegments(&json, key: "tracks", segments: board.tracks, supportsLayer: true, supportsArcCenter: true,
-                      widthFromRulesKey: "width_from_net_class", cachesNet: true)
+                      widthFromRulesKey: "width_from_net_class")
         patchJunctionEnds(&json, key: "tracks", segments: board.tracks, junctions: board.junctions)
         patchNewBoardTracks(&json, board: board)
         patchSegments(&json, key: "net_ties", segments: board.netTies, supportsLayer: true,
@@ -391,7 +391,7 @@ enum HorizontalProjectJSONApplicator {
         // A schematic's grid is fixed, and neither Horizon nor Horizontal
         // reads one from the file; earlier saves wrote it all the same.
         json.removeValue(forKey: "grid_settings")
-        patchJunctions(&sheetJSON, points: sheet.junctions, netIDs: sheet.junctionNetIDs)
+        patchJunctions(&sheetJSON, points: sheet.junctions)
         patchSchematicNetLines(&sheetJSON, sheet: sheet)
         patchPlacements(&sheetJSON, key: "symbols", placements: sheet.symbols, boardPackages: false)
         try patchAddedSchematicComponents(
@@ -972,31 +972,22 @@ enum HorizontalProjectJSONApplicator {
         try saveJSON(json, relativePath: path, to: &archive)
     }
 
+    /// Horizon writes only a junction's position: its net is what the copper
+    /// or wiring on it reaches, and the loaders work it out again. A net an
+    /// older save cached on it leaves the file with the next edit that
+    /// changes the file (`HorizontalHorizonFileConformance`), so a save that
+    /// changes nothing still leaves the file alone.
     private static func patchJunctions(
         _ json: inout JSONDictionary,
-        points: [String: HorizontalPoint],
-        netIDs: [String: String] = [:]
+        points: [String: HorizontalPoint]
     ) {
         var junctions = json["junctions"] as? JSONDictionary ?? [:]
         removeEntriesNotIn(&junctions, keeping: Array(points.keys))
 
         for (id, point) in points {
             let key = matchingKey(id, in: junctions) ?? id
-            let existing = junctions[key] as? JSONDictionary
-            var item = existing ?? [:]
+            var item = junctions[key] as? JSONDictionary ?? [:]
             item["position"] = jsonPoint(point)
-            // Horizon writes only a junction's position. Keep a net an MCP edit
-            // cached up to date, and give one to a new junction as MCP does,
-            // but don't add one to every junction the board editor's
-            // connectivity pass found a net for; the board loader works those
-            // out again from the copper.
-            if existing == nil || existing?["net"] != nil {
-                if let netID = netIDs[id] ?? netIDs[key] {
-                    item["net"] = netID
-                } else {
-                    item.removeValue(forKey: "net")
-                }
-            }
             junctions[key] = item
         }
         json["junctions"] = junctions
@@ -1018,16 +1009,8 @@ enum HorizontalProjectJSONApplicator {
             if let toEndpoint = schematicNetLineEndpoint(at: line.to, netID: line.netID, preferred: line.schematicTo, in: sheet) {
                 item["to"] = toEndpoint
             }
-            // Horizon stores no net on a wire. Keep the one an MCP edit cached
-            // up to date, and give one to a new wire as MCP does, but don't
-            // add one to every wire on the sheet.
-            if existing == nil || existing?["net"] != nil {
-                if let netID = line.netID {
-                    item["net"] = netID
-                } else {
-                    item.removeValue(forKey: "net")
-                }
-            }
+            // Horizon stores no net on a wire; the schematic loader works it
+            // out from the pins, labels and power symbols it reaches.
             guard item["from"] != nil, item["to"] != nil else {
                 continue
             }
@@ -1363,8 +1346,7 @@ enum HorizontalProjectJSONApplicator {
         idPrefix: String? = nil,
         supportsLayer: Bool,
         supportsArcCenter: Bool = false,
-        widthFromRulesKey: String? = nil,
-        cachesNet: Bool = false
+        widthFromRulesKey: String? = nil
     ) {
         guard var map = json[key] as? JSONDictionary else {
             return
@@ -1394,16 +1376,6 @@ enum HorizontalProjectJSONApplicator {
                     item["center"] = jsonPoint(center)
                 } else {
                     item.removeValue(forKey: "center")
-                }
-            }
-            // Horizon stores no net on a track. Keep the one the track tool or
-            // an MCP edit cached up to date, as a junction's is: a track whose
-            // pad went has none any more.
-            if cachesNet, item["net"] != nil {
-                if let netID = segment.netID {
-                    item["net"] = netID
-                } else {
-                    item.removeValue(forKey: "net")
                 }
             }
             map[itemKey] = item
@@ -1454,13 +1426,6 @@ enum HorizontalProjectJSONApplicator {
             // a point, not a junction).
             if let center = track.center {
                 item["center"] = jsonPoint(center)
-            }
-            // Not part of Track::serialize (net is derived from the
-            // endpoints there), and the board loader derives it too; it is
-            // the same cache `place_track` writes, which `patchSegments`
-            // keeps up to date.
-            if let netID = track.netID {
-                item["net"] = netID
             }
             map[track.id] = item
         }

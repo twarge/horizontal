@@ -12,8 +12,9 @@ import Foundation
 /// load, so an object one of them added without such a key, or a file an older
 /// Horizon wrote, kept its gaps and its version. This fills both in, and drops
 /// the empty `net_ties` maps Horizon writes only when they hold something,
-/// and the tag and group names no component uses any more, which Horizon's
-/// `Block::vacuum_group_tag_names` clears on every expand.
+/// the tag and group names no component uses any more, which Horizon's
+/// `Block::vacuum_group_tag_names` clears on every expand, and the nets cached
+/// on junctions, tracks and wires (`withoutNetCaches`).
 ///
 /// The versions are those of Horizon 2.7.2, the latest release: board 21,
 /// schematic 9, project 3. Its master branch writes later ones (board 24,
@@ -34,9 +35,11 @@ public enum HorizontalHorizonFileConformance {
         switch json["type"] as? String {
         case "board":
             stampVersion(&json, boardVersion)
+            stripNetCaches(&json)
             conformBoard(&json)
         case "schematic_block", "schematic":
             stampVersion(&json, schematicVersion)
+            stripNetCaches(&json)
             // Horizon reads a schematic of either type and writes this one.
             json["type"] = "schematic_block"
             conformSchematic(&json)
@@ -50,6 +53,46 @@ public enum HorizontalHorizonFileConformance {
             break
         }
         return json
+    }
+
+    /// The file with no net on a board junction or track, or on a sheet's
+    /// junctions or wires: Horizon stores none on them (`Junction`, `Track`,
+    /// `LineNet::serialize`) and works each out from what the copper or wiring
+    /// reaches — pads and vias, or pins, labels, power symbols, bus rippers and
+    /// block ports — so a wire joined to none of those has no net, as Horizon
+    /// has it. Horizontal's writers once cached one on each, and a reader that
+    /// took the cache took a net Horizon doesn't see. Anything else is left
+    /// as it is.
+    public static func withoutNetCaches(_ json: [String: Any]) -> [String: Any] {
+        var json = json
+        switch json["type"] as? String {
+        case "board", "schematic_block", "schematic":
+            stripNetCaches(&json)
+        default:
+            break
+        }
+        return json
+    }
+
+    private static func stripNetCaches(_ json: inout [String: Any]) {
+        func strip(_ json: inout [String: Any], _ keys: [String]) {
+            for key in keys {
+                conformMap(&json, key) { $0.removeValue(forKey: "net") }
+            }
+        }
+        if json["type"] as? String == "board" {
+            strip(&json, ["junctions", "tracks"])
+            return
+        }
+        guard var sheets = json["sheets"] as? [String: Any] else {
+            return
+        }
+        for (id, value) in sheets {
+            guard var sheet = value as? [String: Any] else { continue }
+            strip(&sheet, ["junctions", "net_lines"])
+            sheets[id] = sheet
+        }
+        json["sheets"] = sheets
     }
 
     private static func stampVersion(_ json: inout [String: Any], _ version: Int) {

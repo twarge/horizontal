@@ -290,10 +290,14 @@ final class SchematicBlocksTests: XCTestCase {
         ])
         XCTAssertEqual(retarget.last?["net"] as? String, net)
 
-        // A port on another net, or marked not connected, takes no wire.
-        try apply([["op": "ensure_net", "name": "OTHER"], ["op": "place_junction", "id": other, "net": "OTHER", "x_mm": 30, "y_mm": 60]])
-        XCTAssertThrowsError(try apply([["op": "draw_net_line", "from": ["kind": "port", "instance": placed.instance, "port": "In"],
+        // A port on another net, or marked not connected, takes no wire. A
+        // junction joined to nothing is on the net place_junction gives it
+        // only in that batch, as Horizon stores none.
+        try apply([["op": "ensure_net", "name": "OTHER"]])
+        XCTAssertThrowsError(try apply([["op": "place_junction", "id": other, "net": "OTHER", "x_mm": 30, "y_mm": 60],
+                                        ["op": "draw_net_line", "from": ["kind": "port", "instance": placed.instance, "port": "In"],
                                          "to": ["kind": "junction", "junction": other]]]))
+        try apply([["op": "place_junction", "id": other, "net": "OTHER", "x_mm": 30, "y_mm": 60]])
         try apply([["op": "disconnect_block_port", "instance": placed.instance, "port": "In"],
                    ["op": "connect_block_port", "instance": placed.instance, "port": "In", "nc": true]])
         XCTAssertThrowsError(try apply([["op": "draw_net_line", "from": ["kind": "port", "instance": placed.instance, "port": "In"],

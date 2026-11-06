@@ -73,7 +73,11 @@ final class HorizontalSchematicRemapTests: XCTestCase {
             ["op": "draw_net_line", "id": lines[0], "from": ["kind": "pin", "symbol": instance, "pin": part.pins[0]],
              "to": ["kind": "junction", "junction": junctions[0]]],
             ["op": "draw_net_line", "id": lines[1], "from": ["kind": "junction", "junction": junctions[0]],
-             "to": ["kind": "junction", "junction": junctions[1]]]
+             "to": ["kind": "junction", "junction": junctions[1]]],
+            // Horizon stores no net on a junction, so the two joined to no
+            // pin keep theirs by a label each.
+            ["op": "place_net_label", "net": "A", "x_mm": 22, "y_mm": 10],
+            ["op": "place_net_label", "net": "B", "x_mm": 23, "y_mm": 10]
         ]])
         // Native Horizon stores endpoint identities, with no cached wire or
         // junction nets. Also exercise omitted null endpoint fields.
@@ -170,13 +174,14 @@ final class HorizontalSchematicRemapTests: XCTestCase {
         let before = try HorizontalProjectArchive.snapshot(from: root)
         let beforeLines = try result("list_net_lines") as! [JSONDictionary]
         let beforeTracks = (try result("list_tracks") as! JSONDictionary).dictionaryArray("tracks")
-        let firstWire = try XCTUnwrap(beforeLines.first { $0.dictionary("from")?.string("pin") == old.pins[0] })
-        let staleNet = try call("apply", ["ops": [
-            ["op": "connect", "component": "J1", "pin": "\(old.gate)/\(old.pins[0])", "net": "N1"],
-            ["op": "set_net_line_endpoint", "line": firstWire["id"]!, "end": "to", "endpoint": firstWire["to"]!]
-        ]])
-        XCTAssertNotNil(staleNet["error"], "A stale wire net must not hide conflicting endpoint connectivity")
-        XCTAssertEqual(before, try HorizontalProjectArchive.snapshot(from: root))
+        // No wire or junction stores a net, so none can go stale and hide a
+        // conflict: each wire is on its pin's net.
+        let schematicFile = try HorizontalSchematicClipboardEditor.read("top_schematic.json", archive: before)
+        for sheet in schematicFile.dictionaryMap("sheets").values {
+            XCTAssertTrue(sheet.dictionaryMap("net_lines").values.allSatisfy { $0["net"] == nil })
+            XCTAssertTrue(sheet.dictionaryMap("junctions").values.allSatisfy { $0["net"] == nil })
+        }
+        XCTAssertEqual(Set(beforeLines.compactMap { $0.string("net") }).count, old.pins.count)
         let pinMap = Dictionary(uniqueKeysWithValues: old.pins.indices.map { ("\(old.gate)/\(old.pins[$0])", "\(target.gate)/\(target.pins[$0])") })
         var incomplete = pinMap
         incomplete.removeValue(forKey: "\(old.gate)/\(old.pins[0])")

@@ -352,7 +352,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
                     "to": "The other typed endpoint, on the same sheet and net."]
         case .placeJunction:
             return ["id": "Junction UUID, or a name such as \"j1\" that later ops in the batch use as a wire end's junction (optional). The id of a junction already on a sheet moves that junction.",
-                    "sheet": "Sheet index, name or uuid (optional).", "net": "Net name or id; optional when moving a junction, where it has to be the junction's own.",
+                    "sheet": "Sheet index, name or uuid (optional).", "net": "Net name or id; optional when moving a junction, where it has to be the junction's own. Horizon stores no net on a junction: one joined to no pin, label, power symbol, port or bus ripper holds this net for the rest of the batch only.",
                     "x_mm": "X position.", "y_mm": "Y position."]
         case .setNetLineEndpoint:
             return ["line": "Wire id from list_net_lines.", "end": "from or to.", "endpoint": "An endpoint as for draw_net_line.", "sheet": "Optional sheet selector."]
@@ -828,11 +828,17 @@ final class HorizontalProjectEditor {
         }
     }
 
+    /// A file as the edit starts from it, with no net cached on a junction,
+    /// track or wire (`HorizontalHorizonFileConformance.withoutNetCaches`):
+    /// Horizon stores none, and a net is what the wiring or copper reaches.
+    /// One an op gives a junction or wire stands for the rest of the batch,
+    /// so a wire drawn later to a junction placed on a net carries it; the
+    /// write takes it out, as Horizon's save would.
     private func load(_ key: String, url: URL) throws {
         guard let data = try store.read(url) else {
             return
         }
-        files[key] = try JSONHelper.loadDictionary(from: data)
+        files[key] = HorizontalHorizonFileConformance.withoutNetCaches(try JSONHelper.loadDictionary(from: data))
         fileURLs[key] = url
     }
 
@@ -1602,7 +1608,7 @@ final class HorizontalProjectEditor {
         var drawn = [String: (lines: Set<String>, labels: Set<String>, power: Set<String>, junctions: Set<String>)]()
         if files["schematic"] != nil {
             for sheet in try sheetsInOrder() {
-                let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: block)
+                let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: block, cachedNets: true)
                 func onNet(_ endpoint: JSONDictionary?) -> Bool { endpoint.flatMap { connectivity.net(at: $0) }?.lowercased() == id }
                 let lines = sheet.json.dictionaryMap("net_lines").filter { _, line in
                     line.string("net")?.lowercased() == id || onNet(line.dictionary("from")) || onNet(line.dictionary("to"))
@@ -2811,7 +2817,7 @@ final class HorizontalProjectEditor {
             item["placement"] = placement
         }
         var carriedLines = [String](), stretched = [String](), cut = [JSONDictionary]()
-        let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block)
+        let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block, cachedNets: true)
         for (id, line) in lines {
             let a = movedEnd(line.dictionary("from")), b = movedEnd(line.dictionary("to"))
             if a && b { carriedLines.append(id) }
@@ -3085,7 +3091,7 @@ final class HorizontalProjectEditor {
         var reEnded = 0, removedLines = 0
         for instance in doomed {
             try updateSheet(instance.sheet) { sheet in
-                let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block)
+                let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block, cachedNets: true)
                 var netLines = sheet.dictionaryMap("net_lines")
                 var junctions = sheet.dictionaryMap("junctions")
                 var pinJunctions = [String: String]()
@@ -3320,7 +3326,7 @@ final class HorizontalProjectEditor {
               let sheet = try sheetsInOrder().first(where: { $0.id == junction.sheet }) else {
             throw HorizontalDispatchError.notFound("No junction \(id)\(selected == nil ? "" : " on that sheet"). list_junctions returns them.")
         }
-        let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: block)
+        let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: block, cachedNets: true)
         let endpointJSON: JSONDictionary = ["junc": junction.id, "pin": NSNull(), "port": NSNull(), "bus_ripper": NSNull()]
         let net = connectivity.net(at: ["junc": junction.id])
         if net == nil {
@@ -3421,7 +3427,7 @@ final class HorizontalProjectEditor {
             net = try ensureNet(["name": ""]).0
             createdNet = net
         } else {
-            throw HorizontalDispatchError.invalidParams("Neither end is on a net. Wire one end to a pin, label or power symbol, or place_junction it on a net.")
+            throw HorizontalDispatchError.invalidParams("Neither end is on a net. Wire one end to a pin, label or power symbol, or place_junction it on a net in the same batch: Horizon stores no net on a junction, so one joined to none of those has none in a later edit.")
         }
         guard (start.net ?? net) == net, (end.net ?? net) == net else {
             throw HorizontalDispatchError.invalidParams("The endpoints are on different nets (\(start.net!), \(end.net!)); a wire joins one net.")
@@ -3475,7 +3481,7 @@ final class HorizontalProjectEditor {
               let key = json.dictionaryMap("junctions").keys.first(where: { $0.lowercased() == id }) else {
             throw HorizontalDispatchError.notFound("No junction \(id).")
         }
-        let connectivity = HorizontalSchematicNetConnectivity(sheet: json, block: block)
+        let connectivity = HorizontalSchematicNetConnectivity(sheet: json, block: block, cachedNets: true)
         let current = connectivity.net(at: ["junc": key])?.lowercased()
         if params["net"] != nil {
             let net = try netID(params).lowercased()
@@ -3516,7 +3522,7 @@ final class HorizontalProjectEditor {
         var id = requested
         var created = true
         try updateSheet(sheet) { sheet in
-            let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block)
+            let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block, cachedNets: true)
             var junctions = sheet.dictionaryMap("junctions")
             let coincident = junctions.filter { $0.value["position"] as? [Int] == point }
             let known = Set(block.dictionaryMap("nets").keys.map { $0.lowercased() })
@@ -3565,14 +3571,16 @@ final class HorizontalProjectEditor {
         guard let sheet = try sheetsInOrder().first(where: { $0.id == line.0 }) else {
             throw HorizontalDispatchError.notFound("The wire's sheet is missing.")
         }
-        let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: block)
+        let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet.json, block: block, cachedNets: true)
         let other = end == "from" ? "to" : "from"
-        guard let original = line.2.dictionary(end),
-              let wireNet = connectivity.net(at: original) ?? line.2.dictionary(other).flatMap({ connectivity.net(at: $0) }) else {
-            throw HorizontalDispatchError.invalidParams("The wire is on no net, so there is nothing to keep it on; remove_net_line it instead.")
+        guard let original = line.2.dictionary(end) else {
+            throw HorizontalDispatchError.notFound("The wire has no \(end) end.")
         }
-        guard (replacement.net ?? wireNet) == wireNet else {
-            throw HorizontalDispatchError.invalidParams("Replacement endpoint is on \(replacement.net!), not the wire's net \(wireNet).")
+        // A wire joined to nothing that carries a net is on none, as Horizon
+        // has it, and goes where it is told; one on a net stays on it.
+        let wireNet = connectivity.net(at: original) ?? line.2.dictionary(other).flatMap({ connectivity.net(at: $0) })
+        if let wireNet, let net = replacement.net, net != wireNet {
+            throw HorizontalDispatchError.invalidParams("Replacement endpoint is on \(net), not the wire's net \(wireNet).")
         }
         let otherJSON = line.2.dictionary(other) ?? [:]
         let otherSelector: JSONDictionary
@@ -3586,16 +3594,16 @@ final class HorizontalProjectEditor {
         } else {
             throw HorizontalDispatchError.unsupported("Retargeting currently requires a pin, port or junction at the opposite end.")
         }
-        guard (try wireEnd(otherSelector, sheet: line.0).net ?? wireNet) == wireNet else {
+        if let wireNet, (try wireEnd(otherSelector, sheet: line.0).net ?? wireNet) != wireNet {
             throw HorizontalDispatchError.invalidParams("The opposite endpoint no longer agrees with the wire's logical net.")
         }
         guard HorizontalSchematicNetConnectivity.endpointID(replacement.json) != HorizontalSchematicNetConnectivity.endpointID(otherJSON) else {
             throw HorizontalDispatchError.invalidParams("A wire must have distinct endpoints.")
         }
-        if replacement.net == nil, let junction = replacement.junction {
+        if replacement.net == nil, let wireNet, let junction = replacement.junction {
             try adoptJunction(junction, sheet: line.0, net: wireNet)
         }
-        if replacement.net == nil, let port = replacement.port {
+        if replacement.net == nil, let wireNet, let port = replacement.port {
             _ = try connectBlockPort(["instance": port.instance, "port": port.net, "net": wireNet])
         }
         try updateSheet(line.0) { sheet in
@@ -3603,9 +3611,9 @@ final class HorizontalProjectEditor {
             lines[line.1]?[end] = replacement.json
             sheet["net_lines"] = lines
         }
-        var change: JSONDictionary = ["net_line": line.1, "sheet": line.0, "end": end, "net": wireNet]
-        if replacement.net == nil, let junction = replacement.junction { change["adopted_junctions"] = [junction] }
-        if replacement.net == nil, let port = replacement.port {
+        var change: JSONDictionary = ["net_line": line.1, "sheet": line.0, "end": end, "net": (wireNet ?? replacement.net) as Any]
+        if replacement.net == nil, wireNet != nil, let junction = replacement.junction { change["adopted_junctions"] = [junction] }
+        if replacement.net == nil, wireNet != nil, let port = replacement.port {
             change["connected_ports"] = [["block_instance": port.instance, "port": port.net]]
         }
         return change
@@ -4104,7 +4112,7 @@ final class HorizontalProjectEditor {
                 }
                 return false
             }
-            let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block)
+            let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block, cachedNets: true)
             func floating(_ endpoint: JSONDictionary) -> Bool {
                 guard let id = HorizontalSchematicNetConnectivity.endpointID(endpoint), let island = connectivity.islandOf[id] else { return true }
                 let members = connectivity.islands[island].members
@@ -4487,7 +4495,7 @@ final class HorizontalProjectEditor {
                     "\(where_) is the end of a pin of \(component); a mark there joins nothing. terminate_pin draws a stub from the pin to a label or power symbol.")
             }
         }
-        let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block)
+        let connectivity = HorizontalSchematicNetConnectivity(sheet: sheet, block: block, cachedNets: true)
         for (lineID, line) in sheet.dictionaryMap("net_lines") {
             guard let from = wireEndPosition(line.dictionary("from"), sheet: sheet), let to = wireEndPosition(line.dictionary("to"), sheet: sheet),
                   !same(from, at), !same(to, at) else { continue }
@@ -4537,7 +4545,7 @@ final class HorizontalProjectEditor {
         if let existing, let net {
             // A junction already at the point is reused — a net-less one takes
             // this net — but one on another live net would short the two.
-            let connectivity = HorizontalSchematicNetConnectivity(sheet: sheetJSON, block: block)
+            let connectivity = HorizontalSchematicNetConnectivity(sheet: sheetJSON, block: block, cachedNets: true)
             let known = Set(block.dictionaryMap("nets").keys.map { $0.lowercased() })
             let named = connectivity.namedNets(at: ["junc": existing.key]).intersection(known)
             guard named.isSubset(of: [net.lowercased()]) else {
@@ -4661,7 +4669,7 @@ final class HorizontalProjectEditor {
         }
         let junctions = holder.json.dictionaryMap("junctions")
         let oldJunction = item.string("junction")
-        let connectivity = HorizontalSchematicNetConnectivity(sheet: holder.json, block: block)
+        let connectivity = HorizontalSchematicNetConnectivity(sheet: holder.json, block: block, cachedNets: true)
         let net = isNet ? (oldJunction.flatMap { connectivity.net(at: ["junc": $0]) } ?? item.string("last_net"))?.lowercased() : nil
         if isNet, params["net"] != nil, try netID(params).lowercased() != net {
             throw HorizontalDispatchError.invalidParams("Net label \(id) is on \(net.flatMap { nets()[$0]?.string("name") } ?? "no net"); a label keeps its junction's net. remove_net_label it and place one for the other net.")
@@ -7144,8 +7152,7 @@ final class HorizontalProjectEditor {
                     "Junction \(match.key) joins only tracks on layer \(layers), so a track on layer \(layer) can't end on it without a via. Place a via there first, or give the point ({\"x_mm\", \"y_mm\"}) for a junction of its own."
                 )
             }
-            return TrackEnd(json: ["junc": match.key, "pad": NSNull()],
-                            net: (match.value as? JSONDictionary)?.string("net")?.lowercased())
+            return TrackEnd(json: ["junc": match.key, "pad": NSNull()], net: boardJunctionNet(match.key, in: junctions))
         }
         guard let x = endpoint.double("x_mm"), let y = endpoint.double("y_mm") else {
             throw HorizontalDispatchError.invalidParams(
@@ -7159,11 +7166,20 @@ final class HorizontalProjectEditor {
         let boardJSON = try board()
         let junctions = boardJSON["junctions"] as? JSONDictionary ?? [:]
         if let existing = junctionsJoining(at: point, layer: layer, in: boardJSON).first {
-            return TrackEnd(json: ["junc": existing, "pad": NSNull()],
-                            net: (junctions[existing] as? JSONDictionary)?.string("net")?.lowercased())
+            return TrackEnd(json: ["junc": existing, "pad": NSNull()], net: boardJunctionNet(existing, in: junctions))
         }
         let id = UUID().uuidString.lowercased()
         return TrackEnd(json: ["junc": id, "pad": NSNull()], net: nil, newJunction: (id, point))
+    }
+
+    /// A board junction's net: the one an op of this batch gave it, else the
+    /// one the copper on it gave it when the edit began. Horizon stores none,
+    /// so a junction a file already has is on what its tracks, pads and vias
+    /// reach (`HorizontalBoard.junctionNetIDs`).
+    private func boardJunctionNet(_ id: String, in junctions: JSONDictionary) -> String? {
+        let key = id.lowercased()
+        return (junctions.first { $0.key.lowercased() == key }?.value as? JSONDictionary)?.string("net")?.lowercased()
+            ?? project.board?.junctionNetIDs.first { $0.key.lowercased() == key }?.value.lowercased()
     }
 
     private func writeJunction(_ id: String, point: [Int], net: String?) throws {

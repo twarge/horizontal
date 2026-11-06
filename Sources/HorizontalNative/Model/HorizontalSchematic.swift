@@ -1168,13 +1168,14 @@ struct HorizontalSchematic {
     }
 
     /// Horizon writes only a junction's position, so its net comes from the
-    /// wiring, as a wire's does; a net an MCP edit cached on it wins.
+    /// wiring, as a wire's does, and one the file caches on it, as Horizontal
+    /// once wrote, is no more than a stale guess.
     private static func parseJunctionNetIDs(
         from json: JSONDictionary,
         connectivity: HorizontalSchematicNetConnectivity
     ) -> [String: String] {
         json.dictionaryMap("junctions").reduce(into: [String: String]()) { result, item in
-            if let netID = (item.value.string("net") ?? connectivity.net(at: ["junc": item.key])).map(normalizedID) {
+            if let netID = connectivity.net(at: ["junc": item.key]).map(normalizedID) {
                 result[item.key] = netID
             }
         }

@@ -182,16 +182,18 @@ final class HorizontalMCPFieldFindingsTests: XCTestCase {
 
     func testNetlessJunctionsAreAdoptedRemovedAndPruned() throws {
         let (_, instance) = try placedMCU()
-        // A junction left with no net — what retiring a net leaves behind.
-        let orphan = try XCTUnwrap(changes(try apply([["op": "ensure_net", "name": "TMP"],
-                                                      ["op": "place_junction", "net": "TMP", "x_mm": 80, "y_mm": 100]]))[1].string("junction"))
-        let far = try XCTUnwrap(changes(try apply([["op": "place_junction", "net": "TMP", "x_mm": 70, "y_mm": 100]]))[0].string("junction"))
-        let island = try XCTUnwrap(changes(try apply([["op": "draw_net_line", "from": ["kind": "junction", "junction": orphan],
-                                                       "to": ["kind": "junction", "junction": far]]]))[0].string("net_line"))
-        try apply([["op": "retire_net", "net": "TMP"]])
+        // Retiring a net takes its wiring. Horizon stores no net on a
+        // junction, so wiring joined to nothing else is on the net
+        // place_junction gave it only in its own batch.
+        try apply([
+            ["op": "ensure_net", "name": "TMP"],
+            ["op": "place_junction", "id": "orphan", "net": "TMP", "x_mm": 80, "y_mm": 100],
+            ["op": "place_junction", "id": "far", "net": "TMP", "x_mm": 70, "y_mm": 100],
+            ["op": "draw_net_line", "from": ["kind": "junction", "junction": "orphan"], "to": ["kind": "junction", "junction": "far"]],
+            ["op": "retire_net", "net": "TMP"],
+        ])
         XCTAssertEqual((try result("list_junctions") as? [JSONDictionary])?.count, 0, "retiring a net takes its wiring")
         XCTAssertEqual((try result("list_net_lines") as? [JSONDictionary])?.count, 0)
-        _ = island
 
         // Wiring with no net at all: a wire to a pin gives it one.
         var archive = try HorizontalProjectArchive.snapshot(from: root)
