@@ -99,10 +99,12 @@ struct HorizontalBoardRuleFocus: Equatable {
     }
 }
 
-/// The rules window's Display warnings on canvas. It is the app's setting,
-/// not the board's: off, no canvas draws a warning marker, the schematic's
-/// own or a rules check's, and the rules results button shows no count, in
-/// every document; the checks still run, and their sidebar lists them.
+/// The rules window's Display warnings on canvas, which the rules results
+/// sidebar has too. It is the app's setting, not the board's: off, no canvas
+/// draws a warning marker, the schematic's own or a rules check's, the rules
+/// results button shows no count, and the checks no longer run on their own
+/// (`HorizontalRulesCheckDefaults.runsAutomatically`), in every document;
+/// Check Now and Apply & Check still run them, and their sidebar lists them.
 struct HorizontalCanvasWarningsToggle: View {
     @ObservedObject var appearanceSettings: HorizontalAppearanceSettings
 
@@ -111,8 +113,10 @@ struct HorizontalCanvasWarningsToggle: View {
             #if os(macOS)
             .toggleStyle(.checkbox)
             #endif
-            .help("Mark warnings and rules check findings on the schematic and board, and count them on the rules results button")
+            .help(Self.help)
     }
+
+    static let help = "Mark warnings and rules check findings on the schematic and board, count them on the rules results button, and check the rules as the design changes"
 }
 
 /// What the rules window's sidebar selects: a kind of board rule, or the
@@ -3406,6 +3410,13 @@ enum HorizontalRulesCheckDefaults {
 
     static func checksAutomatically(defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: checksAutomaticallyKey) as? Bool ?? true
+    }
+
+    /// Whether the checks run on their own: Automatically check rules, while
+    /// Display warnings on canvas is on. With the warnings off the checks
+    /// pause, as with Automatically check rules off, and the setting hides.
+    static func runsAutomatically(checksAutomatically: Bool, displaysCanvasWarnings: Bool) -> Bool {
+        checksAutomatically && displaysCanvasWarnings
     }
 }
 

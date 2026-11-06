@@ -1110,9 +1110,11 @@ struct ProjectWorkspaceView: View {
             .onChange(of: updatesPlanesAutomatically) { _, _ in
                 checkPlaneFills(again: true)
             }
-            // Turned back on, the checks catch up with what changed while off.
-            .onChange(of: checksRulesAutomatically) { _, checksAutomatically in
-                if checksAutomatically {
+            // Turned back on, the checks catch up with what changed while off,
+            // whichever of Automatically check rules and Display warnings on
+            // canvas paused them.
+            .onChange(of: runsRulesChecksAutomatically) { _, runsAutomatically in
+                if runsAutomatically {
                     refreshRulesResults()
                 }
             }
@@ -1404,6 +1406,7 @@ struct ProjectWorkspaceView: View {
             HorizontalRulesResultsSidebarView(
                 result: rulesResultsState,
                 safeAreaInsets: safeAreaInsets,
+                displaysCanvasWarnings: appearanceSettings.canvasWarningsBinding(),
                 checksAutomatically: $checksRulesAutomatically,
                 onCheckNow: project.board == nil ? nil : { refreshRulesResults() },
                 onOpenRules: { showBoardRulesWindow() },
@@ -3714,11 +3717,20 @@ struct ProjectWorkspaceView: View {
         rightSidebarPane = .rulesResults
     }
 
+    /// The checks run on their own: Automatically check rules is on, and
+    /// Display warnings on canvas hasn't paused them.
+    private var runsRulesChecksAutomatically: Bool {
+        HorizontalRulesCheckDefaults.runsAutomatically(
+            checksAutomatically: checksRulesAutomatically,
+            displaysCanvasWarnings: appearanceSettings.shouldDisplayCanvasWarnings
+        )
+    }
+
     /// A change to the design or its rules: every check runs again while
     /// they run on their own, and while they run only when asked, what the
     /// sidebar shows is marked out of date.
     private func rulesInputsChanged() {
-        if checksRulesAutomatically {
+        if runsRulesChecksAutomatically {
             refreshRulesResults()
         } else {
             rulesResultsState?.isOutOfDate = true
@@ -3728,7 +3740,7 @@ struct ProjectWorkspaceView: View {
     /// A change to the board's copper or fills alone: the board checks run
     /// again, as `rulesInputsChanged` has them.
     private func boardChangedForRules() {
-        if checksRulesAutomatically {
+        if runsRulesChecksAutomatically {
             scheduleClearanceCheck()
         } else {
             rulesResultsState?.isOutOfDate = true
