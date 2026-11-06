@@ -533,6 +533,34 @@ struct DrawTrackToolButton: View {
     }
 }
 
+/// The board's via tool, with the hole tool behind Shift, as Horizon puts
+/// Place via and Place hole on one button.
+struct PlaceViaToolButton: View {
+    var onPlaceVia: () -> Void
+    var canPlaceVia: Bool
+    var onPlaceHole: () -> Void
+    var canPlaceHole: Bool
+
+    var body: some View {
+        ShiftAlternateToolButton(
+            primary: RailToolChoice(
+                title: "Place via",
+                help: "Place vias on a net. Hold Shift for a hole",
+                systemImage: "smallcircle.circle",
+                isEnabled: canPlaceVia,
+                action: onPlaceVia
+            ),
+            alternate: RailToolChoice(
+                title: "Place hole",
+                help: "Place holes through the board from a hole padstack",
+                systemImage: "circle.dotted",
+                isEnabled: canPlaceHole,
+                action: onPlaceHole
+            )
+        )
+    }
+}
+
 struct AddTextToolButton: View {
     var action: () -> Void
 

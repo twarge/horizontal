@@ -39,18 +39,30 @@ private struct PastePlacementState {
 }
 
 /// Live placement of a pool object — a pad in the package editor, a shape or
-/// a hole in the padstack editor, a decal on the board — following the cursor
-/// until a click places it. The pad, shape and hole tools then re-arm with the
-/// same padstack / form / angle so a row of pads is one click each, as
-/// Horizon's place tools do; a decal's ends with the one, as Horizon's does.
-/// Render-only until the commit, so Esc simply drops it.
+/// a hole in the padstack editor, a decal, via or hole on the board —
+/// following the cursor until a click places it. The pad, shape, hole and via
+/// tools then re-arm with the same padstack / form / angle / net so a row of
+/// pads is one click each, as Horizon's place tools do; a decal's ends with
+/// the one, as Horizon's does. Render-only until the commit, so Esc simply
+/// drops it.
 private enum PoolPlacementKind {
     /// The pad, and its copper/mask/paste/holes baked at the origin.
     case pad(HorizontalPad, geometry: HorizontalPackageGeometry)
     case shape(HorizontalPadstackShape)
+    /// A padstack's hole, or on the board a board hole on a hole padstack.
     case hole(HorizontalHole)
     /// The decal, and the board decal it makes drawn at the origin.
     case decal(HorizontalBoardDecalPlacement, geometry: HorizontalBoardDecal)
+    /// A via of the shape the rules give `netID`, pinned on it.
+    case via(HorizontalBoardViaTemplate, netID: String)
+}
+
+/// What the board's net chooser is open for.
+private enum BoardNetPickerPurpose {
+    /// Set Net… on these tracks and vias.
+    case setNet([HorizontalSelectableRef])
+    /// Place Via…, which places vias on the net chosen.
+    case placeVia
 }
 
 private struct PoolPlacementState {
@@ -628,15 +640,20 @@ struct BoardCanvasView: View {
     /// U during a move, route or paste: the edit is this block instance's
     /// alone, the instances laid out like it left as they are.
     @State private var instanceOnlyEdit = false
-    /// What the last edit also changed in other block instances, said for a
-    /// moment where the hints go.
-    @State private var blockSyncNote: String?
-    @State private var blockSyncNoteID = 0
+    /// Said for a moment where the hints go: what the last edit also changed
+    /// in other block instances, or why a tool didn't start.
+    @State private var canvasNote: String?
+    @State private var canvasNoteID = 0
     @State private var packagePlacementState: PackagePlacementState?
     @State private var planeEditorState: PlaneEditorState?
     @State private var padstackPickerPresented = false
     /// Place Decal…'s chooser, while it is up: the decals the board can take.
     @State private var decalPickerIndex: HorizontalPoolLibraryIndex?
+    /// The net chooser, while it is up, and what it chooses a net for.
+    @State private var netPickerPurpose: BoardNetPickerPurpose?
+    /// Place Board Hole…'s chooser, while it is up: the hole and mechanical
+    /// padstacks the pools hold.
+    @State private var holePadstackChoices: [HorizontalPoolPadstackInfo]?
     /// The last `placeDecalRequest` taken up, so the mount doesn't take up
     /// again one its change already did.
     @State private var handledPlaceDecalRequestID: UUID?
@@ -1144,7 +1161,9 @@ struct BoardCanvasView: View {
             minimumLineWidth: appearanceSettings.minimumLineWidth(for: .board),
             metalLayerOpacity: layerOpacity,
             selectionHUD: selectionHUD,
-            hoverStatusText: interactionStatusText.map(withInstanceOnlyHint) ?? blockSyncNote ?? hoverStatusText,
+            // A note is what the last click did, said for a moment over the
+            // tool's hints: a via a tool refused to put down, say.
+            hoverStatusText: canvasNote ?? interactionStatusText.map(withInstanceOnlyHint) ?? hoverStatusText,
             showsHoverPopover: appearanceSettings.shouldShowHoverPopover,
             selectionDetails: selectionDetails,
             showsSelectionDetails: Self.showsInCanvasSelectionInspector,
@@ -1389,6 +1408,29 @@ struct BoardCanvasView: View {
                 onCancel: { decalPickerIndex = nil }
             )
         }
+        .sheet(isPresented: Binding(
+            get: { netPickerPurpose != nil },
+            set: { if !$0 { netPickerPurpose = nil } }
+        )) {
+            HorizontalNetPickerSheet(
+                title: netPickerPurpose.map(netPickerTitle) ?? "",
+                message: netPickerPurpose.map(netPickerMessage) ?? "",
+                confirmTitle: netPickerPurpose.map(netPickerConfirmTitle) ?? "Choose",
+                nets: sortedNetOptions(),
+                onPick: { chooseNet($0) },
+                onCancel: { netPickerPurpose = nil }
+            )
+        }
+        .sheet(isPresented: Binding(
+            get: { holePadstackChoices != nil },
+            set: { if !$0 { holePadstackChoices = nil } }
+        )) {
+            HorizontalPadstackPickerSheet(
+                choices: holePadstackChoices ?? [],
+                onPick: { chooseHolePadstack($0) },
+                onCancel: { holePadstackChoices = nil }
+            )
+        }
         .onChange(of: sourceBoard.uuid) { _, _ in
             undoTarget.removeAllActions(from: undoManager)
             editedBoard = nil
@@ -1612,7 +1654,7 @@ struct BoardCanvasView: View {
                         HorizontalPlaneSettingsPopover(
                             title: planeEditorTitle(for: state.purpose),
                             confirmTitle: planeEditorConfirmTitle(for: state.purpose),
-                            nets: sortedPlaneNetOptions(),
+                            nets: sortedNetOptions(),
                             layerName: layerName(for: state.layer),
                             draft: state.draft,
                             ruleSettings: planeRuleSettings(layer: state.layer),
@@ -1634,7 +1676,7 @@ struct BoardCanvasView: View {
                     HorizontalPlaneSettingsPopover(
                         title: planeEditorTitle(for: state.purpose),
                         confirmTitle: planeEditorConfirmTitle(for: state.purpose),
-                        nets: sortedPlaneNetOptions(),
+                        nets: sortedNetOptions(),
                         layerName: layerName(for: state.layer),
                         draft: state.draft,
                         ruleSettings: planeRuleSettings(layer: state.layer),
@@ -1750,8 +1792,10 @@ struct BoardCanvasView: View {
         hasher.combine(boardClipboard.isEmpty)
         hasher.combine(pastePlacementState != nil)
         hasher.combine(poolPlacementState != nil)
-        // The Place Decal chooser coming up or going.
+        // The Place Decal, net and hole padstack choosers coming up or going.
         hasher.combine(decalPickerIndex != nil)
+        hasher.combine(netPickerPurpose != nil)
+        hasher.combine(holePadstackChoices != nil)
         return hasher.finalize()
     }
 
@@ -1893,10 +1937,20 @@ struct BoardCanvasView: View {
             case .shape(let shape):
                 return "Place \(shape.form.displayName.lowercased()) shape: click places   R rotates   Esc ends"
             case .hole(let hole):
-                return "Place \(hole.shape == .slot ? "slot" : "round") hole: click places   R rotates   Esc ends"
+                // A board hole is named for its padstack.
+                let padstack = hole.padstackID.flatMap { id in
+                    poolURL.flatMap { HorizontalPoolPadstacks.padstackName(id: id, poolURL: $0) }
+                }
+                let what = padstack.map { "hole (\($0))" } ?? "\(hole.shape == .slot ? "slot" : "round") hole"
+                return "Place \(what): click places   R rotates   Esc ends"
             case .decal(let placement, _):
                 let scale = placement.scale == 1 ? "" : String(format: ", scale %g", placement.scale)
                 return "Place decal \(placement.name)\(scale): click places   R rotates   E flips to the other side   S sets the scale   Esc cancels"
+            case .via(let via, let netID):
+                let diameter = String(format: "%g", via.diameter / 1_000_000)
+                let hole = String(format: "%g", via.holeDiameter / 1_000_000)
+                let net = netDisplayName(netID) ?? shortID(netID)
+                return "Place via (\(net), \(diameter)/\(hole) mm\(via.fromRules ? " from rules" : "")): click places   Esc ends"
             }
         }
         if let tuneState {
@@ -2564,7 +2618,7 @@ struct BoardCanvasView: View {
             guard let plane = board.planes.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return []
             }
-            let netOptions = sortedPlaneNetOptions()
+            let netOptions = sortedNetOptions()
             let netValue = plane.netID.map(normalizedID)
             return [
                 netOptions.isEmpty || netValue == nil
@@ -3170,6 +3224,10 @@ struct BoardCanvasView: View {
             decalPickerIndex = nil
             beginPlaceDecal(item)
         }
+        actions.netChoices = netPickerPurpose != nil ? sortedNetOptions() : nil
+        actions.chooseNet = { chooseNet($0) }
+        actions.holePadstackChoices = holePadstackChoices
+        actions.chooseHolePadstack = { chooseHolePadstack($0) }
         actions.frameWorldRect = { rect in
             guard let transform = liveCanvasTransform.transform else {
                 return
@@ -3361,6 +3419,15 @@ struct BoardCanvasView: View {
             if case .decal? = poolPlacementState?.kind {
                 handlers.enterSize = { enterDecalScale() }
             }
+            if canPlaceVia {
+                handlers.placeVia = { requestPlaceVia() }
+            }
+            if canPlaceBoardHole {
+                handlers.placeBoardHole = { requestPlaceBoardHole() }
+            }
+            // Whether the selection can take a net is worked out when asked:
+            // it floods the copper each selected track and via is part of.
+            handlers.setNet = { requestSetNet() }
             handlers.tuneTrack = { beginTuneTrack() }
             if let onEditDiffpair {
                 handlers.setDiffpair = { netIDs in
@@ -3673,6 +3740,18 @@ struct BoardCanvasView: View {
                 entries.append(contentsOf: HorizontalDiffpairProperty.menuEntries(
                     for: netID(for: ref), selectedNetIDs: selectedNetIDs, in: board.netDetails,
                     canEdit: { onEditDiffpair.canEdit($0) }))
+            }
+        }
+        // Set Net… on a track or via whose copper no pad gives a net
+        // (Horizon's Set via net), or why it can't take one.
+        if writable, modeProfile.mode == .board, let availability = BoardSetNet.availability(of: ref, in: board) {
+            if !hasNet {
+                entries.append(.separator)
+            }
+            if let reason = availability.reason {
+                entries.append(.unavailable(title: "Set Net…", reason: reason))
+            } else {
+                entries.append(.command(title: "Set Net…", .setNet))
             }
         }
 
@@ -6700,7 +6779,7 @@ struct BoardCanvasView: View {
         }
         // The plane editor on the last vertex; the drawing stays the tool's
         // draft behind it until the editor confirms or cancels.
-        let nets = sortedPlaneNetOptions()
+        let nets = sortedNetOptions()
         let defaultNet = highlightedNetIDs.first.map(normalizedID).flatMap { id in nets.first { $0.id == id }?.id } ?? nets.first?.id
         let anchor = state.points.last ?? polygons[0].vertices.last ?? board.bounds.center
         planeEditorState = PlaneEditorState(
@@ -6773,7 +6852,7 @@ struct BoardCanvasView: View {
         guard let layer = polygon.layer, HorizontalBoardLayers.isCopper(layer) else {
             return
         }
-        let nets = sortedPlaneNetOptions()
+        let nets = sortedNetOptions()
         let defaultNet = highlightedNetIDs.first.map(normalizedID).flatMap { id in nets.first { $0.id == id }?.id } ?? nets.first?.id
         planeEditorState = PlaneEditorState(
             purpose: .define(polygonID: polygon.id),
@@ -6950,7 +7029,7 @@ struct BoardCanvasView: View {
 
     /// Board nets as `(id, name)` choices, sorted by display name. Shared by the
     /// draw-plane net prompt and the plane inspector's Net picker.
-    private func sortedPlaneNetOptions() -> [HorizontalSelectionPropertyOption] {
+    private func sortedNetOptions() -> [HorizontalSelectionPropertyOption] {
         board.netDetails.values
             .map { HorizontalSelectionPropertyOption(id: normalizedID($0.id), title: nonEmpty($0.name) ?? shortID($0.id)) }
             .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
@@ -8971,13 +9050,18 @@ struct BoardCanvasView: View {
         guard !parts.isEmpty else {
             return
         }
-        blockSyncNote = parts.joined(separator: " — ")
-        blockSyncNoteID &+= 1
-        let id = blockSyncNoteID
+        showCanvasNote(parts.joined(separator: " — "))
+    }
+
+    /// Says `note` for a few seconds where the hints go.
+    private func showCanvasNote(_ note: String) {
+        canvasNote = note
+        canvasNoteID &+= 1
+        let id = canvasNoteID
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(4))
-            if blockSyncNoteID == id {
-                blockSyncNote = nil
+            if canvasNoteID == id {
+                canvasNote = nil
             }
         }
     }
@@ -17260,12 +17344,192 @@ extension BoardCanvasView {
         }
     }
 
-    /// Whether a decal can be put on the board now: on a board, not a pool
-    /// item, with a pool to take it from, and nothing else under way.
-    private var canPlaceDecal: Bool {
-        !isReadOnly && modeProfile.mode == .board && poolURL != nil
+    /// Whether a placement tool can take up the board now: on a board, not a
+    /// pool item, and nothing else under way.
+    private var canStartBoardPlacement: Bool {
+        !isReadOnly && modeProfile.mode == .board
             && moveState == nil && drawGraphicsState == nil && drawTrackState == nil && pastePlacementState == nil
             && poolPlacementState == nil && roundOffVertexState == nil && tuneState == nil && packagePlacementState == nil
+    }
+
+    /// Whether a decal can be put on the board now, with a pool to take it
+    /// from.
+    private var canPlaceDecal: Bool {
+        canStartBoardPlacement && poolURL != nil
+    }
+
+    /// Whether Place Via… can start: a net to put the via on.
+    private var canPlaceVia: Bool {
+        canStartBoardPlacement && !board.netDetails.isEmpty
+    }
+
+    /// Whether Place Board Hole… can start: a pool to take its padstack from.
+    private var canPlaceBoardHole: Bool {
+        canStartBoardPlacement && poolURL != nil
+    }
+
+    // MARK: Place via, place board hole, set net
+
+    /// Place Via…: Horizon's place-via tool asks for the net first.
+    private func requestPlaceVia() {
+        guard canPlaceVia, netPickerPurpose == nil else {
+            return
+        }
+        netPickerPurpose = .placeVia
+    }
+
+    /// Set Net…: the net chooser, for the selected tracks and vias whose
+    /// copper can take one (`BoardSetNet`).
+    private func requestSetNet() {
+        guard !isReadOnly, modeProfile.mode == .board, netPickerPurpose == nil else {
+            return
+        }
+        let refs = uniqueRefs(selectedObjects).filter { $0.type == .track || $0.type == .via }
+        let availability = BoardSetNet.availability(of: refs, in: board)
+        let takers = zip(refs, availability).compactMap { ref, availability -> HorizontalSelectableRef? in
+            if case .available? = availability { return ref }
+            return nil
+        }
+        guard !takers.isEmpty else {
+            if let reason = availability.lazy.compactMap({ $0?.reason }).first {
+                showCanvasNote(reason)
+            }
+            return
+        }
+        netPickerPurpose = .setNet(takers)
+    }
+
+    private func netPickerTitle(_ purpose: BoardNetPickerPurpose) -> String {
+        switch purpose {
+        case .setNet: return "Set Net"
+        case .placeVia: return "Place Via"
+        }
+    }
+
+    private func netPickerMessage(_ purpose: BoardNetPickerPurpose) -> String {
+        switch purpose {
+        case .setNet:
+            return "The net is pinned on the vias the copper reaches, which give it to the tracks between them."
+        case .placeVia:
+            return "The vias take the shape the via rules give the net."
+        }
+    }
+
+    private func netPickerConfirmTitle(_ purpose: BoardNetPickerPurpose) -> String {
+        switch purpose {
+        case .setNet: return "Set Net"
+        case .placeVia: return "Place"
+        }
+    }
+
+    /// The net chooser's Set Net or Place, for what it was opened for.
+    private func chooseNet(_ netID: String) {
+        guard let purpose = netPickerPurpose else {
+            return
+        }
+        netPickerPurpose = nil
+        switch purpose {
+        case .setNet(let refs):
+            applySetNet(netID, on: refs)
+        case .placeVia:
+            beginPlaceVia(netID: netID)
+        }
+    }
+
+    private func applySetNet(_ netID: String, on refs: [HorizontalSelectableRef]) {
+        guard !isReadOnly else {
+            return
+        }
+        let previous = editedBoard ?? sourceBoard
+        var draft = previous
+        guard BoardSetNet.setNet(netID, on: refs, in: &draft) else {
+            return
+        }
+        registerUndoSnapshot(previous, actionName: "Set Net")
+        editedBoard = draft
+        invalidateSelectableCache()
+        hoveredObject = nil
+        publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previous, kind: .properties))
+        publishSelectionContext()
+    }
+
+    /// Vias on `netID` follow the cursor, shaped as Horizon's place-via tool
+    /// shapes one: by the via rule that takes the net, opening the mask
+    /// where its padstack does. With no rule for the net there is no via to
+    /// place, and the tool says so rather than start.
+    private func beginPlaceVia(netID: String) {
+        guard canPlaceVia else {
+            return
+        }
+        guard let via = board.routeVia(netID: netID) else {
+            let name = netDisplayName(netID) ?? shortID(netID)
+            showCanvasNote(board.rules.viaRules.isEmpty
+                ? "Place Via: the board has no via rules"
+                : "Place Via: no via rule takes \(name)")
+            return
+        }
+        armPoolPlacement(.via(board.viaWithMaskOpenings(via, poolURL: poolURL), netID: normalizedID(netID)))
+    }
+
+    /// Place Board Hole…: Horizon's hole padstack chooser, over the hole and
+    /// mechanical padstacks of the project pool and the pools it draws from,
+    /// read off the main thread.
+    private func requestPlaceBoardHole() {
+        guard canPlaceBoardHole, holePadstackChoices == nil, let poolURL else {
+            return
+        }
+        Task { @MainActor in
+            let choices = await Task.detached(priority: .userInitiated) {
+                HorizontalPoolPadstacks.padstacks(ofTypes: ["hole", "mechanical"], poolURL: poolURL)
+            }.value
+            // A tool taken up while the pools were read keeps the canvas.
+            guard canPlaceBoardHole else {
+                return
+            }
+            holePadstackChoices = choices
+        }
+    }
+
+    private func chooseHolePadstack(_ padstackID: String) {
+        guard holePadstackChoices != nil else {
+            return
+        }
+        holePadstackChoices = nil
+        beginPlaceBoardHole(padstackID: padstackID)
+    }
+
+    /// A board hole on `padstackID` follows the cursor, with the padstack's
+    /// own values for the parameters it requires, as Horizon's tool gives it
+    /// them. A padstack from another pool is cached into the project pool
+    /// when the board is saved, which is where the loader reads it from.
+    private func beginPlaceBoardHole(padstackID: String) {
+        guard canPlaceBoardHole, let poolURL,
+              let padstack = HorizontalPoolPadstacks.padstack(id: padstackID, poolURL: poolURL) else {
+            return
+        }
+        let name = padstack.string("name") ?? shortID(padstackID)
+        let defaults = padstack.dictionary("parameter_set") ?? [:]
+        var parameterSet = JSONDictionary()
+        for case let key as String in padstack["parameters_required"] as? [Any] ?? [] {
+            parameterSet[key] = defaults[key] ?? 0
+        }
+        let holes = HorizontalBoard.boardHoles(
+            id: UUID().uuidString.lowercased(),
+            padstackID: padstackID,
+            padstackJSON: padstack,
+            placement: .identity,
+            parameterSet: parameterSet,
+            netID: nil
+        )
+        // A board hole whose padstack drills several is several holes here,
+        // none of which the file can take by itself.
+        guard holes.count == 1, let hole = holes.first else {
+            showCanvasNote(holes.isEmpty
+                ? "Place Board Hole: \(name) drills no hole"
+                : "Place Board Hole: \(name) drills \(holes.count) holes; a board hole here drills one")
+            return
+        }
+        armPoolPlacement(.hole(hole))
     }
 
     private func beginPlaceDecal(_ item: HorizontalPoolLibraryItem) {
@@ -17398,6 +17662,11 @@ extension BoardCanvasView {
             preview.packageHoles.append(hole)
         case .decal(_, let geometry):
             preview.decals.append(shifted(geometry, by: cursor))
+        case .via(let template, let netID):
+            let ghost = BoardTrackRouting.throughVia(
+                template, id: "place-preview-via", at: cursor, netID: netID, copperLayerCount: preview.copperLayerCount)
+            preview.vias.append(ghost.via)
+            preview.viaHoles.append(ghost.hole)
         }
     }
 
@@ -17419,6 +17688,9 @@ extension BoardCanvasView {
             hasher.combine(placement.flip)
             hasher.combine(placement.scale)
             return hasher.finalize()
+        case .via:
+            // One via all the tool long: its net and shape don't change.
+            return 4_000_000
         }
     }
 
@@ -17442,6 +17714,8 @@ extension BoardCanvasView {
                 return
             }
             state.kind = .decal(placement, geometry: geometry)
+        case .via:
+            return
         }
         poolPlacementState = state
     }
@@ -17459,7 +17733,7 @@ extension BoardCanvasView {
             shape.placement.mirrored.toggle()
             shape.placement.angle = wrappedAngle(-shape.placement.angle)
             state.kind = .shape(shape)
-        case .hole:
+        case .hole, .via:
             return
         case .decal(var placement, _):
             placement.toggleFlip()
@@ -17527,6 +17801,27 @@ extension BoardCanvasView {
             ref = HorizontalSelectableRef(id: decal.id, type: .boardDecal)
             actionName = "Place Decal"
             nextKind = nil
+        case .via(let template, let netID):
+            let at = HorizontalPoint(x: position.x.rounded(), y: position.y.rounded())
+            // The via stands on a junction, and a pad with a junction on its
+            // centre is cut off the copper that ends on it.
+            let atPadCentre = draft.packagePadPositions.values.contains { pointKey($0) == pointKey(at) }
+            guard !atPadCentre else {
+                #if os(macOS)
+                NSSound.beep()
+                #endif
+                showCanvasNote("Place Via: not on a pad's centre, which it would cut off its tracks")
+                return
+            }
+            // It joins the copper ending where it goes, as a via the track
+            // tool drops does (`BoardTrackRouting.dropVia`).
+            BoardTrackRouting.dropVia(template, at: at, netID: netID, preferredJunctionID: nil, on: &draft)
+            guard let via = draft.vias.last else {
+                return
+            }
+            ref = HorizontalSelectableRef(id: via.id, type: .via)
+            actionName = "Place Via"
+            nextKind = .via(template, netID: netID)
         }
 
         registerUndoSnapshot(previous, actionName: actionName)

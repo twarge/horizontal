@@ -2681,6 +2681,12 @@ struct ProjectWorkspaceView: View {
                         DrawingToolButtonGroup(primitives: HorizontalDrawingPrimitive.polygonRail) { primitive in
                             boardDrawingToolCommand = HorizontalDrawingToolCommand(primitive: primitive)
                         }
+                        PlaceViaToolButton(
+                            onPlaceVia: { canvasCommandActionsByPane[.board]?.dispatch(.placeVia) },
+                            canPlaceVia: canvasCommandActionsByPane[.board]?.canPlaceVia == true,
+                            onPlaceHole: { canvasCommandActionsByPane[.board]?.dispatch(.placeBoardHole) },
+                            canPlaceHole: canvasCommandActionsByPane[.board]?.canPlaceBoardHole == true
+                        )
                         DrawDimensionToolButton {
                             canvasCommandActionsByPane[.board]?.dispatch(.drawDimension)
                         }

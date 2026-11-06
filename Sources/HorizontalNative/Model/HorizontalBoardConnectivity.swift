@@ -171,6 +171,57 @@ enum HorizontalBoardConnectivity {
         return found
     }
 
+    /// A track or via, by id, to find the copper it is part of.
+    enum Copper: Hashable {
+        case track(String)
+        case via(String)
+    }
+
+    /// The copper joined to a track or via, as `recompute` floods it to give
+    /// it a net: its tracks and vias, the pads it reaches whatever their
+    /// nets, and the nets its pads and pinned vias bring.
+    struct Run: Equatable {
+        var trackIDs: [String]
+        var viaIDs: [String]
+        /// The pads it reaches ("package/pad"), a pad on no net among them.
+        var pads: [String]
+        var nets: Set<String>
+    }
+
+    /// The run of copper each of `copper` is part of, in order; nil for one
+    /// the board doesn't have. The graph is built once for all of them.
+    static func runs(of copper: [Copper], in board: HorizontalBoard) -> [Run?] {
+        guard !copper.isEmpty else {
+            return []
+        }
+        let built = graph(board)
+        return copper.map { item -> Run? in
+            let start: String
+            switch item {
+            case .track(let id):
+                guard let track = board.tracks.first(where: { normalizedID($0.id) == normalizedID(id) }),
+                      let layer = track.layer ?? built.copperLayers.first else {
+                    return nil
+                }
+                start = HorizontalCopperConnectivity.node(track.from, layer: layer)
+            case .via(let id):
+                guard let via = board.vias.first(where: { normalizedID($0.id) == normalizedID(id) }),
+                      let layer = viaSpan(via, copperLayers: built.copperLayers).first else {
+                    return nil
+                }
+                start = HorizontalCopperConnectivity.node(via.position, layer: layer)
+            }
+            var visited = Set<String>()
+            let component = flood(from: start, graph: built, visited: &visited)
+            return Run(
+                trackIDs: component.tracks.sorted().map { board.tracks[$0].id },
+                viaIDs: component.vias.sorted().map { board.vias[$0].id },
+                pads: Set(component.keys.compactMap { built.padAtKey[$0] }).sorted(),
+                nets: Set(component.nets.map(normalizedID))
+            )
+        }
+    }
+
     private struct Component {
         var keys = [String]()
         var nets = Set<String>()

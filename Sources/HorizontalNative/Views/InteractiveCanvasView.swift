@@ -191,6 +191,15 @@ enum HorizontalCanvasCommand {
     /// Board: choose a decal from the pools and place it (Horizon's
     /// place-decal tool).
     case placeDecal
+    /// Board: choose a net, then place vias on it, shaped by the via rules
+    /// (Horizon's place-via tool).
+    case placeVia
+    /// Board: choose a hole padstack, then place holes with it (Horizon's
+    /// place-board-hole tool).
+    case placeBoardHole
+    /// Board: choose a net for the selected tracks and vias whose copper
+    /// reaches no pad, pinned on the vias it reaches (Horizon's Set via net).
+    case setNet
     /// Symbol editor: place the next unplaced unit pin (Horizon's map-pin).
     case placePin
     /// Symbol editor: place `$REFDES` and `$VALUE` texts together.
@@ -298,6 +307,9 @@ enum HorizontalTargetItemMenuEntry {
     /// A planned-but-unimplemented action: shown disabled (greyed) so the full
     /// Horizon menu is discoverable while clearly marked not-yet-available.
     case todo(title: String)
+    /// An action the candidate can't take, shown disabled with why: Set Net…
+    /// on a track that reaches no via.
+    case unavailable(title: String, reason: String)
     case separator
 }
 
@@ -1838,6 +1850,11 @@ struct InteractiveCanvasView: View {
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             item.isEnabled = false
             item.toolTip = "Not yet implemented"
+            return item
+        case .unavailable(let title, let reason):
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            item.toolTip = reason
             return item
         case .select(let title):
             let item = NSMenuItem(title: title, action: #selector(CanvasMenuAction.invoke(_:)), keyEquivalent: "")
@@ -3528,6 +3545,10 @@ struct HorizontalMultitouchView: UIViewRepresentable {
                     }
                 case .todo(let title):
                     let action = UIAction(title: title) { _ in }
+                    action.attributes = [.disabled]
+                    current.append(action)
+                case .unavailable(let title, let reason):
+                    let action = UIAction(title: title, subtitle: reason) { _ in }
                     action.attributes = [.disabled]
                     current.append(action)
                 case .select(let title):

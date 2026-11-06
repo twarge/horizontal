@@ -1943,6 +1943,16 @@ enum HorizontalProjectJSONApplicator {
             item["source"] = via.fromRules ? "rules" : (via.definitionID != nil ? "definition" : "local")
         }
 
+        // The net pinned on it (Set Net…), the one net the file keeps on
+        // copper; an unchanged one keeps its casing.
+        if let netSetID = via.netSetID {
+            if (item["net_set"] as? String)?.lowercased() != netSetID.lowercased() {
+                item["net_set"] = netSetID
+            }
+        } else {
+            item.removeValue(forKey: "net_set")
+        }
+
         // A span the via definition gave it, which Via::serialize writes
         // only where it isn't through.
         if let span = via.span {
