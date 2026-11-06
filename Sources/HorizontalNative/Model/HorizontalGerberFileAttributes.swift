@@ -2,10 +2,11 @@ import Foundation
 
 /// The Gerber X2 file attributes a layer file's header carries, so a fab's CAM
 /// reads what each file is (which copper layer, counted from the top, which
-/// side's mask) from the file rather than from its name. Horizon's Gerber
-/// writer writes none, only a G04 comment naming the layer; KiCad's writes
-/// this same set. Values as the Gerber Layer Format Specification, revision
-/// 2026.05, §5.6 gives them.
+/// side's mask, which copper a drill file's holes run through) from the file
+/// rather than from its name. Horizon's Gerber and Excellon writers write
+/// none, only a G04 comment naming a Gerber's layer; KiCad's write this same
+/// set. Values as the Gerber Layer Format Specification, revision 2026.05,
+/// §5.6 gives them.
 enum HorizontalGerberFileAttributes {
     /// The `%TF` lines for `layer`'s file, in the order KiCad writes them.
     /// `.GenerationSoftware` needs a version, so it is left out without one.
@@ -15,18 +16,77 @@ enum HorizontalGerberFileAttributes {
         userLayer: HorizontalBoardUserLayer?,
         softwareVersion: String?
     ) -> [String] {
-        var lines = [String]()
-        if let softwareVersion {
-            lines.append("%TF.GenerationSoftware,Horizontal,Horizontal,\(field(softwareVersion))*%")
-        }
-        // Every file of the set is drawn in the board's own coordinates, and
-        // the export moves no origin, so no ident tells sets apart (§5.6.5).
-        lines.append("%TF.SameCoordinates*%")
-        lines.append("%TF.FileFunction,\(fileFunction(for: layer, innerLayerCount: innerLayerCount, userLayer: userLayer))*%")
+        var attributes = setAttributes(softwareVersion: softwareVersion)
+        attributes.append("TF.FileFunction,\(fileFunction(for: layer, innerLayerCount: innerLayerCount, userLayer: userLayer))")
         if let polarity = filePolarity(for: layer) {
-            lines.append("%TF.FilePolarity,\(polarity)*%")
+            attributes.append("TF.FilePolarity,\(polarity)")
         }
-        return lines
+        return attributes.map { "%\($0)*%" }
+    }
+
+    /// A drill file's attributes, as Excellon comments `; #@! TF.…` the way
+    /// KiCad writes them: Excellon has no attributes of its own, and the form
+    /// is the one Gerber keeps for its standard comments (§4.1).
+    static func drillHeader(
+        span: HorizontalViaSpan,
+        plated: Bool?,
+        innerLayerCount: Int,
+        softwareVersion: String?
+    ) -> [String] {
+        var attributes = setAttributes(softwareVersion: softwareVersion)
+        if let function = drillFileFunction(span: span, plated: plated, innerLayerCount: innerLayerCount) {
+            attributes.append("TF.FileFunction,\(function)")
+        }
+        // Drill files are always positive (§6.6).
+        attributes.append("TF.FilePolarity,Positive")
+        return attributes.map { "; #@! \($0)" }
+    }
+
+    /// What every file of the set says: the software, and that the files
+    /// align. Each is drawn in the board's own coordinates and the export
+    /// moves no origin, so no ident tells sets apart (§5.6.5).
+    private static func setAttributes(softwareVersion: String?) -> [String] {
+        var attributes = [String]()
+        if let softwareVersion {
+            attributes.append("TF.GenerationSoftware,Horizontal,Horizontal,\(field(softwareVersion))")
+        }
+        attributes.append("TF.SameCoordinates")
+        return attributes
+    }
+
+    /// The number a copper layer's files go by, counted from the top: L1
+    /// the top, Horizon's Inner 1 L2, the bottom L(inner + 2).
+    static func copperLayerNumber(_ layer: Int, innerLayerCount: Int) -> Int {
+        switch layer {
+        case HorizontalBoardLayers.topCopper:
+            return 1
+        case HorizontalBoardLayers.bottomCopper:
+            return innerLayerCount + 2
+        default:
+            return -layer + 1
+        }
+    }
+
+    /// A drill file's `.FileFunction` (§5.6.3): Plated,i,j between the copper
+    /// layers its holes run from and to, numbered as the copper files are,
+    /// PTH from top to bottom, Blind from an outer layer to an inner one,
+    /// Buried between inner ones; NonPlated,1,n,NPTH for unplated holes. Nil
+    /// for a file holding both, which no value describes.
+    static func drillFileFunction(span: HorizontalViaSpan, plated: Bool?, innerLayerCount: Int) -> String? {
+        guard let plated else {
+            return nil
+        }
+        let from = copperLayerNumber(span.start, innerLayerCount: innerLayerCount)
+        let to = copperLayerNumber(span.end, innerLayerCount: innerLayerCount)
+        let kind: String
+        if span.isThrough {
+            kind = plated ? "PTH" : "NPTH"
+        } else if span.start == HorizontalBoardLayers.topCopper || span.end == HorizontalBoardLayers.bottomCopper {
+            kind = "Blind"
+        } else {
+            kind = "Buried"
+        }
+        return "\(plated ? "Plated" : "NonPlated"),\(from),\(to),\(kind)"
     }
 
     /// The layer's `.FileFunction` value. Copper is numbered from the top,
@@ -38,9 +98,9 @@ enum HorizontalGerberFileAttributes {
         case HorizontalBoardLayers.topCopper:
             return "Copper,L1,Top"
         case HorizontalBoardLayers.in8Copper...HorizontalBoardLayers.in1Copper:
-            return "Copper,L\(-layer + 1),Inr"
+            return "Copper,L\(copperLayerNumber(layer, innerLayerCount: innerLayerCount)),Inr"
         case HorizontalBoardLayers.bottomCopper:
-            return "Copper,L\(innerLayerCount + 2),Bot"
+            return "Copper,L\(copperLayerNumber(layer, innerLayerCount: innerLayerCount)),Bot"
         case HorizontalBoardLayers.topMask, HorizontalBoardLayers.bottomMask:
             return "Soldermask,\(side)"
         case HorizontalBoardLayers.topSilkscreen, HorizontalBoardLayers.bottomSilkscreen:

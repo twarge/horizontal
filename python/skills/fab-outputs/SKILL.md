@@ -25,7 +25,7 @@ A live export writes as the sandboxed app, which can only write where it has acc
 
 ## 4. Check what was written
 
-- List the files, and compare the copper layers with `board_info`'s stackup. Each Gerber states its layer in its header as a Gerber X2 `%TF.FileFunction` attribute: copper as `Copper,L<n>,Top|Inr|Bot`, numbered from the top, so Horizon's Inner 1 is L2 and the bottom of a four-layer board is L4. The drill files carry no attributes.
+- List the files, and compare the copper layers with `board_info`'s stackup. Each Gerber states its layer in its header as a Gerber X2 `%TF.FileFunction` attribute: copper as `Copper,L<n>,Top|Inr|Bot`, numbered from the top, so Horizon's Inner 1 is L2 and the bottom of a four-layer board is L4. Each blind or buried via span has a drill file of its own beside the through holes', and each drill file states its span in a `; #@! TF.FileFunction,Plated,i,j,PTH|Blind|Buried` comment; a merged drill file holding plated and unplated holes states none.
 - Compare BOM lines and quantities with the `bom` tool. Check that do-not-populate parts are handled the way the assembler expects.
 - Use `render_board` per layer, or with `mirrored` for the bottom, to eyeball the copper against the exported Gerbers.
 - Commit outputs separately from design changes, with the source commit they were generated from in the message.
