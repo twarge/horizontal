@@ -1970,7 +1970,9 @@ enum HorizontalExportBackend {
         prefix: String,
         to directoryURL: URL
     ) throws -> [URL] {
-        let hits = (board.holes + board.viaHoles + board.packageHoles).map { DrillHit(position: $0.position, diameter: $0.diameter, plated: $0.plated) }
+        let hits = (board.holes + board.viaHoles + board.packageHoles).map {
+            DrillHit(position: $0.position, diameter: $0.diameter, plated: $0.plated, slot: slotEnds(of: $0))
+        }
         guard !hits.isEmpty else {
             return []
         }
@@ -2014,7 +2016,17 @@ enum HorizontalExportBackend {
             let code = toolCodes[diameter] ?? 1
             lines.append("T\(String(format: "%02d", code))")
             for hit in hits where hit.diameter == diameter {
-                lines.append(String(format: "X%.4fY%.4f", hit.position.x / 1_000_000, hit.position.y / 1_000_000))
+                // A slot is drilled from one end's centre to the other's
+                // (G85), as Horizon's ExcellonWriter writes it; drilled at
+                // its centre alone, it came out a round hole.
+                if let slot = hit.slot {
+                    lines.append(String(
+                        format: "X%.4fY%.4fG85X%.4fY%.4f",
+                        slot.from.x / 1_000_000, slot.from.y / 1_000_000, slot.to.x / 1_000_000, slot.to.y / 1_000_000
+                    ))
+                } else {
+                    lines.append(String(format: "X%.4fY%.4f", hit.position.x / 1_000_000, hit.position.y / 1_000_000))
+                }
             }
         }
         lines.append("M30")
@@ -2204,17 +2216,7 @@ enum HorizontalExportBackend {
                 ?? (layers.count >= 2 ? HorizontalViaSpan(start: layers.max() ?? 0, end: layers.min() ?? 0) : through)
         }
         func drill(_ hole: HorizontalHole, _ kind: ODBDrill.Kind) -> ODBDrill {
-            // A slot is a line between the centres of its two ends.
-            let offset = hole.shape == .slot ? (hole.effectiveLength - hole.diameter) / 2 : 0
-            let transform = HorizontalPlacementTransform(shift: hole.position, angle: hole.angle, mirrored: false)
-            return ODBDrill(
-                position: hole.position,
-                diameter: hole.diameter,
-                kind: kind,
-                slot: offset > 0
-                    ? (transform.applying(to: HorizontalPoint(x: -offset, y: 0)), transform.applying(to: HorizontalPoint(x: offset, y: 0)))
-                    : nil
-            )
+            ODBDrill(position: hole.position, diameter: hole.diameter, kind: kind, slot: slotEnds(of: hole))
         }
         var bySpan = [HorizontalViaSpan: [ODBDrill]]()
         for hole in board.viaHoles where hole.diameter > 0 {
@@ -2226,6 +2228,18 @@ enum HorizontalExportBackend {
         return bySpan
             .sorted { ($0.key != through ? 1 : 0, -$0.key.start, $0.key.end) < ($1.key != through ? 1 : 0, -$1.key.start, $1.key.end) }
             .map { ($0.key, $0.value) }
+    }
+
+    /// A slot's two ends' centres, half its length less its radius either
+    /// side of its middle along its angle; nil for a round hole or a slot no
+    /// longer than it is wide.
+    private static func slotEnds(of hole: HorizontalHole) -> (from: HorizontalPoint, to: HorizontalPoint)? {
+        let offset = hole.shape == .slot ? (hole.effectiveLength - hole.diameter) / 2 : 0
+        guard offset > 0 else {
+            return nil
+        }
+        let transform = HorizontalPlacementTransform(shift: hole.position, angle: hole.angle, mirrored: false)
+        return (transform.applying(to: HorizontalPoint(x: -offset, y: 0)), transform.applying(to: HorizontalPoint(x: offset, y: 0)))
     }
 
     /// A drill layer's features: a pad flashed for each round hole and a line
@@ -3181,6 +3195,7 @@ private struct DrillHit {
     var position: HorizontalPoint
     var diameter: Double
     var plated: Bool
+    var slot: (from: HorizontalPoint, to: HorizontalPoint)?
 }
 
 private struct ODBLayer {
