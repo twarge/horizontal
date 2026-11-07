@@ -1340,8 +1340,10 @@ struct ProjectWorkspaceView: View {
                         // sidebar's controls instead of treating them as
                         // empty-space canvas clicks (which deselect) — still
                         // needed mid-transition, while the sidebar slides
-                        // across the canvas.
+                        // across the canvas. Closed with the pointer over
+                        // it, it goes without a hover end.
                         .onHover { pointerInsideRightSidebar = $0 }
+                        .onDisappear { pointerInsideRightSidebar = false }
                 }
             }
             .animation(.snappy(duration: 0.18), value: rightSidebarPane)

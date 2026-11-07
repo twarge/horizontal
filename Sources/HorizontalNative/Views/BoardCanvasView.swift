@@ -3228,6 +3228,12 @@ struct BoardCanvasView: View {
         actions.chooseNet = { chooseNet($0) }
         actions.holePadstackChoices = holePadstackChoices
         actions.chooseHolePadstack = { chooseHolePadstack($0) }
+        actions.pickUnplacedObject = { id in
+            guard let object = currentUnplacedObjects.first(where: { $0.id == id }) else {
+                return
+            }
+            selectUnplacedObject(object)
+        }
         actions.frameWorldRect = { rect in
             guard let transform = liveCanvasTransform.transform else {
                 return

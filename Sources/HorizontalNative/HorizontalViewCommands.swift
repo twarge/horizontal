@@ -158,6 +158,10 @@ struct HorizontalCanvasCommandActions {
     /// open, and choosing one there, for the same reason.
     var holePadstackChoices: [HorizontalPoolPadstackInfo]? = nil
     var chooseHolePadstack: ((String) -> Void)? = nil
+    /// Picks a row of the unplaced column by its object's id, as a click on
+    /// it does, for the same reason: the row's button can't be pressed from
+    /// a test.
+    var pickUnplacedObject: ((String) -> Void)? = nil
     /// Frames a world rectangle in the canvas, for the live channel's zoom-to.
     var frameWorldRect: ((HorizontalRect) -> Void)? = nil
     /// Zooms the view about its centre; 2 is twice as close.

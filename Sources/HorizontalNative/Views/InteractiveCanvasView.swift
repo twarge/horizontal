@@ -719,8 +719,14 @@ struct InteractiveCanvasView: View {
     }
     @State private var primaryDragIntent: PrimaryDragIntent?
     @State private var gridDivisor = 1
-    @State private var pointerInsideSelectionPopover = false
-    @State private var pointerInsideUnplacedObjectColumn = false
+    /// Where the selection popover and the unplaced column sit, in the
+    /// canvas's own coordinates, which are its event monitor's: the pointer
+    /// over one of them is the panel's, its wheel included. Taken from where
+    /// they are rather than from hover, which a panel that went away, or came
+    /// back, under the pointer could leave set with the pointer long gone, and
+    /// the trackpad then panned nothing.
+    @State private var selectionPopoverFrame: CGRect?
+    @State private var unplacedObjectColumnFrame: CGRect?
     @State private var hoveredWarningIDs: Set<String> = []
     @State private var presentedWarning: HorizontalCanvasWarning?
     /// Current keyboard modifiers, published by the macOS NSEvent flags monitor so
@@ -785,6 +791,21 @@ struct InteractiveCanvasView: View {
     private var effectivePan: CGSize {
         effectiveViewport.pan
     }
+
+    /// The panels over the canvas that are showing, by `Self.coordinateSpace`.
+    private var overlayFrames: [CGRect] {
+        var frames = [CGRect]()
+        if showsSelectionDetails, selectionDetails.hasSelection, let selectionPopoverFrame {
+            frames.append(selectionPopoverFrame)
+        }
+        if !unplacedObjects.isEmpty, let unplacedObjectColumnFrame {
+            frames.append(unplacedObjectColumnFrame)
+        }
+        return frames
+    }
+
+    /// The canvas's own space: the geometry reader the event monitor fills.
+    private static let coordinateSpace = "InteractiveCanvasView.canvas"
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -1149,8 +1170,8 @@ struct InteractiveCanvasView: View {
                         switchesPanes: switchesPanes,
                         hasKeyboardFocus: hasKeyboardFocus,
                         onRequestKeyboardFocus: onRequestKeyboardFocus,
-                        ignoresCanvasMouseEvents: ignoresCanvasMouseEvents || pointerInsideSelectionPopover
-                            || pointerInsideUnplacedObjectColumn || !hoveredWarningIDs.isEmpty,
+                        ignoresCanvasMouseEvents: ignoresCanvasMouseEvents || !hoveredWarningIDs.isEmpty,
+                        overlayFrames: overlayFrames,
                         mouseExclusionInsets: mouseExclusionInsets
                     )
                     .allowsHitTesting(false)
@@ -1304,8 +1325,8 @@ struct InteractiveCanvasView: View {
                         backgroundColor: overlayBackgroundColor,
                         onChange: onSelectionPropertyChange
                     )
-                        .onHover { inside in
-                            pointerInsideSelectionPopover = inside
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.coordinateSpace)) } action: {
+                            selectionPopoverFrame = $0
                         }
                         .padding(.top, overlayInsets.top)
                         .padding(.leading, overlayInsets.leading)
@@ -1327,9 +1348,11 @@ struct InteractiveCanvasView: View {
                         objects: unplacedObjects,
                         selectedID: selectedUnplacedObjectID,
                         colorScheme: canvasColorScheme,
-                        onHover: { pointerInsideUnplacedObjectColumn = $0 },
                         onSelect: onUnplacedObjectSelection
                     )
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.coordinateSpace)) } action: {
+                        unplacedObjectColumnFrame = $0
+                    }
                     .padding(.top, overlayInsets.top)
                     .padding(unplacedObjectColumnHorizontalEdge, unplacedObjectColumnHorizontalPadding(overlayInsets))
                     .padding(.bottom, overlayInsets.bottom)
@@ -1337,6 +1360,7 @@ struct InteractiveCanvasView: View {
                 }
 
             }
+            .coordinateSpace(.named(Self.coordinateSpace))
 
         }
         .onAppear {
@@ -2556,10 +2580,6 @@ private struct HorizontalUnplacedObjectColumn: View {
     var objects: [HorizontalUnplacedObject]
     var selectedID: String?
     var colorScheme: ColorScheme
-    /// The pointer is over the panel. The canvas's event monitor sees the
-    /// scroll wheel first and pans with it, so it has to be told to leave the
-    /// panel its events.
-    var onHover: (Bool) -> Void = { _ in }
     var onSelect: (HorizontalUnplacedObject) -> Void
 
     // The text is the system's size, and the row, the reference designator's
@@ -2626,10 +2646,6 @@ private struct HorizontalUnplacedObjectColumn: View {
         }
         .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
         .environment(\.colorScheme, colorScheme)
-        .onHover(perform: onHover)
-        // The last row placed with the pointer resting on the panel takes the
-        // panel away without a hover end, which would leave the canvas deaf.
-        .onDisappear { onHover(false) }
     }
 
     @ViewBuilder private var material: some View {
@@ -3883,6 +3899,7 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
     var hasKeyboardFocus: Bool
     var onRequestKeyboardFocus: () -> Void
     var ignoresCanvasMouseEvents: Bool
+    var overlayFrames: [CGRect] = []
     var mouseExclusionInsets: EdgeInsets
 
     func makeNSView(context: Context) -> MonitorView {
@@ -3910,6 +3927,7 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
         view.hasKeyboardFocus = hasKeyboardFocus
         view.onRequestKeyboardFocus = onRequestKeyboardFocus
         view.ignoresCanvasMouseEvents = ignoresCanvasMouseEvents
+        view.overlayFrames = overlayFrames
         view.mouseExclusionInsets = mouseExclusionInsets
         return view
     }
@@ -3938,6 +3956,7 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
         nsView.hasKeyboardFocus = hasKeyboardFocus
         nsView.onRequestKeyboardFocus = onRequestKeyboardFocus
         nsView.ignoresCanvasMouseEvents = ignoresCanvasMouseEvents
+        nsView.overlayFrames = overlayFrames
         nsView.mouseExclusionInsets = mouseExclusionInsets
     }
 
@@ -3987,6 +4006,10 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
             }
         }
         var ignoresCanvasMouseEvents = false
+        /// The panels drawn over the canvas (the unplaced column, the
+        /// selection popover), in canvas coordinates: the pointer over one is
+        /// the panel's, so a scroll there scrolls its list.
+        var overlayFrames: [CGRect] = []
         var mouseExclusionInsets = EdgeInsets()
         private var monitor: Any?
         private var cursorSampler: Timer?
@@ -4095,7 +4118,8 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
             }
 
             let location = convert(window.mouseLocationOutsideOfEventStream, from: nil)
-            guard bounds.contains(location), !isExcludedMouseLocation(location) else {
+            let canvasLocation = CGPoint(x: location.x, y: bounds.height - location.y)
+            guard bounds.contains(location), !isExcludedMouseLocation(location), !isOverOverlay(canvasLocation) else {
                 if pointerInside || lastSampledCanvasLocation != nil {
                     pointerInside = false
                     lastSampledCanvasLocation = nil
@@ -4105,7 +4129,6 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
             }
 
             pointerInside = true
-            let canvasLocation = CGPoint(x: location.x, y: bounds.height - location.y)
             guard lastSampledCanvasLocation != canvasLocation else {
                 return
             }
@@ -4180,7 +4203,7 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
             // Feed the modifier side-channel so the SwiftUI select gestures know
             // which click action (add/toggle/remove) to apply.
             onModifiersChanged?(inputModifiers(from: event.modifierFlags))
-            if ignoresCanvasMouseEvents {
+            if ignoresCanvasMouseEvents || isOverOverlay(canvasLocation) {
                 return event
             }
             // Mouse selection (tap + drag-select) is handled by the SwiftUI
@@ -4246,6 +4269,12 @@ struct TrackpadCanvasMonitor: NSViewRepresentable {
             }
 
             return nil
+        }
+
+        /// Over a panel on the canvas, by where it is drawn now; nothing that
+        /// hovering left behind decides it.
+        private func isOverOverlay(_ canvasLocation: CGPoint) -> Bool {
+            overlayFrames.contains { $0.contains(canvasLocation) }
         }
 
         private func isExcludedMouseLocation(_ location: CGPoint) -> Bool {
