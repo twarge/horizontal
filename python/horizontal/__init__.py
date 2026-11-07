@@ -7,7 +7,7 @@ dispatch call. By default it is loaded into this process from
 interpreter down).
 
     import horizontal
-    project = horizontal.open("Board G Horizon/Board G.hprj")
+    project = horizontal.open("Example/Example.hprj")
     for net in project.nets():
         print(net["name"], net["pin_count"])
 """

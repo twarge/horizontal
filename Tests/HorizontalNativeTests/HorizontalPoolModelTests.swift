@@ -301,7 +301,7 @@ final class HorizontalPoolModelTests: XCTestCase {
     /// dictionary the file parsed to — which the writer then turns back into
     /// the file's own bytes.
     func testStockPoolItemsRoundTripThroughTheirModels() throws {
-        let poolURL = URL(fileURLWithPath: "/Users/kornack/Repositories/horizon-pool", isDirectory: true)
+        let poolURL = URL(fileURLWithPath: NSHomeDirectory() + "/Repositories/horizon-pool", isDirectory: true)
         guard FileManager.default.fileExists(atPath: poolURL.appendingPathComponent("pool.json").path) else {
             throw XCTSkip("stock horizon-pool checkout not available")
         }

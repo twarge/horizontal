@@ -327,7 +327,7 @@ final class HorizontalBoardClearanceCheckTests: XCTestCase {
 final class HorizontalBoardClearanceCheckBenchmarkTests: XCTestCase {
     func testRandiShort() throws {
         let path = ProcessInfo.processInfo.environment["HORIZONTAL_GOLDEN_BOARD"]
-            ?? "/Users/kornack/Repositories/board b/Board B Horizon/Board B.hprj"
+            ?? ""
         guard FileManager.default.fileExists(atPath: path) else {
             throw XCTSkip("no real board available")
         }

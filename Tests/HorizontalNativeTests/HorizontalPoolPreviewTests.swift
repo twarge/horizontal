@@ -394,7 +394,7 @@ final class HorizontalPoolPreviewTests: XCTestCase {
     // MARK: - Real horizon-pool checkout
 
     func testStockPoolItemsPreviewWithoutBeingEmpty() throws {
-        let stockPool = URL(fileURLWithPath: "/Users/kornack/Repositories/horizon-pool")
+        let stockPool = URL(fileURLWithPath: NSHomeDirectory() + "/Repositories/horizon-pool")
         guard FileManager.default.fileExists(atPath: stockPool.appendingPathComponent("pool.json").path) else {
             throw XCTSkip("horizon-pool checkout not available")
         }

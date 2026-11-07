@@ -18,10 +18,9 @@ import CryptoKit
 /// says how much copper was poured, not where any of it is.
 ///
 /// The board lives outside the repository, so these skip when it is absent —
-/// including on CI. Point `HORIZONTAL_GOLDEN_BOARD` at a `.hprj` to use another.
+/// including on CI. Point `HORIZONTAL_GOLDEN_BOARD` at the board's `.hprj` to run them.
 final class PlaneFillGoldenTests: XCTestCase {
-    private static let defaultBoardPath =
-        "/Users/kornack/Repositories/board b/Board B Horizon/Board B.hprj"
+    private static let defaultBoardPath = ""
 
     private func loadGoldenBoard() throws -> HorizontalBoard {
         let path = ProcessInfo.processInfo.environment["HORIZONTAL_GOLDEN_BOARD"]

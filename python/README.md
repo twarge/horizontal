@@ -9,7 +9,7 @@ Build the native pieces once in the checkout:
 
 Then, from this directory:
 
-    uv run python -c 'import horizontal; p = horizontal.open("~/Repositories/board g/Board G Horizon/Board G.hprj"); print(p.title, len(p.nets()))'
+    uv run python -c 'import horizontal; p = horizontal.open("~/Projects/Example/Example.hprj"); print(p.title, len(p.nets()))'
 
 The package finds `libHorizontalPy.dylib` in the checkout's `.build/` (release
 first, then debug), or wherever `HORIZONTAL_DYLIB` points. `isolated=True`

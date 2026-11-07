@@ -260,9 +260,9 @@ final class BoardPadLabelLayoutTests: XCTestCase {
     /// through-hole, via and mechanical padstacks included — so the polygon-edge
     /// heuristic is never what orients a pad label.
     func testEveryCopperPadOnRealBoardCarriesALabelDescriptor() throws {
-        let base = URL(fileURLWithPath: "/Users/kornack/Repositories/board d/Board D Horizon")
+        let base = URL(fileURLWithPath: ProcessInfo.processInfo.environment["HORIZONTAL_REAL_BOARD_FOLDER"] ?? "/nonexistent")
         guard FileManager.default.fileExists(atPath: base.appendingPathComponent("board.json").path) else {
-            throw XCTSkip("Board D board not available")
+            throw XCTSkip("set HORIZONTAL_REAL_BOARD_FOLDER to the real board's project folder to run")
         }
         var diagnostics = [HorizontalDiagnostic]()
         let board = try HorizontalBoard.load(

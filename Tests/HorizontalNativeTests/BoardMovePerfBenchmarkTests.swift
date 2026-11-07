@@ -2,7 +2,7 @@ import XCTest
 @testable import HorizontalNative
 
 /// Decisive performance benchmark for the "select whole board + arrow nudge =
-/// beachball" report. Loads the real Board D board and times the move-plan
+/// beachball" report. Loads the real Board D and times the move-plan
 /// stages at WHOLE-BOARD-SELECTION scale with a real clock. The goal is to find
 /// which stage is super-linear (O(n^2)) by running with N and 2N refs.
 ///
@@ -16,9 +16,9 @@ final class BoardMovePerfBenchmarkTests: XCTestCase {
     }
 
     private func loadBoard() throws -> HorizontalBoard {
-        let base = URL(fileURLWithPath: "/Users/kornack/Repositories/board d/Board D Horizon")
+        let base = URL(fileURLWithPath: ProcessInfo.processInfo.environment["HORIZONTAL_REAL_BOARD_FOLDER"] ?? "/nonexistent")
         guard FileManager.default.fileExists(atPath: base.appendingPathComponent("board.json").path) else {
-            throw XCTSkip("Board D board not available")
+            throw XCTSkip("set HORIZONTAL_REAL_BOARD_FOLDER to the real board's project folder to run")
         }
         var diagnostics = [HorizontalDiagnostic]()
         return try HorizontalBoard.load(

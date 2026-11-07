@@ -6,7 +6,7 @@ import XCTest
 /// picking one copies it verbatim into `padstacks/cache/` so the project
 /// stays self-contained (openable in Horizon, resolvable by this parser).
 final class HorizontalPoolPadstacksTests: XCTestCase {
-    private let stockPool = URL(fileURLWithPath: "/Users/kornack/Repositories/horizon-pool")
+    private let stockPool = URL(fileURLWithPath: NSHomeDirectory() + "/Repositories/horizon-pool")
 
     private func makeTempPools(
         projectPadstacks: [JSONDictionary] = [],

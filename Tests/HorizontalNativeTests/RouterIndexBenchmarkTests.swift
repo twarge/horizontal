@@ -14,7 +14,7 @@ import XCTest
 final class RouterIndexBenchmarkTests: XCTestCase {
     func testIndexPerformanceOnARealBoard() throws {
         let path = ProcessInfo.processInfo.environment["HORIZONTAL_GOLDEN_BOARD"]
-            ?? "/Users/kornack/Repositories/board b/Board B Horizon/Board B.hprj"
+            ?? ""
         guard FileManager.default.fileExists(atPath: path) else {
             throw XCTSkip("no real board available")
         }

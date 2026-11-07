@@ -773,7 +773,7 @@ and "analog ground" AGND, and the words a name abbreviates (chip select,
 clock, reset, enable, transmit, receive, input, output) read as the
 abbreviation. Several matches are read back as a question ("123 could be C123,
 R123"); a name nobody has is said back with its kind ("there is no capacitor 7
-in Board G"). Transcription pads a command with words that were not said —
+in Example"). Transcription pads a command with words that were not said —
 "zoom to xyz C 50" — so when the whole of what follows the verb names nothing,
 the longest run of its words that names something exactly is taken instead. A
 verb is read in whatever form it came out — "highlights C113", "highlighting",
@@ -825,11 +825,11 @@ Siri against.
 ## Python
 
     import horizontal
-    project = horizontal.open("~/Repositories/board g/Board G Horizon/Board G.hprj")
+    project = horizontal.open("~/Projects/Example/Example.hprj")
     project.component("U3")["pins"]
     project.net("Sync PPS")
     project.check()["counts"]
-    project.export(["bom", "gerber"], target_directory="/tmp/board g-out")
+    project.export(["bom", "gerber"], target_directory="/tmp/example-out")
     png = project.render_sheet(name="ADC", dpi=150)
     project.apply([
         {"op": "ensure_net", "name": "P1V8"},
@@ -867,8 +867,8 @@ install and how the plugin is laid out:
 `.mcp.json` at the repository root launches `uv run --project python
 horizontal-mcp` for work inside this checkout, and as a project server takes
 precedence over the plugin's. Each tool takes the project path; setting
-`HORIZONTAL_PROJECT` makes it optional, which is what the Board G repository's
-`.mcp.json` does.
+`HORIZONTAL_PROJECT` makes it optional, which is what a design
+repository's own `.mcp.json` can do.
 
 [mcp-app-store-study.md](mcp-app-store-study.md) works through running the
 server from inside the sandboxed app (`Horizontal --mcp`) instead.

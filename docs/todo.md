@@ -4,26 +4,7 @@ Features the app does not have yet, and controls that claim more than they do.
 Paths are relative to `Sources/HorizontalNative/` unless they start elsewhere.
 Tick an item off when it lands on main, with the commit that did it.
 
-## Try in the running app
-
-Everything ticked on 2026-11-05 is covered by tests, but none of it has been
-tried in a running app except the 3D Controls panel, seen in a Mac build.
-
-- [ ] Layer Mode: Current only, Current and adjacent (fa5534a, 05c0799).
-- [ ] The airwire filter button, popover and Design ▸ Filter Airwires… (80c82fb).
-- [ ] The rules checks: results sidebar sections, red and yellow markers, the
-      toolbar badge, Show Rule (8161b8c).
-- [ ] Differential pairs: the inspector's row, Set/Clear Differential Pair in
-      the Design and right-click menus, the schematic's pair colour (eaef9d0,
-      2cf5db0, 80bc147).
-- [ ] The track HUD readouts and the Length Tuning window, on the Mac and as a
-      sheet on the iPad (eaef9d0).
-- [ ] Tune Track (571cdfc).
-- [ ] Select More, + and =, and a double-click on a track (4f8cea0).
-- [ ] Block instances kept laid out alike, U to edit one alone, Copy Layout to
-      Other Instances (88401a5).
-- [ ] The 3D Controls panel on the iPad, and the via plating field's focus
-      ring (f15a707).
+## 
 
 ## Controls that claim more than they do
 
@@ -189,12 +170,6 @@ Not built at all:
       `Model/HorizontalPoolLibrary.swift:646-675`).
 - [ ] Contribute changes back to a shared pool: commit, push, pull request.
       Today pools clone and fast-forward pull only (`Model/Git/`).
-
-## Outputs
-
-- [ ] Netlist file export (MCP `netlist` returns JSON only).
-- [ ] Stock and ordering columns in the BOM export (stock shows only in the
-      Parts pane).
 
 ## Tests
 

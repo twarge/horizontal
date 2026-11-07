@@ -1,7 +1,7 @@
 import XCTest
 @testable import HorizontalNative
 
-/// Regression tests against the real Board D board (skipped when it isn't on
+/// Regression tests against the real Board D (skipped when it isn't on
 /// this machine). Its 443 vias all use the pool's "Circular via (tented)"
 /// padstack — no mask shapes — and Horizon's own fabrication output confirms
 /// the semantics: `Board D Gerbers Top Mask.gbr` contains no via openings.
@@ -9,12 +9,12 @@ import XCTest
 /// picker, and (b) leave the mask expansions nil rather than inventing
 /// openings a tented padstack doesn't have.
 final class HorizontalViaPadstackRealBoardTests: XCTestCase {
-    private let base = URL(fileURLWithPath: "/Users/kornack/Repositories/board d/Board D Horizon")
+    private let base = URL(fileURLWithPath: ProcessInfo.processInfo.environment["HORIZONTAL_REAL_BOARD_FOLDER"] ?? "/nonexistent")
     private let tentedViaPadstack = "8b6dee4b-af88-4c0f-b38b-c5364649e65e"
 
     private func loadBoard() throws -> HorizontalBoard {
         guard FileManager.default.fileExists(atPath: base.appendingPathComponent("board.json").path) else {
-            throw XCTSkip("Board D board not available")
+            throw XCTSkip("set HORIZONTAL_REAL_BOARD_FOLDER to the real board's project folder to run")
         }
         var diagnostics = [HorizontalDiagnostic]()
         return try HorizontalBoard.load(
@@ -79,7 +79,7 @@ final class HorizontalViaPadstackRealBoardTests: XCTestCase {
         // With the horizon-pool checkout next to the projects, the catalog also
         // offers the stock untented "Circular via" so vias can be un-tented.
         if FileManager.default.fileExists(
-            atPath: "/Users/kornack/Repositories/horizon-pool/padstacks/via-round.json"
+            atPath: NSHomeDirectory() + "/Repositories/horizon-pool/padstacks/via-round.json"
         ) {
             XCTAssertTrue(
                 viaPadstacks.contains { $0.name == "Circular via" },

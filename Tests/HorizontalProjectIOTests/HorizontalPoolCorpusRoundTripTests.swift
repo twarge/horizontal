@@ -14,7 +14,7 @@ import XCTest
 ///
 /// Skipped when the checkout is absent, like the other stock-pool tests.
 final class HorizontalPoolCorpusRoundTripTests: XCTestCase {
-    private static let poolURL = URL(fileURLWithPath: "/Users/kornack/Repositories/horizon-pool", isDirectory: true)
+    private static let poolURL = URL(fileURLWithPath: NSHomeDirectory() + "/Repositories/horizon-pool", isDirectory: true)
 
     func testUnitsRoundTrip() throws { try roundTrip(kind: "units") }
     func testSymbolsRoundTrip() throws { try roundTrip(kind: "symbols") }
