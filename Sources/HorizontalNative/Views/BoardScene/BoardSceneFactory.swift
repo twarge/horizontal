@@ -1435,10 +1435,13 @@ enum BoardSceneFactory {
 
     // MARK: Lights
 
-    /// A key light from the front right, high, that casts the shadows, a fill
-    /// from the back left and a rim from behind — the three lights SceneKit
-    /// had, aimed the same way — and one shining up at the underside, which
-    /// SceneKit's ambient light lit and RealityKit has no ambient light for.
+    /// A key light from the front right, high, a fill from the back left and
+    /// a rim from behind — the three lights SceneKit had, aimed the same way —
+    /// and one shining up at the underside, which SceneKit's ambient light lit
+    /// and RealityKit has no ambient light for. The key casts no shadow: with
+    /// the camera still, RealityKit's directional shadow kept changing from
+    /// frame to frame, so the copper, mask and silkscreen flickered between
+    /// lit states.
     private static func lights(width: Double, depth: Double) -> [BoardSceneLight] {
         func direction(pitch: Double, yaw: Double) -> SIMD3<Float> {
             // SceneKit's euler angles turn by the roll, then the yaw, then
@@ -1449,7 +1452,7 @@ enum BoardSceneFactory {
             return simd_normalize(SIMD3(shine.x, shine.y, shine.z))
         }
         return [
-            BoardSceneLight(direction: direction(pitch: -.pi / 3.2, yaw: .pi / 4.5), intensity: 2_600, castsShadow: true),
+            BoardSceneLight(direction: direction(pitch: -.pi / 3.2, yaw: .pi / 4.5), intensity: 2_600, castsShadow: false),
             BoardSceneLight(direction: direction(pitch: -.pi / 5, yaw: -.pi / 3), intensity: 600, castsShadow: false),
             BoardSceneLight(direction: direction(pitch: -.pi / 4, yaw: .pi), intensity: 850, castsShadow: false),
             BoardSceneLight(direction: simd_normalize(SIMD3(0.7, 1, 0.5)), intensity: 1_000, castsShadow: false),
