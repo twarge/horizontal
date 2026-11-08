@@ -170,6 +170,127 @@ final class HorizontalSilkscreenClipperTests: XCTestCase {
         XCTAssertTrue(outside.fragments.isEmpty, "silkscreen entirely off the board vanishes")
     }
 
+    /// A clipped stroke keeps what is left of its centerline, cut where its
+    /// fill is, so the canvas can hold it to an unclipped stroke's weight.
+    func testAClippedLineKeepsItsCenterlineWhereItsFillIs() throws {
+        var board = board()
+        board.lines.append(line("across", from: HorizontalPoint(x: -5 * mm, y: 0), to: HorizontalPoint(x: 5 * mm, y: 0)))
+        let layer = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(
+            HorizontalBoardLayers.topSilkscreen,
+            board: board,
+            clipping: HorizontalSilkscreenClipping(clearance: 0.1 * mm)
+        ))
+        let across = try XCTUnwrap(layer.object("across"))
+        XCTAssertEqual(across.centerlines.count, across.fragments.count, "one list per fragment")
+
+        var spans = [(Double, Double)]()
+        for index in across.fragments.indices {
+            let pieces = across.centerlines(inFragment: index)
+            XCTAssertEqual(pieces.count, 1, "each half of the line has one piece")
+            for piece in pieces {
+                XCTAssertEqual(piece.count, 2)
+                XCTAssertTrue(piece.allSatisfy { abs($0.y) < 1 }, "on the line")
+                XCTAssertTrue(covers([across.fragments[index]], HorizontalPoint(x: (piece[0].x + piece[1].x) / 2, y: 0)), "inside its own fragment")
+                spans.append((min(piece[0].x, piece[1].x), max(piece[0].x, piece[1].x)))
+            }
+        }
+        spans.sort { $0.0 < $1.0 }
+        XCTAssertEqual(spans.count, 2)
+        let tolerance = 0.005 * mm
+        XCTAssertEqual(spans[0].0, -5 * mm, accuracy: tolerance)
+        XCTAssertEqual(spans[0].1, -1.1 * mm, accuracy: tolerance, "cut at the opening's clearance")
+        XCTAssertEqual(spans[1].0, 1.1 * mm, accuracy: tolerance, "cut at the opening's clearance")
+        XCTAssertEqual(spans[1].1, 5 * mm, accuracy: tolerance)
+    }
+
+    func testAClippedTextKeepsItsCenterlinesOutOfTheOpening() throws {
+        var board = board()
+        // "C5" ending a little over the pad's right edge.
+        board.texts.append(HorizontalText(
+            id: "label",
+            text: "C5",
+            position: HorizontalPoint(x: 0.6 * mm, y: 0),
+            size: 0.75 * mm,
+            layer: HorizontalBoardLayers.topSilkscreen,
+            width: 0.15 * mm
+        ))
+        let clearance = 0.1 * mm
+        let layer = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(
+            HorizontalBoardLayers.topSilkscreen,
+            board: board,
+            clipping: HorizontalSilkscreenClipping(clearance: clearance)
+        ))
+        let label = try XCTUnwrap(layer.object("label"))
+        let pieces = label.fragments.indices.flatMap { label.centerlines(inFragment: $0) }
+        XCTAssertFalse(pieces.isEmpty, "the part of the text clear of the pad keeps its centerline")
+        let reach = mm + clearance - 0.005 * mm
+        for piece in pieces {
+            let middle = HorizontalPoint(x: (piece[0].x + piece[1].x) / 2, y: (piece[0].y + piece[1].y) / 2)
+            XCTAssertFalse(abs(middle.x) < reach && abs(middle.y) < reach, "no centerline inside the opening or its clearance")
+        }
+    }
+
+    func testAPolygonHasNoCenterline() throws {
+        var board = board()
+        board.polygons.append(HorizontalPolygon(
+            id: "logo",
+            vertices: [
+                HorizontalPoint(x: 0, y: -0.5 * mm), HorizontalPoint(x: 3 * mm, y: -0.5 * mm),
+                HorizontalPoint(x: 3 * mm, y: 0.5 * mm), HorizontalPoint(x: 0, y: 0.5 * mm),
+            ],
+            layer: HorizontalBoardLayers.topSilkscreen
+        ))
+        let layer = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(
+            HorizontalBoardLayers.topSilkscreen,
+            board: board,
+            clipping: HorizontalSilkscreenClipping(clearance: 0.1 * mm)
+        ))
+        let logo = try XCTUnwrap(layer.object("logo"))
+        XCTAssertFalse(logo.fragments.isEmpty)
+        XCTAssertTrue(logo.centerlines.isEmpty, "a polygon keeps its outline")
+    }
+
+    /// A line whose centerline runs inside the clearance leaves only a sliver
+    /// off its side: that fragment has no centerline, so the canvas outlines
+    /// it as before rather than letting it vanish when zoomed out.
+    func testASliverOffTheSideOfAStrokeHasNoCenterline() throws {
+        var board = board()
+        board.lines.append(line("grazing", from: HorizontalPoint(x: -0.5 * mm, y: 1.05 * mm), to: HorizontalPoint(x: 0.5 * mm, y: 1.05 * mm)))
+        let layer = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(
+            HorizontalBoardLayers.topSilkscreen,
+            board: board,
+            clipping: HorizontalSilkscreenClipping(clearance: 0.1 * mm)
+        ))
+        let grazing = try XCTUnwrap(layer.object("grazing"))
+        XCTAssertFalse(grazing.fragments.isEmpty, "the stroke's far side is beyond the clearance")
+        XCTAssertTrue(grazing.fragments.indices.allSatisfy { grazing.centerlines(inFragment: $0).isEmpty })
+    }
+
+    func testCenterlinePiecesSkipAFragmentsHoles() {
+        let outer = [
+            HorizontalPoint(x: -3 * mm, y: -3 * mm), HorizontalPoint(x: 3 * mm, y: -3 * mm),
+            HorizontalPoint(x: 3 * mm, y: 3 * mm), HorizontalPoint(x: -3 * mm, y: 3 * mm),
+        ]
+        let hole = [
+            HorizontalPoint(x: -mm, y: -mm), HorizontalPoint(x: mm, y: -mm),
+            HorizontalPoint(x: mm, y: mm), HorizontalPoint(x: -mm, y: mm),
+        ]
+        let across = (HorizontalPoint(x: -5 * mm, y: 0), HorizontalPoint(x: 5 * mm, y: 0))
+        let pieces = HorizontalSilkscreenClipper.pieces(of: [across], inside: [outer, hole])
+            .map { (min($0[0].x, $0[1].x), max($0[0].x, $0[1].x)) }
+            .sorted { $0.0 < $1.0 }
+        XCTAssertEqual(pieces.count, 2, "split by the hole, trimmed to the outer contour")
+        XCTAssertEqual(pieces[0].0, -3 * mm, accuracy: 1)
+        XCTAssertEqual(pieces[0].1, -mm, accuracy: 1)
+        XCTAssertEqual(pieces[1].0, mm, accuracy: 1)
+        XCTAssertEqual(pieces[1].1, 3 * mm, accuracy: 1)
+
+        let insideHole = (HorizontalPoint(x: -0.5 * mm, y: 0), HorizontalPoint(x: 0.5 * mm, y: 0))
+        XCTAssertTrue(HorizontalSilkscreenClipper.pieces(of: [insideHole], inside: [outer, hole]).isEmpty)
+        let whole = (HorizontalPoint(x: -2.5 * mm, y: 2 * mm), HorizontalPoint(x: 2.5 * mm, y: 2 * mm))
+        XCTAssertEqual(HorizontalSilkscreenClipper.pieces(of: [whole], inside: [outer, hole]).count, 1, "a segment wholly inside stays one piece")
+    }
+
     func testBridgedContourKeepsHolesOpen() {
         let outer = [
             HorizontalPoint(x: -3 * mm, y: -3 * mm),

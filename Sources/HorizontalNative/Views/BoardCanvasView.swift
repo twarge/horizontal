@@ -11817,15 +11817,18 @@ struct BoardCanvasView: View {
         func clippedSilkscreen<Source: Hashable>(_ id: String, layer: Int, source: Source) -> HorizontalClippedSilkscreenObject? {
             clippedSilkscreenLayers[layer]?.object(id, matching: source)
         }
+        /// `strokeMinimumWidth` is the screen width the object's strokes are
+        /// held to when drawn unclipped (a polygon has none).
         func appendClippedSilkscreen(
             _ clipped: HorizontalClippedSilkscreenObject,
             color: HorizontalMetalRGBA,
+            strokeMinimumWidth: Float = 0.75,
             compositeGroup: Int,
             compositeOpacity: Float,
             owner: HorizontalSelectableRef?,
             to bucketKey: ReferenceWritableKeyPath<BoardMetalElementBuckets, BoardMetalElementBatch>
         ) {
-            for fragment in clipped.fragments {
+            for (index, fragment) in clipped.fragments.enumerated() {
                 appendTriangles(
                     HorizontalMetalTessellator.triangles(for: fragment, color: color),
                     compositeGroup: compositeGroup,
@@ -11833,7 +11836,28 @@ struct BoardCanvasView: View {
                     owner: owner,
                     to: bucketKey
                 )
-                // The outline keeps hairline strokes visible when zoomed out.
+                // What is left of a stroke's centerline, as a hairline held
+                // to the stroke's own minimum: zoomed out it gives the
+                // clipped stroke the weight of an unclipped one, zoomed in
+                // it lies hidden in the fill.
+                let centerlines = clipped.centerlines(inFragment: index)
+                if !centerlines.isEmpty {
+                    for piece in centerlines {
+                        appendPolyline(
+                            piece,
+                            color: color,
+                            width: 0,
+                            minimumWidth: strokeMinimumWidth,
+                            compositeGroup: compositeGroup,
+                            compositeOpacity: compositeOpacity,
+                            owner: owner,
+                            to: bucketKey
+                        )
+                    }
+                    continue
+                }
+                // A polygon, or a sliver off the side of a stroke: the
+                // outline keeps it visible when zoomed out.
                 for path in fragment {
                     appendClosedPolyline(
                         path,
@@ -11885,7 +11909,7 @@ struct BoardCanvasView: View {
 
                 for line in board.lines where line.layer == layer {
                     if let clipped = clippedSilkscreen(line.id, layer: layer, source: line) {
-                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: selectableRef(id: line.id, type: .boardLine, layer: layer), to: \.alwaysOnLayered)
+                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), strokeMinimumWidth: 1.1, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: selectableRef(id: line.id, type: .boardLine, layer: layer), to: \.alwaysOnLayered)
                         continue
                     }
                     appendSegment(
@@ -11901,7 +11925,7 @@ struct BoardCanvasView: View {
                 }
                 for arc in board.arcs where arc.layer == layer {
                     if let clipped = clippedSilkscreen(arc.id, layer: layer, source: arc) {
-                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: selectableRef(id: arc.id, type: .boardArc, layer: layer), to: \.alwaysOnLayered)
+                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), strokeMinimumWidth: 1, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: selectableRef(id: arc.id, type: .boardArc, layer: layer), to: \.alwaysOnLayered)
                         continue
                     }
                     appendArc(
@@ -12030,7 +12054,7 @@ struct BoardCanvasView: View {
                 for line in board.packageLines
                     where line.layer == layer && !isPackageGeometryHidden(line.id, layer: layer) {
                     if let clipped = clippedSilkscreen(line.id, layer: layer, source: line) {
-                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: line.id, layer: layer), to: \.packagesGeometry)
+                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), strokeMinimumWidth: 1, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: line.id, layer: layer), to: \.packagesGeometry)
                         continue
                     }
                     appendSegment(line, color: layerMetalColor(layer), minimumWidth: 1, outlineOnly: outlineOnly, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: line.id, layer: layer), to: \.packagesGeometry)
@@ -12038,7 +12062,7 @@ struct BoardCanvasView: View {
                 for arc in board.packageArcs
                     where arc.layer == layer && !isPackageGeometryHidden(arc.id, layer: layer) {
                     if let clipped = clippedSilkscreen(arc.id, layer: layer, source: arc) {
-                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: arc.id, layer: layer), to: \.packagesGeometry)
+                        appendClippedSilkscreen(clipped, color: layerMetalColor(layer), strokeMinimumWidth: 1, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: arc.id, layer: layer), to: \.packagesGeometry)
                         continue
                     }
                     appendArc(arc, color: layerMetalColor(layer), minimumWidth: 1, outlineOnly: outlineOnly, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: arc.id, layer: layer), to: \.packagesGeometry)
@@ -12090,14 +12114,14 @@ struct BoardCanvasView: View {
                     }
                     for line in decal.lines where line.layer == layer {
                         if let clipped = clippedSilkscreen(line.id, layer: layer, source: line) {
-                            appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
+                            appendClippedSilkscreen(clipped, color: layerMetalColor(layer), strokeMinimumWidth: 1, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
                             continue
                         }
                         appendSegment(line, color: layerMetalColor(layer), minimumWidth: 1, outlineOnly: outlineOnly, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
                     }
                     for arc in decal.arcs where arc.layer == layer {
                         if let clipped = clippedSilkscreen(arc.id, layer: layer, source: arc) {
-                            appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
+                            appendClippedSilkscreen(clipped, color: layerMetalColor(layer), strokeMinimumWidth: 1, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
                             continue
                         }
                         appendArc(arc, color: layerMetalColor(layer), minimumWidth: 1, outlineOnly: outlineOnly, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)

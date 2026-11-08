@@ -25,6 +25,18 @@ struct HorizontalClippedSilkscreenObject: Hashable {
     /// compares it with the object now, so it never draws fragments for a
     /// line or text that has since moved.
     var sourceSignature: Int
+    /// For a stroked object (a line, arc or text), what is left of its
+    /// strokes' centerlines in each fragment, by fragment index: two-point
+    /// pieces. Empty for a polygon, and for a fragment that is only a sliver
+    /// off the side of a stroke. The canvas draws these as hairlines at the
+    /// width an unclipped stroke is held to, so a clipped label weighs what
+    /// an unclipped one does when zoomed out, where the fill alone goes thin.
+    var centerlines: [[[HorizontalPoint]]] = []
+
+    /// The centerline pieces through `fragments[index]`.
+    func centerlines(inFragment index: Int) -> [[HorizontalPoint]] {
+        centerlines.indices.contains(index) ? centerlines[index] : []
+    }
 }
 
 /// A silkscreen layer's clipping result. Objects that come nowhere near a
@@ -160,7 +172,10 @@ enum HorizontalSilkscreenClipper {
             clipped[HorizontalCanvasModeSupport.normalizedID(object.id)] = HorizontalClippedSilkscreenObject(
                 id: object.id,
                 fragments: fragments,
-                sourceSignature: object.sourceSignature
+                sourceSignature: object.sourceSignature,
+                centerlines: object.centerline.isEmpty
+                    ? []
+                    : fragments.map { pieces(of: object.centerline, inside: $0) }
             )
         }
         return HorizontalClippedSilkscreenLayer(layer: layer, clipped: clipped)
@@ -212,6 +227,9 @@ enum HorizontalSilkscreenClipper {
         var id: String
         var subjects: [[HorizontalPoint]]
         var sourceSignature: Int
+        /// The strokes' centerline segments, for a line, arc or text; empty
+        /// for a polygon.
+        var centerline: [(HorizontalPoint, HorizontalPoint)] = []
     }
 
     /// What a clipped object records of its source: the line, arc, polygon or
@@ -224,36 +242,51 @@ enum HorizontalSilkscreenClipper {
 
     private static func silkscreenObjects(on layer: Int, board: HorizontalBoard) -> [SilkscreenObject] {
         var objects = [SilkscreenObject]()
-        func add<Source: Hashable>(_ id: String, _ subjects: [[HorizontalPoint]], source: Source) {
+        func add<Source: Hashable>(
+            _ id: String,
+            _ subjects: [[HorizontalPoint]],
+            centerline: [(HorizontalPoint, HorizontalPoint)] = [],
+            source: Source
+        ) {
             let valid = subjects.filter { $0.count >= 3 }
             if !valid.isEmpty {
-                objects.append(SilkscreenObject(id: id, subjects: valid, sourceSignature: sourceSignature(source)))
+                objects.append(SilkscreenObject(id: id, subjects: valid, sourceSignature: sourceSignature(source), centerline: centerline))
             }
         }
+        func addLine(_ line: HorizontalSegment) {
+            add(line.id, strokePaths(for: line), centerline: centerline(for: line), source: line)
+        }
+        func addArc(_ arc: HorizontalArc) {
+            let polyline = arc.polyline(precision: 48)
+            add(arc.id, strokePaths(polyline: polyline, width: arc.width), centerline: centerline(polyline: polyline), source: arc)
+        }
+        func addText(_ text: HorizontalText) {
+            add(text.id, strokePaths(for: text), centerline: HorizontalOutlineTextRenderer.outlineSegments(for: text), source: text)
+        }
         for line in board.lines + board.packageLines where line.layer == layer {
-            add(line.id, strokePaths(for: line), source: line)
+            addLine(line)
         }
         for arc in board.arcs + board.packageArcs where arc.layer == layer {
-            add(arc.id, strokePaths(polyline: arc.polyline(precision: 48), width: arc.width), source: arc)
+            addArc(arc)
         }
         for polygon in board.polygons + board.packagePolygons where polygon.layer == layer {
             add(polygon.id, [polygon.renderVertices(arcPrecision: 24)], source: polygon)
         }
         for text in board.texts + board.packageTexts where text.layer == layer {
-            add(text.id, strokePaths(for: text), source: text)
+            addText(text)
         }
         for decal in board.decals {
             for line in decal.lines where line.layer == layer {
-                add(line.id, strokePaths(for: line), source: line)
+                addLine(line)
             }
             for arc in decal.arcs where arc.layer == layer {
-                add(arc.id, strokePaths(polyline: arc.polyline(precision: 48), width: arc.width), source: arc)
+                addArc(arc)
             }
             for polygon in decal.polygons where polygon.layer == layer {
                 add(polygon.id, [polygon.renderVertices(arcPrecision: 24)], source: polygon)
             }
             for text in decal.texts where text.layer == layer {
-                add(text.id, strokePaths(for: text), source: text)
+                addText(text)
             }
         }
         return objects
@@ -276,6 +309,110 @@ enum HorizontalSilkscreenClipper {
         zip(polyline, polyline.dropFirst()).map { from, to in
             capsule(from: from, to: to, width: width)
         }
+    }
+
+    /// The centerline `strokePaths(for:)` puts its capsules around.
+    static func centerline(for segment: HorizontalSegment) -> [(HorizontalPoint, HorizontalPoint)] {
+        if let arc = segment.arc {
+            return centerline(polyline: arc.polyline(precision: 48))
+        }
+        return [(segment.from, segment.to)]
+    }
+
+    static func centerline(polyline: [HorizontalPoint]) -> [(HorizontalPoint, HorizontalPoint)] {
+        Array(zip(polyline, polyline.dropFirst()))
+    }
+
+    /// The parts of `segments` that run inside `fragment` (an outer contour
+    /// followed by its holes), as two-point pieces. A stroke's centerline
+    /// lies inside its own capsule, so what is left of it after clipping is
+    /// exactly the part that stays out of every grown opening and inside the
+    /// board: where the fill goes on around it.
+    static func pieces(
+        of segments: [(HorizontalPoint, HorizontalPoint)],
+        inside fragment: [[HorizontalPoint]]
+    ) -> [[HorizontalPoint]] {
+        let contours = fragment.filter { $0.count >= 3 }
+        guard !contours.isEmpty else {
+            return []
+        }
+        let bounds = HorizontalRect(points: contours.flatMap { $0 })
+        var pieces = [[HorizontalPoint]]()
+        for (from, to) in segments {
+            let segmentBounds = HorizontalRect(points: [from, to])
+            guard rectsTouch(bounds, segmentBounds) else {
+                continue
+            }
+            let dx = to.x - from.x
+            let dy = to.y - from.y
+            func point(at t: Double) -> HorizontalPoint {
+                HorizontalPoint(x: from.x + dx * t, y: from.y + dy * t)
+            }
+            guard dx != 0 || dy != 0 else {
+                // A dot: kept whole or not at all.
+                if evenOddContains(contours, from) {
+                    pieces.append([from, to])
+                }
+                continue
+            }
+            // Where the segment crosses the fragment's contours, as
+            // fractions of the way along it.
+            var cuts: [Double] = [0, 1]
+            for contour in contours {
+                var previous = contour[contour.count - 1]
+                for current in contour {
+                    defer { previous = current }
+                    let ex = current.x - previous.x
+                    let ey = current.y - previous.y
+                    let denominator = dx * ey - dy * ex
+                    guard denominator != 0 else {
+                        continue
+                    }
+                    let ox = previous.x - from.x
+                    let oy = previous.y - from.y
+                    let t = (ox * ey - oy * ex) / denominator
+                    let u = (ox * dy - oy * dx) / denominator
+                    if t > 0, t < 1, u >= 0, u <= 1 {
+                        cuts.append(t)
+                    }
+                }
+            }
+            cuts.sort()
+            var runStart: Double?
+            var runEnd = 0.0
+            for (a, b) in zip(cuts, cuts.dropFirst()) where b > a {
+                if evenOddContains(contours, point(at: (a + b) / 2)) {
+                    if runStart == nil {
+                        runStart = a
+                    }
+                    runEnd = b
+                } else if let start = runStart {
+                    pieces.append([point(at: start), point(at: runEnd)])
+                    runStart = nil
+                }
+            }
+            if let start = runStart {
+                pieces.append([point(at: start), point(at: runEnd)])
+            }
+        }
+        return pieces
+    }
+
+    /// Even-odd inside test over all of a fragment's contours: inside the
+    /// outer contour and outside every hole.
+    private static func evenOddContains(_ contours: [[HorizontalPoint]], _ point: HorizontalPoint) -> Bool {
+        var inside = false
+        for contour in contours {
+            var previous = contour[contour.count - 1]
+            for current in contour {
+                if (current.y > point.y) != (previous.y > point.y),
+                   point.x < (previous.x - current.x) * (point.y - current.y) / (previous.y - current.y) + current.x {
+                    inside.toggle()
+                }
+                previous = current
+            }
+        }
+        return inside
     }
 
     /// The area a stroke of `width` covers between two points: a rectangle
