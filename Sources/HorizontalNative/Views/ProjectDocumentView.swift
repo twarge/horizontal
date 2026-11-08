@@ -6731,6 +6731,14 @@ struct WindowChromeConfigurator: NSViewRepresentable {
     var isTransparent: Bool
     /// An opaque title bar with the title shown (pool item editors), where the
     /// canvas windows follow the Transparent Toolbar preference.
+/// In full screen AppKit moves the toolbar into a window of its own, a child of
+/// this one, whose title bar draws its material over the canvas whatever
+/// `titlebarAppearsTransparent` says, on either window. The canvas runs under
+/// it all the same, so a transparent toolbar hides that title bar's background
+/// view, as AppKit hides the window's own when the title bar is transparent,
+/// and hides it again whenever AppKit shows it, as a change to the toolbar's
+/// items does.
+///
     var usesStandardTitleBar = false
 
     func makeNSView(context: Context) -> ConfiguringView {
@@ -6755,9 +6763,15 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             configureWindow()
         }
 
+        private weak var observedWindow: NSWindow?
+        private var fullScreenObservers = [NSObjectProtocol]()
+        /// The full-screen toolbar's title bar backgrounds, kept hidden while
+        /// they are watched; empty when nothing is hidden.
+        private var hiddenBackgrounds = [NSKeyValueObservation]()
         func configureWindow() {
             guard let window else {
                 return
+            observeFullScreen()
             }
 
             if !window.styleMask.contains(.fullSizeContentView) {
@@ -6765,6 +6779,11 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             }
             let transparent = isTransparent && !usesStandardTitleBar
             if window.titlebarAppearsTransparent != transparent {
+            defer {
+                if wantsTransparentFullScreenToolbar != !hiddenBackgrounds.isEmpty {
+                    configureFullScreenToolbar()
+                }
+            }
                 window.titlebarAppearsTransparent = transparent
             }
             if usesStandardTitleBar {
@@ -6782,6 +6801,81 @@ struct WindowChromeConfigurator: NSViewRepresentable {
 private struct WindowSizeObserver: NSViewRepresentable {
     var savedSize: HorizontalWindowSize?
     var onSizeChange: (HorizontalWindowSize) -> Void
+
+        private var wantsTransparentFullScreenToolbar: Bool {
+            isTransparent && !usesStandardTitleBar && window?.styleMask.contains(.fullScreen) == true
+        }
+
+        /// The toolbar window comes with full screen and goes with it.
+        private func observeFullScreen() {
+            guard observedWindow !== window else {
+                return
+            }
+            fullScreenObservers.forEach(NotificationCenter.default.removeObserver)
+            fullScreenObservers.removeAll()
+            hiddenBackgrounds.removeAll()
+            observedWindow = window
+            guard let window else {
+                return
+            }
+            let names = [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification]
+            fullScreenObservers = names.map { name in
+                NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.configureFullScreenToolbar()
+                    }
+                }
+            }
+        }
+
+        /// Hides the full-screen toolbar's title bar background while the
+        /// toolbar is transparent, and shows it again when it is not.
+        private func configureFullScreenToolbar() {
+            hiddenBackgrounds.removeAll()
+            guard let window else {
+                return
+            }
+            let hides = wantsTransparentFullScreenToolbar
+            for background in Self.fullScreenToolbarBackgrounds(of: window) {
+                if background.isHidden != hides {
+                    background.isHidden = hides
+                }
+                guard hides else {
+                    continue
+                }
+                // AppKit shows it again when the toolbar changes; hide it
+                // once AppKit is done, while the toolbar is still wanted
+                // transparent.
+                hiddenBackgrounds.append(background.observe(\.isHidden) { [weak self] background, _ in
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            guard let self, self.wantsTransparentFullScreenToolbar, !background.isHidden else {
+                                return
+                            }
+                            background.isHidden = true
+                        }
+                    }
+                })
+            }
+        }
+
+        /// AppKit's `NSToolbarFullScreenWindow` among the window's children,
+        /// and the `NSTitlebarBackgroundView` in it. Both are AppKit's own,
+        /// found by class name; a system that names them otherwise finds
+        /// none, and the toolbar keeps its material.
+        private static func fullScreenToolbarBackgrounds(of window: NSWindow) -> [NSView] {
+            (window.childWindows ?? [])
+                .filter { NSStringFromClass(type(of: $0)).contains("ToolbarFullScreenWindow") }
+                .compactMap { $0.contentView?.superview ?? $0.contentView }
+                .flatMap(titlebarBackgrounds(in:))
+        }
+
+        private static func titlebarBackgrounds(in view: NSView) -> [NSView] {
+            if NSStringFromClass(type(of: view)) == "NSTitlebarBackgroundView" {
+                return [view]
+            }
+            return view.subviews.flatMap(titlebarBackgrounds(in:))
+        }
 
     func makeNSView(context: Context) -> ObservingView {
         let view = ObservingView()
