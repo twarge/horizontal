@@ -7,6 +7,7 @@ struct HorizontalSettingsView: View {
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
     @AppStorage(HorizontalPlaneFillDefaults.updatesAutomaticallyKey) private var updatesPlanesAutomatically = false
     @AppStorage(HorizontalRulesCheckDefaults.checksAutomaticallyKey) private var checksRulesAutomatically = true
+    @AppStorage(HorizontalSpotlightFraming.framesEveryViewKey) private var spotlightFramesEveryView = false
 
     var body: some View {
         Form {
@@ -38,6 +39,13 @@ struct HorizontalSettingsView: View {
             // and its context menu was the iPad's only other way back.
             Section("Board") {
                 Toggle("Update Planes Automatically", isOn: $updatesPlanesAutomatically)
+            }
+
+            Section("Spotlight") {
+                Toggle("Show the Spotlight in Every View", isOn: $spotlightFramesEveryView)
+                Text("Spotlight (L) also scrolls and zooms the schematic, the board, the 3D view and the Parts list to what it spotlights, turning to another sheet or the other side of the board if it has to.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             // As in the rules results sidebar: with the warnings off the

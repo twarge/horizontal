@@ -68,6 +68,19 @@ struct HorizontalPartBrowserView: View {
     /// Selects and highlights the components fitted with a part, in the
     /// schematic and on the board, where the document offers it.
     var onSelectUses: ((HorizontalPoolPart.ID) -> Void)? = nil
+    /// The parts the components selected anywhere in the window are fitted
+    /// with, lowercased: their rows are tinted blue, as a selection is boxed
+    /// blue in the other views. The list's own selection is left alone.
+    var selectedComponentPartIDs: Set<String> = []
+    /// While Spotlight (L) is on components, the parts they are fitted with,
+    /// lowercased; nil while nothing is spotlit, or only nets are.
+    var spotlitPartIDs: Set<String>? = nil
+    /// Whether Spotlight dims the rows it leaves out, as the board's Dim
+    /// Other and Hide Other modes dim the rest of the board; As Is doesn't.
+    var spotlightDimsOthers = true
+    /// A fresh value scrolls the list to the first spotlit part it shows:
+    /// Spotlight framing every view, when Settings asks it to.
+    var spotlightScrollToken = 0
     /// What DigiKey stocks of each part, for the DigiKey Stock column.
     @ObservedObject var digiKey: HorizontalDigiKeyStockMonitor = .shared
     /// What Mouser stocks of the parts on screen, for the Mouser Stock
@@ -88,6 +101,9 @@ struct HorizontalPartBrowserView: View {
     /// A fresh value asks the list to bring the selected part into view
     /// (`HorizontalTableScrollRequest`); a new selection does on its own.
     @State private var scrollToken = 0
+    /// The spotlit part Spotlight last scrolled to, which a re-sort keeps in
+    /// view until the list's selection changes or the spotlight goes.
+    @State private var spotlightScrollPartID: HorizontalPoolPart.ID?
     @State private var selectionChangedAt = Date.distantPast
     @State private var libraryFilter = HorizontalPartLibraryFilter.all
     /// Leaves out what isn't bought for the board: parts flagged exclude
@@ -209,6 +225,20 @@ struct HorizontalPartBrowserView: View {
             selectionChangedAt = Date()
             pendingRevealTask?.cancel()
             pendingRevealTask = nil
+            spotlightScrollPartID = nil
+        }
+        .onChange(of: spotlightScrollToken) { _, _ in
+            guard let spotlit = spotlitPartIDs,
+                  let first = filteredParts.first(where: { spotlit.contains($0.id.lowercased()) }) else {
+                return
+            }
+            spotlightScrollPartID = first.id
+            scrollToken += 1
+        }
+        .onChange(of: spotlitPartIDs) { _, spotlit in
+            if spotlit == nil {
+                spotlightScrollPartID = nil
+            }
         }
         // A re-sort, or the selection coming back into a filtered list,
         // keeps the selected part where it can be seen.
@@ -408,13 +438,73 @@ struct HorizontalPartBrowserView: View {
         }
     }
 
-    /// The selected part's row, for the list's scroll anchor.
+    /// The row the list's scroll anchor keeps in view: the spotlit part
+    /// Spotlight scrolled to, centred as a reveal, else the selected part.
     private func scrollRequest(in rows: [HorizontalPoolPart]) -> HorizontalTableScrollRequest? {
-        guard let selectedPartID, let row = rows.firstIndex(where: { $0.id == selectedPartID }) else {
+        guard let target = spotlightScrollPartID ?? selectedPartID,
+              let row = rows.firstIndex(where: { $0.id == target }) else {
             return nil
         }
-        return HorizontalTableScrollRequest(rowID: selectedPartID, row: row, rowCount: rows.count, centers: false, token: scrollToken)
+        return HorizontalTableScrollRequest(rowID: target, row: row, rowCount: rows.count,
+                                            centers: spotlightScrollPartID != nil, token: scrollToken)
     }
+
+    /// How a part's row shows the selection and Spotlight made elsewhere.
+    enum RowMark: Equatable {
+        case none
+        /// A selected component is fitted with it.
+        case selected
+        /// Spotlight leaves it out.
+        case dimmed
+    }
+
+    static func rowMark(partID: String, selected: Set<String>, spotlit: Set<String>?, dimsOthers: Bool) -> RowMark {
+        let id = partID.lowercased()
+        if selected.contains(id) {
+            return .selected
+        }
+        if dimsOthers, let spotlit, !spotlit.contains(id) {
+            return .dimmed
+        }
+        return .none
+    }
+
+    /// The 3D view's selection blue (`BoardSceneEntities.selectionColor`),
+    /// whatever the system's accent colour.
+    static let selectionBlue = Color(red: 0.25, green: 0.56, blue: 1.0)
+
+    /// One cell of a part's row, with the row's mark: a blue band across the
+    /// row for a part a selected component uses, faded for one Spotlight
+    /// leaves out. Each cell's band reaches past its edges over the space
+    /// between the columns, which nothing clips, so the cells' bands make
+    /// one band along the row; the band is opaque, the blue laid over the
+    /// row's own colour, so where two overlap no seam shows.
+    @ViewBuilder
+    private func cell<Content: View>(_ part: HorizontalPoolPart, @ViewBuilder _ content: () -> Content) -> some View {
+        let mark = Self.rowMark(partID: part.id, selected: selectedComponentPartIDs, spotlit: spotlitPartIDs,
+                                dimsOthers: spotlightDimsOthers)
+        content()
+            // A line's height even for an empty cell, so the band is as
+            // tall in every column.
+            .frame(maxWidth: .infinity, minHeight: 16, alignment: .leading)
+            .background {
+                if mark == .selected {
+                    ZStack {
+                        Self.rowColor
+                        Self.selectionBlue.opacity(0.3)
+                    }
+                    .padding(.horizontal, -9)
+                    .padding(.vertical, -4)
+                }
+            }
+            .opacity(mark == .dimmed ? 0.35 : 1)
+    }
+
+    #if os(macOS)
+    private static let rowColor = Color(nsColor: .controlBackgroundColor)
+    #else
+    private static let rowColor = Color(uiColor: .secondarySystemGroupedBackground)
+    #endif
 
     private var sortableTable: some View {
         let rows = filteredParts
@@ -425,20 +515,22 @@ struct HorizontalPartBrowserView: View {
             columnCustomization: $columnCustomization
         ) {
             TableColumn("MPN", value: \.mpn) { part in
-                poolLinkText(part.mpn, part: part, category: .part)
+                cell(part) { poolLinkText(part.mpn, part: part, category: .part) }
             }
             .width(min: 130, ideal: 180)
             .customizationID("mpn")
             .disabledCustomizationBehavior(.visibility)
 
             TableColumn("Library Status") { part in
-                if let row = libraryRow(for: part) {
-                    Label(row.statusTitle, systemImage: row.status.symbol)
-                        .foregroundStyle(row.status == .current || row.status == .projectOnly ? Color.secondary : Color.orange)
-                        .lineLimit(1)
-                        .help(row.message.isEmpty ? row.sourcePool.map { "From \($0)" } ?? row.statusTitle : row.message)
-                } else {
-                    Text(library.isChecking ? "Checking" : "Unavailable").foregroundStyle(.secondary)
+                cell(part) {
+                    if let row = libraryRow(for: part) {
+                        Label(row.statusTitle, systemImage: row.status.symbol)
+                            .foregroundStyle(row.status == .current || row.status == .projectOnly ? Color.secondary : Color.orange)
+                            .lineLimit(1)
+                            .help(row.message.isEmpty ? row.sourcePool.map { "From \($0)" } ?? row.statusTitle : row.message)
+                    } else {
+                        Text(library.isChecking ? "Checking" : "Unavailable").foregroundStyle(.secondary)
+                    }
                 }
             }
             .width(min: 175, ideal: 185)
@@ -447,40 +539,42 @@ struct HorizontalPartBrowserView: View {
             // The pool a part is kept up to date from; none where no attached
             // pool has it.
             TableColumn("Source Pool") { part in
-                if let row = libraryRow(for: part) {
-                    Text(row.sourcePool ?? (row.status == .projectOnly ? "This project" : "None attached"))
-                        .foregroundStyle(row.sourcePool != nil ? Color.primary : row.status == .projectOnly ? Color.secondary : Color.orange)
-                        .lineLimit(1)
-                } else {
-                    Text("")
+                cell(part) {
+                    if let row = libraryRow(for: part) {
+                        Text(row.sourcePool ?? (row.status == .projectOnly ? "This project" : "None attached"))
+                            .foregroundStyle(row.sourcePool != nil ? Color.primary : row.status == .projectOnly ? Color.secondary : Color.orange)
+                            .lineLimit(1)
+                    } else {
+                        Text("")
+                    }
                 }
             }
             .width(min: 110, ideal: 140)
             .customizationID("sourcePool")
 
             TableColumn("Value", value: \.value) { part in
-                tableText(part.value, part: part)
+                cell(part) { tableText(part.value, part: part) }
             }
             .width(min: 90, ideal: 120)
             .customizationID("value")
             .disabledCustomizationBehavior(.visibility)
 
             TableColumn("Manufacturer", value: \.manufacturer) { part in
-                poolLinkText(part.manufacturer, part: part, category: .part)
+                cell(part) { poolLinkText(part.manufacturer, part: part, category: .part) }
             }
             .width(min: 120, ideal: 150)
             .customizationID("manufacturer")
             .disabledCustomizationBehavior(.visibility)
 
             TableColumn("Description", value: \.partDescription) { part in
-                tableText(part.partDescription, part: part)
+                cell(part) { tableText(part.partDescription, part: part) }
             }
             .width(min: 220, ideal: 360)
             .customizationID("description")
             .disabledCustomizationBehavior(.visibility)
 
             TableColumn("Package", value: \.packageName) { part in
-                poolLinkText(part.packageName, part: part, category: .package)
+                cell(part) { poolLinkText(part.packageName, part: part, category: .package) }
             }
             .width(min: 110, ideal: 140)
             .customizationID("package")
@@ -491,7 +585,7 @@ struct HorizontalPartBrowserView: View {
             // part.
             if digiKey.isEnabled {
                 TableColumn("DigiKey Stock") { part in
-                    digiKeyStockCell(part)
+                    cell(part) { digiKeyStockCell(part) }
                 }
                 .width(min: Self.stockColumnMinimumWidth, ideal: 110)
                 .customizationID(Self.digiKeyStockColumnID)
@@ -503,14 +597,14 @@ struct HorizontalPartBrowserView: View {
             // Mouser, never mixed with another distributor's.
             if mouser.isEnabled {
                 TableColumn("Mouser Stock") { part in
-                    mouserStockCell(part)
+                    cell(part) { mouserStockCell(part) }
                 }
                 .width(min: Self.stockColumnMinimumWidth, ideal: 110)
                 .customizationID(Self.mouserStockColumnID)
             }
 
             TableColumn("Tags", value: \.tagList) { part in
-                tableText(part.tagList, part: part)
+                cell(part) { tableText(part.tagList, part: part) }
             }
             .width(min: 140, ideal: 220)
             .customizationID("tags")

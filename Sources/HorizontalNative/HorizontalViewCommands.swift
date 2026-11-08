@@ -173,6 +173,12 @@ struct HorizontalCanvasCommandActions {
     /// whether the canvas's selection changed, and so whether it will report
     /// one the workspace gave it rather than one made there.
     var selectComponents: ((Set<String>) -> Bool)? = nil
+    /// Picks the first of these that has no package on the board, in the
+    /// unplaced column, which scrolls to it. A part with a package, and the
+    /// canvas's own selection, are left as they are, so a selection made in
+    /// another view reaches only the unplaced column. Returns whether the
+    /// column's selection changed.
+    var selectUnplacedComponents: ((Set<String>) -> Bool)? = nil
     var dispatch: (HorizontalCanvasCommand) -> Void
 }
 
@@ -802,7 +808,7 @@ struct HorizontalViewCommands: Commands {
 
             Divider()
 
-            Button("Highlight Net") {
+            Button("Spotlight") {
                 highlightNetAction?()
             }
             .disabled(highlightNetAction == nil)

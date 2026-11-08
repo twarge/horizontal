@@ -39,6 +39,9 @@ struct HorizontalIPadProjectView: View {
     @AppStorage(HorizontalPlaneFillDefaults.updatesAutomaticallyKey) private var updatesPlanesAutomatically = false
     /// The rules checks run again on every change; off, when asked.
     @AppStorage(HorizontalRulesCheckDefaults.checksAutomaticallyKey) private var checksRulesAutomatically = true
+    @AppStorage(HorizontalSpotlightFraming.framesEveryViewKey) private var spotlightFramesEveryView = false
+    /// A fresh value scrolls the Parts pane to the first spotlit part.
+    @State private var partsSpotlightScrollToken = 0
     @State private var planesNeedUpdate = false
     /// What the board's fills were poured from; nil until the board is first
     /// seen, when the fills its files hold are taken to be its own.
@@ -1524,8 +1527,80 @@ struct HorizontalIPadProjectView: View {
                 guard !componentIDs.isEmpty else { return }
                 selectComponents(componentIDs)
                 highlightedComponentIDs = componentIDs
-            }
+            },
+            selectedComponentPartIDs: partMarks(in: project).selected,
+            spotlitPartIDs: partMarks(in: project).spotlit,
+            spotlightDimsOthers: boardDisplayOptions.highlightMode != "as_is",
+            spotlightScrollToken: partsSpotlightScrollToken
         )
+    }
+
+    /// As on the Mac: the parts the selected components are fitted with, and
+    /// while Spotlight is on components, the parts those are.
+    private func partMarks(in project: HorizontalProject) -> (selected: Set<String>, spotlit: Set<String>?) {
+        guard !selectedComponentIDs.isEmpty || !highlightedComponentIDs.isEmpty else {
+            return ([], nil)
+        }
+        let parts = HorizontalPoolCacheUpdater.partIDsByComponent(in: document.archive, project: project)
+        func partIDs(_ componentIDs: Set<String>) -> Set<String> {
+            Set(componentIDs.compactMap { parts[$0.lowercased()] })
+        }
+        return (partIDs(selectedComponentIDs), highlightedComponentIDs.isEmpty ? nil : partIDs(highlightedComponentIDs))
+    }
+
+    /// A canvas's L, as on the Mac: the components come in after the nets,
+    /// and with both in, what is spotlit is framed in every pane showing,
+    /// when Settings asks.
+    private func spotlightFromCanvas(_ componentIDs: Set<String>) {
+        highlightedComponentIDs = componentIDs
+        Task { @MainActor in
+            frameSpotlight()
+        }
+    }
+
+    private func frameSpotlight() {
+        guard spotlightFramesEveryView, let project else {
+            return
+        }
+        let nets = highlightedNetIDs
+        let components = highlightedComponentIDs
+        guard !nets.isEmpty || !components.isEmpty else {
+            return
+        }
+        if let board = project.board,
+           let rect = HorizontalSpotlightFraming.boardRect(board, netIDs: nets, componentIDs: components) {
+            if isShown(.board) {
+                if let side = HorizontalSpotlightFraming.boardSide(board, componentIDs: components) {
+                    showBoardSide(side)
+                }
+                canvasActions(for: .board)?.frameWorldRect?(rect)
+            }
+            if isShown(.threeD) {
+                threeDCameraState = horizonSceneCameraState(framing: rect, board: board, current: threeDCameraState, projection: .perspective)
+            }
+        }
+        if isShown(.schematic) {
+            let currentSheetID: String? = switch navigatorSelection {
+            case .sheet(_, let sheetID), .standaloneSheet(let sheetID): sheetID
+            default: nil
+            }
+            if let target = HorizontalSpotlightFraming.sheetTarget(project, netIDs: nets, componentIDs: components,
+                                                                   currentSheetID: currentSheetID) {
+                if target.sheetID.caseInsensitiveCompare(currentSheetID ?? "") == .orderedSame {
+                    canvasActions(for: .schematic)?.frameWorldRect?(target.rect)
+                } else {
+                    navigatorSelection = target.blockID.map { .sheet(blockID: $0, sheetID: target.sheetID) }
+                        ?? .standaloneSheet(target.sheetID)
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(250))
+                        canvasActions(for: .schematic)?.frameWorldRect?(target.rect)
+                    }
+                }
+            }
+        }
+        if isShown(.parts) {
+            partsSpotlightScrollToken += 1
+        }
     }
 
     /// The lock.
@@ -1604,7 +1679,7 @@ struct HorizontalIPadProjectView: View {
                     onSelectedNetChange: { selectedNetIDs = $0 },
                     onSelectedComponentChange: { selectComponents($0, from: .schematic) },
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
-                    onHighlightComponentCommand: { highlightedComponentIDs = $0 },
+                    onHighlightComponentCommand: spotlightFromCanvas,
                     onSheetChange: { applyEditedSchematicSheet($0) },
                     onMergeNetsSheetChange: { sheet, merges, actionName in
                         applyEditedSchematicSheet(sheet, mergingNets: merges, actionName: actionName)
@@ -1721,7 +1796,7 @@ struct HorizontalIPadProjectView: View {
                     onSelectedNetChange: { selectedNetIDs = $0 },
                     onSelectedComponentChange: { selectComponents($0, from: .board) },
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
-                    onHighlightComponentCommand: { highlightedComponentIDs = $0 },
+                    onHighlightComponentCommand: spotlightFromCanvas,
                     onBoardChange: { applyEditedBoard($0) },
                     onPlaneEdit: { applyBoardPlaneEdit($0, actionName: $1) },
                     onUpdateAllPlanes: updateAllBoardPlanes,
@@ -2956,6 +3031,11 @@ struct HorizontalIPadProjectView: View {
             if canvasActions(for: pane)?.selectComponents?(componentIDs) == true {
                 crossProbedPanes.insert(pane)
             }
+        }
+        // As on the Mac: a part with no package is picked in the board's
+        // unplaced column.
+        if origin == .schematic, canvasActions(for: .board)?.selectUnplacedComponents?(componentIDs) == true {
+            crossProbedPanes.insert(.board)
         }
     }
 

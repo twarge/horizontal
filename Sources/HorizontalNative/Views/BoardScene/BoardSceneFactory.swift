@@ -1442,7 +1442,7 @@ enum BoardSceneFactory {
     /// the camera still, RealityKit's directional shadow kept changing from
     /// frame to frame, so the copper, mask and silkscreen flickered between
     /// lit states.
-    private static func lights(width: Double, depth: Double) -> [BoardSceneLight] {
+    static func lights(width: Double, depth: Double) -> [BoardSceneLight] {
         func direction(pitch: Double, yaw: Double) -> SIMD3<Float> {
             // SceneKit's euler angles turn by the roll, then the yaw, then
             // the pitch; a light shines down its -z.

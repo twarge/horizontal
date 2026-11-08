@@ -130,5 +130,32 @@ final class BoardUnplacedColumnSelectionTests: XCTestCase {
         XCTAssertTrue(back, "the column scrolls back up to R100, at \(offset())")
         XCTAssertGreaterThan(offset(), 0, "as little as shows it: R1 above it is scrolled off")
     }
+
+    /// The schematic keeps its selection from the board's packages, but what
+    /// it picks that has no package is picked in the column, which scrolls to
+    /// it, and goes again when the schematic picks something else. A package
+    /// the board has selected itself stays selected.
+    func testTheSchematicsPickOfAPartNotOnTheBoardIsPickedInTheColumn() async throws {
+        let state = State(fixture())
+        let (_, hosted) = try await mount(state)
+        let scroll = try XCTUnwrap(column(in: hosted))
+        func offset() -> CGFloat { scroll.contentView.bounds.origin.y }
+        func bottom() -> CGFloat { (scroll.documentView?.frame.height ?? 0) - scroll.contentView.bounds.height }
+
+        XCTAssertEqual(state.actions?.selectUnplacedComponents?(["placed", "c59"]), true, "R159 has no package: the column picks it")
+        let scrolled = await settle { offset() >= bottom() - 6 }
+        XCTAssertTrue(scrolled, "the column scrolls down to R159, at \(offset()) of \(bottom())")
+        XCTAssertEqual(state.actions?.selectUnplacedComponents?(["c59"]), false, "already picked")
+
+        XCTAssertEqual(state.actions?.selectUnplacedComponents?(["placed"]), true, "R1 is placed: R159's pick goes")
+        XCTAssertEqual(state.actions?.selectUnplacedComponents?([]), false, "nothing left to drop")
+
+        // The board's own selection of R1's package is left alone by a
+        // schematic pick with nothing unplaced in it.
+        XCTAssertEqual(state.actions?.selectComponents?(["placed"]), true)
+        XCTAssertEqual(state.actions?.selectUnplacedComponents?(["placed"]), false)
+        XCTAssertEqual(state.actions?.selectUnplacedComponents?([]), false)
+        XCTAssertEqual(state.actions?.selectComponents?(["placed"]), false, "R1's package is still the board's selection")
+    }
 }
 #endif

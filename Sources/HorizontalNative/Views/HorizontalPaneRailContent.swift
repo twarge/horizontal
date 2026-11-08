@@ -1809,7 +1809,7 @@ struct BoardLayerControls: View {
                     Slider(value: $displayOptions.layerOpacity, in: 0...1)
                 }
 
-                Picker("Highlight Mode", selection: $displayOptions.highlightMode) {
+                Picker("Spotlight Mode", selection: $displayOptions.highlightMode) {
                     Text("Dim other").tag("dim_other")
                     Text("As is").tag("as_is")
                     Text("Hide other").tag("hide_other")

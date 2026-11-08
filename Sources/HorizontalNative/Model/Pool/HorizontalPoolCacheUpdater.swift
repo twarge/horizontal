@@ -245,6 +245,35 @@ enum HorizontalPoolCacheUpdater {
         return result.mapValues { $0.sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
     }
 
+    /// Each component's part by the component's id, both lowercased: every
+    /// block's own components, and the flattened block's, so a selection made
+    /// on a block's sheet (its own ids) and one made on the board (flat ids)
+    /// both find their parts.
+    static func partIDsByComponent(in archive: HorizontalProjectArchive, project: HorizontalProject? = nil) -> [String: String] {
+        var result = [String: String]()
+        var jsons = blocks(in: archive, project: project)
+        if let flattened = project?.flattenedBlock {
+            jsons.append(flattened.json)
+        }
+        for json in jsons {
+            for (id, component) in json.dictionaryMap("components") {
+                if let part = component.string("part")?.lowercased() {
+                    result[id.lowercased()] = part
+                }
+            }
+        }
+        if result.isEmpty, let project {
+            let schematics = project.schematics.map(\.schematic) + (project.schematic.map { [$0] } ?? [])
+            let placements = schematics.flatMap { $0.sheets.flatMap(\.symbols) } + (project.board?.packages ?? [])
+            for placement in placements {
+                if let componentID = placement.componentID, let part = placement.componentDetails?.partID {
+                    result[componentID.lowercased()] = part.lowercased()
+                }
+            }
+        }
+        return result
+    }
+
     /// The parts some component is fitted with: a part that only components
     /// marked Do Not Populate use is missing. A block's components count once
     /// for each of its instances, with that instance's Do Not Populate, as

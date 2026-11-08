@@ -198,7 +198,7 @@ enum HorizontalVoiceCommandParser {
         "center on", "centre on", "focus on", "look at", "find", "frame", "locate", "where is", "where's",
     ]
     private static let selectVerbs = ["select", "pick", "choose"]
-    private static let highlightVerbs = ["highlight", "light up", "show me", "show", "mark", "point out", "point to", "point at", "flash"]
+    private static let highlightVerbs = ["highlight", "spotlight", "light up", "show me", "show", "mark", "point out", "point to", "point at", "flash"]
     private static let articles: Set<String> = ["the", "a", "an", "all", "every", "of", "my"]
     private static let paneGlue: Set<String> = [
         "the", "a", "and", "with", "plus", "view", "views", "pane", "panes", "me", "only", "just", "too",
@@ -339,7 +339,7 @@ enum HorizontalVoiceCommandParser {
         let words = text.split(separator: " ").map(String.init)
         guard let first = words.first else { return nil }
         let rest = words.dropFirst().filter { !paneGlue.contains($0) && !articles.contains($0) }
-        let highlightWords: Set<String> = ["highlight", "highlights", "highlighting", "highlighted", "everything"]
+        let highlightWords: Set<String> = ["highlight", "highlights", "highlighting", "highlighted", "spotlight", "spotlights", "everything"]
         let selectionWords: Set<String> = ["selection", "selected", "select"]
         switch first {
         case "unhighlight":

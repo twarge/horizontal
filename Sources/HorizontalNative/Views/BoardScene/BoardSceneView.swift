@@ -681,6 +681,9 @@ struct BoardSceneHostView {
         }
         if sceneSwapped || coordinator.lastHighlighted != highlightedComponentIDs {
             scene.applyHighlight(componentIDs: highlightedComponentIDs)
+            // The studio light goes down with the scene's own while a spot
+            // is lit.
+            view.environment.lighting.intensityExponent = BoardSceneEnvironment.intensityExponent + scene.environmentExposure
             coordinator.lastHighlighted = highlightedComponentIDs
         }
         if sceneSwapped || coordinator.lastSelected != selectedComponentIDs {
@@ -1185,7 +1188,7 @@ enum BoardSceneOffscreenRenderer {
         renderer.activeCamera = rig.camera
         renderer.cameraSettings.colorBackground = .color(background.cgColor)
         renderer.lighting.resource = BoardSceneEnvironment.resource()
-        renderer.lighting.intensityExponent = BoardSceneEnvironment.intensityExponent
+        renderer.lighting.intensityExponent = BoardSceneEnvironment.intensityExponent + scene.environmentExposure
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm_srgb, width: width, height: height, mipmapped: false)
         descriptor.usage = [.renderTarget, .shaderRead]

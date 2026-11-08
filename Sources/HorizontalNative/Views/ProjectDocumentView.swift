@@ -20,6 +20,8 @@ struct ProjectDocumentView: View {
     @State private var highlightedNetIDs = Set<String>()
     @State private var selectedComponentIDs = Set<String>()
     @State private var highlightedComponentIDs = Set<String>()
+    /// Counts the View menu's Spotlight, for the workspace to frame it.
+    @State private var spotlightRequest = 0
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
 
@@ -126,7 +128,8 @@ struct ProjectDocumentView: View {
                 selectedNetIDs: $selectedNetIDs,
                 highlightedNetIDs: $highlightedNetIDs,
                 selectedComponentIDs: $selectedComponentIDs,
-                highlightedComponentIDs: $highlightedComponentIDs
+                highlightedComponentIDs: $highlightedComponentIDs,
+                spotlightRequest: $spotlightRequest
             )
                 .id(workspaceIdentity ?? Self.documentIdentity(project.url))
                 .navigationTitle(project.displayTitle)
@@ -145,6 +148,7 @@ struct ProjectDocumentView: View {
     private func highlightSelectedNet() {
         highlightedNetIDs = selectedNetIDs
         highlightedComponentIDs = selectedComponentIDs
+        spotlightRequest += 1
     }
 
     /// AppKit can change a saved document URL's spelling (for example /tmp
@@ -650,6 +654,13 @@ struct ProjectWorkspaceView: View {
     @Binding var highlightedNetIDs: Set<String>
     @Binding var selectedComponentIDs: Set<String>
     @Binding var highlightedComponentIDs: Set<String>
+    /// Counts each Spotlight (L) the window's Spotlight command made, from the
+    /// menu or a canvas: each one frames what it spotlights in every view
+    /// showing, when Settings asks.
+    @Binding var spotlightRequest: Int
+    @AppStorage(HorizontalSpotlightFraming.framesEveryViewKey) private var spotlightFramesEveryView = false
+    /// A fresh value scrolls the Parts pane to the first spotlit part.
+    @State private var partsSpotlightScrollToken = 0
 
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var navigatorSelection: ProjectNavigatorSelection?
@@ -842,7 +853,8 @@ struct ProjectWorkspaceView: View {
         selectedNetIDs: Binding<Set<String>>,
         highlightedNetIDs: Binding<Set<String>>,
         selectedComponentIDs: Binding<Set<String>>,
-        highlightedComponentIDs: Binding<Set<String>>
+        highlightedComponentIDs: Binding<Set<String>>,
+        spotlightRequest: Binding<Int> = .constant(0)
     ) {
         let fileViewState = HorizontalFileViewStateStore.shared.load(for: project.url, projectID: project.uuid)
         _project = State(initialValue: project)
@@ -853,6 +865,7 @@ struct ProjectWorkspaceView: View {
         _highlightedNetIDs = highlightedNetIDs
         _selectedComponentIDs = selectedComponentIDs
         _highlightedComponentIDs = highlightedComponentIDs
+        _spotlightRequest = spotlightRequest
         _columnVisibility = State(initialValue: Self.initialColumnVisibility(fileViewState: fileViewState, project: project))
         _schematicDisplayOptions = State(initialValue: fileViewState?.schematicDisplayOptions ?? SchematicDisplayOptions())
         _boardDisplayOptions = State(initialValue: BoardDisplayOptions.opening(fileViewState?.boardDisplayOptions))
@@ -1140,6 +1153,9 @@ struct ProjectWorkspaceView: View {
             }
             .onChange(of: selectedComponentIDs) { _, _ in
                 refreshLibraryPartReplacement()
+            }
+            .onChange(of: spotlightRequest) { _, _ in
+                frameSpotlight()
             }
             .onChange(of: schematicEditRevision) { _, _ in
                 refreshLibraryPartReplacement()
@@ -2253,6 +2269,20 @@ struct ProjectWorkspaceView: View {
         }
     }
 
+    /// The Parts pane's marks: the parts the selected components are fitted
+    /// with, and while Spotlight is on components, the parts those are; the
+    /// block files are read only when there is something to mark.
+    private var partMarks: (selected: Set<String>, spotlit: Set<String>?) {
+        guard !selectedComponentIDs.isEmpty || !highlightedComponentIDs.isEmpty else {
+            return ([], nil)
+        }
+        let parts = HorizontalPoolCacheUpdater.partIDsByComponent(in: document.archive, project: project)
+        func partIDs(_ componentIDs: Set<String>) -> Set<String> {
+            Set(componentIDs.compactMap { parts[$0.lowercased()] })
+        }
+        return (partIDs(selectedComponentIDs), highlightedComponentIDs.isEmpty ? nil : partIDs(highlightedComponentIDs))
+    }
+
     @ViewBuilder
     private func paneView(_ pane: HorizontalPane, fitSafeAreaInsets: EdgeInsets) -> some View {
         switch pane {
@@ -2271,7 +2301,11 @@ struct ProjectWorkspaceView: View {
                     onCopyToPool: isReadOnly ? nil : { partID, target in preparePoolCopy(partID: partID, to: target) },
                     onReviewUpdates: { showsPartUpdates = true },
                     onCleanUp: poolCleanupAction,
-                    onSelectUses: { selectComponents(usingPart: $0) }
+                    onSelectUses: { selectComponents(usingPart: $0) },
+                    selectedComponentPartIDs: partMarks.selected,
+                    spotlitPartIDs: partMarks.spotlit,
+                    spotlightDimsOthers: boardDisplayOptions.highlightMode != "as_is",
+                    spotlightScrollToken: partsSpotlightScrollToken
                 )
                 .claimsKeyboardOnClick(leadingInset: fitSafeAreaInsets.leading) { activeCanvasCommandPane = .parts }
             }
@@ -2344,7 +2378,7 @@ struct ProjectWorkspaceView: View {
                                 onSelectedNetChange: selectNet,
                                 onSelectedComponentChange: { selectComponents($0, from: .schematic) },
                                 onHighlightNetCommand: highlightSelectedNet,
-                                onHighlightComponentCommand: highlightSelectedComponents,
+                                onHighlightComponentCommand: spotlightFromCanvas,
                                 onSelectionClearedBySheetChange: clearSelectionKeepingHighlight,
                                 onSheetChange: { sheet in
                                     applyEditedSchematicSheet(sheet, schematicURL: selectedSchematic.url)
@@ -2556,7 +2590,7 @@ struct ProjectWorkspaceView: View {
                                 onSelectedNetChange: selectNet,
                                 onSelectedComponentChange: { selectComponents($0, from: .board) },
                                 onHighlightNetCommand: highlightSelectedNet,
-                                onHighlightComponentCommand: highlightSelectedComponents,
+                                onHighlightComponentCommand: spotlightFromCanvas,
                                 onBoardChange: { board in
                                     applyEditedBoard(board)
                                 },
@@ -3132,7 +3166,11 @@ struct ProjectWorkspaceView: View {
     /// other way round. A click in the 3D view, Find, the Parts pane or the
     /// live channel (no `origin`) selects in both canvases; a canvas already
     /// showing the set ignores it, and every one it changes is marked, so its
-    /// report doesn't take the focus.
+    /// report doesn't take the focus. One exception: a part picked in the
+    /// schematic that has no package on the board is picked in the board's
+    /// unplaced column, which scrolls to it, and the pick goes again when the
+    /// schematic selects something else — though not on a page change
+    /// (`keepingHighlight`), which drops only the schematic's selection.
     private func selectComponents(_ componentIDs: Set<String>, from origin: HorizontalPane? = nil,
                                   keepingHighlight: Bool = false) {
         if componentIDs != selectedComponentIDs, !keepingHighlight {
@@ -3143,6 +3181,10 @@ struct ProjectWorkspaceView: View {
             if canvasCommandActionsByPane[pane]?.selectComponents?(componentIDs) == true {
                 crossProbedPanes.insert(pane)
             }
+        }
+        if origin == .schematic, !keepingHighlight,
+           canvasCommandActionsByPane[.board]?.selectUnplacedComponents?(componentIDs) == true {
+            crossProbedPanes.insert(.board)
         }
     }
 
@@ -3215,6 +3257,72 @@ struct ProjectWorkspaceView: View {
 
     private func highlightSelectedComponents(_ componentIDs: Set<String>) {
         highlightedComponentIDs = componentIDs
+    }
+
+    /// A canvas's L: its nets are spotlit first, then its components, and
+    /// with both in, what it spotlights is framed, a turn later, when the
+    /// highlight has landed.
+    private func spotlightFromCanvas(_ componentIDs: Set<String>) {
+        highlightSelectedComponents(componentIDs)
+        Task { @MainActor in
+            frameSpotlight()
+        }
+    }
+
+    /// Spotlight's framing, when Settings asks for it: what is spotlit,
+    /// framed in every view showing — the board and the 3D view on its
+    /// copper, turned to its side when a sided view shows the other; the
+    /// schematic on the sheet that draws the most of it, turning the page if
+    /// need be; the Parts pane scrolled to the first spotlit part. Hidden
+    /// panes are left as they are.
+    private func frameSpotlight() {
+        guard spotlightFramesEveryView else {
+            return
+        }
+        let nets = highlightedNetIDs
+        let components = highlightedComponentIDs
+        guard !nets.isEmpty || !components.isEmpty else {
+            return
+        }
+        if let board = project.board,
+           let rect = HorizontalSpotlightFraming.boardRect(board, netIDs: nets, componentIDs: components) {
+            if visiblePanes.contains(.board) {
+                if let side = HorizontalSpotlightFraming.boardSide(board, componentIDs: components) {
+                    showBoardSide(side)
+                }
+                canvasCommandActionsByPane[.board]?.frameWorldRect?(rect)
+            }
+            if visiblePanes.contains(.threeD) {
+                threeDCameraState = horizonSceneCameraState(
+                    framing: rect, board: board, current: threeDCameraState,
+                    projection: boardDisplayOptions.threeDProjection
+                )
+            }
+        }
+        if visiblePanes.contains(.schematic) {
+            let currentSheetID: String? = switch navigatorSelection {
+            case .sheet(_, let sheetID), .standaloneSheet(let sheetID): sheetID
+            default: nil
+            }
+            if let target = HorizontalSpotlightFraming.sheetTarget(project, netIDs: nets, componentIDs: components,
+                                                                   currentSheetID: currentSheetID) {
+                if target.sheetID.caseInsensitiveCompare(currentSheetID ?? "") == .orderedSame {
+                    canvasCommandActionsByPane[.schematic]?.frameWorldRect?(target.rect)
+                } else {
+                    // Another sheet swaps the canvas; frame once it is up,
+                    // the wait zoom_to gives a sheet swap.
+                    navigatorSelection = target.blockID.map { .sheet(blockID: $0, sheetID: target.sheetID) }
+                        ?? .standaloneSheet(target.sheetID)
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(250))
+                        canvasCommandActionsByPane[.schematic]?.frameWorldRect?(target.rect)
+                    }
+                }
+            }
+        }
+        if visiblePanes.contains(.parts) {
+            partsSpotlightScrollToken += 1
+        }
     }
 
     /// Returns whether the document's files changed.

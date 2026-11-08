@@ -3273,6 +3273,34 @@ struct BoardCanvasView: View {
             // would take that as the new selection and clear every other view.
             return before != (selectedObjects, selectedUnplacedObjectID)
         }
+        actions.selectUnplacedComponents = { componentIDs in
+            // A part being placed, moved or pasted keeps the column as it is.
+            guard moveState == nil, pastePlacementState == nil, packagePlacementState == nil else {
+                return false
+            }
+            let wanted = Set(componentIDs.map(normalizedID))
+            if let object = currentUnplacedObjects.first(where: { object in
+                object.componentID.map { wanted.contains(normalizedID($0)) } == true
+            }) {
+                guard selectedUnplacedObjectID != object.id || !selectedObjects.isEmpty else {
+                    return false
+                }
+                // The column's pick is the board's selection, as a click on
+                // its row makes it, though without starting to place it.
+                selectedObjects = []
+                selectedUnplacedObjectID = object.id
+            } else {
+                // The schematic has moved on: a pick it no longer selects
+                // goes, when it is all the board has selected.
+                guard selectedObjects.isEmpty, let picked = selectedUnplacedObject,
+                      picked.componentID.map({ wanted.contains(normalizedID($0)) }) != true else {
+                    return false
+                }
+                selectedUnplacedObjectID = nil
+            }
+            hoveredObject = nil
+            return true
+        }
         return actions
     }
 
@@ -3743,7 +3771,7 @@ struct BoardCanvasView: View {
         // Net
         if hasNet {
             entries.append(.separator)
-            entries.append(.command(title: "Highlight Net", .highlightNet))
+            entries.append(.command(title: "Spotlight", .highlightNet))
             entries.append(.command(title: "Select Net", .selectNet))
             // Set and Clear Differential Pair, for the top block's nets.
             if writable, modeProfile.mode == .board, let onEditDiffpair {
