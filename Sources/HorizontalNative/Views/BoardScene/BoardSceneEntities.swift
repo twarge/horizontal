@@ -68,6 +68,9 @@ final class BoardSceneEntities {
     /// How far up the scene's own light is: 1, or `spotlitHouseLightLevel`
     /// while a spot is lit.
     private(set) var houseLightLevel: Float = 1
+    /// The shadows' meshes and the materials they were built with: they fade
+    /// with the house lights, since the light they stand for dims.
+    private var shadowMeshes = [(entity: Entity, materials: [BoardSceneMaterialSpec])]()
 
     /// Via barrels and rings are tubes of a handful of sizes: one unit-high
     /// mesh per pair of radii, drawn once per barrel or ring as an instance
@@ -145,6 +148,9 @@ final class BoardSceneEntities {
         parent(for: item.group, explodeFactor: item.explodeFactor).entity.addChild(entity)
         if item.role != .fixed {
             recolorables.append(Recolorable(entity: entity, materials: item.materials, role: item.role))
+        }
+        if item.group == .shadow || item.group == .allModelShadow {
+            shadowMeshes.append((entity, item.materials))
         }
         statistics.meshes += 1
         statistics.vertices += item.mesh.vertexCount
@@ -235,9 +241,8 @@ final class BoardSceneEntities {
             entity.name = "light:\(index)"
             entity.components.set(DirectionalLightComponent(color: .white, intensity: light.intensity * houseLightLevel))
             houseLights.append((entity, light.intensity))
-            if light.castsShadow {
-                entity.components.set(DirectionalLightComponent.Shadow(maximumDistance: size * 8 + 400, depthBias: 0.6))
-            }
+            // No RealityKit shadow: its shadow maps change from frame to
+            // frame. The scene's shadows are drawn (`shadowItems`).
             let from = -light.direction * size
             entity.look(at: .zero, from: from, relativeTo: nil)
             root.addChild(entity)
@@ -338,6 +343,11 @@ final class BoardSceneEntities {
         hide(.orientationAxes, !options.orientationAxes)
         hide(.outline, !options.outline)
         hide(.panelLabel, !options.panelLabels)
+        // The shadows of the models shown, if any are, and only on the board:
+        // exploded, the parts float clear of it and their shadows with them.
+        let shadows = options.threeDShadows && options.threeDExplode <= 0
+        hide(.shadow, !shadows || options.threeDModelMode != .placed)
+        hide(.allModelShadow, !shadows || options.threeDModelMode != .all)
         for (group, entity) in groups {
             let enabled = !hidden.contains(group)
             if entity.isEnabled != enabled {
@@ -631,6 +641,29 @@ final class BoardSceneEntities {
             component.intensity = light.intensity * level
             light.entity.components.set(component)
         }
+        for shadow in shadowMeshes {
+            let specs = shadow.materials.map { spec in
+                var spec = spec
+                spec.opacity *= level
+                return spec
+            }
+            shadow.entity.components[ModelComponent.self]?.materials = specs.map(BoardSceneMaterials.material)
+        }
+    }
+
+    /// The opacity of one layer of the shadows now, for tests.
+    var shadowLayerOpacity: Float {
+        BoardSceneFactory.shadowLayerOpacity * houseLightLevel
+    }
+
+    /// Whether the scene shows shadows, for tests.
+    var showsShadows: Bool {
+        groups[.shadow]?.isEnabled == true || groups[.allModelShadow]?.isEnabled == true
+    }
+
+    /// Shadow meshes in the scene, for tests.
+    var shadowMeshCount: Int {
+        shadowMeshes.count
     }
 
     /// The scene's own lights' intensities now, for tests.

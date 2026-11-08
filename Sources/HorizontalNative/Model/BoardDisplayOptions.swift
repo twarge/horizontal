@@ -105,6 +105,9 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
     var threeDProjection: HorizontalBoardSceneProjection = .perspective
     var threeDExplode = 0.0
     var threeDBackground = true
+    /// The 3D view draws the parts' shadows on the board, cast by its key
+    /// light (and its under-light, for parts on the bottom).
+    var threeDShadows = true
     var threeDSolderMaskTransparency = 0.10
     var threeDViaPlatingMicrons = 12.0
     var threeDCopperMode: HorizontalBoardSceneCopperMode = .on {
@@ -199,6 +202,7 @@ struct BoardDisplayOptions: Codable, Equatable, Hashable {
         }
         threeDExplode = try container.decodeIfPresent(Double.self, forKey: .threeDExplode) ?? defaults.threeDExplode
         threeDBackground = try container.decodeIfPresent(Bool.self, forKey: .threeDBackground) ?? defaults.threeDBackground
+        threeDShadows = try container.decodeIfPresent(Bool.self, forKey: .threeDShadows) ?? defaults.threeDShadows
         threeDSolderMaskTransparency = try container.decodeIfPresent(Double.self, forKey: .threeDSolderMaskTransparency) ?? defaults.threeDSolderMaskTransparency
         threeDViaPlatingMicrons = try container.decodeIfPresent(Double.self, forKey: .threeDViaPlatingMicrons) ?? defaults.threeDViaPlatingMicrons
         let legacyUsesLayerColors = try container.decodeIfPresent(Bool.self, forKey: .threeDUseLayerColors) ?? defaults.threeDUseLayerColors

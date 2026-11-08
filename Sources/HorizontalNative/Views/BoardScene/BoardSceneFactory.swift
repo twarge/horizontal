@@ -231,7 +231,17 @@ enum BoardSceneFactory {
             boardWidth: width,
             boardDepth: depth
         )
+        let sceneLights = lights(width: width, depth: depth)
         scene.meshes = stage("meshes") { build.meshes.items() }
+        scene.meshes += stage("shadows") {
+            shadowItems(
+                models: build.models,
+                lights: sceneLights,
+                center: center,
+                topY: overlayHeight(for: HorizontalBoardLayers.topSilkscreen, board: board, boardThickness: thickness) + shadowStandOff,
+                bottomY: overlayHeight(for: HorizontalBoardLayers.bottomSilkscreen, board: board, boardThickness: thickness) - shadowStandOff
+            )
+        }
         scene.labels = build.labels
         scene.models = build.models
         if options.holes {
@@ -242,7 +252,7 @@ enum BoardSceneFactory {
             // of meshes, so a thousand more cost a thousand transforms.
             scene.vias = board.vias + packageVias.map(\.marker)
         }
-        scene.lights = lights(width: width, depth: depth)
+        scene.lights = sceneLights
         let halfWidth = Float(bodyBounds.isEmpty ? width / 2 : bodyBounds.width / unitsPerMillimeter / 2)
         let halfDepth = Float(bodyBounds.isEmpty ? depth / 2 : bodyBounds.height / unitsPerMillimeter / 2)
         scene.boardBoxMin = SIMD3(-halfWidth, Float(boardTopHeight - thickness), -halfDepth)
@@ -1438,10 +1448,9 @@ enum BoardSceneFactory {
     /// A key light from the front right, high, a fill from the back left and
     /// a rim from behind — the three lights SceneKit had, aimed the same way —
     /// and one shining up at the underside, which SceneKit's ambient light lit
-    /// and RealityKit has no ambient light for. The key casts no shadow: with
-    /// the camera still, RealityKit's directional shadow kept changing from
-    /// frame to frame, so the copper, mask and silkscreen flickered between
-    /// lit states.
+    /// and RealityKit has no ambient light for. RealityKit's own shadows
+    /// change from frame to frame with nothing moving, so the key and the
+    /// under-light cast none; their shadows are drawn (`shadowItems`).
     static func lights(width: Double, depth: Double) -> [BoardSceneLight] {
         func direction(pitch: Double, yaw: Double) -> SIMD3<Float> {
             // SceneKit's euler angles turn by the roll, then the yaw, then
@@ -1452,11 +1461,172 @@ enum BoardSceneFactory {
             return simd_normalize(SIMD3(shine.x, shine.y, shine.z))
         }
         return [
-            BoardSceneLight(direction: direction(pitch: -.pi / 3.2, yaw: .pi / 4.5), intensity: 2_600, castsShadow: false),
+            BoardSceneLight(direction: direction(pitch: -.pi / 3.2, yaw: .pi / 4.5), intensity: 2_600, castsShadow: true),
             BoardSceneLight(direction: direction(pitch: -.pi / 5, yaw: -.pi / 3), intensity: 600, castsShadow: false),
             BoardSceneLight(direction: direction(pitch: -.pi / 4, yaw: .pi), intensity: 850, castsShadow: false),
-            BoardSceneLight(direction: simd_normalize(SIMD3(0.7, 1, 0.5)), intensity: 1_000, castsShadow: false),
+            BoardSceneLight(direction: simd_normalize(SIMD3(0.7, 1, 0.5)), intensity: 1_000, castsShadow: true),
         ]
+    }
+
+    // MARK: Shadows
+
+    /// How far a shadow lies off the board's outermost surface, the
+    /// silkscreen's, in millimetres.
+    static let shadowStandOff = 0.01
+    /// A shadow is three layers of translucent black, each reaching this far
+    /// past the one inside it (millimetres), which soften its edge.
+    static let shadowPenumbraStep = 0.25
+    static let shadowLayerCount = 3
+    /// Each layer's opacity. The three over the shadow's core take away a
+    /// little under half the light, about the key's share of what lights
+    /// the board: the fill, the rim and the studio light still reach it.
+    static let shadowLayerOpacity: Float = 0.18
+
+    /// The parts' shadows on the board: each model's box cast along the
+    /// light that shines on its face of the board (the key on top, the
+    /// under-light below) onto that face, the outlines of a face unioned so
+    /// neighbouring shadows don't darken where they overlap, and laid in
+    /// three widening layers. RealityKit's shadow maps came out different
+    /// from one frame to the next with nothing moving, half the board's
+    /// shading on alternate frames; these are the same every frame. They
+    /// fall on the board only, not on other parts, and the view hides them
+    /// while it is exploded. Two sets: the placed models' and every model's,
+    /// as the view's model mode shows one or the other.
+    static func shadowItems(
+        models: [BoardSceneModelPlacement],
+        lights: [BoardSceneLight],
+        center: HorizontalPoint,
+        topY: Double,
+        bottomY: Double
+    ) -> [BoardSceneMeshItem] {
+        let casters = lights.filter(\.castsShadow)
+        let down = casters.first { $0.direction.y < -0.05 }?.direction
+        let up = casters.first { $0.direction.y > 0.05 }?.direction
+        struct Outline {
+            var hull: [HorizontalPoint]
+            var group: BoardSceneGroup
+            var bottom: Bool
+        }
+        var outlines = [Outline]()
+        for model in models where model.asset.mesh.hasBounds {
+            let bottom = model.explodeFactor < 0
+            guard let light = bottom ? up : down else {
+                continue
+            }
+            let plane = Float(bottom ? bottomY : topY)
+            let low = model.asset.mesh.boundsMin
+            let high = model.asset.mesh.boundsMax
+            var cast = [HorizontalPoint]()
+            for corner in 0..<8 {
+                let local = SIMD3<Float>(
+                    corner & 1 == 0 ? low.x : high.x,
+                    corner & 2 == 0 ? low.y : high.y,
+                    corner & 4 == 0 ? low.z : high.z
+                )
+                let world = model.transform * SIMD4(local, 1)
+                let point = SIMD3(world.x, world.y, world.z)
+                // Along the light to the plane; a corner already past it
+                // (the part's foot, below the silkscreen) stays where it is.
+                let along = max((plane - point.y) / light.y, 0)
+                let shadow = point + light * along
+                cast.append(HorizontalPoint(
+                    x: Double(shadow.x) * unitsPerMillimeter + center.x,
+                    y: -Double(shadow.z) * unitsPerMillimeter + center.y
+                ))
+            }
+            let hull = convexHull(cast)
+            if hull.count >= 3 {
+                outlines.append(Outline(hull: hull, group: model.group, bottom: bottom))
+            }
+        }
+        guard !outlines.isEmpty else {
+            return []
+        }
+
+        let material = BoardSceneMaterialSpec(
+            lighting: .unlit,
+            color: BoardSceneColor(red: 0, green: 0, blue: 0),
+            opacity: shadowLayerOpacity,
+            writesDepth: false
+        )
+        var meshes = BoardSceneMeshAccumulator()
+        let sets: [(group: BoardSceneGroup, casters: Set<BoardSceneGroup>)] = [
+            (.shadow, [.model]),
+            (.allModelShadow, [.model, .noPopulateModel, .placeholderModel]),
+        ]
+        for bottom in [false, true] {
+            for set in sets {
+                let hulls = outlines.filter { $0.bottom == bottom && set.casters.contains($0.group) }.map(\.hull)
+                guard !hulls.isEmpty else {
+                    continue
+                }
+                let y = bottom ? bottomY : topY
+                meshes.append(
+                    group: set.group,
+                    explodeFactor: bottom ? -3 : 3,
+                    materials: [material],
+                    drawOrder: .shadow,
+                    name: "shadows:\(bottom ? "bottom" : "top")"
+                ) { builder in
+                    for layer in 0..<shadowLayerCount {
+                        let reach = Double(layer) * shadowPenumbraStep * unitsPerMillimeter
+                        let fragments = clippedSceneFragments(subjects: hulls.map { offsetConvexPolygon($0, by: reach) }, cutouts: [])
+                        appendFlat(fragments, center: center, y: y, facingUp: !bottom, to: &builder)
+                    }
+                }
+            }
+        }
+        return meshes.items()
+    }
+
+    /// The smallest convex polygon around `points`, anticlockwise.
+    static func convexHull(_ points: [HorizontalPoint]) -> [HorizontalPoint] {
+        let sorted = Array(Set(points)).sorted { $0.x == $1.x ? $0.y < $1.y : $0.x < $1.x }
+        guard sorted.count >= 3 else {
+            return sorted
+        }
+        func cross(_ o: HorizontalPoint, _ a: HorizontalPoint, _ b: HorizontalPoint) -> Double {
+            (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+        }
+        var lower = [HorizontalPoint]()
+        for point in sorted {
+            while lower.count >= 2, cross(lower[lower.count - 2], lower[lower.count - 1], point) <= 0 {
+                lower.removeLast()
+            }
+            lower.append(point)
+        }
+        var upper = [HorizontalPoint]()
+        for point in sorted.reversed() {
+            while upper.count >= 2, cross(upper[upper.count - 2], upper[upper.count - 1], point) <= 0 {
+                upper.removeLast()
+            }
+            upper.append(point)
+        }
+        return Array(lower.dropLast() + upper.dropLast())
+    }
+
+    /// An anticlockwise convex polygon grown outwards by `distance`, its
+    /// edges moved out parallel and its corners mitred.
+    static func offsetConvexPolygon(_ polygon: [HorizontalPoint], by distance: Double) -> [HorizontalPoint] {
+        guard distance > 0, polygon.count >= 3 else {
+            return polygon
+        }
+        func outward(_ a: HorizontalPoint, _ b: HorizontalPoint) -> SIMD2<Double> {
+            let edge = SIMD2(b.x - a.x, b.y - a.y)
+            let length = max(simd_length(edge), .ulpOfOne)
+            return SIMD2(edge.y, -edge.x) / length
+        }
+        return polygon.indices.map { index in
+            let previous = polygon[(index + polygon.count - 1) % polygon.count]
+            let point = polygon[index]
+            let next = polygon[(index + 1) % polygon.count]
+            let incoming = outward(previous, point)
+            let outgoing = outward(point, next)
+            // A mitre: as long as it must be to keep both edges `distance`
+            // out, no longer than four times that at a sharp corner.
+            let miter = (incoming + outgoing) * distance / max(1 + simd_dot(incoming, outgoing), 0.25)
+            return HorizontalPoint(x: point.x + miter.x, y: point.y + miter.y)
+        }
     }
 
     // MARK: Strokes and clipping

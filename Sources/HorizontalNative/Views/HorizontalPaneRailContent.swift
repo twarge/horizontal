@@ -2275,6 +2275,7 @@ private struct ThreeDViewControlsPanel: View {
                     isOn: $displayOptions.threeDBackground,
                     color: appearanceSettings.boardSceneBackgroundColorBinding()
                 )
+                BoardDisplayToggle(title: "Shadows", isOn: $displayOptions.threeDShadows)
                 segmentedPickerRow("Projection", selection: projectionBinding) {
                     ForEach(HorizontalBoardSceneProjection.allCases) { projection in
                         Text(projection.title).tag(projection)

@@ -146,6 +146,12 @@ enum BoardSceneGroup: Int, CaseIterable, Hashable, Sendable {
     case orientationAxes
     case outline
     case panelLabel
+    /// The shadows of the placed models, shown while they are the models
+    /// shown.
+    case shadow
+    /// The shadows of every model, placeholders and parts not fitted too,
+    /// shown while all of them are.
+    case allModelShadow
 }
 
 /// Translucent surfaces lie microns apart, too close for sorting by distance
@@ -157,6 +163,7 @@ enum BoardSceneDrawOrder: Int32, Sendable {
     case silkscreen = 20
     case decal = 22
     case text = 25
+    case shadow = 27
     case keepout = 30
     case outline = 35
     case mark = 41
@@ -319,6 +326,8 @@ struct BoardSceneModelPlacement: Sendable {
 struct BoardSceneLight: Sendable {
     var direction: SIMD3<Float>
     var intensity: Float
+    /// Its shadows are drawn on the board while the view's Shadows option is
+    /// on: the parts' on the face it lights.
     var castsShadow: Bool
 }
 

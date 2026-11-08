@@ -352,6 +352,7 @@ private struct BoardSceneDisplayOptionsKey: Hashable {
     var projection: HorizontalBoardSceneProjection
     var explode: Double
     var background: Bool
+    var shadows: Bool
     var solderMaskTransparency: Double
     var viaPlatingMicrons: Double
     var copperMode: HorizontalBoardSceneCopperMode
@@ -376,6 +377,7 @@ private struct BoardSceneDisplayOptionsKey: Hashable {
         self.projection = options.threeDProjection
         self.explode = options.threeDExplode
         self.background = options.threeDBackground
+        self.shadows = options.threeDShadows
         self.solderMaskTransparency = options.threeDSolderMaskTransparency
         self.viaPlatingMicrons = options.threeDViaPlatingMicrons
         self.copperMode = options.threeDCopperMode
@@ -445,6 +447,8 @@ final class BoardSceneCameraRig {
     var sceneSize: Float = 100 {
         didSet { updateCamera() }
     }
+    /// Called whenever the camera moves or changes, for the view to draw.
+    var onChange: (() -> Void)?
 
     /// RealityKit's orthographic scale, like SceneKit's that camera states
     /// keep, is half the view's height.
@@ -552,6 +556,7 @@ final class BoardSceneCameraRig {
                 fieldOfViewOrientation: .vertical
             ))
         }
+        onChange?()
     }
 }
 
@@ -581,9 +586,9 @@ final class BoardSceneCoordinator {
 }
 
 #if canImport(AppKit)
-typealias BoardScenePlatformView = BoardSceneARView
+typealias BoardScenePlatformView = BoardSceneRenderView
 #else
-typealias BoardScenePlatformView = BoardSceneTouchARView
+typealias BoardScenePlatformView = BoardSceneTouchRenderView
 #endif
 
 @MainActor
@@ -675,6 +680,9 @@ struct BoardSceneHostView {
             )
             view.applyBackground(backgroundColor, displayOptions: displayOptions)
             coordinator.lastAppliedOptionsKey = appliedOptionsKey
+            // The view draws only when asked: the scene's own changes are
+            // asked for here, the camera's and the view's by themselves.
+            view.surface.requestFrame()
         }
         if sceneSwapped {
             view.show(scene)
@@ -683,12 +691,14 @@ struct BoardSceneHostView {
             scene.applyHighlight(componentIDs: highlightedComponentIDs)
             // The studio light goes down with the scene's own while a spot
             // is lit.
-            view.environment.lighting.intensityExponent = BoardSceneEnvironment.intensityExponent + scene.environmentExposure
+            view.surface.setEnvironmentExposure(scene.environmentExposure)
             coordinator.lastHighlighted = highlightedComponentIDs
+            view.surface.requestFrame()
         }
         if sceneSwapped || coordinator.lastSelected != selectedComponentIDs {
             scene.applySelection(componentIDs: selectedComponentIDs)
             coordinator.lastSelected = selectedComponentIDs
+            view.surface.requestFrame()
         }
         let projectionChanged = coordinator.lastAppliedProjection != displayOptions.threeDProjection
         coordinator.lastAppliedProjection = displayOptions.threeDProjection
@@ -712,23 +722,25 @@ struct BoardSceneHostView {
 
 #if canImport(AppKit)
 extension BoardSceneHostView: NSViewRepresentable {
-    func makeNSView(context: Context) -> BoardSceneARView {
+    func makeNSView(context: Context) -> BoardSceneRenderView {
         makeView(context: context)
     }
 
-    func updateNSView(_ nsView: BoardSceneARView, context: Context) {
+    func updateNSView(_ nsView: BoardSceneRenderView, context: Context) {
         updateView(nsView, context: context)
     }
 }
 
-/// The Mac's 3D view: RealityKit's view, with the camera driven the way
-/// SceneKit's camera control drove it — drag to turn about what it looks at,
-/// right-, middle- or option-drag and two-finger scroll to pan, pinch and the
-/// scroll wheel to zoom — and a click that did not drag picking a part.
-final class BoardSceneARView: ARView {
-    let rig = BoardSceneCameraRig()
-    private let contentAnchor = AnchorEntity(world: .zero)
-    private(set) var shownScene: BoardSceneEntities?
+/// The Mac's 3D view: the scene drawn by `BoardSceneRenderSurface` when
+/// something changes, with the camera driven the way SceneKit's camera
+/// control drove it — drag to turn about what it looks at, right-, middle-
+/// or option-drag and two-finger scroll to pan, pinch and the scroll wheel to
+/// zoom — and a click that did not drag picking a part.
+final class BoardSceneRenderView: NSView {
+    private let metalLayer = CAMetalLayer()
+    private(set) lazy var surface = BoardSceneRenderSurface(layer: metalLayer)
+    var rig: BoardSceneCameraRig { surface.rig }
+    var shownScene: BoardSceneEntities? { surface.shownScene }
     var ignoresSceneMouseEvents = false
     var onCameraStateChange: ((HorizontalSceneCameraState?) -> Void)?
     /// A click that did not drag: the component under it (nil for empty
@@ -752,29 +764,48 @@ final class BoardSceneARView: ARView {
     // sluggish even though the scene itself was static.
     private var pendingReportTimer: Timer?
     private static let reportSettleInterval: TimeInterval = 0.12
+    private var displayLink: CADisplayLink?
+    private let displayLinkTarget = BoardSceneDisplayLinkTarget()
+    private var occlusionObserver: NSObjectProtocol?
 
-    required init(frame frameRect: NSRect) {
+    override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        configureScene()
+        configureView()
     }
 
-    @MainActor @preconcurrency required dynamic init?(coder decoder: NSCoder) {
+    required init?(coder decoder: NSCoder) {
         super.init(coder: decoder)
-        configureScene()
+        configureView()
     }
 
-    private func configureScene() {
-        environment.lighting.resource = BoardSceneEnvironment.resource()
-        environment.lighting.intensityExponent = BoardSceneEnvironment.intensityExponent
-        scene.addAnchor(contentAnchor)
-        scene.addAnchor(rig.anchor)
+    // A view let go of in its window never hears it is leaving: the link
+    // and the observer go with it.
+    isolated deinit {
+        removeDisplayLink()
+    }
+
+    private func configureView() {
+        wantsLayer = true
+        layerContentsRedrawPolicy = .never
+        displayLinkTarget.onStep = { [weak self] timestamp in
+            self?.surface.step(at: timestamp)
+        }
+        surface.onActivityChange = { [weak self] in
+            self?.updateDisplayLink()
+        }
+        updateDrawableSize()
+    }
+
+    override func makeBackingLayer() -> CALayer {
+        metalLayer
+    }
+
+    override var isOpaque: Bool {
+        true
     }
 
     func show(_ scene: BoardSceneEntities) {
-        shownScene?.root.removeFromParent()
-        contentAnchor.addChild(scene.root)
-        shownScene = scene
-        rig.sceneSize = Float(max(scene.boardWidth, scene.boardDepth))
+        surface.show(scene)
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -790,13 +821,81 @@ final class BoardSceneARView: ARView {
         super.viewDidMoveToWindow()
         applyBackground(requestedBackgroundColor, displayOptions: requestedDisplayOptions)
         configureMonitor()
+        configureDisplayLink()
+        updateDrawableSize()
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         super.viewWillMove(toWindow: newWindow)
         if newWindow == nil {
             removeMonitor()
+            removeDisplayLink()
         }
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateDrawableSize()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        updateDrawableSize()
+    }
+
+    override func layout() {
+        super.layout()
+        updateDrawableSize()
+    }
+
+    private func updateDrawableSize() {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        surface.setSize(bounds.size, scale: scale)
+    }
+
+    /// A display link from the view's screen, which follows the window to
+    /// another display, running only while the surface has a frame to draw.
+    private func configureDisplayLink() {
+        removeDisplayLink()
+        guard let window else {
+            return
+        }
+        let link = displayLink(target: displayLinkTarget, selector: #selector(BoardSceneDisplayLinkTarget.step(_:)))
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+        occlusionObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.updateVisibility()
+            }
+        }
+        updateVisibility()
+        updateDisplayLink()
+    }
+
+    private func removeDisplayLink() {
+        displayLink?.invalidate()
+        displayLink = nil
+        if let occlusionObserver {
+            NotificationCenter.default.removeObserver(occlusionObserver)
+            self.occlusionObserver = nil
+        }
+    }
+
+    private func updateVisibility() {
+        surface.setVisible(window?.occlusionState.contains(.visible) ?? false)
+    }
+
+    private func updateDisplayLink() {
+        displayLink?.isPaused = !surface.isActive
+    }
+
+    /// The display link is running, for tests.
+    var isDrawing: Bool {
+        displayLink.map { !$0.isPaused } ?? false
     }
 
     func applyBackground(_ backgroundColor: Color, displayOptions: BoardDisplayOptions) {
@@ -804,9 +903,7 @@ final class BoardSceneARView: ARView {
         requestedDisplayOptions = displayOptions
         let effectiveColor = horizonSceneEffectiveBackgroundColor(backgroundColor, displayOptions: displayOptions)
         let platformBackgroundColor = horizonScenePlatformColor(effectiveColor, resolvingAgainst: effectiveAppearance)
-        environment.background = .color(platformBackgroundColor)
-        wantsLayer = true
-        layer?.backgroundColor = platformBackgroundColor.cgColor
+        surface.setBackground(platformBackgroundColor.cgColor)
     }
 
     private func configureMonitor() {
@@ -1025,21 +1122,28 @@ final class BoardSceneARView: ARView {
 }
 #else
 extension BoardSceneHostView: UIViewRepresentable {
-    func makeUIView(context: Context) -> BoardSceneTouchARView {
+    func makeUIView(context: Context) -> BoardSceneTouchRenderView {
         makeView(context: context)
     }
 
-    func updateUIView(_ uiView: BoardSceneTouchARView, context: Context) {
+    func updateUIView(_ uiView: BoardSceneTouchRenderView, context: Context) {
         updateView(uiView, context: context)
     }
 }
 
-/// The iPad's 3D view: one finger turns the camera about what it looks at,
-/// two pan, a pinch zooms, and a tap picks a part.
-final class BoardSceneTouchARView: ARView {
-    let rig = BoardSceneCameraRig()
-    private let contentAnchor = AnchorEntity(world: .zero)
-    private(set) var shownScene: BoardSceneEntities?
+/// The iPad's 3D view, drawn by `BoardSceneRenderSurface` when something
+/// changes: one finger turns the camera about what it looks at, two pan, a
+/// pinch zooms, and a tap picks a part.
+final class BoardSceneTouchRenderView: UIView {
+    override class var layerClass: AnyClass {
+        CAMetalLayer.self
+    }
+
+    private(set) lazy var surface = BoardSceneRenderSurface(layer: layer as! CAMetalLayer)
+    var rig: BoardSceneCameraRig { surface.rig }
+    var shownScene: BoardSceneEntities? { surface.shownScene }
+    private var displayLink: CADisplayLink?
+    private let displayLinkTarget = BoardSceneDisplayLinkTarget()
     var ignoresSceneMouseEvents = false {
         didSet { isUserInteractionEnabled = !ignoresSceneMouseEvents }
     }
@@ -1049,26 +1153,30 @@ final class BoardSceneTouchARView: ARView {
     var onPick: ((String?, Bool) -> Void)?
     private var lastOrbitTranslation = CGPoint.zero
     private var lastPanTranslation = CGPoint.zero
-    /// ARView is its own recognisers' delegate, and keeps that method.
     private let twoFingerGestures = TwoFingerGestures()
 
-    required init(frame frameRect: CGRect) {
-        // No AR session: a camera of our own over a virtual scene.
-        super.init(frame: frameRect, cameraMode: .nonAR, automaticallyConfigureSession: false)
-        configureScene()
+    override init(frame frameRect: CGRect) {
+        super.init(frame: frameRect)
+        configureView()
     }
 
-    @MainActor @preconcurrency required dynamic init?(coder decoder: NSCoder) {
+    required init?(coder decoder: NSCoder) {
         super.init(coder: decoder)
-        cameraMode = .nonAR
-        configureScene()
+        configureView()
     }
 
-    private func configureScene() {
-        environment.lighting.resource = BoardSceneEnvironment.resource()
-        environment.lighting.intensityExponent = BoardSceneEnvironment.intensityExponent
-        scene.addAnchor(contentAnchor)
-        scene.addAnchor(rig.anchor)
+    isolated deinit {
+        displayLink?.invalidate()
+    }
+
+    private func configureView() {
+        isOpaque = true
+        displayLinkTarget.onStep = { [weak self] timestamp in
+            self?.surface.step(at: timestamp)
+        }
+        surface.onActivityChange = { [weak self] in
+            self?.updateDisplayLink()
+        }
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         addGestureRecognizer(tap)
@@ -1085,16 +1193,38 @@ final class BoardSceneTouchARView: ARView {
     }
 
     func show(_ scene: BoardSceneEntities) {
-        shownScene?.root.removeFromParent()
-        contentAnchor.addChild(scene.root)
-        shownScene = scene
-        rig.sceneSize = Float(max(scene.boardWidth, scene.boardDepth))
+        surface.show(scene)
     }
 
     func applyBackground(_ backgroundColor: Color, displayOptions: BoardDisplayOptions) {
         let color = horizonScenePlatformColor(horizonSceneEffectiveBackgroundColor(backgroundColor, displayOptions: displayOptions))
-        environment.background = .color(color)
-        self.backgroundColor = color
+        surface.setBackground(color.resolvedColor(with: traitCollection).cgColor)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateDrawableSize()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        displayLink?.invalidate()
+        displayLink = nil
+        if window != nil {
+            let link = CADisplayLink(target: displayLinkTarget, selector: #selector(BoardSceneDisplayLinkTarget.step(_:)))
+            link.add(to: .main, forMode: .common)
+            displayLink = link
+        }
+        updateDrawableSize()
+        updateDisplayLink()
+    }
+
+    private func updateDrawableSize() {
+        surface.setSize(bounds.size, scale: window?.screen.scale ?? traitCollection.displayScale)
+    }
+
+    private func updateDisplayLink() {
+        displayLink?.isPaused = !surface.isActive
     }
 
     @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
@@ -1148,6 +1278,17 @@ private final class TwoFingerGestures: NSObject, UIGestureRecognizerDelegate {
     }
 }
 #endif
+
+/// The display link's target: the link keeps its target alive, so it holds
+/// this rather than the view.
+@MainActor
+final class BoardSceneDisplayLinkTarget: NSObject {
+    var onStep: ((CFTimeInterval) -> Void)?
+
+    @objc func step(_ link: CADisplayLink) {
+        onStep?(link.timestamp)
+    }
+}
 
 // MARK: Offscreen
 

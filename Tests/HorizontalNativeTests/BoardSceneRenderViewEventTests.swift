@@ -4,16 +4,16 @@ import simd
 import XCTest
 @testable import HorizontalNative
 
-/// The Mac's 3D view takes its mouse and scroll events itself — RealityKit's
-/// view brings no camera control of its own — so a drag turns the camera, a
+/// The Mac's 3D view takes its mouse and scroll events itself — RealityKit
+/// brings no camera control of its own — so a drag turns the camera, a
 /// right-drag pans it, the scroll wheel zooms, and a click that did not drag
 /// picks the part under it. Events are handed to the view directly.
 @MainActor
-final class BoardSceneARViewEventTests: XCTestCase {
+final class BoardSceneRenderViewEventTests: XCTestCase {
     private let size = NSSize(width: 400, height: 300)
 
-    private func view() -> BoardSceneARView {
-        let view = BoardSceneARView(frame: NSRect(origin: .zero, size: size))
+    private func view() -> BoardSceneRenderView {
+        let view = BoardSceneRenderView(frame: NSRect(origin: .zero, size: size))
         let board = HorizontalBoard.poolEditorBoard(uuid: "events", name: "Events", url: URL(fileURLWithPath: "/tmp/events"))
         let asset = BoardSceneModelLibrary.shared.boxAsset(
             size: SIMD3(4, 1, 4),
