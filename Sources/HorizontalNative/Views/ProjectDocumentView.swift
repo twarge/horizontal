@@ -932,8 +932,19 @@ struct ProjectWorkspaceView: View {
             revealPackageInFinder: { revealInFinder(project.url) },
             openProjectFile: { openURL(project.projectFileURL) },
             copyPackagePath: { copyToPasteboard(project.url.path) },
-            copyProjectFilePath: { copyToPasteboard(project.projectFileURL.path) }
+            copyProjectFilePath: { copyToPasteboard(project.projectFileURL.path) },
+            exportProject: exportProject
         )
+    }
+
+    /// File ▸ Export…: the document as it is now, unsaved edits included,
+    /// copied where the panel says, the window staying on its own file.
+    private func exportProject() {
+        let document = document.archive
+        let project = project
+        HorizontalProjectExportPanel.run(project: project, isReadOnly: isReadOnly, window: NSApp.keyWindow) {
+            try HorizontalProjectExport.archive(from: document, project: project)
+        }
     }
 
     var body: some View {
@@ -948,6 +959,12 @@ struct ProjectWorkspaceView: View {
     /// did; each is its own expression, so each is type-checked on its own.
     private var workspaceWithFocusedValues: some View {
         workspaceContentWithAlerts
+            .onReceive(
+                NotificationCenter.default.publisher(for: HorizontalProjectDocument.didWriteNotification)
+                    .receive(on: RunLoop.main)
+            ) { _ in
+                followRenamedProjectFile()
+            }
             .onReceive(
                 NotificationCenter.default.publisher(for: HorizontalPoolLibrary.itemDidSaveNotification)
                     .receive(on: RunLoop.main)
@@ -1618,6 +1635,23 @@ struct ProjectWorkspaceView: View {
         fileWatcher = nil
         diskConflict?.releaseSaves()
         diskConflict = nil
+    }
+
+    /// A package save names the package's `.hprj` after the package, and the
+    /// document holds the renamed copy; the project follows, so Open Project
+    /// File, Copy Project File Path and the navigator name the file there is.
+    /// Every document's save is heard here; each window looks at its own.
+    private func followRenamedProjectFile() {
+        guard project.url.pathExtension.caseInsensitiveCompare("horizontal") == .orderedSame,
+              project.projectFileURL.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
+                == project.url.resolvingSymlinksInPath().standardizedFileURL,
+              let name = document.archive.packageProjectFileName(
+                packageName: project.url.deletingPathExtension().lastPathComponent
+              ),
+              name != project.projectFileURL.lastPathComponent else {
+            return
+        }
+        project.projectFileURL = project.projectFileURL.deletingLastPathComponent().appendingPathComponent(name)
     }
 
     /// A new document's first save put its files at `url`: the project, the

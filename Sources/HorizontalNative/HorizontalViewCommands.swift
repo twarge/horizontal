@@ -222,6 +222,8 @@ struct HorizontalDocumentViewActions {
     var openProjectFile: () -> Void
     var copyPackagePath: () -> Void
     var copyProjectFilePath: () -> Void
+    /// File ▸ Export…: a copy as a package or a Horizon project folder.
+    var exportProject: (() -> Void)? = nil
 }
 
 extension FocusedValues {
@@ -390,6 +392,15 @@ struct HorizontalViewCommands: Commands {
             }
             .disabled(documentViewActions == nil)
         }
+
+        #if os(macOS)
+        CommandGroup(after: .saveItem) {
+            Button("Export…") {
+                documentViewActions?.exportProject?()
+            }
+            .disabled(documentViewActions?.exportProject == nil)
+        }
+        #endif
 
         CommandGroup(after: .pasteboard) {
             Divider()

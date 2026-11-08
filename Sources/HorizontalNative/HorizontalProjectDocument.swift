@@ -60,6 +60,15 @@ struct HorizontalProjectDocument: FileDocument {
             defer { lock.unlock() }
             value = archive
         }
+
+        /// The `.hprj` named after the package a save just wrote, in the copy
+        /// that save was taken from. Renaming is no edit either: the document
+        /// holds what the files now do, and is not marked changed.
+        func renameProjectFile(toMatchPackageNamed packageName: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            value = value.renamingProjectFile(toMatchPackageNamed: packageName)
+        }
     }
 
     /// Installs the rest of an existing project's files without writing back
@@ -170,9 +179,36 @@ struct HorizontalProjectDocument: FileDocument {
             NotificationCenter.default.post(name: Self.didWriteNotification, object: archive)
             return wrapper
         }
-        let wrapper = try archive.fileWrapper()
-        NotificationCenter.default.post(name: Self.didWriteNotification, object: archive)
+        // The package's .hprj takes the package's name, so Untitled.hprj in a
+        // project saved as Evan.horizontal becomes Evan.hprj, as does the one
+        // in a package renamed in the Finder. WriteConfiguration names no
+        // destination, so only a package already on disk says what it is
+        // called: a first save, or Save As, keeps the name until the save
+        // after it. The document takes the renamed copy too, so it holds what
+        // the files do, and the watcher hears of the archive actually written.
+        let written = packageArchive(writing: archive, over: configuration.existingFile)
+        let wrapper = try written.fileWrapper()
+        NotificationCenter.default.post(name: Self.didWriteNotification, object: written)
         return wrapper
+    }
+}
+
+extension HorizontalProjectDocument {
+    /// What a package save of `archive` over `existing` writes: the archive
+    /// with its `.hprj` named after the package on disk. When that renames
+    /// it, the document holds the renamed copy from then on, without being
+    /// marked changed. A first save, which has no package on disk to name it,
+    /// writes the archive as it is.
+    func packageArchive(writing archive: HorizontalProjectArchive, over existing: FileWrapper?) -> HorizontalProjectArchive {
+        guard let existing, existing.isDirectory,
+              let packageName = existing.filename ?? existing.preferredFilename else {
+            return archive
+        }
+        let written = archive.renamingProjectFile(toMatchPackageNamed: packageName)
+        if written.packageProjectFileName() != archive.packageProjectFileName() {
+            contents.renameProjectFile(toMatchPackageNamed: packageName)
+        }
+        return written
     }
 }
 
