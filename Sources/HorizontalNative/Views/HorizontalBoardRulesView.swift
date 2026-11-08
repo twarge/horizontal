@@ -1537,12 +1537,21 @@ private struct HorizontalBoardRuleEditorView: View {
 /// blank, and a field left blank stores it, since Horizon refuses an empty
 /// uuid and drops what names one.
 private func padstackBinding(_ key: String, in dictionary: Binding<JSONDictionary>) -> Binding<String> {
-    Binding {
-        let value = dictionary.wrappedValue.string(key) ?? ""
-        return value == HorizontalProjectArchive.nullUUID ? "" : value
-    } set: { value in
-        let trimmed = value.trimmingCharacters(in: .whitespaces)
-        dictionary.wrappedValue[key] = trimmed.isEmpty ? HorizontalProjectArchive.nullUUID : trimmed
+    // Through a key path, which is Sendable, rather than closures capturing
+    // the binding, which isn't.
+    dictionary[dynamicMember: \.[padstack: key]]
+}
+
+private extension Dictionary where Key == String, Value == Any {
+    subscript(padstack key: String) -> String {
+        get {
+            let value = string(key) ?? ""
+            return value == HorizontalProjectArchive.nullUUID ? "" : value
+        }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+            self[key] = trimmed.isEmpty ? HorizontalProjectArchive.nullUUID : trimmed
+        }
     }
 }
 

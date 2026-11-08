@@ -175,6 +175,7 @@ final class HorizontalInsertMetadataMenu: NSObject {
 /// One Insert Metadata item's action: `$key` typed into the field editor
 /// over its selection, so the field, and whatever its text binds to, hears of
 /// it as of anything typed.
+@MainActor
 final class HorizontalInsertMetadataAction: NSObject {
     let code: String
     private weak var editor: NSTextView?

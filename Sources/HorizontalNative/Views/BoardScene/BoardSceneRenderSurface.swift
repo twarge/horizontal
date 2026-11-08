@@ -127,7 +127,7 @@ final class BoardSceneRenderSurface {
         // without saying.
         subscriptions.append(renderer.subscribe(to: AnimationEvents.PlaybackStarted.self) { [weak self] event in
             MainActor.assumeIsolated {
-                self?.playing.insert(event.playbackController)
+                _ = self?.playing.insert(event.playbackController)
             }
         })
         subscriptions.append(renderer.subscribe(to: AnimationEvents.PlaybackCompleted.self) { [weak self] event in

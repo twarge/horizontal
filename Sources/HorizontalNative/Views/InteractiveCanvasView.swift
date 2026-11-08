@@ -805,7 +805,7 @@ struct InteractiveCanvasView: View {
     }
 
     /// The canvas's own space: the geometry reader the event monitor fills.
-    private static let coordinateSpace = "InteractiveCanvasView.canvas"
+    private nonisolated static let coordinateSpace = "InteractiveCanvasView.canvas"
 
     var body: some View {
         ZStack(alignment: .topTrailing) {

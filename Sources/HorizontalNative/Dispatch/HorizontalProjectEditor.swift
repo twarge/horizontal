@@ -3628,7 +3628,8 @@ final class HorizontalProjectEditor {
             lines[line.1]?[end] = replacement.json
             sheet["net_lines"] = lines
         }
-        var change: JSONDictionary = ["net_line": line.1, "sheet": line.0, "end": end, "net": (wireNet ?? replacement.net) as Any]
+        let net: String? = wireNet ?? replacement.net
+        var change: JSONDictionary = ["net_line": line.1, "sheet": line.0, "end": end, "net": net as Any]
         if replacement.net == nil, wireNet != nil, let junction = replacement.junction { change["adopted_junctions"] = [junction] }
         if replacement.net == nil, wireNet != nil, let port = replacement.port {
             change["connected_ports"] = [["block_instance": port.instance, "port": port.net]]
