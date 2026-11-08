@@ -316,8 +316,7 @@ struct HorizontalSettingsView: View {
     private func lineWidthRow(_ kind: HorizontalCanvasKind) -> some View {
         lineWidthSliderRow(
             kind.title,
-            width: appearanceSettings.minimumLineWidthBinding(for: kind),
-            in: 0.5...4.0
+            width: appearanceSettings.minimumLineWidthBinding(for: kind)
         ) {
             appearanceSettings.resetMinimumLineWidth(kind: kind)
         }
@@ -326,8 +325,7 @@ struct HorizontalSettingsView: View {
     private func lineWidthRow(_ role: HorizontalLineWidthRole) -> some View {
         lineWidthSliderRow(
             role.title,
-            width: appearanceSettings.lineWidthBinding(for: role),
-            in: HorizontalLineWidthRole.range
+            width: appearanceSettings.lineWidthBinding(for: role)
         ) {
             appearanceSettings.resetLineWidth(role: role)
         }
@@ -360,23 +358,27 @@ struct HorizontalSettingsView: View {
     private func gridLineWidthRow() -> some View {
         lineWidthSliderRow(
             "Grid marks",
-            width: appearanceSettings.gridLineWidthBinding(),
-            in: 0.5...4.0
+            width: appearanceSettings.gridLineWidthBinding()
         ) {
             appearanceSettings.resetGridLineWidth()
         }
     }
 
+    /// Every line width slider runs over the same range in the same steps,
+    /// so each has the same ticks.
     private func lineWidthSliderRow(
         _ title: String,
         width: Binding<Double>,
-        in range: ClosedRange<Double>,
         reset: @escaping () -> Void
     ) -> some View {
         HStack(spacing: 12) {
             Text(title)
                 .frame(width: 170, alignment: .leading)
-            Slider(value: width, in: range, step: 0.1)
+            Slider(
+                value: width,
+                in: HorizontalAppearanceSettings.lineWidthRange,
+                step: HorizontalAppearanceSettings.lineWidthStep
+            )
             Text(width.wrappedValue.formatted(.number.precision(.fractionLength(1))) + " px")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)

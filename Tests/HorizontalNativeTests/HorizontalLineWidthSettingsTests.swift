@@ -13,10 +13,10 @@ final class HorizontalLineWidthSettingsTests: XCTestCase {
         return defaults
     }
 
-    func testUnsetWidthsAreWhatTheLinesWereDrawnAtBefore() throws {
+    func testUnsetWidthsAreTheDefaults() throws {
         let settings = HorizontalAppearanceSettings(defaults: try makeDefaults())
 
-        XCTAssertEqual(settings.lineWidth(for: .connectionLine), 3)
+        XCTAssertEqual(settings.lineWidth(for: .connectionLine), 2)
         XCTAssertEqual(settings.lineWidth(for: .smashedConnectionLine), settings.minimumLineWidth(for: .board))
     }
 
@@ -35,9 +35,9 @@ final class HorizontalLineWidthSettingsTests: XCTestCase {
         XCTAssertEqual(reloaded.lineWidth(for: .smashedConnectionLine), 2)
 
         reloaded.resetLineWidth(role: .connectionLine)
-        XCTAssertEqual(reloaded.lineWidth(for: .connectionLine), 3)
+        XCTAssertEqual(reloaded.lineWidth(for: .connectionLine), 2)
         XCTAssertEqual(reloaded.lineWidth(for: .smashedConnectionLine), 2, "a reset takes back only its own")
-        XCTAssertEqual(HorizontalAppearanceSettings(defaults: defaults).lineWidth(for: .connectionLine), 3)
+        XCTAssertEqual(HorizontalAppearanceSettings(defaults: defaults).lineWidth(for: .connectionLine), 2)
     }
 
     func testAWidthStaysInTheSlidersRange() throws {
@@ -55,5 +55,29 @@ final class HorizontalLineWidthSettingsTests: XCTestCase {
             CGFloat(HorizontalLineWidthRole.range.lowerBound),
             "a stored width out of range is brought into it"
         )
+    }
+
+    /// The grid's marks, each canvas's minimum and the connection lines all
+    /// run over one range, 0.5 to 5 px, so their sliders match.
+    func testEveryLineWidthSharesOneRangeUpTo5Pixels() throws {
+        XCTAssertEqual(HorizontalAppearanceSettings.lineWidthRange, 0.5...5)
+        XCTAssertEqual(HorizontalLineWidthRole.range, HorizontalAppearanceSettings.lineWidthRange)
+        let defaults = try makeDefaults()
+        let settings = HorizontalAppearanceSettings(defaults: defaults)
+
+        settings.gridLineWidthBinding().wrappedValue = 40
+        settings.minimumLineWidthBinding(for: .board).wrappedValue = 40
+        settings.minimumLineWidthBinding(for: .schematic).wrappedValue = 0
+        settings.lineWidthBinding(for: .connectionLine).wrappedValue = 40
+        XCTAssertEqual(settings.gridLineWidthBinding().wrappedValue, 5)
+        XCTAssertEqual(settings.minimumLineWidth(for: .board), 5)
+        XCTAssertEqual(settings.minimumLineWidth(for: .schematic), 0.5)
+        XCTAssertEqual(settings.lineWidth(for: .connectionLine), 5)
+
+        settings.minimumLineWidthBinding(for: .board).wrappedValue = 4.5
+        XCTAssertEqual(settings.minimumLineWidth(for: .board), 4.5, "past the old 4 px top")
+        defaults.set(6.0, forKey: "appearance.board.connectionLine.lineWidth")
+        XCTAssertEqual(HorizontalAppearanceSettings(defaults: defaults).lineWidth(for: .connectionLine), 5,
+                       "a width stored under the old 6 px top comes down to 5")
     }
 }

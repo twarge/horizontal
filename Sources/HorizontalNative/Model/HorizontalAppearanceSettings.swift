@@ -135,17 +135,16 @@ enum HorizontalLineWidthRole: String, CaseIterable, Identifiable {
         }
     }
 
-    /// What each was drawn at before it could be set: connection lines twice
-    /// the board's default minimum line width, a smashed text's line that
-    /// minimum.
+    /// Connection lines at 2 px, a smashed text's line at the board's default
+    /// minimum line width, what it was drawn at before it could be set.
     var defaultWidth: Double {
         switch self {
-        case .connectionLine: 3
+        case .connectionLine: 2
         case .smashedConnectionLine: HorizontalAppearanceSettings.defaultMinimumLineWidth
         }
     }
 
-    static let range: ClosedRange<Double> = 0.5...6
+    static let range = HorizontalAppearanceSettings.lineWidthRange
 }
 
 enum HorizontalColorRole: String, CaseIterable, Identifiable {
@@ -450,6 +449,16 @@ private struct HorizontalPaletteKey: Hashable {
 final class HorizontalAppearanceSettings: ObservableObject {
     nonisolated static let defaultMinimumLineWidth: Double = 1.5
     static let defaultGridLineWidth: Double = 0.5
+    /// Every line width Settings sets, the grid's marks, each canvas's
+    /// minimum and the connection lines, in pixels: one range and one step,
+    /// so their sliders run alike and carry the same ticks.
+    nonisolated static let lineWidthRange: ClosedRange<Double> = 0.5...5
+    nonisolated static let lineWidthStep: Double = 0.1
+
+    /// `width` brought into `lineWidthRange`.
+    nonisolated static func clampedLineWidth(_ width: Double) -> Double {
+        min(max(width, lineWidthRange.lowerBound), lineWidthRange.upperBound)
+    }
 
     @Published private var appTheme: HorizontalAppTheme
     @Published private var cursorSize: HorizontalCursorSize
@@ -1033,7 +1042,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
     }
 
     private func setMinimumLineWidth(_ width: Double, for kind: HorizontalCanvasKind) {
-        let clampedWidth = min(max(width, 0.5), 4.0)
+        let clampedWidth = Self.clampedLineWidth(width)
         objectWillChange.send()
         minimumLineWidths[kind] = clampedWidth
         defaults.set(clampedWidth, forKey: minimumLineWidthDefaultsKey(kind: kind))
@@ -1053,14 +1062,14 @@ final class HorizontalAppearanceSettings: ObservableObject {
     }
 
     private func setGridLineWidth(_ width: Double) {
-        let clampedWidth = min(max(width, 0.5), 4.0)
+        let clampedWidth = Self.clampedLineWidth(width)
         objectWillChange.send()
         gridLineWidth = clampedWidth
         defaults.set(clampedWidth, forKey: Self.gridLineWidthDefaultsKey)
     }
 
     private func setLineWidth(_ width: Double, for role: HorizontalLineWidthRole) {
-        let clampedWidth = min(max(width, HorizontalLineWidthRole.range.lowerBound), HorizontalLineWidthRole.range.upperBound)
+        let clampedWidth = Self.clampedLineWidth(width)
         objectWillChange.send()
         roleLineWidths[role] = clampedWidth
         defaults.set(clampedWidth, forKey: Self.lineWidthDefaultsKey(role: role))
@@ -1081,7 +1090,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
         guard defaults.object(forKey: key) != nil else {
             return Self.defaultMinimumLineWidth
         }
-        return min(max(defaults.double(forKey: key), 0.5), 4.0)
+        return Self.clampedLineWidth(defaults.double(forKey: key))
     }
 
     private static func loadClipsSilkscreenToSolderMask(defaults: UserDefaults) -> Bool {
@@ -1099,7 +1108,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
         guard defaults.object(forKey: gridLineWidthDefaultsKey) != nil else {
             return defaultGridLineWidth
         }
-        return min(max(defaults.double(forKey: gridLineWidthDefaultsKey), 0.5), 4.0)
+        return clampedLineWidth(defaults.double(forKey: gridLineWidthDefaultsKey))
     }
 
     private static func loadLineWidth(role: HorizontalLineWidthRole, defaults: UserDefaults) -> Double {
@@ -1107,7 +1116,7 @@ final class HorizontalAppearanceSettings: ObservableObject {
         guard defaults.object(forKey: key) != nil else {
             return role.defaultWidth
         }
-        return min(max(defaults.double(forKey: key), HorizontalLineWidthRole.range.lowerBound), HorizontalLineWidthRole.range.upperBound)
+        return clampedLineWidth(defaults.double(forKey: key))
     }
 
     private static func loadAppTheme(defaults: UserDefaults) -> HorizontalAppTheme {
