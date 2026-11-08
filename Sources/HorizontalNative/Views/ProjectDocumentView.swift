@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import Combine
 import HorizontalProjectIO
 import SwiftUI
 
@@ -16,10 +17,9 @@ struct ProjectDocumentView: View {
     /// the temporary folder's.
     @State private var workspaceIdentity: URL?
     @State private var visiblePanes: Set<HorizontalPane> = [.schematic, .board]
-    @State private var selectedNetIDs = Set<String>()
-    @State private var highlightedNetIDs = Set<String>()
-    @State private var selectedComponentIDs = Set<String>()
-    @State private var highlightedComponentIDs = Set<String>()
+    /// The project, selection and Spotlight this window shares with the
+    /// project's other windows (⌥⌘N).
+    @StateObject private var shared = HorizontalSharedProject()
     /// Counts the View menu's Spotlight, for the workspace to frame it.
     @State private var spotlightRequest = 0
     @Environment(\.colorScheme) private var colorScheme
@@ -125,14 +125,16 @@ struct ProjectDocumentView: View {
                 projectURL: project.url,
                 document: $document,
                 visiblePanes: $visiblePanes,
-                selectedNetIDs: $selectedNetIDs,
-                highlightedNetIDs: $highlightedNetIDs,
-                selectedComponentIDs: $selectedComponentIDs,
-                highlightedComponentIDs: $highlightedComponentIDs,
-                spotlightRequest: $spotlightRequest
+                selectedNetIDs: $shared.selectedNetIDs,
+                highlightedNetIDs: $shared.highlightedNetIDs,
+                selectedComponentIDs: $shared.selectedComponentIDs,
+                highlightedComponentIDs: $shared.highlightedComponentIDs,
+                spotlightRequest: $spotlightRequest,
+                sharedProject: shared
             )
                 .id(workspaceIdentity ?? Self.documentIdentity(project.url))
                 .navigationTitle(project.displayTitle)
+                .focusedSceneValue(\.horizonNewProjectWindowAction, openProjectWindow)
         case .pool(let poolURL):
             HorizontalPoolBrowserView(root: .pool(poolURL))
                 .id(poolURL)
@@ -146,9 +148,18 @@ struct ProjectDocumentView: View {
     }
 
     private func highlightSelectedNet() {
-        highlightedNetIDs = selectedNetIDs
-        highlightedComponentIDs = selectedComponentIDs
+        shared.highlightedNetIDs = shared.selectedNetIDs
+        shared.highlightedComponentIDs = shared.selectedComponentIDs
         spotlightRequest += 1
+    }
+
+    /// File ▸ New Window for Project (⌥⌘N): another window on this project,
+    /// on another screen when there is one.
+    private func openProjectWindow() {
+        HorizontalSecondaryProjectWindow.open(
+            shared: shared, document: $document, visiblePanes: visiblePanes,
+            appearanceSettings: appearanceSettings, from: NSApp.keyWindow
+        )
     }
 
     /// AppKit can change a saved document URL's spelling (for example /tmp
@@ -644,7 +655,30 @@ private struct ToolbarFindControl: View {
 }
 
 struct ProjectWorkspaceView: View {
-    @State private var project: HorizontalProject
+    /// The project as this window has it. Every change goes through
+    /// `project`, which hands it to the project's other windows.
+    @State private var projectState: HorizontalProject
+    /// The project this window shows. Setting it, or any part of it, is a
+    /// change the project's other windows take (`sharedProject`).
+    private var project: HorizontalProject {
+        get { projectState }
+        nonmutating set {
+            projectState = newValue
+            sharedProject?.publish(newValue, from: windowID)
+        }
+    }
+    /// What this window shares with the project's other windows: the project,
+    /// the selection and Spotlight. Nil in a workspace nothing else shows.
+    let sharedProject: HorizontalSharedProject?
+    /// One of a project's other windows (⌥⌘N), not the project window: the
+    /// project window alone serves the live channel, watches the files,
+    /// pours planes by itself and keeps the file's saved view state.
+    let isSecondaryWindow: Bool
+    /// The document's undo manager, for a window SwiftUI didn't make and so
+    /// hands none.
+    let undoManagerOverride: UndoManager?
+    /// Which window a change to the shared project came from.
+    @State private var windowID = UUID()
     /// Where the document's files are: the project's own URL, until a new
     /// document's first save moves them out of their temporary folder.
     let projectURL: URL
@@ -854,10 +888,16 @@ struct ProjectWorkspaceView: View {
         highlightedNetIDs: Binding<Set<String>>,
         selectedComponentIDs: Binding<Set<String>>,
         highlightedComponentIDs: Binding<Set<String>>,
-        spotlightRequest: Binding<Int> = .constant(0)
+        spotlightRequest: Binding<Int> = .constant(0),
+        sharedProject: HorizontalSharedProject? = nil,
+        isSecondaryWindow: Bool = false,
+        undoManagerOverride: UndoManager? = nil
     ) {
         let fileViewState = HorizontalFileViewStateStore.shared.load(for: project.url, projectID: project.uuid)
-        _project = State(initialValue: project)
+        _projectState = State(initialValue: project)
+        self.sharedProject = sharedProject
+        self.isSecondaryWindow = isSecondaryWindow
+        self.undoManagerOverride = undoManagerOverride
         self.projectURL = projectURL ?? project.url
         _document = document
         _visiblePanes = visiblePanes
@@ -909,7 +949,7 @@ struct ProjectWorkspaceView: View {
     }
 
     private var activeUndoManager: UndoManager? {
-        documentUndoManager ?? fallbackUndoManager
+        undoManagerOverride ?? documentUndoManager ?? fallbackUndoManager
     }
 
     private var isReadOnly: Bool {
@@ -964,6 +1004,15 @@ struct ProjectWorkspaceView: View {
                     .receive(on: RunLoop.main)
             ) { _ in
                 followRenamedProjectFile()
+            }
+            .onReceive(sharedProject?.projectChanges.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in
+                followSharedProject()
+            }
+            .onReceive(sharedProject?.spotlights.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { window in
+                // Another window's Spotlight: every pane here follows it.
+                if window != windowID {
+                    frameSpotlight(from: nil, passesOn: false)
+                }
             }
             .onReceive(
                 NotificationCenter.default.publisher(for: HorizontalPoolLibrary.itemDidSaveNotification)
@@ -1622,8 +1671,13 @@ struct ProjectWorkspaceView: View {
         restoreFileViewStateIfNeeded()
         planePourScheduler.deliver = { applyPouredPlanes($0) }
         checkPlaneFills()
-        registerLiveDocument()
-        startFileWatcher()
+        if !isSecondaryWindow {
+            registerLiveDocument()
+            startFileWatcher()
+            // The project as this window loaded it, for windows already open
+            // on it: a reload, a Revert, makes a new workspace.
+            sharedProject?.publish(project, from: windowID)
+        }
         gitignoreNeedsFixing = !isReadOnly && document.archive.gitignoreNeedsFixing
         if navigatorSelection == nil {
             navigatorSelection = defaultNavigatorSelection
@@ -1636,6 +1690,27 @@ struct ProjectWorkspaceView: View {
         fileWatcher = nil
         diskConflict?.releaseSaves()
         diskConflict = nil
+    }
+
+    /// Another window of the project changed it: take its copy as an edit
+    /// through the live channel is taken, the canvases syncing to it. The
+    /// document is the same one, already holding the edit. Only the project
+    /// window pours what it calls for.
+    private func followSharedProject() {
+        guard let sharedProject, sharedProject.writer != windowID, let followed = sharedProject.project else {
+            return
+        }
+        if let board = followed.board, let previous = project.board,
+           HorizontalBoardPlaneInputs.signature(of: board) != HorizontalBoardPlaneInputs.signature(of: previous) {
+            planePourScheduler.forgetCache()
+        }
+        projectState = followed
+        boardEditRevision += 1
+        boardSyncRevision += 1
+        schematicEditRevision += 1
+        schematicSyncRevision += 1
+        selectionDetailsByPane = [:]
+        checkPlaneFills()
     }
 
     /// A package save names the package's `.hprj` after the package, and the
@@ -1659,7 +1734,9 @@ struct ProjectWorkspaceView: View {
     /// live channel and the file watcher go there, and the canvases, tools
     /// and undo stay as they are.
     private func moveProject(to url: URL) {
-        guard ProjectDocumentView.documentIdentity(url) != ProjectDocumentView.documentIdentity(project.url) else {
+        // The project window moves the project and hands the moved one on.
+        guard !isSecondaryWindow,
+              ProjectDocumentView.documentIdentity(url) != ProjectDocumentView.documentIdentity(project.url) else {
             return
         }
         let previous = project
@@ -2168,7 +2245,8 @@ struct ProjectWorkspaceView: View {
     }
 
     private func saveFileViewState() {
-        guard didRestoreFileViewState else {
+        // The file reopens as its project window was left.
+        guard didRestoreFileViewState, !isSecondaryWindow else {
             return
         }
 
@@ -3315,7 +3393,7 @@ struct ProjectWorkspaceView: View {
     /// it, turning the page if need be and keeping the scale the page was
     /// seen at. The Parts pane scrolls to the first spotlit part. Hidden panes
     /// are left as they are.
-    private func frameSpotlight(from origin: HorizontalPane?) {
+    private func frameSpotlight(from origin: HorizontalPane?, passesOn: Bool = true) {
         guard spotlightFramesEveryView else {
             return
         }
@@ -3323,6 +3401,11 @@ struct ProjectWorkspaceView: View {
         let components = highlightedComponentIDs
         guard !nets.isEmpty || !components.isEmpty else {
             return
+        }
+        // The project's other windows bring it into their panes too, every
+        // one of them, since none is where L was pressed.
+        if passesOn {
+            sharedProject?.spotlights.send(windowID)
         }
         if let board = project.board,
            let rect = HorizontalSpotlightFraming.boardRect(board, netIDs: nets, componentIDs: components, margin: 0) {
@@ -4147,7 +4230,9 @@ struct ProjectWorkspaceView: View {
             return
         }
         planesNeedUpdate = inputs != pouredPlaneInputs
-        if planesNeedUpdate, updatesPlanesAutomatically, !isReadOnly {
+        // The project window pours for every window, once; this one takes
+        // the fills it pours with the rest of the project.
+        if planesNeedUpdate, updatesPlanesAutomatically, !isReadOnly, !isSecondaryWindow {
             requestPlanePour(for: board, inputs: inputs)
         }
     }

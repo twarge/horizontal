@@ -8,6 +8,11 @@ private struct HorizontalHighlightNetActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
 
+/// File ▸ New Window for Project: another window on the front project.
+private struct HorizontalNewProjectWindowActionKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
 private struct HorizontalFindActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
@@ -244,6 +249,11 @@ extension FocusedValues {
         set { self[HorizontalHighlightNetActionKey.self] = newValue }
     }
 
+    var horizonNewProjectWindowAction: (() -> Void)? {
+        get { self[HorizontalNewProjectWindowActionKey.self] }
+        set { self[HorizontalNewProjectWindowActionKey.self] = newValue }
+    }
+
     var horizonFindAction: (() -> Void)? {
         get { self[HorizontalFindActionKey.self] }
         set { self[HorizontalFindActionKey.self] = newValue }
@@ -350,6 +360,7 @@ struct HorizontalViewCommands: Commands {
     @FocusedBinding(\.horizonDistractionFreeMode) private var distractionFreeMode
     @FocusedBinding(\.horizonWindowToolbarHidden) private var windowToolbarHidden
     @FocusedValue(\.horizonHighlightNetAction) private var highlightNetAction
+    @FocusedValue(\.horizonNewProjectWindowAction) private var newProjectWindowAction
     @FocusedValue(\.horizonFindAction) private var findAction
     @FocusedValue(\.horizonListenAction) private var listenAction
     @FocusedValue(\.horizonToggleRightSidebarAction) private var toggleRightSidebarAction
@@ -379,6 +390,14 @@ struct HorizontalViewCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
+            #if os(macOS)
+            // Another window on the project, to spread it over monitors.
+            Button("New Window for Project") {
+                newProjectWindowAction?()
+            }
+            .keyboardShortcut("n", modifiers: [.command, .option])
+            .disabled(newProjectWindowAction == nil)
+            #endif
             Divider()
             Button("Reveal Package in Finder") {
                 documentViewActions?.revealPackageInFinder()
