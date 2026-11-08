@@ -164,6 +164,13 @@ struct HorizontalCanvasCommandActions {
     var pickUnplacedObject: ((String) -> Void)? = nil
     /// Frames a world rectangle in the canvas, for the live channel's zoom-to.
     var frameWorldRect: ((HorizontalRect) -> Void)? = nil
+    /// Brings a world rectangle into view without zooming, for Spotlight in
+    /// a view it didn't start in: nothing when all of it shows; otherwise
+    /// centred on it at the scale the canvas draws at, or at the scale given
+    /// (points per world unit), the one the last page was seen at.
+    var revealWorldRect: ((HorizontalRect, CGFloat?) -> Void)? = nil
+    /// The scale the canvas draws at now, in points per world unit.
+    var drawingScale: (() -> CGFloat?)? = nil
     /// Zooms the view about its centre; 2 is twice as close.
     var zoomBy: ((Double) -> Void)? = nil
     /// Selects these components — the board's packages, the schematic's

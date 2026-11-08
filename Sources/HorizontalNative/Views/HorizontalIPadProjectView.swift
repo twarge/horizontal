@@ -39,7 +39,7 @@ struct HorizontalIPadProjectView: View {
     @AppStorage(HorizontalPlaneFillDefaults.updatesAutomaticallyKey) private var updatesPlanesAutomatically = false
     /// The rules checks run again on every change; off, when asked.
     @AppStorage(HorizontalRulesCheckDefaults.checksAutomaticallyKey) private var checksRulesAutomatically = true
-    @AppStorage(HorizontalSpotlightFraming.framesEveryViewKey) private var spotlightFramesEveryView = false
+    @AppStorage(HorizontalSpotlightFraming.framesEveryViewKey) private var spotlightFramesEveryView = HorizontalSpotlightFraming.framesEveryViewByDefault
     /// A fresh value scrolls the Parts pane to the first spotlit part.
     @State private var partsSpotlightScrollToken = 0
     @State private var planesNeedUpdate = false
@@ -1549,16 +1549,18 @@ struct HorizontalIPadProjectView: View {
     }
 
     /// A canvas's L, as on the Mac: the components come in after the nets,
-    /// and with both in, what is spotlit is framed in every pane showing,
-    /// when Settings asks.
-    private func spotlightFromCanvas(_ componentIDs: Set<String>) {
+    /// and with both in, what is spotlit is brought into every other pane
+    /// showing, when Settings asks, the canvas L was pressed in staying put.
+    private func spotlightFromCanvas(_ componentIDs: Set<String>, from pane: HorizontalPane) {
         highlightedComponentIDs = componentIDs
         Task { @MainActor in
-            frameSpotlight()
+            frameSpotlight(from: pane)
         }
     }
 
-    private func frameSpotlight() {
+    /// As the Mac's: a pane moves only when what is spotlit is out of it, and
+    /// only scrolls or turns the page, at the scale it was drawn at.
+    private func frameSpotlight(from origin: HorizontalPane?) {
         guard spotlightFramesEveryView, let project else {
             return
         }
@@ -1568,37 +1570,39 @@ struct HorizontalIPadProjectView: View {
             return
         }
         if let board = project.board,
-           let rect = HorizontalSpotlightFraming.boardRect(board, netIDs: nets, componentIDs: components) {
-            if isShown(.board) {
+           let rect = HorizontalSpotlightFraming.boardRect(board, netIDs: nets, componentIDs: components, margin: 0) {
+            if isShown(.board), origin != .board {
                 if let side = HorizontalSpotlightFraming.boardSide(board, componentIDs: components) {
                     showBoardSide(side)
                 }
-                canvasActions(for: .board)?.frameWorldRect?(rect)
+                canvasActions(for: .board)?.revealWorldRect?(rect, nil)
             }
-            if isShown(.threeD) {
-                threeDCameraState = horizonSceneCameraState(framing: rect, board: board, current: threeDCameraState, projection: .perspective)
+            if isShown(.threeD), origin != .threeD,
+               let revealed = horizonSceneCameraState(revealing: rect, board: board, current: threeDCameraState) {
+                threeDCameraState = revealed
             }
         }
-        if isShown(.schematic) {
+        if isShown(.schematic), origin != .schematic {
             let currentSheetID: String? = switch navigatorSelection {
             case .sheet(_, let sheetID), .standaloneSheet(let sheetID): sheetID
             default: nil
             }
             if let target = HorizontalSpotlightFraming.sheetTarget(project, netIDs: nets, componentIDs: components,
-                                                                   currentSheetID: currentSheetID) {
+                                                                   currentSheetID: currentSheetID, margin: 0) {
                 if target.sheetID.caseInsensitiveCompare(currentSheetID ?? "") == .orderedSame {
-                    canvasActions(for: .schematic)?.frameWorldRect?(target.rect)
+                    canvasActions(for: .schematic)?.revealWorldRect?(target.rect, nil)
                 } else {
+                    let scale = canvasActions(for: .schematic)?.drawingScale?()
                     navigatorSelection = target.blockID.map { .sheet(blockID: $0, sheetID: target.sheetID) }
                         ?? .standaloneSheet(target.sheetID)
                     Task { @MainActor in
                         try? await Task.sleep(for: .milliseconds(250))
-                        canvasActions(for: .schematic)?.frameWorldRect?(target.rect)
+                        canvasActions(for: .schematic)?.revealWorldRect?(target.rect, scale)
                     }
                 }
             }
         }
-        if isShown(.parts) {
+        if isShown(.parts), origin != .parts {
             partsSpotlightScrollToken += 1
         }
     }
@@ -1674,12 +1678,13 @@ struct HorizontalIPadProjectView: View {
                     fitSafeAreaInsets: safeAreaInsets,
                     highlightedNetIDs: highlightedNetIDs,
                     highlightedComponentIDs: highlightedComponentIDs,
+                    crossSelectedComponentIDs: selectedComponentIDs,
                     selectionToolSettings: selectionToolSettings,
                     isReadOnly: isReadOnly,
                     onSelectedNetChange: { selectedNetIDs = $0 },
                     onSelectedComponentChange: { selectComponents($0, from: .schematic) },
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
-                    onHighlightComponentCommand: spotlightFromCanvas,
+                    onHighlightComponentCommand: { spotlightFromCanvas($0, from: .schematic) },
                     onSheetChange: { applyEditedSchematicSheet($0) },
                     onMergeNetsSheetChange: { sheet, merges, actionName in
                         applyEditedSchematicSheet(sheet, mergingNets: merges, actionName: actionName)
@@ -1791,12 +1796,13 @@ struct HorizontalIPadProjectView: View {
                     fitSafeAreaInsets: safeAreaInsets,
                     highlightedNetIDs: highlightedNetIDs,
                     highlightedComponentIDs: highlightedComponentIDs,
+                    crossSelectedComponentIDs: selectedComponentIDs,
                     selectionToolSettings: selectionToolSettings,
                     isReadOnly: isReadOnly,
                     onSelectedNetChange: { selectedNetIDs = $0 },
                     onSelectedComponentChange: { selectComponents($0, from: .board) },
                     onHighlightNetCommand: { highlightedNetIDs = $0 },
-                    onHighlightComponentCommand: spotlightFromCanvas,
+                    onHighlightComponentCommand: { spotlightFromCanvas($0, from: .board) },
                     onBoardChange: { applyEditedBoard($0) },
                     onPlaneEdit: { applyBoardPlaneEdit($0, actionName: $1) },
                     onUpdateAllPlanes: updateAllBoardPlanes,

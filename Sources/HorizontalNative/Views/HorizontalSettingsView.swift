@@ -7,7 +7,7 @@ struct HorizontalSettingsView: View {
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
     @AppStorage(HorizontalPlaneFillDefaults.updatesAutomaticallyKey) private var updatesPlanesAutomatically = false
     @AppStorage(HorizontalRulesCheckDefaults.checksAutomaticallyKey) private var checksRulesAutomatically = true
-    @AppStorage(HorizontalSpotlightFraming.framesEveryViewKey) private var spotlightFramesEveryView = false
+    @AppStorage(HorizontalSpotlightFraming.framesEveryViewKey) private var spotlightFramesEveryView = HorizontalSpotlightFraming.framesEveryViewByDefault
 
     var body: some View {
         Form {
@@ -43,7 +43,7 @@ struct HorizontalSettingsView: View {
 
             Section("Spotlight") {
                 Toggle("Show the Spotlight in Every View", isOn: $spotlightFramesEveryView)
-                Text("Spotlight (L) also scrolls and zooms the schematic, the board, the 3D view and the Parts list to what it spotlights, turning to another sheet or the other side of the board if it has to.")
+                Text("Spotlight (L) also brings what it spotlights into the other views: the schematic, the board, the 3D view and the Parts list. A view it is already in stays put; one it is out of scrolls to it, or turns to another sheet or the other side of the board, without changing the zoom. The view you pressed L in doesn't move.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

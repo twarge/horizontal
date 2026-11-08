@@ -658,7 +658,7 @@ struct ProjectWorkspaceView: View {
     /// menu or a canvas: each one frames what it spotlights in every view
     /// showing, when Settings asks.
     @Binding var spotlightRequest: Int
-    @AppStorage(HorizontalSpotlightFraming.framesEveryViewKey) private var spotlightFramesEveryView = false
+    @AppStorage(HorizontalSpotlightFraming.framesEveryViewKey) private var spotlightFramesEveryView = HorizontalSpotlightFraming.framesEveryViewByDefault
     /// A fresh value scrolls the Parts pane to the first spotlit part.
     @State private var partsSpotlightScrollToken = 0
 
@@ -1172,7 +1172,8 @@ struct ProjectWorkspaceView: View {
                 refreshLibraryPartReplacement()
             }
             .onChange(of: spotlightRequest) { _, _ in
-                frameSpotlight()
+                // The View menu's Spotlight comes from the pane with the keys.
+                frameSpotlight(from: activeCanvasCommandPane)
             }
             .onChange(of: schematicEditRevision) { _, _ in
                 refreshLibraryPartReplacement()
@@ -2405,6 +2406,7 @@ struct ProjectWorkspaceView: View {
                                 fitSafeAreaInsets: fitSafeAreaInsets,
                                 highlightedNetIDs: activeHighlightedNetIDs,
                                 highlightedComponentIDs: activeHighlightedComponentIDs,
+                                crossSelectedComponentIDs: selectedComponentIDs,
                                 undoManager: activeUndoManager,
                                 selectionToolSettings: selectionToolSettings,
                                 isReadOnly: isReadOnly,
@@ -2412,7 +2414,7 @@ struct ProjectWorkspaceView: View {
                                 onSelectedNetChange: selectNet,
                                 onSelectedComponentChange: { selectComponents($0, from: .schematic) },
                                 onHighlightNetCommand: highlightSelectedNet,
-                                onHighlightComponentCommand: spotlightFromCanvas,
+                                onHighlightComponentCommand: { spotlightFromCanvas($0, from: .schematic) },
                                 onSelectionClearedBySheetChange: clearSelectionKeepingHighlight,
                                 onSheetChange: { sheet in
                                     applyEditedSchematicSheet(sheet, schematicURL: selectedSchematic.url)
@@ -2617,6 +2619,7 @@ struct ProjectWorkspaceView: View {
                                 fitSafeAreaInsets: fitSafeAreaInsets,
                                 highlightedNetIDs: activeHighlightedNetIDs,
                                 highlightedComponentIDs: activeHighlightedComponentIDs,
+                                crossSelectedComponentIDs: selectedComponentIDs,
                                 undoManager: activeUndoManager,
                                 selectionToolSettings: selectionToolSettings,
                                 isReadOnly: isReadOnly,
@@ -2624,7 +2627,7 @@ struct ProjectWorkspaceView: View {
                                 onSelectedNetChange: selectNet,
                                 onSelectedComponentChange: { selectComponents($0, from: .board) },
                                 onHighlightNetCommand: highlightSelectedNet,
-                                onHighlightComponentCommand: spotlightFromCanvas,
+                                onHighlightComponentCommand: { spotlightFromCanvas($0, from: .board) },
                                 onBoardChange: { board in
                                     applyEditedBoard(board)
                                 },
@@ -3294,22 +3297,25 @@ struct ProjectWorkspaceView: View {
     }
 
     /// A canvas's L: its nets are spotlit first, then its components, and
-    /// with both in, what it spotlights is framed, a turn later, when the
-    /// highlight has landed.
-    private func spotlightFromCanvas(_ componentIDs: Set<String>) {
+    /// with both in, what it spotlights is brought into the other views, a
+    /// turn later, when the highlight has landed.
+    private func spotlightFromCanvas(_ componentIDs: Set<String>, from pane: HorizontalPane) {
         highlightSelectedComponents(componentIDs)
         Task { @MainActor in
-            frameSpotlight()
+            frameSpotlight(from: pane)
         }
     }
 
-    /// Spotlight's framing, when Settings asks for it: what is spotlit,
-    /// framed in every view showing — the board and the 3D view on its
-    /// copper, turned to its side when a sided view shows the other; the
-    /// schematic on the sheet that draws the most of it, turning the page if
-    /// need be; the Parts pane scrolled to the first spotlit part. Hidden
-    /// panes are left as they are.
-    private func frameSpotlight() {
+    /// Spotlight's following, when Settings asks for it: what is spotlit,
+    /// brought into every view showing but `origin`, the one L was pressed
+    /// in, which stays where it is. A view it is in already doesn't move; one
+    /// it is out of scrolls to it at the scale it is drawn at — the board and
+    /// the 3D view to its copper, the board turned to its side when a sided
+    /// view shows the other; the schematic to the sheet that draws the most of
+    /// it, turning the page if need be and keeping the scale the page was
+    /// seen at. The Parts pane scrolls to the first spotlit part. Hidden panes
+    /// are left as they are.
+    private func frameSpotlight(from origin: HorizontalPane?) {
         guard spotlightFramesEveryView else {
             return
         }
@@ -3319,42 +3325,42 @@ struct ProjectWorkspaceView: View {
             return
         }
         if let board = project.board,
-           let rect = HorizontalSpotlightFraming.boardRect(board, netIDs: nets, componentIDs: components) {
-            if visiblePanes.contains(.board) {
+           let rect = HorizontalSpotlightFraming.boardRect(board, netIDs: nets, componentIDs: components, margin: 0) {
+            if visiblePanes.contains(.board), origin != .board {
                 if let side = HorizontalSpotlightFraming.boardSide(board, componentIDs: components) {
                     showBoardSide(side)
                 }
-                canvasCommandActionsByPane[.board]?.frameWorldRect?(rect)
+                canvasCommandActionsByPane[.board]?.revealWorldRect?(rect, nil)
             }
-            if visiblePanes.contains(.threeD) {
-                threeDCameraState = horizonSceneCameraState(
-                    framing: rect, board: board, current: threeDCameraState,
-                    projection: boardDisplayOptions.threeDProjection
-                )
+            if visiblePanes.contains(.threeD), origin != .threeD,
+               let revealed = horizonSceneCameraState(revealing: rect, board: board, current: threeDCameraState) {
+                threeDCameraState = revealed
             }
         }
-        if visiblePanes.contains(.schematic) {
+        if visiblePanes.contains(.schematic), origin != .schematic {
             let currentSheetID: String? = switch navigatorSelection {
             case .sheet(_, let sheetID), .standaloneSheet(let sheetID): sheetID
             default: nil
             }
             if let target = HorizontalSpotlightFraming.sheetTarget(project, netIDs: nets, componentIDs: components,
-                                                                   currentSheetID: currentSheetID) {
+                                                                   currentSheetID: currentSheetID, margin: 0) {
                 if target.sheetID.caseInsensitiveCompare(currentSheetID ?? "") == .orderedSame {
-                    canvasCommandActionsByPane[.schematic]?.frameWorldRect?(target.rect)
+                    canvasCommandActionsByPane[.schematic]?.revealWorldRect?(target.rect, nil)
                 } else {
-                    // Another sheet swaps the canvas; frame once it is up,
-                    // the wait zoom_to gives a sheet swap.
+                    // Another sheet swaps the canvas; scroll once it is up,
+                    // the wait zoom_to gives a sheet swap, at the scale the
+                    // page being left was drawn at.
+                    let scale = canvasCommandActionsByPane[.schematic]?.drawingScale?()
                     navigatorSelection = target.blockID.map { .sheet(blockID: $0, sheetID: target.sheetID) }
                         ?? .standaloneSheet(target.sheetID)
                     Task { @MainActor in
                         try? await Task.sleep(for: .milliseconds(250))
-                        canvasCommandActionsByPane[.schematic]?.frameWorldRect?(target.rect)
+                        canvasCommandActionsByPane[.schematic]?.revealWorldRect?(target.rect, scale)
                     }
                 }
             }
         }
-        if visiblePanes.contains(.parts) {
+        if visiblePanes.contains(.parts), origin != .parts {
             partsSpotlightScrollToken += 1
         }
     }
@@ -6725,12 +6731,6 @@ private struct NavigatorColorRow: View {
 /// opaque instead: never transparent, with the toolbar background visible
 /// (`ProjectDocumentView.body`), and its content below it in the safe area.
 ///
-/// This runs on every SwiftUI update, so a property is written only when it
-/// differs; rewriting the style mask makes AppKit rebuild the title bar.
-struct WindowChromeConfigurator: NSViewRepresentable {
-    var isTransparent: Bool
-    /// An opaque title bar with the title shown (pool item editors), where the
-    /// canvas windows follow the Transparent Toolbar preference.
 /// In full screen AppKit moves the toolbar into a window of its own, a child of
 /// this one, whose title bar draws its material over the canvas whatever
 /// `titlebarAppearsTransparent` says, on either window. The canvas runs under
@@ -6739,6 +6739,12 @@ struct WindowChromeConfigurator: NSViewRepresentable {
 /// and hides it again whenever AppKit shows it, as a change to the toolbar's
 /// items does.
 ///
+/// This runs on every SwiftUI update, so a property is written only when it
+/// differs; rewriting the style mask makes AppKit rebuild the title bar.
+struct WindowChromeConfigurator: NSViewRepresentable {
+    var isTransparent: Bool
+    /// An opaque title bar with the title shown (pool item editors), where the
+    /// canvas windows follow the Transparent Toolbar preference.
     var usesStandardTitleBar = false
 
     func makeNSView(context: Context) -> ConfiguringView {
@@ -6757,21 +6763,26 @@ struct WindowChromeConfigurator: NSViewRepresentable {
     final class ConfiguringView: NSView {
         var isTransparent = false
         var usesStandardTitleBar = false
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            configureWindow()
-        }
-
         private weak var observedWindow: NSWindow?
         private var fullScreenObservers = [NSObjectProtocol]()
         /// The full-screen toolbar's title bar backgrounds, kept hidden while
         /// they are watched; empty when nothing is hidden.
         private var hiddenBackgrounds = [NSKeyValueObservation]()
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            observeFullScreen()
+            configureWindow()
+        }
+
         func configureWindow() {
             guard let window else {
                 return
-            observeFullScreen()
+            }
+            defer {
+                if wantsTransparentFullScreenToolbar != !hiddenBackgrounds.isEmpty {
+                    configureFullScreenToolbar()
+                }
             }
 
             if !window.styleMask.contains(.fullSizeContentView) {
@@ -6779,11 +6790,6 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             }
             let transparent = isTransparent && !usesStandardTitleBar
             if window.titlebarAppearsTransparent != transparent {
-            defer {
-                if wantsTransparentFullScreenToolbar != !hiddenBackgrounds.isEmpty {
-                    configureFullScreenToolbar()
-                }
-            }
                 window.titlebarAppearsTransparent = transparent
             }
             if usesStandardTitleBar {
@@ -6795,12 +6801,6 @@ struct WindowChromeConfigurator: NSViewRepresentable {
                 }
             }
         }
-    }
-}
-
-private struct WindowSizeObserver: NSViewRepresentable {
-    var savedSize: HorizontalWindowSize?
-    var onSizeChange: (HorizontalWindowSize) -> Void
 
         private var wantsTransparentFullScreenToolbar: Bool {
             isTransparent && !usesStandardTitleBar && window?.styleMask.contains(.fullScreen) == true
@@ -6876,6 +6876,12 @@ private struct WindowSizeObserver: NSViewRepresentable {
             }
             return view.subviews.flatMap(titlebarBackgrounds(in:))
         }
+    }
+}
+
+private struct WindowSizeObserver: NSViewRepresentable {
+    var savedSize: HorizontalWindowSize?
+    var onSizeChange: (HorizontalWindowSize) -> Void
 
     func makeNSView(context: Context) -> ObservingView {
         let view = ObservingView()

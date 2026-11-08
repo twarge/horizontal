@@ -250,9 +250,11 @@ final class HorizontalSpotlightFramingTests: XCTestCase {
     }
 
     /// The starter board is 50 mm square with a GND via at (25, 0) mm. With
-    /// the setting on, Spotlight on GND frames the board on the via; off, the
-    /// board stays where it was.
-    func testWithTheSettingOnASpotlightFramesTheBoardOnIt() async throws {
+    /// the setting on, as it is until it is turned off, Spotlight on GND
+    /// leaves the board where it is while the via is in view, and scrolls it
+    /// to the via at the same zoom once it is out of view; off, the board
+    /// stays where it was.
+    func testWithTheSettingOnASpotlightScrollsTheBoardToItOnlyWhenItIsOutOfView() async throws {
         guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
         _ = NSApplication.shared
         let key = HorizontalSpotlightFraming.framesEveryViewKey
@@ -276,29 +278,49 @@ final class HorizontalSpotlightFramingTests: XCTestCase {
         window.orderFront(nil)
         defer { window.close() }
 
-        func bounds() -> HorizontalRect? {
+        func live() -> HorizontalLiveDocument? {
             HorizontalDispatchSession.shared.openEntries
                 .first { $0.live != nil && $0.url.resolvingSymlinksInPath() == root.resolvingSymlinksInPath() }?
-                .live?.visibleBounds(.board)
+                .live
+        }
+        func bounds() -> HorizontalRect? { live()?.visibleBounds(.board) }
+        func showsVia(_ view: HorizontalRect) -> Bool {
+            view.minX < 25 * mm && view.maxX > 25 * mm && view.minY < 0 && view.maxY > 0
         }
         let up = await settle(timeout: 10) { (bounds()?.width ?? 0) > 0 }
         XCTAssertTrue(up, "the board shows")
         let fitted = try XCTUnwrap(bounds())
-        XCTAssertGreaterThan(fitted.width, 40 * mm, "it starts fitted to the board")
+        XCTAssertTrue(showsVia(fitted), "it starts fitted to the board, the via in view")
 
-        UserDefaults.standard.set(false, forKey: key)
+        UserDefaults.standard.set(true, forKey: key)
         spot.highlightedNets = [gnd]
         spot.request += 1
         try await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(try XCTUnwrap(bounds()).width, fitted.width, accuracy: 1, "off, the board stays")
+        let still = try XCTUnwrap(bounds())
+        XCTAssertEqual(still.minX, fitted.minX, accuracy: 1, "in view, the board doesn't move")
+        XCTAssertEqual(still.width, fitted.width, accuracy: 1, "nor zoom")
 
-        UserDefaults.standard.set(true, forKey: key)
+        // Zoomed in on the far corner, the via out of view.
+        try XCTUnwrap(live()).frame(.board, HorizontalRect(center: HorizontalPoint(x: -20 * mm, y: -20 * mm), size: 8 * mm))
+        let away = await settle { bounds().map { !showsVia($0) && $0.width < 20 * mm } ?? false }
+        XCTAssertTrue(away, "zoomed in away from the via: \(String(describing: bounds()))")
+        let zoomed = try XCTUnwrap(bounds())
+
+        UserDefaults.standard.set(false, forKey: key)
         spot.request += 1
-        let framed = await settle {
-            guard let view = bounds() else { return false }
-            return view.width < 20 * mm && view.minX < 25 * mm && view.maxX > 25 * mm && view.minY < 0 && view.maxY > 0
-        }
-        XCTAssertTrue(framed, "framed on the via: \(String(describing: bounds()))")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(try XCTUnwrap(bounds()).minX, zoomed.minX, accuracy: 1, "off, the board stays")
+
+        // Never set is on.
+        UserDefaults.standard.removeObject(forKey: key)
+        XCTAssertTrue(HorizontalSpotlightFraming.framesEveryViewByDefault)
+        spot.request += 1
+        let scrolled = await settle { bounds().map(showsVia) ?? false }
+        XCTAssertTrue(scrolled, "scrolled to the via: \(String(describing: bounds()))")
+        let after = try XCTUnwrap(bounds())
+        XCTAssertEqual(after.width, zoomed.width, accuracy: zoomed.width * 0.001, "at the zoom it was at")
+        XCTAssertEqual(after.height, zoomed.height, accuracy: zoomed.height * 0.001)
+        XCTAssertEqual(after.center.x, 25 * mm, accuracy: 0.6 * mm, "centred on the via")
     }
 }
 #endif

@@ -309,6 +309,61 @@ func horizonSceneCameraState(
     return HorizontalSceneCameraState(matrix: matrix, orthographicScale: orthographicScale)
 }
 
+/// The camera slid along the board, not turned or zoomed, so that `rect` — a
+/// rectangle on the board, in board units — is in view, or nil when all of it
+/// is already, or when there is no camera yet to keep. Spotlight moves the 3D
+/// pane this way when L wasn't pressed there: the camera looks at the
+/// rectangle's middle, as far along its line of sight as it looked at the
+/// board before, so the view keeps its angle and its zoom. The view is taken
+/// as no wider than it is tall, which only ever moves it when it needn't.
+func horizonSceneCameraState(
+    revealing rect: HorizontalRect,
+    board: HorizontalBoard,
+    current: HorizontalSceneCameraState?
+) -> HorizontalSceneCameraState? {
+    guard let current, let matrix = current.matrix else {
+        return nil
+    }
+    let bodyBounds = board.physicalBounds.isEmpty ? board.bounds : board.physicalBounds
+    func scenePoint(_ point: HorizontalPoint) -> SIMD3<Float> {
+        BoardSceneFactory.scenePoint(point, center: bodyBounds.center, y: BoardSceneFactory.boardTopHeight)
+    }
+    let position = BoardSceneCameraMath.position(of: matrix)
+    let forward = simd_normalize(BoardSceneCameraMath.forward(of: matrix))
+    let right = simd_normalize(BoardSceneCameraMath.right(of: matrix))
+    let up = simd_normalize(BoardSceneCameraMath.up(of: matrix))
+    let tangent = tan(BoardSceneCameraMath.fieldOfView * .pi / 360)
+    let corners = [
+        HorizontalPoint(x: rect.minX, y: rect.minY), HorizontalPoint(x: rect.maxX, y: rect.minY),
+        HorizontalPoint(x: rect.minX, y: rect.maxY), HorizontalPoint(x: rect.maxX, y: rect.maxY),
+    ].map(scenePoint)
+    let inView = corners.allSatisfy { corner in
+        let offset = corner - position
+        let depth = simd_dot(offset, forward)
+        guard depth > 0 else {
+            return false
+        }
+        let half = current.orthographicScale.map { Float($0) } ?? depth * tangent
+        return abs(simd_dot(offset, right)) <= half && abs(simd_dot(offset, up)) <= half
+    }
+    guard !inView else {
+        return nil
+    }
+    let target = scenePoint(rect.center)
+    // How far the camera looked: to where its line of sight meets the board,
+    // or to the target when it looks along the board or away from it.
+    var distance = simd_length(position - target)
+    if abs(forward.y) > 1e-4 {
+        let along = (target.y - position.y) / forward.y
+        if along > 0 {
+            distance = along
+        }
+    }
+    var moved = matrix
+    moved.columns.3 = SIMD4(target - forward * distance, 1)
+    return HorizontalSceneCameraState(matrix: moved, orthographicScale: current.orthographicScale)
+}
+
 private extension Double {
     var float: Float { Float(self) }
 }

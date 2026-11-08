@@ -497,6 +497,10 @@ struct BoardCanvasView: View {
     var fitSafeAreaInsets: EdgeInsets? = nil
     var highlightedNetIDs = Set<String>()
     var highlightedComponentIDs = Set<String>()
+    /// The parts selected in another view — the workspace's selection when
+    /// this canvas didn't make it — boxed in blue here without becoming this
+    /// canvas's selection, so its inspector and keys stay as they are.
+    var crossSelectedComponentIDs = Set<String>()
     var undoManager: UndoManager? = nil
     var selectionToolSettings = HorizontalSelectionToolSettings()
     var isReadOnly = false
@@ -707,6 +711,7 @@ struct BoardCanvasView: View {
         fitSafeAreaInsets: EdgeInsets? = nil,
         highlightedNetIDs: Set<String> = [],
         highlightedComponentIDs: Set<String> = [],
+        crossSelectedComponentIDs: Set<String> = [],
         undoManager: UndoManager? = nil,
         selectionToolSettings: HorizontalSelectionToolSettings = HorizontalSelectionToolSettings(),
         isReadOnly: Bool = false,
@@ -760,6 +765,7 @@ struct BoardCanvasView: View {
         self.fitSafeAreaInsets = fitSafeAreaInsets
         self.highlightedNetIDs = highlightedNetIDs
         self.highlightedComponentIDs = highlightedComponentIDs
+        self.crossSelectedComponentIDs = crossSelectedComponentIDs
         self.undoManager = undoManager
         self.selectionToolSettings = selectionToolSettings
         self.isReadOnly = isReadOnly
@@ -1084,14 +1090,18 @@ struct BoardCanvasView: View {
         let metalTopOverlayTriangles = measureBody("overlay triangles") {
             metalDimBatch.triangles + metalHighlightBatch.triangles + metalSelectionBatch.triangles + metalPreviewBatch.triangles
         }
+        let crossSelection = measureBody("cross selection") { crossSelectionLines() }
+        // Last, after the selection and the preview, whose places in the
+        // buffer a move patches.
         let metalTopOverlayLines = measureBody("overlay lines") {
-            metalHighlightBatch.lines + metalSelectionBatch.lines + metalPreviewBatch.lines
+            metalHighlightBatch.lines + metalSelectionBatch.lines + metalPreviewBatch.lines + crossSelection.lines
         }
         let metalTopOverlayHandles = measureBody("overlay handles") {
             metalHighlightBatch.handles + metalSelectionBatch.handles + metalPreviewBatch.handles
         }
         let metalTopOverlayKey = measureBody("overlay key") {
-            ((metalDimBatch.triangleKey &* 31 &+ metalHighlightBatch.lineKey) &* 31 &+ metalSelectionBatch.lineKey) &* 31 &+ metalPreviewBatch.lineKey
+            (((metalDimBatch.triangleKey &* 31 &+ metalHighlightBatch.lineKey) &* 31 &+ metalSelectionBatch.lineKey) &* 31
+                &+ metalPreviewBatch.lineKey) &* 31 &+ crossSelection.key
         }
         let metalTopOverlayHandleKey = measureBody("handle key") {
             (metalHighlightBatch.handleKey &* 31 &+ metalSelectionBatch.handleKey) &* 31 &+ metalPreviewBatch.handleKey
@@ -2149,6 +2159,42 @@ struct BoardCanvasView: View {
         }
         return ids
     }
+
+    /// The blue boxes round `crossSelectedComponentIDs`, the parts another
+    /// view selected, but not round any this canvas has selected itself,
+    /// which its own selection marks: the outline a selection takes, in the
+    /// 3D view's selection blue, and a key for them.
+    func crossSelectionLines() -> (lines: [HorizontalMetalLinePrimitive], key: Int) {
+        let wanted = Set(crossSelectedComponentIDs.map(normalizedID)).subtracting(selectedComponentIDs)
+        guard !wanted.isEmpty else {
+            return ([], 0)
+        }
+        let selectables = boardSelectablesByRef()
+        let refs = board.packages.compactMap { package -> HorizontalSelectableRef? in
+            guard let componentID = package.componentID, wanted.contains(normalizedID(componentID)) else {
+                return nil
+            }
+            return HorizontalSelectableRef(id: package.id, type: .boardPackage)
+        }
+        let color = HorizontalMetalRGBA(red: 0.25, green: 0.56, blue: 1.0, alpha: 0.95)
+        var lines = [HorizontalMetalLinePrimitive]()
+        var hasher = Hasher()
+        for ref in refs {
+            for selectable in selectables[ref] ?? [] {
+                let corners = selectable.corners(expandedByWorld: Self.crossSelectionMargin)
+                for (index, corner) in corners.enumerated() {
+                    let next = corners[(index + 1) % corners.count]
+                    lines.append(HorizontalMetalLinePrimitive(from: corner, to: next, color: color, minimumWidth: 2))
+                    hasher.combine(corner.x)
+                    hasher.combine(corner.y)
+                }
+            }
+        }
+        return (lines, lines.isEmpty ? 0 : hasher.finalize())
+    }
+
+    /// How far the blue box stands off a part, in world units: 0.2 mm.
+    static let crossSelectionMargin = 200_000.0
 
     private func publishSelectionContext() {
         onSelectedNetChange(selectedNetIDs)
@@ -3240,6 +3286,14 @@ struct BoardCanvasView: View {
             }
             viewport = CanvasViewport.framing(rect, in: transform, identity: board.uuid)
         }
+        actions.revealWorldRect = { rect, scale in
+            guard let transform = liveCanvasTransform.transform,
+                  let revealed = CanvasViewport.revealing(rect, in: transform, scale: scale, identity: board.uuid) else {
+                return
+            }
+            viewport = revealed
+        }
+        actions.drawingScale = { liveCanvasTransform.transform?.length(1) }
         actions.zoomBy = { factor in
             guard let transform = liveCanvasTransform.transform, factor >= 0 else {
                 return

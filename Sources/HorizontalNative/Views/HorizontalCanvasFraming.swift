@@ -90,3 +90,43 @@ extension CanvasViewport {
         )
     }
 }
+
+extension CanvasViewport {
+    /// The viewport that brings `rect` into view without zooming, or nil when
+    /// all of it is in view already: centred on it at the scale the canvas
+    /// draws at now, or at `scale` (points per world unit) when given, which
+    /// is always applied. Spotlight moves a view it didn't start in this way,
+    /// and a page it turns to keeps the scale the last page was seen at.
+    static func revealing(
+        _ rect: HorizontalRect, in transform: HorizontalCanvasTransform, scale: CGFloat? = nil, identity: String? = nil
+    ) -> CanvasViewport? {
+        let bounds = transform.bounds
+        guard !bounds.isEmpty, transform.size.width > 0, transform.size.height > 0 else {
+            return nil
+        }
+        if scale == nil {
+            let visible = transform.visibleBounds
+            if rect.minX >= visible.minX, rect.maxX <= visible.maxX, rect.minY >= visible.minY, rect.maxY <= visible.maxY {
+                return nil
+            }
+        }
+        let unit = HorizontalCanvasTransform(bounds: bounds, size: transform.size, fitInsets: transform.fitInsets, zoom: 1, pan: .zero)
+        let fitScale = unit.length(1)
+        let wantedScale = scale ?? transform.length(1)
+        guard fitScale > 0, wantedScale > 0 else {
+            return nil
+        }
+        let zoom = min(max(wantedScale / fitScale, CanvasViewport.minimumZoom), CanvasViewport.maximumZoom)
+        let drawn = fitScale * zoom
+        let center = rect.center
+        let fromLeft = transform.mirrored ? bounds.maxX - center.x : center.x - bounds.minX
+        let pan = CGSize(
+            width: CGFloat(bounds.width) * drawn / 2 - CGFloat(fromLeft) * drawn,
+            height: CGFloat(bounds.height) * drawn / 2 - CGFloat(bounds.maxY - center.y) * drawn
+        )
+        return CanvasViewport(
+            zoom: zoom, pan: pan, mirrored: transform.mirrored,
+            reference: identity.map { Reference(identity: $0, bounds: bounds) }
+        )
+    }
+}

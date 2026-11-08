@@ -1,21 +1,27 @@
 import Foundation
 
-/// Where Spotlight (L) frames what it spotlights in each view, when the
-/// setting asks it to: the board and the 3D view on the components' pads and
-/// the nets' pads, tracks, airwires and vias, much as `zoom_to` frames them; the
-/// schematic on the sheet that draws the most of it, the one showing when it
-/// draws as much as any other. Ids are compared lowercased.
+/// Where Spotlight (L) brings what it spotlights into view in each view, when
+/// the setting asks it to: the board and the 3D view on the components' pads
+/// and the nets' pads, tracks, airwires and vias, much as `zoom_to` frames
+/// them; the schematic on the sheet that draws the most of it, the one showing
+/// when it draws as much as any other. A view moves only when what is spotlit
+/// is out of it, and then only scrolls, or turns the page, at the scale it
+/// was drawn at; the view L was pressed in stays where it is. Ids are compared
+/// lowercased.
 enum HorizontalSpotlightFraming {
-    /// The setting: Spotlight scrolls and zooms every view showing to what
-    /// it spotlights. Off by default.
+    /// The setting: Spotlight brings what it spotlights into every other view
+    /// showing. On by default, since a view moves only when what is spotlit
+    /// is out of it, and the one L was pressed in never does.
     static let framesEveryViewKey = "Horizontal.spotlight.framesEveryView"
+    static let framesEveryViewByDefault = true
 
     /// Room around what is framed, as `zoom_to` leaves by default.
     static let margin = 3_000_000.0
 
     /// What the spotlit components' packages and nets' copper cover on the
     /// board, with a margin; nil when none of it is on the board.
-    static func boardRect(_ board: HorizontalBoard, netIDs: Set<String>, componentIDs: Set<String>) -> HorizontalRect? {
+    static func boardRect(_ board: HorizontalBoard, netIDs: Set<String>, componentIDs: Set<String>,
+                          margin: Double = margin) -> HorizontalRect? {
         let nets = Set(netIDs.map { $0.lowercased() })
         let components = Set(componentIDs.map { $0.lowercased() })
         func onNet(_ netID: String?) -> Bool {
@@ -43,7 +49,7 @@ enum HorizontalSpotlightFraming {
         for via in board.vias where onNet(via.netID) {
             points.append(via.position)
         }
-        return framed(points, smallest: 2_000_000)
+        return framed(points, smallest: 2_000_000, margin: margin)
     }
 
     /// The side of the board every spotlit package is on, when they share
@@ -71,7 +77,7 @@ enum HorizontalSpotlightFraming {
     /// about it there. The sheet showing wins a tie, so a spotlight that is
     /// on it doesn't turn the page.
     static func sheetTarget(_ project: HorizontalProject, netIDs: Set<String>, componentIDs: Set<String>,
-                            currentSheetID: String?) -> SheetTarget? {
+                            currentSheetID: String?, margin: Double = margin) -> SheetTarget? {
         let nets = Set(netIDs.map { $0.lowercased() })
         let components = Set(componentIDs.map { $0.lowercased() })
         guard !nets.isEmpty || !components.isEmpty else {
@@ -103,7 +109,7 @@ enum HorizontalSpotlightFraming {
                 points.append(segment.to)
                 wires += 1
             }
-            guard let rect = framed(points, smallest: 20_000_000) else {
+            guard let rect = framed(points, smallest: 20_000_000, margin: margin) else {
                 continue
             }
             // A symbol counts for more than a stretch of wire: the parts are
@@ -117,8 +123,8 @@ enum HorizontalSpotlightFraming {
         return best?.target
     }
 
-    /// The points' bounds with the margin, at least `smallest` across.
-    static func framed(_ points: [HorizontalPoint], smallest: Double) -> HorizontalRect? {
+    /// The points' bounds with `margin` round them, at least `smallest` across.
+    static func framed(_ points: [HorizontalPoint], smallest: Double, margin: Double = margin) -> HorizontalRect? {
         guard !points.isEmpty else {
             return nil
         }
