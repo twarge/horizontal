@@ -1,12 +1,14 @@
 import Foundation
 
-/// Corner geometry for a routed track: a 90° L-bend, a 45° diagonal elbow, or a
+/// Corner geometry for a routed track: a 45° diagonal elbow, a 90° L-bend, or a
 /// tangent quarter-arc rounding the same corner. Posture (which leg leads) is
 /// chosen separately. Persisted via the tool settings, so it lives at module
-/// scope rather than nested in the view.
+/// scope rather than nested in the view. The cases are in the order the route
+/// inspector's picker shows them and C steps through them, 45° first, the
+/// default.
 enum BoardTrackCornerStyle: String, CaseIterable, Identifiable {
-    case ninety
     case fortyFive
+    case ninety
     case arc
 
     var id: String { rawValue }
@@ -23,9 +25,9 @@ enum BoardTrackCornerStyle: String, CaseIterable, Identifiable {
 
     mutating func cycle() {
         switch self {
-        case .ninety: self = .fortyFive
-        case .fortyFive: self = .arc
-        case .arc: self = .ninety
+        case .fortyFive: self = .ninety
+        case .ninety: self = .arc
+        case .arc: self = .fortyFive
         }
     }
 }

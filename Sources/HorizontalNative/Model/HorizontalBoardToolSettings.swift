@@ -100,7 +100,7 @@ final class HorizontalBoardToolSettings: ObservableObject {
         self.defaults = defaults
         explicitTrackWidth = Self.optionalDouble(defaults, forKey: Self.trackWidthKey)
         cornerStyle = (defaults.string(forKey: Self.cornerStyleKey))
-            .flatMap(BoardTrackCornerStyle.init(rawValue:)) ?? .ninety
+            .flatMap(BoardTrackCornerStyle.init(rawValue:)) ?? .fortyFive
         routerMode = defaults.bool(forKey: Self.routerModeKey)
         routerShove = defaults.bool(forKey: Self.routerShoveKey)
         removeLoops = defaults.object(forKey: Self.removeLoopsKey) as? Bool ?? true

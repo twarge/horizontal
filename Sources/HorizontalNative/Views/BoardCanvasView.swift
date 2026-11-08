@@ -379,7 +379,7 @@ struct BoardCanvasView: View {
         var layer: Int
         var cursor: HorizontalPoint?
         var bendMode: BoardTrackBendMode = .xy
-        var cornerStyle: BoardTrackCornerStyle = .ninety
+        var cornerStyle: BoardTrackCornerStyle = .fortyFive
         var segmentCount = 0
         var viaCount = 0
         /// `v` armed a via, as Horizon's router places one: it rides on the
@@ -1920,7 +1920,7 @@ struct BoardCanvasView: View {
                     viaArmed = ", via \(diameter)/\(hole) mm\(via.fromRules ? " from rules" : "")"
                 }
             }
-            return "Track (\(layerName), \(widthMM) mm, \(state.cornerStyle.label)\(viaArmed)): click to route   / posture   C corner (90/45/arc)   W width\(viaHint)\(undoHint)   Return, Esc or double-click finishes"
+            return "Track (\(layerName), \(widthMM) mm, \(state.cornerStyle.label)\(viaArmed)): click to route   / posture   C corner (45/90/arc)   W width\(viaHint)\(undoHint)   Return, Esc or double-click finishes"
         }
         // Ahead of the move hint: placing a package rides the move tool.
         if let state = packagePlacementState {
