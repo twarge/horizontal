@@ -599,8 +599,7 @@ final class BoardSceneEntities {
     /// Spotlights the packages of `componentIDs` (L, Spotlight) and takes the
     /// spot off the rest: a theatre spot over each, shining down at a part on
     /// top of the board (up at one on the bottom), on the part and a small
-    /// margin of board around it, with a faint beam from the lamp to the
-    /// board. The rigs sit in the models' containers, so they explode, hide
+    /// margin of board around it. The rigs sit in the models' containers, so they explode, hide
     /// and show with them; the models themselves are not touched, because
     /// their materials are shared by every instance.
     func applyHighlight(componentIDs: Set<String>) {
@@ -608,13 +607,13 @@ final class BoardSceneEntities {
             self.spotlight(around: package)
         }
         // More lights than this flood the board, and cost more than the
-        // spots need: past it, the beams mark the parts alone.
+        // spots need: past it, no spot is lit.
         let lit = highlightMarks.count <= Self.highlightLightBudget
         for rig in highlightMarks.values {
             rig.findEntity(named: Self.highlightLightName)?.isEnabled = lit
         }
         // The house lights go down while a spot is lit, as in a theatre, so
-        // the spot stands out; with the beams alone they stay up.
+        // the spot stands out; with no spot lit they stay up.
         setHouseLightLevel(lit && !highlightMarks.isEmpty ? Self.spotlitHouseLightLevel : 1)
     }
 
@@ -684,7 +683,7 @@ final class BoardSceneEntities {
         highlightMarks.count + selectionMarks.count
     }
 
-    /// The spots' rigs, one a highlighted part: the light and its beam.
+    /// The spots' rigs, one a highlighted part, each holding its light.
     var highlightRigs: [Entity] {
         Array(highlightMarks.values)
     }
@@ -770,16 +769,12 @@ final class BoardSceneEntities {
     /// A theatre spot on a highlighted part: a spotlight over the part's
     /// middle (under it, for a part on the bottom) shining at the board, in
     /// full over the whole part, its top corners too, and fading out a small
-    /// margin past it, and a faint beam from the lamp to the board, so the
-    /// light reads as a light and still marks the part past the light
-    /// budget. The lamp hangs high enough over the part that the beam is a
-    /// narrow cone, as a stage spot's is, and higher over a bigger or taller
-    /// part, so its beam stays narrow too.
+    /// margin past it. The lamp hangs high enough over the part that its
+    /// light is a narrow cone, as a stage spot's is, and higher over a bigger
+    /// or taller part, so it stays narrow too. Only the light is drawn: no
+    /// beam or lamp shows.
     ///
-    /// The rig's -Z points at the board, which is where a spotlight shines,
-    /// and the beam lies along it from the lamp, so it turns with the light.
-    /// The beam stops just short of the part's foot, where the board is, so
-    /// the disc that closes it doesn't fight the board's surface.
+    /// The rig's -Z points at the board, which is where a spotlight shines.
     private func spotlight(around package: PackagePlacement) -> Entity {
         var (low, high) = markBounds(of: package)
         if [low.x, low.y, low.z, high.x, high.y, high.z].contains(where: { !$0.isFinite }) || high.x < low.x || high.y < low.y || high.z < low.z {
@@ -803,19 +798,6 @@ final class BoardSceneEntities {
             attenuationRadius: geometry.attenuationRadius
         ))
         rig.addChild(light)
-
-        // RealityKit's cone stands on its middle with its tip up +Y, so
-        // turning it a quarter about X puts the tip on the lamp, at the rig's
-        // origin, and its base down -Z at the board.
-        let beam = ModelEntity(
-            mesh: .generateCone(height: geometry.beamLength, radius: geometry.beamRadius),
-            materials: [BoardSceneMaterials.material(Self.glow(Self.spotColor, alpha: 0.07))]
-        )
-        beam.name = "highlight-beam"
-        beam.position = SIMD3(0, 0, -geometry.beamLength / 2)
-        beam.orientation = simd_quatf(angle: .pi / 2, axis: SIMD3(1, 0, 0))
-        beam.components.set(ModelSortGroupComponent(group: Self.sortGroup, order: BoardSceneDrawOrder.mark.rawValue))
-        rig.addChild(beam)
         return rig
     }
 
@@ -832,8 +814,6 @@ final class BoardSceneEntities {
         /// Lumens, for the illuminance asked for at the middle of the pool.
         var intensity: Float
         var attenuationRadius: Float
-        var beamLength: Float
-        var beamRadius: Float
         /// The radius on the board inside which the part is in full light,
         /// and the one past which it is dark.
         var poolRadius: Float
@@ -855,7 +835,7 @@ final class BoardSceneEntities {
         let footprint = max(width, length)
         let corner = (width * width + length * length).squareRoot() / 2
         let margin = 0.8 + 0.1 * footprint
-        // Far over the part, as a stage spot hangs in the flies, so its beam
+        // Far over the part, as a stage spot hangs in the flies, so its light
         // comes down near straight.
         let lift = 16 + 1.2 * footprint + tall
         let toFoot = lift + tall
@@ -865,7 +845,6 @@ final class BoardSceneEntities {
         let poolRadius = toFoot * tan(inner)
         let edgeRadius = poolRadius + margin
         let outer = min(atan(edgeRadius / toFoot), 1.3)
-        let beamLength = max(toFoot - 0.08, 0.1)
         return SpotGeometry(
             side: side,
             lamp: SIMD3(center.x, top + side * lift, center.z),
@@ -875,8 +854,6 @@ final class BoardSceneEntities {
             // light, the same candela: lumens spread over π, not 4π.
             intensity: spotIlluminance * .pi * toFoot * toFoot,
             attenuationRadius: 1.5 * toFoot / cos(outer),
-            beamLength: beamLength,
-            beamRadius: beamLength * tan(outer),
             poolRadius: poolRadius,
             edgeRadius: edgeRadius
         )
@@ -1044,7 +1021,7 @@ enum BoardSceneEnvironment {
         if let gradient = CGGradient(colorsSpace: space, colors: sky, locations: [0, 0.42, 0.55, 1]) {
             context.drawLinearGradient(gradient, start: CGPoint(x: 0, y: height), end: CGPoint(x: 0, y: 0), options: [])
         }
-        // A softbox high over the front right, where the key light is.
+        // A softbox high on one side, for the copper to catch.
         let softbox = [CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1), CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0)] as CFArray
         if let glow = CGGradient(colorsSpace: space, colors: softbox, locations: [0, 1]) {
             let center = CGPoint(x: CGFloat(width) * 0.62, y: CGFloat(height) * 0.78)

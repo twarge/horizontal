@@ -10,8 +10,7 @@ import XCTest
 /// The 3D view's Spotlight: a highlighted part is lit by a spot over it that
 /// lights the part and a small margin of board around it, and nothing past
 /// that, under it for a part on the bottom. Rendered offscreen from straight
-/// above, on a plain grey board under the scene's own lights, with the beam
-/// hidden so only the light is measured. Set HORIZONTAL_SPOTLIGHT_RENDERS to a
+/// above, on a plain grey board under the scene's own lights. Set HORIZONTAL_SPOTLIGHT_RENDERS to a
 /// folder to have the renders written there as PNGs.
 @MainActor
 final class BoardSceneSpotlightTests: XCTestCase {
@@ -101,12 +100,6 @@ final class BoardSceneSpotlightTests: XCTestCase {
         return lit[x] - plain[x]
     }
 
-    private func hideBeams(_ scene: BoardSceneEntities) {
-        for rig in scene.highlightRigs {
-            rig.findEntity(named: "highlight-beam")?.isEnabled = false
-        }
-    }
-
     /// The spots off and the house lights left down: the board as the
     /// spot finds it.
     private func putOutTheSpots(_ scene: BoardSceneEntities) {
@@ -128,7 +121,6 @@ final class BoardSceneSpotlightTests: XCTestCase {
         XCTAssertEqual(scene.environmentExposure, log2(level), accuracy: 0.001, "the studio light goes down with them")
 
         let plain = middleRow(try await render(self.scene(), name: "house-up"))
-        hideBeams(scene)
         putOutTheSpots(scene)
         let dimmed = middleRow(try await render(scene, name: "house-down"))
         XCTAssertGreaterThan(plain[60] - dimmed[60], 40, "the board away from the part is darker")
@@ -142,8 +134,8 @@ final class BoardSceneSpotlightTests: XCTestCase {
         let budget = BoardSceneEntities.highlightLightBudget
         let scene = scene()
         let full = scene.houseLightIntensities
-        // More parts than the budget: the highlight marks them with beams
-        // alone, and with no spot lit there is nothing to stand out.
+        // More parts than the budget: no spot is lit, so there is nothing to
+        // stand out.
         let board = HorizontalBoard.poolEditorBoard(uuid: "many", name: "Many", url: URL(fileURLWithPath: "/tmp/many"))
         let asset = BoardSceneModelLibrary.shared.boxAsset(size: partSize, materials: [BoardSceneMaterialSpec(color: BoardSceneColor(red: 0.2, green: 0.2, blue: 0.2))])
         var description = BoardSceneDescription(board: board, center: .zero, boardThickness: 1.6, boardWidth: 40, boardDepth: 40)
@@ -179,8 +171,7 @@ final class BoardSceneSpotlightTests: XCTestCase {
                 write(image, name: name)
             }
         }
-        hideBeams(scene)
-        let lit = middleRow(try await render(scene, name: "top-spot-no-beam"))
+        let lit = middleRow(try await render(scene, name: "top-spot-lit"))
         putOutTheSpots(scene)
         let dark = middleRow(try await render(scene, name: "top-house-down"))
 
@@ -203,8 +194,7 @@ final class BoardSceneSpotlightTests: XCTestCase {
         _ = try await render(scene, fromBelow: true, name: "bottom-plain")
         scene.applyHighlight(componentIDs: ["c-a"])
         _ = try await render(scene, fromBelow: true, name: "bottom-spot")
-        hideBeams(scene)
-        let lit = middleRow(try await render(scene, fromBelow: true, name: "bottom-spot-no-beam"))
+        let lit = middleRow(try await render(scene, fromBelow: true, name: "bottom-spot-lit"))
         let topSide = middleRow(try await render(scene, name: "bottom-spot-seen-from-top"))
         putOutTheSpots(scene)
         let dark = middleRow(try await render(scene, fromBelow: true, name: "bottom-house-down"))
@@ -213,20 +203,17 @@ final class BoardSceneSpotlightTests: XCTestCase {
         XCTAssertLessThan(abs(gain(lit: topSide, plain: topDark, atMillimetres: 1.2)), 8, "the board's top is not lit by a spot under it")
     }
 
-    func testTheBeamRunsFromTheLampToThePartsFoot() {
+    func testTheSpotIsALightOverThePartWithNothingDrawn() {
         let scene = scene()
         scene.applyHighlight(componentIDs: ["c-a"])
         let rig = try! XCTUnwrap(scene.highlightRigs.first)
-        let beam = try! XCTUnwrap(rig.findEntity(named: "highlight-beam") as? ModelEntity)
-        let bounds = beam.visualBounds(relativeTo: nil)
+        XCTAssertEqual(rig.children.map(\.name), [BoardSceneEntities.highlightLightName], "the light alone: no beam")
+        XCTAssertFalse(rig.children.contains { $0 is ModelEntity })
         let light = try! XCTUnwrap(scene.highlightLights.first)
         let lamp = light.position(relativeTo: nil)
-        XCTAssertEqual(bounds.max.y, lamp.y, accuracy: 0.01, "the beam's tip is at the lamp")
-        // The part's foot, risen with the explode as the part is.
-        let foot = rig.parent!.convert(position: SIMD3(0, boardTop, 0), to: nil).y
-        XCTAssertEqual(bounds.min.y, foot + 0.08, accuracy: 0.01, "the beam stops just short of the board")
-        XCTAssertGreaterThan(lamp.y, foot + partSize.y, "the lamp hangs over the part")
-        XCTAssertEqual(lamp.x, bounds.center.x, accuracy: 0.01)
-        XCTAssertEqual(lamp.z, bounds.center.z, accuracy: 0.01)
+        let foot = rig.parent!.convert(position: SIMD3(0, boardTop, 0), to: nil)
+        XCTAssertGreaterThan(lamp.y, foot.y + partSize.y, "the lamp hangs over the part")
+        XCTAssertEqual(lamp.x, foot.x, accuracy: 0.01)
+        XCTAssertEqual(lamp.z, foot.z, accuracy: 0.01)
     }
 }

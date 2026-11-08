@@ -182,11 +182,11 @@ struct HorizontalIPadProjectView: View {
         } else {
             projectBody
                 .environment(\.horizonPoolRevealAction, revealInPools)
-                // The first project the app opens offers Horizon's default
-                // pool, once, as the Mac does at its first launch.
+                // While no pool is registered, the first project opened in a
+                // run offers Horizon's default pool or a pool on disk, as the
+                // Mac does at each launch.
                 .task {
-                    if HorizontalDefaultPool.shouldOfferAtLaunch {
-                        HorizontalDefaultPool.markOffered()
+                    if HorizontalDefaultPool.takeLaunchOffer() {
                         isOfferingDefaultPool = true
                     }
                 }

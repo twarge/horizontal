@@ -1445,10 +1445,11 @@ enum BoardSceneFactory {
 
     // MARK: Lights
 
-    /// A key light from the front right, high, a fill from the back left and
-    /// a rim from behind — the three lights SceneKit had, aimed the same way —
-    /// and one shining up at the underside, which SceneKit's ambient light lit
-    /// and RealityKit has no ambient light for. RealityKit's own shadows
+    /// A key light from the front, high, so it lights the faces the default
+    /// view looks at and the parts' shadows fall back, away from it; a fill
+    /// and a rim, as SceneKit had them; and one shining up at the underside,
+    /// which SceneKit's ambient light lit and RealityKit has no ambient light
+    /// for. RealityKit's own shadows
     /// change from frame to frame with nothing moving, so the key and the
     /// under-light cast none; their shadows are drawn (`shadowItems`).
     static func lights(width: Double, depth: Double) -> [BoardSceneLight] {
@@ -1461,7 +1462,7 @@ enum BoardSceneFactory {
             return simd_normalize(SIMD3(shine.x, shine.y, shine.z))
         }
         return [
-            BoardSceneLight(direction: direction(pitch: -.pi / 3.2, yaw: .pi / 4.5), intensity: 2_600, castsShadow: true),
+            BoardSceneLight(direction: direction(pitch: -.pi / 3.2, yaw: 0), intensity: 2_600, castsShadow: true),
             BoardSceneLight(direction: direction(pitch: -.pi / 5, yaw: -.pi / 3), intensity: 600, castsShadow: false),
             BoardSceneLight(direction: direction(pitch: -.pi / 4, yaw: .pi), intensity: 850, castsShadow: false),
             BoardSceneLight(direction: simd_normalize(SIMD3(0.7, 1, 0.5)), intensity: 1_000, castsShadow: true),

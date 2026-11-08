@@ -215,6 +215,8 @@ final class HorizontalDefaultPoolCloneTests: XCTestCase {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("HorizontalDefaultPoolCloneTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         HorizontalPoolRegistryStore.defaults = try XCTUnwrap(UserDefaults(suiteName: "HorizontalDefaultPoolCloneTests-\(UUID().uuidString)"))
+        HorizontalDefaultPool.defaults = try XCTUnwrap(UserDefaults(suiteName: "HorizontalDefaultPoolCloneTests-offer-\(UUID().uuidString)"))
+        HorizontalDefaultPool.offeredThisLaunch = false
         HorizontalPoolLibrary.invalidateCache()
     }
 
@@ -223,6 +225,8 @@ final class HorizontalDefaultPoolCloneTests: XCTestCase {
             HorizontalPoolRegistryStore.removePool(at: url)
         }
         HorizontalPoolRegistryStore.defaults = .standard
+        HorizontalDefaultPool.defaults = .standard
+        HorizontalDefaultPool.offeredThisLaunch = false
         HorizontalPoolLibrary.invalidateCache()
         try? FileManager.default.removeItem(at: root)
     }
@@ -270,6 +274,59 @@ final class HorizontalDefaultPoolCloneTests: XCTestCase {
         XCTAssertTrue(HorizontalDefaultPool.isRegistered)
         XCTAssertEqual(HorizontalPoolRegistryStore.poolURLs().map(\.standardizedFileURL), [pool.standardizedFileURL])
         XCTAssertFalse(HorizontalDefaultPool.shouldOfferAtLaunch, "not offered to someone who has it")
+    }
+
+    private func writePool(in folder: URL) throws {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("{\"type\": \"pool\", \"uuid\": \"11111111-2222-3333-4444-555555555555\", \"name\": \"Mine\"}\n".utf8)
+            .write(to: folder.appendingPathComponent("pool.json"))
+    }
+
+    func testTheOfferComesBackAtEachLaunchWhileNoPoolIsRegistered() throws {
+        XCTAssertTrue(HorizontalDefaultPool.shouldOfferAtLaunch, "no pool registered yet")
+        try writePool(in: root.appendingPathComponent("mine", isDirectory: true))
+        XCTAssertTrue(HorizontalPoolRegistry.shared.addPool(at: root.appendingPathComponent("mine", isDirectory: true)))
+        XCTAssertFalse(HorizontalDefaultPool.shouldOfferAtLaunch, "any registered pool stops it, not only the default")
+        for url in HorizontalPoolRegistryStore.poolURLs() {
+            HorizontalPoolRegistryStore.removePool(at: url)
+        }
+        XCTAssertTrue(HorizontalDefaultPool.shouldOfferAtLaunch, "offered again once no pool is registered")
+    }
+
+    func testTheOfferIsTakenOncePerLaunch() {
+        XCTAssertTrue(HorizontalDefaultPool.takeLaunchOffer(), "the launch's offer")
+        XCTAssertFalse(HorizontalDefaultPool.takeLaunchOffer(), "not again for the next project or a reopen")
+        XCTAssertFalse(HorizontalDefaultPool.shouldOfferAtLaunch)
+        HorizontalDefaultPool.offeredThisLaunch = false
+        XCTAssertTrue(HorizontalDefaultPool.shouldOfferAtLaunch, "the next launch offers it again")
+    }
+
+    func testDontAskStopsTheOfferAtLaunchUntilItIsUnticked() {
+        HorizontalDefaultPool.dontAsk = true
+        XCTAssertFalse(HorizontalDefaultPool.shouldOfferAtLaunch, "no pool, but asked not to be offered")
+        HorizontalDefaultPool.dontAsk = false
+        XCTAssertTrue(HorizontalDefaultPool.shouldOfferAtLaunch, "offered again once unticked")
+    }
+
+    func testAPoolOnDiskIsAddedAsItIs() throws {
+        let pool = root.appendingPathComponent("my-pool", isDirectory: true)
+        try writePool(in: pool)
+        let clone = HorizontalDefaultPoolClone()
+        clone.addExisting(at: pool)
+        XCTAssertEqual(clone.state, .finished(pool))
+        XCTAssertNil(clone.notAPool)
+        XCTAssertEqual(HorizontalPoolRegistryStore.poolURLs().map(\.standardizedFileURL), [pool.standardizedFileURL])
+        XCTAssertFalse(HorizontalDefaultPool.shouldOfferAtLaunch)
+    }
+
+    func testAFolderWithoutAPoolJSONIsTurnedAwayAndNotRegistered() throws {
+        let folder = root.appendingPathComponent("notes", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let clone = HorizontalDefaultPoolClone()
+        clone.addExisting(at: folder)
+        XCTAssertEqual(clone.state, .offer, "the offer stays up to pick again")
+        XCTAssertEqual(clone.notAPool, "notes")
+        XCTAssertTrue(HorizontalPoolRegistryStore.poolURLs().isEmpty)
     }
 
     /// Over the network, when asked: HORIZONTAL_NETWORK_TESTS=1. The whole

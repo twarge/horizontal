@@ -213,6 +213,15 @@ final class BoardSceneRenderSurfaceTests: XCTestCase {
 
     // MARK: Shadows
 
+    func testTheKeyLightShinesFromTheBoardsFront() throws {
+        let key = try XCTUnwrap(BoardSceneFactory.lights(width: 40, depth: 40).first { $0.castsShadow && $0.direction.y < 0 }).direction
+        // The board's front edge is +z, toward the default camera; the key
+        // shines from there straight back, high over the board.
+        XCTAssertEqual(key.x, 0, accuracy: 0.001, "neither left nor right")
+        XCTAssertLessThan(key.z, -0.3, "from the front, toward the back")
+        XCTAssertLessThan(key.y, -0.6, "high")
+    }
+
     func testAPartsShadowFallsAwayFromTheKeyLightOnTheBoardsFace() throws {
         let lights = BoardSceneFactory.lights(width: 40, depth: 40)
         let key = try XCTUnwrap(lights.first { $0.castsShadow && $0.direction.y < 0 }).direction
