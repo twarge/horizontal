@@ -7252,6 +7252,11 @@ struct BoardCanvasView: View {
         guard deleteSelectedObjects(from: &draft) else {
             return
         }
+        // A polygon edge's next is the edge across the gap it left, so the
+        // next Delete goes on along the outline.
+        let polygonNext = unique.count == 1
+            ? polygonEdgeSelection(afterDeleting: unique[0], from: previousBoard, to: draft)
+            : nil
         // The scene and selectables built for the board as it is, which a
         // delete that takes only copper off can be taken out of.
         let renderLayers = boardMetalRenderLayers()
@@ -7265,7 +7270,7 @@ struct BoardCanvasView: View {
         let invalidatedRevision = selectableCacheRevision
         // The neighbour (if any) wasn't deleted, so its ref stays valid through
         // the connectivity recompute below; selecting it renders it highlighted.
-        selectedObjects = chainNext.map { [$0] } ?? []
+        selectedObjects = (chainNext ?? polygonNext).map { [$0] } ?? []
         hoveredObject = nil
         publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previousBoard, kind: .delete))
         // Rules that changed something, or block instances the delete reached,
@@ -7553,6 +7558,31 @@ struct BoardCanvasView: View {
         changed = removeAll(from: &board.packageTexts) { belongsToPanel($0.id) } || changed
         changed = removeAll(from: &board.texts) { belongsToPanel($0.id) } || changed
         return changed
+    }
+
+    /// The edge to select once `ref`, a polygon's edge, is deleted: the one
+    /// joining the vertices either side of the gap
+    /// (`HorizontalPolygonEdgeDeletion`), in a board's polygon or a plane's
+    /// outline; nil for anything else, or when the polygon went with it.
+    private func polygonEdgeSelection(
+        afterDeleting ref: HorizontalSelectableRef,
+        from before: HorizontalBoard,
+        to after: HorizontalBoard
+    ) -> HorizontalSelectableRef? {
+        guard ref.type == .polygonEdge else {
+            return nil
+        }
+        func polygon(in board: HorizontalBoard) -> HorizontalPolygon? {
+            board.polygons.first { normalizedID($0.id) == normalizedID(ref.id) }
+                ?? board.planes.lazy.compactMap(\.fallbackPolygon).first { normalizedID($0.id) == normalizedID(ref.id) }
+        }
+        guard let old = polygon(in: before), let new = polygon(in: after),
+              new.polygonVertices.count == old.polygonVertices.count - 2,
+              let index = HorizontalPolygonEdgeDeletion.edgeIndex(afterDeleting: ref.vertex, vertexCount: old.polygonVertices.count),
+              new.polygonVertices.indices.contains(index) else {
+            return nil
+        }
+        return HorizontalSelectableRef(id: new.id, type: .polygonEdge, vertex: index, layer: new.layer)
     }
 
     private func deletePolygonVertices(_ ref: HorizontalSelectableRef, from polygons: inout [HorizontalPolygon]) -> Bool {

@@ -4170,11 +4170,39 @@ struct SchematicCanvasView: View {
 
         registerUndoSnapshot(previousSheet, actionName: "Delete")
         editedSheet = draft
-        selectedObjects = []
+        // A polygon edge's next is the edge across the gap it left, as on
+        // the board, so the next Delete goes on along the outline.
+        selectedObjects = drawingPolygonEdgeSelection(afterDeleting: selectedObjects, from: previousSheet, to: draft).map { [$0] } ?? []
         hoveredObject = nil
         invalidateSelectableCache()
         onSheetChange(draft)
         publishSelectionContext()
+    }
+
+    /// The edge to select once `deleted`, one drawing polygon's edge, is
+    /// deleted: the one joining the vertices either side of the gap
+    /// (`HorizontalPolygonEdgeDeletion`); nil for anything else, or when the
+    /// polygon went with it. A drawing polygon goes below two vertices.
+    private func drawingPolygonEdgeSelection(
+        afterDeleting deleted: [HorizontalSelectableRef],
+        from before: HorizontalSchematicSheet,
+        to after: HorizontalSchematicSheet
+    ) -> HorizontalSelectableRef? {
+        guard Set(deleted).count == 1, let ref = deleted.first, ref.type == .polygonEdge else {
+            return nil
+        }
+        func polygon(in sheet: HorizontalSchematicSheet) -> HorizontalPolygon? {
+            sheet.drawingPolygons.first { $0.id.lowercased() == ref.id.lowercased() }
+        }
+        guard let old = polygon(in: before), let new = polygon(in: after),
+              new.polygonVertices.count == old.polygonVertices.count - 2,
+              let index = HorizontalPolygonEdgeDeletion.edgeIndex(
+                afterDeleting: ref.vertex, vertexCount: old.polygonVertices.count, minimumVertices: 2
+              ),
+              new.polygonVertices.indices.contains(index) else {
+            return nil
+        }
+        return HorizontalSelectableRef(id: new.id, type: .polygonEdge, vertex: index)
     }
 
     private func deleteSelectedObjects(from sheet: inout HorizontalSchematicSheet) -> Bool {
