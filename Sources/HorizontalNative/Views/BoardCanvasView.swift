@@ -386,6 +386,12 @@ struct BoardCanvasView: View {
         /// end of the route at the cursor, and the next click lays the route
         /// there, drops the via at its end and carries on on the far layer.
         var placesVia = false
+        /// The layer the route was on before the click that just dropped a
+        /// via took it to the far one; nil once a click lays anything after
+        /// the via. A double-click then ends the route at the via and goes
+        /// back to that layer, as a via down to a plane on another layer
+        /// wants: the next route starts where this one did.
+        var layerBeforeVia: Int?
         /// Where the stretch being drawn left copper that was there before the
         /// route; a click that reaches its net's copper again replaces what
         /// joined the two (`BoardTrackLoops`).
@@ -1238,8 +1244,19 @@ struct BoardCanvasView: View {
                     // nothing, so one whose first click ended the route on a
                     // pad or a track doesn't begin the next route there.
                     if clickCount >= 2 {
-                        if drawTrackState?.hasDrawn == true {
-                            commitDrawTrack()
+                        if let state = drawTrackState, state.hasDrawn {
+                            // A via the first click dropped (V) ends the
+                            // route there, on the layer it was on before the
+                            // via: the via reaches the far layer, a plane
+                            // there, and routing goes on where it was.
+                            commitDrawTrack(armingLayer: state.layerBeforeVia)
+                            // The via turned the board to the route's layer;
+                            // turn it back. Against the route's layer, not
+                            // `drawingLayer`, which this click's closure may
+                            // hold from before the board turned.
+                            if let layer = state.layerBeforeVia, layer != state.layer {
+                                onSelectDrawingLayer(layer)
+                            }
                         }
                         return
                     }
@@ -1923,7 +1940,7 @@ struct BoardCanvasView: View {
                 : "   V via (no via rule for this net)"
             var viaArmed = ""
             if let via = routeVia(netID: state.netID) {
-                viaHint = state.placesVia ? "   V no via" : "   V via"
+                viaHint = state.placesVia ? "   V no via   double-click ends at the via, on this layer" : "   V via"
                 if state.placesVia {
                     let diameter = String(format: "%g", via.diameter / 1_000_000)
                     let hole = String(format: "%g", via.holeDiameter / 1_000_000)
@@ -6134,6 +6151,7 @@ struct BoardCanvasView: View {
         state.netID = netID
         state.layer = laid.head.layer
         state.placesVia = laid.head.placesVia
+        state.layerBeforeVia = laid.vias > 0 && laid.head.layer != head.layer ? head.layer : nil
         state.segmentCount += laid.segments
         state.viaCount += laid.vias
         // A route whose width is the rules' takes the rules' width on the
@@ -6261,7 +6279,9 @@ struct BoardCanvasView: View {
     /// Ends the route: what its clicks laid goes to the document as one
     /// undoable step, and the tool waits for the click that starts the next
     /// route (`armDrawTrack`). A route that laid nothing just ends.
-    private func commitDrawTrack() {
+    /// Keeps what the route laid and waits for the next one, on `armingLayer`
+    /// when given, else the board's drawing layer.
+    private func commitDrawTrack(armingLayer: Int? = nil) {
         guard !isReadOnly,
               let state = drawTrackState else {
             return
@@ -6281,7 +6301,7 @@ struct BoardCanvasView: View {
             registerUndoSnapshot(state.originalBoard, actionName: "Draw Track")
             publishConnectivityResolvedEdit(board, sync: BoardLayoutSyncIntent(baseline: state.originalBoard, kind: .drawTrack))
         }
-        armDrawTrack()
+        armDrawTrack(layer: armingLayer)
         // The route inspector measures the next route against the board this
         // one left; the tool never stopped, so nothing else tells it.
         routeInspector?.beginRoute(on: board)
@@ -6383,6 +6403,7 @@ struct BoardCanvasView: View {
         state.segmentCount = step.segmentCount
         state.viaCount = step.viaCount
         state.placesVia = step.placesVia
+        state.layerBeforeVia = nil
         state.loopStart = step.loopStart
         state.routeTrackIDs = step.routeTrackIDs
         drawTrackState = state

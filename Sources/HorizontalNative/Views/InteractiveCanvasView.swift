@@ -2928,18 +2928,39 @@ struct HorizontalCanvasInputView: View {
 
     /// Single/double-click detection (SwiftUI drags carry no click count),
     /// with the system's double-click interval: a fixed 0.35 s took a
-    /// double-click at macOS's default speed for two single clicks.
+    /// double-click at macOS's default speed for two single clicks. On the
+    /// Mac the mouse event's own count decides, which AppKit takes from when
+    /// the clicks happened: timed when they were handled, a click that kept
+    /// the main thread busy, as a via turning the board to another layer
+    /// does, left the next one past the interval, a single click.
     private func fireTap(at location: CGPoint, size: CGSize, action: HorizontalSelectionClickAction) {
         let now = Date()
-        let isDouble = HorizontalCanvasInputCore.isDoubleClick(
+        var isDouble = HorizontalCanvasInputCore.isDoubleClick(
             at: location, time: now, after: lastTapLocation, at: lastTapTime,
             interval: Self.doubleClickInterval
         )
+        #if os(macOS)
+        if let counted = Self.clickCount(of: NSApp.currentEvent) {
+            isDouble = counted == 2
+        }
+        #endif
         let clickCount = isDouble ? 2 : 1
         lastTapTime = isDouble ? .distantPast : now
         lastTapLocation = location
         onPrimaryClick(location, size, action, clickCount)
     }
+
+    #if os(macOS)
+    /// The click count of `event` when it is the left button's: 2 for a
+    /// double-click, 1 for a single or a third click, as the canvas has
+    /// always counted them; nil for any other event, when the timing decides.
+    static func clickCount(of event: NSEvent?) -> Int? {
+        guard let event, event.type == .leftMouseUp || event.type == .leftMouseDown, event.clickCount > 0 else {
+            return nil
+        }
+        return event.clickCount % 2 == 0 ? 2 : 1
+    }
+    #endif
 
     private func magnifyGesture(size: CGSize) -> some Gesture {
         MagnifyGesture()
