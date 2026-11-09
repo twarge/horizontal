@@ -621,6 +621,9 @@ struct BoardCanvasView: View {
     /// draws again.
     var rulesShapeRevision: Int = 0
     var onShowToolSettings: () -> Void = {}
+    /// Opens the sidebar on the selection's details, as Edit Plane… and
+    /// Define Keepout… do.
+    var onShowSelectionDetails: () -> Void = {}
     var drawingLayer: Int = HorizontalBoardLayers.topCopper
     /// Bumped by the pane when the board changes underneath the canvas — a plane
     /// pour, a schematic sync. The canvas adopts the new board in place rather
@@ -800,6 +803,7 @@ struct BoardCanvasView: View {
         rulesRevision: Int = 0,
         rulesShapeRevision: Int = 0,
         onShowToolSettings: @escaping () -> Void = {},
+        onShowSelectionDetails: @escaping () -> Void = {},
         toolSettings: HorizontalBoardToolSettings,
         drawingLayer: Int = HorizontalBoardLayers.topCopper,
         syncRevision: Int = 0,
@@ -854,6 +858,7 @@ struct BoardCanvasView: View {
         self.rulesRevision = rulesRevision
         self.rulesShapeRevision = rulesShapeRevision
         self.onShowToolSettings = onShowToolSettings
+        self.onShowSelectionDetails = onShowSelectionDetails
         self.toolSettings = toolSettings
         self.drawingLayer = drawingLayer
         self.syncRevision = syncRevision
@@ -2324,7 +2329,8 @@ struct BoardCanvasView: View {
             title: item.title,
             subtitle: item.subtitle,
             details: item.details,
-            properties: selectionProperties(for: ref)
+            properties: selectionProperties(for: ref),
+            openSections: [Self.planeSection, Self.keepoutSection]
         )
     }
 
@@ -2543,7 +2549,10 @@ struct BoardCanvasView: View {
 
         let plane = board.planes.first { normalizedID($0.polygonID) == normalizedID(polygon.id) }
         let netID = plane?.netID ?? polygon.netID
-        let net = plane.map { "Plane \(netDisplayName($0.netID) ?? "with no net")" } ?? netDisplayName(polygon.netID)
+        let keepout = plane == nil ? keepoutBackedByPolygon(polygon.id, in: board) : nil
+        let net = plane.map { "Plane \(netDisplayName($0.netID) ?? "with no net")" }
+            ?? keepout.map { _ in "Keepout" }
+            ?? netDisplayName(polygon.netID)
         return HorizontalSelectionHUDItem(
             title: title,
             subtitle: hudSubtitle(net, layerName(for: polygon.layer)),
@@ -2563,7 +2572,7 @@ struct BoardCanvasView: View {
     private func boardPolygon(for id: String, in board: HorizontalBoard) -> HorizontalPolygon? {
         let normalizedPolygonID = normalizedID(id)
         return board.polygons.first { normalizedID($0.id) == normalizedPolygonID }
-            ?? board.planes.compactMap(\.fallbackPolygon).first { normalizedID($0.id) == normalizedPolygonID }
+            ?? board.outlinePolygons.first { normalizedID($0.id) == normalizedPolygonID }
     }
 
     private func genericHUDItem(for ref: HorizontalSelectableRef) -> HorizontalSelectionHUDItem {
@@ -2751,43 +2760,15 @@ struct BoardCanvasView: View {
             guard let plane = board.planes.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return []
             }
-            let netOptions = sortedNetOptions()
-            let netValue = plane.netID.map(normalizedID)
             return [
-                netOptions.isEmpty || netValue == nil
-                    ? readOnlyProperty("name", "Net", netDisplayName(plane.netID))
-                    : editableChoiceProperty("net", "Net", value: netValue!, options: netOptions),
                 editableNetClassProperty(for: plane.netID),
                 editableLayerProperty("layer", "Layer", plane.layer, copperOnly: true),
-                editableChoiceProperty(
-                    "priority",
-                    "Fill order",
-                    value: String(plane.priority),
-                    options: (0...20).map { HorizontalSelectionPropertyOption(id: String($0), title: String($0)) }
-                ),
-                HorizontalSelectionProperty(
-                    id: "fromRules", label: "Settings from", editor: .segmented(Self.ruleSourceOptions),
-                    value: .choice(plane.fromRules ? "rules" : "custom")),
-                editableChoiceProperty(
-                    "fill",
-                    "Fill",
-                    value: planeFillStyleID(plane.settings.fillStyle),
-                    options: [
-                        HorizontalSelectionPropertyOption(id: "solid", title: "Solid"),
-                        HorizontalSelectionPropertyOption(id: "hatch", title: "Hatch"),
-                    ]
-                ),
-                editableLengthProperty("minWidth", "Min width", Double(plane.settings.minWidth)),
-                editableBoolProperty("keepOrphans", "Keep orphans", plane.settings.keepOrphans),
-            ].compactMap { $0 }
+            ].compactMap { $0 } + planeSettingsProperties(plane, prefix: "", section: nil)
         case .keepout:
             guard let keepout = board.keepouts.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return []
             }
-            return [
-                editableTextProperty("keepoutClass", "Keepout class", keepout.keepoutClass),
-                readOnlyProperty("layer", "Layer", keepout.allCopperLayers ? "All copper" : layerName(for: keepout.polygon.layer)),
-            ].compactMap { $0 }
+            return keepoutProperties(keepout, prefix: "", section: nil)
         case .dimension:
             guard let dimension = board.dimensions.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
                 return []
@@ -2812,15 +2793,17 @@ struct BoardCanvasView: View {
             guard let polygon = boardPolygon(for: ref.id, in: board) else {
                 return []
             }
+            let plane = planeBackedByPolygon(polygon.id, in: board)
+            let keepout = keepoutBackedByPolygon(polygon.id, in: board)
             return [
                 readOnlyProperty("net", "Net", netDisplayName(polygon.netID)),
                 editableNetClassProperty(for: polygon.netID),
-                editableLayerProperty("layer", "Layer", polygon.layer, copperOnly: false),
+                editableLayerProperty("layer", "Layer", polygon.layer, copperOnly: plane != nil),
                 modeProfile.isPoolMode
                     ? editableTextProperty("parameterClass", "Parameter class", polygon.parameterClass)
-                    : readOnlyProperty("usage", "Usage", "Polygon"),
+                    : readOnlyProperty("usage", "Usage", plane != nil ? "Plane" : keepout != nil ? "Keepout" : "Polygon"),
                 readOnlyProperty("area", "Area", areaString(polygon.area)),
-            ].compactMap { $0 }
+            ].compactMap { $0 } + polygonUsageProperties(for: polygon, plane: plane, keepout: keepout)
         case .pad:
             if modeProfile.mode == .package {
                 return poolPadProperties(for: ref)
@@ -2979,6 +2962,161 @@ struct BoardCanvasView: View {
         HorizontalSelectionPropertyOption(id: "rules", title: "Rules"),
         HorizontalSelectionPropertyOption(id: "custom", title: "Custom"),
     ]
+
+    // MARK: - Plane and keepout definitions in the sidebar
+
+    static let planeSection = "Plane"
+    static let keepoutSection = "Keepout"
+    static let definePlaneActionID = "definePlane"
+    static let defineKeepoutActionID = "defineKeepout"
+    static let deletePlaneActionID = "deletePlaneDefinition"
+    static let deleteKeepoutActionID = "deleteKeepoutDefinition"
+    /// A plane setting shown on its outline's polygon is the plane's
+    /// property of the same id, prefixed so it reaches the plane.
+    static let planePropertyPrefix = "plane."
+    /// So is a keepout's, in its polygon's Keepout section.
+    static let keepoutPropertyPrefix = "keepout."
+    static let keepoutPatchPrefix = "patch."
+    /// The copper a keepout can keep out, as Horizon's keepout editor lists
+    /// it: the file's names and what the sidebar calls them.
+    static let keepoutPatchTypes: [(id: String, title: String)] = [
+        ("track", "Tracks"), ("pad", "Pads"), ("pad_th", "TH pads"), ("via", "Vias"), ("plane", "Planes"),
+        ("text", "Text"), ("net_tie", "Net ties"), ("hole_pth", "Plated holes"), ("hole_npth", "NPTH holes"),
+    ]
+    /// What a keepout defined here keeps out, as a package's keepout starts:
+    /// the board's copper and its plated holes.
+    static let defaultKeepoutPatchTypes = ["track", "pad", "pad_th", "via", "plane", "hole_pth"]
+
+    private func actionProperty(_ id: String, _ title: String, section: String? = nil) -> HorizontalSelectionProperty {
+        HorizontalSelectionProperty(id: id, label: title, editor: .action, value: .bool(true), section: section)
+    }
+
+    /// Under a board polygon's details, as Horizon's polygon offers them: the
+    /// plane or the keepout it outlines, its settings in a section ending in
+    /// Delete Plane or Delete Keepout Definition; else Define Plane… (on a
+    /// board's copper) and Define Keepout…. A package's keepouts are its own
+    /// polygons' too.
+    private func polygonUsageProperties(
+        for polygon: HorizontalPolygon,
+        plane: HorizontalPlane?,
+        keepout: HorizontalKeepout?
+    ) -> [HorizontalSelectionProperty] {
+        guard !normalizedID(polygon.id).contains("/") else {
+            return []
+        }
+        if let plane, !modeProfile.isPoolMode {
+            return planeSettingsProperties(plane, prefix: Self.planePropertyPrefix, section: Self.planeSection)
+        }
+        if let keepout {
+            return keepoutProperties(keepout, prefix: Self.keepoutPropertyPrefix, section: Self.keepoutSection)
+        }
+        var actions = [HorizontalSelectionProperty]()
+        if !modeProfile.isPoolMode, let layer = polygon.layer, HorizontalBoardLayers.isCopper(layer) {
+            actions.append(actionProperty(Self.definePlaneActionID, "Define Plane…"))
+        }
+        if allowsKeepouts {
+            actions.append(actionProperty(Self.defineKeepoutActionID, "Define Keepout…"))
+        }
+        return actions
+    }
+
+    /// A board's and a package's polygons can be keepouts, as Horizon's can.
+    private var allowsKeepouts: Bool {
+        modeProfile.mode == .board || modeProfile.mode == .package
+    }
+
+    /// A plane's settings, as Horizon's plane editor has them, ending in
+    /// Delete Plane Definition: in the Plane section of its outline's details,
+    /// their ids prefixed to reach the plane, or the plane's own. Those of a
+    /// thermal and of a hatch show only when it connects by thermals and
+    /// fills with a hatch.
+    private func planeSettingsProperties(_ plane: HorizontalPlane, prefix: String, section: String?) -> [HorizontalSelectionProperty] {
+        let settings = plane.settings
+        let thermal = settings.thermalSettings
+        let netOptions = sortedNetOptions()
+        let netValue = plane.netID.map(normalizedID)
+        func option(_ id: String, _ title: String) -> HorizontalSelectionPropertyOption {
+            HorizontalSelectionPropertyOption(id: id, title: title)
+        }
+        var properties: [HorizontalSelectionProperty?] = [
+            netOptions.isEmpty || netValue == nil
+                ? readOnlyProperty("name", "Net", netDisplayName(plane.netID))
+                : editableChoiceProperty("net", "Net", value: netValue ?? "", options: netOptions),
+            editableChoiceProperty(
+                "priority", "Fill order", value: String(plane.priority),
+                options: (0...20).map { option(String($0), String($0)) }
+            ),
+            HorizontalSelectionProperty(
+                id: "fromRules", label: "Settings from", editor: .segmented(Self.ruleSourceOptions),
+                value: .choice(plane.fromRules ? "rules" : "custom")),
+            editableLengthProperty("minWidth", "Min width", Double(settings.minWidth)),
+            editableChoiceProperty("style", "Style", value: Self.planeStyleID(settings.style),
+                                   options: [option("round", "Round"), option("square", "Bevel"), option("miter", "Sharp")]),
+            editableBoolProperty("keepOrphans", "Keep orphans", settings.keepOrphans),
+            editableChoiceProperty("textStyle", "Text style", value: settings.textStyle == .bbox ? "bbox" : "expand",
+                                   options: [option("expand", "Expand"), option("bbox", "Bounding box")]),
+            editableChoiceProperty("connectStyle", "Connect style", value: thermal.connectStyle == .thermal ? "thermal" : "solid",
+                                   options: [option("solid", "Solid"), option("thermal", "Thermal relief")]),
+        ]
+        if thermal.connectStyle == .thermal {
+            properties += [
+                editableLengthProperty("thermalGap", "Thermal gap", Double(thermal.thermalGapWidth)),
+                editableLengthProperty("thermalSpoke", "Spoke width", Double(thermal.thermalSpokeWidth)),
+                editableChoiceProperty("spokes", "Spokes", value: String(thermal.nSpokes),
+                                       options: (1...8).map { option(String($0), String($0)) }),
+                editableAngleProperty("spokeAngle", "Spoke angle", thermal.angle),
+            ]
+        }
+        properties.append(editableChoiceProperty("fill", "Fill", value: planeFillStyleID(settings.fillStyle),
+                                                 options: [option("solid", "Solid"), option("hatch", "Hatch")]))
+        if settings.fillStyle == .hatch {
+            properties += [
+                editableLengthProperty("hatchBorder", "Hatch border", Double(settings.hatchBorderWidth)),
+                editableLengthProperty("hatchLine", "Hatch line", Double(settings.hatchLineWidth)),
+                editableLengthProperty("hatchSpacing", "Hatch spacing", Double(settings.hatchLineSpacing)),
+            ]
+        }
+        let planeRows = properties.compactMap { $0 }.map { property -> HorizontalSelectionProperty in
+            var property = property
+            property.id = prefix + property.id
+            property.section = section
+            return property
+        }
+        return planeRows + [actionProperty(Self.deletePlaneActionID, "Delete Plane Definition", section: section)]
+    }
+
+    private static func planeStyleID(_ style: HorizontalPlaneSettings.Style) -> String {
+        switch style {
+        case .round: "round"
+        case .square: "square"
+        case .miter: "miter"
+        }
+    }
+
+    /// A keepout's options, as Horizon's keepout editor has them, ending in
+    /// Delete Keepout Definition, which leaves the polygon a polygon: its
+    /// class, whether it is on all copper layers or its polygon's, whether
+    /// only exposed copper, and what it keeps out. In the Keepout section of
+    /// its polygon's details, their ids prefixed to reach the keepout, or the
+    /// keepout's own.
+    private func keepoutProperties(_ keepout: HorizontalKeepout, prefix: String, section: String?) -> [HorizontalSelectionProperty] {
+        var properties: [HorizontalSelectionProperty?] = [
+            editableTextProperty("keepoutClass", "Keepout class", keepout.keepoutClass),
+            editableBoolProperty("allCopperLayers", "All copper layers", keepout.allCopperLayers),
+            editableBoolProperty("exposedCopperOnly", "Exposed copper only", keepout.exposedCopperOnly),
+        ]
+        let keptOut = Set(keepout.copperPatchTypes.map { $0.lowercased() })
+        for type in Self.keepoutPatchTypes {
+            properties.append(editableBoolProperty(Self.keepoutPatchPrefix + type.id, type.title, keptOut.contains(type.id)))
+        }
+        let rows = properties.compactMap { $0 }.map { property -> HorizontalSelectionProperty in
+            var property = property
+            property.id = prefix + property.id
+            property.section = section
+            return property
+        }
+        return rows + [actionProperty(Self.deleteKeepoutActionID, "Delete Keepout Definition", section: section)]
+    }
 
     private func readOnlyProperty(_ id: String, _ label: String, _ value: String?) -> HorizontalSelectionProperty? {
         guard let value = nonEmpty(value) else {
@@ -3480,6 +3618,8 @@ struct BoardCanvasView: View {
             selectBoardLayerView: { onSelectBoardLayerView($0) },
             definePlane: { definePlaneForSelection() },
             editPlane: { editPlaneForSelection() },
+            defineKeepout: { if let ref = selectedObjects.first(where: isPolygonRef) { defineKeepout(on: ref) } },
+            editKeepout: { editKeepoutForSelection() },
             updateAllPlanes: { onUpdateAllPlanes() },
             convertPolygonToLineLoop: { convertPolygonToLineLoopForSelection() },
             convertLineLoopToPolygon: { convertLineLoopToPolygonForSelection() },
@@ -3912,6 +4052,12 @@ struct BoardCanvasView: View {
             } else if canDefinePlane(on: ref) {
                 entries.append(.command(title: "Define Plane…", .definePlane))
             }
+            if canDefineKeepout(on: ref) {
+                entries.append(.command(title: "Define Keepout…", .defineKeepout))
+            }
+        }
+        if ref.type == .keepout || (isPolygonRef(ref) && keepoutBackedByPolygon(ref.id, in: board) != nil) {
+            entries.append(.command(title: "Edit Keepout…", .editKeepout))
         }
 
         // Polygon ↔ line loop (reciprocal tools).
@@ -7042,7 +7188,7 @@ struct BoardCanvasView: View {
               let layer = polygon.layer, HorizontalBoardLayers.isCopper(layer) else {
             return false
         }
-        return planeBackedByPolygon(polygon.id, in: board) == nil
+        return planeBackedByPolygon(polygon.id, in: board) == nil && keepoutBackedByPolygon(polygon.id, in: board) == nil
     }
 
     /// Context-menu "Define Plane": the plane editor on the right-clicked
@@ -7058,7 +7204,9 @@ struct BoardCanvasView: View {
             editPlaneForSelection()
             return
         }
-        guard let layer = polygon.layer, HorizontalBoardLayers.isCopper(layer) else {
+        // A polygon is a plane or a keepout, as Horizon's has one usage.
+        guard keepoutBackedByPolygon(polygon.id, in: board) == nil,
+              let layer = polygon.layer, HorizontalBoardLayers.isCopper(layer) else {
             return
         }
         let nets = sortedNetOptions()
@@ -7071,26 +7219,158 @@ struct BoardCanvasView: View {
         )
     }
 
-    /// Context-menu "Edit Plane": the plane editor on the plane the
-    /// right-clicked polygon backs, with the plane selected behind it.
+    /// Context-menu "Edit Plane": the right-clicked polygon's parts alone
+    /// left selected and the sidebar open on them, where the polygon's Plane
+    /// section has the plane's settings.
     private func editPlaneForSelection() {
         guard let ref = selectedObjects.first(where: isPolygonRef),
-              let plane = planeBackedByPolygon(ref.id, in: board) else {
+              planeBackedByPolygon(ref.id, in: board) != nil else {
             return
         }
-        setSelectedObject(HorizontalSelectableRef(id: plane.id, type: .plane, layer: plane.layer))
+        let id = normalizedID(ref.id)
+        selectedObjects = selectedObjects.filter { isPolygonRef($0) && normalizedID($0.id) == id }
+        publishSelectionContext()
+        onShowSelectionDetails()
+    }
+
+    private func keepoutBackedByPolygon(_ polygonID: String, in board: HorizontalBoard) -> HorizontalKeepout? {
+        board.keepouts.first { !$0.id.contains("/") && normalizedID($0.polygonID) == normalizedID(polygonID) }
+    }
+
+    /// A polygon that can become a keepout: one of the board's or the
+    /// package's own, not a package's on the board, a plane's outline or a
+    /// keepout's already.
+    private func canDefineKeepout(on ref: HorizontalSelectableRef) -> Bool {
+        guard allowsKeepouts, isPolygonRef(ref), !normalizedID(ref.id).contains("/"),
+              board.polygons.contains(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+            return false
+        }
+        return planeBackedByPolygon(ref.id, in: board) == nil && keepoutBackedByPolygon(ref.id, in: board) == nil
+    }
+
+    /// The polygon's parts in the selection, or `ref` alone when there are
+    /// none: what Define Keepout… and Delete Keepout Definition leave
+    /// selected, so the sidebar shows the polygon with its Keepout section,
+    /// or without it, where it was.
+    private func selectPolygonParts(of ref: HorizontalSelectableRef) {
+        let id = normalizedID(ref.id)
+        let parts = selectedObjects.filter { isPolygonRef($0) && normalizedID($0.id) == id }
+        selectedObjects = parts.isEmpty ? [ref] : parts
+    }
+
+    /// A keepout defined on its polygon or deleted from it, a board edit as
+    /// any other, which the document saves and pours planes again for.
+    private func commitKeepoutEdit(_ board: HorizontalBoard, from previous: HorizontalBoard, actionName: String) {
+        registerUndoSnapshot(previous, actionName: actionName)
+        editedBoard = board
+        hoveredObject = nil
+        invalidateSelectableCache()
+        publishConnectivityResolvedEdit(board)
+        publishSelectionContext()
+    }
+
+    /// Define Keepout…: the polygon a keepout at once, as Horizon's polygon
+    /// becomes one, keeping out the copper on its layer, or all copper when
+    /// it is on none. It stays a polygon to pick and reshape, now with a
+    /// Keepout section in its details, where the sidebar opens. The keepout
+    /// holds its polygon, as the board loads one.
+    private func defineKeepout(on ref: HorizontalSelectableRef) {
+        guard !isReadOnly, canDefineKeepout(on: ref) else {
+            return
+        }
+        let previous = editedBoard ?? sourceBoard
+        var board = previous
+        guard let polygon = board.polygons.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+            return
+        }
+        board.keepouts.append(HorizontalKeepout(
+            id: UUID().uuidString.lowercased(),
+            polygonID: polygon.id,
+            polygon: polygon,
+            keepoutClass: "",
+            allCopperLayers: !(polygon.layer.map(HorizontalBoardLayers.isCopper) ?? false),
+            exposedCopperOnly: false,
+            copperPatchTypes: Self.defaultKeepoutPatchTypes
+        ))
+        // The polygon is the keepout's outline now, kept in the keepout.
+        board.lowerPlaneOutlines()
+        selectPolygonParts(of: ref)
+        commitKeepoutEdit(board, from: previous, actionName: "Define Keepout")
+        onShowSelectionDetails()
+    }
+
+    /// Delete Keepout Definition, in a keepout's or its polygon's details:
+    /// the keepout goes and its polygon stays, a polygon again, selected.
+    private func deleteKeepoutDefinition(_ ref: HorizontalSelectableRef) {
         guard !isReadOnly else {
             return
         }
-        let anchor = lastCursorWorldPoint
-            ?? plane.fallbackPolygon.map { HorizontalRect(points: $0.vertices).center }
-            ?? board.bounds.center
-        planeEditorState = PlaneEditorState(
-            purpose: .edit(planeID: plane.id),
-            worldPosition: anchor,
-            layer: plane.layer,
-            draft: HorizontalPlaneEditorDraft(plane: plane)
-        )
+        let previous = editedBoard ?? sourceBoard
+        var board = previous
+        let keepout = ref.type == .keepout
+            ? board.keepouts.first { normalizedID($0.id) == normalizedID(ref.id) }
+            : isPolygonRef(ref) ? keepoutBackedByPolygon(ref.id, in: board) : nil
+        guard let keepout, !keepout.id.contains("/"),
+              let index = board.keepouts.firstIndex(where: { normalizedID($0.id) == normalizedID(keepout.id) }) else {
+            return
+        }
+        board.keepouts.remove(at: index)
+        // patchKeepouts keeps entries the model lacks.
+        board.removedKeepoutIDs.insert(keepout.id)
+        board.polygons.append(keepout.polygon)
+        selectPolygonParts(of: isPolygonRef(ref) ? ref : HorizontalSelectableRef(
+            id: keepout.polygon.id, type: .polygonEdge, vertex: 0, layer: keepout.polygon.layer))
+        commitKeepoutEdit(board, from: previous, actionName: "Delete Keepout")
+    }
+
+    /// Context-menu "Edit Keepout": the right-clicked polygon's parts alone
+    /// left selected and the sidebar open on them, where the polygon's
+    /// Keepout section has the keepout's options.
+    private func editKeepoutForSelection() {
+        guard let ref = selectedObjects.first(where: { isPolygonRef($0) && keepoutBackedByPolygon($0.id, in: board) != nil })
+                ?? selectedObjects.first(where: { $0.type == .keepout }) else {
+            return
+        }
+        if ref.type == .keepout {
+            setSelectedObject(ref)
+        } else {
+            let id = normalizedID(ref.id)
+            selectedObjects = selectedObjects.filter { isPolygonRef($0) && normalizedID($0.id) == id }
+            publishSelectionContext()
+        }
+        onShowSelectionDetails()
+    }
+
+    /// Delete Plane Definition, in a plane's or its outline's details: the
+    /// plane goes and its polygon stays, a polygon again, selected.
+    private func deletePlaneDefinition(outlinedBy ref: HorizontalSelectableRef) {
+        guard !isReadOnly else {
+            return
+        }
+        let plane = ref.type == .plane
+            ? board.planes.first { normalizedID($0.id) == normalizedID(ref.id) }
+            : isPolygonRef(ref) ? planeBackedByPolygon(ref.id, in: board) : nil
+        guard let plane, !plane.id.contains("/") else {
+            return
+        }
+        removePlane(plane.id, actionName: "Delete Plane")
+        if let outline = plane.fallbackPolygon {
+            setSelectedObject(HorizontalSelectableRef(id: outline.id, type: .polygonEdge,
+                                                      vertex: isPolygonRef(ref) ? ref.vertex : 0, layer: outline.layer))
+        }
+    }
+
+    /// The plane out of the board and the file, its polygon kept a polygon:
+    /// patchPlanes keeps entries the model lacks, so the removal is flagged
+    /// rather than inferred from absence.
+    private func removePlane(_ planeID: String, actionName: String) {
+        var board = editedBoard ?? sourceBoard
+        let liftedOutlines = board.liftPlaneOutlines()
+        board.planes.removeAll { normalizedID($0.id) == normalizedID(planeID) }
+        board.removedPlaneIDs.insert(planeID)
+        board.lowerPlaneOutlines(lifted: liftedOutlines)
+        selectedObjects = []
+        commitPlaneEdit(board, actionName: actionName)
     }
 
     private func confirmPlaneEditor(_ draft: HorizontalPlaneEditorDraft) {
@@ -7111,8 +7391,12 @@ struct BoardCanvasView: View {
             // The polygon is the plane's outline now, kept in the plane as
             // the board loads it, and no polygon of the board's own.
             board.lowerPlaneOutlines()
-            selectedObjects = [HorizontalSelectableRef(id: plane.id, type: .plane, layer: plane.layer)]
+            // The polygon stays selected, its Plane section now in the sidebar.
+            if !selectedObjects.contains(where: { isPolygonRef($0) && normalizedID($0.id) == normalizedID(polygon.id) }) {
+                selectedObjects = [HorizontalSelectableRef(id: polygon.id, type: .polygonEdge, vertex: 0, layer: polygon.layer)]
+            }
             commitPlaneEdit(board, actionName: "Define Plane")
+            onShowSelectionDetails()
         case .edit(let planeID):
             guard let index = board.planes.firstIndex(where: { normalizedID($0.id) == normalizedID(planeID) }) else {
                 return
@@ -7130,16 +7414,8 @@ struct BoardCanvasView: View {
             return
         }
         planeEditorState = nil
-        var board = editedBoard ?? sourceBoard
         // The polygon stays, a polygon again; only the plane over it goes.
-        // patchPlanes keeps entries the model lacks, so the removal is
-        // flagged rather than inferred from absence.
-        let liftedOutlines = board.liftPlaneOutlines()
-        board.planes.removeAll { normalizedID($0.id) == normalizedID(planeID) }
-        board.removedPlaneIDs.insert(planeID)
-        board.lowerPlaneOutlines(lifted: liftedOutlines)
-        selectedObjects = []
-        commitPlaneEdit(board, actionName: "Delete Plane")
+        removePlane(planeID, actionName: "Delete Plane")
     }
 
     private func cancelPlaneEditor() {
@@ -7153,7 +7429,8 @@ struct BoardCanvasView: View {
     }
 
     /// True for a standalone board polygon that can convert to a line loop — not a
-    /// plane outline (that would orphan the plane) and not package-owned geometry.
+    /// plane's or a keepout's outline (that would orphan it) and not
+    /// package-owned geometry.
     private func isConvertiblePolygon(_ ref: HorizontalSelectableRef) -> Bool {
         guard isPolygonRef(ref), !normalizedID(ref.id).contains("/") else {
             return false
@@ -7161,7 +7438,7 @@ struct BoardCanvasView: View {
         guard let polygon = boardPolygon(for: ref.id, in: board), !polygon.id.contains("/") else {
             return false
         }
-        return planeBackedByPolygon(polygon.id, in: board) == nil
+        return planeBackedByPolygon(polygon.id, in: board) == nil && keepoutBackedByPolygon(polygon.id, in: board) == nil
     }
 
     /// `tool_polygon_to_line_loop`: explode the selected polygon into a
@@ -7670,7 +7947,7 @@ struct BoardCanvasView: View {
         }
         func polygon(in board: HorizontalBoard) -> HorizontalPolygon? {
             board.polygons.first { normalizedID($0.id) == normalizedID(ref.id) }
-                ?? board.planes.lazy.compactMap(\.fallbackPolygon).first { normalizedID($0.id) == normalizedID(ref.id) }
+                ?? board.outlinePolygons.first { normalizedID($0.id) == normalizedID(ref.id) }
         }
         guard let old = polygon(in: before), let new = polygon(in: after),
               new.polygonVertices.count == old.polygonVertices.count - 2,
@@ -8138,7 +8415,7 @@ struct BoardCanvasView: View {
         // moves whole. One with a point left behind (an edge moved alone, a
         // vertex) changes shape, so it is previewed from a rebuilt scene.
         let reshaped = BoardPolygonParts.reshapedPolygonIDs(
-            by: refs, in: board.polygons + board.planes.compactMap(\.fallbackPolygon)
+            by: refs, in: board.polygons + board.outlinePolygons
         )
         if !reshaped.isEmpty {
             plan.unsupportedRefs.formUnion(refs.filter {
@@ -9100,6 +9377,24 @@ struct BoardCanvasView: View {
             copyBlockLayoutToOtherInstances()
             return
         }
+        // The sidebar's plane and keepout buttons, each its own edit.
+        switch change.propertyID {
+        case Self.definePlaneActionID:
+            setSelectedObject(change.ref)
+            definePlaneForSelection()
+            return
+        case Self.defineKeepoutActionID:
+            defineKeepout(on: change.ref)
+            return
+        case Self.deletePlaneActionID:
+            deletePlaneDefinition(outlinedBy: change.ref)
+            return
+        case Self.deleteKeepoutActionID:
+            deleteKeepoutDefinition(change.ref)
+            return
+        default:
+            break
+        }
         // Set and Clear Diff Pair edit the block, through the host's
         // project edit, which reloads the board with the pair.
         if change.propertyID == HorizontalDiffpairProperty.id, case .choice(let partner) = change.value {
@@ -9324,6 +9619,28 @@ struct BoardCanvasView: View {
     ) {
         if propertyID == "netClass", case .choice(let classID) = value {
             updateNetClass(for: netID(for: ref), classID: classID, board: &board, changedNetClasses: &changedNetClasses)
+            return
+        }
+        // A keepout option in its polygon's Keepout section is the keepout's.
+        if isPolygonRef(ref), propertyID.hasPrefix(Self.keepoutPropertyPrefix),
+           let keepout = keepoutBackedByPolygon(ref.id, in: board) {
+            updateKeepout(
+                &board.keepouts,
+                ref: HorizontalSelectableRef(id: keepout.id, type: .keepout, layer: keepout.polygon.layer),
+                propertyID: String(propertyID.dropFirst(Self.keepoutPropertyPrefix.count)),
+                value: value
+            )
+            return
+        }
+        // A plane setting in its outline's Plane section is the plane's.
+        if isPolygonRef(ref), propertyID.hasPrefix(Self.planePropertyPrefix),
+           let plane = planeBackedByPolygon(ref.id, in: board) {
+            updatePlane(
+                ref: HorizontalSelectableRef(id: plane.id, type: .plane, layer: plane.layer),
+                propertyID: String(propertyID.dropFirst(Self.planePropertyPrefix.count)),
+                value: value,
+                board: &board
+            )
             return
         }
 
@@ -9797,6 +10114,38 @@ struct BoardCanvasView: View {
             board.planes[index].fromRules = false
             board.planes[index].settings.keepOrphans = on
             board.planes[index].keepOrphans = on
+        case ("style", .choice(let style)):
+            board.planes[index].fromRules = false
+            board.planes[index].settings.style = style == "square" ? .square : style == "miter" ? .miter : .round
+        case ("textStyle", .choice(let style)):
+            board.planes[index].fromRules = false
+            board.planes[index].settings.textStyle = style == "bbox" ? .bbox : .expand
+        case ("connectStyle", .choice(let style)):
+            board.planes[index].fromRules = false
+            board.planes[index].settings.thermalSettings.connectStyle = style == "thermal" ? .thermal : .solid
+        case ("thermalGap", .length(let width)):
+            board.planes[index].fromRules = false
+            board.planes[index].settings.thermalSettings.thermalGapWidth = Int(max(width, 0).rounded())
+        case ("thermalSpoke", .length(let width)):
+            board.planes[index].fromRules = false
+            board.planes[index].settings.thermalSettings.thermalSpokeWidth = Int(max(width, 0).rounded())
+        case ("spokes", .choice(let count)):
+            if let count = Int(count) {
+                board.planes[index].fromRules = false
+                board.planes[index].settings.thermalSettings.nSpokes = count
+            }
+        case ("spokeAngle", .angle(let angle)):
+            board.planes[index].fromRules = false
+            board.planes[index].settings.thermalSettings.angle = angle
+        case ("hatchBorder", .length(let width)):
+            board.planes[index].fromRules = false
+            board.planes[index].settings.hatchBorderWidth = Int(max(width, 0).rounded())
+        case ("hatchLine", .length(let width)):
+            board.planes[index].fromRules = false
+            board.planes[index].settings.hatchLineWidth = Int(max(width, 0).rounded())
+        case ("hatchSpacing", .length(let width)):
+            board.planes[index].fromRules = false
+            board.planes[index].settings.hatchLineSpacing = Int(max(width, 0).rounded())
         case ("layer", .layer(let layer)):
             // A plane's layer is its outline's.
             board.planes[index].layer = layer
@@ -9823,12 +10172,30 @@ struct BoardCanvasView: View {
         propertyID: String,
         value: HorizontalSelectionPropertyValue
     ) {
-        guard propertyID == "keepoutClass",
-              case .text(let keepoutClass) = value,
-              let index = keepouts.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+        guard let index = keepouts.firstIndex(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
             return
         }
-        keepouts[index].keepoutClass = keepoutClass
+        switch (propertyID, value) {
+        case ("keepoutClass", .text(let keepoutClass)):
+            keepouts[index].keepoutClass = keepoutClass
+        case ("allCopperLayers", .bool(let on)):
+            keepouts[index].allCopperLayers = on
+        case ("exposedCopperOnly", .bool(let on)):
+            keepouts[index].exposedCopperOnly = on
+        case (let id, .bool(let on)) where id.hasPrefix(Self.keepoutPatchPrefix):
+            let type = String(id.dropFirst(Self.keepoutPatchPrefix.count))
+            var types = keepouts[index].copperPatchTypes.filter { $0.lowercased() != type }
+            if on {
+                types.append(type)
+            }
+            // In the order the editor lists them, as the file had them.
+            let order = Self.keepoutPatchTypes.map(\.id)
+            keepouts[index].copperPatchTypes = types.sorted {
+                (order.firstIndex(of: $0) ?? order.count) < (order.firstIndex(of: $1) ?? order.count)
+            }
+        default:
+            break
+        }
     }
 
     private func updateDimension(
@@ -10475,6 +10842,10 @@ struct BoardCanvasView: View {
             uniqueKeysWithValues: board.keepouts.map { (normalizedID($0.id), $0.allCopperLayers) }
         )
         let planePolygonIDs = Set(board.planes.map { normalizedID($0.polygonID) })
+        let keepoutAllCopperByPolygonID: [String: Bool] = Dictionary(
+            board.keepouts.filter { !$0.id.contains("/") }.map { (normalizedID($0.polygonID), $0.allCopperLayers) },
+            uniquingKeysWith: { first, _ in first }
+        )
         let visibleCopperLayers = Set(
             HorizontalBoardLayers.all.filter {
                 HorizontalBoardLayers.isCopper($0) && displayOptions.isLayerVisible($0)
@@ -10507,6 +10878,7 @@ struct BoardCanvasView: View {
             return isSelectableVisible(
                 selectable.ref,
                 keepoutAllCopperByID: keepoutAllCopperByID,
+                keepoutAllCopperByPolygonID: keepoutAllCopperByPolygonID,
                 planePolygonIDs: planePolygonIDs,
                 visibleCopperLayers: visibleCopperLayers,
                 visibleDecalIDs: visibleDecalIDs,
@@ -10523,6 +10895,7 @@ struct BoardCanvasView: View {
     private func isSelectableVisible(
         _ ref: HorizontalSelectableRef,
         keepoutAllCopperByID: [String: Bool],
+        keepoutAllCopperByPolygonID: [String: Bool],
         planePolygonIDs: Set<String>,
         visibleCopperLayers: Set<Int>,
         visibleDecalIDs: Set<String>,
@@ -10535,6 +10908,14 @@ struct BoardCanvasView: View {
         case .polygonArcCenter, .polygonEdge, .polygonVertex:
             if planePolygonIDs.contains(normalizedID(ref.id)) {
                 return displayOptions.isLayerVisible(ref.layer)
+            }
+            // A keepout's polygon shows while keepouts do, on its layer, or
+            // on any copper shown for one on all copper layers.
+            if let allCopper = keepoutAllCopperByPolygonID[normalizedID(ref.id)] {
+                guard displayOptions.keepouts else {
+                    return false
+                }
+                return allCopper ? !visibleCopperLayers.isEmpty : displayOptions.isLayerVisible(ref.layer)
             }
             if let layer = ref.layer, isBoardBodyLayer(layer) {
                 return displayOptions.boardBody || displayOptions.showsOutlineLayer
@@ -11903,8 +12284,10 @@ struct BoardCanvasView: View {
         // ============================================================
         profile("all-copper keepouts") {
             for keepout in board.keepouts where keepout.allCopperLayers {
+                // A board keepout's spans are its polygon's, which its parts
+                // pick and a move shifts, as a polygon's are.
                 let owner = packageOwner(for: keepout.id)
-                    ?? selectableRef(id: keepout.id, type: .keepout, layer: keepout.polygon.layer)
+                    ?? selectableRef(id: keepout.polygon.id, type: .polygonEdge, layer: keepout.polygon.layer)
                 appendClosedPolyline(
                     keepout.polygon.renderVertices(arcPrecision: 24),
                     color: keepoutStrokeColor,
@@ -12176,7 +12559,7 @@ struct BoardCanvasView: View {
                 // Keepouts (per-layer)
                 for keepout in board.keepouts where !keepout.allCopperLayers && keepout.polygon.layer == layer {
                     let owner = packageOwner(for: keepout.id, layer: layer)
-                        ?? selectableRef(id: keepout.id, type: .keepout, layer: layer)
+                        ?? selectableRef(id: keepout.polygon.id, type: .polygonEdge, layer: layer)
                     appendClosedPolyline(
                         keepout.polygon.renderVertices(arcPrecision: 24),
                         color: keepoutStrokeColor,
@@ -14412,7 +14795,7 @@ struct BoardCanvasView: View {
                 .filter { $0.type == .polygonEdge }
                 .map(polygonEdgeSelectionKey)
         )
-        let polygons = board.polygons + board.planes.compactMap(\.fallbackPolygon)
+        let polygons = board.polygons + board.outlinePolygons
         let edgeSelectables = filterVisibleSelectables(
             polygonEdgeSelectables(polygons, type: .polygonEdge),
             in: board
@@ -14626,21 +15009,14 @@ struct BoardCanvasView: View {
             board.polygons,
             type: .polygonEdge
         ))
+        // A plane's outline and a keepout's are picked, moved and reshaped by
+        // their parts, as any polygon is; a package's keepouts and drills are
+        // parts of it, which a click picks and a move moves only as the whole
+        // package, as in Horizon.
         selectables.append(contentsOf: polygonEdgeSelectables(
-            board.planes.compactMap(\.fallbackPolygon),
+            board.outlinePolygons,
             type: .polygonEdge
         ))
-
-        // A package's keepouts and drills are parts of it, which a click
-        // picks and a move moves only as the whole package, as in Horizon.
-        selectables.append(contentsOf: board.keepouts.filter { packageID(forGeometryID: $0.id) == nil }.map { keepout in
-            HorizontalSelectable.bounds(
-                ref: HorizontalSelectableRef(id: keepout.id, type: .keepout, layer: keepout.polygon.layer),
-                points: keepout.points,
-                fallbackCenter: HorizontalRect(points: keepout.points).center,
-                fallbackSize: 1_000_000
-            )
-        })
 
         selectables.append(contentsOf: board.decals.compactMap { decal in
             // Use the full geometric bounds; visibility is applied at filter time.
@@ -18170,8 +18546,8 @@ extension BoardCanvasView {
         }
         let stableBoard = editedBoard ?? sourceBoard
         let polygonID = normalizedID(ref.id)
-        // A plane's outline rounds off as any polygon does.
-        guard let polygon = (stableBoard.polygons + stableBoard.planes.compactMap(\.fallbackPolygon))
+        // A plane's or a keepout's outline rounds off as any polygon does.
+        guard let polygon = (stableBoard.polygons + stableBoard.outlinePolygons)
                 .first(where: { normalizedID($0.id) == polygonID }),
               !polygon.id.contains("/") else {
             return nil

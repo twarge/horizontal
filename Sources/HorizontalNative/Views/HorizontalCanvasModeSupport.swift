@@ -278,6 +278,8 @@ struct HorizontalCanvasCommandHandlerSet {
     var switchPane: (() -> Void)? = nil
     var definePlane: (() -> Void)? = nil
     var editPlane: (() -> Void)? = nil
+    var defineKeepout: (() -> Void)? = nil
+    var editKeepout: (() -> Void)? = nil
     var updateAllPlanes: (() -> Void)? = nil
     var convertPolygonToLineLoop: (() -> Void)? = nil
     var convertLineLoopToPolygon: (() -> Void)? = nil
@@ -432,6 +434,11 @@ struct HorizontalCanvasCommandHandlerSet {
             definePlane?()
         case .editPlane:
             editPlane?()
+        case .defineKeepout:
+            guard !isReadOnly else { return }
+            defineKeepout?()
+        case .editKeepout:
+            editKeepout?()
         case .updateAllPlanes:
             guard !isReadOnly else { return }
             updateAllPlanes?()

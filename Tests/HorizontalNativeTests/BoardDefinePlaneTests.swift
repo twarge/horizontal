@@ -202,9 +202,10 @@ final class BoardDefinePlaneTests: XCTestCase {
         XCTAssertEqual(plane.fallbackPolygon?.id, "pour")
         XCTAssertFalse(edit.board.polygons.contains { $0.id == "pour" },
                        "the polygon is kept in the plane, as the board loads it, not among the board's own, which an export writes as copper")
-        let planeSelected = await settle { state.details.groups.contains { $0.type == .plane } }
-        XCTAssertTrue(planeSelected, "the new plane is selected, which the canvas can only show with the plane in its board")
-        XCTAssertEqual(subtitles(state, .plane), ["GND - \(topName)"])
+        let planeShown = await settle { subtitles(state, .polygonEdge) == ["Plane GND - \(topName)"] }
+        XCTAssertTrue(planeShown, "the polygon stays selected, a plane's now, which the canvas can only show with the plane in its board")
+        let edge = try XCTUnwrap(state.details.groups.first { $0.type == .polygonEdge }?.items.first)
+        XCTAssertTrue(edge.properties.contains { $0.id == "plane.net" && $0.section == "Plane" }, "its Plane section in the sidebar")
 
         // The document pours the board it was handed, with the plane.
         state.delivery = delivery(for: edit.board, planeID: plane.id, revision: 1)

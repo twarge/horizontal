@@ -1821,6 +1821,7 @@ struct HorizontalIPadProjectView: View {
                     rulesRevision: boardRulesRevision,
                     rulesShapeRevision: boardRuleShapeRevision,
                     onShowToolSettings: { rightPane = .inspector },
+                    onShowSelectionDetails: { rightPane = .inspector },
                     toolSettings: boardToolSettings,
                     drawingLayer: boardDrawingLayer,
                     syncRevision: boardSyncRevision,

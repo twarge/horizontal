@@ -15,7 +15,7 @@ enum BoardSelectionVertices {
     static func refs(of selected: [HorizontalSelectableRef], in board: HorizontalBoard) -> [HorizontalSelectableRef] {
         let types = Set(selected.map(\.type))
         let polygons = types.contains(where: BoardPolygonParts.isPart)
-            ? byID(board.polygons + board.planes.compactMap(\.fallbackPolygon), id: \.id)
+            ? byID(board.polygons + board.outlinePolygons, id: \.id)
             : [:]
         let tracks = types.contains(.track) ? byID(board.tracks, id: \.id) : [:]
         let netTies = types.contains(.boardNetTie) ? byID(board.netTies, id: \.id) : [:]

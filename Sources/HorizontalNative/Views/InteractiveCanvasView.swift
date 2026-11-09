@@ -99,6 +99,11 @@ enum HorizontalCanvasCommand {
     case switchPane
     case definePlane
     case editPlane
+    /// A polygon's Define Keepout… (Horizon's): a keepout on it, and its
+    /// options in the sidebar.
+    case defineKeepout
+    /// A keepout's Edit Keepout…: its options in the sidebar.
+    case editKeepout
     /// Pours every plane (Q): the fills go stale as copper moves.
     case updateAllPlanes
     /// Board: measure between two points (Horizon's dimension tool).

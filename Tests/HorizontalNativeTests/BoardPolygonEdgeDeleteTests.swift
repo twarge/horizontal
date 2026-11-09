@@ -6,8 +6,8 @@ import XCTest
 
 /// Delete on a polygon's edge takes its two vertices and selects the edge
 /// that now joins the vertices either side of the gap, so the next Delete
-/// goes on along the outline; on the board, and in the schematic's drawings
-/// by the same rule.
+/// goes on along the outline; on the board, a keepout's polygon too, and in
+/// the schematic's drawings by the same rule.
 @MainActor
 final class BoardPolygonEdgeDeleteTests: XCTestCase {
     // MARK: - The edge across the gap
@@ -71,10 +71,16 @@ final class BoardPolygonEdgeDeleteTests: XCTestCase {
         }
     }
 
-    private func board() -> HorizontalBoard {
-        var board = HorizontalGerberExportFixture.board(polygons: [
-            HorizontalPolygon(id: "hexagon", vertices: hexagon(), layer: HorizontalBoardLayers.topCopper),
-        ])
+    /// The hexagon as a polygon of the board's, or as a keepout's, which
+    /// holds its polygon as the board loads one.
+    private func board(keepout: Bool = false) -> HorizontalBoard {
+        let hexagon = HorizontalPolygon(id: "hexagon", vertices: hexagon(), layer: HorizontalBoardLayers.topCopper)
+        var board = HorizontalGerberExportFixture.board(polygons: keepout ? [] : [hexagon])
+        if keepout {
+            board.keepouts = [HorizontalKeepout(
+                id: "ko", polygonID: "hexagon", polygon: hexagon, keepoutClass: "", allCopperLayers: false,
+                exposedCopperOnly: false, copperPatchTypes: ["track"])]
+        }
         let extent = HorizontalRect(points: [HorizontalPoint(x: 0, y: 0), HorizontalPoint(x: 30 * mm, y: 30 * mm)])
         board.bounds = extent
         board.physicalBounds = extent
@@ -97,9 +103,23 @@ final class BoardPolygonEdgeDeleteTests: XCTestCase {
     }
 
     func testDeletingAnEdgeSelectsTheEdgeAcrossTheGapAndTheNextDeleteGoesOn() async throws {
+        try await deleteEdgesInTurn(keepout: false)
+    }
+
+    /// A keepout's polygon is reshaped as any polygon is, the keepout kept
+    /// until its polygon goes.
+    func testAKeepoutsPolygonLosesAnEdgeAsAPolygonDoes() async throws {
+        try await deleteEdgesInTurn(keepout: true)
+    }
+
+    private func deleteEdgesInTurn(keepout: Bool) async throws {
         guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
         _ = NSApplication.shared
-        let state = State(board())
+        let state = State(board(keepout: keepout))
+        /// The hexagon's vertices as the edit left them, wherever it is kept.
+        func vertexCount(_ board: HorizontalBoard?) -> Int? {
+            keepout ? board?.keepouts.first?.polygon.polygonVertices.count : board?.polygons.first?.polygonVertices.count
+        }
         let hosted = NSHostingView(rootView: Canvas(state: state)
             .environmentObject(HorizontalAppearanceSettings(defaults: UserDefaults(suiteName: UUID().uuidString)!)))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
@@ -126,15 +146,23 @@ final class BoardPolygonEdgeDeleteTests: XCTestCase {
         XCTAssertTrue(picked, "edge 2 selected: \(selectedEdges(state))")
 
         state.actions?.dispatch(.deleteSelection)
-        let deleted = await settle { state.committed.last?.polygons.first?.polygonVertices.count == 4 }
+        let deleted = await settle { vertexCount(state.committed.last) == 4 }
         XCTAssertTrue(deleted, "its two vertices gone")
+        if keepout {
+            XCTAssertTrue(state.committed.last?.polygons.isEmpty ?? false, "the keepout keeps its polygon")
+            XCTAssertEqual(state.committed.last?.keepouts.map(\.id), ["ko"])
+        }
         let next = await settle { self.selectedEdges(state).map(\.vertex) == [1] }
         XCTAssertTrue(next, "edge 1, v1–v4, across the gap, selected: \(selectedEdges(state))")
         XCTAssertEqual(selectedEdges(state).first?.id, "hexagon")
 
         state.actions?.dispatch(.deleteSelection)
-        let gone = await settle { state.committed.last?.polygons.isEmpty == true }
+        let gone = await settle { state.committed.count == 2 && vertexCount(state.committed.last) == nil }
         XCTAssertTrue(gone, "the next Delete takes v1 and v4, and two vertices are no polygon")
+        if keepout {
+            XCTAssertTrue(state.committed.last?.keepouts.isEmpty ?? false, "and no keepout")
+            XCTAssertEqual(state.committed.last?.removedKeepoutIDs, ["ko"])
+        }
         let cleared = await settle { self.selectedEdges(state).isEmpty }
         XCTAssertTrue(cleared, "with nothing left to select: \(selectedEdges(state))")
     }

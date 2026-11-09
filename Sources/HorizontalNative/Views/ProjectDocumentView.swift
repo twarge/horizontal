@@ -2768,6 +2768,7 @@ struct ProjectWorkspaceView: View {
                                 rulesRevision: boardRulesRevision,
                                 rulesShapeRevision: boardRuleShapeRevision,
                                 onShowToolSettings: { rightSidebarPane = .selection },
+                                onShowSelectionDetails: { rightSidebarPane = .selection },
                                 toolSettings: boardToolSettings,
                                 drawingLayer: boardDrawingLayer,
                                 syncRevision: boardSyncRevision,

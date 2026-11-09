@@ -2078,9 +2078,10 @@ enum HorizontalProjectJSONApplicator {
         keepouts: [HorizontalKeepout],
         removing removedIDs: Set<String> = []
     ) {
-        guard var map = json["keepouts"] as? JSONDictionary else {
+        guard json["keepouts"] != nil || !keepouts.isEmpty else {
             return
         }
+        var map = json["keepouts"] as? JSONDictionary ?? [:]
         for id in removedIDs {
             if let itemKey = matchingKey(id, in: map) {
                 map.removeValue(forKey: itemKey)
@@ -2089,12 +2090,17 @@ enum HorizontalProjectJSONApplicator {
         // Preserve unknown source entries; deletions come through `removedIDs`.
         // See note in patchPolygons.
 
-        for keepout in keepouts {
-            guard let itemKey = matchingKey(keepout.id, in: map),
-                  var item = map[itemKey] as? JSONDictionary else {
-                continue
-            }
+        // Each of the board's own as Horizon's Keepout::serialize writes it,
+        // one defined on a polygon new to the file: a package's keepouts
+        // (their ids under the package's) are the package's.
+        for keepout in keepouts where !keepout.id.contains("/") {
+            let itemKey = matchingKey(keepout.id, in: map) ?? keepout.id
+            var item = map[itemKey] as? JSONDictionary ?? [:]
+            item["polygon"] = keepout.polygonID
             item["keepout_class"] = keepout.keepoutClass
+            item["all_cu_layers"] = keepout.allCopperLayers
+            item["exposed_cu_only"] = keepout.exposedCopperOnly
+            item["patch_types_cu"] = keepout.copperPatchTypes
             map[itemKey] = item
         }
         json["keepouts"] = map

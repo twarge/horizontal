@@ -5,8 +5,9 @@ import SwiftUI
 import XCTest
 @testable import HorizontalNative
 
-/// Deleting a plane, from the plane editor's Delete Plane and with Delete on
-/// the selected plane, through the writer the document saves with. The canvas
+/// Deleting a plane, with Delete Plane Definition in its polygon's Plane
+/// section and in a selected plane's details, through the writer the
+/// document saves with. The canvas
 /// took the plane out of its board, but the writer keeps every plane entry the
 /// model lacks (a parser that dropped one must not read as a user deleting
 /// it), so the plane stayed in board.json and came back with the next load.
@@ -15,6 +16,7 @@ import XCTest
 @MainActor
 final class BoardDeletePlaneTests: XCTestCase {
     @MainActor private final class State: ObservableObject {
+        @Published var change: HorizontalSelectionPropertyChangeCommand?
         var source: HorizontalBoard
         var committed: [HorizontalBoard] = []
         var planeEdits: [(board: HorizontalBoard, actionName: String)] = []
@@ -43,6 +45,7 @@ final class BoardDeletePlaneTests: XCTestCase {
                 onPlaneEdit: { state.planeEdits.append(($0, $1)); board = $0 },
                 onSelectionDetailsChange: { state.details = $0 },
                 onCanvasCommandActionsChange: { state.actions = $0 },
+                selectionPropertyChangeCommand: state.change,
                 toolSettings: state.toolSettings)
         }
     }
@@ -107,54 +110,49 @@ final class BoardDeletePlaneTests: XCTestCase {
         return window
     }
 
-    /// Edit Plane on the plane's polygon: the plane selected, its editor open.
-    private func editThePlane(_ state: State) async {
-        state.actions?.dispatch(.selectAll)
-        let selected = await settle { state.details.groups.contains { $0.type == .polygonEdge } }
-        XCTAssertTrue(selected)
-        state.actions?.dispatch(.editPlane)
-        let editing = await settle { state.details.groups.map(\.type) == [.plane] }
-        XCTAssertTrue(editing, "Edit Plane selects the plane")
-    }
-
-    func testDeletePlaneInTheEditorTakesThePlaneOutOfTheFile() async throws {
-        let (board, planeID) = try fixture()
-        let state = State(board)
-        let window = try await mount(state)
-        defer { window.close() }
-
-        await editThePlane(state)
+    /// The sidebar's Delete Plane Definition, on `ref`.
+    private func deleteThePlane(_ state: State, on ref: HorizontalSelectableRef) async throws -> HorizontalBoard {
         state.undo.beginUndoGrouping()
-        state.actions?.deletePlaneInEditor?()
-        state.undo.endUndoGrouping()
+        state.change = HorizontalSelectionPropertyChangeCommand(change: HorizontalSelectionPropertyChange(
+            ref: ref, type: ref.type, propertyID: "deletePlaneDefinition", value: .bool(true), applyToAll: false))
         let deleted = await settle { state.planeEdits.count == 1 }
+        state.undo.endUndoGrouping()
         XCTAssertTrue(deleted)
         let edit = try XCTUnwrap(state.planeEdits.first)
         XCTAssertEqual(edit.actionName, "Delete Plane")
         XCTAssertTrue(edit.board.planes.isEmpty)
-        XCTAssertEqual(edit.board.polygons.map(\.id), ["pour"], "the polygon stays")
-
-        try HorizontalProjectJSONApplicator.apply(board: edit.board, in: project, to: &archive)
-        XCTAssertFalse(try writtenKeys("planes").contains(planeID), "the plane is gone from the file")
-        XCTAssertTrue(try writtenKeys("polygons").contains("pour"), "and its polygon is not")
+        XCTAssertEqual(edit.board.polygons.map(\.id), ["pour"], "the polygon stays, a polygon again")
+        return edit.board
     }
 
-    func testDeletingTheSelectedPlaneTakesItOutOfTheFile() async throws {
+    func testDeletePlaneDefinitionOnItsPolygonTakesThePlaneOutOfTheFile() async throws {
         let (board, planeID) = try fixture()
         let state = State(board)
         let window = try await mount(state)
         defer { window.close() }
 
-        await editThePlane(state)
-        state.undo.beginUndoGrouping()
-        state.actions?.dispatch(.deleteSelection)
-        state.undo.endUndoGrouping()
-        let deleted = await settle { state.committed.count == 1 }
-        XCTAssertTrue(deleted)
-        let after = try XCTUnwrap(state.committed.first)
-        XCTAssertTrue(after.planes.isEmpty)
-        XCTAssertTrue(after.polygons.contains { $0.id == "pour" }, "the polygon stays, a polygon again")
+        let after = try await deleteThePlane(state, on: HorizontalSelectableRef(
+            id: "pour", type: .polygonEdge, vertex: 1, layer: HorizontalBoardLayers.topCopper))
+        let selected = await settle {
+            state.details.groups.map(\.type) == [.polygonEdge] && state.details.groups.first?.items.first?.ref.vertex == 1
+        }
+        XCTAssertTrue(selected, "the polygon's edge stays selected: \(state.details.groups.map(\.type))")
+        let usage = state.details.groups.first?.items.first?.properties.first { $0.id == "usage" }
+        XCTAssertEqual(usage?.value, .readOnly("Polygon"))
 
+        try HorizontalProjectJSONApplicator.apply(board: after, in: project, to: &archive)
+        XCTAssertFalse(try writtenKeys("planes").contains(planeID), "the plane is gone from the file")
+        XCTAssertTrue(try writtenKeys("polygons").contains("pour"), "and its polygon is not")
+    }
+
+    func testDeletePlaneDefinitionOnThePlaneTakesItOutOfTheFile() async throws {
+        let (board, planeID) = try fixture()
+        let state = State(board)
+        let window = try await mount(state)
+        defer { window.close() }
+
+        let after = try await deleteThePlane(state, on: HorizontalSelectableRef(
+            id: planeID, type: .plane, layer: HorizontalBoardLayers.topCopper))
         try HorizontalProjectJSONApplicator.apply(board: after, in: project, to: &archive)
         XCTAssertFalse(try writtenKeys("planes").contains(planeID))
         XCTAssertTrue(try writtenKeys("polygons").contains("pour"))

@@ -6,7 +6,7 @@ import XCTest
 @testable import HorizontalNative
 
 /// Moving a plane on the board canvas: by its polygon, which is what a click
-/// on a plane picks, and by the plane itself, which Edit Plane selects. The
+/// on a plane picks, and Edit Plane leaves selected with the sidebar open. The
 /// board keeps a plane's polygon in the plane, as it loads it, and the move
 /// changed only the board's own polygons, so a plane's outline stayed where
 /// it was and the next pour put the fill back there; a moved plane moved only
@@ -18,6 +18,7 @@ final class BoardPlanePolygonMoveTests: XCTestCase {
         var committed: [HorizontalBoard] = []
         var actions: HorizontalCanvasCommandActions?
         var details: HorizontalSelectionDetailState = .empty
+        var sidebarShown = 0
         let undo: UndoManager = {
             let undo = UndoManager()
             undo.groupsByEvent = false
@@ -40,6 +41,7 @@ final class BoardPlanePolygonMoveTests: XCTestCase {
                 onBoardChange: { state.committed.append($0); board = $0 },
                 onSelectionDetailsChange: { state.details = $0 },
                 onCanvasCommandActionsChange: { state.actions = $0 },
+                onShowSelectionDetails: { state.sidebarShown += 1 },
                 toolSettings: state.toolSettings)
         }
     }
@@ -176,20 +178,24 @@ final class BoardPlanePolygonMoveTests: XCTestCase {
         XCTAssertEqual(try writtenPolygonVertices(), board.planes.first?.fallbackPolygon?.vertices.map { $0 + delta })
     }
 
-    func testMovingThePlaneMovesItsPolygon() async throws {
+    func testMovingThePolygonEditPlaneLeavesSelectedMovesThePlane() async throws {
         let board = try fixture()
         let state = State(board)
         let (window, key) = try await mount(state)
         defer { window.close() }
 
-        // Edit Plane on the polygon selects the plane; its editor closed again.
+        // Edit Plane on the polygon keeps it selected, the sidebar open on
+        // its Plane section.
         state.actions?.dispatch(.selectAll)
         let selected = await settle { state.details.groups.contains { $0.type == .polygonEdge } }
         XCTAssertTrue(selected)
         state.actions?.dispatch(.editPlane)
-        state.actions?.cancelPlaneEditor?()
-        let plane = await settle { state.details.groups.map(\.type) == [.plane] }
-        XCTAssertTrue(plane)
+        let polygonTypes: Set<HorizontalObjectType> = [.polygonEdge, .polygonVertex, .polygonArcCenter]
+        let edge = await settle {
+            state.details.groups.allSatisfy { polygonTypes.contains($0.type) && $0.items.allSatisfy { $0.ref.id == "pour" } }
+        }
+        XCTAssertTrue(edge, "the polygon's parts alone: \(state.details.groups.map(\.type))")
+        XCTAssertEqual(state.sidebarShown, 1)
         let after = try await moveUp(state, key: key)
         let delta = try assertMovedTogether(board, after)
 

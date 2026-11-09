@@ -161,7 +161,9 @@ final class BoardDeletionPersistenceTests: XCTestCase {
         let (window, _) = try await mount(state)
         defer { window.close() }
 
-        await selectAll(state, including: [.polygonEdge, .keepout, .boardHole])
+        await selectAll(state, including: [.polygonEdge, .boardHole])
+        XCTAssertTrue(state.details.groups.first { $0.type == .polygonEdge }?.items.contains { $0.ref.id == "ko-poly" } ?? false,
+                      "a keepout is picked by its polygon")
         let after = try await deleteSelection(state)
         XCTAssertTrue(after.polygons.isEmpty)
         XCTAssertTrue(after.keepouts.isEmpty)
@@ -182,7 +184,7 @@ final class BoardDeletionPersistenceTests: XCTestCase {
         defer { window.close() }
         let before = try writtenPolygonY("ko-poly")
 
-        await selectAll(state, including: [.keepout])
+        await selectAll(state, including: [.polygonEdge])
         let selected = await settle { state.actions?.canMoveSelection == true }
         XCTAssertTrue(selected)
         try key(126, "\u{f700}")

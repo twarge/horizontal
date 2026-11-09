@@ -53,12 +53,7 @@ final class BoardMovePerfBenchmarkTests: XCTestCase {
             }
         }
         s += polygonEdges(board.polygons)
-        s += polygonEdges(board.planes.compactMap(\.fallbackPolygon))
-        s += board.keepouts.map { k in
-            HorizontalSelectable.bounds(
-                ref: HorizontalSelectableRef(id: k.id, type: .keepout, layer: k.polygon.layer),
-                points: k.points, fallbackCenter: HorizontalRect(points: k.points).center, fallbackSize: 1_000_000)
-        }
+        s += polygonEdges(board.outlinePolygons)
         s += board.dimensions.flatMap(BoardDimensionParts.selectables)
         s += HorizontalCanvasModeSupport.segmentSelectables(board.lines, type: .boardLine, convertsArcSegments: true)
         s += HorizontalCanvasModeSupport.arcSelectables(board.arcs, type: .boardArc)

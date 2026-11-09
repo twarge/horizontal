@@ -66,6 +66,10 @@ enum HorizontalSelectionPropertyEditor: Equatable {
     case segmented([HorizontalSelectionPropertyOption])
     case pinFunctions(HorizontalPinFunctionsEditor)
     case readOnly
+    /// A button, titled with the property's label, on a row of its own: it
+    /// sends a change with the property's id for the object shown, as Define
+    /// Plane… and Delete Plane Definition do.
+    case action
 }
 
 struct HorizontalSelectionProperty: Identifiable, Equatable {
@@ -105,6 +109,9 @@ struct HorizontalSelectionDetailItem: Identifiable, Equatable {
     var subtitle: String
     var details: [HorizontalSelectionHUDDetail]
     var properties: [HorizontalSelectionProperty]
+    /// Sections shown open until folded, where the others start folded: the
+    /// plane a polygon is the outline of, which is what one selects it for.
+    var openSections: Set<String> = []
 
     var id: HorizontalSelectableRef { ref }
 }
@@ -204,6 +211,8 @@ struct HorizontalSelectionPopoverView: View {
     @State private var applyAllProperties = Set<HorizontalSelectionApplyAllKey>()
     /// Sections the user has opened; every section starts closed.
     @State private var expandedSections = Set<String>()
+    /// The open-by-default sections (`openSections`) folded by hand.
+    @State private var foldedSections = Set<String>()
 
     var body: some View {
         inspectorContent
@@ -398,13 +407,13 @@ struct HorizontalSelectionPopoverView: View {
             }
 
             ForEach(sectionTitles(in: properties), id: \.self) { section in
-                let expanded = expandedSections.contains(section)
+                let expanded = isExpanded(section, in: item)
                 VStack(alignment: .leading, spacing: 7) {
                     // Drawn by hand: the system DisclosureGroup's chevron
                     // doesn't show in the inspector and ignores its colours.
                     Button {
                         withAnimation(.easeInOut(duration: 0.15)) {
-                            sectionExpandedBinding(section).wrappedValue.toggle()
+                            setExpanded(!expanded, section, in: item)
                         }
                     } label: {
                         HStack(spacing: 5) {
@@ -440,6 +449,24 @@ struct HorizontalSelectionPopoverView: View {
     private func sectionTitles(in properties: [HorizontalSelectionProperty]) -> [String] {
         var seen = Set<String>()
         return properties.compactMap(\.section).filter { seen.insert($0).inserted }
+    }
+
+    /// Whether `section` shows its rows: an open-by-default section until
+    /// folded, any other once opened.
+    private func isExpanded(_ section: String, in item: HorizontalSelectionDetailItem) -> Bool {
+        item.openSections.contains(section) ? !foldedSections.contains(section) : expandedSections.contains(section)
+    }
+
+    private func setExpanded(_ expanded: Bool, _ section: String, in item: HorizontalSelectionDetailItem) {
+        if item.openSections.contains(section) {
+            if expanded {
+                foldedSections.remove(section)
+            } else {
+                foldedSections.insert(section)
+            }
+        } else {
+            sectionExpandedBinding(section).wrappedValue = expanded
+        }
     }
 
     private func sectionExpandedBinding(_ section: String) -> Binding<Bool> {
@@ -614,6 +641,8 @@ struct HorizontalSelectionPopoverView: View {
         if case .pinFunctions(let editor) = property.editor,
            case .pinFunctions(let value) = property.value {
             pinFunctionsRow(property, editor: editor, value: value, group: group, item: item)
+        } else if property.editor == .action {
+            actionRow(property, group: group, item: item)
         } else {
             standardPropertyRow(property, group: group, item: item)
         }
@@ -830,6 +859,29 @@ struct HorizontalSelectionPopoverView: View {
         }
     }
 
+    /// An `.action` property: its label on a button of its own, which acts
+    /// on the object shown. None while the document is read-only.
+    @ViewBuilder
+    private func actionRow(
+        _ property: HorizontalSelectionProperty,
+        group: HorizontalSelectionDetailGroup,
+        item: HorizontalSelectionDetailItem
+    ) -> some View {
+        if !isReadOnly {
+            Button(property.label) {
+                onChange(HorizontalSelectionPropertyChange(
+                    ref: item.ref,
+                    type: group.type,
+                    propertyID: property.id,
+                    value: .bool(true),
+                    applyToAll: false
+                ))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(chrome == .sidebar ? .small : .mini)
+        }
+    }
+
     /// The button of a row carrying an `actionID`, e.g. a custom value's
     /// "Edit…". It acts on the object shown, never on every selected one.
     @ViewBuilder
@@ -955,7 +1007,7 @@ struct HorizontalSelectionPopoverView: View {
             .controlSize(.small)
             .fixedSize()
             .focusable(false)
-        case .pinFunctions, .readOnly:
+        case .pinFunctions, .readOnly, .action:
             EmptyView()
         }
     }

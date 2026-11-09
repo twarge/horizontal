@@ -24,22 +24,6 @@ Tick an item off when it lands on main, with the commit that did it.
       router. Comments still describe it as vendored or "not-yet-vendored"
       (`Views/BoardCanvasView.swift`, `Model/HorizontalBoardToolSettings.swift:25`).
 
-## Board DRC
-
-Since 8161b8c every board rule family is checked, in the app's background check
-and results sidebar and in MCP `check`.
-
-- [x] Track width: each track's width within its rule's minimum and maximum.
-- [x] Hole size, for board, via and pad holes; the rule is parsed now.
-- [x] Copper to keepout (`clearance_copper_keepout`).
-- [x] Same-net clearance (`clearance_same_net`).
-- [x] Silkscreen to exposed copper.
-- [x] Preflight checks.
-- [x] Plane priorities (fill order).
-- [x] Net ties.
-- [x] Height restrictions; the rules window lists the kind now.
-- [x] The results sidebar shows what only MCP `check` found before: copper
-      joining two nets, a plane over another net's pad, unrouted connections.
 
 ## Differential pairs and length tuning
 
@@ -95,9 +79,9 @@ rules.
 
 Available only as MCP ops so far:
 
-- [ ] Place a board hole (`place_hole`; the Place Hole tool runs only in the
+- [x] Place a board hole (`place_hole`; the Place Hole tool runs only in the
       padstack editor).
-- [ ] Add a keepout, or turn a polygon into one (`place_keepout`).
+- [x] Add a keepout, or turn a polygon into one (`place_keepout`).
 - [ ] Groups and tags: set, rename, clear and highlight them (`set_group_tag`).
       A block instance can be selected whole (Select Instance, 88401a5).
 - [ ] Copy placement and tracks between groups that aren't block instances,
