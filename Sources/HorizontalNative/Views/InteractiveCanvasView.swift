@@ -1355,7 +1355,7 @@ struct InteractiveCanvasView: View {
                     }
                     .padding(.top, overlayInsets.top)
                     .padding(unplacedObjectColumnHorizontalEdge, unplacedObjectColumnHorizontalPadding(overlayInsets))
-                    .padding(.bottom, overlayInsets.bottom)
+                    .padding(.bottom, unplacedObjectColumnBottomPadding(overlayInsets))
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: unplacedObjectColumnAlignment)
                 }
 
@@ -1419,6 +1419,14 @@ struct InteractiveCanvasView: View {
 
     private func unplacedObjectColumnHorizontalPadding(_ insets: EdgeInsets) -> CGFloat {
         (placesUnplacedObjectsOnTrailingEdge ? insets.trailing : insets.leading) + 8
+    }
+
+    /// On the leading edge the column stops above the lower left's scale bar,
+    /// whose label stands 20 pt over its line at the bottom inset, and the
+    /// keyboard-focus badge beside it, with a gap; the trailing edge has
+    /// neither.
+    private func unplacedObjectColumnBottomPadding(_ insets: EdgeInsets) -> CGFloat {
+        placesUnplacedObjectsOnTrailingEdge ? insets.bottom : insets.bottom + 28
     }
 
     /// The canvas runs under the toolbar and, in the leading pane, under the
