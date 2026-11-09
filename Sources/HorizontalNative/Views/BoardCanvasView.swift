@@ -110,6 +110,56 @@ private final class BoardPointerPick {
 /// arc direction (E flips it) and the radius the cursor last set. A corner
 /// rounded off before starts at its arc's radius and direction, and keeps
 /// them until the cursor moves.
+/// Add Vertex (K) on a board polygon's edge, as Horizon's: a vertex goes
+/// into the edge and follows the cursor, each click leaves it there and puts
+/// the next one in after it, and Return, Esc or a double-click ends the tool,
+/// keeping what the clicks placed and dropping the vertex at the cursor.
+private struct AddVertexState {
+    var polygonID: String
+    /// The polygon as it would be: the vertices placed so far, and the one
+    /// at the cursor (`floatingIndex`).
+    var polygon: HorizontalPolygon
+    var floatingIndex: Int
+    var placedCount = 0
+    /// What was selected when K was pressed, given back when nothing is
+    /// added.
+    var selection: [HorizontalSelectableRef] = []
+
+    /// A vertex at `cursor` into `polygon`'s edge that starts at `vertex`;
+    /// nil on an arc, which a vertex would bend out of shape.
+    init?(polygon: HorizontalPolygon, afterVertex vertex: Int, cursor: HorizontalPoint) {
+        guard polygon.polygonVertices.indices.contains(vertex), polygon.polygonVertices[vertex].type == .line else {
+            return nil
+        }
+        polygonID = polygon.id
+        self.polygon = polygon
+        floatingIndex = vertex + 1
+        self.polygon.polygonVertices.insert(HorizontalPolygonVertex(position: cursor), at: floatingIndex)
+    }
+
+    var cursor: HorizontalPoint {
+        polygon.polygonVertices[floatingIndex].position
+    }
+
+    mutating func update(cursor: HorizontalPoint) {
+        polygon.polygonVertices[floatingIndex].position = cursor
+    }
+
+    /// The vertex at the cursor stays where it is; the next goes in after it.
+    mutating func place() {
+        placedCount += 1
+        polygon.polygonVertices.insert(HorizontalPolygonVertex(position: cursor), at: floatingIndex + 1)
+        floatingIndex += 1
+    }
+
+    /// What the clicks placed, without the vertex at the cursor.
+    var placed: HorizontalPolygon {
+        var placed = polygon
+        placed.polygonVertices.remove(at: floatingIndex)
+        return placed
+    }
+}
+
 private struct RoundOffVertexState {
     var polygonID: String
     var rounding: HorizontalPolygonRounding
@@ -645,6 +695,7 @@ struct BoardCanvasView: View {
     @State private var pastePlacementState: PastePlacementState?
     @State private var poolPlacementState: PoolPlacementState?
     @State private var roundOffVertexState: RoundOffVertexState?
+    @State private var addVertexState: AddVertexState?
     /// The tune tool, while it is in use (`BoardTuneState`).
     @State private var tuneState: BoardTuneState?
     /// U during a move, route or paste: the edit is this block instance's
@@ -858,6 +909,16 @@ struct BoardCanvasView: View {
             preview.lowerPlaneOutlines(lifted: liftedOutlines)
             return preview
         }
+        if let addVertexState {
+            var preview = base
+            let liftedOutlines = preview.liftPlaneOutlines()
+            let polygonID = normalizedID(addVertexState.polygonID)
+            if let index = preview.polygons.firstIndex(where: { normalizedID($0.id) == polygonID }) {
+                preview.polygons[index] = addVertexState.polygon
+            }
+            preview.lowerPlaneOutlines(lifted: liftedOutlines)
+            return preview
+        }
         return base
     }
 
@@ -886,6 +947,15 @@ struct BoardCanvasView: View {
                 itemCount: 2_000_000 + signature.count,
                 offsetX: signature.hash,
                 offsetY: signature.length
+            )
+        }
+        if let addVertexState {
+            // The added vertices ride the same slot: how many in the count,
+            // where the one at the cursor is in the offset.
+            return BoardPastePreviewSignature(
+                itemCount: 3_000_000 + addVertexState.polygon.polygonVertices.count,
+                offsetX: Int64(addVertexState.cursor.x.rounded()),
+                offsetY: Int64(addVertexState.cursor.y.rounded())
             )
         }
         if let roundOffVertexState {
@@ -1206,6 +1276,16 @@ struct BoardCanvasView: View {
                     commitRoundOffVertex(at: point)
                     return
                 }
+                if addVertexState != nil {
+                    // A click leaves the vertex there and adds the next; a
+                    // double-click's second ends the tool, as Return does.
+                    if clickCount >= 2 {
+                        commitAddVertex()
+                    } else {
+                        placeAddVertex(at: point)
+                    }
+                    return
+                }
                 if tuneState != nil {
                     clickTune(at: pointer.raw, worldUnitsPerPoint: worldUnitsPerPoint)
                     return
@@ -1303,7 +1383,7 @@ struct BoardCanvasView: View {
                       drawTrackState == nil,
                       pastePlacementState == nil,
                       poolPlacementState == nil,
-                      roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil else {
+                      roundOffVertexState == nil && addVertexState == nil && tuneState == nil, packagePlacementState == nil else {
                     return
                 }
                 updateSelection(with: refs, action: action)
@@ -1379,8 +1459,8 @@ struct BoardCanvasView: View {
                 labelLODDebouncer.postponeForViewportMovement()
             },
             canvasDisplayTransformReportTrigger: inlineTextEditorReportTrigger,
-            allowsContextMenu: moveState == nil && drawGraphicsState == nil && drawTrackState == nil && pastePlacementState == nil && poolPlacementState == nil && roundOffVertexState == nil && tuneState == nil && packagePlacementState == nil,
-            handlesInteractionKeys: moveState != nil || drawGraphicsState != nil || drawTrackState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || tuneState != nil || packagePlacementState != nil,
+            allowsContextMenu: moveState == nil && drawGraphicsState == nil && drawTrackState == nil && pastePlacementState == nil && poolPlacementState == nil && roundOffVertexState == nil && addVertexState == nil && tuneState == nil && packagePlacementState == nil,
+            handlesInteractionKeys: moveState != nil || drawGraphicsState != nil || drawTrackState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || addVertexState != nil || tuneState != nil || packagePlacementState != nil,
             usesCrosshairCursor: drawGraphicsState != nil || drawTrackState != nil,
             hasKeyboardFocus: hasKeyboardFocus,
             onRequestKeyboardFocus: onRequestKeyboardFocus,
@@ -1388,7 +1468,7 @@ struct BoardCanvasView: View {
                 || drawGraphicsState != nil
                 || pastePlacementState != nil
                 || poolPlacementState != nil
-                || roundOffVertexState != nil || tuneState != nil || packagePlacementState != nil
+                || roundOffVertexState != nil || addVertexState != nil || tuneState != nil || packagePlacementState != nil
                 || moveState?.tracksCursor == true,
             supportsTrackVias: true,
             switchesPanes: onSwitchPane != nil
@@ -1982,6 +2062,10 @@ struct BoardCanvasView: View {
         }
         if let tuneState {
             return tuneState.hint
+        }
+        if let state = addVertexState {
+            let placed = state.placedCount == 1 ? "1 vertex" : "\(state.placedCount) vertices"
+            return "Add vertex (\(placed) added): click adds it and the next   Return, Esc or double-click ends"
         }
         if let state = roundOffVertexState {
             let radiusMM = String(format: "%.3f", state.clampedRadius / 1_000_000)
@@ -3381,7 +3465,7 @@ struct BoardCanvasView: View {
         // the type checker will resolve.
         var handlers = HorizontalCanvasCommandHandlerSet(
             isReadOnly: isReadOnly,
-            hasInteraction: drawGraphicsState != nil || drawTrackState != nil || moveState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || tuneState != nil || packagePlacementState != nil,
+            hasInteraction: drawGraphicsState != nil || drawTrackState != nil || moveState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || addVertexState != nil || tuneState != nil || packagePlacementState != nil,
             selectAll: selectAllObjects,
             selectNet: selectNetOfSelection,
             selectMore: { selectMoreOfSelection(stopsAtVias: $0) },
@@ -3437,6 +3521,8 @@ struct BoardCanvasView: View {
             commitInteraction: {
                 if packagePlacementState != nil {
                     commitPackagePlacement(at: lastCursorWorldPoint)
+                } else if addVertexState != nil {
+                    commitAddVertex()
                 } else if roundOffVertexState != nil {
                     // Return is Horizon's "enter datum": type the radius.
                     enterRoundOffVertexRadius()
@@ -3458,6 +3544,10 @@ struct BoardCanvasView: View {
             cancelInteraction: {
                 if packagePlacementState != nil {
                     cancelPackagePlacement()
+                } else if addVertexState != nil {
+                    // Esc ends Add Vertex keeping what was placed, as
+                    // Horizon's does.
+                    commitAddVertex()
                 } else if roundOffVertexState != nil {
                     cancelRoundOffVertex()
                 } else if tuneState != nil {
@@ -3481,6 +3571,10 @@ struct BoardCanvasView: View {
         // or via, and Horizon doesn't offer it then.
         if modeProfile.isPoolMode || !BoardSelectMore.canSelectMore(from: selectedObjects) {
             handlers.selectMore = nil
+        }
+        // K: Add Vertex on a polygon's edge (or after its vertex), Horizon's.
+        if canAddPolygonVertex {
+            handlers.bendNetLine = { beginAddPolygonVertex() }
         }
         // A text size step needs a text, and none while an edit is under way.
         if !handlers.hasInteraction, !selectedSizedTexts.isEmpty {
@@ -3610,6 +3704,17 @@ struct BoardCanvasView: View {
             if state.cursor != point {
                 state.update(cursor: point)
                 roundOffVertexState = state
+            }
+            if hoveredObject != nil {
+                hoveredObject = nil
+            }
+            return
+        }
+
+        if var state = addVertexState {
+            if state.cursor != point {
+                state.update(cursor: point)
+                addVertexState = state
             }
             if hoveredObject != nil {
                 hoveredObject = nil
@@ -3829,6 +3934,10 @@ struct BoardCanvasView: View {
         }
         if writable, let state = roundOffVertexState(for: ref) {
             entries.append(.command(title: state.adjustsRounding ? "Adjust Rounding" : "Round Off Vertex", .roundOffVertex))
+        }
+        // K, on a straight edge or the vertex starting one.
+        if writable, let target = addVertexTarget(ref), target.polygon.polygonVertices[target.vertex].type == .line {
+            entries.append(.command(title: "Add Vertex", .bendNetLine))
         }
         if writable, ref.type == .boardLine || ref.type == .boardArc || ref.type == .junction {
             entries.append(.command(title: "Convert to Polygon", .convertLineLoopToPolygon))
@@ -4329,7 +4438,7 @@ struct BoardCanvasView: View {
     private func selectMoreOfSelection(stopsAtVias: Bool) {
         guard moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
               pastePlacementState == nil, poolPlacementState == nil,
-              roundOffVertexState == nil, tuneState == nil, packagePlacementState == nil else {
+              roundOffVertexState == nil, addVertexState == nil, tuneState == nil, packagePlacementState == nil else {
             return
         }
         let run = BoardSelectMore.selection(from: selectedObjects, in: board, stopsAtVias: stopsAtVias)
@@ -4409,7 +4518,7 @@ struct BoardCanvasView: View {
               drawGraphicsState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil,
+              roundOffVertexState == nil && addVertexState == nil && tuneState == nil, packagePlacementState == nil,
               !boardClipboard.isEmpty else { return }
         // Anchor on the cursor at copy time; the ghost keeps that relative offset.
         let anchor = boardClipboardAnchor ?? lastCursorWorldPoint ?? .zero
@@ -4687,7 +4796,7 @@ struct BoardCanvasView: View {
               modeProfile.mode == .board,
               let poolURL,
               moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
-              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil && tuneState == nil,
+              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil && addVertexState == nil && tuneState == nil,
               packagePlacementState == nil else {
             return
         }
@@ -4927,7 +5036,7 @@ struct BoardCanvasView: View {
     }
 
     private func beginMove(tracksCursor: Bool = true, editTextRefOnCommit: String? = nil) {
-        guard pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil else { return }
+        guard pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil && addVertexState == nil && tuneState == nil, packagePlacementState == nil else { return }
         let selectedCount = selectedObjects.count
         var timings = [(String, UInt64)]()
         func measure<T>(_ label: String, _ body: () -> T) -> T {
@@ -5198,7 +5307,7 @@ struct BoardCanvasView: View {
               moveState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil,
+              roundOffVertexState == nil && addVertexState == nil && tuneState == nil, packagePlacementState == nil,
               primitive.producesPolygon ? modeProfile.allowsPolygons : modeProfile.allowsGraphics else {
             return
         }
@@ -5245,6 +5354,7 @@ struct BoardCanvasView: View {
         pastePlacementState = nil
         poolPlacementState = nil
         roundOffVertexState = nil
+        addVertexState = nil
         packagePlacementState = nil
         invalidateSelectableCache()
         // The track tool stays, as it does when a route ends: only a route
@@ -5282,7 +5392,7 @@ struct BoardCanvasView: View {
         editingText = editingTextState != nil
         #endif
         return moveState != nil || drawGraphicsState != nil || drawTrackState?.hasDrawn == true
-            || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || tuneState != nil
+            || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || addVertexState != nil || tuneState != nil
             || packagePlacementState != nil || planeEditorState != nil || editingText
     }
 
@@ -5387,7 +5497,7 @@ struct BoardCanvasView: View {
               moveState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil else {
+              roundOffVertexState == nil && addVertexState == nil && tuneState == nil, packagePlacementState == nil else {
             return
         }
         drawGraphicsState = DrawGraphicsState(
@@ -5438,7 +5548,7 @@ struct BoardCanvasView: View {
               moveState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil else {
+              roundOffVertexState == nil && addVertexState == nil && tuneState == nil, packagePlacementState == nil else {
             return
         }
         drawGraphicsState = DrawGraphicsState(
@@ -5890,7 +6000,7 @@ struct BoardCanvasView: View {
               moveState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil,
+              roundOffVertexState == nil && addVertexState == nil && tuneState == nil, packagePlacementState == nil,
               drawTrackState == nil else {
             return
         }
@@ -7235,7 +7345,7 @@ struct BoardCanvasView: View {
               drawGraphicsState == nil,
               pastePlacementState == nil,
               poolPlacementState == nil,
-              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil,
+              roundOffVertexState == nil && addVertexState == nil && tuneState == nil, packagePlacementState == nil,
               !selectedObjects.isEmpty else {
             return
         }
@@ -13974,7 +14084,7 @@ struct BoardCanvasView: View {
             let previewsUnkeyedBoard = (moveState != nil && !patchesMove)
                 || pastePlacementState != nil
                 || poolPlacementState != nil
-                || roundOffVertexState != nil || tuneState != nil
+                || roundOffVertexState != nil || addVertexState != nil || tuneState != nil
             let selectablesByRef = previewsUnkeyedBoard
                 ? boardSelectablesByRef(in: selectionBoard)
                 : boardSelectablesByRef()
@@ -17444,7 +17554,7 @@ extension BoardCanvasView {
     private func requestPlacePad() {
         guard !isReadOnly, modeProfile.placesPads, poolContext != nil,
               moveState == nil, drawGraphicsState == nil, pastePlacementState == nil, poolPlacementState == nil,
-              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil else {
+              roundOffVertexState == nil && addVertexState == nil && tuneState == nil, packagePlacementState == nil else {
             return
         }
         padstackPickerPresented = true
@@ -17527,7 +17637,7 @@ extension BoardCanvasView {
     private var canStartBoardPlacement: Bool {
         !isReadOnly && modeProfile.mode == .board
             && moveState == nil && drawGraphicsState == nil && drawTrackState == nil && pastePlacementState == nil
-            && poolPlacementState == nil && roundOffVertexState == nil && tuneState == nil && packagePlacementState == nil
+            && poolPlacementState == nil && roundOffVertexState == nil && addVertexState == nil && tuneState == nil && packagePlacementState == nil
     }
 
     /// Whether a decal can be put on the board now, with a pool to take it
@@ -17789,7 +17899,7 @@ extension BoardCanvasView {
 
     private func armPoolPlacement(_ kind: PoolPlacementKind) {
         guard moveState == nil, drawGraphicsState == nil, drawTrackState == nil, pastePlacementState == nil,
-              roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil else {
+              roundOffVertexState == nil && addVertexState == nil && tuneState == nil, packagePlacementState == nil else {
             return
         }
         selectedObjects = []
@@ -18056,7 +18166,7 @@ extension BoardCanvasView {
 
     private var canRoundOffVertex: Bool {
         guard !isReadOnly, moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
-              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil && tuneState == nil, packagePlacementState == nil,
+              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil && addVertexState == nil && tuneState == nil, packagePlacementState == nil,
               let ref = roundOffVertexCandidate else {
             return false
         }
@@ -18110,6 +18220,110 @@ extension BoardCanvasView {
         return zip(edge, edge.dropFirst()).contains { from, to in
             HorizontalRouteClearanceProbe.pointSegmentDistance(point, from, to) <= tolerance
         }
+    }
+
+    // MARK: - Add vertex
+
+    /// The polygon edge K adds vertices to: one selected edge, or the edge
+    /// after one selected vertex, of a board polygon that isn't a package's.
+    private var addVertexCandidate: (polygon: HorizontalPolygon, vertex: Int)? {
+        let refs = uniqueRefs(selectedObjects)
+        guard refs.count == 1, let ref = refs.first else {
+            return nil
+        }
+        return addVertexTarget(ref)
+    }
+
+    /// The board polygon (or plane outline) `ref`, an edge or a vertex of
+    /// it, names, and the vertex its edge starts at; nil for anything else.
+    private func addVertexTarget(_ ref: HorizontalSelectableRef) -> (polygon: HorizontalPolygon, vertex: Int)? {
+        guard ref.type == .polygonEdge || ref.type == .polygonVertex else {
+            return nil
+        }
+        var board = board
+        _ = board.liftPlaneOutlines()
+        guard let polygon = board.polygons.first(where: { normalizedID($0.id) == normalizedID(ref.id) }),
+              polygon.polygonVertices.indices.contains(ref.vertex) else {
+            return nil
+        }
+        return (polygon, ref.vertex)
+    }
+
+    private var canAddPolygonVertex: Bool {
+        guard !isReadOnly, moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
+              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil, addVertexState == nil,
+              tuneState == nil, packagePlacementState == nil,
+              let candidate = addVertexCandidate else {
+            return false
+        }
+        return candidate.polygon.polygonVertices[candidate.vertex].type == .line
+    }
+
+    /// K: a vertex into the edge at the cursor, or the edge's middle when the
+    /// cursor isn't on the canvas, following the cursor from there.
+    private func beginAddPolygonVertex() {
+        guard canAddPolygonVertex, let candidate = addVertexCandidate else {
+            return
+        }
+        let vertices = candidate.polygon.polygonVertices
+        let start = vertices[candidate.vertex].position
+        let end = vertices[candidate.polygon.nextVertexIndex(after: candidate.vertex)].position
+        let middle = HorizontalPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+        guard var state = AddVertexState(polygon: candidate.polygon, afterVertex: candidate.vertex, cursor: lastCursorWorldPoint ?? middle) else {
+            return
+        }
+        state.selection = selectedObjects
+        selectedObjects = []
+        hoveredObject = nil
+        addVertexState = state
+        publishSelectionContext()
+        publishCanvasCommandActions()
+    }
+
+    /// A click: the vertex at the cursor stays at `point`, and the next one
+    /// goes in after it.
+    private func placeAddVertex(at point: HorizontalPoint) {
+        guard var state = addVertexState else {
+            return
+        }
+        state.update(cursor: point)
+        state.place()
+        addVertexState = state
+    }
+
+    /// Return, Esc or a double-click: the vertices the clicks placed go into
+    /// the polygon as one step, the one at the cursor dropped, the last of
+    /// them left selected. With none placed the polygon is as it was, and
+    /// the edge K was pressed on selected again.
+    private func commitAddVertex() {
+        guard let state = addVertexState else {
+            return
+        }
+        addVertexState = nil
+        guard state.placedCount > 0 else {
+            selectedObjects = state.selection
+            publishSelectionContext()
+            publishCanvasCommandActions()
+            return
+        }
+        let previous = editedBoard ?? sourceBoard
+        var draft = previous
+        // A plane's outline takes its vertices as a polygon.
+        let liftedOutlines = draft.liftPlaneOutlines()
+        let placed = state.placed
+        if let index = draft.polygons.firstIndex(where: { normalizedID($0.id) == normalizedID(state.polygonID) }) {
+            draft.polygons[index] = placed
+        }
+        draft.lowerPlaneOutlines(lifted: liftedOutlines)
+        registerUndoSnapshot(previous, actionName: state.placedCount == 1 ? "Add Vertex" : "Add Vertices")
+        invalidateSelectableCache()
+        publishConnectivityResolvedEdit(draft)
+        selectedObjects = [
+            HorizontalSelectableRef(id: placed.id, type: .polygonVertex, vertex: state.floatingIndex - 1, layer: placed.layer)
+        ]
+        hoveredObject = nil
+        publishSelectionContext()
+        publishCanvasCommandActions()
     }
 
     private func beginRoundOffVertex() {
@@ -18238,7 +18452,7 @@ extension BoardCanvasView {
 
     private func beginTuneTrack() {
         guard !isReadOnly, modeProfile.mode == .board, moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
-              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil,
+              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil, addVertexState == nil,
               packagePlacementState == nil, tuneState == nil else {
             return
         }
