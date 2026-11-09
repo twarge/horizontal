@@ -940,6 +940,19 @@ struct ProjectWorkspaceView: View {
         return sheetCount > 1 ? .all : .detailOnly
     }
 
+    /// Parts as the schematic's sheets name them: a part of a block's
+    /// instance, picked or spotlit on the board, is its block's component
+    /// there (`HorizontalFlattenedBlock.blockComponentIDs`).
+    private func schematicComponentIDs(_ componentIDs: Set<String>) -> Set<String> {
+        project.flattenedBlock?.blockComponentIDs(for: componentIDs) ?? componentIDs
+    }
+
+    /// Parts as the board and the 3D view name them: a block's component,
+    /// picked or spotlit on its sheet, is every instance's package there.
+    private func boardComponentIDs(_ componentIDs: Set<String>) -> Set<String> {
+        project.flattenedBlock?.boardComponentIDs(for: componentIDs) ?? componentIDs
+    }
+
     private var activeHighlightedNetIDs: Set<String> {
         highlightedNetIDs
     }
@@ -1333,7 +1346,7 @@ struct ProjectWorkspaceView: View {
                 selection: $navigatorSelection,
                 searchText: $navigatorSearchText,
                 highlightedNetIDs: highlightedNetIDs,
-                markedComponentIDs: selectedComponentIDs.union(highlightedComponentIDs),
+                markedComponentIDs: schematicComponentIDs(selectedComponentIDs.union(highlightedComponentIDs)),
                 highlightColor: appearanceSettings.palette(for: .schematic, colorScheme: colorScheme).junction,
                 allowsSheetEditing: !isReadOnly,
                 allowsBlockEditing: true,
@@ -2483,8 +2496,8 @@ struct ProjectWorkspaceView: View {
                                 displayOptions: schematicDisplayOptions,
                                 fitSafeAreaInsets: fitSafeAreaInsets,
                                 highlightedNetIDs: activeHighlightedNetIDs,
-                                highlightedComponentIDs: activeHighlightedComponentIDs,
-                                crossSelectedComponentIDs: selectedComponentIDs,
+                                highlightedComponentIDs: schematicComponentIDs(activeHighlightedComponentIDs),
+                                crossSelectedComponentIDs: schematicComponentIDs(selectedComponentIDs),
                                 undoManager: activeUndoManager,
                                 selectionToolSettings: selectionToolSettings,
                                 isReadOnly: isReadOnly,
@@ -2696,8 +2709,8 @@ struct ProjectWorkspaceView: View {
                                 displayOptions: boardCanvasDisplayOptions,
                                 fitSafeAreaInsets: fitSafeAreaInsets,
                                 highlightedNetIDs: activeHighlightedNetIDs,
-                                highlightedComponentIDs: activeHighlightedComponentIDs,
-                                crossSelectedComponentIDs: selectedComponentIDs,
+                                highlightedComponentIDs: boardComponentIDs(activeHighlightedComponentIDs),
+                                crossSelectedComponentIDs: boardComponentIDs(selectedComponentIDs),
                                 undoManager: activeUndoManager,
                                 selectionToolSettings: selectionToolSettings,
                                 isReadOnly: isReadOnly,
@@ -2890,8 +2903,8 @@ struct ProjectWorkspaceView: View {
                             // Both only count up, so their sum changes with
                             // either: an edit, or new fills from a pour.
                             revision: boardEditRevision + planeFillRevision,
-                            highlightedComponentIDs: highlightedComponentIDs,
-                            selectedComponentIDs: selectedComponentIDs,
+                            highlightedComponentIDs: boardComponentIDs(highlightedComponentIDs),
+                            selectedComponentIDs: boardComponentIDs(selectedComponentIDs),
                             onSelectComponent: { componentID, extend in
                                 // A click in 3D selects the way a click on
                                 // the board does: one part, or one more with
@@ -3293,12 +3306,13 @@ struct ProjectWorkspaceView: View {
         }
         selectedComponentIDs = componentIDs
         for pane in HorizontalPane.componentSelectionTargets(from: origin) {
-            if canvasCommandActionsByPane[pane]?.selectComponents?(componentIDs) == true {
+            let named = pane == .schematic ? schematicComponentIDs(componentIDs) : boardComponentIDs(componentIDs)
+            if canvasCommandActionsByPane[pane]?.selectComponents?(named) == true {
                 crossProbedPanes.insert(pane)
             }
         }
         if origin == .schematic, !keepingHighlight,
-           canvasCommandActionsByPane[.board]?.selectUnplacedComponents?(componentIDs) == true {
+           canvasCommandActionsByPane[.board]?.selectUnplacedComponents?(boardComponentIDs(componentIDs)) == true {
             crossProbedPanes.insert(.board)
         }
     }
@@ -3408,9 +3422,9 @@ struct ProjectWorkspaceView: View {
             sharedProject?.spotlights.send(windowID)
         }
         if let board = project.board,
-           let rect = HorizontalSpotlightFraming.boardRect(board, netIDs: nets, componentIDs: components, margin: 0) {
+           let rect = HorizontalSpotlightFraming.boardRect(board, netIDs: nets, componentIDs: boardComponentIDs(components), margin: 0) {
             if visiblePanes.contains(.board), origin != .board {
-                if let side = HorizontalSpotlightFraming.boardSide(board, componentIDs: components) {
+                if let side = HorizontalSpotlightFraming.boardSide(board, componentIDs: boardComponentIDs(components)) {
                     showBoardSide(side)
                 }
                 canvasCommandActionsByPane[.board]?.revealWorldRect?(rect, nil)
@@ -3425,7 +3439,7 @@ struct ProjectWorkspaceView: View {
             case .sheet(_, let sheetID), .standaloneSheet(let sheetID): sheetID
             default: nil
             }
-            if let target = HorizontalSpotlightFraming.sheetTarget(project, netIDs: nets, componentIDs: components,
+            if let target = HorizontalSpotlightFraming.sheetTarget(project, netIDs: nets, componentIDs: schematicComponentIDs(components),
                                                                    currentSheetID: currentSheetID, margin: 0) {
                 if target.sheetID.caseInsensitiveCompare(currentSheetID ?? "") == .orderedSame {
                     canvasCommandActionsByPane[.schematic]?.revealWorldRect?(target.rect, nil)

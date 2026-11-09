@@ -58,6 +58,36 @@ struct HorizontalFlattenedBlock: @unchecked Sendable {
         }
     }
 
+    /// `componentIDs` as a block's sheets name parts: with each flat (board)
+    /// id that is an instance of a block's component, that component's own
+    /// id, the one its symbol on the block's sheet has. What a part picked or
+    /// spotlit on the board is in the schematic, whichever instance it is.
+    func blockComponentIDs(for componentIDs: Set<String>) -> Set<String> {
+        var ids = componentIDs
+        for id in componentIDs {
+            if let path = componentPaths[id.lowercased()], path.count > 1, let own = path.last {
+                ids.insert(own)
+            }
+        }
+        return ids
+    }
+
+    /// `componentIDs` as the board names parts: with each block component's
+    /// id, the flat id of every instance of it, which the board's packages
+    /// have. What a symbol picked or spotlit on a block's sheet is on the
+    /// board: every instance's package. A flat id is left as it is, and
+    /// brings in no other instance.
+    func boardComponentIDs(for componentIDs: Set<String>) -> Set<String> {
+        let wanted = Set(componentIDs.map { $0.lowercased() })
+        var ids = componentIDs
+        for (flatID, path) in componentPaths where path.count > 1 {
+            if let own = path.last, wanted.contains(own.lowercased()) {
+                ids.insert(flatID)
+            }
+        }
+        return ids
+    }
+
     /// The flat uuids of block `blockID`'s components `componentIDs`, one for
     /// each instance of the block however deep: what the board names their
     /// packages by.
