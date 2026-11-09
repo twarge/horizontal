@@ -2263,8 +2263,9 @@ struct BoardCanvasView: View {
 
     /// The blue boxes round `crossSelectedComponentIDs`, the parts another
     /// view selected, but not round any this canvas has selected itself,
-    /// which its own selection marks: the outline a selection takes, in the
-    /// 3D view's selection blue, and a key for them.
+    /// which its own selection marks: the outline a selection takes, as far
+    /// out from the part (a few points, whatever the zoom), in the 3D view's
+    /// selection blue, and a key for them.
     func crossSelectionLines() -> (lines: [HorizontalMetalLinePrimitive], key: Int) {
         let wanted = Set(crossSelectedComponentIDs.map(normalizedID)).subtracting(selectedComponentIDs)
         guard !wanted.isEmpty else {
@@ -2277,25 +2278,8 @@ struct BoardCanvasView: View {
             }
             return HorizontalSelectableRef(id: package.id, type: .boardPackage)
         }
-        let color = HorizontalMetalRGBA(red: 0.25, green: 0.56, blue: 1.0, alpha: 0.95)
-        var lines = [HorizontalMetalLinePrimitive]()
-        var hasher = Hasher()
-        for ref in refs {
-            for selectable in selectables[ref] ?? [] {
-                let corners = selectable.corners(expandedByWorld: Self.crossSelectionMargin)
-                for (index, corner) in corners.enumerated() {
-                    let next = corners[(index + 1) % corners.count]
-                    lines.append(HorizontalMetalLinePrimitive(from: corner, to: next, color: color, minimumWidth: 2))
-                    hasher.combine(corner.x)
-                    hasher.combine(corner.y)
-                }
-            }
-        }
-        return (lines, lines.isEmpty ? 0 : hasher.finalize())
+        return HorizontalCanvasModeSupport.crossSelectionLines(for: refs.flatMap { selectables[$0] ?? [] })
     }
-
-    /// How far the blue box stands off a part, in world units: 0.2 mm.
-    static let crossSelectionMargin = 200_000.0
 
     private func publishSelectionContext() {
         onSelectedNetChange(selectedNetIDs)

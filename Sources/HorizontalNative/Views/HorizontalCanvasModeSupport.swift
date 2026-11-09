@@ -1124,6 +1124,33 @@ enum HorizontalCanvasModeSupport {
         return overlay
     }
 
+    /// The blue box round a part another view selected, on the board or a
+    /// sheet: its selection outline, as far out as a selection's (a few
+    /// points whatever the zoom), solid, in the 3D view's selection blue.
+    /// And a key for the lines.
+    static func crossSelectionLines(for selectables: [HorizontalSelectable]) -> (lines: [HorizontalMetalLinePrimitive], key: Int) {
+        let color = HorizontalMetalRGBA(red: 0.25, green: 0.56, blue: 1.0, alpha: 0.95)
+        var lines = [HorizontalMetalLinePrimitive]()
+        var hasher = Hasher()
+        for selectable in selectables {
+            let outline = selectionOutline(for: selectable)
+            let points = outline.points
+            guard points.count >= 2 else {
+                continue
+            }
+            let ends = outline.closesPath ? points.count : points.count - 1
+            for index in 0..<ends {
+                let from = points[index], to = points[(index + 1) % points.count]
+                lines.append(HorizontalMetalLinePrimitive(
+                    from: from, to: to, color: color, minimumWidth: 2, normalOffset: outline.normalOffset
+                ))
+                hasher.combine(from.x)
+                hasher.combine(from.y)
+            }
+        }
+        return (lines, lines.isEmpty ? 0 : hasher.finalize())
+    }
+
     static func selectionOutline(for selectable: HorizontalSelectable) -> HorizontalCanvasSelectionOutline {
         if selectable.ref.type.hasLineCenterHandle,
            selectable.handlePoints.count >= 2 {
