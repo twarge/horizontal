@@ -10367,8 +10367,18 @@ struct BoardCanvasView: View {
             return normalizedID(via.id)
         })
         let visiblePackageIDs = visibleBoardPackageIDs(in: board)
+        // A junction shows on the copper layers it spans, as Horizon gives
+        // it its layers: a via's at its point, else its tracks' and net
+        // ties'. One with all of them hidden can't be picked, any more than
+        // its tracks can; one on no copper at all still can, to delete it.
+        let hiddenJunctionIDs = Set(board.junctionLayerRanges().compactMap { id, span -> String? in
+            visibleCopperLayers.contains(where: span.contains) ? nil : id
+        })
         return selectables.filter { selectable in
-            isSelectableVisible(
+            if selectable.ref.type == .junction {
+                return !hiddenJunctionIDs.contains(normalizedID(selectable.ref.id))
+            }
+            return isSelectableVisible(
                 selectable.ref,
                 keepoutAllCopperByID: keepoutAllCopperByID,
                 planePolygonIDs: planePolygonIDs,
@@ -10429,6 +10439,7 @@ struct BoardCanvasView: View {
         case .via:
             return displayOptions.vias && visibleViaIDs.contains(normalizedID(ref.id))
         case .junction:
+            // By the layers it spans, in `filterVisibleSelectables`.
             return true
         case .boardHole:
             return displayOptions.holes
