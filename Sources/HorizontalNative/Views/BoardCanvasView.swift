@@ -1508,12 +1508,14 @@ struct BoardCanvasView: View {
                 title: "Place Decal",
                 category: .decal,
                 index: decalPickerIndex ?? .empty,
+                showsPreview: true,
                 onPick: { item in
                     decalPickerIndex = nil
                     beginPlaceDecal(item)
                 },
                 onCancel: { decalPickerIndex = nil }
             )
+            .environmentObject(appearanceSettings)
         }
         .sheet(isPresented: Binding(
             get: { netPickerPurpose != nil },

@@ -1892,6 +1892,10 @@ struct HorizontalIPadProjectView: View {
                     AddTextToolButton {
                         boardCanvasActions?.dispatch(.addText)
                     }
+                    PlaceDecalToolButton {
+                        boardCanvasActions?.dispatch(.placeDecal)
+                    }
+                    .disabled(boardCanvasActions?.canPlaceDecal != true)
                 }
             }
         } else {

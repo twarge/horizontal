@@ -9,6 +9,9 @@ struct HorizontalPoolItemPickerSheet: View {
     var index: HorizontalPoolLibraryIndex
     /// Items to leave out (an item can't be its own base or alternate).
     var excludedUUIDs: Set<String> = []
+    /// A drawing of the selected item below the list, as the library
+    /// browser's, for a pick made by its looks, as a decal's is.
+    var showsPreview = false
     var onPick: (HorizontalPoolLibraryItem) -> Void
     var onCancel: () -> Void
 
@@ -67,6 +70,11 @@ struct HorizontalPoolItemPickerSheet: View {
                     onPick(item)
                 }
             }
+            if showsPreview {
+                Divider()
+                HorizontalPoolItemPreviewView(item: selectedItem, index: index)
+                    .frame(height: 260)
+            }
             Divider()
             HStack {
                 Text("\(items.count) \(category.title.lowercased())")
@@ -85,7 +93,7 @@ struct HorizontalPoolItemPickerSheet: View {
             }
             .padding(12)
         }
-        .frame(minWidth: 560, minHeight: 420)
+        .frame(minWidth: 560, minHeight: showsPreview ? 640 : 420)
     }
 }
 

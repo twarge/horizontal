@@ -574,6 +574,21 @@ struct AddTextToolButton: View {
     }
 }
 
+/// Place Decal…: Horizon's decal chooser, its pick then following the
+/// cursor onto the board.
+struct PlaceDecalToolButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        HorizontalRailHelpLabel(title: "Place decal") {
+            Button(action: action) {
+                Image(systemName: "photo.artframe")
+            }
+            .help("Place a decal from the pools: a logo or other artwork")
+        }
+    }
+}
+
 struct TieNetsToolButton: View {
     var action: () -> Void
 

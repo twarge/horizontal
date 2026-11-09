@@ -2863,6 +2863,10 @@ struct ProjectWorkspaceView: View {
                             canvasCommandActionsByPane[.board]?.dispatch(.addText)
                         }
                         .disabled(project.board == nil)
+                        PlaceDecalToolButton {
+                            canvasCommandActionsByPane[.board]?.dispatch(.placeDecal)
+                        }
+                        .disabled(canvasCommandActionsByPane[.board]?.canPlaceDecal != true)
                     }
                 }
                 .overlay(alignment: .topTrailing) {
