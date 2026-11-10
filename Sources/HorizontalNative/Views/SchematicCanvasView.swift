@@ -8728,6 +8728,11 @@ struct SchematicCanvasView: View {
         if !editorProfile.isPoolMode, onApplyProjectEdit != nil {
             handlers.setAllUnconnectedPinsNC = { setAllNoConnect(true) }
             handlers.clearAllNCPins = { setAllNoConnect(false) }
+            handlers.setPinNoConnect = { symbol, pin, mark in
+                if let edit = HorizontalSchematicPinNoConnect.edit(symbol: symbol, pin: pin, mark: mark, in: sheet) {
+                    applyProjectEdit(edit.ops, actionName: edit.actionName)
+                }
+            }
             handlers.setDiffpair = { editDiffpair(HorizontalDiffpairProperty.pairing(of: Set($0), in: sheet.netDetails)) }
             handlers.clearDiffpair = { editDiffpair(HorizontalDiffpairProperty.clearing(of: [$0], in: sheet.netDetails)) }
             if selectedObjects.contains(where: { $0.type == .schematicSymbol }) {
@@ -8925,6 +8930,7 @@ struct SchematicCanvasView: View {
             if noConnectChange(for: [symbol], mark: false) {
                 entries.append(.command(title: "Clear all NC pins", .clearAllNCPins))
             }
+            entries.append(contentsOf: HorizontalSchematicPinNoConnect.menuEntries(for: ref, at: contextMenuWorldPoint, in: sheet))
         }
         if let smash = smashEntry(for: ref) { entries.append(smash) }
         entries.append(contentsOf: blockSymbolEntries(for: ref))
@@ -8957,6 +8963,9 @@ struct SchematicCanvasView: View {
         if canBendNetLine(ref) { entries.append(.command(title: "Add Vertex", .bendNetLine)) }
         if canEditCustomValue(of: ref) { entries.append(.command(title: "Edit Custom Value…", .editCustomValue)) }
         if let noPopulate = noPopulateEntry(for: ref) { entries.append(noPopulate) }
+        if !isReadOnly, !editorProfile.isPoolMode, onApplyProjectEdit != nil {
+            entries.append(contentsOf: HorizontalSchematicPinNoConnect.menuEntries(for: ref, at: contextMenuWorldPoint, in: sheet))
+        }
         if let smash = smashEntry(for: ref) { entries.append(smash) }
         entries.append(contentsOf: blockSymbolEntries(for: ref))
         if let moveToOtherSheet = moveToOtherSheetEntry(for: ref) { entries.append(moveToOtherSheet) }

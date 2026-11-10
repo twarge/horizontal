@@ -430,6 +430,7 @@ struct HorizontalCanvasCommandHandlerSet {
     var showAlternateParts: (() -> Void)? = nil
     var setAllUnconnectedPinsNC: (() -> Void)? = nil
     var clearAllNCPins: (() -> Void)? = nil
+    var setPinNoConnect: ((String, String, Bool) -> Void)? = nil
     var toggleNoPopulate: (() -> Void)? = nil
     var setDiffpair: (([String]) -> Void)? = nil
     var clearDiffpair: ((String) -> Void)? = nil
@@ -669,6 +670,9 @@ struct HorizontalCanvasCommandHandlerSet {
         case .clearAllNCPins:
             guard !isReadOnly else { return }
             clearAllNCPins?()
+        case .setPinNoConnect(let symbol, let pin, let mark):
+            guard !isReadOnly else { return }
+            setPinNoConnect?(symbol, pin, mark)
         case .toggleNoPopulate:
             guard !isReadOnly else { return }
             toggleNoPopulate?()

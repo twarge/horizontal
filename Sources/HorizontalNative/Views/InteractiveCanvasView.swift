@@ -173,6 +173,9 @@ enum HorizontalCanvasCommand {
     /// Schematic: clear every no-connect mark on those gates' pins
     /// (Horizon's "Clear all NC pins").
     case clearAllNCPins
+    /// Schematic: mark one pin of a symbol not connected, or clear its mark
+    /// (Horizon's Set NC / Clear NC on a pin).
+    case setPinNoConnect(symbol: String, pin: String, mark: Bool)
     /// Schematic: mark the selected symbols' components do not populate, or
     /// populate again (Horizon's "Mark do not populate" / "Mark populate").
     case toggleNoPopulate
