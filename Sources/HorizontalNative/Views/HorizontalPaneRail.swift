@@ -264,7 +264,7 @@ struct PaneToolColumn<
     @ViewBuilder
     private var selectionToolButton: some View {
         if let selectionToolSettings {
-            SelectionToolButton(settings: selectionToolSettings)
+            SelectionToolButton(settings: selectionToolSettings, showsBoardFilter: pane == .board)
         }
     }
 }

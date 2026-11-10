@@ -47,9 +47,20 @@ struct HorizontalCanvasSelectableScene {
             : indexes.flatMap { $0.candidates(at: point, expand: expand) }
     }
 
-    func hitSelectable(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> HorizontalSelectableRef? {
+    /// `admits`, when given, leaves out what it doesn't admit before the
+    /// smallest is picked (the board's selection filter), so a filtered
+    /// object never hides the one under it.
+    func hitSelectable(
+        at point: HorizontalPoint,
+        worldUnitsPerPoint: Double,
+        admits: ((HorizontalSelectableRef) -> Bool)? = nil
+    ) -> HorizontalSelectableRef? {
         let expand = HorizontalSelectable.minimumScreenSize * worldUnitsPerPoint
-        return HorizontalSelectableHitTest.smallestSelectable(at: point, in: candidates(at: point, expand: expand), expand: expand)
+        var found = candidates(at: point, expand: expand)
+        if let admits {
+            found = found.filter { admits($0.ref) }
+        }
+        return HorizontalSelectableHitTest.smallestSelectable(at: point, in: found, expand: expand)
     }
 
     func targetRefs(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> [HorizontalSelectableRef] {
@@ -381,6 +392,13 @@ struct HorizontalCanvasCommandHandlerSet {
     var mirrorSelection: () -> Void
     var mirrorSelectionHorizontal: (() -> Void)? = nil
     var mirrorSelectionVertical: (() -> Void)? = nil
+    /// Board: Align and Distribute; nil while the selection has too little
+    /// to line up.
+    var alignSelection: ((BoardAlignOperation) -> Void)? = nil
+    /// How many of the selected objects Align and Distribute would move.
+    var alignableSelectionCount = 0
+    /// Board: the measure tool; it changes nothing, so it works locked.
+    var measureDistance: (() -> Void)? = nil
     var drawNetLine: (() -> Void)?
     var drawTrack: (() -> Void)? = nil
     var drawGraphics: ((HorizontalDrawingPrimitive) -> Void)? = nil
@@ -522,6 +540,11 @@ struct HorizontalCanvasCommandHandlerSet {
         case .mirrorSelectionVertical:
             guard !isReadOnly else { return }
             mirrorSelectionVertical?()
+        case .alignSelection(let operation):
+            guard !isReadOnly, !hasInteraction else { return }
+            alignSelection?(operation)
+        case .measureDistance:
+            measureDistance?()
         case .drawNetLine:
             guard !isReadOnly else { return }
             drawNetLine?()
@@ -757,7 +780,7 @@ struct HorizontalCanvasCommandHandlerSet {
 
     func actions() -> HorizontalCanvasCommandActions {
         let writable = !isReadOnly
-        return HorizontalCanvasCommandActions(
+        var actions = HorizontalCanvasCommandActions(
             canDeleteSelection: writable,
             canMoveSelection: writable,
             canRotateSelection: writable,
@@ -822,6 +845,9 @@ struct HorizontalCanvasCommandHandlerSet {
             roundOffVertexAdjustsRounding: roundOffVertexAdjustsRounding,
             dispatch: dispatch
         )
+        actions.alignableSelectionCount = writable && !hasInteraction && alignSelection != nil ? alignableSelectionCount : 0
+        actions.canMeasureDistance = measureDistance != nil
+        return actions
     }
 }
 

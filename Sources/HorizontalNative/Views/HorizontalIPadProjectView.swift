@@ -867,10 +867,19 @@ struct HorizontalIPadProjectView: View {
     /// A view key (⌘1, ⌘⌥1, ⌘⇧1 and the 2s): the preset's layers, with the
     /// tools on its side, as on the Mac.
     private func applyBoardLayerViewPreset(_ preset: HorizontalBoardLayerViewPreset) {
-        boardDisplayOptions.applyLayerPreset(preset.layerPreset)
-        if let layer = preset.layerPreset.drawingLayer {
-            boardDrawingLayer = layer
-        }
+        applyBoardViewPreset(preset.layerPreset)
+    }
+
+    /// A layer view preset, or the flip (F, View ▸ Flip Board View), applied
+    /// to the board's layers, side and drawing layer together.
+    private func applyBoardViewPreset(_ preset: HorizontalBoardLayerPreset) {
+        var view = HorizontalBoardViewState(
+            displayOptions: boardDisplayOptions, mirrored: boardViewport.mirrored, drawingLayer: boardDrawingLayer
+        )
+        view.apply(preset)
+        boardDisplayOptions = view.displayOptions
+        boardViewport.mirrored = view.mirrored
+        boardDrawingLayer = view.drawingLayer
     }
 
     /// Contents of the right-side slide-over inspector. Reuses the cross-platform
@@ -2969,16 +2978,8 @@ struct HorizontalIPadProjectView: View {
         live.setLayerPreset = { preset in
             // A side-less preset ("show silkscreen") takes the side that is
             // up; the view presets also turn the board over and put the tools
-            // on that side's copper, or its silkscreen for a silkscreen view.
-            let side = boardDisplayOptions.visibleSide ?? (boardViewport.mirrored ? .bottom : .top)
-            let resolved = preset.resolved(for: side)
-            boardDisplayOptions.applyLayerPreset(resolved)
-            if let mirrors = resolved.mirrorsView {
-                boardViewport.mirrored = mirrors
-            }
-            if let layer = resolved.drawingLayer {
-                boardDrawingLayer = layer
-            }
+            // on that side's copper (`HorizontalBoardViewState`).
+            applyBoardViewPreset(preset)
             showPane(.board)
         }
         live.showBoardSide = { side in

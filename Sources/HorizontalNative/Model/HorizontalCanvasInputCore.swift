@@ -400,6 +400,9 @@ enum HorizontalCanvasInputCore {
         switch characters {
         case "b": return .placeNetLabel
         case "e": return .mirrorSelection
+        // Board canvas only: Horizon's Flip view is the sequence V F, and V
+        // alone is Toggle Via here, so the flip takes F.
+        case "f": return supportsTrackVias ? .selectBoardLayerView(.flip) : nil
         case "h": return .smash
         case "i": return .editSymbolPinNames
         case "k": return .bendNetLine

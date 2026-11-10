@@ -670,6 +670,8 @@ struct BoardCanvasView: View {
     @State private var editedBoard: HorizontalBoard?
     @State private var moveState: MoveState?
     @State private var drawGraphicsState: DrawGraphicsState?
+    /// Design ▸ Measure Distance while it is on (`BoardMeasureState`).
+    @State private var measureState: BoardMeasureState?
     @State private var drawTrackState: DrawTrackState?
     /// Obstacle world for the active drawing gesture, built once when it starts.
     /// See `docs/push-shove-router.md`.
@@ -1310,6 +1312,10 @@ struct BoardCanvasView: View {
             },
             onPrimaryClick: { pointer, worldUnitsPerPoint, clickAction, clickCount in
                 let point = pointer.snapped
+                if measureState != nil {
+                    measureState?.click(at: point)
+                    return
+                }
                 if packagePlacementState != nil {
                     commitPackagePlacement(at: point)
                     return
@@ -1425,10 +1431,11 @@ struct BoardCanvasView: View {
                       drawTrackState == nil,
                       pastePlacementState == nil,
                       poolPlacementState == nil,
+                      measureState == nil,
                       roundOffVertexState == nil && addVertexState == nil && tuneState == nil, packagePlacementState == nil else {
                     return
                 }
-                updateSelection(with: refs, action: action)
+                updateSelection(with: selectionFilterAdmits.map { refs.filter($0) } ?? refs, action: action)
             },
             targetMenuItems: { pointer, worldUnitsPerPoint in
                 lastPointerPick.point = pointer.raw
@@ -1501,13 +1508,14 @@ struct BoardCanvasView: View {
                 labelLODDebouncer.postponeForViewportMovement()
             },
             canvasDisplayTransformReportTrigger: inlineTextEditorReportTrigger,
-            allowsContextMenu: moveState == nil && drawGraphicsState == nil && drawTrackState == nil && pastePlacementState == nil && poolPlacementState == nil && roundOffVertexState == nil && addVertexState == nil && tuneState == nil && packagePlacementState == nil,
-            handlesInteractionKeys: moveState != nil || drawGraphicsState != nil || drawTrackState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || addVertexState != nil || tuneState != nil || packagePlacementState != nil,
-            usesCrosshairCursor: drawGraphicsState != nil || drawTrackState != nil,
+            allowsContextMenu: moveState == nil && drawGraphicsState == nil && drawTrackState == nil && pastePlacementState == nil && poolPlacementState == nil && roundOffVertexState == nil && addVertexState == nil && tuneState == nil && packagePlacementState == nil && measureState == nil,
+            handlesInteractionKeys: moveState != nil || drawGraphicsState != nil || drawTrackState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || addVertexState != nil || tuneState != nil || packagePlacementState != nil || measureState != nil,
+            usesCrosshairCursor: drawGraphicsState != nil || drawTrackState != nil || measureState != nil,
             hasKeyboardFocus: hasKeyboardFocus,
             onRequestKeyboardFocus: onRequestKeyboardFocus,
             samplesCursorContinuously: drawTrackState != nil
                 || drawGraphicsState != nil
+                || measureState != nil
                 || pastePlacementState != nil
                 || poolPlacementState != nil
                 || roundOffVertexState != nil || addVertexState != nil || tuneState != nil || packagePlacementState != nil
@@ -1592,6 +1600,7 @@ struct BoardCanvasView: View {
             moveState = nil
             packagePlacementState = nil
             drawGraphicsState = nil
+            measureState = nil
             drawTrackState = nil
             trackRouterSession = nil
             pastePlacementState = nil
@@ -1932,6 +1941,7 @@ struct BoardCanvasView: View {
         hasher.combine(selectedObjects)
         hasher.combine(selectedUnplacedObjectID)
         hasher.combine(moveState != nil)
+        hasher.combine(measureState != nil)
         hasher.combine(drawGraphicsState?.primitive.rawValue)
         hasher.combine(drawGraphicsState?.points.count ?? 0)
         hasher.combine(drawGraphicsState?.rectanglePlacementMode == .center)
@@ -2033,6 +2043,9 @@ struct BoardCanvasView: View {
     }
 
     private var interactionStatusText: String? {
+        if let measureState {
+            return measureState.statusText
+        }
         if let state = drawGraphicsState {
             return HorizontalCanvasModeSupport.drawingToolStatusText(
                 for: state.primitive,
@@ -3754,7 +3767,7 @@ struct BoardCanvasView: View {
         // the type checker will resolve.
         var handlers = HorizontalCanvasCommandHandlerSet(
             isReadOnly: isReadOnly,
-            hasInteraction: drawGraphicsState != nil || drawTrackState != nil || moveState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || addVertexState != nil || tuneState != nil || packagePlacementState != nil,
+            hasInteraction: drawGraphicsState != nil || drawTrackState != nil || moveState != nil || pastePlacementState != nil || poolPlacementState != nil || roundOffVertexState != nil || addVertexState != nil || tuneState != nil || packagePlacementState != nil || measureState != nil,
             selectAll: selectAllObjects,
             selectNet: selectNetOfSelection,
             selectMore: { selectMoreOfSelection(stopsAtVias: $0) },
@@ -3810,7 +3823,9 @@ struct BoardCanvasView: View {
             hasRoundOffVertexInteraction: roundOffVertexState != nil,
             roundOffVertexAdjustsRounding: canRoundOffVertex && roundOffVertexAdjustsRounding,
             commitInteraction: {
-                if packagePlacementState != nil {
+                if measureState != nil {
+                    measureState = nil
+                } else if packagePlacementState != nil {
                     commitPackagePlacement(at: lastCursorWorldPoint)
                 } else if addVertexState != nil {
                     commitAddVertex()
@@ -3833,7 +3848,9 @@ struct BoardCanvasView: View {
                 }
             },
             cancelInteraction: {
-                if packagePlacementState != nil {
+                if measureState != nil {
+                    measureState = nil
+                } else if packagePlacementState != nil {
                     cancelPackagePlacement()
                 } else if addVertexState != nil {
                     // Esc ends Add Vertex keeping what was placed, as
@@ -3907,6 +3924,7 @@ struct BoardCanvasView: View {
             // Dimensions are the board's: a package or padstack has no use for
             // one, and Horizon offers the tool only there.
             handlers.drawDimension = { beginDrawDimension() }
+            handlers.measureDistance = { beginMeasure() }
             if canPlaceDecal {
                 handlers.placeDecal = { requestPlaceDecal() }
             }
@@ -3925,6 +3943,11 @@ struct BoardCanvasView: View {
             installCopperLockHandlers(&handlers)
             handlers.tuneTrack = { beginTuneTrack() }
             handlers.dragCopper = { beginCopperDrag() }
+            let alignable = BoardAlignment.alignableRefs(selectedObjects, in: editedBoard ?? sourceBoard)
+            if alignable.count >= 2 {
+                handlers.alignSelection = { alignSelection($0) }
+                handlers.alignableSelectionCount = alignable.count
+            }
             if let onEditDiffpair {
                 handlers.setDiffpair = { netIDs in
                     guard netIDs.allSatisfy(onEditDiffpair.canEdit),
@@ -3976,6 +3999,16 @@ struct BoardCanvasView: View {
         }
 
         guard let point else {
+            if hoveredObject != nil {
+                hoveredObject = nil
+            }
+            return
+        }
+
+        if var state = measureState {
+            if state.move(to: point) {
+                measureState = state
+            }
             if hoveredObject != nil {
                 hoveredObject = nil
             }
@@ -4089,7 +4122,20 @@ struct BoardCanvasView: View {
 
     private func hitSelectable(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> HorizontalSelectableRef? {
         selectionVertex(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
-            ?? boardSelectableScene().hitSelectable(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+            ?? boardSelectableScene().hitSelectable(
+                at: point, worldUnitsPerPoint: worldUnitsPerPoint, admits: selectionFilterAdmits
+            )
+    }
+
+    /// The selection filter (`BoardSelectionFilter`), on the board only, and
+    /// nil while it lets everything through. A part of what is selected
+    /// already (`selectionVertex`) is picked whatever it says.
+    private var selectionFilterAdmits: ((HorizontalSelectableRef) -> Bool)? {
+        let filter = selectionToolSettings.boardFilter
+        guard modeProfile.mode == .board, filter.isFiltering else {
+            return nil
+        }
+        return filter.admits
     }
 
     /// The part of the selection marked under the cursor (`BoardSelectionVertices`):
@@ -4127,11 +4173,12 @@ struct BoardCanvasView: View {
     }
 
     private func targetMenuItems(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> [HorizontalSelectionTargetItem] {
-        HorizontalCanvasModeSupport.targetMenuItems(
+        let admits = selectionFilterAdmits
+        return HorizontalCanvasModeSupport.targetMenuItems(
             scene: boardSelectableScene(),
             at: point,
             worldUnitsPerPoint: worldUnitsPerPoint,
-            itemForRef: { hudItem(for: $0) }
+            itemForRef: { ref in admits?(ref) == false ? nil : hudItem(for: ref) }
         )
     }
 
@@ -4707,7 +4754,8 @@ struct BoardCanvasView: View {
         guard moveState == nil, pastePlacementState == nil else {
             return
         }
-        selectedObjects = boardSelectableScene().refs()
+        let refs = boardSelectableScene().refs()
+        selectedObjects = selectionFilterAdmits.map { refs.filter($0) } ?? refs
         selectedUnplacedObjectID = nil
         hoveredObject = nil
         publishSelectionContext()
@@ -5717,6 +5765,19 @@ struct BoardCanvasView: View {
     /// Begin a dimension: a two-point measurement, drawn with the line tool's
     /// own interaction and committed as a `HorizontalDimension` rather than as
     /// board graphics.
+    /// Design ▸ Measure Distance (`BoardMeasureState`). Nothing changes on
+    /// the board, so it starts on a locked one too, but not over another
+    /// tool.
+    private func beginMeasure() {
+        guard moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
+              pastePlacementState == nil, poolPlacementState == nil, packagePlacementState == nil,
+              roundOffVertexState == nil, addVertexState == nil, tuneState == nil else {
+            return
+        }
+        measureState = BoardMeasureState(cursor: lastCursorWorldPoint)
+        hoveredObject = nil
+    }
+
     private func beginDrawDimension() {
         guard !isReadOnly,
               modeProfile.mode == .board,
@@ -8100,6 +8161,44 @@ struct BoardCanvasView: View {
             mirrorSelectedObjects(around: center, board: &draft)
             rotateSelectedObjects(around: center, by: Self.quarterTurnAngle * 2, board: &draft)
         }
+    }
+
+    /// Edit ▸ Align and Edit ▸ Distribute (`BoardAlignment`): each object
+    /// moved on its own by what lines it up, its copper following as a move
+    /// takes it, all as one undoable edit. A fixed package stays. Left and
+    /// right are the screen's, so they swap seen from below.
+    private func alignSelection(_ operation: BoardAlignOperation) {
+        guard !isReadOnly, moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
+              pastePlacementState == nil, poolPlacementState == nil, packagePlacementState == nil,
+              roundOffVertexState == nil, addVertexState == nil, tuneState == nil else {
+            return
+        }
+        let previousBoard = editedBoard ?? sourceBoard
+        let lookup = boardSelectablesByRef()
+        let items = BoardAlignment.items(for: selectedObjects, in: previousBoard) { BoardAlignment.bounds(of: lookup[$0] ?? []) }
+        let offsets = BoardAlignment.offsets(operation.onBoard(viewMirrored: viewport.mirrored), items: items)
+        guard !offsets.isEmpty else {
+            return
+        }
+        var draft = previousBoard
+        var points = BoardMovingPoints()
+        for (ref, delta) in offsets.sorted(by: { $0.key.id < $1.key.id }) {
+            switch ref.type {
+            case .boardPackage: moveBoardPackage(ref: ref, by: delta, board: &draft)
+            case .via: moveVia(ref: ref, by: delta, in: previousBoard, points: &points)
+            case .boardHole: moveHole(&draft.holes, ref: ref, by: delta)
+            case .boardDecal: moveBoardDecal(&draft.decals, ref: ref, by: delta)
+            case .text: moveText(&draft.texts, ref: ref, by: delta)
+            default: break
+            }
+        }
+        points.apply(from: previousBoard, to: &draft)
+        registerUndoSnapshot(previousBoard, actionName: operation.actionName)
+        editedBoard = draft
+        invalidateSelectableCache()
+        hoveredObject = nil
+        publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previousBoard, kind: .transform))
+        publishSelectionContext()
     }
 
     private func rotateSelection() {
@@ -15393,6 +15492,10 @@ struct BoardCanvasView: View {
             }
         }
 
+        if let measurement = measureState?.measurement {
+            appendSegment(from: measurement.from, to: measurement.to, color: HorizontalMetalRGBA(theme.textOverlay.opacity(0.9)))
+        }
+
         if let state = drawGraphicsState {
             var points = state.points
             if let cursor = state.cursor,
@@ -17307,6 +17410,12 @@ struct BoardCanvasView: View {
     }
 
     private func drawGraphicsPreview(context: GraphicsContext, transform: HorizontalCanvasTransform) {
+        if let measurement = measureState?.measurement {
+            drawPreviewSegment(
+                HorizontalSegment(id: "measure-preview", from: measurement.from, to: measurement.to, width: 0, layer: nil),
+                context: context, transform: transform
+            )
+        }
         guard let state = drawGraphicsState else {
             return
         }

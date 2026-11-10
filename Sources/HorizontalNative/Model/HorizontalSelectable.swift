@@ -131,6 +131,8 @@ struct HorizontalSelectionToolSettings: Equatable, Hashable {
     var qualifier: HorizontalSelectionQualifier = .includeOrigin
     var modifierAction: HorizontalSelectionModifierAction = .toggle
     var stickySelection = false
+    /// The board's selection filter: which kinds a pick takes there.
+    var boardFilter = BoardSelectionFilter()
 }
 
 struct HorizontalSelectable: Hashable {

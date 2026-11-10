@@ -138,6 +138,11 @@ struct HorizontalCanvasCommandActions {
     var canOpenBlock: Bool = false
     var canEditBlockSymbol: Bool = false
     var canUpdateAllPlanes: Bool = false
+    /// Edit ▸ Align and Distribute: how many objects of the board's
+    /// selection they would line up; 0 when they can't act.
+    var alignableSelectionCount: Int = 0
+    /// Design ▸ Measure Distance: the board's measure tool.
+    var canMeasureDistance: Bool = false
     var hasPlacementInteraction: Bool = false
     var hasRoundOffVertexInteraction: Bool = false
     var roundOffVertexAdjustsRounding: Bool = false
@@ -382,6 +387,7 @@ struct HorizontalViewCommands: Commands {
     @FocusedValue(\.horizonReadOnlyOperation) private var readOnlyOperation
     @FocusedValue(\.horizonSchematicAvailable) private var schematicAvailable
     @FocusedValue(\.horizonDocumentViewActions) private var documentViewActions
+    @FocusedValue(\.horizonFlipBoardViewAction) private var flipBoardViewAction
 
     /// Locked means the document is read-only, which is not the same as a
     /// command being inapplicable to whatever canvas has focus. Menu items are
@@ -519,6 +525,8 @@ struct HorizontalViewCommands: Commands {
                     canvasCommandActions?.dispatch(.mirrorSelection)
                 }
                 .disabled(canvasCommandActions?.canMirrorSelection != true)
+
+                HorizontalAlignMenus(actions: canvasCommandActions)
 
                 Divider()
                 // The canvas takes these keys itself, by what they type
@@ -828,6 +836,10 @@ struct HorizontalViewCommands: Commands {
                 lengthTuningActions?.measure?(true)
             }
             .disabled(lengthTuningActions?.measure == nil)
+            Button("Measure Distance") {
+                canvasCommandActions?.dispatch(.measureDistance)
+            }
+            .disabled(canvasCommandActions?.canMeasureDistance != true)
             Divider()
             Button("Filter Airwires…") {
                 canvasCommandActions?.dispatch(.filterAirwires)
@@ -985,6 +997,13 @@ struct HorizontalViewCommands: Commands {
                 Toggle("Coordinates", isOn: schematicOptionBinding(\.coordinates))
             }
             .disabled(schematicDisplayOptions == nil || schematicAvailable != true)
+
+            // F reaches it through the board canvas: a menu shortcut with no
+            // ⌘ would take F from every text field.
+            Button("Flip Board View") {
+                flipBoardViewAction?()
+            }
+            .disabled(flipBoardViewAction == nil || boardAvailable != true)
 
             Menu("Board Visibility") {
                 Button("Show All") {

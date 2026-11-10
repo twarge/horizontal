@@ -49,6 +49,9 @@ enum HorizontalBoardLayerViewPreset: Hashable {
     case bottomSilkscreen
     case topRouting
     case bottomRouting
+    /// F, View ▸ Flip Board View: the other side's placement view, seen from
+    /// that side (Horizon's Flip view).
+    case flip
 
     /// The named preset it is, which says what it shows and which layer the
     /// drawing tools go on.
@@ -60,6 +63,7 @@ enum HorizontalBoardLayerViewPreset: Hashable {
         case .bottomSilkscreen: .bottomSilkscreen
         case .topRouting: .topRouting
         case .bottomRouting: .bottomRouting
+        case .flip: .flipView
         }
     }
 }
@@ -85,6 +89,9 @@ enum HorizontalCanvasCommand {
     case mirrorSelection
     case mirrorSelectionHorizontal
     case mirrorSelectionVertical
+    /// Board: Edit ▸ Align and Edit ▸ Distribute, on the selected packages,
+    /// vias, holes, decals and texts (`BoardAlignment`).
+    case alignSelection(BoardAlignOperation)
     case drawNetLine
     case drawTrack
     case drawGraphics(HorizontalDrawingPrimitive)
@@ -108,6 +115,9 @@ enum HorizontalCanvasCommand {
     case updateAllPlanes
     /// Board: measure between two points (Horizon's dimension tool).
     case drawDimension
+    /// Board: measure between two clicked points without drawing anything
+    /// (Design ▸ Measure Distance, Horizon's measure tool).
+    case measureDistance
     /// Board: lengthen a straight track's net with a meander, to the Length
     /// Tuning window's reference or a typed target (Horizon's Tune track).
     case tuneTrack
