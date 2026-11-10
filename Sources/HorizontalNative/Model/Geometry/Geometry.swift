@@ -1584,6 +1584,9 @@ struct HorizontalPlacement: Identifiable, Hashable {
     var gateID: String? = nil
     var symbolID: String? = nil
     var pinDisplayMode: String = HorizontalSymbolPinDisplayMode.selectedOnly.rawValue
+    /// A schematic symbol's `display_all_pads`: a pin with several pads
+    /// lists every pad number, as Horizon's default has it.
+    var displayAllPads: Bool = true
     var symbolPinNames: [HorizontalSymbolPinName] = []
     var packageID: String? = nil
     var modelID: String? = nil

@@ -2089,7 +2089,7 @@ struct SchematicCanvasView: View {
                 editableLengthProperty("positionY", "Position Y", symbol.position.y),
                 editableAngleProperty("angle", "Angle", symbol.angle),
                 noPopulateProperty(for: symbol),
-            ].compactMap { $0 } + editableSymbolPinNameProperties(for: symbol)
+            ].compactMap { $0 } + symbolProjectProperties(for: symbol) + editableSymbolPinNameProperties(for: symbol)
         case .lineNet:
             let netID = sheet.netLines.first { normalizedID($0.id) == normalizedID(ref.id) }?.netID
             return segmentProperties(for: ref, segments: sheet.netLines, title: "Net", editsNetName: true)
@@ -2170,6 +2170,17 @@ struct SchematicCanvasView: View {
             return nil
         }
         return (symbol, parts[2])
+    }
+
+    /// The symbol's pool symbol, pin display mode and display all pads
+    /// (`HorizontalSchematicSymbolProperties`), edited through the project.
+    private func symbolProjectProperties(for symbol: HorizontalPlacement) -> [HorizontalSelectionProperty] {
+        guard !editorProfile.isPoolMode else { return [] }
+        let choices = symbol.symbolID.flatMap { id in
+            poolURL.map { HorizontalSchematicSymbolProperties.symbols(drawingTheUnitOf: id, poolURL: $0) }
+        } ?? []
+        return HorizontalSchematicSymbolProperties.properties(
+            for: symbol, symbols: choices, editable: !isReadOnly && onApplyProjectEdit != nil)
     }
 
     private static let portNoConnectPropertyID = "portNoConnect"
@@ -7073,6 +7084,18 @@ struct SchematicCanvasView: View {
             }
             return
         }
+        if HorizontalSchematicSymbolProperties.handles(change.propertyID) {
+            let refs = Set((change.applyToAll ? selectedObjects : [change.ref]).map { normalizedID($0.id) })
+            if let edit = HorizontalSchematicSymbolProperties.edit(
+                propertyID: change.propertyID, value: change.value,
+                placements: sheet.symbols.filter { refs.contains(normalizedID($0.id)) }) {
+                // The selection survives the reload, as a rename's does.
+                hoveredObject = nil
+                adoptExternallyUpdatedSheet()
+                onApplyProjectEdit?(edit.ops, edit.actionName)
+            }
+            return
+        }
         if change.propertyID == Self.noPopulatePropertyID, case .bool(let noPopulate) = change.value {
             setNoPopulate(noPopulate, of: change.applyToAll ? selectedObjects : [change.ref])
             return
@@ -7384,9 +7407,6 @@ struct SchematicCanvasView: View {
             return true
         }
 
-        // The inspector has no display-mode control: a pin shows what its
-        // function menu selects, so an edit settles the symbol on that mode.
-        sheet.symbols[symbolIndex].pinDisplayMode = HorizontalSymbolPinDisplayMode.selectedOnly.rawValue
         updateSymbolPinNameTexts(
             symbolID: sheet.symbols[symbolIndex].id,
             pins: sheet.symbols[symbolIndex].symbolPinNames,

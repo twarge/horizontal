@@ -1277,6 +1277,7 @@ struct HorizontalSchematic {
             }
             placements[index].gateID = gateID
             placements[index].pinDisplayMode = symbolItem.string("pin_display_mode") ?? HorizontalSymbolPinDisplayMode.selectedOnly.rawValue
+            placements[index].displayAllPads = symbolItem.bool("display_all_pads") ?? true
             placements[index].symbolPinNames = editorPins
         }
     }
