@@ -5772,12 +5772,12 @@ struct ProjectWorkspaceView: View {
         do {
             let part = try cacheLibraryPart(item)
             let edited = try HorizontalCanvasProjectEdit.archive(
-                applying: replacement.operations(partID: part.id),
+                applying: replacement.operations(partID: part.id, entityID: item.partEntityID),
                 to: document.archive,
                 in: project,
                 block: replacement.blockID
             )
-            try applyLiveArchive(edited.archive, actionName: replacement.targets.count == 1 ? "Replace Part" : "Replace Parts")
+            try applyLiveArchive(edited.archive, actionName: replacement.actionName(for: item))
         } catch {
             libraryReplacementError = HorizontalCanvasProjectEdit.message(for: error)
         }

@@ -1434,13 +1434,13 @@ struct HorizontalIPadProjectView: View {
             let part = try cacheLibraryPart(item, project: current)
             let withPart = self.project ?? current
             let edited = try HorizontalCanvasProjectEdit.archive(
-                applying: replacement.operations(partID: part.id),
+                applying: replacement.operations(partID: part.id, entityID: item.partEntityID),
                 to: document.archive,
                 in: withPart,
                 block: replacement.blockID
             )
             try applyArchiveEdit(edited.archive, to: withPart,
-                                 actionName: replacement.targets.count == 1 ? "Replace Part" : "Replace Parts")
+                                 actionName: replacement.actionName(for: item))
         } catch {
             libraryReplacementError = HorizontalCanvasProjectEdit.message(for: error)
         }

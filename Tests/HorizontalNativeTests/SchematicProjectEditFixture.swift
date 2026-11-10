@@ -15,12 +15,14 @@ final class SchematicProjectEditFixture {
     let otherSymbol: String
     let pins: [String]
     let poolURL: URL
+    let url: URL
 
     init(testCase: XCTestCase) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("schematic-project-edit-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         testCase.addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("Test.horizontal")
+        self.url = url
         try HorizontalProjectArchive.newProject().write(to: url)
 
         poolURL = url.appendingPathComponent("pool")
@@ -56,6 +58,36 @@ final class SchematicProjectEditFixture {
         _ = try HorizontalPoolItemFactory.write(.part(resistor), to: poolURL.appendingPathComponent("parts/cache/\(resistor.uuid).json"))
         project = try HorizontalProject.load(from: url)
         archive = try HorizontalProjectArchive.completeProject(from: url)
+    }
+
+    /// Another entity's part in the pool, its one gate's pins named
+    /// `pinNames`, drawn by a symbol of its own. Only before any edit: the
+    /// project is read from disk again. Returns the part's and the entity's
+    /// uuids.
+    func addPart(entityName: String, pinNames: [String]) throws -> (part: String, entity: String) {
+        var unit = HorizontalPoolItemFactory.newUnit()
+        unit.name = entityName
+        var symbolPins = [String: HorizontalSymbolPin]()
+        for (index, name) in pinNames.enumerated() {
+            let id = HorizontalPoolItemFactory.newUUID()
+            unit.pins[id] = HorizontalUnitPin(id: id, primaryName: name)
+            symbolPins[id] = HorizontalSymbolPin(id: id, position: .init(x: -5_000_000, y: Double(index) * -2_540_000), length: 2_500_000)
+        }
+        var entity = HorizontalPoolItemFactory.newEntity(for: unit)
+        entity.name = entityName
+        entity.prefix = "U"
+        var symbol = HorizontalPoolItemFactory.newSymbol(for: unit)
+        symbol.pins = symbolPins
+        let package = HorizontalPoolItemFactory.newPackage()
+        let part = HorizontalPoolItemFactory.newPart(entity: entity, packageID: package.uuid)
+        _ = try HorizontalPoolItemFactory.write(.unit(unit), to: poolURL.appendingPathComponent("units/cache/\(unit.uuid).json"))
+        _ = try HorizontalPoolItemFactory.write(.entity(entity), to: poolURL.appendingPathComponent("entities/cache/\(entity.uuid).json"))
+        _ = try HorizontalPoolItemFactory.write(.symbol(symbol), to: poolURL.appendingPathComponent("symbols/cache/\(symbol.uuid).json"))
+        _ = try HorizontalPoolItemFactory.write(.package(package), to: poolURL.appendingPathComponent("packages/cache/\(package.uuid)/package.json"))
+        _ = try HorizontalPoolItemFactory.write(.part(part), to: poolURL.appendingPathComponent("parts/cache/\(part.uuid).json"))
+        project = try HorizontalProject.load(from: url)
+        archive = try HorizontalProjectArchive.completeProject(from: url)
+        return (part.uuid.lowercased(), entity.uuid.lowercased())
     }
 
     /// One batch, one archive edit: what the app's undo step is made of.
