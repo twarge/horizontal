@@ -155,6 +155,7 @@ struct HorizontalPoolsSettingsSection: View {
     @ObservedObject private var updater = HorizontalPoolUpdater.shared
     @State private var isImportingPool = false
     @State private var isOfferingDefaultPool = false
+    @State private var isCreatingPool = false
     @State private var addFailure: String?
 
     private var gitPools: [URL] {
@@ -172,6 +173,7 @@ struct HorizontalPoolsSettingsSection: View {
             }
             HStack {
                 Button("Add Pool…", action: addPool)
+                Button("New Pool…") { isCreatingPool = true }
                 if !HorizontalDefaultPool.isRegistered {
                     Button("Get Horizon Default Pool…", action: offerDefaultPool)
                 }
@@ -193,6 +195,9 @@ struct HorizontalPoolsSettingsSection: View {
         }
         .sheet(isPresented: $isOfferingDefaultPool) {
             HorizontalDefaultPoolSheet()
+        }
+        .sheet(isPresented: $isCreatingPool) {
+            HorizontalNewPoolSheet()
         }
         .alert("Not a Pool", isPresented: Binding { addFailure != nil } set: { if !$0 { addFailure = nil } }) {
             Button("OK", role: .cancel) {}
