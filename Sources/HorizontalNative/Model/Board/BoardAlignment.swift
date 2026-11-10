@@ -199,18 +199,21 @@ enum BoardAlignment {
 
     /// The selection's objects to align (`alignableRefs`), each with its
     /// bounding box, whose `bounds` (the boxes the canvas hit-tests them
-    /// by) give one at all. A fixed package is marked to stay.
+    /// by) give one at all. A fixed package is marked to stay, and a locked via.
     static func items(
         for refs: [HorizontalSelectableRef],
         in board: HorizontalBoard,
         bounds: (HorizontalSelectableRef) -> HorizontalRect?
     ) -> [BoardAlignItem<HorizontalSelectableRef>] {
         let fixed = Set(board.packages.filter(\.fixed).map { HorizontalCanvasModeSupport.normalizedID($0.id) })
+        let held = BoardCopperLock.held(in: board)
         return alignableRefs(refs, in: board).compactMap { ref in
             guard let box = bounds(ref) else {
                 return nil
             }
+            // A via the lock holds stays too (`BoardCopperLock`).
             let isFixed = ref.type == .boardPackage && fixed.contains(HorizontalCanvasModeSupport.normalizedID(ref.id))
+                || ref.type == .via && held.holds(ref)
             return BoardAlignItem(key: ref, bounds: box, isFixed: isFixed)
         }
     }

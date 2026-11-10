@@ -19527,7 +19527,7 @@ extension BoardCanvasView {
     private func beginCopperDrag() {
         guard !isReadOnly, modeProfile.mode == .board, moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
               pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil, addVertexState == nil,
-              packagePlacementState == nil, tuneState == nil else {
+              packagePlacementState == nil, tuneState == nil, measureState == nil else {
             return
         }
         let originalBoard = board
