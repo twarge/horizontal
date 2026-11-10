@@ -13,7 +13,7 @@ import XCTest
 /// the user's requests that came with them: links both ways between pool
 /// items, in the MCP and on screen.
 @MainActor
-final class HorizontalMCPFieldFindings49Tests: XCTestCase {
+final class HorizontalMCPPoolLinksAndRemapTests: XCTestCase {
     private struct Part {
         var items: [JSONDictionary]
         var part: String
@@ -67,7 +67,7 @@ final class HorizontalMCPFieldFindings49Tests: XCTestCase {
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("field49-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        HorizontalPoolRegistryStore.defaults = try XCTUnwrap(UserDefaults(suiteName: "HorizontalMCPFieldFindings49Tests-\(UUID().uuidString)"))
+        HorizontalPoolRegistryStore.defaults = try XCTUnwrap(UserDefaults(suiteName: "HorizontalMCPPoolLinksAndRemapTests-\(UUID().uuidString)"))
         HorizontalPoolLibrary.invalidateCache()
         let project = root.appendingPathComponent("Project.horizontal")
         try HorizontalProjectArchive.newProject().write(to: project)

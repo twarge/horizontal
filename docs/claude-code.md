@@ -11,7 +11,8 @@ skills for working on Horizon EDA projects. With it, Claude can:
 ## Install
 
 Install [uv](https://docs.astral.sh/uv/) (`brew install uv`), then in a
-terminal:
+terminal (without uv the server runs on any Python 3.11 or later it finds,
+such as `brew install python@3.13`; macOS's own `/usr/bin/python3` is 3.9):
 
     claude plugin marketplace add twarge/horizontal
     claude plugin install horizontal@twarge
@@ -98,11 +99,17 @@ entry in `python/uv.lock` together. A test enforces that.
   - The plugin is rooted at `python/`. An installed copy carries the server's
     source and `uv.lock`, so the server and the skills always come from the
     same commit.
-  - The manifest's server entry runs `uv run --frozen --project
-    ${CLAUDE_PLUGIN_ROOT} horizontal-mcp`. Its virtual environment lives in
-    `${CLAUDE_PLUGIN_DATA}`, which survives updates.
-  - Both client launchers request Python 3.13. uv downloads it if necessary,
-    avoiding dependency builds against the newest installed Python.
+  - The manifest's server entry runs the launcher, `bin/horizontal-mcp`,
+    which both clients share. With uv it runs `uv run --python 3.13 --frozen
+    --project <plugin root> horizontal-mcp`: uv downloads Python 3.13 if
+    necessary, avoiding dependency builds against the newest installed
+    Python. Its virtual environment lives in `${CLAUDE_PLUGIN_DATA}`, which
+    survives updates.
+  - Without uv the launcher uses the first Python 3.11 or later it finds,
+    makes a virtual environment beside uv's (`venv-pip`) and installs with
+    pip, from `pyproject.toml`'s ranges, not `uv.lock`. It looks for uv and
+    Python in Homebrew's and `~/.local/bin` as well as `PATH`, which a client
+    started from the Dock doesn't have.
 - **Trying changes.** Use `claude --plugin-dir ./python`, or add the checkout
   as a local marketplace (`claude plugin marketplace add ./`). A local
   marketplace reads the plugin in place.

@@ -2302,7 +2302,11 @@ struct HorizontalIPadProjectView: View {
         // A net that changed its class, or a track its net, takes what the
         // rules give it now, which the archive is given too.
         if !HorizontalBoardRuleApplication.apply(to: &syncedBoard, poolURL: boardPoolURL).isEmpty {
-            try? HorizontalProjectJSONApplicator.apply(board: syncedBoard, in: updated, to: &document.archive)
+            do {
+                try HorizontalProjectJSONApplicator.apply(board: syncedBoard, in: updated, to: &document.archive)
+            } catch {
+                loadError = "Couldn't save board changes: \(error.localizedDescription)"
+            }
         }
         updated.board = syncedBoard
         project = updated

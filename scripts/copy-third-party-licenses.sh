@@ -7,9 +7,7 @@
 # licences it did not carry. For OCCT that is not cosmetic: it is statically
 # linked under LGPL 2.1, which requires the licence to accompany the binary.
 #
-# Only what the binary actually contains is listed. poly2tri and js-dxf are
-# vendored but compiled into nothing, so shipping their notices would claim the
-# app includes software it does not.
+# Only what the binary actually contains is listed.
 #
 # Run as a build phase. Sources are the vendored trees; a missing one is a
 # warning rather than a build failure, because submodules are not always checked

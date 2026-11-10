@@ -10,6 +10,10 @@ final class HorizontalDispatchSnapshot {
     let files: [String]
     private var temporaryURL: URL?
     private var cachedProject: HorizontalProject?
+    /// A snapshot reaches other threads through a detached read session.
+    /// None of the methods that run there materialize it today, but one
+    /// added to that list would, alongside the main thread's.
+    private let materializeLock = NSLock()
 
     init(archive: HorizontalProjectArchive, baseURL: URL) {
         self.archive = archive
@@ -80,6 +84,8 @@ final class HorizontalDispatchSnapshot {
     }
 
     func materializedProject() throws -> HorizontalProject {
+        materializeLock.lock()
+        defer { materializeLock.unlock() }
         if let cachedProject { return cachedProject }
         guard archive.symbolicLinkCount == 0 else {
             throw HorizontalDispatchError.unsupported("Snapshot has symbolic links; resolve dependencies before analysis or rendering.")

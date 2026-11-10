@@ -363,7 +363,7 @@ enum HorizontalMetalTessellator {
         if holes.isEmpty {
             return triangulateSimple(outer, color: color, allowsFanFallback: false)
         }
-        let triangles = triangulateWithPoly2Tri(outer: outer, holes: holes, color: color)
+        let triangles = triangulateWithEarcut(outer: outer, holes: holes, color: color)
         return triangles.isEmpty ? triangulate(outer: outer, holes: holes, color: color) : triangles
     }
 
@@ -435,7 +435,7 @@ enum HorizontalMetalTessellator {
             if holes.isEmpty {
                 triangles = triangulateSimple(outer, color: color, allowsFanFallback: false)
             } else {
-                triangles = triangulateWithPoly2Tri(outer: outer, holes: holes, color: color)
+                triangles = triangulateWithEarcut(outer: outer, holes: holes, color: color)
                 if triangles.isEmpty {
                     triangles = triangulate(outer: outer, holes: holes, color: color)
                 }
@@ -539,7 +539,7 @@ enum HorizontalMetalTessellator {
         return triangulateSimple(polygon, color: color, allowsFanFallback: false)
     }
 
-    private static func triangulateWithPoly2Tri(
+    private static func triangulateWithEarcut(
         outer: [HorizontalPoint],
         holes: [[HorizontalPoint]],
         color: HorizontalMetalRGBA

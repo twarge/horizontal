@@ -291,6 +291,9 @@ final class HorizontalLiveActivity: @unchecked Sendable {
 
 /// One client connection: buffers bytes into lines and answers each line in
 /// order on the main actor.
+///
+/// `@unchecked Sendable` rests on `queue` being serial: `buffer` is touched
+/// only there.
 final class HorizontalLiveConnection: @unchecked Sendable {
     private let connection: NWConnection
     private let token: String

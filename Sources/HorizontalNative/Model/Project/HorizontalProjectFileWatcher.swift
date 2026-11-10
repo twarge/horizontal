@@ -18,6 +18,8 @@ final class HorizontalDirectoryEvents: @unchecked Sendable {
     private let alias: String
     private let handler: Handler
     private let queue = DispatchQueue(label: "com.twarge.horizontal.project-file-events")
+    /// Marks `queue`, so `stop` can tell it is running there.
+    private static let onQueue = DispatchSpecificKey<Bool>()
     private var stream: FSEventStreamRef?
 
     init(directory: URL, handler: @escaping Handler) {
@@ -27,6 +29,7 @@ final class HorizontalDirectoryEvents: @unchecked Sendable {
             return String(cString: resolved)
         } ?? alias
         self.handler = handler
+        queue.setSpecific(key: Self.onQueue, value: true)
     }
 
     deinit { stop() }
@@ -62,6 +65,14 @@ final class HorizontalDirectoryEvents: @unchecked Sendable {
         guard let stream else { return }
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)
+        // The stream holds `self` unretained, and a callback already handed
+        // to `queue` still runs after the invalidate: wait for it, so it
+        // can't reach `self` once deinit has returned. Not from the queue
+        // itself, where the callback's own reference can be the last one and
+        // this is its deinit; waiting there would wait for itself.
+        if DispatchQueue.getSpecific(key: Self.onQueue) != true {
+            queue.sync {}
+        }
         FSEventStreamRelease(stream)
         self.stream = nil
     }

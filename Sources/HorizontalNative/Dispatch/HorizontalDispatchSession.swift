@@ -3,6 +3,12 @@ import HorizontalProjectIO
 
 /// The open-project table every dispatch call runs against. All access is
 /// serialized by `perform`, so handlers may touch entries freely.
+///
+/// That is what `@unchecked Sendable` rests on: `entries`, `nextHandle` and
+/// `frontLiveHandle` are read and written only inside `perform`. The members
+/// below it (`openEntries`, `open`, `entry`, `close`, `reload` and the rest)
+/// take no lock of their own, so they are called only from a `perform` body.
+/// A detached read session is one thread's alone.
 final class HorizontalDispatchSession: @unchecked Sendable {
     static let shared = HorizontalDispatchSession()
     let serverID = UUID().uuidString.lowercased()

@@ -90,7 +90,13 @@ enum HorizontalPoolRegistryStore {
         #else
         let options: URL.BookmarkCreationOptions = []
         #endif
-        guard let data = try? url.bookmarkData(options: options) else {
+        // Without the bookmark a sandboxed relaunch can't open the pool, which
+        // then reads as missing: say why in the log.
+        let data: Data
+        do {
+            data = try url.bookmarkData(options: options)
+        } catch {
+            NSLog("%@", "Horizontal pools: could not keep access to \(url.path): \(error.localizedDescription)")
             return
         }
         var bookmarks = defaults.dictionary(forKey: bookmarksKey) as? [String: Data] ?? [:]

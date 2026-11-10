@@ -390,8 +390,14 @@ final class HorizontalPlanePourScheduler: ObservableObject {
                 made.set { $0.airwires = resolved.airwires }
             case 1:
                 guard request.makesPlanesFile else { return }
-                let data = try? HorizontalProjectJSONApplicator.planeCacheData(board: poured)
-                made.set { $0.planesFileData = data }
+                // No data reads as "no file wanted", so the saved planes
+                // file would stay stale without a word.
+                do {
+                    let data = try HorizontalProjectJSONApplicator.planeCacheData(board: poured)
+                    made.set { $0.planesFileData = data }
+                } catch {
+                    NSLog("%@", "Horizontal plane pour: could not make the planes file: \(error.localizedDescription)")
+                }
             default:
                 let tessellated = tessellate(poured.planes, freshlyPoured: outcome.pouredPlaneIDs, known: request.knownFragmentKeys)
                 made.set {

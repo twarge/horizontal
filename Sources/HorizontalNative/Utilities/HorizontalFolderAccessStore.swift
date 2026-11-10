@@ -261,7 +261,13 @@ enum HorizontalFolderAccessStore {
     }
 
     private static func storeBookmark(for folder: URL) {
-        guard let data = try? folder.bookmarkData(options: [.withSecurityScope]) else {
+        // Without the bookmark the grant lasts this session only, and the
+        // user is asked again at every launch: say why in the log.
+        let data: Data
+        do {
+            data = try folder.bookmarkData(options: [.withSecurityScope])
+        } catch {
+            logger.error("could not store folder access for \(folder.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return
         }
         var bookmarks = storedBookmarks()

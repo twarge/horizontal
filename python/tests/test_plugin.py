@@ -1,6 +1,7 @@
 """Codex and Claude Code packaging, onboarding, and shared skill contracts."""
 
 import json
+import os
 import re
 import tomllib
 import unittest
@@ -10,6 +11,7 @@ from horizontal import mcp_server as server
 
 PACKAGE = Path(__file__).resolve().parents[1]
 REPOSITORY = PACKAGE.parent
+LAUNCHER = "bin/horizontal-mcp"
 IDENTIFIER = re.compile(r"`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`")
 
 
@@ -53,22 +55,31 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
     def test_portable_server_uses_installed_source_and_writable_data(self):
         config = json.loads((PACKAGE / "mcp.json").read_text())["mcpServers"]["horizontal"]
         self.assertEqual(config["type"], "stdio")
-        self.assertEqual(config["command"], "uv")
-        root = config["args"][config["args"].index("--project") + 1]
-        self.assertEqual(root, "${PLUGIN_ROOT}")
-        self.assertIn("--frozen", config["args"])
-        self.assertIn(config["args"][-1], self.pyproject["project"]["scripts"])
+        # Both clients start the one launcher, which holds the uv command line
+        # and the fallback for a machine with no uv.
+        self.assertEqual(config["command"], "sh")
+        self.assertEqual(config["args"], ["${PLUGIN_ROOT}/" + LAUNCHER])
         self.assertTrue(config["env"]["UV_PROJECT_ENVIRONMENT"].startswith("${PLUGIN_DATA}/"))
-        claude_args = self.manifest["mcpServers"]["horizontal"]["args"]
-        self.assertEqual(config["args"][config["args"].index("--python") + 1],
-                         claude_args[claude_args.index("--python") + 1])
+
+    def test_launcher_runs_the_locked_package_script_and_keeps_stdout_clean(self):
+        launcher = PACKAGE / LAUNCHER
+        self.assertTrue(os.access(launcher, os.X_OK), launcher)
+        text = launcher.read_text()
+        uv = next(line for line in text.splitlines() if line.strip().startswith("exec uv run") and "python -c" not in line)
+        self.assertIn("--frozen", uv)
+        self.assertIn('--project "$ROOT"', uv)
+        self.assertIn(uv.split()[-1], self.pyproject["project"]["scripts"])
+        # stdout is the JSON-RPC channel: whatever sets the fallback up
+        # prints to stderr.
+        for line in text.splitlines():
+            if " -m venv " in line or " -m pip " in line or line.strip().startswith("echo "):
+                self.assertTrue(line.rstrip().endswith(">&2"), line)
 
     def test_server_runs_the_package_script_from_the_installed_plugin(self):
         server_config = self.manifest["mcpServers"]["horizontal"]
-        self.assertIn("horizontal-mcp", server_config["args"])
+        self.assertEqual(server_config["command"], "sh")
+        self.assertEqual(server_config["args"], ["${CLAUDE_PLUGIN_ROOT}/" + LAUNCHER])
         self.assertIn("horizontal-mcp", self.pyproject["project"]["scripts"])
-        root = server_config["args"][server_config["args"].index("--project") + 1]
-        self.assertEqual(root, "${CLAUDE_PLUGIN_ROOT}")
         self.assertTrue(server_config["env"]["UV_PROJECT_ENVIRONMENT"].startswith("${CLAUDE_PLUGIN_DATA}"))
 
     def test_skills_have_names_and_descriptions(self):

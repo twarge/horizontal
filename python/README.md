@@ -27,7 +27,7 @@ disk selection.
 
 The MCP server:
 
-    uv run horizontal-mcp
+    bin/horizontal-mcp
 
 is what `.mcp.json` at the repository root launches for Claude Code. Set
 `HORIZONTAL_PROJECT` to make the `path` argument of every tool optional.

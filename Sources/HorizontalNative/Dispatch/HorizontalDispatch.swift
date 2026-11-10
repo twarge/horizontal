@@ -102,6 +102,10 @@ public enum HorizontalDispatch {
 /// Carries non-Sendable values into a `MainActor.assumeIsolated` block that
 /// the caller has already verified runs on the main thread (the live
 /// handlers, which the live server calls from the main queue).
+///
+/// Nothing guards `value`: a box is either used on one thread throughout, or
+/// written once, handed to another thread and only read there. Never written
+/// from two.
 final class HorizontalUnsafeSendableBox<Value>: @unchecked Sendable {
     var value: Value
 

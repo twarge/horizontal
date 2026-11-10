@@ -6,6 +6,22 @@ Horizontal is a PCB design tool for macOS and iPadOS.
 
 ## Build
 
+Building needs Xcode 27.1 or later and two Homebrew packages, which the
+OpenCascade build uses:
+
+```sh
+brew install cmake ninja
+```
+
+The Python package and MCP server (`make python`, `make python-test`) also
+need uv:
+
+```sh
+brew install uv
+```
+
+Then:
+
 ```sh
 make          # Debug build of the macOS app
 make run      # build it, then launch it
@@ -53,7 +69,7 @@ Horizontal is Apache 2.0 — see `LICENSE`.
 
 Third-party licence texts ship inside the app at
 `Contents/Resources/ThirdPartyLicenses/`, which is where the About panel points.
-`Scripts/copy-third-party-licenses.sh` puts them there as a build phase, and a
+`scripts/copy-third-party-licenses.sh` puts them there as a build phase, and a
 Release build fails if any is missing.
 
 **Open CASCADE Technology 8.0.1**

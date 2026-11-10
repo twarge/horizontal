@@ -5,7 +5,7 @@ import XCTest
 
 /// MCP field findings 46: what swapping Board A's MCU to its TFBGA240 package
 /// through MCP on October 21 turned up (items 147–150 in the notes).
-final class HorizontalMCPFieldFindings46Tests: XCTestCase {
+final class HorizontalMCPPinMapAndNetlistTests: XCTestCase {
     private struct Part {
         var items: [JSONDictionary]
         var part: String

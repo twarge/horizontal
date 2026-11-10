@@ -32,6 +32,10 @@ jobs:
           swift --version
           xcodebuild -version
 
+      # Seconds, and needs nothing built: fail before OpenCascade if it fails.
+      - name: Lint
+        run: make lint
+
       # Vendor/OpenCascadeStatic is deliberately gitignored: it is built from
       # the Vendor/OCCT submodule by scripts/build-occt.sh. Cache the built
       # static xcframework keyed on the submodule revision and build scripts.
@@ -84,5 +88,38 @@ jobs:
 
       # The suite lives in the Swift package; the Horizontal scheme has no
       # testables yet, so this stays on SwiftPM's runner (see the Makefile).
+      # The Metal-backed tests skip themselves on a machine with no Metal
+      # device, so a green run can be one that drew nothing. The summary line
+      # goes on the run's page, where a jump in the skipped count shows.
       - name: Test
-        run: make test
+        shell: bash
+        run: |
+          make test 2>&1 | tee test.log
+          grep -E 'Executed [0-9]+ tests?, with' test.log | tail -1 >> "$GITHUB_STEP_SUMMARY" || true
+
+      # The Python package and MCP server, against the release dylib and CLI
+      # this checkout builds: the bindings break when a dispatch method or a
+      # reply's shape changes, and nothing above loads them.
+      - name: Python tests
+        run: |
+          brew install uv
+          make python-test
+
+  # The iPad app shares nearly every source file with the Mac's, behind
+  # platform conditionals the macOS build never compiles. This needs the iOS
+  # slices of OpenCascade, so it uses the three-slice cache occt-cache.yml
+  # warms on the default branch, not the macOS-only entry above.
+  ios:
+    name: Build (iOS Simulator)
+    runs-on: xcode-27
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Restore or build OpenCascade static libraries
+        uses: ./.github/actions/occt-static
+
+      - name: Build
+        run: make ios

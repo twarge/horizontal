@@ -64,7 +64,7 @@ Not built at all:
 - [ ] Manage Buses: remove a bus or member, rename members (MCP `remove_bus`
       only).
 - [ ] Disconnect a pin (board only in the GUI).
-- [ ] Pictures: kept in the file (`Model/HorizontalSchematic.swift:594`) but not
+- [ ] Pictures: kept in the file (`Model/Schematic/HorizontalSchematic.swift:594`) but not
       drawn or importable.
 - [ ] Tables.
 - [ ] Align and distribute.
@@ -80,7 +80,7 @@ Not built at all:
 - [ ] Create a new pool.
 - [ ] Delete a pool item.
 - [ ] Edit a pool's included pools (they are only resolved when reading,
-      `Model/HorizontalPoolLibrary.swift:646-675`).
+      `Model/Pool/HorizontalPoolLibrary.swift:646-675`).
 - [ ] Contribute changes back to a shared pool: commit, push, pull request.
       Today pools clone and fast-forward pull only (`Model/Git/`).
 

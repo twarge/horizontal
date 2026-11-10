@@ -6,7 +6,7 @@ import XCTest
 
 /// MCP field findings 44: what editing Board F and Board A through MCP on
 /// October 14 and 17 turned up (items 102–135 in board a's notes).
-final class HorizontalMCPFieldFindings44Tests: XCTestCase {
+final class HorizontalMCPShortIDAndWiringTests: XCTestCase {
     private struct Part {
         var items: [JSONDictionary]
         var part: String

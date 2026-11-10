@@ -20,6 +20,7 @@
 #   make native     release build of the headless dylib and CLI
 #   make python     set up the Python package and MCP server
 #   make python-test run the Python package tests
+#   make lint       check the source invariants (no try!, no fatalError)
 #   make deps       build the vendored dependencies (OpenCascade)
 #   make clean      remove build products
 #   make help       list targets
@@ -38,7 +39,7 @@ XCODEBUILD := xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(
 OCCT_XCFRAMEWORK := Vendor/OpenCascadeStatic/OpenCascadeStairs.xcframework
 OCCT_LIB         := $(OCCT_XCFRAMEWORK)/macos-arm64/libOpenCascadeStairs-macos-arm64.a
 
-.PHONY: all build run release ios test deps clean help app-path archive upload native python python-test
+.PHONY: all build run release ios test deps clean help app-path archive upload native python python-test lint python-lint
 
 all: build
 
@@ -77,7 +78,7 @@ run: build
 		echo "==> Launching $$app"; \
 		open "$$app"
 
-# The test suite lives in the Swift package (four XCTest bundles), and Xcode does
+# The test suite lives in the Swift package (three XCTest bundles), and Xcode does
 # not currently surface those targets to the Horizontal scheme — its <Testables>
 # list is empty, so Cmd-U runs nothing. Until they are added there (Edit Scheme ▸
 # Test ▸ +, which makes Xcode write the correct target references), this runs
@@ -103,6 +104,20 @@ python: native
 ## python-test: run the Python package's tests against the release dylib and CLI that `native` builds
 python-test: python
 	cd python && uv run python -m unittest discover -s tests -v
+
+# The app's sources hold to two rules a formatter can't check: nothing crashes
+# on purpose (`try!`, `fatalError`). swift-format is not used: its layout rules
+# disagree with the aligned continuation lines the code is written in, in some
+# nineteen thousand places, and it cannot lint without them.
+## lint: fail if app sources use try! or fatalError
+lint:
+	@if git grep -nE 'try!|fatalError\(' -- 'Sources/*.swift'; then \
+		echo "error: try! and fatalError are not used in Sources/ (throw, or return a failure)"; exit 1; \
+	else echo "lint: ok"; fi
+
+## python-lint: ruff over python/ (configured in python/pyproject.toml)
+python-lint:
+	cd python && uvx ruff check .
 
 # ---------------------------------------------------------------------------
 # App Store distribution

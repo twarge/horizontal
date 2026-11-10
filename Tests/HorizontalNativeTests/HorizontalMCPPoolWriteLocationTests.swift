@@ -7,7 +7,7 @@ import XCTest
 /// in board a's notes). Board A's DAC80504, written in October 21's Rotating Field
 /// session, went into the project pool's cache, where it read as a copy whose
 /// source pool was missing. A part the MCP makes is the project's own.
-final class HorizontalMCPFieldFindings47Tests: XCTestCase {
+final class HorizontalMCPPoolWriteLocationTests: XCTestCase {
     private struct Part {
         var items: [JSONDictionary]
         var part: String
@@ -58,7 +58,7 @@ final class HorizontalMCPFieldFindings47Tests: XCTestCase {
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("field47-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        HorizontalPoolRegistryStore.defaults = try XCTUnwrap(UserDefaults(suiteName: "HorizontalMCPFieldFindings47Tests-\(UUID().uuidString)"))
+        HorizontalPoolRegistryStore.defaults = try XCTUnwrap(UserDefaults(suiteName: "HorizontalMCPPoolWriteLocationTests-\(UUID().uuidString)"))
         HorizontalPoolLibrary.invalidateCache()
         HorizontalPoolPadstacks.invalidateCaches()
 

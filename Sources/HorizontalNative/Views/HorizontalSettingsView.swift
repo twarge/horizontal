@@ -469,7 +469,7 @@ private struct HorizontalMCPSetup: View {
                 }
             }
             .pickerStyle(.segmented)
-            Text("1. Install uv and the \(client.rawValue) command-line tool, then run these commands in Terminal.")
+            Text("1. Install uv (or Python 3.11 or later) and the \(client.rawValue) command-line tool, then run these commands in Terminal.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(client.commands)

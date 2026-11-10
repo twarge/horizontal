@@ -14,8 +14,8 @@
   "mcpServers": {
     "horizontal": {
       "type": "stdio",
-      "command": "uv",
-      "args": ["run", "--python", "3.13", "--frozen", "--quiet", "--project", "${CLAUDE_PLUGIN_ROOT}", "horizontal-mcp"],
+      "command": "sh",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/horizontal-mcp"],
       "env": {
         "UV_PROJECT_ENVIRONMENT": "${CLAUDE_PLUGIN_DATA}/venv"
       }

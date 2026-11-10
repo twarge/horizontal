@@ -5,7 +5,7 @@ import XCTest
 /// real Board D through the actual parser and inspect U10's exposed-pad
 /// hole shapes. Settles whether the bug is in parsing (shape comes out .slot) or
 /// rendering (.round but drawn as a slot).
-final class U10HoleShapeTests: XCTestCase {
+final class ExposedPadHoleShapeTests: XCTestCase {
     func testU10ExposedPadHolesParseAsRound() throws {
         let base = URL(fileURLWithPath: ProcessInfo.processInfo.environment["HORIZONTAL_REAL_BOARD_FOLDER"] ?? "/nonexistent")
         guard FileManager.default.fileExists(atPath: base.appendingPathComponent("board.json").path) else {

@@ -1,0 +1,86 @@
+#!/bin/sh
+# Starts Horizontal's MCP server from this package, with uv or without it.
+#
+# With uv: `uv run --frozen`, the locked dependencies on Python 3.13, which uv
+# downloads if it has to. That is the tested configuration.
+#
+# Without uv: any Python 3.11 or later, a virtual environment of its own, and
+# pip. The dependencies then come from pyproject.toml's ranges, not uv.lock.
+#
+# A client started from the Dock has launchd's short PATH, without Homebrew's
+# or ~/.local/bin, so uv and python are also looked for where their installers
+# put them. "Executable not found in $PATH: uv" was this more often than a
+# machine with no uv.
+#
+# Everything this prints goes to stderr: stdout is the server's JSON-RPC
+# channel, and one line of pip's progress on it ends the connection.
+#
+#   HORIZONTAL_MCP_NO_UV=1   use the Python fallback even where uv is found
+#   HORIZONTAL_MCP_PYTHON    the Python to use for the fallback
+#   HORIZONTAL_MCP_VENV      where the fallback keeps its virtual environment
+#   HORIZONTAL_MCP_SETUP=1   set up, then exit instead of serving
+set -eu
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PATH="$PATH:$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin"
+export PATH
+
+if [ -z "${HORIZONTAL_MCP_NO_UV:-}" ] && command -v uv >/dev/null 2>&1; then
+    if [ -n "${HORIZONTAL_MCP_SETUP:-}" ]; then
+        exec uv run --python 3.13 --frozen --quiet --project "$ROOT" python -c pass >&2
+    fi
+    exec uv run --python 3.13 --frozen --quiet --project "$ROOT" horizontal-mcp
+fi
+
+new_enough() {
+    "$1" -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1
+}
+
+python=""
+for candidate in "${HORIZONTAL_MCP_PYTHON:-}" python3.13 python3.12 python3.14 python3.11 python3 \
+    /Library/Frameworks/Python.framework/Versions/Current/bin/python3; do
+    [ -n "$candidate" ] || continue
+    found="$(command -v "$candidate" 2>/dev/null)" || continue
+    if new_enough "$found"; then
+        python="$found"
+        break
+    fi
+done
+
+if [ -z "$python" ]; then
+    cat >&2 <<'EOF'
+Horizontal's MCP server needs uv, or Python 3.11 or later, and found neither.
+(macOS's own /usr/bin/python3 is 3.9.) Install one of them, then restart the
+client so it sees it:
+
+    brew install uv          # or: brew install python@3.13
+EOF
+    exit 127
+fi
+
+# Beside uv's environment where the plugin names one (its data directory,
+# which survives updates), and never the same directory: uv would rebuild it.
+if [ -n "${HORIZONTAL_MCP_VENV:-}" ]; then
+    venv="$HORIZONTAL_MCP_VENV"
+elif [ -n "${UV_PROJECT_ENVIRONMENT:-}" ]; then
+    venv="${UV_PROJECT_ENVIRONMENT}-pip"
+else
+    venv="$HOME/.horizontal/mcp-venv"
+fi
+
+# Installed again when the package's metadata, its place or the Python changes.
+# The install is editable, so a checkout's own source edits need no reinstall.
+stamp="$venv/.horizontal-stamp"
+want="$ROOT $python $(cksum < "$ROOT/pyproject.toml")"
+if [ ! -x "$venv/bin/horizontal-mcp" ] || [ "$(cat "$stamp" 2>/dev/null || true)" != "$want" ]; then
+    echo "horizontal-mcp: setting up $venv with $python (first start; needs the network)" >&2
+    rm -f "$stamp"
+    "$python" -m venv "$venv" >&2
+    "$venv/bin/python" -m pip install --quiet --disable-pip-version-check --editable "$ROOT" >&2
+    printf '%s\n' "$want" > "$stamp"
+fi
+
+if [ -n "${HORIZONTAL_MCP_SETUP:-}" ]; then
+    exit 0
+fi
+exec "$venv/bin/horizontal-mcp"

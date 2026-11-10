@@ -864,8 +864,9 @@ install and how the plugin is laid out:
     claude plugin marketplace add twarge/horizontal
     claude plugin install horizontal@twarge
 
-`.mcp.json` at the repository root launches `uv run --project python
-horizontal-mcp` for work inside this checkout, and as a project server takes
+`.mcp.json` at the repository root runs the launcher, `python/bin/horizontal-mcp`
+(uv where it is installed, any Python 3.11 or later where it is not), for work
+inside this checkout, and as a project server takes
 precedence over the plugin's. Each tool takes the project path; setting
 `HORIZONTAL_PROJECT` makes it optional, which is what a design
 repository's own `.mcp.json` can do.

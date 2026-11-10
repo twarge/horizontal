@@ -422,7 +422,7 @@
 					"@executable_path/Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.twarge.app.horizontal;
 				PRODUCT_NAME = Horizontal;
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -474,7 +474,7 @@
 					"@executable_path/Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.twarge.app.horizontal;
 				PRODUCT_NAME = Horizontal;
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -510,7 +510,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.twarge.app.horizontal.quicklook-preview";
 				PRODUCT_NAME = HorizontalQuickLookPreview;
 				SDKROOT = macosx;
@@ -544,7 +544,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.twarge.app.horizontal.quicklook-preview";
 				PRODUCT_NAME = HorizontalQuickLookPreview;
 				SDKROOT = macosx;
@@ -578,7 +578,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.twarge.app.horizontal.quicklook-thumbnail";
 				PRODUCT_NAME = HorizontalQuickLookThumbnail;
 				SDKROOT = macosx;
@@ -612,7 +612,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.twarge.app.horizontal.quicklook-thumbnail";
 				PRODUCT_NAME = HorizontalQuickLookThumbnail;
 				SDKROOT = macosx;

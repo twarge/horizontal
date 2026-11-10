@@ -22,17 +22,17 @@ If no `horizontal` tools are available, check that the plugin is installed and
 enabled in the current client, then check whether its server started. Adding a
 repository folder alone does not register the server.
 
-- The plugin runs the server with `uv`. Check whether it is installed before recommending `brew install uv`. A desktop client may need to be restarted after installation to pick up its updated environment.
+- The plugin's launcher (`bin/horizontal-mcp`) runs the server with `uv`, or without it on any Python 3.11 or later; it exits with a message naming both when it finds neither. Check whether either is installed before recommending `brew install uv`. A desktop client may need to be restarted after installation to pick up its updated environment.
 - **Codex:** install with `codex plugin marketplace add twarge/horizontal`, then `codex plugin add horizontal@twarge`. Start a new chat. `codex mcp list` shows manual server entries; inspect them for an old checkout path before changing anything. `codex mcp remove horizontal` removes a manual entry when the user wants to replace it with the plugin. The plugin bundles both the server and these skills; do not add a second manual server during onboarding.
 - **Claude Code:** install with `claude plugin marketplace add twarge/horizontal`, then `claude plugin install horizontal@twarge`. Start a new session. A user-scope or project-scope server named `horizontal` overrides the plugin's (local > project > user > plugin). `claude mcp list` shows which one is in use. A stale user-scope entry is removed with `claude mcp remove horizontal -s user` when the user wants to replace it.
 
-Both launchers request Python 3.13; uv downloads it if needed. The first start
+With uv the launcher requests Python 3.13; uv downloads it if needed. The first start
 also installs locked dependencies and may outlast a client's connection timeout.
 For Codex, `codex mcp list --json` reports the resolved command, arguments, working
 directory and environment. If tools are still missing after installation, use
-that configuration to finish dependency setup: run the same uv command and
-environment, replacing the final `horizontal-mcp` argument with
-`python -c "pass"`. Report any installation error, then restart the connection
+that configuration to finish dependency setup: run the same command and
+environment with `HORIZONTAL_MCP_SETUP=1` added, which sets up and exits
+without serving. Report any installation error, then restart the connection
 or start a new chat after successful setup. Do not change the user's Python or
 install dependencies into the plugin's source folder.
 

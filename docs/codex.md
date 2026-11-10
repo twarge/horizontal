@@ -31,7 +31,8 @@ marketplace and install **Horizontal** there. The plugin's setup action runs the
 included connection skill; it checks the connection without editing the board.
 
 The launcher uses Python 3.13, which uv downloads if needed, and installs locked
-dependencies into the plugin's data directory. This first start needs network
+dependencies into the plugin's data directory. Without uv it uses any Python
+3.11 or later it finds and installs with pip. This first start needs network
 access and can take longer than later connections. If it times out, run the
 plugin's setup skill to finish installation, then restart the connection.
 The app must be running with the project
@@ -70,7 +71,8 @@ An unreadable discovery file inside the app's private container is expected;
 the holder record beside the project is another discovery route. Check the MCP
 switch and project-folder access before changing macOS privacy settings.
 
-If `uv` or `codex` is not found, install the missing command-line tool. Restart
+If the server reports that it found neither uv nor Python 3.11, or `codex` is
+not found, install the missing command-line tool. Restart
 the desktop client after installing tools so it sees the updated environment.
 
 ## Updating and developing
