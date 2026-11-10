@@ -1758,6 +1758,12 @@ struct HorizontalIPadProjectView: View {
                         schematicCanvasActions?.dispatch(.tieNets)
                     }
                     .disabled(schematicCanvasActions?.canTieNets != true)
+                    ManageBusesToolButton(
+                        buses: project.schematic?.sheets.first?.busDetails ?? [],
+                        netNames: (project.schematic?.sheets.first?.netDetails ?? [:]).mapValues(\.name),
+                        isReadOnly: isReadOnly,
+                        onCommand: { schematicCanvasActions?.dispatch(.manageBus($0)) }
+                    )
                     AddTextToolButton {
                         schematicCanvasActions?.dispatch(.addText)
                     }

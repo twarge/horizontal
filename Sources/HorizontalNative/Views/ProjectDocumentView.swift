@@ -2647,6 +2647,13 @@ struct ProjectWorkspaceView: View {
                             canvasCommandActionsByPane[.schematic]?.dispatch(.tieNets)
                         }
                         .disabled(canvasCommandActionsByPane[.schematic]?.canTieNets != true)
+                        ManageBusesToolButton(
+                            buses: selectedSchematic?.sheet.busDetails ?? [],
+                            netNames: (selectedSchematic?.sheet.netDetails ?? [:]).mapValues(\.name),
+                            isReadOnly: isReadOnly,
+                            onCommand: { canvasCommandActionsByPane[.schematic]?.dispatch(.manageBus($0)) }
+                        )
+                        .disabled(selectedSchematic == nil)
                         AnnotateToolButton {
                             annotatePopoverPresented.toggle()
                         }

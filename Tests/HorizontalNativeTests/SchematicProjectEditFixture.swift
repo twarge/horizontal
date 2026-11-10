@@ -127,6 +127,25 @@ final class SchematicProjectEditFixture {
         return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? JSONDictionary)
     }
 
+    /// The first sheet's JSON rewritten in the archive, as a file Horizon
+    /// wrote might have it, and the project read again.
+    func editSheetJSON(_ body: (inout JSONDictionary) -> Void) throws {
+        let filename = try XCTUnwrap(project.blocks.first(where: \.isTop)?.schematicFilename ?? project.schematicFilename)
+        let data = try XCTUnwrap(archive.regularFileData(relativePath: filename))
+        var schematic = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? JSONDictionary)
+        var sheets = schematic.dictionaryMap("sheets")
+        let id = try XCTUnwrap(sheets.keys.first { $0.lowercased() == (try? sheet.id.lowercased()) })
+        var sheetJSON = try XCTUnwrap(sheets[id])
+        body(&sheetJSON)
+        sheets[id] = sheetJSON
+        schematic["sheets"] = sheets
+        try archive.replaceRegularFileData(relativePath: filename,
+                                           with: JSONSerialization.data(withJSONObject: schematic, options: [.sortedKeys]))
+        var reloaded = try HorizontalProject.loadSnapshot(of: archive)
+        reloaded.rebaseURLs(onto: project)
+        project = reloaded
+    }
+
     /// The first sheet's JSON as the archive holds it.
     func sheetJSON() throws -> JSONDictionary {
         let filename = try XCTUnwrap(project.blocks.first(where: \.isTop)?.schematicFilename ?? project.schematicFilename)

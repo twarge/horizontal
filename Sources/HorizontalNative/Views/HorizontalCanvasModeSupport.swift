@@ -455,6 +455,7 @@ struct HorizontalCanvasCommandHandlerSet {
     var placeBusRipper: (() -> Void)? = nil
     var tieNets: (() -> Void)? = nil
     var managePowerNet: ((HorizontalPowerNetCommand) -> Void)? = nil
+    var manageBus: ((HorizontalBusCommand) -> Void)? = nil
     var autoplaceNextPin: (() -> Void)? = nil
     var autoplaceAllPins: (() -> Void)? = nil
     var resizeSymbol: (() -> Void)? = nil
@@ -582,6 +583,9 @@ struct HorizontalCanvasCommandHandlerSet {
         case .managePowerNet(let command):
             guard !isReadOnly else { return }
             managePowerNet?(command)
+        case .manageBus(let command):
+            guard !isReadOnly else { return }
+            manageBus?(command)
         case .drawDimension:
             guard !isReadOnly else { return }
             drawDimension?()

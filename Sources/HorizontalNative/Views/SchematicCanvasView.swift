@@ -8760,6 +8760,11 @@ struct SchematicCanvasView: View {
         if !editorProfile.isPoolMode, onApplyProjectEdit != nil {
             handlers.setAllUnconnectedPinsNC = { setAllNoConnect(true) }
             handlers.clearAllNCPins = { setAllNoConnect(false) }
+            handlers.manageBus = { command in
+                if let edit = command.edit(in: sheet.busDetails) {
+                    applyProjectEdit(edit.ops, actionName: edit.actionName)
+                }
+            }
             handlers.setPinNoConnect = { symbol, pin, mark in
                 if let edit = HorizontalSchematicPinNoConnect.edit(symbol: symbol, pin: pin, mark: mark, in: sheet) {
                     applyProjectEdit(edit.ops, actionName: edit.actionName)
