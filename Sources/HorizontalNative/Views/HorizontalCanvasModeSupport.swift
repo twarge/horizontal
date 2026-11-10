@@ -5,30 +5,57 @@ struct HorizontalCanvasSelectableScene {
     static let empty = HorizontalCanvasSelectableScene(selectables: [])
 
     var selectables: [HorizontalSelectable]
-    var selectablesByRef: [HorizontalSelectableRef: [HorizontalSelectable]]
-    /// Spatial index over `selectables` so hover hit-testing doesn't scan the
-    /// whole board on every mouse-move. Built once when the scene is built.
-    private let index: HorizontalSelectableSpatialIndex
+    /// Spatial indexes over `selectables` so hover hit-testing doesn't scan
+    /// the whole board on every mouse-move: one, or one per part of a scene
+    /// made of parts, each built once with its part.
+    private let indexes: [HorizontalSelectableSpatialIndex]
+    private let refStorage: HorizontalSelectableRefStorage
 
     init(selectables: [HorizontalSelectable]) {
         self.selectables = selectables
-        self.selectablesByRef = Dictionary(grouping: selectables, by: \.ref)
-        self.index = HorizontalSelectableSpatialIndex(selectables)
+        self.refStorage = HorizontalSelectableRefStorage(selectables: selectables)
+        self.indexes = [BoardLoadTimer.measure("selectable scene: spatial index") {
+            HorizontalSelectableSpatialIndex(selectables)
+        }]
+    }
+
+    /// A scene of parts, each its selectables, those by ref and an index over
+    /// them, made and kept apart (the board's kinds of selectable): an edit
+    /// rebuilds the parts it touched, and the scene is put together from
+    /// them without grouping or indexing the rest again. Hit tests order what
+    /// they find by a total order, so the parts' order doesn't matter to them.
+    init(parts: [(selectables: [HorizontalSelectable], byRef: [HorizontalSelectableRef: [HorizontalSelectable]], index: HorizontalSelectableSpatialIndex)]) {
+        self.selectables = parts.flatMap(\.selectables)
+        self.refStorage = HorizontalSelectableRefStorage(maps: parts.map(\.byRef))
+        self.indexes = parts.map(\.index)
+    }
+
+    /// The selectables by ref, in one dictionary.
+    var selectablesByRef: [HorizontalSelectableRef: [HorizontalSelectable]] {
+        refStorage.dictionary
+    }
+
+    /// The selectables by ref, looked up without putting the parts' maps
+    /// together.
+    var lookup: HorizontalSelectableLookup {
+        refStorage.lookup
+    }
+
+    private func candidates(at point: HorizontalPoint, expand: Double) -> [HorizontalSelectable] {
+        indexes.count == 1
+            ? indexes[0].candidates(at: point, expand: expand)
+            : indexes.flatMap { $0.candidates(at: point, expand: expand) }
     }
 
     func hitSelectable(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> HorizontalSelectableRef? {
-        index.smallestSelectable(
-            at: point,
-            expand: HorizontalSelectable.minimumScreenSize * worldUnitsPerPoint
-        )
+        let expand = HorizontalSelectable.minimumScreenSize * worldUnitsPerPoint
+        return HorizontalSelectableHitTest.smallestSelectable(at: point, in: candidates(at: point, expand: expand), expand: expand)
     }
 
     func targetRefs(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> [HorizontalSelectableRef] {
-        HorizontalCanvasModeSupport.uniqueRefs(
-            index.allSelectables(
-                at: point,
-                expand: HorizontalSelectable.minimumScreenSize * worldUnitsPerPoint
-            )
+        let expand = HorizontalSelectable.minimumScreenSize * worldUnitsPerPoint
+        return HorizontalCanvasModeSupport.uniqueRefs(
+            HorizontalSelectableHitTest.allSelectables(at: point, in: candidates(at: point, expand: expand), expand: expand)
         )
     }
 
@@ -41,6 +68,69 @@ struct HorizontalCanvasSelectableScene {
         return selectables
             .flatMap(\.anchorSnapPoints)
             .filter { seen.insert(pointKey($0)).inserted }
+    }
+}
+
+/// Selectables by ref, from one map or several (a scene of parts), looked up
+/// in turn.
+struct HorizontalSelectableLookup {
+    let maps: [[HorizontalSelectableRef: [HorizontalSelectable]]]
+
+    subscript(ref: HorizontalSelectableRef) -> [HorizontalSelectable]? {
+        for map in maps {
+            if let selectables = map[ref] {
+                return selectables
+            }
+        }
+        return nil
+    }
+}
+
+/// A scene's selectables by ref, grouped (or merged from its parts' maps) the
+/// first time they are asked for in one dictionary.
+private final class HorizontalSelectableRefStorage: @unchecked Sendable {
+    private let selectables: [HorizontalSelectable]?
+    private let maps: [[HorizontalSelectableRef: [HorizontalSelectable]]]?
+    private let lock = NSLock()
+    private var grouped: [HorizontalSelectableRef: [HorizontalSelectable]]?
+
+    init(selectables: [HorizontalSelectable]) {
+        self.selectables = selectables
+        self.maps = nil
+    }
+
+    init(maps: [[HorizontalSelectableRef: [HorizontalSelectable]]]) {
+        self.selectables = nil
+        self.maps = maps
+    }
+
+    var dictionary: [HorizontalSelectableRef: [HorizontalSelectable]] {
+        lock.lock()
+        defer { lock.unlock() }
+        if let grouped {
+            return grouped
+        }
+        let built: [HorizontalSelectableRef: [HorizontalSelectable]]
+        if let maps {
+            var merged = [HorizontalSelectableRef: [HorizontalSelectable]](minimumCapacity: maps.reduce(0) { $0 + $1.count })
+            for map in maps {
+                merged.merge(map) { first, second in first + second }
+            }
+            built = merged
+        } else {
+            built = BoardLoadTimer.measure("selectable scene: by ref") {
+                Dictionary(grouping: selectables ?? [], by: \.ref)
+            }
+        }
+        grouped = built
+        return built
+    }
+
+    var lookup: HorizontalSelectableLookup {
+        if let maps {
+            return HorizontalSelectableLookup(maps: maps)
+        }
+        return HorizontalSelectableLookup(maps: [dictionary])
     }
 }
 
@@ -78,6 +168,28 @@ final class HorizontalCanvasSelectableSceneCache<Key: Hashable> {
                 snapTargetsValue = previous.snapTargets ?? []
             } else {
                 sceneValue = HorizontalCanvasSelectableScene(selectables: build())
+                snapTargetsKey = nil
+                snapTargetsValue = []
+            }
+            sceneKey = key
+            previous = replaced ?? previous
+        }
+        return sceneValue
+    }
+
+    /// As `scene(key:build:)`, with the scene made by `buildScene`.
+    func scene(
+        key: Key,
+        buildScene: () -> HorizontalCanvasSelectableScene
+    ) -> HorizontalCanvasSelectableScene {
+        if sceneKey != key {
+            let replaced = current
+            if let previous, previous.key == key {
+                sceneValue = previous.scene
+                snapTargetsKey = previous.snapTargets == nil ? nil : key
+                snapTargetsValue = previous.snapTargets ?? []
+            } else {
+                sceneValue = buildScene()
                 snapTargetsKey = nil
                 snapTargetsValue = []
             }

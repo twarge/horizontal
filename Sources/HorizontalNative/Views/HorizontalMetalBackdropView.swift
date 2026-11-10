@@ -75,6 +75,11 @@ struct HorizontalMetalCanvasLayerContent {
     var screenLineKey = 0
     var bufferPatches = HorizontalMetalBufferPatches.empty
     var bufferPatchKey = 0
+    /// Per composite group (0 for the direct buffers), a key that changes only
+    /// when that group's primitives in `triangles`/`lines`/`anchoredRects` do.
+    /// With them an update uploads only the groups whose key changed; without
+    /// them any change of the content's keys uploads every group.
+    var groupKeys: [Int: Int]? = nil
     var visibleCompositeGroups: Set<Int>? = nil
     /// Composite groups that must ignore `layerOpacity` — rendered at their own
     /// full opacity even while the layer-opacity slider dims every other group.
@@ -586,6 +591,9 @@ final class HorizontalMetalCanvasLayer {
     private var compositeBatchBuffers = [HorizontalMetalCompositeBatchBuffers]()
     private var compositeBatchStorageByGroup = [Int: HorizontalMetalCompositeBatchBuffers]()
     private var currentCompositeBatchKey: Int?
+    /// The composite groups' keys (`HorizontalMetalCanvasLayerContent.groupKeys`)
+    /// of what the batch buffers hold; nil when they were uploaded without.
+    private var currentGroupKeys: [Int: Int]?
     /// Last scene submitted to a drawable, used to distinguish model
     /// updates from presentation in mounted-canvas regression tests.
     private(set) var presentedContentKey: Int?
@@ -602,6 +610,10 @@ final class HorizontalMetalCanvasLayer {
     /// What the composite textures were last rendered from; nil when they
     /// hold nothing usable.
     private var renderedCompositeSignature: HorizontalMetalCompositeSignature?
+    /// What each composite texture was last rendered from, by its index:
+    /// a texture whose batch, batch revision, uniforms and size are the same
+    /// still holds its group, and isn't rendered again.
+    private var renderedCompositeTextures = [Int: HorizontalMetalCompositeTextureState]()
     /// How many draws rendered the composite textures rather than reusing
     /// them, for regression checks.
     private(set) var compositeTextureRenders = 0
@@ -616,6 +628,11 @@ final class HorizontalMetalCanvasLayer {
     private var currentLayerOpacity: Float = 1
     private var currentLayerOpacityExemptCompositeGroups: Set<Int> = []
     private var hadBufferPatches = false
+    /// The composite groups (0 for the direct buffers) the current patch set
+    /// has written to, and whether it wrote handles: what has to be put back
+    /// from the base when the patches end.
+    private var patchedGroups = Set<Int>()
+    private var patchedHandles = false
 
     init(device: MTLDevice?) {
         self.device = device
@@ -673,15 +690,43 @@ final class HorizontalMetalCanvasLayer {
         // patches. Once the preview ends, restore that base even if its
         // keys already match; otherwise patched positions remain resident.
         if hadBufferPatches && content.bufferPatches.isEmpty {
-            currentTriangleKey = nil
-            currentLineKey = nil
-            currentHandleKey = nil
-            currentAnchoredRectKey = nil
-            currentCompositeBatchKey = nil
+            if content.groupKeys != nil, var groupKeys = currentGroupKeys {
+                // Only what the patches wrote goes back to the base: the
+                // groups they touched upload again, the rest stay.
+                for group in patchedGroups where group != 0 {
+                    groupKeys.removeValue(forKey: group)
+                }
+                currentGroupKeys = groupKeys
+                currentCompositeBatchKey = nil
+                if patchedGroups.contains(0) {
+                    currentTriangleKey = nil
+                    currentLineKey = nil
+                    currentAnchoredRectKey = nil
+                }
+                if patchedHandles {
+                    currentHandleKey = nil
+                }
+            } else {
+                currentTriangleKey = nil
+                currentLineKey = nil
+                currentHandleKey = nil
+                currentAnchoredRectKey = nil
+                currentCompositeBatchKey = nil
+                currentGroupKeys = nil
+            }
+            patchedGroups = []
+            patchedHandles = false
         }
+        // With group keys the direct buffers are keyed by group 0's, so they
+        // upload only when their own primitives changed.
+        let directGroupKey = content.groupKeys.map { $0[0] ?? 0 }
+        let triangleKey = directGroupKey.map { $0 &* 31 &+ 1 } ?? content.triangleKey
+        let lineKey = directGroupKey.map { $0 &* 31 &+ 2 } ?? content.lineKey
+        let anchoredRectKey = directGroupKey.map { $0 &* 31 &+ 3 } ?? content.anchoredRectKey
         hadBufferPatches = !content.bufferPatches.isEmpty
-        let sceneChanged = currentTriangleKey != content.triangleKey || currentLineKey != content.lineKey
-            || currentHandleKey != content.handleKey || currentAnchoredRectKey != content.anchoredRectKey
+        let sceneChanged = currentTriangleKey != triangleKey || currentLineKey != lineKey
+            || currentHandleKey != content.handleKey || currentAnchoredRectKey != anchoredRectKey
+            || content.groupKeys.map { keys in keys.filter { $0.key != 0 } != currentGroupKeys } ?? false
             || currentScreenTriangleKey != content.screenTriangleKey || currentScreenLineKey != content.screenLineKey
         let profilesMovePatch = !content.bufferPatches.isEmpty
         if profilesMovePatch {
@@ -724,12 +769,12 @@ final class HorizontalMetalCanvasLayer {
 
             HorizontalMoveProfiler.measure("metal.update.triangles", enabled: profilesMovePatch) {
                 profileLoadUpdate("direct triangles") {
-                    updateTriangleBuffer(triangles: content.triangles, triangleKey: content.triangleKey)
+                    updateTriangleBuffer(triangles: content.triangles, triangleKey: triangleKey)
                 }
             }
             HorizontalMoveProfiler.measure("metal.update.lines", enabled: profilesMovePatch) {
                 profileLoadUpdate("direct lines") {
-                    updateLineBuffer(lines: content.lines, lineKey: content.lineKey)
+                    updateLineBuffer(lines: content.lines, lineKey: lineKey)
                 }
             }
             HorizontalMoveProfiler.measure("metal.update.handles", enabled: profilesMovePatch) {
@@ -739,7 +784,7 @@ final class HorizontalMetalCanvasLayer {
             }
             HorizontalMoveProfiler.measure("metal.update.anchoredRects", enabled: profilesMovePatch) {
                 profileLoadUpdate("direct anchored rects") {
-                    updateAnchoredRectBuffer(anchoredRects: content.anchoredRects, anchoredRectKey: content.anchoredRectKey)
+                    updateAnchoredRectBuffer(anchoredRects: content.anchoredRects, anchoredRectKey: anchoredRectKey)
                 }
             }
             HorizontalMoveProfiler.measure("metal.update.screenTriangles", enabled: profilesMovePatch) {
@@ -754,12 +799,21 @@ final class HorizontalMetalCanvasLayer {
             }
             HorizontalMoveProfiler.measure("metal.update.compositeBatches", enabled: profilesMovePatch) {
                 profileLoadUpdate("composite batches") {
-                    updateCompositeBatchBuffers(
-                        triangles: content.triangles,
-                        lines: content.lines,
-                        anchoredRects: content.anchoredRects,
-                        key: ((content.triangleKey &* 31) &+ content.lineKey) &* 31 &+ content.anchoredRectKey
-                    )
+                    if let groupKeys = content.groupKeys {
+                        updateCompositeBatchBuffers(
+                            triangles: content.triangles,
+                            lines: content.lines,
+                            anchoredRects: content.anchoredRects,
+                            groupKeys: groupKeys
+                        )
+                    } else {
+                        updateCompositeBatchBuffers(
+                            triangles: content.triangles,
+                            lines: content.lines,
+                            anchoredRects: content.anchoredRects,
+                            key: ((content.triangleKey &* 31) &+ content.lineKey) &* 31 &+ content.anchoredRectKey
+                        )
+                    }
                 }
             }
             HorizontalMoveProfiler.measure("metal.update.bufferPatches", enabled: profilesMovePatch) {
@@ -806,12 +860,16 @@ final class HorizontalMetalCanvasLayer {
         compositeBatchBuffers = []
         compositeBatchStorageByGroup = [:]
         currentCompositeBatchKey = nil
+        currentGroupKeys = nil
         compositeRenderTextures = []
         currentCompositeTextureSize = .zero
         renderedCompositeSignature = nil
+        renderedCompositeTextures = [:]
         compositeContentRevision += 1
         presentedContentKey = nil
         hadBufferPatches = false
+        patchedGroups = []
+        patchedHandles = false
     }
 
     fileprivate func markPresented() {
@@ -966,12 +1024,13 @@ final class HorizontalMetalCanvasLayer {
         anchoredRects: [HorizontalMetalAnchoredRectPrimitive],
         key: Int
     ) {
-        guard currentCompositeBatchKey != key else {
+        guard currentCompositeBatchKey != key || currentGroupKeys != nil else {
             return
         }
 
         forgetTranslations { $0.compositeGroup != 0 }
         currentCompositeBatchKey = key
+        currentGroupKeys = nil
         residentSceneUploads += 1
         compositeContentRevision += 1
         guard let device else {
@@ -1019,6 +1078,75 @@ final class HorizontalMetalCanvasLayer {
             return batch
         }
         compositeBatchStorageByGroup = compositeBatchStorageByGroup.filter { allGroups.contains($0.key) }
+    }
+
+    /// As above, uploading only the composite groups whose key changed (or
+    /// that are new), dropping those that are gone, and leaving the rest, and
+    /// their translations, as they are.
+    private func updateCompositeBatchBuffers(
+        triangles: [HorizontalMetalTrianglePrimitive],
+        lines: [HorizontalMetalLinePrimitive],
+        anchoredRects: [HorizontalMetalAnchoredRectPrimitive],
+        groupKeys: [Int: Int]
+    ) {
+        let compositeKeys = groupKeys.filter { $0.key != 0 }
+        var keyHasher = Hasher()
+        for group in compositeKeys.keys.sorted() {
+            keyHasher.combine(group)
+            keyHasher.combine(compositeKeys[group])
+        }
+        let key = keyHasher.finalize()
+        let previous = currentGroupKeys ?? [:]
+        let changed = Set(compositeKeys.keys.filter { group in
+            currentGroupKeys == nil || previous[group] != compositeKeys[group] || compositeBatchStorageByGroup[group] == nil
+        })
+        let removed = Set(compositeBatchStorageByGroup.keys).subtracting(compositeKeys.keys)
+        currentCompositeBatchKey = key
+        currentGroupKeys = compositeKeys
+        guard !changed.isEmpty || !removed.isEmpty else {
+            return
+        }
+
+        forgetTranslations { changed.contains($0.compositeGroup) || removed.contains($0.compositeGroup) }
+        residentSceneUploads += 1
+        compositeContentRevision += 1
+        guard let device else {
+            compositeBatchBuffers = []
+            return
+        }
+
+        var trianglesByGroup = [Int: [HorizontalMetalTriangleShaderPrimitive]]()
+        var linesByGroup = [Int: [HorizontalMetalLineShaderPrimitive]]()
+        var rectsByGroup = [Int: [HorizontalMetalAnchoredRectShaderPrimitive]]()
+        var opacityByGroup = [Int: Float]()
+        for triangle in triangles where triangle.compositeGroup != 0 && changed.contains(triangle.compositeGroup) {
+            trianglesByGroup[triangle.compositeGroup, default: []].append(Self.shaderPrimitive(triangle))
+            opacityByGroup[triangle.compositeGroup] = triangle.compositeOpacity
+        }
+        for line in lines where line.compositeGroup != 0 && changed.contains(line.compositeGroup) {
+            linesByGroup[line.compositeGroup, default: []].append(Self.shaderPrimitive(line))
+            opacityByGroup[line.compositeGroup] = line.compositeOpacity
+        }
+        for rect in anchoredRects where rect.compositeGroup != 0 && changed.contains(rect.compositeGroup) {
+            rectsByGroup[rect.compositeGroup, default: []].append(Self.shaderPrimitive(rect))
+            opacityByGroup[rect.compositeGroup] = rect.compositeOpacity
+        }
+
+        for group in removed {
+            compositeBatchStorageByGroup.removeValue(forKey: group)
+        }
+        for group in changed {
+            let batch = compositeBatchStorageByGroup[group] ?? HorizontalMetalCompositeBatchBuffers(group: group)
+            compositeBatchStorageByGroup[group] = batch
+            batch.opacity = min(max(opacityByGroup[group] ?? 1, 0), 1)
+            batch.replaceBuffers(
+                device: device,
+                triangles: trianglesByGroup[group] ?? [],
+                lines: linesByGroup[group] ?? [],
+                anchoredRects: rectsByGroup[group] ?? []
+            )
+        }
+        compositeBatchBuffers = compositeBatchStorageByGroup.keys.sorted().compactMap { compositeBatchStorageByGroup[$0] }
     }
 
     private static func shaderPrimitive(_ line: HorizontalMetalLinePrimitive) -> HorizontalMetalLineShaderPrimitive {
@@ -1073,6 +1201,17 @@ final class HorizontalMetalCanvasLayer {
             return
         }
         compositeContentRevision += 1
+        patchedGroups.formUnion(patches.linePatches.map(\.compositeGroup))
+        patchedGroups.formUnion(patches.trianglePatches.map(\.compositeGroup))
+        patchedGroups.formUnion(patches.anchoredRectPatches.map(\.compositeGroup))
+        patchedGroups.formUnion(patches.lineTranslationPatches.map(\.compositeGroup))
+        patchedGroups.formUnion(patches.lineEndpointPatches.map(\.compositeGroup))
+        patchedGroups.formUnion(patches.triangleTranslationPatches.map(\.compositeGroup))
+        patchedGroups.formUnion(patches.anchoredRectTranslationPatches.map(\.compositeGroup))
+        patchedGroups.formUnion(patches.lineRedrawPatches.map(\.compositeGroup))
+        if !patches.handlePatches.isEmpty || !patches.handleTranslationPatches.isEmpty {
+            patchedHandles = true
+        }
 
         for patch in patches.linePatches {
             let primitives = patch.primitives.map(Self.shaderPrimitive)
@@ -1516,17 +1655,29 @@ final class HorizontalMetalCanvasLayer {
             batches: activeBatches.map(ObjectIdentifier.init),
             pixelSize: pixelSize
         )
-        let rendersTextures = signature != renderedCompositeSignature
+        let rendersAnyTexture = signature != renderedCompositeSignature
         renderedCompositeSignature = signature
 
         var result = [HorizontalMetalCompositeTexture]()
+        var renderedAny = false
         for (index, batch) in activeBatches.enumerated() {
             guard compositeRenderTextures.indices.contains(index) else {
                 renderedCompositeSignature = nil
+                renderedCompositeTextures[index] = nil
                 continue
             }
             let texture = compositeRenderTextures[index]
-            if rendersTextures {
+            // Only the groups whose buffers changed are drawn again; the
+            // others' textures still hold them.
+            let state = HorizontalMetalCompositeTextureState(
+                batch: ObjectIdentifier(batch),
+                revision: batch.revision,
+                uniforms: uniforms,
+                pixelSize: pixelSize
+            )
+            if rendersAnyTexture, renderedCompositeTextures[index] != state {
+                renderedCompositeTextures[index] = state
+                renderedAny = true
                 let descriptor = MTLRenderPassDescriptor()
                 descriptor.colorAttachments[0].texture = texture
                 descriptor.colorAttachments[0].loadAction = .clear
@@ -1535,6 +1686,7 @@ final class HorizontalMetalCanvasLayer {
 
                 guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
                     renderedCompositeSignature = nil
+                    renderedCompositeTextures[index] = nil
                     continue
                 }
 
@@ -1567,7 +1719,7 @@ final class HorizontalMetalCanvasLayer {
                 ignoresLayerOpacity: currentLayerOpacityExemptCompositeGroups.contains(batch.group)
             ))
         }
-        if rendersTextures {
+        if renderedAny {
             compositeTextureRenders += 1
         }
 
@@ -1580,6 +1732,7 @@ final class HorizontalMetalCanvasLayer {
         }
 
         currentCompositeTextureSize = size
+        renderedCompositeTextures = [:]
         compositeRenderTextures = (0..<count).compactMap { _ in
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
                 pixelFormat: .bgra8Unorm,
@@ -2339,6 +2492,9 @@ private final class HorizontalMetalCompositeBatchBuffers {
     private(set) var triangleCount = 0
     private(set) var lineCount = 0
     private(set) var anchoredRectCount = 0
+    /// Bumped whenever the buffers' contents change, so the group's
+    /// composite texture is drawn again only then.
+    private(set) var revision = 0
 
     init(group: Int) {
         self.group = group
@@ -2369,36 +2525,43 @@ private final class HorizontalMetalCompositeBatchBuffers {
         triangleCount = triangles.count
         lineCount = lines.count
         anchoredRectCount = anchoredRects.count
+        revision += 1
         _ = triangleStorage.replace(device: device, primitives: triangles)
         _ = lineStorage.replace(device: device, primitives: lines)
         _ = anchoredRectStorage.replace(device: device, primitives: anchoredRects)
     }
 
     func replaceTriangleSubrange(start: Int, primitives: [HorizontalMetalTriangleShaderPrimitive]) {
+        revision += 1
         triangleStorage.replaceSubrange(start: start, primitives: primitives)
     }
 
     func replaceLineSubrange(start: Int, primitives: [HorizontalMetalLineShaderPrimitive]) {
+        revision += 1
         lineStorage.replaceSubrange(start: start, primitives: primitives)
     }
 
     func replaceAnchoredRectSubrange(start: Int, primitives: [HorizontalMetalAnchoredRectShaderPrimitive]) {
+        revision += 1
         anchoredRectStorage.replaceSubrange(start: start, primitives: primitives)
     }
 
     func translateTriangleSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
+        revision += 1
         triangleStorage.mutateSubrange(start: start, count: count) { primitives in
             step.apply(toTriangles: primitives)
         }
     }
 
     func translateLineSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
+        revision += 1
         lineStorage.mutateSubrange(start: start, count: count) { primitives in
             step.apply(toLines: primitives)
         }
     }
 
     func setLineEndpointSubrange(start: Int, from: SIMD2<Float>?, to: SIMD2<Float>?) {
+        revision += 1
         lineStorage.mutateSubrange(start: start, count: 1) { primitives in
             guard let index = primitives.indices.first else {
                 return
@@ -2413,6 +2576,7 @@ private final class HorizontalMetalCompositeBatchBuffers {
     }
 
     func translateAnchoredRectSubrange(start: Int, count: Int, by step: HorizontalMetalPlacementStep) {
+        revision += 1
         anchoredRectStorage.mutateSubrange(start: start, count: count) { primitives in
             step.apply(toAnchoredRects: primitives)
         }
@@ -2515,6 +2679,13 @@ private struct HorizontalMetalPlacementStep: Equatable {
 /// What a layer's composite textures are drawn from: the uniforms (pan,
 /// zoom and the rest), the layer-group buffers, which groups are active, and
 /// the drawable's size. While it holds, the textures need no rendering.
+private struct HorizontalMetalCompositeTextureState: Equatable {
+    var batch: ObjectIdentifier
+    var revision: Int
+    var uniforms: HorizontalMetalBackdropUniforms
+    var pixelSize: CGSize
+}
+
 private struct HorizontalMetalCompositeSignature: Equatable {
     var uniforms: HorizontalMetalBackdropUniforms
     var contentRevision: Int

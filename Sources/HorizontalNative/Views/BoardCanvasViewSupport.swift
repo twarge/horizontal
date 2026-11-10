@@ -18,7 +18,13 @@ struct BoardAllSelectableCacheKey: Hashable {
 /// visibility signature (which carries the label cull's threshold), and by
 /// the layers shown.
 struct BoardMetalHighlightCacheKey: Hashable {
-    var bucketsKey: BoardMetalElementBucketsCacheKey
+    /// The scene the highlight is drawn from: the board scene's composite
+    /// group keys when it has them, which change only with what it draws (so
+    /// a move's preview that changes nothing highlighted keeps the batch),
+    /// else its bucket key.
+    var bucketsKey: BoardMetalElementBucketsCacheKey?
+    var sceneGroupKeys: [Int: Int]?
+    var renderLayers: [Int]
     var visibilitySignature: BoardMetalVisibilitySignature
     var visibleCompositeGroups: Set<Int>
     var highlightedNetIDs: [String]
@@ -348,6 +354,9 @@ struct BoardMetalLineBatch {
     /// A selection batch's outlines of the tracks a move redraws rather than
     /// shifts, last among its lines and handles.
     var movingTrackOutlines: BoardMetalMovingTrackOutlines?
+    /// Per composite group, a key that changes only when the group's
+    /// primitives do; nil when the scene can't tell (every group uploads).
+    var groupKeys: [Int: Int]?
 
     var primitiveWeight: BoardMetalPrimitiveWeight {
         BoardMetalPrimitiveWeight(
@@ -447,7 +456,7 @@ typealias BoardPadOutlineFragmentsByLayer = Dictionary<Int?, [HorizontalPadOutli
 
 /// One text's strokes in a `BoardMetalElementBatch`: its id, and the lines it
 /// was stroked into.
-struct BoardMetalTextRun {
+struct BoardMetalTextRun: Equatable {
     var textID: String
     var lineStart: Int
     var lineCount: Int
@@ -455,7 +464,7 @@ struct BoardMetalTextRun {
 
 // One batch per element-type bucket. Visibility flags are NOT consulted during
 // the build; they only select which buckets are concatenated at draw time.
-struct BoardMetalElementBatch {
+struct BoardMetalElementBatch: Equatable {
     var lines: [HorizontalMetalLinePrimitive] = []
     var triangles: [HorizontalMetalTrianglePrimitive] = []
     var anchoredRects: [HorizontalMetalAnchoredRectPrimitive] = []
@@ -659,6 +668,11 @@ final class BoardMetalElementBuckets {
     /// The airwires `connectionLines` was drawn from, so the scene can say
     /// which it shows without reading its primitives back.
     var airwires: [HorizontalSegment] = []
+    /// For a full build, per bucket and composite group, a stamp of what the
+    /// group's primitives in it were drawn from, which changes when they do
+    /// (`BoardSceneObjectCache`). Nil for a partial build (a highlight's
+    /// subset) or a verifying one, which don't use the cache.
+    var groupStamps: [BoardSceneBucket: [Int: Int]]?
 
     /// Every batch, for whole-scene operations. `namedBatches()` lists the
     /// same batches; a test keeps the two the same length.
@@ -670,27 +684,6 @@ final class BoardMetalElementBuckets {
             \.holesNone, \.holesPad, \.holesVia, \.text, \.textPackagesAsText, \.trackLabels,
             \.dimensions, \.connectionLines, \.connectionLabels,
         ]
-    }
-
-    /// This scene plus `addition`'s primitives, with the `replacing` batches
-    /// taken from `addition` alone. Lets a package dropped onto the board join
-    /// the scene that is already built rather than rebuilding all of it.
-    func merged(
-        adding addition: BoardMetalElementBuckets,
-        replacing replaced: [ReferenceWritableKeyPath<BoardMetalElementBuckets, BoardMetalElementBatch>]
-    ) -> BoardMetalElementBuckets {
-        let result = BoardMetalElementBuckets()
-        for keyPath in Self.batchKeyPaths {
-            if replaced.contains(keyPath) {
-                result[keyPath: keyPath] = addition[keyPath: keyPath]
-            } else {
-                var batch = self[keyPath: keyPath]
-                batch.append(contentsOf: addition[keyPath: keyPath])
-                result[keyPath: keyPath] = batch
-            }
-        }
-        result.airwires = replaced.contains(\.connectionLines) ? addition.airwires : airwires + addition.airwires
-        return result
     }
 
     func namedBatches() -> [BoardMetalNamedPrimitiveWeight] {
@@ -799,21 +792,13 @@ func boardPlaneFragmentKey(
     fragmentIndex: Int,
     fragment: HorizontalPlaneFragment
 ) -> BoardPlaneFragmentKey {
-    var hasher = Hasher()
-    for path in fragment.paths {
-        hasher.combine(path.count)
-        for point in path {
-            hasher.combine(point.x)
-            hasher.combine(point.y)
-        }
-    }
-    return BoardPlaneFragmentKey(
+    BoardPlaneFragmentKey(
         planeID: planeID.lowercased(),
         fragmentIndex: fragmentIndex,
         orphan: fragment.orphan,
         pathCount: fragment.paths.count,
         vertexCount: fragment.paths.reduce(0) { $0 + $1.count },
-        contentHash: hasher.finalize()
+        contentHash: fragment.contentHash
     )
 }
 
@@ -993,13 +978,19 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
     private var planeFragmentTrianglePoints = [BoardPlaneFragmentKey: [BoardMetalTrianglePoints]]()
     private var planeFragmentTriangles = [BoardMetalPlaneTriangleCacheKey: [HorizontalMetalTrianglePrimitive]]()
     private var planeFragmentOutlines = [BoardMetalPlaneOutlineCacheKey: [HorizontalMetalLinePrimitive]]()
-    private var padOutlineFragmentsKey: BoardAllSelectableCacheKey?
-    private var padOutlineFragmentsValue = BoardPadOutlineFragmentsByLayer()
     /// Survives `invalidate`: its entries are keyed by pad shape, so an edit
     /// re-merges only the pads it touched.
     let padOutlineUnionCache = HorizontalPadOutlineUnionCache()
-    private var padLabelTextsKey: BoardAllSelectableCacheKey?
-    private var padLabelTextsValue = [Int: [HorizontalText]]()
+    /// What the scene build works out from the board's content (the pads'
+    /// outlines and labels, the packages with geometry), kept while that
+    /// content is unchanged. Survives `invalidate`, as its inputs are the
+    /// content itself rather than a revision.
+    let contentMemo = BoardContentMemo()
+    /// What each object of the last scene build drew, which the next build
+    /// replays for what is unchanged. Survives `invalidate`: it compares
+    /// content, not revisions.
+    let sceneObjects = BoardSceneObjectCache()
+    private var legibleLabelBatches = [String: (key: Int, batch: BoardMetalElementBatch)]()
     private var trackSnapTargetsKey: BoardTrackSnapTargetsKey?
     private var trackSnapTargetsValue = [HorizontalPoint]()
     private var visibleRenderLayersKey: BoardSelectableCacheKey?
@@ -1056,22 +1047,6 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
     /// Increments when a move's live rats' nest lands, so the canvas redraws.
     @Published private(set) var movingAirwiresVersion: Int = 0
 
-    /// The built selectables, if they are the ones for `key`.
-    func allSelectables(ifBuiltFor key: BoardAllSelectableCacheKey) -> [HorizontalSelectable]? {
-        if allSelectablesKey == key {
-            return allSelectablesValue
-        }
-        return previousAllSelectables?.key == key ? previousAllSelectables?.value : nil
-    }
-
-    func seedAllSelectables(_ selectables: [HorizontalSelectable], for key: BoardAllSelectableCacheKey) {
-        if let allSelectablesKey {
-            previousAllSelectables = (allSelectablesKey, allSelectablesValue)
-        }
-        allSelectablesValue = selectables
-        allSelectablesKey = key
-    }
-
     func allSelectables(
         key: BoardAllSelectableCacheKey,
         build: () -> [HorizontalSelectable]
@@ -1103,13 +1078,11 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         selectableSceneCache.scene(key: key, build: build)
     }
 
-    /// The selectable scene built for `key`, if it is still here.
-    func selectableScene(ifBuiltFor key: BoardSelectableCacheKey) -> HorizontalCanvasSelectableScene? {
-        selectableSceneCache.scene(ifBuiltFor: key)
-    }
-
-    func seedSelectableScene(_ scene: HorizontalCanvasSelectableScene, for key: BoardSelectableCacheKey) {
-        selectableSceneCache.seed(scene, for: key)
+    func selectableScene(
+        key: BoardSelectableCacheKey,
+        buildScene: () -> HorizontalCanvasSelectableScene
+    ) -> HorizontalCanvasSelectableScene {
+        selectableSceneCache.scene(key: key, buildScene: buildScene)
     }
 
     func snapTargets(
@@ -1152,6 +1125,17 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
             metalSelectionKey = key
         }
         return metalSelectionValue
+    }
+
+    /// A label bucket culled to the zoom's legible size, under a key of the
+    /// bucket's stamps and the size.
+    func legibleLabels(_ name: String, key: Int, build: () -> BoardMetalElementBatch) -> BoardMetalElementBatch {
+        if let stored = legibleLabelBatches[name], stored.key == key {
+            return stored.batch
+        }
+        let batch = build()
+        legibleLabelBatches[name] = (key, batch)
+        return batch
     }
 
     func movePreview(
@@ -1395,27 +1379,6 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         return value
     }
 
-    func padOutlineFragments(
-        key: BoardAllSelectableCacheKey,
-        build: () -> BoardPadOutlineFragmentsByLayer
-    ) -> BoardPadOutlineFragmentsByLayer {
-        if padOutlineFragmentsKey != key {
-            padOutlineFragmentsValue = build()
-            padOutlineFragmentsKey = key
-        }
-        return padOutlineFragmentsValue
-    }
-
-    func padLabelTexts(
-        key: BoardAllSelectableCacheKey,
-        build: () -> [Int: [HorizontalText]]
-    ) -> [Int: [HorizontalText]] {
-        if padLabelTextsKey != key {
-            padLabelTextsValue = build()
-            padLabelTextsKey = key
-        }
-        return padLabelTextsValue
-    }
 
     func visibleRenderLayers(
         key: BoardSelectableCacheKey,
@@ -1437,24 +1400,6 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
             metalRenderLayersKey = key
         }
         return metalRenderLayersValue
-    }
-
-    /// The built scene, if it is the one for `key`.
-    func elementBuckets(ifBuiltFor key: BoardMetalElementBucketsCacheKey) -> BoardMetalElementBuckets? {
-        if elementBucketsKey == key {
-            return elementBucketsValue
-        }
-        return previousElementBuckets?.key == key ? previousElementBuckets?.value : nil
-    }
-
-    /// Installs a scene made some other way than a full build (a package
-    /// merged into the previous one), so the next body pass finds it.
-    func seedElementBuckets(_ buckets: BoardMetalElementBuckets, for key: BoardMetalElementBucketsCacheKey) {
-        if let elementBucketsKey {
-            previousElementBuckets = (elementBucketsKey, elementBucketsValue)
-        }
-        elementBucketsValue = buckets
-        elementBucketsKey = key
     }
 
     func elementBuckets(
@@ -1535,10 +1480,6 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         selectionDetailsValue = .empty
         selectionVerticesKey = nil
         selectionVerticesValue = HorizontalSelectableSpatialIndex([])
-        padOutlineFragmentsKey = nil
-        padOutlineFragmentsValue = BoardPadOutlineFragmentsByLayer()
-        padLabelTextsKey = nil
-        padLabelTextsValue = [:]
         visibleRenderLayersKey = nil
         visibleRenderLayersValue = []
         metalRenderLayersKey = nil
@@ -1561,4 +1502,153 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         concatenatedLineBatchKey = nil
         concatenatedLineBatchValue = .empty
     }
+}
+
+
+/// Values worked out from board content, each kept under a name with the
+/// content it came from and handed back while the content is `==` to it.
+/// Arrays and strings compare in constant time when their storage is the
+/// same, which it is for content an edit didn't touch, so a hit costs little
+/// more than the lookup; content that did change is compared element by
+/// element, still far cheaper than what is derived from it.
+final class BoardContentMemo {
+    private var slots = [String: (input: Any, value: Any)]()
+
+    func value<Input: Equatable, Value>(_ name: String, input: Input, build: () -> Value) -> Value {
+        if let slot = slots[name], let stored = slot.input as? Input, stored == input, let value = slot.value as? Value {
+            return value
+        }
+        let value = build()
+        slots[name] = (input, value)
+        return value
+    }
+
+    func removeAll() {
+        slots.removeAll()
+    }
+}
+
+/// Two pieces of content a memo or a scene section is derived from.
+struct BoardContentPair<First: Equatable, Second: Equatable>: Equatable {
+    var first: First
+    var second: Second
+
+    init(_ first: First, _ second: Second) {
+        self.first = first
+        self.second = second
+    }
+}
+
+/// Three pieces of content.
+struct BoardContentTriple<First: Equatable, Second: Equatable, Third: Equatable>: Equatable {
+    var first: First
+    var second: Second
+    var third: Third
+
+    init(_ first: First, _ second: Second, _ third: Third) {
+        self.first = first
+        self.second = second
+        self.third = third
+    }
+}
+
+
+/// Checks a scene built with the caches against one built without them, so a
+/// dependency a cache missed shows up as a difference rather than as stale
+/// drawing. Off unless `HORIZONTAL_VERIFY_SCENE=1` or a test turns it on; each
+/// build it checks costs a second, uncached build.
+enum BoardSceneVerifier {
+    nonisolated(unsafe) static var isEnabled: Bool = {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["HORIZONTAL_VERIFY_SCENE"] == "1"
+        #else
+        false
+        #endif
+    }()
+    /// Each difference found, described; a test reads and clears it.
+    nonisolated(unsafe) static var mismatches = [String]()
+    /// How many builds were checked.
+    nonisolated(unsafe) static var comparisons = 0
+
+    static func compare(_ cached: BoardMetalElementBuckets, with fresh: BoardMetalElementBuckets) {
+        comparisons += 1
+        let names = cached.namedBatches().map(\.name)
+        for (index, keyPath) in BoardMetalElementBuckets.batchKeyPaths.enumerated() {
+            let lhs = cached[keyPath: keyPath]
+            let rhs = fresh[keyPath: keyPath]
+            guard lhs != rhs else {
+                continue
+            }
+            let description = "\(names[index]): \(difference(lhs, rhs))"
+            mismatches.append(description)
+            print("Horizontal scene verifier: \(description)")
+        }
+        if cached.airwires != fresh.airwires {
+            let description = "airwires: \(cached.airwires.count) cached, \(fresh.airwires.count) fresh"
+            mismatches.append(description)
+            print("Horizontal scene verifier: \(description)")
+        }
+    }
+
+    /// A reshape drag's preview, made by editing just the reshaped
+    /// polygons, against `moveSelectedObjects`' whole-board one.
+    static func compareReshapePreview(_ reshaped: HorizontalBoard, with moved: HorizontalBoard) {
+        comparisons += 1
+        for (name, same) in [
+            ("polygons", reshaped.polygons == moved.polygons),
+            ("planes", reshaped.planes == moved.planes),
+            ("keepouts", reshaped.keepouts == moved.keepouts),
+            ("tracks", reshaped.tracks == moved.tracks),
+            ("junctions", reshaped.junctions == moved.junctions),
+        ] where !same {
+            let description = "reshape preview: \(name) differ from a whole-board move"
+            mismatches.append(description)
+            print("Horizontal scene verifier: \(description)")
+        }
+    }
+
+    private static func difference(_ lhs: BoardMetalElementBatch, _ rhs: BoardMetalElementBatch) -> String {
+        func first<T: Equatable>(_ name: String, _ a: [T], _ b: [T], owners: [HorizontalSelectableRef?]? = nil) -> String? {
+            guard a != b else {
+                return nil
+            }
+            let index = zip(a, b).enumerated().first { $0.element.0 != $0.element.1 }?.offset ?? min(a.count, b.count)
+            let owner = owners.flatMap { index < $0.count ? $0[index] : nil }.map { " (\($0.type) \($0.id))" } ?? ""
+            return "\(name) differ at \(index) of \(a.count) cached / \(b.count) fresh\(owner)"
+        }
+        return first("lines", lhs.lines, rhs.lines, owners: lhs.lineOwners)
+            ?? first("line owners", lhs.lineOwners, rhs.lineOwners, owners: lhs.lineOwners)
+            ?? first("triangles", lhs.triangles, rhs.triangles, owners: lhs.triangleOwners)
+            ?? first("triangle owners", lhs.triangleOwners, rhs.triangleOwners, owners: lhs.triangleOwners)
+            ?? first("anchored rects", lhs.anchoredRects, rhs.anchoredRects, owners: lhs.anchoredRectOwners)
+            ?? first("anchored rect owners", lhs.anchoredRectOwners, rhs.anchoredRectOwners)
+            ?? first("label sizes", lhs.lineLabelSizes, rhs.lineLabelSizes)
+            ?? first("text runs", lhs.textRuns, rhs.textRuns)
+            ?? "differ"
+    }
+}
+
+
+/// What decides whether a board selectable shows, beyond its ref
+/// (`BoardCanvasView.selectableVisibility`).
+struct BoardSelectableVisibility: Equatable {
+    var keepoutAllCopperByID: [String: Bool]
+    var keepoutAllCopperByPolygonID: [String: Bool]
+    var planePolygonIDs: Set<String>
+    var visibleCopperLayers: Set<Int>
+    var visibleDecalIDs: Set<String>
+    var visibleViaIDs: Set<String>
+    var visiblePackageIDs: Set<String>
+    var hiddenJunctionIDs: Set<String>
+}
+
+/// One kind of board selectable: all of them, the visible ones, and those by
+/// ref (`BoardCanvasView.boardSelectableCategories`).
+struct BoardSelectableCategory {
+    var all: [HorizontalSelectable]
+    var visible: [HorizontalSelectable]
+    var byRef: [HorizontalSelectableRef: [HorizontalSelectable]]
+    /// The hit-test index over `visible`, built when first asked for and kept
+    /// with the category.
+    var index: () -> HorizontalSelectableSpatialIndex
 }

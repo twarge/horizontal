@@ -16,7 +16,7 @@ Tick an item off when it lands on main, with the commit that did it.
       (fa5534a, 05c0799).
 - [x] Design ▸ Filter Airwires… was always disabled. It opens the airwire
       filter (80c82fb).
-- [ ] Clear All Planes only empties the fills drawn on screen; it is not an edit.
+- [ ] Clear All Planes only empties the fills drawn on screen; it is not an edit. \*Clear all planes (shift-Q) should set as a mode with a checkmark in the menu. The clear all planes mode applies to all layers, not just the visible ones, and persists until the user explicitly calls to update planes, thereby pausing Automatically recompute planes and disabling the clear all planes mode.\*
 - [ ] The "Shove" router setting (`routerShove`,
       `Model/HorizontalBoardToolSettings.swift:34`) does nothing, and the
       `#if canImport(HorizontalPushShoveRouter)` blocks in

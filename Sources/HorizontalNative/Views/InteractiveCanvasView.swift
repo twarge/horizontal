@@ -599,6 +599,10 @@ struct InteractiveCanvasView: View {
     var metalOverlayScreenLineKey = 0
     var metalOverlayBufferPatches = HorizontalMetalBufferPatches.empty
     var metalOverlayBufferPatchKey = 0
+    /// Per composite group, a key that changes only when that group's
+    /// overlay primitives do, so only changed groups are uploaded; nil uploads
+    /// every group on any change of the overlay's keys.
+    var metalOverlayGroupKeys: [Int: Int]? = nil
     var metalOverlayVisibleCompositeGroups: Set<Int>? = nil
     var metalOverlayLayerOpacityExemptGroups: Set<Int> = []
     var metalTopOverlayTriangles = [HorizontalMetalTrianglePrimitive]()
@@ -615,6 +619,8 @@ struct InteractiveCanvasView: View {
     var metalTopOverlayScreenLineKey = 0
     var metalTopOverlayBufferPatches = HorizontalMetalBufferPatches.empty
     var metalTopOverlayBufferPatchKey = 0
+    /// As `metalOverlayGroupKeys`, for the top overlay.
+    var metalTopOverlayGroupKeys: [Int: Int]? = nil
     var metalTopOverlayVisibleCompositeGroups: Set<Int>? = nil
     /// As `metalLayerOpacity`, for the top overlay's composite groups: the
     /// board's highlight draws copper there in its layers' groups.
@@ -842,6 +848,19 @@ struct InteractiveCanvasView: View {
                 let topOverlayScreenLines = metalTopOverlayScreenLines + scaleBarScreenLines
                     + selectionDragMetalBatch.screenLines
                 let topOverlayLineKey = metalTopOverlayLineKey &* 31 &+ selectionDragMetalBatch.worldLines.hashValue
+                // The drag's lines join the overlay's group-0 lines; any in a
+                // group of their own leave every group to upload.
+                let topOverlayGroupKeys: [Int: Int]? = metalTopOverlayGroupKeys.flatMap { keys in
+                    guard !selectionDragMetalBatch.worldLines.contains(where: { $0.compositeGroup != 0 }) else {
+                        return nil
+                    }
+                    guard !selectionDragMetalBatch.worldLines.isEmpty else {
+                        return keys
+                    }
+                    var keys = keys
+                    keys[0] = (keys[0] ?? 0) &* 31 &+ selectionDragMetalBatch.worldLines.hashValue
+                    return keys
+                }
                 let topOverlayScreenTriangleKey = (metalTopOverlayScreenTriangleKey &* 31 &+ selectionDragMetalBatch.screenTriangles.hashValue)
                     &* 31 &+ warningTriangles.hashValue
                 let topOverlayScreenLineKey = (metalTopOverlayScreenLineKey &* 31 &+ scaleBarScreenLines.hashValue)
@@ -950,6 +969,7 @@ struct InteractiveCanvasView: View {
                                 screenLineKey: metalOverlayScreenLineKey,
                                 bufferPatches: metalOverlayBufferPatches,
                                 bufferPatchKey: metalOverlayBufferPatchKey,
+                                groupKeys: metalOverlayGroupKeys,
                                 visibleCompositeGroups: metalOverlayVisibleCompositeGroups,
                                 layerOpacityExemptCompositeGroups: metalOverlayLayerOpacityExemptGroups,
                                 label: "Metal overlay",
@@ -972,6 +992,7 @@ struct InteractiveCanvasView: View {
                                 screenLineKey: topOverlayScreenLineKey,
                                 bufferPatches: metalTopOverlayBufferPatches,
                                 bufferPatchKey: metalTopOverlayBufferPatchKey,
+                                groupKeys: topOverlayGroupKeys,
                                 visibleCompositeGroups: metalTopOverlayVisibleCompositeGroups,
                                 layerOpacityExemptCompositeGroups: metalTopOverlayLayerOpacityExemptGroups,
                                 label: "Metal top overlay",

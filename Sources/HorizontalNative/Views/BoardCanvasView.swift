@@ -1159,7 +1159,11 @@ struct BoardCanvasView: View {
             visibleMetalCompositeGroups(for: visibleLayers)
         }
         let metalHighlightBatch = measureBody("highlight batch") {
-            boardMetalHighlightBatch(renderLayers: metalRenderLayers, visibleCompositeGroups: visibleCompositeGroups)
+            boardMetalHighlightBatch(
+                renderLayers: metalRenderLayers,
+                visibleCompositeGroups: visibleCompositeGroups,
+                sceneGroupKeys: metalLineBatch.groupKeys
+            )
         }
         let metalDimBatch = measureBody("dim batch") {
             boardMetalDimBatch(
@@ -1183,6 +1187,30 @@ struct BoardCanvasView: View {
         let metalTopOverlayKey = measureBody("overlay key") {
             (((metalDimBatch.triangleKey &* 31 &+ metalHighlightBatch.lineKey) &* 31 &+ metalSelectionBatch.lineKey) &* 31
                 &+ metalPreviewBatch.lineKey) &* 31 &+ crossSelection.key
+        }
+        // The top overlay's composite groups, each keyed by the batches that
+        // draw in it, so a hover or selection change (group 0) leaves a
+        // highlight's layer groups where they are.
+        let metalTopOverlayGroupKeys = measureBody("overlay group keys") { () -> [Int: Int] in
+            var hashers = [Int: Hasher]()
+            func fold(_ key: Int, _ groups: some Sequence<Int>) {
+                for group in groups {
+                    hashers[group, default: Hasher()].combine(key)
+                }
+            }
+            func groups(of batch: BoardMetalLineBatch) -> Set<Int> {
+                var groups = Set<Int>()
+                for triangle in batch.triangles { groups.insert(triangle.compositeGroup) }
+                for line in batch.lines { groups.insert(line.compositeGroup) }
+                for rect in batch.anchoredRects { groups.insert(rect.compositeGroup) }
+                return groups
+            }
+            fold(metalDimBatch.triangleKey, groups(of: metalDimBatch))
+            fold(metalHighlightBatch.lineKey, metalHighlightBatch.groupKeys.map { Set($0.keys) } ?? groups(of: metalHighlightBatch))
+            fold(metalSelectionBatch.lineKey, groups(of: metalSelectionBatch))
+            fold(metalPreviewBatch.lineKey, groups(of: metalPreviewBatch))
+            fold(crossSelection.key, Set(crossSelection.lines.map(\.compositeGroup)))
+            return hashers.mapValues { $0.finalize() }
         }
         let metalTopOverlayHandleKey = measureBody("handle key") {
             (metalHighlightBatch.handleKey &* 31 &+ metalSelectionBatch.handleKey) &* 31 &+ metalPreviewBatch.handleKey
@@ -1225,6 +1253,7 @@ struct BoardCanvasView: View {
             metalOverlayAnchoredRectKey: metalLineBatch.anchoredRectKey,
             metalOverlayBufferPatches: metalBufferPatches,
             metalOverlayBufferPatchKey: metalBufferPatches.hashValue,
+            metalOverlayGroupKeys: metalLineBatch.groupKeys,
             metalOverlayVisibleCompositeGroups: visibleCompositeGroups,
             metalOverlayLayerOpacityExemptGroups: [Self.textOverlayMetalCompositeGroup, Self.holesMetalCompositeGroup],
             metalTopOverlayTriangles: metalTopOverlayTriangles,
@@ -1237,6 +1266,7 @@ struct BoardCanvasView: View {
             metalTopOverlayAnchoredRectKey: metalHighlightBatch.anchoredRectKey,
             metalTopOverlayBufferPatches: metalTopOverlayBufferPatches,
             metalTopOverlayBufferPatchKey: metalTopOverlayBufferPatches.hashValue,
+            metalTopOverlayGroupKeys: metalTopOverlayGroupKeys,
             // The highlighted copper is composited in its layers' groups at
             // the layers' opacity, as the board's overlay composites it.
             metalTopOverlayLayerOpacity: layerOpacity,
@@ -3938,7 +3968,7 @@ struct BoardCanvasView: View {
             key: BoardSelectionVerticesCacheKey(selectableKey: selectableCacheKey, selectedRefs: selectedObjects)
         ) {
             let selectablesByRef = boardSelectablesByRef()
-            return BoardSelectionVertices.refs(of: selectedObjects, in: board).flatMap { selectablesByRef[$0] ?? [] }
+            return BoardSelectionVertices.refs(of: selectedObjects, in: selectableSceneBoard).flatMap { selectablesByRef[$0] ?? [] }
         }
         return BoardSelectionVertices.pick(at: point, among: index.candidates(at: point, expand: expand), expand: expand)
     }
@@ -4935,11 +4965,6 @@ struct BoardCanvasView: View {
         let originalBoard = board
         // What the cursor snaps to: the board as it is, without the package.
         let snapTargets = boardSnapTargets()
-        // And the scene and selectables already built for it, which the
-        // package can join instead of everything being rebuilt.
-        let renderLayers = boardMetalRenderLayers()
-        let builtBuckets = selectableCache.elementBuckets(ifBuiltFor: metalElementBucketsCacheKey(renderLayers: renderLayers))
-        let builtSelectables = selectableCache.allSelectables(ifBuiltFor: allSelectableCacheKey)
         let position = lastCursorWorldPoint ?? originalBoard.bounds.center
         guard let draft = HorizontalBoard.placingPackage(
             for: object,
@@ -4953,106 +4978,15 @@ struct BoardCanvasView: View {
         packagePlacementState = PackagePlacementState(originalBoard: originalBoard, placementID: draft.placementID)
         selectedObjects = [HorizontalSelectableRef(id: draft.placementID, type: .boardPackage)]
         hoveredObject = nil
-        // One rebuild for the board with the package on it. From then on the
-        // package rides the move tool, whose resident plan shifts its spans on
-        // the GPU per cursor step; writing a new board per step instead rebuilt
-        // the whole scene, the selectables and the snap index every time.
+        // One rebuild for the board with the package on it, which draws only
+        // the package (`BoardSceneObjectCache`). From then on the package rides
+        // the move tool, whose resident plan shifts its spans on the GPU per
+        // cursor step; writing a new board per step instead rebuilt the whole
+        // scene, the selectables and the snap index every time.
         invalidateSelectableCache()
         startPlacingPackageMove(on: draft.board, from: position, snapTargets: snapTargets)
-        seedPlacedPackage(
-            draft.board,
-            over: originalBoard,
-            builtBuckets: builtBuckets,
-            builtSelectables: builtSelectables,
-            renderLayers: renderLayers
-        )
         publishSelectionContext()
         publishCanvasCommandActions()
-    }
-
-    /// Joins the dropped package to the scene and selectables that were built
-    /// for the board without it, so the click builds one package's worth
-    /// rather than the whole board. Seeded under the keys the next body pass
-    /// will ask for; should one not match, that pass simply rebuilds.
-    private func seedPlacedPackage(
-        _ placed: HorizontalBoard,
-        over original: HorizontalBoard,
-        builtBuckets: BoardMetalElementBuckets?,
-        builtSelectables: [HorizontalSelectable]?,
-        renderLayers: [Int]
-    ) {
-        guard let addition = packagePlacementAddition(placed, over: original) else {
-            return
-        }
-        if let builtBuckets, boardMetalRenderLayers() == renderLayers {
-            let additionBuckets = buildBoardMetalElementBuckets(renderLayers: renderLayers, partialBoard: addition)
-            // The airwires change with the package, so their batches are
-            // taken whole from the addition, which carries all of them.
-            selectableCache.seedElementBuckets(
-                builtBuckets.merged(adding: additionBuckets, replacing: [\.connectionLines, \.connectionLabels]),
-                for: metalElementBucketsCacheKey(renderLayers: renderLayers)
-            )
-        }
-        if let builtSelectables {
-            var selectableAddition = addition
-            selectableAddition.connectionLines = []
-            selectableCache.seedAllSelectables(
-                builtSelectables + buildAllBoardSelectables(in: selectableAddition),
-                for: allSelectableCacheKey
-            )
-        }
-    }
-
-    /// What `placed` adds to `original` as a board of its own: the package
-    /// `placingPackage` appended, plus every connection line and airwire,
-    /// since placing redraws those whole. The rest of the board is left out,
-    /// so a scene build over it emits only what is new. Nil when `placed` is
-    /// not `original` with one package appended.
-    private func packagePlacementAddition(_ placed: HorizontalBoard, over original: HorizontalBoard) -> HorizontalBoard? {
-        guard placed.packages.count == original.packages.count + 1,
-              placed.packagePads.count >= original.packagePads.count,
-              placed.packageHoles.count >= original.packageHoles.count,
-              placed.packagePolygons.count >= original.packagePolygons.count,
-              placed.packageLines.count >= original.packageLines.count,
-              placed.packageArcs.count >= original.packageArcs.count,
-              placed.packageTexts.count >= original.packageTexts.count,
-              placed.keepouts.count >= original.keepouts.count,
-              placed.tracks.count == original.tracks.count,
-              placed.vias.count == original.vias.count,
-              placed.polygons.count == original.polygons.count,
-              placed.planes.count == original.planes.count,
-              placed.texts.count == original.texts.count,
-              placed.decals.count == original.decals.count else {
-            return nil
-        }
-        var addition = placed
-        addition.packages = Array(placed.packages.dropFirst(original.packages.count))
-        addition.packagePads = Array(placed.packagePads.dropFirst(original.packagePads.count))
-        addition.packageHoles = Array(placed.packageHoles.dropFirst(original.packageHoles.count))
-        addition.packagePolygons = Array(placed.packagePolygons.dropFirst(original.packagePolygons.count))
-        addition.packageLines = Array(placed.packageLines.dropFirst(original.packageLines.count))
-        addition.packageArcs = Array(placed.packageArcs.dropFirst(original.packageArcs.count))
-        addition.packageTexts = Array(placed.packageTexts.dropFirst(original.packageTexts.count))
-        addition.keepouts = Array(placed.keepouts.dropFirst(original.keepouts.count))
-        addition.packagePadPositions = placed.packagePadPositions.filter { original.packagePadPositions[$0.key] == nil }
-        addition.junctions = [:]
-        addition.junctionNetIDs = [:]
-        addition.tracks = []
-        addition.netTies = []
-        addition.lines = []
-        addition.arcs = []
-        addition.polygons = []
-        addition.planes = []
-        addition.dimensions = []
-        addition.decals = []
-        addition.holes = []
-        addition.vias = []
-        addition.viaHoles = []
-        addition.texts = []
-        addition.boardPanels = []
-        addition.pads = []
-        addition.padstackShapes = []
-        return addition
     }
 
     /// Hands the package being placed to the move tool: the cursor drags it
@@ -5428,10 +5362,57 @@ struct BoardCanvasView: View {
                 turns: state.turn?.count ?? 0
             )
         ) {
+            if let reshaped = reshapedPolygonPreview(of: base, by: totalDelta) {
+                if BoardSceneVerifier.isEnabled {
+                    var moved = base
+                    moveSelectedObjects(by: totalDelta, board: &moved)
+                    BoardSceneVerifier.compareReshapePreview(reshaped, with: moved)
+                }
+                return reshaped
+            }
             var previewBoard = base
             moveSelectedObjects(by: totalDelta, board: &previewBoard)
             return previewBoard
         }
+    }
+
+    /// A drag of polygon parts alone that reshapes every polygon it touches
+    /// (a vertex or an edge, say): those polygons changed where the board
+    /// keeps them (its own, a plane's outline, a keepout's) and nothing else,
+    /// which is what `moveSelectedObjects` makes of it, without its
+    /// whole-board pass. Everything else the board holds keeps its storage,
+    /// so the scene and selectable caches see it unchanged. Nil for anything
+    /// else, a polygon moved whole included: a plane's fills go with it.
+    private func reshapedPolygonPreview(of base: HorizontalBoard, by delta: HorizontalPoint) -> HorizontalBoard? {
+        guard !selectedObjects.isEmpty, selectedObjects.allSatisfy({ BoardPolygonParts.isPart($0.type) }) else {
+            return nil
+        }
+        let ids = Set(selectedObjects.map { normalizedID($0.id) })
+        let originals = (base.polygons + base.outlinePolygons).filter { ids.contains(normalizedID($0.id)) }
+        guard Set(originals.map { normalizedID($0.id) }).count == originals.count else {
+            return nil
+        }
+        var polygons = originals
+        var done = Set<String>()
+        for ref in selectedObjects {
+            BoardPolygonParts.change(&polygons, ref: ref, done: &done) { $0 + delta }
+        }
+        guard !originals.contains(where: { BoardPolygonParts.changedWhole($0, done: done) }) else {
+            return nil
+        }
+        var board = base
+        for polygon in polygons {
+            let id = normalizedID(polygon.id)
+            if let index = board.polygons.firstIndex(where: { normalizedID($0.id) == id }) {
+                board.polygons[index] = polygon
+            } else if let index = board.planes.firstIndex(where: { !$0.id.contains("/") && normalizedID($0.polygonID) == id }) {
+                board.planes[index].fallbackPolygon = polygon
+                board.planes[index].layer = polygon.layer
+            } else if let index = board.keepouts.firstIndex(where: { !$0.id.contains("/") && normalizedID($0.polygonID) == id }) {
+                board.keepouts[index].polygon = polygon
+            }
+        }
+        return board
     }
 
     private func beginDrawGraphics(_ primitive: HorizontalDrawingPrimitive) {
@@ -5513,7 +5494,7 @@ struct BoardCanvasView: View {
     }
 
     /// Whether a tool is in use, with a board of its own to commit or to put
-    /// back on cancel. New fills wait until it is done: spliced in now, they
+    /// back on cancel. New fills wait until it is done: taken in now, they
     /// would be lost when it commits or cancels from its own copy, and a move
     /// draws from that copy meanwhile anyway. The track tool has one only
     /// once its route has laid something: waiting for a route, or for the
@@ -5546,10 +5527,8 @@ struct BoardCanvasView: View {
         guard HorizontalBoardPlaneInputs.signature(of: base) == delivery.fills.inputs else {
             return
         }
-        let renderLayers = boardMetalRenderLayers()
-        let builtBuckets = selectableCache.elementBuckets(ifBuiltFor: metalElementBucketsCacheKey(renderLayers: renderLayers))
         var filled = base
-        let airwiresChanged = filled.takePlaneFills(delivery.fills)
+        _ = filled.takePlaneFills(delivery.fills)
         selectableCache.takePlaneFills(triangles: triangles, keeping: delivery.fragmentKeys)
         // A fragment the pour took to be the canvas's already, and that it no
         // longer has, is tessellated here, and the scene built again with it.
@@ -5560,56 +5539,9 @@ struct BoardCanvasView: View {
             state.originalBoard = filled
             drawTrackState = state
         }
+        // The next build draws the planes the pour changed, and the rats'
+        // nest if it changed; the rest it replays (`BoardSceneObjectCache`).
         metalSceneRevision &+= 1
-        guard let builtBuckets else {
-            return
-        }
-        let addition = planeFillAddition(filled, withAirwires: airwiresChanged)
-        let additionBuckets = buildBoardMetalElementBuckets(renderLayers: renderLayers, partialBoard: addition)
-        let replaced: [ReferenceWritableKeyPath<BoardMetalElementBuckets, BoardMetalElementBatch>] = airwiresChanged
-            ? [\.planes, \.connectionLines, \.connectionLabels]
-            : [\.planes]
-        selectableCache.seedElementBuckets(
-            builtBuckets.merged(adding: additionBuckets, replacing: replaced),
-            for: metalElementBucketsCacheKey(renderLayers: renderLayers)
-        )
-    }
-
-    /// `board`'s planes alone, and its airwires and connection lines when
-    /// they are to be drawn again too: what a scene build over it emits is
-    /// exactly the batches a new pour replaces.
-    private func planeFillAddition(_ board: HorizontalBoard, withAirwires: Bool) -> HorizontalBoard {
-        var addition = board
-        addition.packages = []
-        addition.packagePads = []
-        addition.packageHoles = []
-        addition.packagePolygons = []
-        addition.packageLines = []
-        addition.packageArcs = []
-        addition.packageTexts = []
-        addition.packagePadPositions = [:]
-        addition.keepouts = []
-        addition.junctions = [:]
-        addition.junctionNetIDs = [:]
-        addition.tracks = []
-        addition.netTies = []
-        addition.lines = []
-        addition.arcs = []
-        addition.polygons = []
-        addition.dimensions = []
-        addition.decals = []
-        addition.holes = []
-        addition.vias = []
-        addition.viaHoles = []
-        addition.texts = []
-        addition.boardPanels = []
-        addition.pads = []
-        addition.padstackShapes = []
-        if !withAirwires {
-            addition.airwires = []
-            addition.connectionLines = []
-        }
-        return addition
     }
 
     private func selectDrawingLayer(_ layer: Int) {
@@ -7630,70 +7562,18 @@ struct BoardCanvasView: View {
         let polygonNext = unique.count == 1
             ? polygonEdgeSelection(afterDeleting: unique[0], from: previousBoard, to: draft)
             : nil
-        // The scene and selectables built for the board as it is, which a
-        // delete that takes only copper off can be taken out of.
-        let renderLayers = boardMetalRenderLayers()
-        let builtBuckets = selectableCache.elementBuckets(ifBuiltFor: metalElementBucketsCacheKey(renderLayers: renderLayers))
-        let builtSelectables = selectableCache.allSelectables(ifBuiltFor: allSelectableCacheKey)
-        let builtScene = selectableCache.selectableScene(ifBuiltFor: selectableCacheKey)
-
         registerUndoSnapshot(previousBoard, actionName: "Delete")
         editedBoard = draft
+        // The next build draws again only the copper whose net the delete
+        // changed and the rats' nest, and replays the rest
+        // (`BoardSceneObjectCache`), as a splice of the old scene once did.
         invalidateSelectableCache()
-        let invalidatedRevision = selectableCacheRevision
         // The neighbour (if any) wasn't deleted, so its ref stays valid through
         // the connectivity recompute below; selecting it renders it highlighted.
         selectedObjects = (chainNext ?? polygonNext).map { [$0] } ?? []
         hoveredObject = nil
         publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previousBoard, kind: .delete))
-        // Rules that changed something, or block instances the delete reached,
-        // invalidated again: what was built no longer shows what is left.
-        if selectableCacheRevision == invalidatedRevision, let resolved = editedBoard,
-           let splice = BoardDeletionSplice(from: previousBoard, to: resolved) {
-            seedDeletion(
-                splice,
-                from: resolved,
-                builtBuckets: builtBuckets,
-                builtSelectables: builtSelectables,
-                builtScene: builtScene,
-                renderLayers: renderLayers
-            )
-        }
         publishSelectionContext()
-    }
-
-    /// Takes what a delete removed out of the scene, the selectables and the
-    /// selectable scene built for the board before it, and draws again only
-    /// the copper whose net it changed and the rats' nest, where the whole
-    /// board was built again: on Board K that was 2.6 s of a one-track delete
-    /// and the selectables another 1.1 s. Seeded under the keys the next body
-    /// pass asks for; should one not match, that pass simply builds.
-    private func seedDeletion(
-        _ splice: BoardDeletionSplice,
-        from resolved: HorizontalBoard,
-        builtBuckets: BoardMetalElementBuckets?,
-        builtSelectables: [HorizontalSelectable]?,
-        builtScene: HorizontalCanvasSelectableScene?,
-        renderLayers: [Int]
-    ) {
-        if let builtBuckets, boardMetalRenderLayers() == renderLayers {
-            let redrawn = buildBoardMetalElementBuckets(renderLayers: renderLayers, partialBoard: splice.redrawnBoard(of: resolved))
-            // The airwires change with the copper, so their batches are taken
-            // whole from the build of what is drawn again, which has all of them.
-            selectableCache.seedElementBuckets(
-                builtBuckets.spliced(splice, adding: redrawn, replacing: [\.connectionLines, \.connectionLabels]),
-                for: metalElementBucketsCacheKey(renderLayers: renderLayers)
-            )
-        }
-        if let builtSelectables {
-            selectableCache.seedAllSelectables(builtSelectables.filter { !splice.removes($0.ref) }, for: allSelectableCacheKey)
-        }
-        if let builtScene {
-            selectableCache.seedSelectableScene(
-                HorizontalCanvasSelectableScene(selectables: builtScene.selectables.filter { !splice.removes($0.ref) }),
-                for: selectableCacheKey
-            )
-        }
     }
 
     /// Removes a selected junction once nothing meets it any more: the tracks,
@@ -10756,7 +10636,28 @@ struct BoardCanvasView: View {
         HorizontalCanvasModeSupport.wrappedAngle(angle)
     }
 
+    /// The board the revision-keyed caches (the selectable scene, the
+    /// selection's vertices, the snap targets) are built from and keyed by:
+    /// the board as edited, never a move's, paste's or tool's preview of it,
+    /// which shares its revision and may share its counts, so a scene built
+    /// from a preview would be served once the preview is gone.
+    private var selectableSceneBoard: HorizontalBoard {
+        editedBoard ?? sourceBoard
+    }
+
     private var selectableCacheKey: BoardSelectableCacheKey {
+        let board = selectableSceneBoard
+        return BoardSelectableCacheKey(
+            boardID: board.uuid,
+            revision: selectableCacheRevision,
+            displayOptions: displayOptions,
+            counts: boardGeometryCounts(for: board)
+        )
+    }
+
+    /// As `selectableCacheKey`, for what is drawn: the board as shown,
+    /// preview and all.
+    private var renderLayersCacheKey: BoardSelectableCacheKey {
         BoardSelectableCacheKey(
             boardID: board.uuid,
             revision: selectableCacheRevision,
@@ -10799,10 +10700,11 @@ struct BoardCanvasView: View {
     }
 
     private var allSelectableCacheKey: BoardAllSelectableCacheKey {
-        BoardAllSelectableCacheKey(
+        let board = selectableSceneBoard
+        return BoardAllSelectableCacheKey(
             boardID: board.uuid,
             revision: selectableCacheRevision,
-            counts: boardGeometryCounts
+            counts: boardGeometryCounts(for: board)
         )
     }
 
@@ -10813,83 +10715,133 @@ struct BoardCanvasView: View {
     }
 
     private func boardSelectableScene() -> HorizontalCanvasSelectableScene {
-        selectableCache.selectableScene(key: selectableCacheKey) {
-            let all = selectableCache.allSelectables(key: allSelectableCacheKey) {
-                BoardLoadTimer.measure("BoardCanvasView.buildAllBoardSelectables") {
-                    buildAllBoardSelectables(in: board)
-                }
+        let board = selectableSceneBoard
+        // Put together from the board's kinds of selectable, each built,
+        // filtered, grouped and indexed only when what it comes from changed.
+        return selectableCache.selectableScene(key: selectableCacheKey, buildScene: {
+            let categories = BoardLoadTimer.measure("BoardCanvasView.buildAllBoardSelectables") {
+                boardSelectableCategories(in: board)
             }
-            return BoardLoadTimer.measure("BoardCanvasView.filterVisibleSelectables") {
-                filterVisibleSelectables(all, in: board)
+            return BoardLoadTimer.measure("BoardCanvasView.indexSelectables") {
+                HorizontalCanvasSelectableScene(parts: categories.map { ($0.visible, $0.byRef, $0.index()) })
             }
-        }
+        })
     }
 
     private func boardSelectables() -> [HorizontalSelectable] {
         boardSelectableScene().selectables
     }
 
-    private func boardSelectablesByRef() -> [HorizontalSelectableRef: [HorizontalSelectable]] {
-        boardSelectableScene().selectablesByRef
+    private func boardSelectablesByRef() -> HorizontalSelectableLookup {
+        boardSelectableScene().lookup
     }
 
     private func filterVisibleSelectables(_ selectables: [HorizontalSelectable]) -> [HorizontalSelectable] {
         filterVisibleSelectables(selectables, in: board)
     }
 
-    private func filterVisibleSelectables(_ selectables: [HorizontalSelectable], in board: HorizontalBoard) -> [HorizontalSelectable] {
-        let keepoutAllCopperByID: [String: Bool] = Dictionary(
-            uniqueKeysWithValues: board.keepouts.map { (normalizedID($0.id), $0.allCopperLayers) }
-        )
-        let planePolygonIDs = Set(board.planes.map { normalizedID($0.polygonID) })
-        let keepoutAllCopperByPolygonID: [String: Bool] = Dictionary(
-            board.keepouts.filter { !$0.id.contains("/") }.map { (normalizedID($0.polygonID), $0.allCopperLayers) },
-            uniquingKeysWith: { first, _ in first }
-        )
+    /// What decides whether a selectable shows, beyond its own ref: which
+    /// polygons are plane or keepout outlines, which copper, decals, vias and
+    /// packages show, and which junctions span no copper that does. Each part
+    /// is kept while the content it comes from (and the display options) is
+    /// unchanged: worked out afresh, the package, via and junction passes over
+    /// the whole board ran on every filter.
+    private func selectableVisibility(in board: HorizontalBoard) -> BoardSelectableVisibility {
+        let memo = selectableCache.contentMemo
+        let keepouts = memo.value("visibility: keepouts", input: board.keepouts) { () -> BoardContentPair<[String: Bool], [String: Bool]> in
+            BoardContentPair(
+                Dictionary(uniqueKeysWithValues: board.keepouts.map { (normalizedID($0.id), $0.allCopperLayers) }),
+                Dictionary(
+                    board.keepouts.filter { !$0.id.contains("/") }.map { (normalizedID($0.polygonID), $0.allCopperLayers) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+            )
+        }
+        let planePolygonIDs = memo.value("visibility: plane polygons", input: board.planes.map(\.polygonID)) {
+            Set(board.planes.map { normalizedID($0.polygonID) })
+        }
         let visibleCopperLayers = Set(
             HorizontalBoardLayers.all.filter {
                 HorizontalBoardLayers.isCopper($0) && displayOptions.isLayerVisible($0)
             }
         )
-        let visibleDecalIDs = Set(board.decals.compactMap { decal -> String? in
-            guard boardDecalHasVisibleLayer(decal) else {
-                return nil
-            }
-            return normalizedID(decal.id)
-        })
-        let visibleViaIDs = Set(board.vias.compactMap { via -> String? in
-            guard !visibleViaLayers(for: via).isEmpty else {
-                return nil
-            }
-            return normalizedID(via.id)
-        })
-        let visiblePackageIDs = visibleBoardPackageIDs(in: board)
+        let visibleDecalIDs = memo.value("visibility: decals", input: BoardContentPair(board.decals, displayOptions)) {
+            Set(board.decals.compactMap { decal -> String? in
+                boardDecalHasVisibleLayer(decal) ? normalizedID(decal.id) : nil
+            })
+        }
+        let visibleViaIDs = memo.value("visibility: vias", input: BoardContentPair(board.vias, displayOptions)) {
+            Set(board.vias.compactMap { via -> String? in
+                visibleViaLayers(for: via).isEmpty ? nil : normalizedID(via.id)
+            })
+        }
+        let packageContent = BoardContentTriple(
+            BoardContentTriple(board.packagePolygons, board.packageLines, board.packageArcs),
+            BoardContentTriple(board.packagePads, board.packageHoles, board.packageTexts),
+            board.packages
+        )
+        let visiblePackageIDs = memo.value("visibility: packages", input: BoardContentPair(packageContent, displayOptions)) {
+            visibleBoardPackageIDs(in: board)
+        }
         // A junction shows on the copper layers it spans, as Horizon gives
         // it its layers: a via's at its point, else its tracks' and net
         // ties'. One with all of them hidden can't be picked, any more than
         // its tracks can; one on no copper at all still can, to delete it.
-        let hiddenJunctionIDs = Set(board.junctionLayerRanges().compactMap { id, span -> String? in
-            visibleCopperLayers.contains(where: span.contains) ? nil : id
-        })
-        return selectables.filter { selectable in
+        let junctionRanges = memo.value(
+            "junction layer ranges",
+            input: BoardContentTriple(board.tracks, board.netTies, BoardContentPair(board.vias, board.junctions))
+        ) {
+            board.junctionLayerRanges()
+        }
+        let hiddenJunctionIDs = memo.value("visibility: hidden junctions", input: BoardContentPair(junctionRanges, visibleCopperLayers)) {
+            Set(junctionRanges.compactMap { id, span -> String? in
+                visibleCopperLayers.contains(where: span.contains) ? nil : id
+            })
+        }
+        return BoardSelectableVisibility(
+            keepoutAllCopperByID: keepouts.first,
+            keepoutAllCopperByPolygonID: keepouts.second,
+            planePolygonIDs: planePolygonIDs,
+            visibleCopperLayers: visibleCopperLayers,
+            visibleDecalIDs: visibleDecalIDs,
+            visibleViaIDs: visibleViaIDs,
+            visiblePackageIDs: visiblePackageIDs,
+            hiddenJunctionIDs: hiddenJunctionIDs
+        )
+    }
+
+    private func filterVisibleSelectables(_ selectables: [HorizontalSelectable], in board: HorizontalBoard) -> [HorizontalSelectable] {
+        filterVisibleSelectables(selectables, visibility: selectableVisibility(in: board))
+    }
+
+    private func filterVisibleSelectables(
+        _ selectables: [HorizontalSelectable],
+        visibility: BoardSelectableVisibility
+    ) -> [HorizontalSelectable] {
+        selectables.filter { selectable in
             if selectable.ref.type == .junction {
-                return !hiddenJunctionIDs.contains(normalizedID(selectable.ref.id))
+                return !visibility.hiddenJunctionIDs.contains(normalizedID(selectable.ref.id))
             }
             return isSelectableVisible(
                 selectable.ref,
-                keepoutAllCopperByID: keepoutAllCopperByID,
-                keepoutAllCopperByPolygonID: keepoutAllCopperByPolygonID,
-                planePolygonIDs: planePolygonIDs,
-                visibleCopperLayers: visibleCopperLayers,
-                visibleDecalIDs: visibleDecalIDs,
-                visibleViaIDs: visibleViaIDs,
-                visiblePackageIDs: visiblePackageIDs
+                keepoutAllCopperByID: visibility.keepoutAllCopperByID,
+                keepoutAllCopperByPolygonID: visibility.keepoutAllCopperByPolygonID,
+                planePolygonIDs: visibility.planePolygonIDs,
+                visibleCopperLayers: visibility.visibleCopperLayers,
+                visibleDecalIDs: visibility.visibleDecalIDs,
+                visibleViaIDs: visibility.visibleViaIDs,
+                visiblePackageIDs: visibility.visiblePackageIDs
             )
         }
     }
 
-    private func boardSelectablesByRef(in board: HorizontalBoard) -> [HorizontalSelectableRef: [HorizontalSelectable]] {
-        Dictionary(grouping: filterVisibleSelectables(buildAllBoardSelectables(in: board), in: board), by: \.ref)
+    /// The visible selectables of `board` by ref, for a board the selectable
+    /// scene's key can't see (a move's or a placement's preview): looked up
+    /// in each category's own map, so only the categories the preview changed
+    /// are built and grouped again.
+    private func boardSelectableLookup(in board: HorizontalBoard) -> (HorizontalSelectableRef) -> [HorizontalSelectable]? {
+        let lookup = HorizontalSelectableLookup(maps: boardSelectableCategories(in: board).map(\.byRef))
+        return { lookup[$0] }
     }
 
     private func isSelectableVisible(
@@ -11121,6 +11073,42 @@ struct BoardCanvasView: View {
         }
     }
 
+    /// The part of the scene's cache key that is style rather than content:
+    /// its colours and widths. A change of it clears the scene's per-object
+    /// cache, as every primitive's colour may have changed with it; the render
+    /// layers and their fill modes are keyed per section instead.
+    private func metalSceneStyleKey(renderLayers: [Int]) -> Int {
+        var key = metalElementBucketsCacheKey(renderLayers: renderLayers)
+        key.boardID = ""
+        key.revision = 0
+        key.tessellationVersion = 0
+        key.counts = []
+        key.movePreview = nil
+        key.pastePreview = nil
+        key.routePreviewRemoved = []
+        key.renderLayers = []
+        key.silkscreenClipVersion = 0
+        key.layerFillModes = []
+        return key.hashValue
+    }
+
+    /// What a plane draws: its fills, or its outline while it has none, and
+    /// whether each fill's tessellation had arrived (a fill drawn before it
+    /// did is drawn again once it has).
+    private func planeSceneInput(_ plane: HorizontalPlane, filled: Bool) -> BoardScenePlaneInput {
+        let fragments = plane.renderFragments
+        let tessellated = !filled || fragments.enumerated().allSatisfy { index, fragment in
+            selectableCache.hasPlaneFragmentTrianglePoints(
+                boardPlaneFragmentKey(planeID: plane.id, fragmentIndex: index, fragment: fragment)
+            )
+        }
+        return BoardScenePlaneInput(
+            fragments: plane.fragments,
+            outline: plane.fragments.isEmpty ? plane.fallbackPolygon?.vertices : nil,
+            tessellated: tessellated
+        )
+    }
+
     private func metalElementBucketsCacheKey(renderLayers: [Int]) -> BoardMetalElementBucketsCacheKey {
         // None of these colors include layerOpacity. The slider is applied at
         // composite time via the renderer's layerOpacity uniform.
@@ -11300,67 +11288,86 @@ struct BoardCanvasView: View {
         }
 
         let activeBatches = profile("choose active batches") {
-            var activeBatches = [(name: String, batch: BoardMetalElementBatch)]()
+            var activeBatches = [(name: String, bucket: BoardSceneBucket, filter: Int, batch: BoardMetalElementBatch)]()
             activeBatches.reserveCapacity(32)
 
-            func add(_ name: String, _ batch: BoardMetalElementBatch) {
-                activeBatches.append((name, batch))
+            /// `filter` stands for what concat filters the bucket by, which
+            /// changes its primitives as much as its build does.
+            func add(_ name: String, _ bucket: BoardSceneBucket, _ batch: BoardMetalElementBatch, filter: Int = 0) {
+                activeBatches.append((name, bucket, filter, batch))
+            }
+            let labelFilter = signature.minimumLabelSize.hashValue
+            /// A label bucket culled to the legible zoom, kept while the
+            /// bucket's primitives and the zoom step are what they were.
+            func legible(_ name: String, _ bucket: BoardSceneBucket) -> BoardMetalElementBatch {
+                guard let stamps = buckets.groupStamps?[bucket] else {
+                    return buckets[keyPath: bucket].filtered(minimumLabelSize: signature.minimumLabelSize)
+                }
+                var hasher = Hasher()
+                for group in stamps.keys.sorted() {
+                    hasher.combine(group)
+                    hasher.combine(stamps[group])
+                }
+                hasher.combine(signature.minimumLabelSize)
+                return selectableCache.legibleLabels(name, key: hasher.finalize()) {
+                    buckets[keyPath: bucket].filtered(minimumLabelSize: signature.minimumLabelSize)
+                }
             }
 
             // Always-on per-layer geometry (board polygons, lines, arcs, tracks, netTies);
             // per-layer visibility is enforced by composite-group masking at draw time.
-            add("layer polygons/lines/tracks", buckets.alwaysOnLayered)
+            add("layer polygons/lines/tracks", \.alwaysOnLayered, buckets.alwaysOnLayered)
 
             if signature.outline {
-                add("panels", buckets.panels)
-                add("body outline high", buckets.bodyOutlineHigh)
+                add("panels", \.panels, buckets.panels)
+                add("body outline high", \.bodyOutlineHigh, buckets.bodyOutlineHigh)
             } else if signature.boardBody {
-                add("body outline low", buckets.bodyOutlineLow)
+                add("body outline low", \.bodyOutlineLow, buckets.bodyOutlineLow)
             }
             if signature.outline && signature.panelLabels {
-                add("panel labels", buckets.panelLabels)
+                add("panel labels", \.panelLabels, buckets.panelLabels)
             }
             if signature.boardBody {
-                add("body fill", buckets.bodyFill)
+                add("body fill", \.bodyFill, buckets.bodyFill)
             }
             if signature.origin {
-                add("origin", buckets.origin)
+                add("origin", \.origin, buckets.origin)
             }
             if signature.keepouts && signature.hasVisibleCopper {
-                add("all-copper keepouts", buckets.keepoutsAllCopper)
+                add("all-copper keepouts", \.keepoutsAllCopper, buckets.keepoutsAllCopper)
             }
             if signature.keepouts {
-                add("per-layer keepouts", buckets.keepoutsPerLayer)
+                add("per-layer keepouts", \.keepoutsPerLayer, buckets.keepoutsPerLayer)
             }
             // Planes are gated only by their copper layer, which the renderer
             // masks per composite group.
-            add("planes", buckets.planes)
+            add("planes", \.planes, buckets.planes)
             if signature.packages {
-                add("package geometry", buckets.packagesGeometry)
-                add("package fallback", buckets.packagesFallback)
+                add("package geometry", \.packagesGeometry, buckets.packagesGeometry)
+                add("package fallback", \.packagesFallback, buckets.packagesFallback)
             }
             // packagesText: shown when EITHER packages or text is on (matches original
             // logic where packageTexts emit via the packages block, or via the text block
             // when packages is off).
             if signature.packages || signature.text {
-                add("package text", buckets.packagesText)
+                add("package text", \.packagesText, buckets.packagesText)
             }
             if signature.decals {
-                add("decals", buckets.decals)
+                add("decals", \.decals, buckets.decals)
             }
             if signature.pads {
-                add("pads", buckets.pads)
+                add("pads", \.pads, buckets.pads)
             }
             if signature.vias {
-                add("vias", buckets.vias)
+                add("vias", \.vias, buckets.vias)
             }
             if signature.holes {
-                add("board holes", buckets.holesNone)
+                add("board holes", \.holesNone, buckets.holesNone)
                 if signature.pads {
-                    add("package holes", buckets.holesPad)
+                    add("package holes", \.holesPad, buckets.holesPad)
                 }
                 if signature.vias {
-                    add("via holes", buckets.holesVia)
+                    add("via holes", \.holesVia, buckets.holesVia)
                 }
             }
             // Pad/via name labels composite AFTER holes so drill holes don't
@@ -11370,25 +11377,25 @@ struct BoardCanvasView: View {
             // zoom: once their glyphs shrink past legibility they are dropped
             // rather than drawn as unreadable clutter.
             if signature.pads && signature.padLabels {
-                add("pad labels", buckets.padLabels.filtered(minimumLabelSize: signature.minimumLabelSize))
+                add("pad labels", \.padLabels, legible("pad labels", \.padLabels), filter: labelFilter)
             }
             if signature.vias && signature.viaLabels {
-                add("via labels", buckets.viaLabels.filtered(minimumLabelSize: signature.minimumLabelSize))
+                add("via labels", \.viaLabels, legible("via labels", \.viaLabels), filter: labelFilter)
             }
             if signature.text {
-                add("board text", buckets.text)
+                add("board text", \.text, buckets.text)
             }
             if signature.trackLabels {
-                add("track labels", buckets.trackLabels.filtered(minimumLabelSize: signature.minimumLabelSize))
+                add("track labels", \.trackLabels, legible("track labels", \.trackLabels), filter: labelFilter)
             }
             if signature.dimensions {
-                add("dimensions", buckets.dimensions)
+                add("dimensions", \.dimensions, buckets.dimensions)
             }
             if signature.connectionLines {
-                add("connection lines", buckets.connectionLines.filtered(hidingAirwiresOf: signature.hiddenAirwireNetIDs))
+                add("connection lines", \.connectionLines, buckets.connectionLines.filtered(hidingAirwiresOf: signature.hiddenAirwireNetIDs), filter: signature.hiddenAirwireNetIDs.hashValue)
             }
             if signature.connectionLines && signature.connectionLabels {
-                add("connection labels", buckets.connectionLabels)
+                add("connection labels", \.connectionLabels, buckets.connectionLabels)
             }
             return activeBatches
         }
@@ -11398,11 +11405,37 @@ struct BoardCanvasView: View {
             label: "visible metal buckets"
         )
 
+        // Each composite group's key: what its primitives were drawn from,
+        // bucket by bucket in concat order, with what concat filtered them by.
+        // A group whose key is unchanged holds the same primitives in the same
+        // order, which the renderer then leaves where they are. A scene with no
+        // stamps (a partial build's) leaves every group to be uploaded.
+        let groupKeys = profile("group keys") { () -> [Int: Int]? in
+            guard let stamps = buckets.groupStamps else {
+                return nil
+            }
+            var hashers = [Int: Hasher]()
+            for (name, bucket, filter, batch) in activeBatches {
+                guard let groups = stamps[bucket] else {
+                    if batch.lines.isEmpty, batch.triangles.isEmpty, batch.anchoredRects.isEmpty {
+                        continue
+                    }
+                    return nil
+                }
+                for (group, stamp) in groups {
+                    hashers[group, default: Hasher()].combine(name)
+                    hashers[group, default: Hasher()].combine(stamp)
+                    hashers[group, default: Hasher()].combine(filter)
+                }
+            }
+            return hashers.mapValues { $0.finalize() }
+        }
+
         let capacities = profile("count primitive capacities") {
             var lineCapacity = 0
             var triangleCapacity = 0
             var anchoredRectCapacity = 0
-            for (_, batch) in activeBatches {
+            for (_, _, _, batch) in activeBatches {
                 lineCapacity += batch.lines.count
                 triangleCapacity += batch.triangles.count
                 anchoredRectCapacity += batch.anchoredRects.count
@@ -11423,17 +11456,17 @@ struct BoardCanvasView: View {
 
         if !includesResidentMoveMetadata {
             profile("copy lines") {
-                for (_, batch) in activeBatches {
+                for (_, _, _, batch) in activeBatches {
                     lines.append(contentsOf: batch.lines)
                 }
             }
             profile("copy triangles") {
-                for (_, batch) in activeBatches {
+                for (_, _, _, batch) in activeBatches {
                     triangles.append(contentsOf: batch.triangles)
                 }
             }
             profile("copy anchored rects") {
-                for (_, batch) in activeBatches {
+                for (_, _, _, batch) in activeBatches {
                     anchoredRects.append(contentsOf: batch.anchoredRects)
                 }
             }
@@ -11448,12 +11481,13 @@ struct BoardCanvasView: View {
                 handles: [],
                 anchoredRectKey: composedKey,
                 anchoredRects: anchoredRects,
-                metadata: metadata
+                metadata: metadata,
+                groupKeys: groupKeys
             )
         }
 
         profile("copy lines and metadata") {
-            for (_, batch) in activeBatches {
+            for (_, _, _, batch) in activeBatches {
                 let batchLineBase = lines.count
                 lines.append(contentsOf: batch.lines)
                 var textRunIndex = 0
@@ -11536,7 +11570,7 @@ struct BoardCanvasView: View {
         }
 
         profile("copy triangles and metadata") {
-            for (_, batch) in activeBatches {
+            for (_, _, _, batch) in activeBatches {
                 triangles.append(contentsOf: batch.triangles)
                 var runOwner: HorizontalSelectableRef?
                 var runGroup = 0
@@ -11586,7 +11620,7 @@ struct BoardCanvasView: View {
         }
 
         profile("copy anchored rects and metadata") {
-            for (_, batch) in activeBatches {
+            for (_, _, _, batch) in activeBatches {
                 anchoredRects.append(contentsOf: batch.anchoredRects)
                 var runOwner: HorizontalSelectableRef?
                 var runGroup = 0
@@ -11645,7 +11679,8 @@ struct BoardCanvasView: View {
             handles: [],
             anchoredRectKey: composedKey,
             anchoredRects: anchoredRects,
-            metadata: metadata
+            metadata: metadata,
+            groupKeys: groupKeys
         )
     }
 
@@ -11685,6 +11720,12 @@ struct BoardCanvasView: View {
                 buildBoardMetalElementBuckets(renderLayers: renderLayers)
             }
             BoardLoadTimer.flushPlaneTessellationSummary()
+            if BoardSceneVerifier.isEnabled {
+                BoardSceneVerifier.compare(
+                    result,
+                    with: buildBoardMetalElementBuckets(renderLayers: renderLayers, bypassesSceneCaches: true)
+                )
+            }
             return result
         }
         // The buckets just fetched are the ones drawn, cached or not, so what
@@ -11755,10 +11796,21 @@ struct BoardCanvasView: View {
     // `partialBoard` builds just that board's primitives (a package being
     // placed) for merging into the scene already built; it leaves the
     // whole-board derived-geometry caches alone.
-    private func buildBoardMetalElementBuckets(renderLayers: [Int], partialBoard: HorizontalBoard? = nil) -> BoardMetalElementBuckets {
+    private func buildBoardMetalElementBuckets(
+        renderLayers: [Int],
+        partialBoard: HorizontalBoard? = nil,
+        bypassesSceneCaches: Bool = false
+    ) -> BoardMetalElementBuckets {
         let board = partialBoard ?? boardForMetalBuckets
         let isPartial = partialBoard != nil
         let buckets = BoardMetalElementBuckets()
+        // Each section replays what it drew last build for what is unchanged
+        // (`BoardSceneObjectCache`); a partial or verifying build draws all.
+        let scene = BoardSceneBuild(
+            cache: isPartial || bypassesSceneCaches ? nil : selectableCache.sceneObjects,
+            buckets: buckets
+        )
+        scene.cache?.beginBuild(styleKey: metalSceneStyleKey(renderLayers: renderLayers))
 
         func profile<T>(_ label: String, _ body: () -> T) -> T {
             BoardLoadTimer.measure("bucket: \(label)", body)
@@ -11773,23 +11825,22 @@ struct BoardCanvasView: View {
         let colorsByLayer = Dictionary(uniqueKeysWithValues: renderLayers.map { layer in
             (layer, layerColor(for: layer))
         })
-        let derivedGeometryKey = BoardAllSelectableCacheKey(
-            boardID: board.uuid,
-            revision: metalSceneRevision,
-            counts: boardGeometryCounts(for: board)
-        )
+        // The pads' outlines and labels are worked out from the pads (and the
+        // net names) alone, so they are kept while those are unchanged, edits
+        // to anything else included. A verifying build works them out afresh.
+        let memo = bypassesSceneCaches || isPartial ? BoardContentMemo() : selectableCache.contentMemo
         let padOutlineFragmentsByLayer = profile("pad outline fragments") {
-            guard !isPartial else {
+            guard !isPartial, !bypassesSceneCaches else {
                 return Dictionary(grouping: horizonPadOutlineFragments(board.packagePads), by: { $0.layer })
             }
-            return selectableCache.padOutlineFragments(key: derivedGeometryKey) {
+            return memo.value("pad outline fragments", input: board.packagePads) {
                 Dictionary(
                     grouping: horizonPadOutlineFragments(board.packagePads, unionCache: selectableCache.padOutlineUnionCache),
                     by: { $0.layer }
                 )
             }
         }
-        let viasByLayer = profile("vias by layer") {
+        let viasByLayer = profile("vias by layer") { memo.value("vias by layer", input: board.vias) {
             var result = [Int: [HorizontalMarker]]()
             result.reserveCapacity(renderLayers.count)
             for via in board.vias {
@@ -11803,7 +11854,7 @@ struct BoardCanvasView: View {
                 }
             }
             return result
-        }
+        } }
 
         // OPAQUE: overlay labels are dimmed to 0.86 by their composite group
         // (textOverlayMetalCompositeGroup), not by a baked per-vertex alpha, so
@@ -11811,7 +11862,9 @@ struct BoardCanvasView: View {
         let textOverlayColor = HorizontalMetalRGBA(theme.textOverlay)
         // Pad-center keys for the track-label "connects to a pad" heuristic,
         // precomputed once so the per-track check is O(1).
-        let trackLabelPadCenterKeys = Set(board.packagePadPositions.values.map { pointKey($0) })
+        let trackLabelPadCenterKeys = memo.value("pad centre keys", input: board.packagePadPositions) {
+            Set(board.packagePadPositions.values.map { pointKey($0) })
+        }
         let dimensionColor = HorizontalMetalRGBA(layerColor(for: HorizontalBoardLayers.dimensions).opacity(0.72))
         let connectionLineColor = HorizontalMetalRGBA(theme.connectionLine.opacity(0.86))
         let connectionLineDashColor = HorizontalMetalRGBA(theme.connectionLine.opacity(0.72))
@@ -11841,9 +11894,9 @@ struct BoardCanvasView: View {
 
         // Render-time gating for the package omit_silkscreen / omit_outline flags:
         // package-id → (silk, outline). Empty for packages with no omit flag.
-        let packageOmitByID: [String: (silk: Bool, outline: Bool)] = board.packages.reduce(into: [:]) { result, package in
+        let packageOmitByID: [String: BoardScenePackageOmit] = board.packages.reduce(into: [:]) { result, package in
             if package.omitSilkscreen || package.omitOutline {
-                result[normalizedID(package.id)] = (package.omitSilkscreen, package.omitOutline)
+                result[normalizedID(package.id)] = BoardScenePackageOmit(silk: package.omitSilkscreen, outline: package.omitOutline)
             }
         }
         func isPackageGeometryHidden(_ geometryID: String, layer: Int) -> Bool {
@@ -12198,17 +12251,29 @@ struct BoardCanvasView: View {
             }
         }
 
-        let viaCirclePointsByID = profile("via circle points") {
-            Dictionary(uniqueKeysWithValues: board.vias.map { via in
-                (via.id, circlePoints(center: via.position, radius: via.size / 2, segments: 24))
-            })
+        // Each layer's objects, grouped once while the collection is unchanged.
+        func byLayer<Item: Equatable>(_ name: String, _ items: [Item], _ layer: (Item) -> Int?) -> [Int?: [Item]] {
+            memo.value("\(name) by layer", input: items) { Dictionary(grouping: items, by: layer) }
         }
+        let polygonsByLayer = byLayer("polygons", board.polygons) { $0.layer }
+        let linesByLayer = byLayer("lines", board.lines) { $0.layer }
+        let arcsByLayer = byLayer("arcs", board.arcs) { $0.layer }
+        let tracksByLayer = byLayer("tracks", board.tracks) { $0.layer }
+        let netTiesByLayer = byLayer("net ties", board.netTies) { $0.layer }
+        let layerKeepoutsByLayer = byLayer("keepouts", board.keepouts.filter { !$0.allCopperLayers }) { $0.polygon.layer }
+        let planesByLayer = byLayer("planes", board.planes) { $0.layer }
+        let packagePolygonsByLayer = byLayer("package polygons", board.packagePolygons) { $0.layer }
+        let packageLinesByLayer = byLayer("package lines", board.packageLines) { $0.layer }
+        let packageArcsByLayer = byLayer("package arcs", board.packageArcs) { $0.layer }
+        let packageTextsByLayer = byLayer("package texts", board.packageTexts) { $0.layer }
+        let textsByLayer = byLayer("texts", board.texts) { $0.layer }
+        let tessellationVersion = selectableCache.tessellationVersion
 
         let padLabelTextsByLayer = profile("pad label texts by layer") {
             guard !isPartial else {
                 return packagePadLabelTextsByLayer(board: board)
             }
-            return selectableCache.padLabelTexts(key: derivedGeometryKey) {
+            return memo.value("pad label texts", input: BoardContentPair(board.packagePads, board.netDetails)) {
                 packagePadLabelTextsByLayer(board: board)
             }
         }
@@ -12217,6 +12282,12 @@ struct BoardCanvasView: View {
         // Panels (outline)
         // ============================================================
         profile("panels") {
+            let panelLabelTexts = board.boardPanels.compactMap(boardPanelLabelText)
+            scene.section(
+                .init("panels"),
+                writes: [\.panels, \.panelLabels],
+                source: BoardContentPair(board.boardPanels.map(\.bounds), panelLabelTexts)
+            ) {
             for panel in board.boardPanels where !panel.bounds.isEmpty {
                 appendClosedPolyline(
                     [
@@ -12233,8 +12304,9 @@ struct BoardCanvasView: View {
             }
 
             // Panel labels (gated at concat by outline && panelLabels)
-            for text in board.boardPanels.compactMap(boardPanelLabelText) {
+            for text in panelLabelTexts {
                 appendText(text, color: panelLabelColor, minimumWidth: 0.85, to: \.panelLabels)
+            }
             }
         }
 
@@ -12245,7 +12317,15 @@ struct BoardCanvasView: View {
         // Body (boardBody and outline) — outlines emitted in two opacity variants
         // ============================================================
         profile("board body") {
-            for polygon in board.polygons where isBoardBodyLayer(polygon.layer) {
+            let bodyPolygons = memo.value("body polygons", input: board.polygons) {
+                board.polygons.filter { isBoardBodyLayer($0.layer) }
+            }
+            scene.section(
+                .init("board body"),
+                writes: [\.bodyOutlineHigh, \.bodyOutlineLow, \.bodyFill],
+                source: BoardContentPair(bodyPolygons, layerUsesFill(HorizontalBoardLayers.outline))
+            ) {
+            for polygon in bodyPolygons {
                 let owner = selectableRef(id: polygon.id, type: .polygonEdge, layer: polygon.layer)
                 appendClosedPolyline(
                     polygon.renderVertices(arcPrecision: 24),
@@ -12277,13 +12357,18 @@ struct BoardCanvasView: View {
                     )
                 }
             }
+            }
         }
 
         // ============================================================
         // Keepouts (allCopper variant — gated by hasVisibleCopper at concat)
         // ============================================================
         profile("all-copper keepouts") {
-            for keepout in board.keepouts where keepout.allCopperLayers {
+            let allCopperKeepouts = memo.value("all-copper keepouts", input: board.keepouts) {
+                board.keepouts.filter(\.allCopperLayers)
+            }
+            scene.section(.init("all-copper keepouts"), writes: [\.keepoutsAllCopper], source: allCopperKeepouts, objects: HorizontalKeepout.self) { draw in
+            for keepout in allCopperKeepouts { draw(keepout.id, keepout) {
                 // A board keepout's spans are its polygon's, which its parts
                 // pick and a move shifts, as a polygon's are.
                 let owner = packageOwner(for: keepout.id)
@@ -12302,6 +12387,7 @@ struct BoardCanvasView: View {
                     owner: owner,
                     to: \.keepoutsAllCopper
                 )
+            } }
             }
         }
 
@@ -12309,6 +12395,12 @@ struct BoardCanvasView: View {
         // Connection lines / airwires + labels
         // ============================================================
         profile("connection lines") {
+            buckets.airwires = board.airwires
+            scene.section(
+                .init("connection lines"),
+                writes: [\.connectionLines, \.connectionLabels],
+                source: BoardContentPair(board.connectionLines, board.airwires)
+            ) {
             for connectionLine in board.connectionLines {
                 appendSegment(
                     connectionLine,
@@ -12329,7 +12421,6 @@ struct BoardCanvasView: View {
                     to: \.connectionLines
                 )
             }
-            buckets.airwires = board.airwires
             for connectionLine in board.connectionLines {
                 appendText(
                     segmentLengthLabelText(connectionLine, idSuffix: "connection-length-label"),
@@ -12338,18 +12429,20 @@ struct BoardCanvasView: View {
                     to: \.connectionLabels
                 )
             }
+            }
         }
 
         // ============================================================
         // Dimensions (lines + arrows + labels)
         // ============================================================
         profile("dimensions") {
-            for dimension in board.dimensions {
+            scene.section(.init("dimensions"), writes: [\.dimensions], source: board.dimensions, objects: HorizontalDimension.self) { draw in
+            for dimension in board.dimensions { draw(dimension.id, dimension) {
                 let owner = selectableRef(id: dimension.id, type: .dimension)
                 let geometry = dimension.measurementGeometry
                 let vector = geometry.p1Projected - geometry.p0Projected
                 let length = hypot(vector.x, vector.y)
-                guard length > 0 else { continue }
+                guard length > 0 else { return }
 
                 let direction = vector.normalized
                 let normal = geometry.normal
@@ -12399,6 +12492,7 @@ struct BoardCanvasView: View {
                 if let labelText = dimension.labelText {
                     appendText(labelText, color: dimensionColor, minimumWidth: 0.7, owner: owner, to: \.dimensions)
                 }
+            } }
             }
         }
 
@@ -12472,14 +12566,22 @@ struct BoardCanvasView: View {
             // Constant — layerOpacity is applied as a uniform at composite time.
             let compositeOpacity: Float = 1
             let outlineOnly = !layerUsesFill(layer)
+            // What every section on this layer draws with besides its objects:
+            // the layer's fill, and the silkscreen clip its objects may be cut by.
+            let layerStyle = BoardContentPair(
+                layerUsesFill(layer),
+                clippedSilkscreenLayers[layer] == nil ? 0 : selectableCache.silkscreenClipVersion
+            )
 
             // Always-on per-layer: board polygons (non-body), lines, arcs, tracks, netTies
             profile("layer polygons lines tracks") {
-                for polygon in board.polygons where polygon.layer == layer && !isBoardBodyLayer(polygon.layer) {
+                let layerPolygons = isBoardBodyLayer(layer) ? [] : polygonsByLayer[layer] ?? []
+                scene.section(.init("polygons", layer: layer), writes: [\.alwaysOnLayered], source: BoardContentPair(layerPolygons, layerStyle), objects: HorizontalPolygon.self) { draw in
+                for polygon in layerPolygons { draw(polygon.id, polygon) {
                     let owner = selectableRef(id: polygon.id, type: .polygonEdge, layer: layer)
                     if let clipped = clippedSilkscreen(polygon.id, layer: layer, source: polygon) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.alwaysOnLayered)
-                        continue
+                        return
                     }
                     appendClosedPolyline(
                         polygon.renderVertices(arcPrecision: 24),
@@ -12500,12 +12602,15 @@ struct BoardCanvasView: View {
                             to: \.alwaysOnLayered
                         )
                     }
+                } }
                 }
 
-                for line in board.lines where line.layer == layer {
+                let layerLines = linesByLayer[layer] ?? []
+                scene.section(.init("lines", layer: layer), writes: [\.alwaysOnLayered], source: BoardContentPair(layerLines, layerStyle), objects: HorizontalSegment.self) { draw in
+                for line in layerLines { draw(line.id, line) {
                     if let clipped = clippedSilkscreen(line.id, layer: layer, source: line) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), strokeMinimumWidth: 1.1, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: selectableRef(id: line.id, type: .boardLine, layer: layer), to: \.alwaysOnLayered)
-                        continue
+                        return
                     }
                     appendSegment(
                         line,
@@ -12517,11 +12622,14 @@ struct BoardCanvasView: View {
                         owner: selectableRef(id: line.id, type: .boardLine, layer: layer),
                         to: \.alwaysOnLayered
                     )
+                } }
                 }
-                for arc in board.arcs where arc.layer == layer {
+                let layerArcs = arcsByLayer[layer] ?? []
+                scene.section(.init("arcs", layer: layer), writes: [\.alwaysOnLayered], source: BoardContentPair(layerArcs, layerStyle), objects: HorizontalArc.self) { draw in
+                for arc in layerArcs { draw(arc.id, arc) {
                     if let clipped = clippedSilkscreen(arc.id, layer: layer, source: arc) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), strokeMinimumWidth: 1, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: selectableRef(id: arc.id, type: .boardArc, layer: layer), to: \.alwaysOnLayered)
-                        continue
+                        return
                     }
                     appendArc(
                         arc,
@@ -12533,8 +12641,11 @@ struct BoardCanvasView: View {
                         owner: selectableRef(id: arc.id, type: .boardArc, layer: layer),
                         to: \.alwaysOnLayered
                     )
+                } }
                 }
-                for track in board.tracks where track.layer == layer {
+                let layerTracks = tracksByLayer[layer] ?? []
+                scene.section(.init("tracks", layer: layer), writes: [\.alwaysOnLayered], source: BoardContentPair(layerTracks, layerStyle), objects: HorizontalSegment.self) { draw in
+                for track in layerTracks { draw(track.id, track) {
                     let trackColor = track.netID == nil ? noNetTrackColor : layerMetalColor(layer)
                     let owner = selectableRef(id: track.id, type: .track, layer: layer)
                     if let arc = track.arc {
@@ -12542,8 +12653,11 @@ struct BoardCanvasView: View {
                     } else {
                         appendSegment(track, color: trackColor, minimumWidth: 1.1, outlineOnly: outlineOnly, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.alwaysOnLayered)
                     }
+                } }
                 }
-                for netTie in board.netTies where netTie.layer == layer {
+                let layerNetTies = netTiesByLayer[layer] ?? []
+                scene.section(.init("net ties", layer: layer), writes: [\.alwaysOnLayered], source: BoardContentPair(layerNetTies, layerStyle), objects: HorizontalSegment.self) { draw in
+                for netTie in layerNetTies { draw(netTie.id, netTie) {
                     appendSegment(
                         netTie,
                         color: layerMetalColor(layer),
@@ -12554,10 +12668,13 @@ struct BoardCanvasView: View {
                         owner: selectableRef(id: netTie.id, type: .boardNetTie, layer: layer),
                         to: \.alwaysOnLayered
                     )
+                } }
                 }
 
                 // Keepouts (per-layer)
-                for keepout in board.keepouts where !keepout.allCopperLayers && keepout.polygon.layer == layer {
+                let layerKeepouts = layerKeepoutsByLayer[layer] ?? []
+                scene.section(.init("keepouts", layer: layer), writes: [\.keepoutsPerLayer], source: BoardContentPair(layerKeepouts, layerStyle), objects: HorizontalKeepout.self) { draw in
+                for keepout in layerKeepouts { draw(keepout.id, keepout) {
                     let owner = packageOwner(for: keepout.id, layer: layer)
                         ?? selectableRef(id: keepout.polygon.id, type: .polygonEdge, layer: layer)
                     appendClosedPolyline(
@@ -12578,12 +12695,20 @@ struct BoardCanvasView: View {
                         owner: owner,
                         to: \.keepoutsPerLayer
                     )
+                } }
                 }
             }
 
             // Planes (outline + fill)
             profile("planes") {
-                for plane in board.planes where plane.layer == layer {
+                let layerPlanes = planesByLayer[layer] ?? []
+                scene.section(
+                    .init("planes", layer: layer),
+                    writes: [\.planes],
+                    source: BoardContentTriple(layerPlanes, layerStyle, tessellationVersion),
+                    objects: BoardScenePlaneInput.self
+                ) { draw in
+                for plane in layerPlanes { draw(plane.id, planeSceneInput(plane, filled: layerUsesFill(layer))) {
                     let owner = selectableRef(id: plane.id, type: .plane, layer: layer)
                     let planeStrokeColor = layerMetalColor(layer, opacity: plane.fragments.isEmpty ? 0.42 : 1)
                     let planeDash: (Float, Float)? = plane.fragments.isEmpty ? (4, 3) : nil
@@ -12614,17 +12739,25 @@ struct BoardCanvasView: View {
                             ), owner: owner)
                         }
                     }
+                } }
                 }
             }
 
             // Packages (geometry + texts)
             profile("package geometry") {
-                for polygon in board.packagePolygons
-                    where polygon.layer == layer && !isPackageGeometryHidden(polygon.id, layer: layer) {
+                let packageStyle = BoardContentPair(layerStyle, packageOmitByID)
+                // Filtered only when a package omits something, so an unchanged
+                // layer's array is the one last build had.
+                func shown<Item>(_ items: [Item], _ id: (Item) -> String) -> [Item] {
+                    packageOmitByID.isEmpty ? items : items.filter { !isPackageGeometryHidden(id($0), layer: layer) }
+                }
+                let layerPackagePolygons = shown(packagePolygonsByLayer[layer] ?? []) { $0.id }
+                scene.section(.init("package polygons", layer: layer), writes: [\.packagesGeometry], source: BoardContentPair(layerPackagePolygons, packageStyle), objects: HorizontalPolygon.self) { draw in
+                for polygon in layerPackagePolygons { draw(polygon.id, polygon) {
                     let owner = packageOwner(for: polygon.id, layer: layer)
                     if let clipped = clippedSilkscreen(polygon.id, layer: layer, source: polygon) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.packagesGeometry)
-                        continue
+                        return
                     }
                     appendClosedPolyline(
                         polygon.renderVertices(arcPrecision: 24),
@@ -12645,42 +12778,52 @@ struct BoardCanvasView: View {
                             to: \.packagesGeometry
                         )
                     }
+                } }
                 }
-                for line in board.packageLines
-                    where line.layer == layer && !isPackageGeometryHidden(line.id, layer: layer) {
+                let layerPackageLines = shown(packageLinesByLayer[layer] ?? []) { $0.id }
+                scene.section(.init("package lines", layer: layer), writes: [\.packagesGeometry], source: BoardContentPair(layerPackageLines, packageStyle), objects: HorizontalSegment.self) { draw in
+                for line in layerPackageLines { draw(line.id, line) {
                     if let clipped = clippedSilkscreen(line.id, layer: layer, source: line) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), strokeMinimumWidth: 1, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: line.id, layer: layer), to: \.packagesGeometry)
-                        continue
+                        return
                     }
                     appendSegment(line, color: layerMetalColor(layer), minimumWidth: 1, outlineOnly: outlineOnly, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: line.id, layer: layer), to: \.packagesGeometry)
+                } }
                 }
-                for arc in board.packageArcs
-                    where arc.layer == layer && !isPackageGeometryHidden(arc.id, layer: layer) {
+                let layerPackageArcs = shown(packageArcsByLayer[layer] ?? []) { $0.id }
+                scene.section(.init("package arcs", layer: layer), writes: [\.packagesGeometry], source: BoardContentPair(layerPackageArcs, packageStyle), objects: HorizontalArc.self) { draw in
+                for arc in layerPackageArcs { draw(arc.id, arc) {
                     if let clipped = clippedSilkscreen(arc.id, layer: layer, source: arc) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), strokeMinimumWidth: 1, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: arc.id, layer: layer), to: \.packagesGeometry)
-                        continue
+                        return
                     }
                     appendArc(arc, color: layerMetalColor(layer), minimumWidth: 1, outlineOnly: outlineOnly, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: arc.id, layer: layer), to: \.packagesGeometry)
+                } }
                 }
             }
 
             profile("package text") {
-                for text in board.packageTexts where text.layer == layer {
-                    // omit_silkscreen hides the package's own silk text too, but
-                    // never the smashed (`fromSmash`) board-level copies, which
-                    // are the whole point of smashing.
-                    if !text.fromSmash, isPackageGeometryHidden(text.id, layer: layer) { continue }
+                // omit_silkscreen hides the package's own silk text too, but
+                // never the smashed (`fromSmash`) board-level copies, which
+                // are the whole point of smashing.
+                let layerPackageTexts = packageOmitByID.isEmpty
+                    ? packageTextsByLayer[layer] ?? []
+                    : (packageTextsByLayer[layer] ?? []).filter { $0.fromSmash || !isPackageGeometryHidden($0.id, layer: layer) }
+                scene.section(.init("package texts", layer: layer), writes: [\.packagesText], source: BoardContentPair(layerPackageTexts, BoardContentPair(layerStyle, packageOmitByID)), objects: HorizontalText.self) { draw in
+                for text in layerPackageTexts { draw(text.id, text) {
                     if let clipped = clippedSilkscreen(text.id, layer: layer, source: text) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: text.id, layer: layer), to: \.packagesText)
-                        continue
+                        return
                     }
                     appendText(text, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: packageOwner(for: text.id, layer: layer), to: \.packagesText)
+                } }
                 }
             }
 
             // Decals
             profile("decals") {
-                for decal in board.decals {
+                scene.section(.init("decals", layer: layer), writes: [\.decals], source: BoardContentPair(board.decals, layerStyle), objects: HorizontalBoardDecal.self) { draw in
+                for decal in board.decals { draw(decal.id, decal) {
                     let owner = selectableRef(id: decal.id, type: .boardDecal)
                     for polygon in decal.polygons where polygon.layer == layer {
                         if let clipped = clippedSilkscreen(polygon.id, layer: layer, source: polygon) {
@@ -12728,12 +12871,15 @@ struct BoardCanvasView: View {
                         }
                         appendText(text, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.decals)
                     }
+                } }
                 }
             }
 
             // Pads
             profile("pads") {
-                for pad in padOutlineFragmentsByLayer[layer] ?? [] {
+                let layerPads = padOutlineFragmentsByLayer[layer] ?? []
+                scene.section(.init("pads", layer: layer), writes: [\.pads], source: BoardContentPair(layerPads, layerStyle), objects: HorizontalPadOutlineFragment.self) { draw in
+                for pad in layerPads { draw(pad.id, pad) {
                     let owner = packageOwner(for: pad.id, layer: layer)
                     if layerUsesFill(layer) {
                         appendFilledPaths(
@@ -12757,19 +12903,19 @@ struct BoardCanvasView: View {
                             )
                         }
                     }
+                } }
                 }
             }
 
             // Vias (ring + fill on copper; the padstack's mask opening on mask)
             profile("vias") {
-                for via in viasByLayer[layer] ?? [] {
+                let layerVias = viasByLayer[layer] ?? []
+                scene.section(.init("vias", layer: layer), writes: [\.vias], source: BoardContentPair(layerVias, layerStyle), objects: HorizontalMarker.self) { draw in
+                for via in layerVias { draw(via.id, via) {
                     let maskDiameter = via.maskDiameter(on: layer)
                     let outerRadius = (maskDiameter ?? via.size) / 2
                     let owner = selectableRef(id: via.id, type: .via)
-                    let points = maskDiameter == nil
-                        ? viaCirclePointsByID[via.id]
-                            ?? circlePoints(center: via.position, radius: outerRadius, segments: 24)
-                        : circlePoints(center: via.position, radius: outerRadius, segments: 24)
+                    let points = circlePoints(center: via.position, radius: outerRadius, segments: 24)
                     appendClosedPolyline(
                         points,
                         color: layerMetalColor(layer),
@@ -12791,15 +12937,18 @@ struct BoardCanvasView: View {
                             to: \.vias
                         )
                     }
+                } }
                 }
             }
 
             // Texts (board)
             profile("board text") {
-                for text in board.texts where text.layer == layer {
+                let layerTexts = textsByLayer[layer] ?? []
+                scene.section(.init("texts", layer: layer), writes: [\.text], source: BoardContentPair(layerTexts, layerStyle), objects: HorizontalText.self) { draw in
+                for text in layerTexts { draw(text.id, text) {
                     if let clipped = clippedSilkscreen(text.id, layer: layer, source: text) {
                         appendClippedSilkscreen(clipped, color: layerMetalColor(layer), compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: selectableRef(id: text.id, type: .text, layer: layer), to: \.text)
-                        continue
+                        return
                     }
                     appendText(
                         text,
@@ -12809,14 +12958,24 @@ struct BoardCanvasView: View {
                         owner: selectableRef(id: text.id, type: .text, layer: layer),
                         to: \.text
                     )
+                } }
                 }
             }
 
             if Self.emitsGeneratedBoardLabelsInMetal {
                 // Track / netTie net labels (per-layer)
                 profile("track labels") {
-                    for track in board.tracks where track.layer == layer && track.center == nil {
-                        if let text = segmentNetLabelText(track, idSuffix: "track-net-label", padCenterKeys: trackLabelPadCenterKeys) {
+                    // A label is its net's name fitted to the track, unless an
+                    // end is on a pad: worked out for each track (cheap), and
+                    // stroked again only when it changed.
+                    let labelSource = BoardContentPair(board.netDetails, trackLabelPadCenterKeys)
+                    let layerTracks = tracksByLayer[layer] ?? []
+                    let labelTracks = memo.value("label tracks \(layer)", input: layerTracks) { layerTracks.filter { $0.center == nil } }
+                    scene.section(.init("track labels", layer: layer), writes: [\.trackLabels], source: BoardContentPair(labelTracks, labelSource), objects: HorizontalText?.self) { draw in
+                    for track in labelTracks {
+                        let label = segmentNetLabelText(track, idSuffix: "track-net-label", padCenterKeys: trackLabelPadCenterKeys)
+                        draw(track.id, label) {
+                        if let text = label {
                             appendText(
                                 text,
                                 color: textOverlayColor,
@@ -12826,9 +12985,15 @@ struct BoardCanvasView: View {
                                 to: \.trackLabels
                             )
                         }
+                        }
                     }
-                    for netTie in board.netTies where netTie.layer == layer {
-                        if let text = segmentNetLabelText(netTie, idSuffix: "net-tie-net-label", padCenterKeys: trackLabelPadCenterKeys) {
+                    }
+                    let labelNetTies = netTiesByLayer[layer] ?? []
+                    scene.section(.init("net tie labels", layer: layer), writes: [\.trackLabels], source: BoardContentPair(labelNetTies, labelSource), objects: HorizontalText?.self) { draw in
+                    for netTie in labelNetTies {
+                        let label = segmentNetLabelText(netTie, idSuffix: "net-tie-net-label", padCenterKeys: trackLabelPadCenterKeys)
+                        draw(netTie.id, label) {
+                        if let text = label {
                             appendText(
                                 text,
                                 color: textOverlayColor,
@@ -12838,12 +13003,16 @@ struct BoardCanvasView: View {
                                 to: \.trackLabels
                             )
                         }
+                        }
+                    }
                     }
                 }
 
                 // Pad labels (per-layer)
                 profile("pad labels") {
-                    for text in padLabelTextsByLayer[layer] ?? [] {
+                    let layerPadLabels = padLabelTextsByLayer[layer] ?? []
+                    scene.section(.init("pad labels", layer: layer), writes: [\.padLabels], source: layerPadLabels, objects: HorizontalText.self) { draw in
+                    for text in layerPadLabels { draw(text.id, text) {
                         appendText(
                             text,
                             color: textOverlayColor,
@@ -12853,6 +13022,7 @@ struct BoardCanvasView: View {
                             owner: packageOwner(for: text.id, layer: layer),
                             to: \.padLabels
                         )
+                    } }
                     }
                 }
             }
@@ -12862,15 +13032,16 @@ struct BoardCanvasView: View {
         // filled on a visible layer; the holes go over them.
         profile("via diameters") {
             let copperLayers = Set(renderLayers.filter(HorizontalBoardLayers.isCopper))
+            let filledCopperLayers = copperLayers.filter(layerUsesFill)
             let fill = HorizontalMetalRGBA(Self.viaDiameterFill)
-            for via in board.vias {
+            scene.section(.init("via diameters"), writes: [\.vias], source: BoardContentTriple(board.vias, copperLayers, filledCopperLayers), objects: HorizontalMarker.self) { draw in
+            for via in board.vias { draw(via.id, via) {
                 let layers = renderedViaLayers(for: via).filter(copperLayers.contains)
                 guard layers.contains(where: layerUsesFill) else {
-                    continue
+                    return
                 }
                 let owner = selectableRef(id: via.id, type: .via)
-                let points = viaCirclePointsByID[via.id]
-                    ?? circlePoints(center: via.position, radius: via.size / 2, segments: 24)
+                let points = circlePoints(center: via.position, radius: via.size / 2, segments: 24)
                 appendFilledCircle(
                     center: via.position,
                     radius: via.size / 2,
@@ -12880,6 +13051,7 @@ struct BoardCanvasView: View {
                     owner: owner,
                     to: \.vias
                 )
+            } }
             }
         }
 
@@ -12887,24 +13059,30 @@ struct BoardCanvasView: View {
         // Holes (outlines + fills)
         // ============================================================
         profile("holes") {
-            for hole in board.holes {
+            scene.section(.init("board holes"), writes: [\.holesNone], source: board.holes, objects: HorizontalHole.self) { draw in
+            for hole in board.holes { draw(hole.id, hole) {
                 let owner = selectableRef(id: hole.id, type: .boardHole)
                 let points = hole.outlinePoints(precision: 32)
                 appendHoleOutline(hole, points: points, owner: owner, to: \.holesNone)
                 appendHoleFill(hole, points: points, owner: owner, to: \.holesNone)
+            } }
             }
-            for hole in board.packageHoles {
+            scene.section(.init("package holes"), writes: [\.holesPad], source: board.packageHoles, objects: HorizontalHole.self) { draw in
+            for hole in board.packageHoles { draw(hole.id, hole) {
                 let owner = packageOwner(for: hole.id)
                 let points = hole.outlinePoints(precision: 32)
                 appendHoleOutline(hole, points: points, owner: owner, to: \.holesPad)
                 appendHoleFill(hole, points: points, owner: owner, to: \.holesPad)
+            } }
             }
-            for hole in board.viaHoles {
+            scene.section(.init("via holes"), writes: [\.holesVia], source: board.viaHoles, objects: HorizontalHole.self) { draw in
+            for hole in board.viaHoles { draw(hole.id, hole) {
                 // Drawn as part of its via, which a move shifts, drill and all.
                 let owner = selectableRef(id: HorizontalBoard.viaID(ofViaHole: hole.id) ?? hole.id, type: .via)
                 let points = hole.outlinePoints(precision: 32)
                 appendHoleOutline(hole, points: points, owner: owner, to: \.holesVia)
                 appendHoleFill(hole, points: points, owner: owner, to: \.holesVia)
+            } }
             }
         }
 
@@ -12914,10 +13092,18 @@ struct BoardCanvasView: View {
             profile("via labels") {
                 // Only over copper that shows: hiding a layer changes the
                 // render layers, which rebuilds these buckets.
-                for via in board.vias where displayOptions.showsCopper(of: via) {
-                    if let label = viaLabelText(via) {
+                let shownVias = memo.value("label vias", input: BoardContentPair(board.vias, displayOptions)) {
+                    board.vias.filter { displayOptions.showsCopper(of: $0) }
+                }
+                scene.section(.init("via labels"), writes: [\.viaLabels], source: BoardContentPair(shownVias, board.netDetails), objects: HorizontalText?.self) { draw in
+                for via in shownVias {
+                    let label = viaLabelText(via)
+                    draw(via.id, label) {
+                    if let label {
                         appendText(label, color: textOverlayColor, minimumWidth: 0.7, compositeGroup: Self.textOverlayMetalCompositeGroup, compositeOpacity: Self.textOverlayMetalCompositeOpacity, owner: selectableRef(id: via.id, type: .via), to: \.viaLabels)
                     }
+                    }
+                }
                 }
             }
         }
@@ -12926,7 +13112,11 @@ struct BoardCanvasView: View {
         // resolved geometry). Gated at concat by signature.packages.
         profile("package fallback labels") {
             let resolvedPackageIDs = packageIDsWithGeometry(in: board)
-            for package in board.packages where !resolvedPackageIDs.contains(package.id) {
+            let fallbackPackages = memo.value("fallback packages", input: BoardContentPair(board.packages, resolvedPackageIDs)) {
+                board.packages.filter { !resolvedPackageIDs.contains($0.id) }
+            }
+            scene.section(.init("package fallback labels"), writes: [\.packagesFallback], source: fallbackPackages, objects: HorizontalPlacement.self) { draw in
+            for package in fallbackPackages { draw(package.id, package) {
                 appendText(
                     packageFallbackLabelText(package),
                     color: package.mirrored ? bottomFallbackColor : topFallbackColor,
@@ -12945,11 +13135,13 @@ struct BoardCanvasView: View {
                     ),
                     owner: selectableRef(id: package.id, type: .boardPackage)
                 )
+            } }
             }
         }
 
         recordBoardMetalWeightSummary(buckets.namedBatches(), label: "built bucket")
 
+        scene.finish()
         return buckets
     }
 
@@ -14258,7 +14450,11 @@ struct BoardCanvasView: View {
     /// layers the board shows, so a highlight only dims the rest. With the
     /// highlight mode at As is nothing dims, and they are drawn lighter, as
     /// Horizon's Highlight mode lightens them.
-    private func boardMetalHighlightBatch(renderLayers: [Int], visibleCompositeGroups: Set<Int>) -> BoardMetalLineBatch {
+    private func boardMetalHighlightBatch(
+        renderLayers: [Int],
+        visibleCompositeGroups: Set<Int>,
+        sceneGroupKeys: [Int: Int]? = nil
+    ) -> BoardMetalLineBatch {
         guard drawsBoardLinesInMetal, hasActiveHighlight else {
             return .empty
         }
@@ -14269,7 +14465,9 @@ struct BoardCanvasView: View {
         let signature = metalVisibilitySignature()
         let lightens = displayOptions.highlightMode == "as_is"
         let key = BoardMetalHighlightCacheKey(
-            bucketsKey: bucketsKey,
+            bucketsKey: sceneGroupKeys == nil ? bucketsKey : nil,
+            sceneGroupKeys: sceneGroupKeys,
+            renderLayers: renderLayers,
             visibilitySignature: signature,
             visibleCompositeGroups: visibleCompositeGroups,
             highlightedNetIDs: netIDs.sorted(),
@@ -14331,6 +14529,10 @@ struct BoardCanvasView: View {
             }
 
             let batchKey = key.hashValue
+            var groups = Set<Int>()
+            for triangle in triangles { groups.insert(triangle.compositeGroup) }
+            for line in lines { groups.insert(line.compositeGroup) }
+            for rect in anchoredRects { groups.insert(rect.compositeGroup) }
             return BoardMetalLineBatch(
                 triangleKey: batchKey,
                 triangles: triangles,
@@ -14339,7 +14541,10 @@ struct BoardCanvasView: View {
                 handleKey: 0,
                 handles: [],
                 anchoredRectKey: batchKey,
-                anchoredRects: anchoredRects
+                anchoredRects: anchoredRects,
+                // The groups it draws in, each under the batch's key, for the
+                // top overlay's group keys.
+                groupKeys: Dictionary(uniqueKeysWithValues: groups.map { ($0, batchKey) })
             )
         }
     }
@@ -14454,9 +14659,13 @@ struct BoardCanvasView: View {
                 || pastePlacementState != nil
                 || poolPlacementState != nil
                 || roundOffVertexState != nil || addVertexState != nil || tuneState != nil
-            let selectablesByRef = previewsUnkeyedBoard
-                ? boardSelectablesByRef(in: selectionBoard)
-                : boardSelectablesByRef()
+            let selectablesForRef: (HorizontalSelectableRef) -> [HorizontalSelectable]?
+            if previewsUnkeyedBoard {
+                selectablesForRef = boardSelectableLookup(in: selectionBoard)
+            } else {
+                let byRef = boardSelectablesByRef()
+                selectablesForRef = { byRef[$0] }
+            }
             let style = HorizontalCanvasSelectionOverlayStyle(
                 selectedOuterColor: selectedOuterColor,
                 selectedInnerColor: selectedInnerColor,
@@ -14471,7 +14680,7 @@ struct BoardCanvasView: View {
             var movingTracks = BoardMovingTrackOutlines()
             if patchesMove, let moveState {
                 movingTracks = BoardMovingTrackOutlines(
-                    selectedRefs: selectedObjects.filter { selectablesByRef[$0] != nil },
+                    selectedRefs: selectedObjects.filter { selectablesForRef($0) != nil },
                     plan: moveState.residentMovePlan,
                     board: selectionBoard
                 )
@@ -14485,7 +14694,7 @@ struct BoardCanvasView: View {
                 refs: shiftedRefs + [hoveredObject].compactMap { $0 }
             )
             let overlay = HorizontalCanvasModeSupport.metalSelectionOverlay(
-                selectablesForRef: { selectablesByRef[$0] ?? [] },
+                selectablesForRef: { selectablesForRef($0) ?? [] },
                 selectedRefs: shiftedRefs,
                 hoveredRef: hoveredObject.flatMap { movingTrackRefs.contains($0) ? nil : $0 },
                 style: style,
@@ -14502,7 +14711,7 @@ struct BoardCanvasView: View {
             )
             let vertexMarks = boardMetalSelectionVertexMarks(
                 in: selectionBoard,
-                selectablesByRef: selectablesByRef,
+                selectablesForRef: selectablesForRef,
                 selectedRefs: selectedObjects,
                 hoveredRef: hoveredObject,
                 outerColor: selectedGroupPreviewColor,
@@ -14728,7 +14937,7 @@ struct BoardCanvasView: View {
     /// picks, is lit as hovered.
     private func boardMetalSelectionVertexMarks(
         in board: HorizontalBoard,
-        selectablesByRef: [HorizontalSelectableRef: [HorizontalSelectable]],
+        selectablesForRef: (HorizontalSelectableRef) -> [HorizontalSelectable]?,
         selectedRefs: [HorizontalSelectableRef],
         hoveredRef: HorizontalSelectableRef?,
         outerColor: HorizontalMetalRGBA,
@@ -14743,7 +14952,7 @@ struct BoardCanvasView: View {
         var lines = [HorizontalMetalLinePrimitive]()
         for ref in BoardSelectionVertices.refs(of: selectedRefs, in: board) where !selected.contains(ref) {
             let outerColor = ref == hoveredRef ? hoverColor : outerColor
-            for selectable in selectablesByRef[ref] ?? [] {
+            for selectable in selectablesForRef(ref) ?? [] {
                 if selectable.isPoint {
                     handles.append(
                         HorizontalMetalHandlePrimitive(
@@ -14795,7 +15004,7 @@ struct BoardCanvasView: View {
                 .filter { $0.type == .polygonEdge }
                 .map(polygonEdgeSelectionKey)
         )
-        let polygons = board.polygons + board.outlinePolygons
+        let polygons = (board.polygons + board.outlinePolygons).filter { polygonIDs.contains(normalizedID($0.id)) }
         let edgeSelectables = filterVisibleSelectables(
             polygonEdgeSelectables(polygons, type: .polygonEdge),
             in: board
@@ -15001,91 +15210,129 @@ struct BoardCanvasView: View {
     private func buildAllBoardSelectables(in board: HorizontalBoard) -> [HorizontalSelectable] {
         // Visibility-independent: emits every potentially selectable object.
         // filterVisibleSelectables(_:) applies the live displayOptions at hit-test time.
-        var selectables = [HorizontalSelectable]()
+        boardSelectableCategories(in: board).flatMap(\.all)
+    }
 
-        selectables.append(contentsOf: boardPanelSelectables(in: board))
+    /// The board's selectables, category by category in hit-testing order,
+    /// each with its visible ones and those by ref. A category is built
+    /// again only when the content it comes from changed, and filtered and
+    /// grouped again only when that or what decides visibility did, so an
+    /// edit, or a move's preview, rebuilds the categories it touched.
+    private func boardSelectableCategories(in board: HorizontalBoard) -> [BoardSelectableCategory] {
+        let memo = selectableCache.contentMemo
+        let visibility = selectableVisibility(in: board)
+        func category<Input: Equatable>(_ name: String, _ input: Input, _ build: () -> [HorizontalSelectable]) -> BoardSelectableCategory {
+            let all = memo.value("selectables: \(name)", input: input, build: build)
+            let visible = memo.value("visible selectables: \(name)", input: BoardContentPair(input, visibility)) {
+                filterVisibleSelectables(all, visibility: visibility)
+            }
+            let byRef = memo.value("selectables by ref: \(name)", input: BoardContentPair(input, visibility)) {
+                Dictionary(grouping: visible, by: \.ref)
+            }
+            return BoardSelectableCategory(all: all, visible: visible, byRef: byRef) {
+                memo.value("selectable index: \(name)", input: BoardContentPair(input, visibility)) {
+                    HorizontalSelectableSpatialIndex(visible)
+                }
+            }
+        }
+        func uncached(_ all: [HorizontalSelectable]) -> BoardSelectableCategory {
+            let visible = filterVisibleSelectables(all, visibility: visibility)
+            return BoardSelectableCategory(all: all, visible: visible, byRef: Dictionary(grouping: visible, by: \.ref)) {
+                HorizontalSelectableSpatialIndex(visible)
+            }
+        }
 
-        selectables.append(contentsOf: polygonEdgeSelectables(
-            board.polygons,
-            type: .polygonEdge
-        ))
+        var categories = [BoardSelectableCategory]()
+        categories.append(uncached(boardPanelSelectables(in: board)))
+        categories.append(category("polygons", board.polygons) {
+            polygonEdgeSelectables(board.polygons, type: .polygonEdge)
+        })
         // A plane's outline and a keepout's are picked, moved and reshaped by
         // their parts, as any polygon is; a package's keepouts and drills are
         // parts of it, which a click picks and a move moves only as the whole
         // package, as in Horizon.
-        selectables.append(contentsOf: polygonEdgeSelectables(
-            board.outlinePolygons,
-            type: .polygonEdge
-        ))
-
-        selectables.append(contentsOf: board.decals.compactMap { decal in
-            // Use the full geometric bounds; visibility is applied at filter time.
-            // Hit bounds may be slightly larger than the visible silhouette when
-            // some sub-layers are hidden — acceptable trade-off for cache stability.
-            let allPoints = decal.polygons.flatMap(\.vertices)
-                + decal.lines.flatMap { [$0.from, $0.to] }
-                + decal.arcs.flatMap { $0.polyline(precision: 24) }
-                + decal.texts.flatMap(\.renderBoundsPoints)
-            guard !allPoints.isEmpty else {
-                return nil
+        let outlinePolygons = board.outlinePolygons
+        categories.append(category("outline polygons", outlinePolygons) {
+            polygonEdgeSelectables(outlinePolygons, type: .polygonEdge)
+        })
+        categories.append(category("decals", board.decals) {
+            board.decals.compactMap { decal in
+                // Use the full geometric bounds; visibility is applied at filter time.
+                // Hit bounds may be slightly larger than the visible silhouette when
+                // some sub-layers are hidden — acceptable trade-off for cache stability.
+                let allPoints = decal.polygons.flatMap(\.vertices)
+                    + decal.lines.flatMap { [$0.from, $0.to] }
+                    + decal.arcs.flatMap { $0.polyline(precision: 24) }
+                    + decal.texts.flatMap(\.renderBoundsPoints)
+                guard !allPoints.isEmpty else {
+                    return nil
+                }
+                return HorizontalSelectable.bounds(
+                    ref: HorizontalSelectableRef(id: decal.id, type: .boardDecal),
+                    points: allPoints,
+                    fallbackCenter: HorizontalRect(points: allPoints).center,
+                    fallbackSize: 1_000_000
+                )
             }
-            return HorizontalSelectable.bounds(
-                ref: HorizontalSelectableRef(id: decal.id, type: .boardDecal),
-                points: allPoints,
-                fallbackCenter: HorizontalRect(points: allPoints).center,
-                fallbackSize: 1_000_000
-            )
         })
-
         // Horizon's three: the two points and the label, not a box round it all.
-        selectables.append(contentsOf: board.dimensions.flatMap(BoardDimensionParts.selectables))
-
-        selectables.append(contentsOf: segmentSelectables(board.lines, type: .boardLine))
-        selectables.append(contentsOf: arcSelectables(board.arcs, type: .boardArc))
-        selectables.append(contentsOf: segmentSelectables(board.tracks, type: .track))
-        selectables.append(contentsOf: segmentSelectables(board.netTies, type: .boardNetTie))
-
-        selectables.append(contentsOf: segmentSelectables(board.connectionLines, type: .connectionLine))
-
-        selectables.append(contentsOf: board.junctions.map { id, point in
-            HorizontalSelectable.point(ref: HorizontalSelectableRef(id: id, type: .junction), at: point)
+        categories.append(category("dimensions", board.dimensions) {
+            board.dimensions.flatMap(BoardDimensionParts.selectables)
         })
-
-        selectables.append(contentsOf: board.vias.map { via in
-            HorizontalSelectable.bounds(
-                ref: HorizontalSelectableRef(id: via.id, type: .via, layer: via.layer),
-                points: via.boundsPoints,
-                fallbackCenter: via.position,
-                fallbackSize: via.size
-            )
+        categories.append(category("lines", board.lines) { segmentSelectables(board.lines, type: .boardLine) })
+        categories.append(category("arcs", board.arcs) { arcSelectables(board.arcs, type: .boardArc) })
+        categories.append(category("tracks", board.tracks) { segmentSelectables(board.tracks, type: .track) })
+        categories.append(category("net ties", board.netTies) { segmentSelectables(board.netTies, type: .boardNetTie) })
+        categories.append(category("connection lines", board.connectionLines) {
+            segmentSelectables(board.connectionLines, type: .connectionLine)
         })
-
+        categories.append(category("junctions", board.junctions) {
+            board.junctions.map { id, point in
+                HorizontalSelectable.point(ref: HorizontalSelectableRef(id: id, type: .junction), at: point)
+            }
+        })
+        categories.append(category("vias", board.vias) {
+            board.vias.map { via in
+                HorizontalSelectable.bounds(
+                    ref: HorizontalSelectableRef(id: via.id, type: .via, layer: via.layer),
+                    points: via.boundsPoints,
+                    fallbackCenter: via.position,
+                    fallbackSize: via.size
+                )
+            }
+        })
         // Pad holes belong to their pads, on a board and in a package editor.
-        selectables.append(contentsOf: board.holes.map { hole in
-            HorizontalSelectable.bounds(
-                ref: HorizontalSelectableRef(id: hole.id, type: .boardHole),
-                points: hole.boundsPoints,
-                fallbackCenter: hole.position,
-                fallbackSize: hole.diameter
-            )
+        categories.append(category("holes", board.holes) {
+            board.holes.map { hole in
+                HorizontalSelectable.bounds(
+                    ref: HorizontalSelectableRef(id: hole.id, type: .boardHole),
+                    points: hole.boundsPoints,
+                    fallbackCenter: hole.position,
+                    fallbackSize: hole.diameter
+                )
+            }
         })
-
-        selectables.append(contentsOf: boardPackageSelectables(in: board))
+        categories.append(category(
+            "packages",
+            BoardContentTriple(board.packages, board.packagePads, BoardContentPair(board.packagePolygons, board.packagePadPositions))
+        ) {
+            boardPackageSelectables(in: board)
+        })
         if modeProfile.mode == .package {
-            selectables.append(contentsOf: poolPadSelectables(in: board))
+            categories.append(uncached(poolPadSelectables(in: board)))
         }
         if modeProfile.mode == .padstack {
-            selectables.append(contentsOf: padstackShapeSelectables(in: board))
+            categories.append(uncached(padstackShapeSelectables(in: board)))
         }
-
         // Standalone board text is independently selectable. Package-owned text
         // (refdes / value / assembly annotations) normally is NOT — it belongs to
         // its package — EXCEPT a SMASHED package's extracted `fromSmash` copies,
         // which are the point of smashing: individually editable board text.
-        selectables.append(contentsOf: textSelectables(board.texts))
-        selectables.append(contentsOf: textSelectables(board.packageTexts.filter { $0.fromSmash }))
-
-        return selectables
+        categories.append(category("texts", board.texts) { textSelectables(board.texts) })
+        categories.append(category("smashed texts", board.packageTexts) {
+            textSelectables(board.packageTexts.filter { $0.fromSmash })
+        })
+        return categories
     }
 
     private func boardSnapTargets() -> [HorizontalPoint] {
@@ -15098,7 +15345,7 @@ struct BoardCanvasView: View {
         if let layer = drawTrackState?.layer {
             let key = BoardTrackSnapTargetsKey(selectables: selectableCacheKey, layer: layer)
             return selectableCache.trackSnapTargets(key: key) {
-                BoardTrackRouting.snapTargets(on: layer, in: board)
+                BoardTrackRouting.snapTargets(on: layer, in: selectableSceneBoard)
             }
         }
         return selectableCache.snapTargets(key: selectableCacheKey) {
@@ -15327,7 +15574,7 @@ struct BoardCanvasView: View {
     }
 
     private func visibleRenderLayers() -> [Int] {
-        selectableCache.visibleRenderLayers(key: selectableCacheKey) {
+        selectableCache.visibleRenderLayers(key: renderLayersCacheKey) {
             buildVisibleRenderLayers()
         }
     }
@@ -17086,7 +17333,20 @@ struct BoardCanvasView: View {
         boardPackageGeometryPoints(in: board)
     }
 
+    /// Each package's pad vertices and bounding-box polygon points, by
+    /// package id. Kept while the pads and package polygons are unchanged:
+    /// the scene build, the visibility filter and the package selectables all
+    /// ask, and each pass renders every package polygon's vertices.
     private func boardPackageGeometryPoints(in board: HorizontalBoard) -> [String: [HorizontalPoint]] {
+        selectableCache.contentMemo.value(
+            "package geometry points",
+            input: BoardContentPair(board.packagePads, board.packagePolygons)
+        ) {
+            uncachedBoardPackageGeometryPoints(in: board)
+        }
+    }
+
+    private func uncachedBoardPackageGeometryPoints(in board: HorizontalBoard) -> [String: [HorizontalPoint]] {
         var pointsByPackage = [String: [HorizontalPoint]]()
 
         func append(id: String, points: [HorizontalPoint]) {
@@ -17176,10 +17436,15 @@ struct BoardCanvasView: View {
     }
 
     private func packageIDsWithGeometry(in board: HorizontalBoard) -> Set<String> {
-        let geometryPackageIDs = Set(boardPackageGeometryPoints(in: board).keys)
-        return Set(board.packages.compactMap { package in
-            geometryPackageIDs.contains(normalizedID(package.id)) ? package.id : nil
-        })
+        selectableCache.contentMemo.value(
+            "package ids with geometry",
+            input: BoardContentTriple(board.packages.map(\.id), board.packagePads, board.packagePolygons)
+        ) {
+            let geometryPackageIDs = Set(boardPackageGeometryPoints(in: board).keys)
+            return Set(board.packages.compactMap { package in
+                geometryPackageIDs.contains(normalizedID(package.id)) ? package.id : nil
+            })
+        }
     }
 
     private func hole(for id: String) -> HorizontalHole? {

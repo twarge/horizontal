@@ -1185,6 +1185,23 @@ struct HorizontalPlaneFragment: Hashable {
         derived.containmentPaths { paths.map(HorizontalBoard.PlanePath.init) }
     }
 
+    /// A hash of every point of `paths`, worked out once per fill: the canvas
+    /// keys a fill's tessellation by it on every scene build, which hashed
+    /// every plane vertex each time.
+    var contentHash: Int {
+        derived.contentHash {
+            var hasher = Hasher()
+            for path in paths {
+                hasher.combine(path.count)
+                for point in path {
+                    hasher.combine(point.x)
+                    hasher.combine(point.y)
+                }
+            }
+            return hasher.finalize()
+        }
+    }
+
     static func == (lhs: HorizontalPlaneFragment, rhs: HorizontalPlaneFragment) -> Bool {
         lhs.paths == rhs.paths && lhs.orphan == rhs.orphan
     }
@@ -1200,6 +1217,18 @@ struct HorizontalPlaneFragment: Hashable {
 final class HorizontalPlaneFragmentDerived: @unchecked Sendable {
     private let lock = NSLock()
     private var containment: [HorizontalBoard.PlanePath]?
+    private var hash: Int?
+
+    func contentHash(_ build: () -> Int) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        if let hash {
+            return hash
+        }
+        let built = build()
+        hash = built
+        return built
+    }
 
     func containmentPaths(_ build: () -> [HorizontalBoard.PlanePath]) -> [HorizontalBoard.PlanePath] {
         lock.lock()
