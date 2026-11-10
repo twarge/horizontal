@@ -49,6 +49,9 @@ enum HorizontalBoardLayerViewPreset: Hashable {
     case bottomSilkscreen
     case topRouting
     case bottomRouting
+    /// F, View ▸ Flip Board View: the other side's placement view, seen from
+    /// that side (Horizon's Flip view).
+    case flip
 
     /// The named preset it is, which says what it shows and which layer the
     /// drawing tools go on.
@@ -60,6 +63,7 @@ enum HorizontalBoardLayerViewPreset: Hashable {
         case .bottomSilkscreen: .bottomSilkscreen
         case .topRouting: .topRouting
         case .bottomRouting: .bottomRouting
+        case .flip: .flipView
         }
     }
 }

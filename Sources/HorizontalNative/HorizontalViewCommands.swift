@@ -381,6 +381,7 @@ struct HorizontalViewCommands: Commands {
     @FocusedValue(\.horizonReadOnlyOperation) private var readOnlyOperation
     @FocusedValue(\.horizonSchematicAvailable) private var schematicAvailable
     @FocusedValue(\.horizonDocumentViewActions) private var documentViewActions
+    @FocusedValue(\.horizonFlipBoardViewAction) private var flipBoardViewAction
 
     /// Locked means the document is read-only, which is not the same as a
     /// command being inapplicable to whatever canvas has focus. Menu items are
@@ -966,6 +967,13 @@ struct HorizontalViewCommands: Commands {
                 Toggle("Coordinates", isOn: schematicOptionBinding(\.coordinates))
             }
             .disabled(schematicDisplayOptions == nil || schematicAvailable != true)
+
+            // F reaches it through the board canvas: a menu shortcut with no
+            // ⌘ would take F from every text field.
+            Button("Flip Board View") {
+                flipBoardViewAction?()
+            }
+            .disabled(flipBoardViewAction == nil || boardAvailable != true)
 
             Menu("Board Visibility") {
                 Button("Show All") {

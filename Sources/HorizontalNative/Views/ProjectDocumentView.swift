@@ -1062,6 +1062,7 @@ struct ProjectWorkspaceView: View {
             .focusedSceneValue(\.horizonLeaveBlockAction, canLeaveBlock ? { leaveBlock() } : nil)
             .focusedSceneValue(\.horizonClearAllPlanesAction, clearAllBoardPlanes)
             .focusedSceneValue(\.horizonBoardRulesAction, showBoardRulesWindow)
+            .focusedSceneValue(\.horizonFlipBoardViewAction, { applyBoardLayerViewPreset(.flip) })
             .focusedSceneValue(\.horizonLengthTuningActions, lengthTuningActions)
             .onChange(of: boardEditRevision) { _, _ in
                 // The window's lengths follow the board, as Horizon updates
@@ -1970,16 +1971,8 @@ struct ProjectWorkspaceView: View {
         live.setLayerPreset = { preset in
             // A side-less preset ("show silkscreen") takes the side that is
             // up; the view presets also turn the board over and put the tools
-            // on that side's copper, or its silkscreen for a silkscreen view.
-            let side = boardDisplayOptions.visibleSide ?? (boardViewport.mirrored ? .bottom : .top)
-            let resolved = preset.resolved(for: side)
-            boardDisplayOptions.applyLayerPreset(resolved)
-            if let mirrors = resolved.mirrorsView {
-                boardViewport.mirrored = mirrors
-            }
-            if let layer = resolved.drawingLayer {
-                boardDrawingLayer = layer
-            }
+            // on that side's copper (`HorizontalBoardViewState`).
+            applyBoardViewPreset(preset)
             visiblePanes.insert(.board)
         }
         live.showBoardSide = { side in
@@ -4189,10 +4182,19 @@ struct ProjectWorkspaceView: View {
     /// working would show in a bottom view.
     private func applyBoardLayerViewPreset(_ preset: HorizontalBoardLayerViewPreset) {
         soloedBoardLayer = nil
-        boardDisplayOptions.applyLayerPreset(preset.layerPreset)
-        if let layer = preset.layerPreset.drawingLayer {
-            boardDrawingLayer = layer
-        }
+        applyBoardViewPreset(preset.layerPreset)
+    }
+
+    /// A layer view preset, or the flip (F, View ▸ Flip Board View), applied
+    /// to the board's layers, side and drawing layer together.
+    private func applyBoardViewPreset(_ preset: HorizontalBoardLayerPreset) {
+        var view = HorizontalBoardViewState(
+            displayOptions: boardDisplayOptions, mirrored: boardViewport.mirrored, drawingLayer: boardDrawingLayer
+        )
+        view.apply(preset)
+        boardDisplayOptions = view.displayOptions
+        boardViewport.mirrored = view.mirrored
+        boardDrawingLayer = view.drawingLayer
     }
 
     private func updateAllBoardPlanes() {
