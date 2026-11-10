@@ -117,6 +117,7 @@ struct HorizontalCanvasCommandActions {
     var canPlaceBoardHole: Bool = false
     var canDrawDimension: Bool = false
     var canTuneTrack: Bool = false
+    var canDragCopper: Bool = false
     var canPlacePin: Bool = false
     var canPlaceRefdesAndValue: Bool = false
     var canPlaceDot: Bool = false
@@ -774,6 +775,12 @@ struct HorizontalViewCommands: Commands {
                     canvasCommandActions?.dispatch(.tuneTrack)
                 }
                 .disabled(canvasCommandActions?.canTuneTrack != true)
+
+                // Horizon's Drag keep slope; a via drags with its tracks.
+                Button("Drag Track or Via") {
+                    canvasCommandActions?.dispatch(.dragCopper)
+                }
+                .disabled(canvasCommandActions?.canDragCopper != true)
 
                 Divider()
                 // Horizon's Set Diff Pair pairs the two nets selected, and its

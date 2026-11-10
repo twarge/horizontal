@@ -404,6 +404,8 @@ enum HorizontalCanvasInputCore {
         case "i": return .editSymbolPinNames
         case "k": return .bendNetLine
         case "c": return .toggleRectanglePlacementMode
+        // Board canvas only: D drags a track keeping its slopes, or a via.
+        case "d": return supportsTrackVias ? .dragCopper : nil
         case "l": return .highlightNet
         case "m": return .moveSelection
         case "n": return .drawNetLine

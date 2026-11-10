@@ -111,6 +111,10 @@ enum HorizontalCanvasCommand {
     /// Board: lengthen a straight track's net with a meander, to the Length
     /// Tuning window's reference or a typed target (Horizon's Tune track).
     case tuneTrack
+    /// Board: D, the selected track dragged across itself with its
+    /// neighbours keeping their slopes (Horizon's Drag keep slope), or the
+    /// selected via with its tracks' ends (`HorizontalCopperDrag`).
+    case dragCopper
     case convertPolygonToLineLoop
     case convertLineLoopToPolygon
     /// Replace the selected polygon corner with a tangent arc whose radius

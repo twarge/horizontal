@@ -401,6 +401,7 @@ struct HorizontalCanvasCommandHandlerSet {
     var stepTextSize: ((Bool) -> Void)? = nil
     var drawDimension: (() -> Void)? = nil
     var tuneTrack: (() -> Void)? = nil
+    var dragCopper: (() -> Void)? = nil
     var editText: (() -> Void)? = nil
     var filterAirwires: (() -> Void)? = nil
     var toggleInstanceOnly: (() -> Void)? = nil
@@ -587,6 +588,9 @@ struct HorizontalCanvasCommandHandlerSet {
         case .tuneTrack:
             guard !isReadOnly else { return }
             tuneTrack?()
+        case .dragCopper:
+            guard !isReadOnly else { return }
+            dragCopper?()
         case .addText:
             guard !isReadOnly else { return }
             addText?()
@@ -782,6 +786,7 @@ struct HorizontalCanvasCommandHandlerSet {
             canPlaceBoardHole: writable && placeBoardHole != nil,
             canDrawDimension: writable && drawDimension != nil,
             canTuneTrack: writable && tuneTrack != nil,
+            canDragCopper: writable && dragCopper != nil,
             canPlacePin: writable && placePin != nil,
             canPlaceRefdesAndValue: writable && placeRefdesAndValue != nil,
             canPlaceDot: writable && placeDot != nil,

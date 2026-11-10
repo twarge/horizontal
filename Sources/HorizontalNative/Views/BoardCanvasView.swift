@@ -311,6 +311,10 @@ struct BoardCanvasView: View {
         var boardBeforeMove: HorizontalBoard? = nil
         /// R and T as the move turned in place (122); nil until one does.
         var turn: BoardMoveTurn? = nil
+        /// Set when this is a drag of a track keeping its slopes, or of a via
+        /// (`HorizontalCopperDrag`), which shapes the copper instead of
+        /// shifting the selection, and takes no turn.
+        var copperDrag: HorizontalCopperDrag? = nil
 
         /// Where the move draws `originalBoard`'s copy of what moves: the turns
         /// so far, then the shift since the last of them.
@@ -1065,6 +1069,7 @@ struct BoardCanvasView: View {
     /// detail item, cost the first nudge of Board C's Select All 2 s.
     private var canPatchBoardMoveInMetal: Bool {
         guard let moveState,
+              moveState.copperDrag == nil,
               !selectedObjects.isEmpty,
               drawsBoardLinesInMetal else {
             return false
@@ -2072,6 +2077,9 @@ struct BoardCanvasView: View {
         if let state = packagePlacementState {
             let label = board.packages.first { normalizedID($0.id) == normalizedID(state.placementID) }?.label ?? "package"
             return "Place \(label): click places   R rotates   E flips to the other side   Esc cancels"
+        }
+        if let drag = moveState?.copperDrag {
+            return "\(drag.actionName): click or Return commits   Esc cancels"
         }
         if moveState != nil {
             return "Move: click or Return commits   Esc cancels"
@@ -3906,6 +3914,7 @@ struct BoardCanvasView: View {
             // it floods the copper each selected track and via is part of.
             handlers.setNet = { requestSetNet() }
             handlers.tuneTrack = { beginTuneTrack() }
+            handlers.dragCopper = { beginCopperDrag() }
             if let onEditDiffpair {
                 handlers.setDiffpair = { netIDs in
                     guard netIDs.allSatisfy(onEditDiffpair.canEdit),
@@ -4147,6 +4156,9 @@ struct BoardCanvasView: View {
         if writable, isTransformable(ref) {
             let rotatable = isRotatableOrMirrorable(ref)
             var move: [HorizontalTargetItemMenuEntry] = [.command(title: "Move", .moveSelection)]
+            if ref.type == .track || ref.type == .via {
+                move.append(.command(title: ref.type == .track ? "Drag keep slope" : "Drag", .dragCopper))
+            }
             if rotatable {
                 move.append(contentsOf: [
                     .command(title: "Rotate", .rotateSelectionAroundCenter),
@@ -5408,7 +5420,9 @@ struct BoardCanvasView: View {
             state.turn?.board ?? state.originalBoard
         }
         measure("apply move") {
-            if totalDelta != .zero {
+            if let drag = state.copperDrag {
+                draft = drag.applied(to: draft, shift: totalDelta)
+            } else if totalDelta != .zero {
                 moveSelectedObjects(by: totalDelta, board: &draft)
             }
         }
@@ -5420,7 +5434,7 @@ struct BoardCanvasView: View {
             // finalize; don't register a "Move" here (there's no committed prior
             // position — the text was never on the board before this flow).
             if editTextRef == nil {
-                registerUndoSnapshot(state.boardBeforeMove ?? state.originalBoard, actionName: "Move")
+                registerUndoSnapshot(state.boardBeforeMove ?? state.originalBoard, actionName: state.copperDrag?.actionName ?? "Move")
             }
         }
         measure("clear move state") {
@@ -5480,6 +5494,9 @@ struct BoardCanvasView: View {
         let totalDelta = state.lastPoint - state.startPoint
         guard totalDelta != .zero else {
             return base
+        }
+        if let drag = state.copperDrag {
+            return drag.applied(to: base, shift: totalDelta)
         }
 
         return selectableCache.movePreview(
@@ -8167,6 +8184,10 @@ struct BoardCanvasView: View {
             return
         }
 
+        if moveState?.copperDrag != nil {
+            // A drag shapes the copper it holds; it takes no turn.
+            return
+        }
         if var state = moveState, packagePlacementState == nil {
             // R, E and T while moving turn what is being moved, where the
             // cursor has taken it, and the move carries on from the turned
@@ -19334,6 +19355,36 @@ extension BoardCanvasView {
 
     private var tuneInspectorState: HorizontalTuneInspectorState? {
         tuneState?.inspectorState(target: tuneTarget, source: tuneTargetSource)
+    }
+
+    /// D: the selected track dragged keeping its neighbours' slopes, or the
+    /// selected via with its tracks' ends (`HorizontalCopperDrag`), riding
+    /// the move tool: the cursor drags it, a click or Return commits it as
+    /// one undo step, Esc puts it back.
+    private func beginCopperDrag() {
+        guard !isReadOnly, modeProfile.mode == .board, moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
+              pastePlacementState == nil, poolPlacementState == nil, roundOffVertexState == nil, addVertexState == nil,
+              packagePlacementState == nil, tuneState == nil else {
+            return
+        }
+        let originalBoard = board
+        switch HorizontalCopperDrag.begin(selection: selectedObjects, on: originalBoard) {
+        case .failure(let refusal):
+            showCanvasNote(refusal.message)
+        case .success(let drag):
+            let start = lastCursorWorldPoint.map(snapBoardPointToGrid) ?? drag.anchor
+            moveState = MoveState(
+                startPoint: start,
+                lastPoint: start,
+                originalBoard: originalBoard,
+                tracksCursor: true,
+                snapTargets: [],
+                residentMovePlan: BoardResidentMovePlan(),
+                copperDrag: drag
+            )
+            hoveredObject = nil
+            publishSelectionContext()
+        }
     }
 
     private func beginTuneTrack() {
