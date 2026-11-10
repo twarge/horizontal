@@ -27,6 +27,11 @@ enum BoardSelectionVertices {
         let endsOnJunctions = !types.isDisjoint(with: [.track, .boardNetTie, .boardLine, .connectionLine, .boardArc])
         let junctionsByPoint = endsOnJunctions ? board.junctionIDsByPoint() : [:]
         let junctionLayers = endsOnJunctions ? board.junctionLayers() : [:]
+        // The vias by point, once: asked per end, the search of every via
+        // made a large selection's marks quadratic.
+        let viasByPoint = endsOnJunctions
+            ? Dictionary(grouping: board.vias) { HorizontalBoard.junctionPointKey($0.position) }
+            : [:]
         /// The junction an end is on: the one the file names, while it is
         /// still there, else the one copper on `layer` ends on there.
         func junction(named name: String?, at point: HorizontalPoint, layer: Int?) -> HorizontalSelectableRef? {
@@ -34,7 +39,7 @@ enum BoardSelectionVertices {
                HorizontalBoard.junctionPointKey(position) == HorizontalBoard.junctionPointKey(point) {
                 return HorizontalSelectableRef(id: name, type: .junction)
             }
-            return board.junctionIDs(at: point, joining: layer, layers: junctionLayers, byPoint: junctionsByPoint)
+            return board.junctionIDs(at: point, joining: layer, layers: junctionLayers, byPoint: junctionsByPoint, viasByPoint: viasByPoint)
                 .first
                 .map { HorizontalSelectableRef(id: $0, type: .junction) }
         }

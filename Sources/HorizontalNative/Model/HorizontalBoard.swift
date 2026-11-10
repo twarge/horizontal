@@ -6685,12 +6685,43 @@ extension HorizontalBoard {
             var movingLayers: [Set<Int>?]
             var segments: [Segment]
             var fills: [Fill]
+            /// The links between moving nodes that a tree could ever use: the
+            /// minimum tree over the moving nodes alone, worked out once. A
+            /// move carries them rigidly, so their distances never change,
+            /// and a link between two moving nodes that isn't in that tree is
+            /// the longest on a cycle of shorter ones and never joins
+            /// anything. Nil leaves every pair to be linked.
+            var movingTree: [(lhs: Int, rhs: Int, weightSquared: Double)]?
+            /// For a net the move carries whole (no fixed copper, no fill, no
+            /// track with an end left behind), its airwires where the move
+            /// started: a rigid move takes the tree with it, every distance
+            /// the same, so each step places these rather than working the
+            /// tree out again (Select All's hundreds of pads a net).
+            var carriedAirwires: [HorizontalSegment]?
 
             /// Elements are the fixed pieces (`0..<componentCount`) and then the
             /// moving nodes, in order. `placement` takes moving copper from
             /// where it started to where the move has it now: a shift, and the
             /// turns R and T made on the way (122).
             func airwires(placement: HorizontalPlacementTransform) -> [HorizontalSegment] {
+                if let carriedAirwires {
+                    return carriedAirwires.map { airwire in
+                        var airwire = airwire
+                        airwire.from = placement.applying(to: airwire.from)
+                        airwire.to = placement.applying(to: airwire.to)
+                        return airwire
+                    }
+                }
+                return workedOutAirwires(placement: placement)
+            }
+
+            /// Whether the move carries the whole net.
+            var isCarriedWhole: Bool {
+                componentCount == 0 && fixedPoints.isEmpty && fills.isEmpty
+                    && segments.allSatisfy { $0.fromMoves && $0.toMoves }
+            }
+
+            func workedOutAirwires(placement: HorizontalPlacementTransform) -> [HorizontalSegment] {
                 let pieceCount = componentCount
                 let moving = movingPoints.map { placement.applying(to: $0) }
                 var disjointSet = HorizontalBoard.BoardAirwireDisjointSet(count: pieceCount + moving.count)
@@ -6769,15 +6800,26 @@ extension HorizontalBoard {
                             to: moving[index]
                         ))
                     }
-                    for other in moving.indices where other > index {
-                        links.append(Link(
-                            lhs: pieceCount + index,
-                            rhs: pieceCount + other,
-                            weightSquared: HorizontalBoard.squaredDistance(moving[index], moving[other]),
-                            from: moving[index],
-                            to: moving[other]
-                        ))
+                    if movingTree == nil {
+                        for other in moving.indices where other > index {
+                            links.append(Link(
+                                lhs: pieceCount + index,
+                                rhs: pieceCount + other,
+                                weightSquared: HorizontalBoard.squaredDistance(moving[index], moving[other]),
+                                from: moving[index],
+                                to: moving[other]
+                            ))
+                        }
                     }
+                }
+                for edge in movingTree ?? [] {
+                    links.append(Link(
+                        lhs: pieceCount + edge.lhs,
+                        rhs: pieceCount + edge.rhs,
+                        weightSquared: edge.weightSquared,
+                        from: moving[edge.lhs],
+                        to: moving[edge.rhs]
+                    ))
                 }
                 links.sort { $0.weightSquared < $1.weightSquared }
 
@@ -6797,6 +6839,43 @@ extension HorizontalBoard {
         }
 
         fileprivate var nets: [Net]
+
+        /// Prim's minimum tree over `points`, by squared distance: each edge
+        /// as the indices of its ends.
+        fileprivate static func minimumTree(over points: [HorizontalPoint]) -> [(lhs: Int, rhs: Int, weightSquared: Double)] {
+            guard points.count > 1 else {
+                return []
+            }
+            var inTree = [Bool](repeating: false, count: points.count)
+            var best = [Double](repeating: .infinity, count: points.count)
+            var from = [Int](repeating: 0, count: points.count)
+            var edges = [(lhs: Int, rhs: Int, weightSquared: Double)]()
+            edges.reserveCapacity(points.count - 1)
+            var current = 0
+            inTree[0] = true
+            for _ in 1..<points.count {
+                var next = -1
+                var nextWeight = Double.infinity
+                for index in points.indices where !inTree[index] {
+                    let weight = HorizontalBoard.squaredDistance(points[current], points[index])
+                    if weight < best[index] {
+                        best[index] = weight
+                        from[index] = current
+                    }
+                    if best[index] < nextWeight {
+                        nextWeight = best[index]
+                        next = index
+                    }
+                }
+                guard next >= 0 else {
+                    break
+                }
+                inTree[next] = true
+                edges.append((from[next], next, nextWeight))
+                current = next
+            }
+            return edges
+        }
 
         /// The nets whose airwires these replace while the move lasts.
         var netIDs: Set<String> {
@@ -6830,7 +6909,8 @@ extension HorizontalBoard {
         packageIDs: Set<String>,
         viaIDs: Set<String>,
         junctionIDs: Set<String>,
-        segmentEnds: [String: (from: Bool, to: Bool)]
+        segmentEnds: [String: (from: Bool, to: Bool)],
+        planeIDs: Set<String> = []
     ) -> MovingAirwires {
         struct Node {
             var point: HorizontalPoint
@@ -6930,6 +7010,29 @@ extension HorizontalBoard {
             }
             let fixed = nodes.filter { !$0.moves }
             let moving = nodes.filter(\.moves)
+            // A net the move carries whole, its planes (`planeIDs`, outlines
+            // moved whole) and all: the rats' nest it has where the move
+            // starts is the one it has at every step, carried along.
+            let netPlanes = planesByNet[netID] ?? []
+            if fixed.isEmpty,
+               netPlanes.allSatisfy({ planeIDs.contains(Self.normalizedID($0.id)) }),
+               (segmentsByNet[netID] ?? []).allSatisfy({ $0.1.from && $0.1.to }) {
+                var net = MovingAirwires.Net(
+                    netID: netID,
+                    fixedPoints: [],
+                    fixedComponents: [],
+                    componentCount: 0,
+                    componentByPointKey: [:],
+                    fixedTree: [],
+                    movingPoints: [],
+                    movingLayers: [],
+                    segments: [],
+                    fills: []
+                )
+                net.carriedAirwires = airwires.filter { $0.netID.map(Self.normalizedID) == netID }
+                nets.append(net)
+                continue
+            }
 
             // The fixed pieces: coincident copper, tracks with neither end
             // moving, and plane fills, as `generateAirwires` joins them.
@@ -7006,7 +7109,7 @@ extension HorizontalBoard {
                 )
             }
 
-            nets.append(MovingAirwires.Net(
+            var net = MovingAirwires.Net(
                 netID: netID,
                 fixedPoints: fixed.map(\.point),
                 fixedComponents: fixedComponents,
@@ -7019,7 +7122,13 @@ extension HorizontalBoard {
                 fills: fillAnchors.map { fill in
                     MovingAirwires.Fill(layer: fill.layer, paths: fill.paths, component: fill.anchor.map { fixedComponents[$0] })
                 }
-            ))
+            )
+            if net.isCarriedWhole {
+                net.carriedAirwires = net.workedOutAirwires(placement: .identity)
+            } else if net.movingPoints.count > 8 {
+                net.movingTree = MovingAirwires.minimumTree(over: net.movingPoints)
+            }
+            nets.append(net)
         }
         return MovingAirwires(nets: nets)
     }

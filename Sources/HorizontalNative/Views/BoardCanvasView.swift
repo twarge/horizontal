@@ -2286,11 +2286,21 @@ struct BoardCanvasView: View {
     }
 
     private var selectedNetIDs: Set<String> {
-        Set(selectedObjects.compactMap { netID(for: $0).map(normalizedID) })
+        let netID = netIDLookup(for: selectedObjects)
+        return Set(selectedObjects.compactMap { netID($0).map(normalizedID) })
     }
 
     private var selectedComponentIDs: Set<String> {
-        var ids = Set(selectedObjects.compactMap { componentID(for: $0).map(normalizedID) })
+        // Asked for on every body pass (the cross-selection boxes); with
+        // Select All's thousands of refs, kept while they and the packages
+        // are what they were.
+        var ids = selectableCache.contentMemo.value(
+            "selected component ids",
+            input: BoardContentPair(selectedObjects, board.packages.map(\.componentID))
+        ) {
+            let componentID = componentIDLookup(for: selectedObjects)
+            return Set(selectedObjects.compactMap { componentID($0).map(normalizedID) })
+        }
         if let selectedUnplacedObject,
            let componentID = selectedUnplacedObject.componentID.map(normalizedID) {
             ids.insert(componentID)
@@ -2523,12 +2533,25 @@ struct BoardCanvasView: View {
         }
     }
 
+    /// `segments`' segment `id`, from an index of them by id kept while they
+    /// are unchanged: the inspector asks for each of Select All's thousands
+    /// of tracks, and a search of all of them for each made it quadratic.
+    private func segment(_ id: String, in segments: [HorizontalSegment], _ name: String) -> HorizontalSegment? {
+        selectableCache.contentMemo.value("segments by id: \(name)", input: segments) {
+            var index = [String: HorizontalSegment](minimumCapacity: segments.count)
+            for segment in segments where index[normalizedID(segment.id)] == nil {
+                index[normalizedID(segment.id)] = segment
+            }
+            return index
+        }[normalizedID(id)]
+    }
+
     private func segmentHUDItem(
         for ref: HorizontalSelectableRef,
         in segments: [HorizontalSegment],
         title: String
     ) -> HorizontalSelectionHUDItem {
-        guard let segment = segments.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+        guard let segment = segment(ref.id, in: segments, title) else {
             return genericHUDItem(for: ref)
         }
 
@@ -2893,7 +2916,7 @@ struct BoardCanvasView: View {
         includesNetClass: Bool,
         editable: Bool = true
     ) -> [HorizontalSelectionProperty] {
-        guard let segment = segments.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
+        guard let segment = segment(ref.id, in: segments, "\(ref.type)") else {
             return []
         }
 
@@ -5123,7 +5146,10 @@ struct BoardCanvasView: View {
         guard !moveSelection.isEmpty else { return }
         let fallbackSelectionCenter = lastCursorWorldPoint == nil
             ? measure("selection center") {
-                HorizontalCanvasModeSupport.selectionCenter(for: moveSelection, anchorPoints: selectionAnchorPoints)
+                HorizontalCanvasModeSupport.selectionCenter(
+                    for: moveSelection,
+                    anchorPoints: selectionAnchorPointLookup(for: moveSelection, in: board)
+                )
             }
             : nil
         let startPoint = measure("start point") {
@@ -8155,6 +8181,56 @@ struct BoardCanvasView: View {
         selectionAnchorPoints(for: ref, in: board)
     }
 
+    /// `selectionAnchorPoints(for:in:)` for many refs at once, the
+    /// collections they name indexed by id once (`netIDLookup`).
+    private func selectionAnchorPointLookup(
+        for refs: [HorizontalSelectableRef],
+        in board: HorizontalBoard
+    ) -> (HorizontalSelectableRef) -> [HorizontalPoint] {
+        guard refs.count > 32 else {
+            return { selectionAnchorPoints(for: $0, in: board) }
+        }
+        let types = Set(refs.map(\.type))
+        func index<Item>(_ type: HorizontalObjectType, _ items: [Item], id: (Item) -> String, points: (Item) -> [HorizontalPoint]) -> [String: [HorizontalPoint]] {
+            guard types.contains(type) else {
+                return [:]
+            }
+            var result = [String: [HorizontalPoint]](minimumCapacity: items.count)
+            for item in items where result[normalizedID(id(item))] == nil {
+                result[normalizedID(id(item))] = points(item)
+            }
+            return result
+        }
+        let packages = index(.boardPackage, board.packages, id: \.id) { [$0.position] }
+        let tracks = index(.track, board.tracks, id: \.id) { [$0.from, $0.to] }
+        let netTies = index(.boardNetTie, board.netTies, id: \.id) { [$0.from, $0.to] }
+        let lines = index(.boardLine, board.lines, id: \.id) { [$0.from, $0.to] }
+        let connectionLines = index(.connectionLine, board.connectionLines, id: \.id) { [$0.from, $0.to] }
+        let arcs = index(.boardArc, board.arcs, id: \.id) { [$0.from, $0.to, $0.center] }
+        let vias = index(.via, board.vias, id: \.id) { [$0.position] }
+        let holes = index(.boardHole, board.holes + board.packageHoles + board.viaHoles, id: \.id) { [$0.position] }
+        let texts = index(.text, board.texts + board.packageTexts, id: \.id) { [$0.position] }
+        let junctions = types.contains(.junction)
+            ? Dictionary(board.junctions.map { (normalizedID($0.key), $0.value) }, uniquingKeysWith: { first, _ in first })
+            : [:]
+        return { ref in
+            let id = normalizedID(ref.id)
+            switch ref.type {
+            case .boardPackage: return packages[id] ?? []
+            case .track: return tracks[id] ?? []
+            case .boardNetTie: return netTies[id] ?? []
+            case .boardLine: return lines[id] ?? []
+            case .connectionLine: return connectionLines[id] ?? []
+            case .boardArc: return arcs[id] ?? []
+            case .via: return vias[id] ?? []
+            case .boardHole: return holes[id] ?? []
+            case .text: return texts[id] ?? []
+            case .junction: return junctions[id].map { [$0] } ?? []
+            default: return selectionAnchorPoints(for: ref, in: board)
+            }
+        }
+    }
+
     private func selectionAnchorPoints(for ref: HorizontalSelectableRef, in board: HorizontalBoard) -> [HorizontalPoint] {
         switch ref.type {
         case .boardPackage:
@@ -10457,6 +10533,69 @@ struct BoardCanvasView: View {
             return (board.texts + board.packageTexts).first { normalizedID($0.id) == normalizedID(ref.id) }?.netID
         case .blockSymbolPort, .boardDecal, .boardPackage, .boardPanel, .busLabel, .busRipper, .dimension, .drawingArc, .drawingLine, .junction, .keepout, .lineNet, .netLabel, .powerSymbol, .schematicBlockSymbol, .schematicNetTie, .schematicSymbol, .padstackShape, .symbolPin:
             return nil
+        }
+    }
+
+    /// `netID(for:)` for many refs at once (Select All's thousands): each
+    /// collection the refs name indexed by id once, where a search of it per
+    /// ref made the lookup quadratic. A few refs search as they did.
+    private func netIDLookup(for refs: [HorizontalSelectableRef]) -> (HorizontalSelectableRef) -> String? {
+        guard refs.count > 32 else {
+            return { netID(for: $0) }
+        }
+        let types = Set(refs.map(\.type))
+        func index<Item>(_ type: HorizontalObjectType, _ items: [Item], id: (Item) -> String, net: (Item) -> String?) -> [String: String?] {
+            guard types.contains(type) else {
+                return [:]
+            }
+            var result = [String: String?](minimumCapacity: items.count)
+            for item in items where result[normalizedID(id(item))] == nil {
+                result[normalizedID(id(item))] = .some(net(item))
+            }
+            return result
+        }
+        let tracks = index(.track, board.tracks, id: \.id, net: \.netID)
+        let netTies = index(.boardNetTie, board.netTies, id: \.id, net: \.netID)
+        let lines = index(.boardLine, board.lines, id: \.id, net: \.netID)
+        let arcs = index(.boardArc, board.arcs, id: \.id, net: \.netID)
+        let connectionLines = index(.connectionLine, board.connectionLines, id: \.id, net: \.netID)
+        let pads = index(.pad, board.packagePads, id: \.id, net: \.netID)
+        let vias = index(.via, board.vias, id: \.id, net: \.netID)
+        let texts = index(.text, board.texts + board.packageTexts, id: \.id, net: \.netID)
+        return { ref in
+            let id = normalizedID(ref.id)
+            switch ref.type {
+            case .track: return tracks[id] ?? nil
+            case .boardNetTie: return netTies[id] ?? nil
+            case .boardLine: return lines[id] ?? nil
+            case .boardArc: return arcs[id] ?? nil
+            case .connectionLine: return connectionLines[id] ?? nil
+            case .pad: return pads[id] ?? nil
+            case .via: return vias[id] ?? nil
+            case .text: return texts[id] ?? nil
+            default: return netID(for: ref)
+            }
+        }
+    }
+
+    /// `componentID(for:)` for many refs at once, the packages indexed by id.
+    private func componentIDLookup(for refs: [HorizontalSelectableRef]) -> (HorizontalSelectableRef) -> String? {
+        guard refs.count > 32 else {
+            return { componentID(for: $0) }
+        }
+        var packages = [String: String?](minimumCapacity: board.packages.count)
+        for package in board.packages where packages[normalizedID(package.id)] == nil {
+            packages[normalizedID(package.id)] = .some(package.componentID)
+        }
+        return { ref in
+            switch ref.type {
+            case .boardPackage:
+                return packages[normalizedID(ref.id)] ?? nil
+            case .pad, .boardHole, .text:
+                return packageID(forGeometryID: ref.id).flatMap { packages[normalizedID($0)] ?? nil }
+            default:
+                return nil
+            }
         }
     }
 
@@ -13196,10 +13335,9 @@ struct BoardCanvasView: View {
                        segmentMove.isRigid(for: segment) {
                         patches.lineTranslationPatches.append(contentsOf: metalLineTranslationPatches(spans: spans, placement: placement))
                     } else if let endpointPatch = boardMetalLineEndpointPatch(
-                        for: ref,
+                        for: segmentsByID[normalizedID(ref.id)],
                         move: segmentMove,
                         placement: placement,
-                        in: moveState.originalBoard,
                         spans: spans
                     ) {
                         patches.lineEndpointPatches.append(endpointPatch)
@@ -13352,24 +13490,31 @@ struct BoardCanvasView: View {
             segmentEnds[normalizedID(ref.id)] = (move.movesFrom, move.movesTo)
         }
         let movingSegmentEnds = segmentEnds
+        // The planes whose outlines move whole, their fills with them.
+        let movedPolygonIDs = Set(selectedObjects.filter { BoardPolygonParts.isPart($0.type) }.map { normalizedID($0.id) })
+            .subtracting(BoardPolygonParts.reshapedPolygonIDs(by: selectedObjects, in: board.polygons + board.outlinePolygons))
+        let planeIDs = Set(board.planes.filter { movedPolygonIDs.contains(normalizedID($0.polygonID)) }.map { normalizedID($0.id) })
         return selectableCache.requestMovingAirwires {
             // After the editor's connectivity pass, as the commit makes the
             // rats' nest: a board as loaded has no junction nets, and without
             // them the live airwires skipped every routed bend (125). Off the
             // main thread, like the rest of the request.
             HorizontalBoardConnectivity.recompute(board)
-                .movingAirwires(packageIDs: packageIDs, viaIDs: viaIDs, junctionIDs: junctionIDs, segmentEnds: movingSegmentEnds)
+                .movingAirwires(packageIDs: packageIDs, viaIDs: viaIDs, junctionIDs: junctionIDs, segmentEnds: movingSegmentEnds,
+                                planeIDs: planeIDs)
         }
     }
 
+    /// `segment` is the moved track or line, looked up once for the whole
+    /// move (`boardSegmentLookup`): found by a search of the board per ref,
+    /// a whole-board move searched every track for each.
     private func boardMetalLineEndpointPatch(
-        for ref: HorizontalSelectableRef,
+        for segment: HorizontalSegment?,
         move: BoardResidentSegmentMove,
         placement: HorizontalPlacementTransform,
-        in board: HorizontalBoard,
         spans: [BoardMetalPrimitiveSpan]
     ) -> HorizontalMetalLineEndpointPatch? {
-        guard let segment = boardSegment(for: ref, in: board),
+        guard let segment,
               segment.center == nil,
               move.movesFrom || move.movesTo,
               let firstSpan = spans.first,

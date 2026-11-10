@@ -89,7 +89,8 @@ extension HorizontalBoard {
         at point: HorizontalPoint,
         joining layer: Int?,
         layers: [String: Set<Int>]? = nil,
-        byPoint: [String: [String]]? = nil
+        byPoint: [String: [String]]? = nil,
+        viasByPoint: [String: [HorizontalMarker]]? = nil
     ) -> [String] {
         let key = Self.junctionPointKey(point)
         let here = byPoint.map { $0[key] ?? [] }
@@ -97,7 +98,11 @@ extension HorizontalBoard {
         guard let layer, !here.isEmpty else {
             return here
         }
-        if vias.contains(where: { Self.junctionPointKey($0.position) == key && $0.spansCopperLayer(layer) }) {
+        if let viasByPoint {
+            if viasByPoint[key]?.contains(where: { $0.spansCopperLayer(layer) }) == true {
+                return here
+            }
+        } else if vias.contains(where: { Self.junctionPointKey($0.position) == key && $0.spansCopperLayer(layer) }) {
             return here
         }
         let layers = layers ?? junctionLayers()
