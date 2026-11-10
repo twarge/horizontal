@@ -446,6 +446,10 @@ struct HorizontalCanvasCommandHandlerSet {
     var placeVia: (() -> Void)? = nil
     var placeBoardHole: (() -> Void)? = nil
     var setNet: (() -> Void)? = nil
+    /// Lock, Unlock and Unlock All; each nil when it would change nothing.
+    var lockSelection: (() -> Void)? = nil
+    var unlockSelection: (() -> Void)? = nil
+    var unlockAllCopper: (() -> Void)? = nil
     var placePin: (() -> Void)? = nil
     var placeRefdesAndValue: (() -> Void)? = nil
     var placeDot: (() -> Void)? = nil
@@ -712,6 +716,12 @@ struct HorizontalCanvasCommandHandlerSet {
         case .setNet:
             guard !isReadOnly, !hasInteraction else { return }
             setNet?()
+        case .setCopperLocked(let locked):
+            guard !isReadOnly, !hasInteraction else { return }
+            (locked ? lockSelection : unlockSelection)?()
+        case .unlockAllCopper:
+            guard !isReadOnly, !hasInteraction else { return }
+            unlockAllCopper?()
         case .placePin:
             guard !isReadOnly else { return }
             placePin?()
@@ -793,6 +803,9 @@ struct HorizontalCanvasCommandHandlerSet {
             canAutoplacePins: writable && autoplaceNextPin != nil,
             canResizeSymbol: writable && resizeSymbol != nil,
             canDisconnect: writable && disconnect != nil,
+            canLockSelection: writable && lockSelection != nil,
+            canUnlockSelection: writable && unlockSelection != nil,
+            canUnlockAllCopper: writable && unlockAllCopper != nil,
             canShowInPoolManager: showInPoolManager != nil,
             canShowInProjectPoolManager: showInProjectPoolManager != nil,
             canRoundOffVertex: writable && roundOffVertex != nil,

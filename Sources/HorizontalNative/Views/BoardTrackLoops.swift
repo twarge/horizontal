@@ -222,7 +222,8 @@ enum BoardTrackLoops {
     /// when each point inside it is where exactly two connected tracks meet
     /// and nothing else is: no pad, hole or net tie, and no via unless the via
     /// passes the chain from one of its layers to another, ends no other
-    /// track and stands in no plane's fill.
+    /// track and stands in no plane's fill. A chain with a locked track or
+    /// via in it stays.
     static func redundantCopper(
         from start: BoardTrackLoopEnd,
         to end: BoardTrackLoopEnd,
@@ -259,7 +260,9 @@ enum BoardTrackLoops {
         var taken = Set<Int>()
         for first in ends[startKey] ?? [] {
             let track = board.tracks[first]
-            guard !routeTrackIDs.contains(track.id),
+            // Locked copper stays (`BoardCopperLock`), so a chain with any in
+            // it is not replaced.
+            guard !track.locked, !routeTrackIDs.contains(track.id),
                   !taken.contains(first),
                   layersContain(startLayers, track.layer) else {
                 continue
@@ -281,7 +284,7 @@ enum BoardTrackLoops {
                 let here = ends[at] ?? []
                 let next: Int
                 if let vias = viasAt[at] {
-                    guard vias.count == 1, passes(board.vias[vias[0]], in: board) else {
+                    guard vias.count == 1, !board.vias[vias[0]].locked, passes(board.vias[vias[0]], in: board) else {
                         break
                     }
                     let span = viaLayers(board.vias[vias[0]], in: board)
@@ -299,7 +302,7 @@ enum BoardTrackLoops {
                     next = other
                 }
                 let nextTrack = board.tracks[next]
-                guard !routeTrackIDs.contains(nextTrack.id), !chain.contains(next) else {
+                guard !nextTrack.locked, !routeTrackIDs.contains(nextTrack.id), !chain.contains(next) else {
                     break
                 }
                 chain.append(next)
