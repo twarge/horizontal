@@ -47,9 +47,20 @@ struct HorizontalCanvasSelectableScene {
             : indexes.flatMap { $0.candidates(at: point, expand: expand) }
     }
 
-    func hitSelectable(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> HorizontalSelectableRef? {
+    /// `admits`, when given, leaves out what it doesn't admit before the
+    /// smallest is picked (the board's selection filter), so a filtered
+    /// object never hides the one under it.
+    func hitSelectable(
+        at point: HorizontalPoint,
+        worldUnitsPerPoint: Double,
+        admits: ((HorizontalSelectableRef) -> Bool)? = nil
+    ) -> HorizontalSelectableRef? {
         let expand = HorizontalSelectable.minimumScreenSize * worldUnitsPerPoint
-        return HorizontalSelectableHitTest.smallestSelectable(at: point, in: candidates(at: point, expand: expand), expand: expand)
+        var found = candidates(at: point, expand: expand)
+        if let admits {
+            found = found.filter { admits($0.ref) }
+        }
+        return HorizontalSelectableHitTest.smallestSelectable(at: point, in: found, expand: expand)
     }
 
     func targetRefs(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> [HorizontalSelectableRef] {

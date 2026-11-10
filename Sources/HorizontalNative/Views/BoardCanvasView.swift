@@ -1430,7 +1430,7 @@ struct BoardCanvasView: View {
                       roundOffVertexState == nil && addVertexState == nil && tuneState == nil, packagePlacementState == nil else {
                     return
                 }
-                updateSelection(with: refs, action: action)
+                updateSelection(with: selectionFilterAdmits.map { refs.filter($0) } ?? refs, action: action)
             },
             targetMenuItems: { pointer, worldUnitsPerPoint in
                 lastPointerPick.point = pointer.raw
@@ -4103,7 +4103,20 @@ struct BoardCanvasView: View {
 
     private func hitSelectable(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> HorizontalSelectableRef? {
         selectionVertex(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
-            ?? boardSelectableScene().hitSelectable(at: point, worldUnitsPerPoint: worldUnitsPerPoint)
+            ?? boardSelectableScene().hitSelectable(
+                at: point, worldUnitsPerPoint: worldUnitsPerPoint, admits: selectionFilterAdmits
+            )
+    }
+
+    /// The selection filter (`BoardSelectionFilter`), on the board only, and
+    /// nil while it lets everything through. A part of what is selected
+    /// already (`selectionVertex`) is picked whatever it says.
+    private var selectionFilterAdmits: ((HorizontalSelectableRef) -> Bool)? {
+        let filter = selectionToolSettings.boardFilter
+        guard modeProfile.mode == .board, filter.isFiltering else {
+            return nil
+        }
+        return filter.admits
     }
 
     /// The part of the selection marked under the cursor (`BoardSelectionVertices`):
@@ -4141,11 +4154,12 @@ struct BoardCanvasView: View {
     }
 
     private func targetMenuItems(at point: HorizontalPoint, worldUnitsPerPoint: Double) -> [HorizontalSelectionTargetItem] {
-        HorizontalCanvasModeSupport.targetMenuItems(
+        let admits = selectionFilterAdmits
+        return HorizontalCanvasModeSupport.targetMenuItems(
             scene: boardSelectableScene(),
             at: point,
             worldUnitsPerPoint: worldUnitsPerPoint,
-            itemForRef: { hudItem(for: $0) }
+            itemForRef: { ref in admits?(ref) == false ? nil : hudItem(for: ref) }
         )
     }
 
@@ -4715,7 +4729,8 @@ struct BoardCanvasView: View {
         guard moveState == nil, pastePlacementState == nil else {
             return
         }
-        selectedObjects = boardSelectableScene().refs()
+        let refs = boardSelectableScene().refs()
+        selectedObjects = selectionFilterAdmits.map { refs.filter($0) } ?? refs
         selectedUnplacedObjectID = nil
         hoveredObject = nil
         publishSelectionContext()

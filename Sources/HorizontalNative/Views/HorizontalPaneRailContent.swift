@@ -203,6 +203,8 @@ struct GridDimensionField: View {
 
 struct SelectionToolButton: View {
     @Binding var settings: HorizontalSelectionToolSettings
+    /// The board's rail: the popover offers the selection filter too.
+    var showsBoardFilter = false
     @State private var isPopoverPresented = false
 
     private var iconName: String {
@@ -220,9 +222,9 @@ struct SelectionToolButton: View {
             } label: {
                 Image(systemName: iconName)
             }
-            .help("Selection tools")
+            .help(showsBoardFilter && settings.boardFilter.isFiltering ? "Selection tools (filtered)" : "Selection tools")
             .popover(isPresented: $isPopoverPresented, arrowEdge: .trailing) {
-                SelectionToolPanel(settings: $settings)
+                SelectionToolPanel(settings: $settings, showsBoardFilter: showsBoardFilter)
             }
         }
     }
@@ -230,6 +232,7 @@ struct SelectionToolButton: View {
 
 struct SelectionToolPanel: View {
     @Binding var settings: HorizontalSelectionToolSettings
+    var showsBoardFilter = false
 
     var body: some View {
         LayerControlsPanel(title: "Selection") {
@@ -267,6 +270,10 @@ struct SelectionToolPanel: View {
                     .pickerStyle(.segmented)
                     .disabled(!settings.stickySelection)
                     .opacity(settings.stickySelection ? 1 : 0.5)
+                }
+
+                if showsBoardFilter {
+                    BoardSelectionFilterSection(filter: $settings.boardFilter)
                 }
             }
             .onChange(of: settings.tool) { _, tool in
