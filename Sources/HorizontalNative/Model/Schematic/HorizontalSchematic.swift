@@ -3395,7 +3395,8 @@ struct HorizontalSchematic {
                 orientation: item.string("orientation") ?? "right",
                 netID: netID,
                 junctionID: junctionID,
-                showsPort: item.bool("show_port") ?? false
+                showsPort: item.bool("show_port") ?? false,
+                showsOffsheetRefs: item.bool("offsheet_refs") ?? true
             )
         }
     }

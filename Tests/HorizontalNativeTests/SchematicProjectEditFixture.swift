@@ -100,6 +100,7 @@ final class SchematicProjectEditFixture {
         let filename = try XCTUnwrap(project.blocks.first(where: \.isTop)?.schematicFilename ?? project.schematicFilename)
         let data = try XCTUnwrap(archive.regularFileData(relativePath: filename))
         let schematic = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? JSONDictionary)
-        return try XCTUnwrap(schematic.dictionaryMap("sheets").values.first)
+        let id = try sheet.id.lowercased()
+        return try XCTUnwrap(schematic.dictionaryMap("sheets").first { $0.key.lowercased() == id }?.value)
     }
 }

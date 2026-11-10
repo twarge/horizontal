@@ -870,6 +870,9 @@ struct HorizontalSchematicNetLabel: Identifiable, Hashable {
     var netID: String? = nil
     var junctionID: String? = nil
     var showsPort: Bool = false
+    /// `offsheet_refs`: the label lists the other sheets its net is
+    /// labelled on after its name.
+    var showsOffsheetRefs: Bool = true
 
     var points: [HorizontalPoint] {
         [position, position + labelShift(size: size, orientation: orientation)]

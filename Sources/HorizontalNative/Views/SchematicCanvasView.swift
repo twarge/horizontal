@@ -2116,6 +2116,8 @@ struct SchematicCanvasView: View {
                 editableNetClassProperty(for: label.netID),
                 // Horizon's "Show port": the label reads the port's direction.
                 showsPort ? editableBoolProperty("showPort", "Show port", label.showsPort) : nil,
+                editorProfile.isPoolMode ? nil
+                    : HorizontalNetLabelOffsheetProperty.property(for: label, editable: !isReadOnly && onApplyProjectEdit != nil),
             ].compactMap { $0 } + netDiffpairProperties(for: label.netID) + netPortProperties(for: label.netID)
         case .busLabel:
             guard let label = sheet.busLabels.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
@@ -7078,6 +7080,16 @@ struct SchematicCanvasView: View {
                let edit = HorizontalDiffpairProperty.operations(for: netID, choice: partner, in: sheet.netDetails) {
                 // The selection survives, as a rename's does, so the
                 // inspector shows the pair made.
+                hoveredObject = nil
+                adoptExternallyUpdatedSheet()
+                onApplyProjectEdit?(edit.ops, edit.actionName)
+            }
+            return
+        }
+        if change.propertyID == HorizontalNetLabelOffsheetProperty.id, case .bool(let shown) = change.value {
+            let refs = Set((change.applyToAll ? selectedObjects : [change.ref]).map { normalizedID($0.id) })
+            if let edit = HorizontalNetLabelOffsheetProperty.edit(
+                shown: shown, labels: sheet.netLabels.filter { refs.contains(normalizedID($0.id)) }) {
                 hoveredObject = nil
                 adoptExternallyUpdatedSheet()
                 onApplyProjectEdit?(edit.ops, edit.actionName)
