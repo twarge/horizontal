@@ -130,6 +130,10 @@ struct HorizontalSelectionDetailGroup: Identifiable, Equatable {
     /// whether or not the document is locked: Measure and Measure All add
     /// tracks to the Length Tuning window.
     var actions: [HorizontalSelectionPropertyOption] = []
+    /// Fields of what the selected objects make up together, between the
+    /// summary and the buttons: a block instance's position. Each sends its
+    /// change for the object shown, never for every selected one.
+    var properties: [HorizontalSelectionProperty] = []
 
     var id: HorizontalObjectType { type }
 }
@@ -384,6 +388,13 @@ struct HorizontalSelectionPopoverView: View {
             if !group.summary.isEmpty {
                 detailsGrid(group.summary)
             }
+            if !group.properties.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(group.properties) { property in
+                        propertyRow(property, group: group, item: item, appliesToAll: false)
+                    }
+                }
+            }
             if !group.actions.isEmpty {
                 groupActions(group, item: item)
             }
@@ -633,10 +644,13 @@ struct HorizontalSelectionPopoverView: View {
     }
 
     @ViewBuilder
+    /// `appliesToAll` false: a row of the group's own (`properties`), with no
+    /// All toggle.
     private func propertyRow(
         _ property: HorizontalSelectionProperty,
         group: HorizontalSelectionDetailGroup,
-        item: HorizontalSelectionDetailItem
+        item: HorizontalSelectionDetailItem,
+        appliesToAll: Bool = true
     ) -> some View {
         if case .pinFunctions(let editor) = property.editor,
            case .pinFunctions(let value) = property.value {
@@ -644,14 +658,15 @@ struct HorizontalSelectionPopoverView: View {
         } else if property.editor == .action {
             actionRow(property, group: group, item: item)
         } else {
-            standardPropertyRow(property, group: group, item: item)
+            standardPropertyRow(property, group: group, item: item, appliesToAll: appliesToAll)
         }
     }
 
     private func standardPropertyRow(
         _ property: HorizontalSelectionProperty,
         group: HorizontalSelectionDetailGroup,
-        item: HorizontalSelectionDetailItem
+        item: HorizontalSelectionDetailItem,
+        appliesToAll: Bool
     ) -> some View {
         HStack(alignment: .center, spacing: 7) {
             Text(property.label)
@@ -671,7 +686,9 @@ struct HorizontalSelectionPopoverView: View {
 
                 actionButton(for: property, group: group, item: item)
 
-                allToggle(for: property, group: group, item: item)
+                if appliesToAll {
+                    allToggle(for: property, group: group, item: item)
+                }
 
                 removeButton(for: property, group: group, item: item)
             } else {

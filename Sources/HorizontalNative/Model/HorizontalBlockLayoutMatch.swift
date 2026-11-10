@@ -207,6 +207,44 @@ final class HorizontalBlockLayoutMatch {
         return classes[index].filter { $0 != path && pairs[Self.key(path, $0)]?.related == true }
     }
 
+    /// The part `path` is placed by, its anchor: its local path and its
+    /// package as the board has it. Its origin is the instance's position,
+    /// its angle and side the instance's. Worked out from the parts, as the
+    /// rest is, so nothing records it (`anchorKey`). nil for an instance with
+    /// no part placed.
+    func anchor(of path: String) -> (local: String, package: HorizontalPlacement)? {
+        guard let layout = layouts[path],
+              let local = Self.anchorKey(among: layout.packages.mapValues { $0.componentDetails?.refdes ?? $0.label }),
+              let package = layout.packages[local] else {
+            return nil
+        }
+        return (local, package)
+    }
+
+    /// Which of an instance's parts, by local path to refdes, it is placed
+    /// by: the lowest-numbered U (U2 before U10), and with no U the first
+    /// part by refdes (R1 before R2).
+    static func anchorKey(among refdes: [String: String]) -> String? {
+        func uNumber(_ refdes: String) -> Int? {
+            guard let first = refdes.first, first == "U" || first == "u" else { return nil }
+            return Int(refdes.dropFirst().prefix { $0.isASCII && $0.isNumber })
+        }
+        let numbers = refdes.mapValues(uNumber)
+        return refdes.keys.min { lhs, rhs in
+            switch (numbers[lhs] ?? nil, numbers[rhs] ?? nil) {
+            case let (l?, r?) where l != r: return l < r
+            case (.some, nil): return true
+            case (nil, .some): return false
+            default:
+                switch refdes[lhs, default: ""].localizedStandardCompare(refdes[rhs, default: ""]) {
+                case .orderedAscending: return true
+                case .orderedDescending: return false
+                case .orderedSame: return lhs < rhs
+                }
+            }
+        }
+    }
+
     /// The instances (innermost first) of blocks used more than once that a
     /// board package's component is a member of.
     func instances(ofPackage packageID: String) -> [Instance] {

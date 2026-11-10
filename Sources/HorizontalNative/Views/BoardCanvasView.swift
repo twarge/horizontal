@@ -1176,6 +1176,7 @@ struct BoardCanvasView: View {
             metalDimBatch.triangles + metalHighlightBatch.triangles + metalSelectionBatch.triangles + metalPreviewBatch.triangles
         }
         let crossSelection = measureBody("cross selection") { crossSelectionLines() }
+        let instanceAnchorMark = measureBody("instance anchor mark") { blockInstanceAnchorMark() }
         // Last, after the selection and the preview, whose places in the
         // buffer a move patches.
         let metalTopOverlayLines = measureBody("overlay lines") {
@@ -1210,6 +1211,7 @@ struct BoardCanvasView: View {
             fold(metalSelectionBatch.lineKey, groups(of: metalSelectionBatch))
             fold(metalPreviewBatch.lineKey, groups(of: metalPreviewBatch))
             fold(crossSelection.key, Set(crossSelection.lines.map(\.compositeGroup)))
+            fold(instanceAnchorMark.key, instanceAnchorMark.rects.isEmpty ? [] : [0])
             return hashers.mapValues { $0.finalize() }
         }
         let metalTopOverlayHandleKey = measureBody("handle key") {
@@ -1262,8 +1264,8 @@ struct BoardCanvasView: View {
             metalTopOverlayLineKey: metalTopOverlayKey,
             metalTopOverlayHandles: metalTopOverlayHandles,
             metalTopOverlayHandleKey: metalTopOverlayHandleKey,
-            metalTopOverlayAnchoredRects: metalHighlightBatch.anchoredRects,
-            metalTopOverlayAnchoredRectKey: metalHighlightBatch.anchoredRectKey,
+            metalTopOverlayAnchoredRects: metalHighlightBatch.anchoredRects + instanceAnchorMark.rects,
+            metalTopOverlayAnchoredRectKey: metalHighlightBatch.anchoredRectKey &* 31 &+ instanceAnchorMark.key,
             metalTopOverlayBufferPatches: metalTopOverlayBufferPatches,
             metalTopOverlayBufferPatchKey: metalTopOverlayBufferPatches.hashValue,
             metalTopOverlayGroupKeys: metalTopOverlayGroupKeys,
@@ -2200,6 +2202,9 @@ struct BoardCanvasView: View {
             return
         }
         group.summary = HorizontalBlockInstanceSummary.details(for: instances, in: match)
+        if instances.count == 1 {
+            group.properties = HorizontalBlockInstanceSummary.placementProperties(for: instances[0], in: match)
+        }
         group.actions = HorizontalBlockInstanceSummary.actions(canCopyLayout: !isReadOnly && instances.count == 1)
     }
 
@@ -2263,6 +2268,96 @@ struct BoardCanvasView: View {
         hoveredObject = nil
         publishConnectivityResolvedEdit(draft)
         showBlockSyncNote(report, lead: "Copied \(source.name)'s layout to")
+    }
+
+    /// Instance X, Y, angle and flipped: the selected parts' instance moved,
+    /// turned or flipped whole, its parts and its own copper, about its
+    /// anchor, so the anchor takes the value; one undo step. Moved whole,
+    /// the instance is no edit for the others to follow
+    /// (`HorizontalBlockLayoutSync`). The selection stays as it was.
+    private func placeBlockInstance(_ change: HorizontalSelectionPropertyChange) {
+        guard !isReadOnly, moveState == nil, pastePlacementState == nil, drawTrackState == nil,
+              let match = blockLayoutMatch, selectedBlockInstances.count == 1, let instance = selectedBlockInstances.first,
+              let anchor = match.anchor(of: instance.path),
+              match.layouts[instance.path]?.packages.values.contains(where: { $0.fixed }) == false else {
+            return
+        }
+        let previous = editedBoard ?? sourceBoard
+        guard let package = previous.packages.first(where: { normalizedID($0.id) == normalizedID(anchor.package.id) }) else {
+            return
+        }
+        let parts = HorizontalBlockInstanceSummary.parts(of: instance, in: match, board: previous)
+        guard !parts.isEmpty else {
+            return
+        }
+        // What the edit does to the instance; nothing where the anchor
+        // already has the value.
+        let edit: (actionName: String, apply: (inout HorizontalBoard) -> Void)
+        switch (change.propertyID, change.value) {
+        case (HorizontalBlockInstanceSummary.positionXPropertyID, .length(let x)) where x != package.position.x:
+            edit = ("Move Instance", { moveSelectedObjects(by: HorizontalPoint(x: x - package.position.x, y: 0), board: &$0) })
+        case (HorizontalBlockInstanceSummary.positionYPropertyID, .length(let y)) where y != package.position.y:
+            edit = ("Move Instance", { moveSelectedObjects(by: HorizontalPoint(x: 0, y: y - package.position.y), board: &$0) })
+        case (HorizontalBlockInstanceSummary.anglePropertyID, .angle(let angle))
+            where wrappedAngle(angle) != wrappedAngle(package.angle):
+            let turn = wrappedAngle(angle) - wrappedAngle(package.angle)
+            edit = ("Rotate Instance", { rotateSelectedObjects(around: package.position, by: turn, board: &$0) })
+        case (HorizontalBlockInstanceSummary.flippedPropertyID, .bool(let on)) where on != package.mirrored:
+            edit = ("Flip Instance", { mirrorSelectedObjects(around: package.position, board: &$0) })
+        default:
+            return
+        }
+        var draft = previous
+        // The move, turn and flip act on the selection.
+        let kept = selectedObjects
+        selectedObjects = parts
+        edit.apply(&draft)
+        selectedObjects = kept
+        let actionName = edit.actionName
+        registerUndoSnapshot(previous, actionName: actionName)
+        editedBoard = draft
+        invalidateSelectableCache()
+        hoveredObject = nil
+        publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previous, kind: .transform))
+        publishSelectionContext()
+    }
+
+    /// The anchor of the instance the selection is, whole
+    /// (`HorizontalBlockInstanceSummary.wholeInstance`), where it is on
+    /// `board`: what R and E turn and flip it about.
+    private func selectedInstanceAnchor(in board: HorizontalBoard) -> HorizontalPoint? {
+        guard let match = blockLayoutMatch else {
+            return nil
+        }
+        let packages = selectedObjects.filter { $0.type == .boardPackage }.map(\.id)
+        guard let instance = HorizontalBlockInstanceSummary.wholeInstance(selectedPackages: packages, in: match),
+              let anchor = match.anchor(of: instance.path) else {
+            return nil
+        }
+        let id = normalizedID(anchor.package.id)
+        return board.packages.first { normalizedID($0.id) == id }?.position
+    }
+
+    /// The mark on the anchor of the block instance the selection is, whole:
+    /// a cross on a halo, a fixed size on screen, at the point Instance X and
+    /// Y place. None while something is being moved or placed, which would
+    /// leave it behind.
+    func blockInstanceAnchorMark() -> (rects: [HorizontalMetalAnchoredRectPrimitive], key: Int) {
+        guard moveState == nil, pastePlacementState == nil, packagePlacementState == nil, poolPlacementState == nil,
+              let anchor = selectedInstanceAnchor(in: board) else {
+            return ([], 0)
+        }
+        let halo = HorizontalMetalRGBA(theme.background.opacity(0.9))
+        let cross = HorizontalMetalRGBA(theme.selectableOuter.opacity(0.95))
+        let rects = [
+            HorizontalMetalAnchoredRectPrimitive(center: anchor, color: halo, width: 26, height: 6),
+            HorizontalMetalAnchoredRectPrimitive(center: anchor, color: halo, width: 6, height: 26),
+            HorizontalMetalAnchoredRectPrimitive(center: anchor, color: cross, width: 22, height: 2),
+            HorizontalMetalAnchoredRectPrimitive(center: anchor, color: cross, width: 2, height: 22),
+        ]
+        var hasher = Hasher()
+        hasher.combine(rects)
+        return (rects, hasher.finalize())
     }
 
     private func selectBlockInstances() {
@@ -5189,6 +5284,16 @@ struct BoardCanvasView: View {
                 snapToGrid: snapBoardPointToGrid
             )
             : start
+        // A block instance selected whole is held by its anchor: grabbed by
+        // anything but a point of its own, the move takes the anchor onto the
+        // grid, where Instance X and Y would place it, and keeps it there.
+        let anchorOffset = measure("instance anchor") { () -> HorizontalPoint in
+            guard tracksCursor, !selectionPointKeys.contains(pointKey(start)),
+                  let anchor = selectedInstanceAnchor(in: originalBoard) else {
+                return .zero
+            }
+            return anchor - snapBoardPointToGrid(anchor)
+        }
         let residentMovePlan = measure("resident plan") {
             boardResidentMovePlan(for: moveSelection, in: originalBoard)
         }
@@ -5197,7 +5302,7 @@ struct BoardCanvasView: View {
         }
         measure("state assign") {
             moveState = MoveState(
-                startPoint: grabbedPoint,
+                startPoint: grabbedPoint + anchorOffset,
                 lastPoint: grabbedPoint,
                 originalBoard: originalBoard,
                 tracksCursor: tracksCursor,
@@ -8123,8 +8228,13 @@ struct BoardCanvasView: View {
     /// board grid only when everything that places it is on that grid
     /// already: a board holds parts placed off the grid on purpose, and those
     /// turn about their exact middle, as Horizon turns a board's selection.
+    /// A block instance selected whole turns and flips about its anchor
+    /// instead, where Instance X and Y place it.
     private func boardSelectionPivot(in board: HorizontalBoard) -> HorizontalPoint? {
-        HorizontalCanvasModeSupport.selectionPivot(
+        if let anchor = selectedInstanceAnchor(in: board) {
+            return anchor
+        }
+        return HorizontalCanvasModeSupport.selectionPivot(
             for: selectedObjects,
             origins: { selectionAnchorPoints(for: $0, in: board) },
             snapToGrid: { center, origins in
@@ -9331,6 +9441,10 @@ struct BoardCanvasView: View {
         }
         if change.propertyID == HorizontalBlockInstanceSummary.copyLayoutActionID {
             copyBlockLayoutToOtherInstances()
+            return
+        }
+        if HorizontalBlockInstanceSummary.placementPropertyIDs.contains(change.propertyID) {
+            placeBlockInstance(change)
             return
         }
         // The sidebar's plane and keepout buttons, each its own edit.

@@ -38,6 +38,13 @@ enum HorizontalBlockInstanceSummary {
 
     static let selectActionID = "blockInstance.select"
     static let copyLayoutActionID = "blockInstance.copyLayout"
+    /// The instance's position, angle and side, its anchor's
+    /// (`HorizontalBlockLayoutMatch.anchor(of:)`).
+    static let positionXPropertyID = "blockInstance.positionX"
+    static let positionYPropertyID = "blockInstance.positionY"
+    static let anglePropertyID = "blockInstance.angle"
+    static let flippedPropertyID = "blockInstance.flipped"
+    static let placementPropertyIDs: Set<String> = [positionXPropertyID, positionYPropertyID, anglePropertyID, flippedPropertyID]
 
     /// The innermost instances of blocks used more than once that the
     /// selected packages are parts of, in name order.
@@ -60,6 +67,9 @@ enum HorizontalBlockInstanceSummary {
             return [HorizontalSelectionHUDDetail(label: "Block instances", value: blocks.count == 1 ? "\(names) of \(blockName)" : names)]
         }
         var rows = [HorizontalSelectionHUDDetail(label: "Block instance", value: "\(instance.name) of \(blockName)")]
+        if let anchor = match.anchor(of: instance.path) {
+            rows.append(HorizontalSelectionHUDDetail(label: "Anchor", value: anchor.package.componentDetails?.refdes ?? anchor.package.label))
+        }
         let classmates = match.classmates(of: instance.path).compactMap { match.instances.instances[$0]?.name }
         rows.append(HorizontalSelectionHUDDetail(label: "In sync with", value: classmates.isEmpty ? "No other instance" : classmates.joined(separator: ", ")))
         for sibling in match.instances.siblings(of: instance) {
@@ -68,6 +78,37 @@ enum HorizontalBlockInstanceSummary {
             rows.append(HorizontalSelectionHUDDetail(label: "Differs from \(sibling.name)", value: parts.joined(separator: ", ")))
         }
         return rows
+    }
+
+    /// The instance's position, angle and side, its anchor's, which an edit
+    /// changes by moving, turning or flipping the whole instance about the
+    /// anchor. Shown, not edited, while one of its parts is fixed: the
+    /// instance would come apart.
+    static func placementProperties(for instance: Instance, in match: HorizontalBlockLayoutMatch) -> [HorizontalSelectionProperty] {
+        guard let anchor = match.anchor(of: instance.path) else {
+            return []
+        }
+        let fixed = match.layouts[instance.path]?.packages.values.contains { $0.fixed } ?? false
+        let package = anchor.package
+        func property(_ id: String, _ label: String, _ editor: HorizontalSelectionPropertyEditor, _ value: HorizontalSelectionPropertyValue) -> HorizontalSelectionProperty {
+            HorizontalSelectionProperty(id: id, label: label, editor: fixed ? .readOnly : editor, value: value)
+        }
+        return [
+            property(positionXPropertyID, "Instance X", .length, .length(package.position.x)),
+            property(positionYPropertyID, "Instance Y", .length, .length(package.position.y)),
+            property(anglePropertyID, "Instance angle", .angle, .angle(package.angle)),
+            property(flippedPropertyID, "Instance flipped", .bool, .bool(package.mirrored)),
+        ]
+    }
+
+    /// The instance whose parts are the packages selected, all of them and
+    /// no others, innermost first: the selection Select Instance makes.
+    static func wholeInstance(selectedPackages packageIDs: [String], in match: HorizontalBlockLayoutMatch) -> Instance? {
+        let selected = Set(packageIDs.map { $0.lowercased() })
+        guard let first = packageIDs.first else {
+            return nil
+        }
+        return match.instances(ofPackage: first).first { match.layouts[$0.path]?.packageIDs == selected }
     }
 
     /// The group's buttons: Select Instance, and Copy Layout to Other
@@ -99,6 +140,20 @@ enum HorizontalBlockInstanceSummary {
             default: return false
             }
         }
+    }
+
+    /// All of `instance`'s parts and own tracks and vias, as refs to them on
+    /// `board`, shown or not: what placing the instance moves, which mustn't
+    /// leave copper on a hidden layer behind.
+    static func parts(of instance: Instance, in match: HorizontalBlockLayoutMatch, board: HorizontalBoard) -> [HorizontalSelectableRef] {
+        let packages = match.layouts[instance.path]?.packageIDs ?? []
+        let owned = match.owned(instance.path)
+        return board.packages.filter { packages.contains($0.id.lowercased()) }
+            .map { HorizontalSelectableRef(id: $0.id, type: .boardPackage) }
+            + board.tracks.filter { owned.tracks.contains($0.id.lowercased()) }
+            .map { HorizontalSelectableRef(id: $0.id, type: .track, layer: $0.layer) }
+            + board.vias.filter { owned.vias.contains($0.id.lowercased()) }
+            .map { HorizontalSelectableRef(id: $0.id, type: .via) }
     }
 
     /// The refdes of `instance`'s member at local path `local`.

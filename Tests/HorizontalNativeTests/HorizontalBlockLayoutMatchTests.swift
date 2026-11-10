@@ -38,6 +38,19 @@ final class HorizontalBlockLayoutMatchTests: XCTestCase {
         XCTAssertNotNil(index.localNet(in1, in: first), "the port is the instance's IN there")
     }
 
+    func testAnInstanceIsPlacedByItsLowestNumberedUElseItsFirstPartByRefdes() throws {
+        XCTAssertEqual(HorizontalBlockLayoutMatch.anchorKey(among: ["a": "R1", "b": "U10", "c": "U2", "d": "C1"]), "c", "U2 before U10")
+        XCTAssertEqual(HorizontalBlockLayoutMatch.anchorKey(among: ["a": "U?", "b": "U7A", "c": "R1"]), "b", "a U with a number")
+        XCTAssertEqual(HorizontalBlockLayoutMatch.anchorKey(among: ["a": "R10", "b": "R2", "c": "C3"]), "c", "no U: the first by refdes")
+        XCTAssertEqual(HorizontalBlockLayoutMatch.anchorKey(among: ["a": "R10", "b": "R2"]), "b", "R2 before R10")
+        XCTAssertNil(HorizontalBlockLayoutMatch.anchorKey(among: [:]))
+
+        fixture = try BlockLayoutFixture(instances: 2)
+        let anchor = try XCTUnwrap(try fixture.match().anchor(of: fixture.path(1)))
+        XCTAssertEqual(anchor.local, fixture.components["R1"]!.lowercased(), "Channel has no U: R1")
+        XCTAssertEqual(anchor.package.position, HorizontalPoint(x: 20_000_000, y: 0), "I2's R1")
+    }
+
     func testInstancesShiftedTurnedOrFlippedAreLaidOutAlike() throws {
         fixture = try BlockLayoutFixture(instances: 5)
         try fixture.place(fixture.instances[1], x: 30, y: 20, angle: 90)
@@ -190,7 +203,9 @@ final class HorizontalBlockInstanceSummaryTests: XCTestCase {
         let instances = HorizontalBlockInstanceSummary.instances(ofPackages: [second], in: match)
         XCTAssertEqual(instances.map(\.name), ["I2"])
         let rows = HorizontalBlockInstanceSummary.details(for: instances, in: match).map { "\($0.label): \($0.value)" }
-        XCTAssertEqual(rows, ["Block instance: I2 of Channel", "In sync with: I1, I3", "Differs from I1: R3", "Differs from I3: R3"])
+        let anchor = try XCTUnwrap(match.anchor(of: fixture.path(1))?.package.componentDetails?.refdes)
+        XCTAssertEqual(rows, ["Block instance: I2 of Channel", "Anchor: \(anchor)", "In sync with: I1, I3",
+                              "Differs from I1: R3", "Differs from I3: R3"])
 
         let first = try fixture.packageID(fixture.instances[0], "R2")
         let both = HorizontalBlockInstanceSummary.instances(ofPackages: [second, first], in: match)
