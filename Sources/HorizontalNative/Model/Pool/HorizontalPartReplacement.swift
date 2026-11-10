@@ -143,105 +143,14 @@ struct HorizontalPartReplacement: Equatable {
     }
 
     /// Replace as edit operations: `set_part` for every target not already on
-    /// `partID`. The entity stays, so `set_part` keeps the connections.
+    /// `partID`. The entity stays, so `set_part` keeps the connections. A part
+    /// in another package breaks the board connections of pads the new
+    /// footprint doesn't have, their copper left on junctions where the pads
+    /// were (`set_part`).
     func operations(partID: String) -> [JSONDictionary] {
         let partID = partID.lowercased()
         return targets.filter { $0.partID != partID }.map {
             ["op": HorizontalEditOperationKind.setPart.rawValue, "component": $0.componentID, "part": partID]
         }
-    }
-
-    /// The targets with copper on their pads: a track on the board that ends
-    /// on one. `board` is the board file's JSON; only the top block has one.
-    func routedTargets(board: JSONDictionary) -> [Target] {
-        guard blockID == nil else {
-            return []
-        }
-        var packagesByComponent = [String: Set<String>]()
-        for (packageID, package) in board.dictionaryMap("packages") {
-            if let component = package.string("component")?.lowercased() {
-                packagesByComponent[component, default: []].insert(packageID.lowercased())
-            }
-        }
-        var routedPackages = Set<String>()
-        for (_, track) in board.dictionaryMap("tracks") {
-            for end in ["from", "to"] {
-                if let pad = track.dictionary(end)?.string("pad"),
-                   let package = pad.split(separator: "/").first {
-                    routedPackages.insert(package.lowercased())
-                }
-            }
-        }
-        return targets.filter { !(packagesByComponent[$0.componentID] ?? []).isDisjoint(with: routedPackages) }
-    }
-
-    /// Why giving the targets a part in package `newPackageID` can't be done
-    /// as `set_part` does it, or nil.
-    ///
-    /// `set_part` leaves the board alone, and the board takes a component's
-    /// package from its part when it loads, as Horizon's does
-    /// (`BoardPackage::update_package`). A placed component in another
-    /// package simply shows the new footprint where it was. Copper ending
-    /// on its pads can't follow: the new package's pads are other pads, and
-    /// Horizon drops such a track when it loads the board. So a package
-    /// change is refused for a routed component rather than left to lose
-    /// its tracks.
-    func packageChangeRefusal(
-        newPackageID: String?,
-        partName: String,
-        currentPackageID: (String) -> String?,
-        board: JSONDictionary?,
-        packageName: (String) -> String
-    ) -> String? {
-        guard let board else {
-            return nil
-        }
-        let newPackageID = newPackageID?.lowercased()
-        let changing = routedTargets(board: board).filter { target in
-            guard let partID = target.partID else { return false }
-            return currentPackageID(partID)?.lowercased() != newPackageID
-        }
-        guard let first = changing.first else {
-            return nil
-        }
-        let names = changing.map { $0.refdes.isEmpty ? String($0.componentID.prefix(8)) : $0.refdes }
-        let listed = names.count > 6 ? names.prefix(5).joined(separator: ", ") + " and \(names.count - 5) more" : names.joined(separator: ", ")
-        let old = first.partID.flatMap(currentPackageID).map(packageName) ?? "its package"
-        let new = newPackageID.map(packageName) ?? "no package"
-        return "“\(partName)” comes in \(new), not \(old), and \(listed) \(changing.count == 1 ? "has" : "have") tracks on "
-            + "\(changing.count == 1 ? "its" : "their") pads, which the new footprint doesn't have. Nothing was changed: "
-            + "remove those tracks first, or choose a part in \(old)."
-    }
-
-    /// Everything that stops Replace giving the targets `item` as the
-    /// project stands in `archive`: `refusal(for:)`, then a change of
-    /// package under copper (`packageChangeRefusal`). The targets' parts
-    /// are the project pool's, so `project.poolParts` gives their packages.
-    func refusal(
-        for item: HorizontalPoolLibraryItem,
-        packageName: String,
-        project: HorizontalProject,
-        archive: HorizontalProjectArchive
-    ) -> String? {
-        if let refusal = refusal(for: item) {
-            return refusal
-        }
-        let parts = Dictionary(project.poolParts.map { ($0.id.lowercased(), $0) }) { first, _ in first }
-        var packageNames = [String: String]()
-        for part in project.poolParts {
-            if let id = part.packageID?.lowercased() { packageNames[id] = part.packageName }
-        }
-        if !item.packageID.isEmpty { packageNames[item.packageID.lowercased()] = packageName }
-        let store = HorizontalArchiveFileStore(archive: archive, baseURL: project.baseURL)
-        let board = project.boardFilename
-            .flatMap { try? store.read(project.baseURL.appendingPathComponent($0)) }
-            .flatMap { try? JSONHelper.loadDictionary(from: $0) }
-        return packageChangeRefusal(
-            newPackageID: item.packageID.isEmpty ? nil : item.packageID,
-            partName: item.name,
-            currentPackageID: { parts[$0.lowercased()]?.packageID },
-            board: board,
-            packageName: { packageNames[$0.lowercased()] ?? String($0.prefix(8)) }
-        )
     }
 }

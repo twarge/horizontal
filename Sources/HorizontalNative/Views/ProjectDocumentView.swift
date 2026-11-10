@@ -5685,8 +5685,8 @@ struct ProjectWorkspaceView: View {
                 ? "Read-only operation is enabled in Horizontal."
                 : selectedSchematic == nil ? "This project has no schematic to place parts in." : nil,
             replacement: libraryPartReplacement,
-            replace: isReadOnly ? nil : { item, packageName, replacement in
-                replacePartsFromLibrary(item, packageName: packageName, replacement)
+            replace: isReadOnly ? nil : { item, _, replacement in
+                replacePartsFromLibrary(item, replacement)
             },
             copyTargets: { item in
                 // A part of this project's pool, which no attached pool has.
@@ -5759,12 +5759,13 @@ struct ProjectWorkspaceView: View {
     /// component is given it with `set_part`, as one undoable edit. The
     /// entity stays, so their connections do, and the schematic and board
     /// reload showing the part's MPN, value and package. A package change
-    /// under a routed component is refused before anything is written.
-    private func replacePartsFromLibrary(_ item: HorizontalPoolLibraryItem, packageName: String, _ replacement: HorizontalPartReplacement) {
+    /// breaks the board connections of pads the new footprint lacks, the
+    /// copper left on junctions where they were (`set_part`).
+    private func replacePartsFromLibrary(_ item: HorizontalPoolLibraryItem, _ replacement: HorizontalPartReplacement) {
         guard !isReadOnly else {
             return
         }
-        if let refusal = replacement.refusal(for: item, packageName: packageName, project: project, archive: document.archive) {
+        if let refusal = replacement.refusal(for: item) {
             libraryReplacementError = refusal
             return
         }

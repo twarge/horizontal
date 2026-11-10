@@ -117,7 +117,7 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .removeComponent: "Remove a component, its symbols, its board package (a sub-block's component, the package of every instance of it), and the copper attached to it. The wiring that served only it goes too — wires that reach no pin once it is gone, with their labels and power symbols, and dead ends that ran to it — unless keep_wiring."
         case .setValue: "Set a component's value. A part's own value is the one shown, and the apply_ops reply gives warnings when it hides the value set."
         case .setRefdes: "Set a component's reference designator."
-        case .setPart: "Assign a pool part (and its entity) to a component; null clears the part."
+        case .setPart: "Assign a pool part (and its entity) to a component; null clears the part. A part in another package breaks the board connections of the pads the new package lacks: the tracks on them end on junctions where the pads were, which the reply's disconnected_pads names (package/pad)."
         case .setNoPopulate: "Mark a component do-not-populate or not."
         case .setGroupTag: "Set the group and tag names Horizon uses to copy placement between identical sub-circuits."
         case .ensureNet: "Create a net if no net has that id or name; returns its id. An empty name always makes a new net with no name."
@@ -912,7 +912,11 @@ final class HorizontalProjectEditor {
         case .setPart:
             let id = try componentID(params)
             change["component"] = id
-            change["cleared_connections"] = try setPart(id, partID: params["part"] as? String)
+            let result = try setPart(id, partID: params["part"] as? String)
+            change["cleared_connections"] = result.clearedConnections
+            if !result.disconnectedPads.isEmpty {
+                change["disconnected_pads"] = result.disconnectedPads
+            }
         case .setNoPopulate:
             let id = try componentID(params)
             guard let flag = params.bool("no_populate") else {
@@ -1367,12 +1371,24 @@ final class HorizontalProjectEditor {
         return (id, true)
     }
 
-    private func setPart(_ id: String, partID: String?) throws -> Bool {
+    /// `set_part`: the part, and with another entity the entity, which
+    /// clears the connections. The board takes the component's package from
+    /// its part when it loads, as Horizon's does (`BoardPackage::update_package`),
+    /// so a part in another package shows the new footprint where the old
+    /// one was. Copper on a pad the new package doesn't have can't follow
+    /// it, and Horizon would drop such a track when it loads the board: its
+    /// connection is broken instead, the end moved onto a junction where the
+    /// pad was, as Disconnect does (`disconnectPadEnds`), and the pads are
+    /// returned as "package/pad".
+    private func setPart(_ id: String, partID: String?) throws -> (clearedConnections: Bool, disconnectedPads: [String]) {
         var clearedConnections = false
+        var disconnectedPads = [String]()
         if let partID {
             guard let part = poolPart(partID.lowercased()) else {
                 throw HorizontalDispatchError.notFound("No pool part \(partID).")
             }
+            let previousPartID = components().first { $0.key.lowercased() == id.lowercased() }?.value.string("part")?.lowercased()
+            disconnectedPads = try disconnectPadsMissing(from: part, previousPartID: previousPartID, component: id)
             try updateComponent(id) { component in
                 let previousEntity = component.string("entity")?.lowercased()
                 component["part"] = partID.lowercased()
@@ -1388,7 +1404,37 @@ final class HorizontalProjectEditor {
         } else {
             try updateComponent(id) { $0.removeValue(forKey: "part") }
         }
-        return clearedConnections
+        return (clearedConnections, disconnectedPads)
+    }
+
+    /// For `set_part`: the pads of the component's board packages, one per
+    /// instance of its block, that copper ends on and `part`'s package
+    /// doesn't have, disconnected (`disconnectPadEnds`). Nothing while the
+    /// package stays the part's, and every routed pad when the new
+    /// package's pads can't be read, as none of them is sure to be there.
+    private func disconnectPadsMissing(from part: HorizontalPoolPart, previousPartID: String?, component id: String) throws -> [String] {
+        guard let boardKey = boardFileKey(), var board = files[boardKey] else {
+            return []
+        }
+        let newPackageID = part.packageID?.lowercased()
+        if let previousPartID, let previous = poolPart(previousPartID), previous.packageID?.lowercased() == newPackageID {
+            return []
+        }
+        let components = Set(try boardComponentIDs(ofBlockComponents: [id]))
+        let packages = Set(board.dictionaryMap("packages")
+            .filter { components.contains($0.value.string("component")?.lowercased() ?? "") }
+            .keys.map { $0.lowercased() })
+        guard !packages.isEmpty else {
+            return []
+        }
+        let newPackage = pool.package(forPart: part.id) ?? newPackageID.flatMap { pool.package($0) }
+        let keptPads = newPackage.map { Set($0.dictionaryMap("pads").keys.map { $0.lowercased() }) }
+        let disconnected = disconnectPadEnds(in: &board, packages: packages) { keptPads?.contains($0) ?? false }
+        if !disconnected.isEmpty {
+            files[boardKey] = board
+            dirty.insert(boardKey)
+        }
+        return disconnected
     }
 
     private func removeComponent(_ id: String) throws -> JSONDictionary {
@@ -8428,10 +8474,77 @@ final class HorizontalProjectEditor {
         return removeBoardPackages { _, component in ids.contains(component) }
     }
 
+    /// The ends of tracks and connection lines on the pads of the board
+    /// packages `packageIDs` names, other than the pads (by pad uuid) that
+    /// `keeps` keeps, moved onto a junction at the pad's position, one
+    /// junction for each pad: the copper stays, the tracks that met on the
+    /// pad still meet, and the pad is no longer connected, as Horizon's
+    /// `Board::disconnect_package` leaves it. A track ending on a pad the
+    /// board doesn't place has nowhere to go and is dropped. Returns the
+    /// pads disconnected, as "package/pad", in order.
+    @discardableResult
+    private func disconnectPadEnds(
+        in board: inout JSONDictionary,
+        packages packageIDs: Set<String>,
+        keeping keeps: (_ pad: String) -> Bool = { _ in false }
+    ) -> [String] {
+        var junctions = board["junctions"] as? JSONDictionary ?? [:]
+        let padPositions = project.board?.packagePadPositions ?? [:]
+        var padJunctions = [String: String]()
+        var droppedPads = Set<String>()
+        for collection in ["tracks", "connection_lines"] {
+            guard var items = board[collection] as? JSONDictionary else {
+                continue
+            }
+            for (itemID, value) in items {
+                guard var item = value as? JSONDictionary else {
+                    continue
+                }
+                var changed = false
+                var drop = false
+                for end in ["from", "to"] {
+                    guard var endpoint = item.dictionary(end), let pad = endpoint.string("pad") else {
+                        continue
+                    }
+                    let pieces = pad.split(separator: "/", maxSplits: 1).map { String($0).lowercased() }
+                    guard pieces.count == 2, packageIDs.contains(pieces[0]), !keeps(pieces[1]) else {
+                        continue
+                    }
+                    let key = "\(pieces[0])/\(pieces[1])"
+                    let junctionID: String
+                    if let existing = padJunctions[key] {
+                        junctionID = existing
+                    } else if let position = padPositions[pad.lowercased()] ?? padPositions[key] {
+                        junctionID = UUID().uuidString.lowercased()
+                        junctions[junctionID] = ["position": [Int(position.x.rounded()), Int(position.y.rounded())]]
+                        padJunctions[key] = junctionID
+                    } else {
+                        droppedPads.insert(key)
+                        drop = true
+                        break
+                    }
+                    endpoint["pad"] = NSNull()
+                    endpoint["junc"] = junctionID
+                    item[end] = endpoint
+                    changed = true
+                }
+                if drop {
+                    items.removeValue(forKey: itemID)
+                } else if changed {
+                    items[itemID] = item
+                }
+            }
+            board[collection] = items
+        }
+        board["junctions"] = junctions
+        return padJunctions.keys.sorted() + droppedPads.subtracting(padJunctions.keys).sorted()
+    }
+
     /// Removes the board packages `isDoomed` picks, by package and component
     /// uuid, with their smashed texts. Tracks that ended on one of their pads
     /// keep their copper: the pad end becomes a junction at the pad's
-    /// position, the way Horizon's delete leaves a track when its pad goes.
+    /// position, the way Horizon's delete leaves a track when its pad goes
+    /// (`disconnectPadEnds`).
     private func removeBoardPackages(where isDoomed: (_ package: String, _ component: String) -> Bool) -> Int {
         guard let boardKey = boardFileKey(), var board = files[boardKey] else {
             return 0
@@ -8452,43 +8565,7 @@ final class HorizontalProjectEditor {
             }
         }
         board["packages"] = packages
-
-        var junctions = board["junctions"] as? JSONDictionary ?? [:]
-        var tracks = board["tracks"] as? JSONDictionary ?? [:]
-        let padPositions = project.board?.packagePadPositions ?? [:]
-        for (trackID, value) in tracks {
-            guard var track = value as? JSONDictionary else {
-                continue
-            }
-            var changed = false
-            var drop = false
-            for end in ["from", "to"] {
-                guard var endpoint = track.dictionary(end), let pad = endpoint.string("pad") else {
-                    continue
-                }
-                let pieces = pad.split(separator: "/", maxSplits: 1).map { String($0).lowercased() }
-                guard pieces.count == 2, doomedIDs.contains(pieces[0]) else {
-                    continue
-                }
-                guard let position = padPositions[pad.lowercased()] ?? padPositions["\(pieces[0])/\(pieces[1])"] else {
-                    drop = true
-                    break
-                }
-                let junctionID = UUID().uuidString.lowercased()
-                junctions[junctionID] = ["position": [Int(position.x.rounded()), Int(position.y.rounded())]]
-                endpoint["pad"] = NSNull()
-                endpoint["junc"] = junctionID
-                track[end] = endpoint
-                changed = true
-            }
-            if drop {
-                tracks.removeValue(forKey: trackID)
-            } else if changed {
-                tracks[trackID] = track
-            }
-        }
-        board["tracks"] = tracks
-        board["junctions"] = junctions
+        disconnectPadEnds(in: &board, packages: doomedIDs)
         if !doomedTextIDs.isEmpty {
             var texts = board["texts"] as? JSONDictionary ?? [:]
             texts = texts.filter { !doomedTextIDs.contains($0.key.lowercased()) }

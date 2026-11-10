@@ -96,34 +96,6 @@ final class HorizontalPoolPartReplacementTests: XCTestCase {
         XCTAssertEqual(names(.package, "", replacement), ["R0603"], "the filter is the parts'")
     }
 
-    func testCopperOnAComponentsPadsIsWhatStopsAPackageChange() throws {
-        let replacement = try XCTUnwrap(HorizontalPartReplacement(componentIDs: ["c-r12", "c-r2"], block: block(components)))
-        let board: JSONDictionary = [
-            "packages": [
-                "bp-r12": ["component": "c-r12"] as JSONDictionary,
-                "bp-r2": ["component": "c-r2"] as JSONDictionary,
-            ] as JSONDictionary,
-            "tracks": [
-                "t1": ["from": ["pad": "bp-r12/pad-1"] as JSONDictionary, "to": ["junc": "j1"] as JSONDictionary] as JSONDictionary,
-            ] as JSONDictionary,
-        ]
-        XCTAssertEqual(replacement.routedTargets(board: board).map(\.refdes), ["R12"])
-        let packages = ["p-10k": "pkg-0603"]
-        func refusal(_ newPackage: String) -> String? {
-            replacement.packageChangeRefusal(newPackageID: newPackage, partName: "RC0805-22K", currentPackageID: { packages[$0] },
-                                             board: board, packageName: { ["pkg-0603": "R0603", "pkg-0805": "R0805"][$0] ?? $0 })
-        }
-        XCTAssertNil(refusal("pkg-0603"), "the same package keeps every pad")
-        XCTAssertEqual(refusal("pkg-0805"),
-                       "“RC0805-22K” comes in R0805, not R0603, and R12 has tracks on its pads, which the new footprint doesn't have. "
-                       + "Nothing was changed: remove those tracks first, or choose a part in R0603.")
-        // Nothing routed: the board takes the new package from the part.
-        var unrouted = board
-        unrouted["tracks"] = [String: Any]()
-        XCTAssertNil(replacement.packageChangeRefusal(newPackageID: "pkg-0805", partName: "x", currentPackageID: { packages[$0] },
-                                                      board: unrouted, packageName: { $0 }))
-    }
-
     // MARK: - Replace through the editor, as the window applies it
 
     private struct SharedEntityParts {
@@ -242,22 +214,28 @@ final class HorizontalPoolPartReplacementTests: XCTestCase {
             try XCTUnwrap(items.first { $0.category == .part && $0.uuid == uuid.lowercased() })
         }
 
-        // A track on R1's pad stops a package change, and says why, before
-        // anything is written.
+        // A track on R1's pad.
         try apply([["op": "place_track", "from": ["component": "R1", "pad": "1"], "to": ["x_mm": 10, "y_mm": 20],
                     "layer": 0, "width_mm": 0.2]])
         archive = try HorizontalProjectArchive.completeProject(from: url)
         project = try HorizontalProject.load(from: url)
-        let refusal = try XCTUnwrap(replacement.refusal(for: try item(parts.large), packageName: "R0805", project: project, archive: archive))
-        XCTAssertTrue(refusal.hasPrefix("“RC0805-22K” comes in R0805, not R0603, and R1 has tracks on its pads"), refusal)
+        func boardJSON(_ archive: HorizontalProjectArchive) throws -> JSONDictionary {
+            let store = HorizontalArchiveFileStore(archive: archive, baseURL: project.baseURL)
+            let data = try XCTUnwrap(try store.read(project.baseURL.appendingPathComponent(try XCTUnwrap(project.boardFilename))))
+            return try JSONHelper.loadDictionary(from: data)
+        }
+        let (trackID, track) = try XCTUnwrap(try boardJSON(archive).dictionaryMap("tracks").first)
+        let padPath = try XCTUnwrap(track.dictionary("from")?.string("pad")?.lowercased())
 
-        // The same package goes through: one edit, both components on the
-        // new part, every connection where it was.
-        XCTAssertNil(replacement.refusal(for: try item(parts.smallAlternative), packageName: "R0603", project: project, archive: archive))
+        // The same package: one edit, both components on the new part, every
+        // connection where it was, the track on its pad.
+        XCTAssertNil(replacement.refusal(for: try item(parts.smallAlternative)))
         let edited = try HorizontalCanvasProjectEdit.archive(
             applying: replacement.operations(partID: parts.smallAlternative), to: archive, in: project, block: replacement.blockID)
         XCTAssertEqual(edited.changes.count, 2)
         XCTAssertEqual(edited.changes.compactMap { $0.bool("cleared_connections") }, [false, false])
+        XCTAssertTrue(edited.changes.allSatisfy { $0["disconnected_pads"] == nil })
+        XCTAssertEqual(try boardJSON(edited.archive).dictionaryMap("tracks")[trackID]?.dictionary("from")?.string("pad")?.lowercased(), padPath)
         var reloaded = try HorizontalProject.loadSnapshot(of: edited.archive)
         reloaded.rebaseURLs(onto: project)
         let store = HorizontalArchiveFileStore(archive: edited.archive, baseURL: project.baseURL)
@@ -290,12 +268,33 @@ final class HorizontalPoolPartReplacementTests: XCTestCase {
         // Unrouted, R2 takes the part in the other package, and the board
         // draws R2 in that package where it was placed.
         let r2Only = try XCTUnwrap(HorizontalPartReplacement.current(componentIDs: [r2ID], archive: edited.archive, project: reloaded))
-        XCTAssertNil(r2Only.refusal(for: try item(parts.large), packageName: "R0805", project: reloaded, archive: edited.archive))
+        XCTAssertNil(r2Only.refusal(for: try item(parts.large)))
         let resized = try HorizontalCanvasProjectEdit.archive(applying: r2Only.operations(partID: parts.large), to: edited.archive, in: reloaded)
         let board = try HorizontalProject.loadSnapshot(of: resized.archive).board
         XCTAssertEqual(try pads(r2ID, on: board), parts.largePads)
         XCTAssertEqual(try placement(r2ID, on: board).componentDetails?.packageName, "R0805")
         XCTAssertEqual(try placement(r2ID, on: board).position, try placement(r2ID, on: project.board).position)
         XCTAssertEqual(try pads(r1ID, on: board), parts.smallPads, "R1 untouched")
+
+        // Routed, R1 takes it too: the new footprint has no pad for the
+        // track's end, so its connection is broken, the track left where it
+        // was, on a junction where the pad was, and R1 drawn in R0805.
+        var resizedProject = try HorizontalProject.loadSnapshot(of: resized.archive)
+        resizedProject.rebaseURLs(onto: project)
+        let padPosition = try XCTUnwrap(resizedProject.board?.packagePadPositions[padPath])
+        let r1Only = try XCTUnwrap(HorizontalPartReplacement.current(componentIDs: [r1ID], archive: resized.archive, project: resizedProject))
+        XCTAssertNil(r1Only.refusal(for: try item(parts.large)), "copper on its pads doesn't stop it")
+        let disconnected = try HorizontalCanvasProjectEdit.archive(
+            applying: r1Only.operations(partID: parts.large), to: resized.archive, in: resizedProject)
+        XCTAssertEqual(disconnected.changes.first?["disconnected_pads"] as? [String], [padPath])
+        let after = try boardJSON(disconnected.archive)
+        let kept = try XCTUnwrap(after.dictionaryMap("tracks")[trackID], "the track stays")
+        XCTAssertNil(kept.dictionary("from")?.string("pad"))
+        let junction = try XCTUnwrap(kept.dictionary("from")?.string("junc"))
+        XCTAssertEqual(after.dictionaryMap("junctions")[junction]?["position"] as? [Int],
+                       [Int(padPosition.x.rounded()), Int(padPosition.y.rounded())], "where the pad was")
+        let disconnectedBoard = try HorizontalProject.loadSnapshot(of: disconnected.archive).board
+        XCTAssertEqual(try pads(r1ID, on: disconnectedBoard), parts.largePads)
+        XCTAssertEqual(disconnectedBoard?.tracks.count, 1, "the board keeps the track when it loads")
     }
 }

@@ -1346,8 +1346,8 @@ struct HorizontalIPadProjectView: View {
                         ? "Read-only operation is enabled in Horizontal."
                         : project.schematic == nil ? "This project has no schematic to place parts in." : nil,
                     replacement: libraryPartReplacement,
-                    replace: isReadOnly ? nil : { item, packageName, replacement in
-                        replacePartsFromLibrary(item, packageName: packageName, replacement)
+                    replace: isReadOnly ? nil : { item, _, replacement in
+                        replacePartsFromLibrary(item, replacement)
                     },
                     copyTargets: { item in
                         guard let directory = project.poolDirectory,
@@ -1422,11 +1422,11 @@ struct HorizontalIPadProjectView: View {
 
     /// The Pools pane's Replace: the macOS workspace's, landing as one
     /// undoable edit through `applyArchiveEdit`.
-    private func replacePartsFromLibrary(_ item: HorizontalPoolLibraryItem, packageName: String, _ replacement: HorizontalPartReplacement) {
+    private func replacePartsFromLibrary(_ item: HorizontalPoolLibraryItem, _ replacement: HorizontalPartReplacement) {
         guard !isReadOnly, let current = project else {
             return
         }
-        if let refusal = replacement.refusal(for: item, packageName: packageName, project: current, archive: document.archive) {
+        if let refusal = replacement.refusal(for: item) {
             libraryReplacementError = refusal
             return
         }
