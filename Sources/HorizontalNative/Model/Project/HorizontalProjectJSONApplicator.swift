@@ -141,7 +141,7 @@ enum HorizontalProjectJSONApplicator {
         patchPlacements(&json, key: "packages", placements: board.packages, boardPackages: true)
         removeConnectionLinesReferencingPackages(&json, packageIDs: removedPackageIDs)
         patchSegments(&json, key: "tracks", segments: board.tracks, supportsLayer: true, supportsArcCenter: true,
-                      widthFromRulesKey: "width_from_net_class")
+                      widthFromRulesKey: "width_from_net_class", supportsLocked: true)
         patchJunctionEnds(&json, key: "tracks", segments: board.tracks, junctions: board.junctions)
         patchNewBoardTracks(&json, board: board)
         patchSegments(&json, key: "net_ties", segments: board.netTies, supportsLayer: true,
@@ -1346,7 +1346,8 @@ enum HorizontalProjectJSONApplicator {
         idPrefix: String? = nil,
         supportsLayer: Bool,
         supportsArcCenter: Bool = false,
-        widthFromRulesKey: String? = nil
+        widthFromRulesKey: String? = nil,
+        supportsLocked: Bool = false
     ) {
         guard var map = json[key] as? JSONDictionary else {
             return
@@ -1370,6 +1371,12 @@ enum HorizontalProjectJSONApplicator {
             // written only where the file states it or the model says false.
             if let widthFromRulesKey, item[widthFromRulesKey] != nil || !segment.widthFromRules {
                 item[widthFromRulesKey] = segment.widthFromRules
+            }
+            // Lock and Unlock. Track::serialize writes `locked` always, and
+            // one the file leaves out reads false, so an unlocked track the
+            // file says nothing of is left as it is.
+            if supportsLocked, item["locked"] != nil || segment.locked {
+                item["locked"] = segment.locked
             }
             if supportsArcCenter {
                 if let center = segment.center {
@@ -1961,6 +1968,13 @@ enum HorizontalProjectJSONApplicator {
             } else {
                 item["span"] = span.json
             }
+        }
+
+        // Lock and Unlock. Via::serialize writes `locked` always, and one the
+        // file leaves out reads false, so an unlocked via the file says
+        // nothing of is left as it is.
+        if item["locked"] != nil || via.locked {
+            item["locked"] = via.locked
         }
         return item
     }

@@ -123,6 +123,9 @@ struct HorizontalCanvasCommandActions {
     var canAutoplacePins: Bool = false
     var canResizeSymbol: Bool = false
     var canDisconnect: Bool = false
+    var canLockSelection: Bool = false
+    var canUnlockSelection: Bool = false
+    var canUnlockAllCopper: Bool = false
     var canShowInPoolManager: Bool = false
     var canShowInProjectPoolManager: Bool = false
     var canRoundOffVertex: Bool = false
@@ -730,6 +733,20 @@ struct HorizontalViewCommands: Commands {
                     canvasCommandActions?.dispatch(.disconnect)
                 }
                 .disabled(canvasCommandActions?.canDisconnect != true)
+
+                // Horizon's Lock, Unlock and Unlock All, on tracks and vias.
+                Button("Lock") {
+                    canvasCommandActions?.dispatch(.setCopperLocked(true))
+                }
+                .disabled(canvasCommandActions?.canLockSelection != true)
+                Button("Unlock") {
+                    canvasCommandActions?.dispatch(.setCopperLocked(false))
+                }
+                .disabled(canvasCommandActions?.canUnlockSelection != true)
+                Button("Unlock All") {
+                    canvasCommandActions?.dispatch(.unlockAllCopper)
+                }
+                .disabled(canvasCommandActions?.canUnlockAllCopper != true)
             }
             Button("Show in Pool Manager") {
                 canvasCommandActions?.dispatch(.showInPoolManager)

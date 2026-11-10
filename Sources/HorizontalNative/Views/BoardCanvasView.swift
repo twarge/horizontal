@@ -1942,6 +1942,8 @@ struct BoardCanvasView: View {
         hasher.combine(decalPickerIndex != nil)
         hasher.combine(netPickerPurpose != nil)
         hasher.combine(holePadstackChoices != nil)
+        // Lock, Unlock and Unlock All, as the copper is (an undo too).
+        hasher.combine(BoardCopperLock.commandSignature(selectedObjects, in: board))
         return hasher.finalize()
     }
 
@@ -3028,6 +3030,9 @@ struct BoardCanvasView: View {
             layerProperty,
             widthProperty,
         ].compactMap { $0 }
+        if editable, modeProfile.mode == .board, let locked = BoardCopperLockCommands.lockedProperty(ref, locked: segment.locked) {
+            properties.append(locked)
+        }
         // A track's or net tie's width is the track width rule's or its own
         // (Horizon's width_from_rules), and the rule says what it would be.
         if editable, includesNetClass {
@@ -3392,7 +3397,11 @@ struct BoardCanvasView: View {
     /// (see takeLocalViaControl).
     private func viaProperties(_ via: HorizontalMarker) -> [HorizontalSelectionProperty] {
         var properties = [
-            readOnlyProperty("name", "Net", netDisplayName(via.netID)),
+            (modeProfile.mode == .board && !isReadOnly
+                ? BoardCopperLockCommands.viaNetProperty(via, in: board, options: { sortedNetOptions() }) : nil)
+                ?? readOnlyProperty("name", "Net", netDisplayName(via.netID)),
+            modeProfile.mode == .board
+                ? BoardCopperLockCommands.lockedProperty(HorizontalSelectableRef(id: via.id, type: .via), locked: via.locked) : nil,
             editableNetClassProperty(for: via.netID),
             diffpairProperty(for: via.netID),
             readOnlyProperty("span", "Span", viaSpanName(via)),
@@ -3905,6 +3914,7 @@ struct BoardCanvasView: View {
             // Whether the selection can take a net is worked out when asked:
             // it floods the copper each selected track and via is part of.
             handlers.setNet = { requestSetNet() }
+            installCopperLockHandlers(&handlers)
             handlers.tuneTrack = { beginTuneTrack() }
             if let onEditDiffpair {
                 handlers.setDiffpair = { netIDs in
@@ -4227,6 +4237,9 @@ struct BoardCanvasView: View {
         entries.append(.separator)
         if writable, isDeletable(ref) { entries.append(.command(title: "Delete", .deleteSelection)) }
         if writable, canDisconnect(ref) { entries.append(.command(title: "Disconnect", .disconnect)) }
+        if writable, modeProfile.mode == .board, let entry = BoardCopperLockCommands.menuEntry(for: ref, in: board) {
+            entries.append(entry)
+        }
 
         // Net
         if hasNet {
@@ -5232,8 +5245,9 @@ struct BoardCanvasView: View {
 
         let originalBoard = measure("board snapshot") { board }
         let moveSelection = measure("expand selection") {
-            // Fixed packages don't move (tool_move filters them out).
-            expandedBoardMoveSelection(selectedObjects, in: originalBoard)
+            // Fixed packages don't move (tool_move filters them out), nor
+            // does locked copper (`BoardCopperLock`).
+            expandedBoardMoveSelection(BoardCopperLock.removingHeld(selectedObjects, in: originalBoard), in: originalBoard)
                 .filter { !isFixedPackage($0, in: originalBoard) }
         }
         // Nothing movable (e.g. only a fixed package selected): leave the
@@ -7749,9 +7763,10 @@ struct BoardCanvasView: View {
         var changed = false
         // Fixed packages can't be deleted — filter them (and their connection
         // lines, added by the expansion) before expanding the delete set.
-        let deletable = uniqueRefs(selectedObjects).filter { !isFixedPackage($0, in: board) }
+        // Nor can locked copper (`BoardCopperLock`), before and after.
+        let deletable = BoardCopperLock.removingHeld(uniqueRefs(selectedObjects), in: board).filter { !isFixedPackage($0, in: board) }
         // Junctions last, once what ends on them is gone.
-        let refs = expandedBoardDeleteRefs(from: deletable, in: board).sorted {
+        let refs = BoardCopperLock.removingHeld(expandedBoardDeleteRefs(from: deletable, in: board), in: board).sorted {
             ($0.type == .junction ? 1 : 0) < ($1.type == .junction ? 1 : 0)
         }
 
@@ -8458,7 +8473,7 @@ struct BoardCanvasView: View {
             junctions: board.junctions,
             junctionNetIDs: board.junctionNetIDs,
             vias: board.vias,
-            padPositions: board.packagePadPositions
+            padPositions: BoardCopperLock.pinnedEndPositions(board)
         )
     }
 
@@ -8475,7 +8490,7 @@ struct BoardCanvasView: View {
             vias: board.vias,
             packagePads: board.packagePads,
             packageHoles: board.packageHoles,
-            padPositions: board.packagePadPositions
+            padPositions: BoardCopperLock.pinnedEndPositions(board)
         )
         // Polygon parts share their polygon's resident spans, which a shift
         // moves whole. One with a point left behind (an edge moved alone, a
@@ -8550,7 +8565,7 @@ struct BoardCanvasView: View {
         // rest, matched against the board as it was (`BoardMovingPoints`).
         let original = board
         var movingPoints = BoardMovingPoints()
-        var padEnds = BoardTrackPadEnds(padPositions: original.packagePadPositions)
+        var padEnds = BoardTrackPadEnds(padPositions: BoardCopperLock.pinnedEndPositions(original))
         var movedLayerVertexKeys = Set<String>()
         let selectedRefSet = Set(selectedObjects)
         var movedPolygonPoints = Set<String>()
@@ -8583,7 +8598,7 @@ struct BoardCanvasView: View {
             return segmentEnds?.refs(of: ref).contains { selectedRefSet.contains($0) } ?? false
         }
 
-        for ref in selectedObjects {
+        for ref in BoardCopperLock.removingHeld(selectedObjects, in: original) {
             switch ref.type {
             case .boardPackage:
                 moveBoardPackage(ref: ref, by: delta, board: &board, geometry: packageGeometry[normalizedID(ref.id)])
@@ -8664,7 +8679,7 @@ struct BoardCanvasView: View {
         var mirroredPolygonPoints = Set<String>()
         let movingPackageIDs = self.movingPackageIDs(in: original)
         let packageGeometry = BoardPackageGeometry.index(of: original, packageIDs: movingPackageIDs)
-        for ref in selectedObjects {
+        for ref in BoardCopperLock.removingHeld(selectedObjects, in: original) {
             switch ref.type {
             case .boardPackage:
                 mirrorBoardPackage(ref: ref, around: center, board: &board, geometry: packageGeometry[normalizedID(ref.id)])
@@ -8734,12 +8749,12 @@ struct BoardCanvasView: View {
         defer { board.lowerPlaneOutlines(lifted: liftedOutlines) }
         let original = board
         var movingPoints = BoardMovingPoints()
-        var padEnds = BoardTrackPadEnds(padPositions: original.packagePadPositions)
+        var padEnds = BoardTrackPadEnds(padPositions: BoardCopperLock.pinnedEndPositions(original))
         var turnedPolygonPoints = Set<String>()
         let movingPackageIDs = self.movingPackageIDs(in: original)
         let packageGeometry = BoardPackageGeometry.index(of: original, packageIDs: movingPackageIDs)
 
-        for ref in selectedObjects {
+        for ref in BoardCopperLock.removingHeld(selectedObjects, in: original) {
             guard let center = refOrigin(ref) else {
                 continue
             }
@@ -8999,6 +9014,8 @@ struct BoardCanvasView: View {
     /// Moves a via with its drill and the copper on it, as the inspector's
     /// position fields do.
     private func moveVia(ref: HorizontalSelectableRef, by delta: HorizontalPoint, board: inout HorizontalBoard) {
+        // A locked via stays, as a fixed package does (`BoardCopperLock`).
+        guard !BoardCopperLock.isLocked(ref, in: board) else { return }
         let original = board
         var points = BoardMovingPoints()
         moveVia(ref: ref, by: delta, in: original, points: &points)
@@ -9689,6 +9706,10 @@ struct BoardCanvasView: View {
     ) {
         if propertyID == "netClass", case .choice(let classID) = value {
             updateNetClass(for: netID(for: ref), classID: classID, board: &board, changedNetClasses: &changedNetClasses)
+            return
+        }
+        // Locked, and a via's Net (`BoardCopperLock`, `BoardSetNet`).
+        if BoardCopperLockCommands.apply(value, propertyID: propertyID, to: ref, board: &board) {
             return
         }
         // A keepout option in its polygon's Keepout section is the keepout's.
@@ -18624,6 +18645,39 @@ extension BoardCanvasView {
         invalidateSelectableCache()
         hoveredObject = nil
         publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previous, kind: .properties))
+        publishSelectionContext()
+    }
+
+    /// Lock, Unlock and Unlock All (`BoardCopperLock`), each offered only
+    /// where it would change something.
+    private func installCopperLockHandlers(_ handlers: inout HorizontalCanvasCommandHandlerSet) {
+        let refs = selectedObjects.filter(BoardCopperLock.isLockable)
+        if BoardCopperLock.canSet(true, on: refs, in: board) {
+            handlers.lockSelection = { editCopperLock("Lock") { BoardCopperLock.setLocked(true, on: refs, in: &$0) } }
+        }
+        if BoardCopperLock.canSet(false, on: refs, in: board) {
+            handlers.unlockSelection = { editCopperLock("Unlock") { BoardCopperLock.setLocked(false, on: refs, in: &$0) } }
+        }
+        if BoardCopperLock.hasLocked(board) {
+            handlers.unlockAllCopper = { editCopperLock("Unlock All") { BoardCopperLock.unlockAll(in: &$0) } }
+        }
+    }
+
+    /// One undoable edit of the lock. It stays in the block instance it is
+    /// made in: a lock is the copper's own, not the layout's.
+    private func editCopperLock(_ actionName: String, _ edit: (inout HorizontalBoard) -> Bool) {
+        guard !isReadOnly else {
+            return
+        }
+        let previous = editedBoard ?? sourceBoard
+        var draft = previous
+        guard edit(&draft) else {
+            return
+        }
+        registerUndoSnapshot(previous, actionName: actionName)
+        editedBoard = draft
+        invalidateSelectableCache()
+        publishConnectivityResolvedEdit(draft)
         publishSelectionContext()
     }
 

@@ -165,7 +165,7 @@ extension HorizontalRouterWorld {
                 width: track.width,
                 layer: layer,
                 netCode: world.netCode(for: track.netID),
-                locked: false
+                locked: track.locked
             ))
         }
 
