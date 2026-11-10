@@ -381,6 +381,11 @@ struct HorizontalCanvasCommandHandlerSet {
     var mirrorSelection: () -> Void
     var mirrorSelectionHorizontal: (() -> Void)? = nil
     var mirrorSelectionVertical: (() -> Void)? = nil
+    /// Board: Align and Distribute; nil while the selection has too little
+    /// to line up.
+    var alignSelection: ((BoardAlignOperation) -> Void)? = nil
+    /// How many of the selected objects Align and Distribute would move.
+    var alignableSelectionCount = 0
     var drawNetLine: (() -> Void)?
     var drawTrack: (() -> Void)? = nil
     var drawGraphics: ((HorizontalDrawingPrimitive) -> Void)? = nil
@@ -517,6 +522,9 @@ struct HorizontalCanvasCommandHandlerSet {
         case .mirrorSelectionVertical:
             guard !isReadOnly else { return }
             mirrorSelectionVertical?()
+        case .alignSelection(let operation):
+            guard !isReadOnly, !hasInteraction else { return }
+            alignSelection?(operation)
         case .drawNetLine:
             guard !isReadOnly else { return }
             drawNetLine?()
@@ -743,7 +751,7 @@ struct HorizontalCanvasCommandHandlerSet {
 
     func actions() -> HorizontalCanvasCommandActions {
         let writable = !isReadOnly
-        return HorizontalCanvasCommandActions(
+        var actions = HorizontalCanvasCommandActions(
             canDeleteSelection: writable,
             canMoveSelection: writable,
             canRotateSelection: writable,
@@ -804,6 +812,8 @@ struct HorizontalCanvasCommandHandlerSet {
             roundOffVertexAdjustsRounding: roundOffVertexAdjustsRounding,
             dispatch: dispatch
         )
+        actions.alignableSelectionCount = writable && !hasInteraction && alignSelection != nil ? alignableSelectionCount : 0
+        return actions
     }
 }
 

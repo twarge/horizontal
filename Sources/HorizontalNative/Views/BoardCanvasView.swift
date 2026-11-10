@@ -3906,6 +3906,11 @@ struct BoardCanvasView: View {
             // it floods the copper each selected track and via is part of.
             handlers.setNet = { requestSetNet() }
             handlers.tuneTrack = { beginTuneTrack() }
+            let alignable = BoardAlignment.alignableRefs(selectedObjects, in: editedBoard ?? sourceBoard)
+            if alignable.count >= 2 {
+                handlers.alignSelection = { alignSelection($0) }
+                handlers.alignableSelectionCount = alignable.count
+            }
             if let onEditDiffpair {
                 handlers.setDiffpair = { netIDs in
                     guard netIDs.allSatisfy(onEditDiffpair.canEdit),
@@ -8068,6 +8073,44 @@ struct BoardCanvasView: View {
             mirrorSelectedObjects(around: center, board: &draft)
             rotateSelectedObjects(around: center, by: Self.quarterTurnAngle * 2, board: &draft)
         }
+    }
+
+    /// Edit ▸ Align and Edit ▸ Distribute (`BoardAlignment`): each object
+    /// moved on its own by what lines it up, its copper following as a move
+    /// takes it, all as one undoable edit. A fixed package stays. Left and
+    /// right are the screen's, so they swap seen from below.
+    private func alignSelection(_ operation: BoardAlignOperation) {
+        guard !isReadOnly, moveState == nil, drawGraphicsState == nil, drawTrackState == nil,
+              pastePlacementState == nil, poolPlacementState == nil, packagePlacementState == nil,
+              roundOffVertexState == nil, addVertexState == nil, tuneState == nil else {
+            return
+        }
+        let previousBoard = editedBoard ?? sourceBoard
+        let lookup = boardSelectablesByRef()
+        let items = BoardAlignment.items(for: selectedObjects, in: previousBoard) { BoardAlignment.bounds(of: lookup[$0] ?? []) }
+        let offsets = BoardAlignment.offsets(operation.onBoard(viewMirrored: viewport.mirrored), items: items)
+        guard !offsets.isEmpty else {
+            return
+        }
+        var draft = previousBoard
+        var points = BoardMovingPoints()
+        for (ref, delta) in offsets.sorted(by: { $0.key.id < $1.key.id }) {
+            switch ref.type {
+            case .boardPackage: moveBoardPackage(ref: ref, by: delta, board: &draft)
+            case .via: moveVia(ref: ref, by: delta, in: previousBoard, points: &points)
+            case .boardHole: moveHole(&draft.holes, ref: ref, by: delta)
+            case .boardDecal: moveBoardDecal(&draft.decals, ref: ref, by: delta)
+            case .text: moveText(&draft.texts, ref: ref, by: delta)
+            default: break
+            }
+        }
+        points.apply(from: previousBoard, to: &draft)
+        registerUndoSnapshot(previousBoard, actionName: operation.actionName)
+        editedBoard = draft
+        invalidateSelectableCache()
+        hoveredObject = nil
+        publishConnectivityResolvedEdit(draft, sync: BoardLayoutSyncIntent(baseline: previousBoard, kind: .transform))
+        publishSelectionContext()
     }
 
     private func rotateSelection() {

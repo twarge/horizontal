@@ -85,6 +85,9 @@ enum HorizontalCanvasCommand {
     case mirrorSelection
     case mirrorSelectionHorizontal
     case mirrorSelectionVertical
+    /// Board: Edit ▸ Align and Edit ▸ Distribute, on the selected packages,
+    /// vias, holes, decals and texts (`BoardAlignment`).
+    case alignSelection(BoardAlignOperation)
     case drawNetLine
     case drawTrack
     case drawGraphics(HorizontalDrawingPrimitive)

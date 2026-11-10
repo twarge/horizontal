@@ -134,6 +134,9 @@ struct HorizontalCanvasCommandActions {
     var canOpenBlock: Bool = false
     var canEditBlockSymbol: Bool = false
     var canUpdateAllPlanes: Bool = false
+    /// Edit ▸ Align and Distribute: how many objects of the board's
+    /// selection they would line up; 0 when they can't act.
+    var alignableSelectionCount: Int = 0
     var hasPlacementInteraction: Bool = false
     var hasRoundOffVertexInteraction: Bool = false
     var roundOffVertexAdjustsRounding: Bool = false
@@ -515,6 +518,8 @@ struct HorizontalViewCommands: Commands {
                     canvasCommandActions?.dispatch(.mirrorSelection)
                 }
                 .disabled(canvasCommandActions?.canMirrorSelection != true)
+
+                HorizontalAlignMenus(actions: canvasCommandActions)
 
                 Divider()
                 // The canvas takes these keys itself, by what they type
