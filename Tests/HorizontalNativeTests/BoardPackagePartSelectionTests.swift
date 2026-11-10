@@ -106,7 +106,9 @@ final class BoardPackagePartSelectionTests: XCTestCase {
 
         XCTAssertEqual(selected(.boardPackage, in: state.details), ["pkg"])
         XCTAssertEqual(selected(.boardHole, in: state.details), ["h"], "the pad's drill is the package's, not a hole of its own")
-        XCTAssertEqual(selected(.keepout, in: state.details), ["k"], "and so is its keepout")
+        // A free keepout is picked by its outline, as any polygon is.
+        XCTAssertEqual(selected(.polygonEdge, in: state.details), ["k"], "and so is its keepout")
+        XCTAssertEqual(selected(.keepout, in: state.details), [])
     }
 }
 #endif
