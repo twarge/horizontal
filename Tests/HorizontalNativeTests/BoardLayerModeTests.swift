@@ -302,6 +302,27 @@ final class BoardLayerModeRedrawTests: XCTestCase {
         return view.subviews.lazy.compactMap { self.boardLayer(in: $0) }.first
     }
 
+    /// The view the board's scene is drawn into.
+    private func boardView(in view: NSView) -> MTKView? {
+        if let metal = view as? MTKView, let renderer = metal.delegate as? HorizontalMetalBackdropView.Renderer,
+           renderer.layer(labeled: "Metal overlay") != nil { return metal }
+        return view.subviews.lazy.compactMap { self.boardView(in: $0) }.first
+    }
+
+    /// Waits for a frame that draws the composites again. The view draws on
+    /// needs-display, and a draw that finds no drawable is skipped and waits
+    /// for the next one, which a window nobody is looking at (a CI runner's)
+    /// may never be given: so a draw is asked for outright while waiting. A
+    /// draw with nothing new reuses the textures and doesn't count, so this
+    /// still fails if the change left them as they were.
+    private func compositesRedrawn(in view: NSView, since renders: Int) async -> Bool {
+        await settle {
+            if (self.boardLayer(in: view)?.compositeTextureRenders ?? 0) > renders { return true }
+            self.boardView(in: view)?.draw()
+            return (self.boardLayer(in: view)?.compositeTextureRenders ?? 0) > renders
+        }
+    }
+
     /// The copper layers whose groups the next frame composites, top first.
     private func compositedCopper(in view: NSView) -> [Int] {
         let groups = Set(boardLayer(in: view)?.compositedGroups ?? [])
@@ -344,7 +365,7 @@ final class BoardLayerModeRedrawTests: XCTestCase {
             change(&state.options)
             let followed = await settle { self.compositedCopper(in: hosted) == expected }
             XCTAssertTrue(followed, "\(name): composites \(compositedCopper(in: hosted)), expected \(expected)")
-            let redrawn = await settle { (self.boardLayer(in: hosted)?.compositeTextureRenders ?? 0) > renders }
+            let redrawn = await compositesRedrawn(in: hosted, since: renders)
             XCTAssertTrue(redrawn, "\(name): the composites are drawn again, not reused")
         }
     }
