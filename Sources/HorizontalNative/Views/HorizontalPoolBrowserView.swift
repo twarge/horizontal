@@ -138,6 +138,9 @@ struct HorizontalPoolBrowserView: View {
     private var parametricColumnsData = Data()
     @State private var isImportingPool = false
     @State private var isManagingPools = false
+    @State private var isCreatingPool = false
+    @State private var pendingDeletion: HorizontalPoolItemDeletion?
+    @State private var deletionMessage: String?
     @ObservedObject private var poolUpdater = HorizontalPoolUpdater.shared
     @State private var addPoolFailurePath: String?
     @State private var scanGeneration = 0
@@ -526,6 +529,18 @@ struct HorizontalPoolBrowserView: View {
         .sheet(isPresented: $isManagingPools) {
             HorizontalManagePoolsSheet()
         }
+        .sheet(isPresented: $isCreatingPool) {
+            HorizontalNewPoolSheet { pool in
+                #if os(macOS)
+                openPoolWindow(pool.url, reveal: nil)
+                #endif
+            }
+        }
+        .modifier(HorizontalPoolItemDeletionPrompt(pending: $pendingDeletion, message: $deletionMessage) { deleted in
+            if selectedItemID == deleted.id {
+                selectedItemID = nil
+            }
+        })
         // A pool registered elsewhere, such as the default pool's clone, is
         // browsed as soon as it is.
         .onChange(of: registry.pools) { _, _ in
@@ -978,6 +993,12 @@ struct HorizontalPoolBrowserView: View {
                 Label("Add Pool…", systemImage: "plus")
             }
             Button {
+                isCreatingPool = true
+            } label: {
+                Label("New Pool…", systemImage: "folder.badge.plus")
+            }
+            .disabled(appearanceSettings.isReadOnlyOperationEnabled)
+            Button {
                 isManagingPools = true
             } label: {
                 Label("Manage Pools…", systemImage: "gearshape")
@@ -1286,6 +1307,13 @@ struct HorizontalPoolBrowserView: View {
                 }
             default:
                 EmptyView()
+            }
+            Button("Move to Trash…", role: .destructive) {
+                do {
+                    pendingDeletion = try HorizontalPoolItemDeletion.plan(for: item, index: index)
+                } catch {
+                    deletionMessage = error.localizedDescription
+                }
             }
         }
         Divider()
