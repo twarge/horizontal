@@ -1015,6 +1015,19 @@ class AddBusMember(Input):
     id: str | None = None
 
 
+class RemoveBusMember(Input):
+    op: Literal["remove_bus_member"]
+    bus: StrictStr
+    member: StrictStr
+
+
+class RenameBusMember(Input):
+    op: Literal["rename_bus_member"]
+    bus: StrictStr
+    member: StrictStr
+    name: StrictStr
+
+
 class PlaceBusLabel(Input):
     """A bus label at a point, or, with the id of one that is there, that label changed in place."""
     op: Literal["place_bus_label"]
@@ -1273,7 +1286,7 @@ EditOperation = Annotated[EnsureComponent | RemoveComponent | RemovePlacement | 
                           AddRule | SetRule | RemoveRule |
                           PlaceHole | RemoveHole | PlaceKeepout | RemoveKeepout | SetSheetIndex |
                           PlaceBoardText | RemoveBoardText | PlaceDimension | RemoveDimension | PlaceDecal | RemoveDecal |
-                          AddBus | RemoveBus | AddBusMember | PlaceBusLabel | PlaceBusRipper |
+                          AddBus | RemoveBus | AddBusMember | RemoveBusMember | RenameBusMember | PlaceBusLabel | PlaceBusRipper |
                           AddNetTie | RemoveNetTie | PlaceNetTie | CopyLayout | SetProjectMeta | SetExportSettings,
                           Field(discriminator="op")]
 

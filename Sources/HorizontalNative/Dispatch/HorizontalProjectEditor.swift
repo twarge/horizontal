@@ -16,6 +16,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
     case addBus = "add_bus"
     case removeBus = "remove_bus"
     case addBusMember = "add_bus_member"
+    case removeBusMember = "remove_bus_member"
+    case renameBusMember = "rename_bus_member"
     case placeBusLabel = "place_bus_label"
     case placeBusRipper = "place_bus_ripper"
     case addNetTie = "add_net_tie"
@@ -124,6 +126,8 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .addBus: "Create a bus — a named bundle the nets in it travel as one line on a sheet."
         case .removeBus: "Remove a bus, its members, and the labels and rippers drawn for it."
         case .addBusMember: "Put a net in a bus under a member name."
+        case .removeBusMember: "Take a member out of a bus, with the rippers drawn for it and the wires ending on them, as Horizon's Manage Buses does. The net stays a net."
+        case .renameBusMember: "Rename a bus member: the name its rippers show. The net it carries keeps its own name."
         case .placeBusLabel: "Label a bus on a sheet, the way a net label names a net. id naming a bus label that is there changes its orientation, size or place."
         case .placeBusRipper: "Take one member off a bus at a point, so it can be wired on its own."
         case .addNetTie: "Tie two nets together — joined on the board, kept apart in the schematic, which is what a tie is for."
@@ -265,6 +269,10 @@ enum HorizontalEditOperationKind: String, CaseIterable {
         case .addBusMember:
             return ["bus": "Bus name or id.", "name": "Member name within the bus.", "net": "Net name or id it carries.",
                     "id": "Member UUID to use, or a name later ops in the batch can use for it (optional)."]
+        case .removeBusMember:
+            return ["bus": "Bus name or id.", "member": "Member name or id."]
+        case .renameBusMember:
+            return ["bus": "Bus name or id.", "member": "Member name or id.", "name": "The new name, which no other member of the bus has."]
         case .placeBusLabel:
             return ["bus": "Bus name or id. Optional when id names a bus label to change.",
                     "id": "A bus label id, from list_buses, to change in place: its orientation, size or place (optional; a new label otherwise, under this id when it is a UUID or a name for later ops).",
@@ -950,6 +958,10 @@ final class HorizontalProjectEditor {
             change.merge(try removeBus(params)) { _, new in new }
         case .addBusMember:
             change.merge(try addBusMember(params)) { _, new in new }
+        case .removeBusMember:
+            change.merge(try removeBusMember(params)) { _, new in new }
+        case .renameBusMember:
+            change.merge(try renameBusMember(params)) { _, new in new }
         case .placeBusLabel:
             change.merge(try placeBusMark(params, kind: .label)) { _, new in new }
         case .placeBusRipper:
@@ -6538,22 +6550,107 @@ final class HorizontalProjectEditor {
         all.removeValue(forKey: id)
         block["buses"] = all
         // Labels and rippers reference the bus; leaving them would point at
-        // nothing.
+        // nothing. The wires on a ripper end on nothing without it, so they
+        // go too, as Horizon drops them.
         var marks = 0
         for sheet in try sheetsInOrder() {
-            for key in ["bus_labels", "bus_rippers"] {
-                let doomed = sheet.json.dictionaryMap(key).filter { $0.value.string("bus")?.lowercased() == id.lowercased() }
-                guard !doomed.isEmpty else { continue }
-                marks += doomed.count
-                try updateSheet(sheet.id) { item in
-                    var map = item[key] as? JSONDictionary ?? [:]
-                    for id in doomed.keys { map.removeValue(forKey: id) }
-                    item[key] = map
-                }
+            let doomed = sheet.json.dictionaryMap("bus_labels").filter { $0.value.string("bus")?.lowercased() == id.lowercased() }
+            guard !doomed.isEmpty else { continue }
+            marks += doomed.count
+            try updateSheet(sheet.id) { item in
+                var map = item["bus_labels"] as? JSONDictionary ?? [:]
+                for id in doomed.keys { map.removeValue(forKey: id) }
+                item["bus_labels"] = map
             }
+        }
+        let rippers = try removeBusRippers { $0.string("bus")?.lowercased() == id.lowercased() }
+        marks += rippers.rippers
+        for sheet in try sheetsInOrder() {
             try collectSheetJunctions(sheet.id)
         }
-        return ["bus": id, "labels_and_rippers": marks]
+        var change: JSONDictionary = ["bus": id, "labels_and_rippers": marks]
+        if rippers.netLines > 0 { change["net_lines_removed"] = rippers.netLines }
+        return change
+    }
+
+    /// Horizon's Manage Buses' delete member: the member goes from the bus,
+    /// and the rippers that take it off, with the wires ending on them.
+    private func removeBusMember(_ params: JSONDictionary) throws -> JSONDictionary {
+        let id = try busID(params)
+        guard let reference = params.string("member") else {
+            throw HorizontalDispatchError.invalidParams("remove_bus_member needs \"member\".")
+        }
+        let member = try busMemberID(reference, in: id)
+        var all = buses()
+        guard var bus = all[id] as? JSONDictionary else { throw HorizontalDispatchError.notFound("No bus \(id).") }
+        var members = bus["members"] as? JSONDictionary ?? [:]
+        members.removeValue(forKey: member.id)
+        bus["members"] = members
+        all[id] = bus
+        block["buses"] = all
+        let removed = try removeBusRippers {
+            $0.string("bus")?.lowercased() == id.lowercased() && $0.string("bus_member")?.lowercased() == member.id.lowercased()
+        }
+        var change: JSONDictionary = ["bus": id, "member": member.id, "rippers_removed": removed.rippers]
+        if removed.netLines > 0 { change["net_lines_removed"] = removed.netLines }
+        return change
+    }
+
+    /// Horizon's Manage Buses' member name: what the member's rippers show.
+    private func renameBusMember(_ params: JSONDictionary) throws -> JSONDictionary {
+        let id = try busID(params)
+        guard let reference = params.string("member") else {
+            throw HorizontalDispatchError.invalidParams("rename_bus_member needs \"member\".")
+        }
+        guard let name = params.string("name")?.trimmingCharacters(in: .whitespaces), !name.isEmpty else {
+            throw HorizontalDispatchError.invalidParams("rename_bus_member needs a \"name\".")
+        }
+        let member = try busMemberID(reference, in: id)
+        var all = buses()
+        guard var bus = all[id] as? JSONDictionary else { throw HorizontalDispatchError.notFound("No bus \(id).") }
+        var members = bus["members"] as? JSONDictionary ?? [:]
+        if members.contains(where: { $0.key != member.id && ($0.value as? JSONDictionary)?.string("name") == name }) {
+            throw HorizontalDispatchError.invalidParams("The bus already has a member called \(name).")
+        }
+        var item = members[member.id] as? JSONDictionary ?? [:]
+        item["name"] = name
+        members[member.id] = item
+        bus["members"] = members
+        all[id] = bus
+        block["buses"] = all
+        return ["bus": id, "member": member.id, "name": name]
+    }
+
+    /// Removes the bus rippers `doomed` picks on every sheet, with the wires
+    /// ending on them, and the junctions only they used.
+    private func removeBusRippers(where doomed: (JSONDictionary) -> Bool) throws -> (rippers: Int, netLines: Int) {
+        var rippers = 0, lines = 0
+        for sheet in try sheetsInOrder() {
+            let gone = sheet.json.dictionaryMap("bus_rippers").filter { doomed($0.value) }
+            guard !gone.isEmpty else { continue }
+            let ids = Set(gone.keys.map { $0.lowercased() })
+            var junctions = Set(gone.values.compactMap { $0.string("junction")?.lowercased() })
+            let wires = sheet.json.dictionaryMap("net_lines").filter { _, line in
+                ["from", "to"].contains { line.dictionary($0)?.string("bus_ripper").map { ids.contains($0.lowercased()) } == true }
+            }
+            for line in wires.values {
+                for end in ["from", "to"] {
+                    if let junction = line.dictionary(end)?.string("junc")?.lowercased() { junctions.insert(junction) }
+                }
+            }
+            rippers += gone.count
+            lines += wires.count
+            try updateSheet(sheet.id) { item in
+                var map = item["bus_rippers"] as? JSONDictionary ?? [:]
+                for key in gone.keys { map.removeValue(forKey: key) }
+                item["bus_rippers"] = map
+                var netLines = item["net_lines"] as? JSONDictionary ?? [:]
+                for key in wires.keys { netLines.removeValue(forKey: key) }
+                item["net_lines"] = netLines
+            }
+            try collectSheetJunctions(sheet.id, candidates: junctions)
+        }
+        return (rippers, lines)
     }
 
     private func addBusMember(_ params: JSONDictionary) throws -> JSONDictionary {

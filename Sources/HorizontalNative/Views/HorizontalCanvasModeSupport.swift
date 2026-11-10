@@ -449,6 +449,7 @@ struct HorizontalCanvasCommandHandlerSet {
     var showAlternateParts: (() -> Void)? = nil
     var setAllUnconnectedPinsNC: (() -> Void)? = nil
     var clearAllNCPins: (() -> Void)? = nil
+    var setPinNoConnect: ((String, String, Bool) -> Void)? = nil
     var toggleNoPopulate: (() -> Void)? = nil
     var setDiffpair: (([String]) -> Void)? = nil
     var clearDiffpair: ((String) -> Void)? = nil
@@ -477,6 +478,7 @@ struct HorizontalCanvasCommandHandlerSet {
     var placeBusRipper: (() -> Void)? = nil
     var tieNets: (() -> Void)? = nil
     var managePowerNet: ((HorizontalPowerNetCommand) -> Void)? = nil
+    var manageBus: ((HorizontalBusCommand) -> Void)? = nil
     var autoplaceNextPin: (() -> Void)? = nil
     var autoplaceAllPins: (() -> Void)? = nil
     var resizeSymbol: (() -> Void)? = nil
@@ -609,6 +611,9 @@ struct HorizontalCanvasCommandHandlerSet {
         case .managePowerNet(let command):
             guard !isReadOnly else { return }
             managePowerNet?(command)
+        case .manageBus(let command):
+            guard !isReadOnly else { return }
+            manageBus?(command)
         case .drawDimension:
             guard !isReadOnly else { return }
             drawDimension?()
@@ -700,6 +705,9 @@ struct HorizontalCanvasCommandHandlerSet {
         case .clearAllNCPins:
             guard !isReadOnly else { return }
             clearAllNCPins?()
+        case .setPinNoConnect(let symbol, let pin, let mark):
+            guard !isReadOnly else { return }
+            setPinNoConnect?(symbol, pin, mark)
         case .toggleNoPopulate:
             guard !isReadOnly else { return }
             toggleNoPopulate?()

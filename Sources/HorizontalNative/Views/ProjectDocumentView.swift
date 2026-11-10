@@ -2640,6 +2640,13 @@ struct ProjectWorkspaceView: View {
                             canvasCommandActionsByPane[.schematic]?.dispatch(.tieNets)
                         }
                         .disabled(canvasCommandActionsByPane[.schematic]?.canTieNets != true)
+                        ManageBusesToolButton(
+                            buses: selectedSchematic?.sheet.busDetails ?? [],
+                            netNames: (selectedSchematic?.sheet.netDetails ?? [:]).mapValues(\.name),
+                            isReadOnly: isReadOnly,
+                            onCommand: { canvasCommandActionsByPane[.schematic]?.dispatch(.manageBus($0)) }
+                        )
+                        .disabled(selectedSchematic == nil)
                         AnnotateToolButton {
                             annotatePopoverPresented.toggle()
                         }
@@ -2861,6 +2868,14 @@ struct ProjectWorkspaceView: View {
                             canvasCommandActionsByPane[.board]?.dispatch(.placeDecal)
                         }
                         .disabled(canvasCommandActionsByPane[.board]?.canPlaceDecal != true)
+                        GroupsToolButton(
+                            groupTags: { HorizontalGroupTags(block: documentJSON(project.blocks.first(where: \.isTop)?.blockFilename ?? project.blockFilename) ?? [:]) },
+                            selectedComponentIDs: selectedComponentIDs,
+                            isReadOnly: isReadOnly,
+                            onEdit: { applyProjectEdit($0, actionName: $1) },
+                            onHighlight: { highlightedComponentIDs = $0 }
+                        )
+                        .disabled(project.board == nil)
                     }
                 }
                 .overlay(alignment: .topTrailing) {
@@ -5774,12 +5789,12 @@ struct ProjectWorkspaceView: View {
         do {
             let part = try cacheLibraryPart(item)
             let edited = try HorizontalCanvasProjectEdit.archive(
-                applying: replacement.operations(partID: part.id),
+                applying: replacement.operations(partID: part.id, entityID: item.partEntityID),
                 to: document.archive,
                 in: project,
                 block: replacement.blockID
             )
-            try applyLiveArchive(edited.archive, actionName: replacement.targets.count == 1 ? "Replace Part" : "Replace Parts")
+            try applyLiveArchive(edited.archive, actionName: replacement.actionName(for: item))
         } catch {
             libraryReplacementError = HorizontalCanvasProjectEdit.message(for: error)
         }

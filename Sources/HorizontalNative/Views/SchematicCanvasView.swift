@@ -2089,7 +2089,7 @@ struct SchematicCanvasView: View {
                 editableLengthProperty("positionY", "Position Y", symbol.position.y),
                 editableAngleProperty("angle", "Angle", symbol.angle),
                 noPopulateProperty(for: symbol),
-            ].compactMap { $0 } + editableSymbolPinNameProperties(for: symbol)
+            ].compactMap { $0 } + symbolProjectProperties(for: symbol) + editableSymbolPinNameProperties(for: symbol)
         case .lineNet:
             let netID = sheet.netLines.first { normalizedID($0.id) == normalizedID(ref.id) }?.netID
             return segmentProperties(for: ref, segments: sheet.netLines, title: "Net", editsNetName: true)
@@ -2116,6 +2116,8 @@ struct SchematicCanvasView: View {
                 editableNetClassProperty(for: label.netID),
                 // Horizon's "Show port": the label reads the port's direction.
                 showsPort ? editableBoolProperty("showPort", "Show port", label.showsPort) : nil,
+                editorProfile.isPoolMode ? nil
+                    : HorizontalNetLabelOffsheetProperty.property(for: label, editable: !isReadOnly && onApplyProjectEdit != nil),
             ].compactMap { $0 } + netDiffpairProperties(for: label.netID) + netPortProperties(for: label.netID)
         case .busLabel:
             guard let label = sheet.busLabels.first(where: { normalizedID($0.id) == normalizedID(ref.id) }) else {
@@ -2170,6 +2172,17 @@ struct SchematicCanvasView: View {
             return nil
         }
         return (symbol, parts[2])
+    }
+
+    /// The symbol's pool symbol, pin display mode and display all pads
+    /// (`HorizontalSchematicSymbolProperties`), edited through the project.
+    private func symbolProjectProperties(for symbol: HorizontalPlacement) -> [HorizontalSelectionProperty] {
+        guard !editorProfile.isPoolMode else { return [] }
+        let choices = symbol.symbolID.flatMap { id in
+            poolURL.map { HorizontalSchematicSymbolProperties.symbols(drawingTheUnitOf: id, poolURL: $0) }
+        } ?? []
+        return HorizontalSchematicSymbolProperties.properties(
+            for: symbol, symbols: choices, editable: !isReadOnly && onApplyProjectEdit != nil)
     }
 
     private static let portNoConnectPropertyID = "portNoConnect"
@@ -7073,6 +7086,28 @@ struct SchematicCanvasView: View {
             }
             return
         }
+        if change.propertyID == HorizontalNetLabelOffsheetProperty.id, case .bool(let shown) = change.value {
+            let refs = Set((change.applyToAll ? selectedObjects : [change.ref]).map { normalizedID($0.id) })
+            if let edit = HorizontalNetLabelOffsheetProperty.edit(
+                shown: shown, labels: sheet.netLabels.filter { refs.contains(normalizedID($0.id)) }) {
+                hoveredObject = nil
+                adoptExternallyUpdatedSheet()
+                onApplyProjectEdit?(edit.ops, edit.actionName)
+            }
+            return
+        }
+        if HorizontalSchematicSymbolProperties.handles(change.propertyID) {
+            let refs = Set((change.applyToAll ? selectedObjects : [change.ref]).map { normalizedID($0.id) })
+            if let edit = HorizontalSchematicSymbolProperties.edit(
+                propertyID: change.propertyID, value: change.value,
+                placements: sheet.symbols.filter { refs.contains(normalizedID($0.id)) }) {
+                // The selection survives the reload, as a rename's does.
+                hoveredObject = nil
+                adoptExternallyUpdatedSheet()
+                onApplyProjectEdit?(edit.ops, edit.actionName)
+            }
+            return
+        }
         if change.propertyID == Self.noPopulatePropertyID, case .bool(let noPopulate) = change.value {
             setNoPopulate(noPopulate, of: change.applyToAll ? selectedObjects : [change.ref])
             return
@@ -7384,9 +7419,6 @@ struct SchematicCanvasView: View {
             return true
         }
 
-        // The inspector has no display-mode control: a pin shows what its
-        // function menu selects, so an edit settles the symbol on that mode.
-        sheet.symbols[symbolIndex].pinDisplayMode = HorizontalSymbolPinDisplayMode.selectedOnly.rawValue
         updateSymbolPinNameTexts(
             symbolID: sheet.symbols[symbolIndex].id,
             pins: sheet.symbols[symbolIndex].symbolPinNames,
@@ -8728,6 +8760,16 @@ struct SchematicCanvasView: View {
         if !editorProfile.isPoolMode, onApplyProjectEdit != nil {
             handlers.setAllUnconnectedPinsNC = { setAllNoConnect(true) }
             handlers.clearAllNCPins = { setAllNoConnect(false) }
+            handlers.manageBus = { command in
+                if let edit = command.edit(in: sheet.busDetails) {
+                    applyProjectEdit(edit.ops, actionName: edit.actionName)
+                }
+            }
+            handlers.setPinNoConnect = { symbol, pin, mark in
+                if let edit = HorizontalSchematicPinNoConnect.edit(symbol: symbol, pin: pin, mark: mark, in: sheet) {
+                    applyProjectEdit(edit.ops, actionName: edit.actionName)
+                }
+            }
             handlers.setDiffpair = { editDiffpair(HorizontalDiffpairProperty.pairing(of: Set($0), in: sheet.netDetails)) }
             handlers.clearDiffpair = { editDiffpair(HorizontalDiffpairProperty.clearing(of: [$0], in: sheet.netDetails)) }
             if selectedObjects.contains(where: { $0.type == .schematicSymbol }) {
@@ -8925,6 +8967,7 @@ struct SchematicCanvasView: View {
             if noConnectChange(for: [symbol], mark: false) {
                 entries.append(.command(title: "Clear all NC pins", .clearAllNCPins))
             }
+            entries.append(contentsOf: HorizontalSchematicPinNoConnect.menuEntries(for: ref, at: contextMenuWorldPoint, in: sheet))
         }
         if let smash = smashEntry(for: ref) { entries.append(smash) }
         entries.append(contentsOf: blockSymbolEntries(for: ref))
@@ -8957,6 +9000,9 @@ struct SchematicCanvasView: View {
         if canBendNetLine(ref) { entries.append(.command(title: "Add Vertex", .bendNetLine)) }
         if canEditCustomValue(of: ref) { entries.append(.command(title: "Edit Custom Value…", .editCustomValue)) }
         if let noPopulate = noPopulateEntry(for: ref) { entries.append(noPopulate) }
+        if !isReadOnly, !editorProfile.isPoolMode, onApplyProjectEdit != nil {
+            entries.append(contentsOf: HorizontalSchematicPinNoConnect.menuEntries(for: ref, at: contextMenuWorldPoint, in: sheet))
+        }
         if let smash = smashEntry(for: ref) { entries.append(smash) }
         entries.append(contentsOf: blockSymbolEntries(for: ref))
         if let moveToOtherSheet = moveToOtherSheetEntry(for: ref) { entries.append(moveToOtherSheet) }

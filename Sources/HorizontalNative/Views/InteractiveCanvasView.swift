@@ -187,6 +187,9 @@ enum HorizontalCanvasCommand {
     /// Schematic: clear every no-connect mark on those gates' pins
     /// (Horizon's "Clear all NC pins").
     case clearAllNCPins
+    /// Schematic: mark one pin of a symbol not connected, or clear its mark
+    /// (Horizon's Set NC / Clear NC on a pin).
+    case setPinNoConnect(symbol: String, pin: String, mark: Bool)
     /// Schematic: mark the selected symbols' components do not populate, or
     /// populate again (Horizon's "Mark do not populate" / "Mark populate").
     case toggleNoPopulate
@@ -245,6 +248,9 @@ enum HorizontalCanvasCommand {
     /// Schematic: the power net editor's edits and its "place" (Horizon's
     /// manage-power-nets dialog).
     case managePowerNet(HorizontalPowerNetCommand)
+    /// Schematic: Manage Buses' edits — rename or remove a member, remove a
+    /// bus (`HorizontalBusCommand`).
+    case manageBus(HorizontalBusCommand)
     /// Symbol editor, while placing pins: put the next pin (or every
     /// remaining pin) one step on from the last two placed.
     case autoplaceNextPin

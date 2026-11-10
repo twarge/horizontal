@@ -9,6 +9,12 @@ import HorizontalProjectIO
 /// while assigning ("Only showing parts for Entity …"), and the tool refuses
 /// a part for another one ("wrong entity"). Components on different entities
 /// have no part in common, as `ImpSchematic::entity_from_selection` has it.
+///
+/// With `allowsOtherEntities`, a part for another entity fits too: the
+/// components are remapped onto it (`remap_part`), their pins matched by
+/// name, so the connections and symbols carry over where the new entity has
+/// pins of those names, and the remap is refused, saying which, where it
+/// hasn't.
 struct HorizontalPartReplacement: Equatable {
     struct Target: Equatable {
         var componentID: String
@@ -22,6 +28,9 @@ struct HorizontalPartReplacement: Equatable {
     /// The block they are in, nil for the top block, which is the one
     /// `set_part` edits unless told otherwise.
     var blockID: String?
+    /// Parts for other entities are offered as well, and remap the
+    /// components onto them (the Pools pane's Other Entities).
+    var allowsOtherEntities = false
 
     /// The components among `componentIDs` that `block` (a block file's
     /// JSON) has. Nil when it has none of them.
@@ -120,7 +129,18 @@ struct HorizontalPartReplacement: Equatable {
         guard item.category == .part, !item.isBasePart, let entityID else {
             return false
         }
-        return item.partEntityID == entityID
+        return allowsOtherEntities || item.partEntityID == entityID
+    }
+
+    /// The undo title for giving the targets `item`.
+    func actionName(for item: HorizontalPoolLibraryItem) -> String {
+        (remaps(item) ? "Remap Part" : "Replace Part") + (targets.count == 1 ? "" : "s")
+    }
+
+    /// Whether giving the targets `item` remaps them onto another entity
+    /// rather than keeping theirs.
+    func remaps(_ item: HorizontalPoolLibraryItem) -> Bool {
+        item.category == .part && entityID != nil && item.partEntityID != entityID
     }
 
     /// Why Replace can't give the targets `item`, or nil when it can.
@@ -134,7 +154,8 @@ struct HorizontalPartReplacement: Equatable {
         guard isCompatible(item) else {
             return item.isBasePart
                 ? "“\(item.name)” is a base part, there to derive other parts from."
-                : "“\(item.name)” is for another entity, so \(refdesList) would lose their connections."
+                : "“\(item.name)” is for another entity, so \(refdesList) would lose their connections. "
+                    + "Turn on Other Entities to remap them onto it, their pins matched by name."
         }
         guard targets.contains(where: { $0.partID != item.uuid.lowercased() }) else {
             return "\(refdesList) already \(targets.count == 1 ? "uses" : "use") “\(item.name)”."
@@ -146,11 +167,14 @@ struct HorizontalPartReplacement: Equatable {
     /// `partID`. The entity stays, so `set_part` keeps the connections. A part
     /// in another package breaks the board connections of pads the new
     /// footprint doesn't have, their copper left on junctions where the pads
-    /// were (`set_part`).
-    func operations(partID: String) -> [JSONDictionary] {
-        let partID = partID.lowercased()
-        return targets.filter { $0.partID != partID }.map {
-            ["op": HorizontalEditOperationKind.setPart.rawValue, "component": $0.componentID, "part": partID]
+    /// were (`set_part`). A part for another entity (`entityID`, the part's)
+    /// is a `remap_part` instead, which matches the pins by name.
+    func operations(partID: String, entityID: String? = nil) -> [JSONDictionary] {
+        let partID = partID.lowercased(), entityID = entityID?.lowercased()
+        return targets.filter { $0.partID != partID }.map { target in
+            let remaps = entityID.map { !$0.isEmpty && $0 != target.entityID } ?? false
+            let kind: HorizontalEditOperationKind = remaps ? .remapPart : .setPart
+            return ["op": kind.rawValue, "component": target.componentID, "part": partID]
         }
     }
 }

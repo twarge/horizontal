@@ -870,6 +870,9 @@ struct HorizontalSchematicNetLabel: Identifiable, Hashable {
     var netID: String? = nil
     var junctionID: String? = nil
     var showsPort: Bool = false
+    /// `offsheet_refs`: the label lists the other sheets its net is
+    /// labelled on after its name.
+    var showsOffsheetRefs: Bool = true
 
     var points: [HorizontalPoint] {
         [position, position + labelShift(size: size, orientation: orientation)]
@@ -1584,6 +1587,9 @@ struct HorizontalPlacement: Identifiable, Hashable {
     var gateID: String? = nil
     var symbolID: String? = nil
     var pinDisplayMode: String = HorizontalSymbolPinDisplayMode.selectedOnly.rawValue
+    /// A schematic symbol's `display_all_pads`: a pin with several pads
+    /// lists every pad number, as Horizon's default has it.
+    var displayAllPads: Bool = true
     var symbolPinNames: [HorizontalSymbolPinName] = []
     var packageID: String? = nil
     var modelID: String? = nil

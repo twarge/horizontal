@@ -163,6 +163,10 @@ struct HorizontalPoolBrowserView: View {
     /// whose close button goes back to showing every part and placing. A
     /// different selection brings Replace back.
     @State private var dismissedReplacementKey: String?
+    /// The banner's Other Entities: parts for any entity listed, one for
+    /// another entity remapping the components onto it. Off again for each
+    /// new selection.
+    @State private var remapsToOtherEntities = false
     /// The parametric bar: shown or behind the toolbar's disclosure triangle,
     /// kept across launches; the browsed pools' tables; the one chosen, nil for
     /// every part; its filters and the list's sort.
@@ -364,9 +368,10 @@ struct HorizontalPoolBrowserView: View {
     /// The selection Replace acts on: the window's, unless its banner was
     /// closed for it.
     private var activeReplacement: HorizontalPartReplacement? {
-        guard let replacement = partActions?.replacement, replacement.key != dismissedReplacementKey else {
+        guard var replacement = partActions?.replacement, replacement.key != dismissedReplacementKey else {
             return nil
         }
+        replacement.allowsOtherEntities = remapsToOtherEntities
         return replacement
     }
 
@@ -498,6 +503,7 @@ struct HorizontalPoolBrowserView: View {
             if key != dismissedReplacementKey {
                 dismissedReplacementKey = nil
             }
+            remapsToOtherEntities = false
             adoptReplacement()
         }
         .onChange(of: parametricTableName) { _, _ in
@@ -877,7 +883,9 @@ struct HorizontalPoolBrowserView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(refusal != nil)
-            .help(refusal ?? "Give \(replacement.refdesList) the selected part, keeping their connections (also double-click or Return in the list)")
+            .help(refusal ?? (item.map(replacement.remaps) == true
+                ? "Remap \(replacement.refdesList) onto the selected part, its pins matched to theirs by name (also double-click or Return in the list)"
+                : "Give \(replacement.refdesList) the selected part, keeping their connections (also double-click or Return in the list)"))
         } else {
             let reason = placeUnavailableReason(for: item)
             Button {
@@ -1530,10 +1538,18 @@ struct HorizontalPoolBrowserView: View {
                 Image(systemName: replacement.problem == nil ? "rectangle.2.swap" : "exclamationmark.triangle")
                     .foregroundStyle(replacement.problem == nil ? Color.accentColor : Color.orange)
                 Text(replacement.problem
-                     ?? "Only showing parts for entity \(entityName(of: replacement)), to replace \(replacement.refdesList).")
+                     ?? (remapsToOtherEntities
+                         ? "Showing every part. One for another entity remaps \(replacement.refdesList) onto it, pins matched by name."
+                         : "Only showing parts for entity \(entityName(of: replacement)), to replace \(replacement.refdesList)."))
                     .font(.callout)
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if replacement.problem == nil {
+                    Toggle("Other Entities", isOn: $remapsToOtherEntities)
+                        .toggleStyle(.button)
+                        .controlSize(.small)
+                        .help("List parts for other entities too, and remap the components onto one, keeping the connections of pins with the same names")
+                }
                 Button {
                     dismissedReplacementKey = replacement.key
                 } label: {
