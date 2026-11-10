@@ -2875,6 +2875,14 @@ struct ProjectWorkspaceView: View {
                             canvasCommandActionsByPane[.board]?.dispatch(.placeDecal)
                         }
                         .disabled(canvasCommandActionsByPane[.board]?.canPlaceDecal != true)
+                        GroupsToolButton(
+                            groupTags: { HorizontalGroupTags(block: documentJSON(project.blocks.first(where: \.isTop)?.blockFilename ?? project.blockFilename) ?? [:]) },
+                            selectedComponentIDs: selectedComponentIDs,
+                            isReadOnly: isReadOnly,
+                            onEdit: { applyProjectEdit($0, actionName: $1) },
+                            onHighlight: { highlightedComponentIDs = $0 }
+                        )
+                        .disabled(project.board == nil)
                     }
                 }
                 .overlay(alignment: .topTrailing) {
