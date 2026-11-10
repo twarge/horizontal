@@ -386,6 +386,8 @@ struct HorizontalCanvasCommandHandlerSet {
     var alignSelection: ((BoardAlignOperation) -> Void)? = nil
     /// How many of the selected objects Align and Distribute would move.
     var alignableSelectionCount = 0
+    /// Board: the measure tool; it changes nothing, so it works locked.
+    var measureDistance: (() -> Void)? = nil
     var drawNetLine: (() -> Void)?
     var drawTrack: (() -> Void)? = nil
     var drawGraphics: ((HorizontalDrawingPrimitive) -> Void)? = nil
@@ -525,6 +527,8 @@ struct HorizontalCanvasCommandHandlerSet {
         case .alignSelection(let operation):
             guard !isReadOnly, !hasInteraction else { return }
             alignSelection?(operation)
+        case .measureDistance:
+            measureDistance?()
         case .drawNetLine:
             guard !isReadOnly else { return }
             drawNetLine?()
@@ -813,6 +817,7 @@ struct HorizontalCanvasCommandHandlerSet {
             dispatch: dispatch
         )
         actions.alignableSelectionCount = writable && !hasInteraction && alignSelection != nil ? alignableSelectionCount : 0
+        actions.canMeasureDistance = measureDistance != nil
         return actions
     }
 }

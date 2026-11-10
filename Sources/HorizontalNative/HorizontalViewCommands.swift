@@ -137,6 +137,8 @@ struct HorizontalCanvasCommandActions {
     /// Edit ▸ Align and Distribute: how many objects of the board's
     /// selection they would line up; 0 when they can't act.
     var alignableSelectionCount: Int = 0
+    /// Design ▸ Measure Distance: the board's measure tool.
+    var canMeasureDistance: Bool = false
     var hasPlacementInteraction: Bool = false
     var hasRoundOffVertexInteraction: Bool = false
     var roundOffVertexAdjustsRounding: Bool = false
@@ -810,6 +812,10 @@ struct HorizontalViewCommands: Commands {
                 lengthTuningActions?.measure?(true)
             }
             .disabled(lengthTuningActions?.measure == nil)
+            Button("Measure Distance") {
+                canvasCommandActions?.dispatch(.measureDistance)
+            }
+            .disabled(canvasCommandActions?.canMeasureDistance != true)
             Divider()
             Button("Filter Airwires…") {
                 canvasCommandActions?.dispatch(.filterAirwires)

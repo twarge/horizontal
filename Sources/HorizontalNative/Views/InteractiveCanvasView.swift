@@ -115,6 +115,9 @@ enum HorizontalCanvasCommand {
     case updateAllPlanes
     /// Board: measure between two points (Horizon's dimension tool).
     case drawDimension
+    /// Board: measure between two clicked points without drawing anything
+    /// (Design ▸ Measure Distance, Horizon's measure tool).
+    case measureDistance
     /// Board: lengthen a straight track's net with a meander, to the Length
     /// Tuning window's reference or a typed target (Horizon's Tune track).
     case tuneTrack
