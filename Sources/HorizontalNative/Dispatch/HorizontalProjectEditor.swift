@@ -1788,6 +1788,13 @@ final class HorizontalProjectEditor {
             let planes = (files["board"]?.dictionaryMap("planes") ?? [:]).filter { $0.value.string("net")?.lowercased() == id }
             board = ["tracks": tracks.count, "vias": vias.count, "planes": planes.count]
             if removeRouting, !(tracks.isEmpty && vias.isEmpty && planes.isEmpty) {
+                let lockedTracks = try lockedCopper("tracks").keys.filter { tracks.contains($0.lowercased()) }
+                let lockedVias = try lockedCopper("vias").keys.filter { vias.contains($0.lowercased()) }
+                guard lockedTracks.isEmpty, lockedVias.isEmpty else {
+                    throw Self.lockedError(
+                        "The net's routing has \(lockedTracks.count) locked track(s) and \(lockedVias.count) locked via(s), which remove_routing would remove.",
+                        tracks: lockedTracks, vias: lockedVias)
+                }
                 try updateBoard { json in
                     for (key, doomed) in [("tracks", Set(tracks)), ("vias", Set(vias))] {
                         var map = json.dictionaryMap(key)
@@ -3961,6 +3968,12 @@ final class HorizontalProjectEditor {
                     details: ["pads": names, "tracks": Set(stranded.values.flatMap { $0 }).sorted()])
             }
             dropped = Set(stranded.values.flatMap { $0 }).sorted()
+            let lockedDrops = try lockedCopper("tracks").keys.filter { dropped.contains($0) }
+            guard lockedDrops.isEmpty else {
+                let count = lockedDrops.count
+                throw Self.lockedError(
+                    "\(count) of the tracks copper \"drop\" would remove \(count == 1 ? "is" : "are") locked.", tracks: lockedDrops)
+            }
             try updateBoard { board in
                 var tracks = board.dictionaryMap("tracks")
                 for id in dropped { tracks.removeValue(forKey: id) }
@@ -7812,8 +7825,36 @@ final class HorizontalProjectEditor {
         return removed.sorted()
     }
 
+    // MARK: - Locked copper
+
+    /// The board's locked tracks and vias (Horizon's `locked`), by id as the
+    /// file has it. The ops leave them where they are, as the app's tools do
+    /// (`BoardCopperLock`): nothing here unlocks one, so a lock set in the
+    /// app holds until it is lifted there.
+    private func lockedCopper(_ collection: String) throws -> [String: JSONDictionary] {
+        try board().dictionaryMap(collection).filter { $0.value.bool("locked") == true }
+    }
+
+    /// The locked tracks with an end on a pad of the board package `packageID`.
+    private func lockedTracks(onPadsOf packageID: String) throws -> [String] {
+        let prefix = packageID.lowercased() + "/"
+        return try lockedCopper("tracks").filter { _, track in
+            ["from", "to"].contains { track.dictionary($0)?.string("pad")?.lowercased().hasPrefix(prefix) == true }
+        }.keys.sorted()
+    }
+
+    private static func lockedError(_ message: String, tracks: [String] = [], vias: [String] = []) -> HorizontalDispatchError {
+        HorizontalDispatchError(
+            code: .invalidParams,
+            message: message + " Unlock it in Horizontal (Design > Unlock) first; nothing was changed.",
+            details: ["locked_tracks": tracks.sorted(), "locked_vias": vias.sorted()])
+    }
+
     private func removeTrack(_ params: JSONDictionary) throws -> JSONDictionary {
         let id = try trackID(params)
+        guard try lockedCopper("tracks")[id] == nil else {
+            throw Self.lockedError("Track \(id) is locked, so it stays.", tracks: [id])
+        }
         try updateBoard { board in
             var tracks = board["tracks"] as? JSONDictionary ?? [:]
             tracks.removeValue(forKey: id)
@@ -8070,6 +8111,20 @@ final class HorizontalProjectEditor {
         guard let id = vias.keys.first(where: { $0.caseInsensitiveCompare(reference) == .orderedSame }) else {
             throw HorizontalDispatchError.notFound("No via \(reference) on the board.")
         }
+        guard (vias[id] as? JSONDictionary)?.bool("locked") != true else {
+            throw Self.lockedError("Via \(id) is locked, so it stays.", vias: [id])
+        }
+        // A via where a locked track ends stays with it, as it does in the
+        // app (`BoardCopperLock.held`).
+        if let junction = (vias[id] as? JSONDictionary)?.string("junction")?.lowercased() {
+            let ending = try lockedCopper("tracks").filter { _, track in
+                ["from", "to"].contains { track.dictionary($0)?.string("junc")?.lowercased() == junction }
+            }.keys.sorted()
+            guard ending.isEmpty else {
+                throw Self.lockedError(
+                    "Via \(id) is where locked track \(ending.joined(separator: ", ")) ends, so it stays.", tracks: ending)
+            }
+        }
         try updateBoard { board in
             var vias = board["vias"] as? JSONDictionary ?? [:]
             vias.removeValue(forKey: id)
@@ -8237,7 +8292,19 @@ final class HorizontalProjectEditor {
             placement["mirror"] = bottom
             package["flip"] = bottom
         }
+        // A package carries the track ends on its pads, so one a locked
+        // track ends on stays where it is (`BoardCopperLock.held`).
         package["placement"] = placement
+        if let existing,
+           !NSDictionary(dictionary: package).isEqual(to: existing.value as? JSONDictionary ?? [:]) {
+            let held = try lockedTracks(onPadsOf: existing.key)
+            guard held.isEmpty else {
+                let count = held.count
+                throw Self.lockedError(
+                    "\(count) locked track\(count == 1 ? " ends" : "s end") on this component's pads, so it stays where it is.",
+                    tracks: held)
+            }
+        }
         let packageID = existing?.key ?? UUID().uuidString.lowercased()
         packages[packageID] = package
         board["packages"] = packages

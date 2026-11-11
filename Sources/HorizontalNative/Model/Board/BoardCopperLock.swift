@@ -8,7 +8,9 @@ import Foundation
 /// rotate or mirror of a selection leaves it, and so does a delete, as a
 /// fixed package stays (`HorizontalPlacement.fixed`). So do a junction and
 /// a via where a locked track ends or a locked via stands, which would
-/// otherwise take the locked copper with them. The route tool's loop removal keeps
+/// otherwise take the locked copper with them, and a package with a locked
+/// track on one of its pads, whose move would stretch the track. The route
+/// tool's loop removal keeps
 /// a chain with locked copper in it, and block layout sync already leaves
 /// locked copper alone (`HorizontalBlockLayoutSync`).
 ///
@@ -38,11 +40,13 @@ enum BoardCopperLock {
     }
 
     /// What the lock holds on `board`, by normalized id: the locked tracks
-    /// and vias, and the junctions and vias at their ends.
+    /// and vias, the junctions and vias at their ends, and the packages
+    /// with a locked track's end on a pad.
     struct Held {
         var trackIDs = Set<String>()
         var viaIDs = Set<String>()
         var junctionIDs = Set<String>()
+        var packageIDs = Set<String>()
 
         var isEmpty: Bool { trackIDs.isEmpty && viaIDs.isEmpty }
 
@@ -51,6 +55,7 @@ enum BoardCopperLock {
             case .track: return trackIDs.contains(HorizontalCanvasModeSupport.normalizedID(ref.id))
             case .via: return viaIDs.contains(HorizontalCanvasModeSupport.normalizedID(ref.id))
             case .junction: return junctionIDs.contains(HorizontalCanvasModeSupport.normalizedID(ref.id))
+            case .boardPackage: return packageIDs.contains(HorizontalCanvasModeSupport.normalizedID(ref.id))
             default: return false
             }
         }
@@ -59,13 +64,25 @@ enum BoardCopperLock {
     static func held(in board: HorizontalBoard) -> Held {
         var held = Held()
         var points = Set<String>()
+        var trackEnds = Set<String>()
         for track in board.tracks where track.locked {
             held.trackIDs.insert(normalized(track.id))
             for junction in [track.fromJunctionID, track.toJunctionID].compactMap({ $0 }) {
                 held.junctionIDs.insert(normalized(junction))
             }
-            points.insert(HorizontalCanvasModeSupport.pointKey(track.from))
-            points.insert(HorizontalCanvasModeSupport.pointKey(track.to))
+            trackEnds.insert(HorizontalCanvasModeSupport.pointKey(track.from))
+            trackEnds.insert(HorizontalCanvasModeSupport.pointKey(track.to))
+        }
+        points = trackEnds
+        // A package carries the track ends on its pads wherever it goes, so
+        // one with a locked track's end on a pad stays with the track.
+        if !trackEnds.isEmpty {
+            for (pad, position) in board.packagePadPositions
+                where trackEnds.contains(HorizontalCanvasModeSupport.pointKey(position)) {
+                if let package = pad.split(separator: "/").first {
+                    held.packageIDs.insert(normalized(String(package)))
+                }
+            }
         }
         for via in board.vias where via.locked {
             held.viaIDs.insert(normalized(via.id))
@@ -86,13 +103,28 @@ enum BoardCopperLock {
         return held
     }
 
-    /// `refs` without what the lock holds on `board`, in order.
-    static func removingHeld(_ refs: [HorizontalSelectableRef], in board: HorizontalBoard) -> [HorizontalSelectableRef] {
+    /// Whether the lock holds the package `id` names on `board`: a locked
+    /// track ends on one of its pads.
+    static func holdsPackage(_ id: String, in board: HorizontalBoard) -> Bool {
+        guard board.tracks.contains(where: \.locked) else {
+            return false
+        }
+        return held(in: board).packageIDs.contains(normalized(id))
+    }
+
+    /// `refs` without what the lock holds on `board`, in order. A delete
+    /// keeps the packages (`keepingPackages`): a package deleted leaves the
+    /// tracks on its pads where they are.
+    static func removingHeld(
+        _ refs: [HorizontalSelectableRef],
+        in board: HorizontalBoard,
+        keepingPackages: Bool = false
+    ) -> [HorizontalSelectableRef] {
         guard board.tracks.contains(where: \.locked) || board.vias.contains(where: \.locked) else {
             return refs
         }
         let held = held(in: board)
-        return refs.filter { !held.holds($0) }
+        return refs.filter { !held.holds($0) || keepingPackages && $0.type == .boardPackage }
     }
 
     /// The points a moving track's end stays on (`BoardTrackPadEnds`): the

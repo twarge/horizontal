@@ -1194,7 +1194,7 @@ def list_tracks(path: str | None = None, net: str | None = None, layer: int | No
                 pads: Annotated[list[str] | None, Field(description="With component, only these of its pads, by name or uuid, e.g. [\"C2\"].")] = None,
                 connected: Annotated[bool | None, Field(description="With component, every track joined to its pads through junctions and vias, out to the next pad — the copper a pin change leaves on the old net.")] = None) -> dict[str, Any]:
     """Copper tracks on the board: net, layer, width, and what each end lands on — a pad (naming the component)
-    or a junction. Boards carry thousands, so filter by net, layer or component; truncated says whether the limit
+    or a junction. locked marks a track the app's Lock holds: remove_track refuses it. Boards carry thousands, so filter by net, layer or component; truncated says whether the limit
     cut the answer short, and total says how many matched."""
     params = {k: v for k, v in {"net": net, "layer": layer, "component": component, "pads": pads,
                                 "connected": connected}.items() if v is not None}
@@ -1208,7 +1208,7 @@ def list_vias(path: str | None = None, net: str | None = None, limit: int = 200,
     board via definition or the via rules. net_pinned marks a via whose net was set outright rather than
     inherited through the copper that reaches it. unresolved marks one that takes its shape from the via rules
     but whose parameters leave out its diameter or hole, so it has its padstack's default there, as Horizon draws
-    it until the rules are applied."""
+    it until the rules are applied. locked marks a via the app's Lock holds: remove_via refuses it."""
     params = {k: v for k, v in {"net": net, "component": component}.items() if v is not None}
     return _resolve(path).vias(limit=limit, **params)
 

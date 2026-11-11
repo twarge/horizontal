@@ -7848,10 +7848,11 @@ struct BoardCanvasView: View {
         var changed = false
         // Fixed packages can't be deleted — filter them (and their connection
         // lines, added by the expansion) before expanding the delete set.
-        // Nor can locked copper (`BoardCopperLock`), before and after.
-        let deletable = BoardCopperLock.removingHeld(uniqueRefs(selectedObjects), in: board).filter { !isFixedPackage($0, in: board) }
+        // Nor can locked copper (`BoardCopperLock`), before and after; a
+        // package a locked track holds can, since its tracks stay put.
+        let deletable = BoardCopperLock.removingHeld(uniqueRefs(selectedObjects), in: board, keepingPackages: true).filter { !isFixedPackage($0, in: board) }
         // Junctions last, once what ends on them is gone.
-        let refs = BoardCopperLock.removingHeld(expandedBoardDeleteRefs(from: deletable, in: board), in: board).sorted {
+        let refs = BoardCopperLock.removingHeld(expandedBoardDeleteRefs(from: deletable, in: board), in: board, keepingPackages: true).sorted {
             ($0.type == .junction ? 1 : 0) < ($1.type == .junction ? 1 : 0)
         }
 
@@ -8668,13 +8669,17 @@ struct BoardCanvasView: View {
         return plan
     }
 
-    /// The packages of `selectedObjects` that move (a fixed one stays),
-    /// normalized. Each carries its texts, smashed refdes too, so a selected
+    /// The packages of `selectedObjects` that move (a fixed one stays, and
+    /// one a locked track holds, `BoardCopperLock`), normalized. Each carries its texts, smashed refdes too, so a selected
     /// text of one is not moved, turned or mirrored again
     /// (`isCarriedByPackage`), as Horizon's move adds a package's texts to the
     /// selection and moves each once.
     private func movingPackageIDs(in board: HorizontalBoard) -> Set<String> {
-        Set(selectedObjects.filter { $0.type == .boardPackage && !isFixedPackage($0, in: board) }.map { normalizedID($0.id) })
+        Set(
+            BoardCopperLock.removingHeld(selectedObjects.filter { $0.type == .boardPackage }, in: board)
+                .filter { !isFixedPackage($0, in: board) }
+                .map { normalizedID($0.id) }
+        )
     }
 
     private func isCarriedByPackage(_ ref: HorizontalSelectableRef, movingPackageIDs: Set<String>) -> Bool {
@@ -10524,6 +10529,11 @@ struct BoardCanvasView: View {
                 board: &board,
                 changedComponentRefdes: &changedComponentRefdes
             )
+        // A package a locked track holds stays where it is, and as it is
+        // (`BoardCopperLock`).
+        case ("positionX", _), ("positionY", _), ("angle", _), ("flipped", _)
+            where BoardCopperLock.holdsPackage(ref.id, in: board):
+            break
         case ("positionX", .length(let x)):
             let delta = HorizontalPoint(x: x - board.packages[index].position.x, y: 0)
             moveBoardPackage(ref: ref, by: delta, board: &board)
@@ -13054,6 +13064,12 @@ struct BoardCanvasView: View {
                     } else {
                         appendSegment(track, color: trackColor, minimumWidth: 1.1, outlineOnly: outlineOnly, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.alwaysOnLayered)
                     }
+                    // A locked track carries a padlock (`BoardCopperLockMark`).
+                    for mark in BoardCopperLockMark.marks(for: track) {
+                        for stroke in mark.strokes {
+                            appendPolyline(stroke, color: textOverlayColor, width: mark.width, minimumWidth: 0.4, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.alwaysOnLayered)
+                        }
+                    }
                 } }
                 }
                 let layerNetTies = netTiesByLayer[layer] ?? []
@@ -13337,6 +13353,15 @@ struct BoardCanvasView: View {
                             owner: owner,
                             to: \.vias
                         )
+                    }
+                    // A locked via carries a padlock on its copper
+                    // (`BoardCopperLockMark`), not on its mask opening.
+                    if maskDiameter == nil {
+                        for mark in BoardCopperLockMark.marks(for: via) {
+                            for stroke in mark.strokes {
+                                appendPolyline(stroke, color: textOverlayColor, width: mark.width, minimumWidth: 0.4, compositeGroup: compositeGroup, compositeOpacity: compositeOpacity, owner: owner, to: \.vias)
+                            }
+                        }
                     }
                 } }
                 }

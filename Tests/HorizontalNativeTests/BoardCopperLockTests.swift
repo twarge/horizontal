@@ -100,6 +100,61 @@ final class BoardCopperLockTests: XCTestCase {
                        "a locked via holds itself and its junction; the tracks on it may move off it")
     }
 
+    /// A package carries the track ends on its pads, so a move of one with a
+    /// locked track on a pad would stretch the track.
+    func testALockedTrackOnAPadHoldsThePackageThroughAMoveAndNotADelete() throws {
+        var board = try fixture()
+        // A pad of one package under t2's far end, and one of another clear
+        // of the copper.
+        board.packagePadPositions["pkg-a/pad-1"] = HorizontalPoint(x: Double(20 * mm), y: Double(10 * mm))
+        board.packagePadPositions["pkg-b/pad-1"] = HorizontalPoint(x: Double(40 * mm), y: Double(10 * mm))
+        let a = HorizontalSelectableRef(id: "pkg-a", type: .boardPackage)
+        let b = HorizontalSelectableRef(id: "pkg-b", type: .boardPackage)
+        XCTAssertFalse(BoardCopperLock.holdsPackage("pkg-a", in: board), "an unlocked track holds nothing")
+
+        BoardCopperLock.setLocked(true, on: [track("t2")], in: &board)
+        XCTAssertTrue(BoardCopperLock.holdsPackage("PKG-A", in: board))
+        XCTAssertFalse(BoardCopperLock.holdsPackage("pkg-b", in: board))
+        XCTAssertEqual(BoardCopperLock.removingHeld([a, b, track("t1")], in: board), [b, track("t1")],
+                       "the package under the locked track's end stays through a move")
+        XCTAssertEqual(BoardCopperLock.removingHeld([a, b, track("t2")], in: board, keepingPackages: true), [a, b],
+                       "a delete takes the package, whose tracks stay where they are, and leaves the locked track")
+
+        BoardCopperLock.setLocked(false, on: [track("t2")], in: &board)
+        BoardCopperLock.setLocked(true, on: [track("t1")], in: &board)
+        XCTAssertFalse(BoardCopperLock.holdsPackage("pkg-a", in: board), "t1 ends on no pad")
+    }
+
+    /// Locked copper is drawn with a padlock (`BoardCopperLockMark`).
+    func testLockedCopperCarriesAPadlockClearOfItsNetName() throws {
+        var board = try fixture()
+        XCTAssertTrue(board.tracks.allSatisfy { BoardCopperLockMark.marks(for: $0).isEmpty })
+        XCTAssertTrue(board.vias.allSatisfy { BoardCopperLockMark.marks(for: $0).isEmpty })
+
+        BoardCopperLock.setLocked(true, on: [track("t2"), via("v1")], in: &board)
+        let t2 = try XCTUnwrap(board.tracks.first { $0.id == "t2" })
+        let onTrack = BoardCopperLockMark.marks(for: t2)
+        XCTAssertEqual(onTrack.count, 2, "one in from each end of a 5 mm track, the middle left to the net's name")
+        for mark in onTrack {
+            let box = HorizontalRect(points: mark.strokes.flatMap { $0 })
+            XCTAssertEqual(box.center.y, Double(10 * mm), accuracy: 30_000, "on the track's centre line")
+            XCTAssertLessThanOrEqual(box.maxY - box.minY, t2.width, "within the track's width")
+            XCTAssertTrue(box.minX > Double(15 * mm) && box.maxX < Double(20 * mm), "between the track's ends")
+            XCTAssertFalse(box.minX < Double(17_500_000) && box.maxX > Double(17_500_000), "clear of the middle")
+        }
+
+        var short = t2
+        short.to = HorizontalPoint(x: t2.from.x + 600_000, y: t2.from.y)
+        XCTAssertEqual(BoardCopperLockMark.marks(for: short).count, 1, "a track too short for two carries one")
+
+        let v1 = try XCTUnwrap(board.vias.first { $0.id == "v1" })
+        let onVia = try XCTUnwrap(BoardCopperLockMark.marks(for: v1).first)
+        let box = HorizontalRect(points: onVia.strokes.flatMap { $0 })
+        let hole = (v1.holeSize ?? v1.size / 2) / 2
+        XCTAssertGreaterThanOrEqual(box.minY, v1.position.y + hole, "above the drill")
+        XCTAssertLessThanOrEqual(box.maxY, v1.position.y + v1.size / 2, "inside the via's edge")
+    }
+
     func testRouteLoopRemovalKeepsAChainWithLockedCopper() throws {
         // t2 on the bottom, so the via passes the chain from layer to layer.
         var board = try fixture()

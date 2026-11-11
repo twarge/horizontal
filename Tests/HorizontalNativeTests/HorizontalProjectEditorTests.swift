@@ -1224,6 +1224,68 @@ final class HorizontalProjectEditorTests: XCTestCase {
         XCTAssertEqual((try result("list_tracks") as? [String: Any])?["total"] as? Int, 0)
     }
 
+    /// A lock set in the app holds against the ops as it does against the
+    /// app's own tools: locked copper is not removed, and a package with a
+    /// locked track on a pad is not moved, which would stretch the track.
+    func testOpsLeaveLockedCopperWhereItIs() throws {
+        try placedDivider()
+        let routed = try apply([
+            ["op": "place_track", "from": ["component": "R1", "pad": "1"], "to": ["x_mm": 20, "y_mm": 20],
+             "layer": 0, "width_mm": 0.25],
+            ["op": "place_track", "from": ["x_mm": 20, "y_mm": 20], "to": ["x_mm": 25, "y_mm": 20],
+             "layer": 0, "width_mm": 0.25, "net": "VCC"],
+            ["op": "place_via", "x_mm": 20, "y_mm": 20, "net": "VCC"],
+            ["op": "place_via", "x_mm": 25, "y_mm": 20, "net": "VCC"]
+        ])
+        let changes = try XCTUnwrap(routed["changes"] as? [[String: Any]])
+        let onPad = try XCTUnwrap(changes[0]["track"] as? String)
+        let free = try XCTUnwrap(changes[1]["track"] as? String)
+        let atLockedEnd = try XCTUnwrap(changes[2]["via"] as? String)
+        let lockedVia = try XCTUnwrap(changes[3]["via"] as? String)
+        // No op locks copper; the app's Lock writes the flag.
+        try editBoard { json in
+            var tracks = json.dictionaryMap("tracks"), vias = json.dictionaryMap("vias")
+            tracks[onPad]?["locked"] = true
+            vias[lockedVia]?["locked"] = true
+            json["tracks"] = tracks
+            json["vias"] = vias
+        }
+        let listed = try XCTUnwrap((try result("list_tracks") as? [String: Any])?["tracks"] as? [[String: Any]])
+        XCTAssertEqual(Set(listed.filter { $0["locked"] as? Bool == true }.compactMap { $0["id"] as? String }), [onPad])
+        let listedVias = try XCTUnwrap((try result("list_vias") as? [String: Any])?["vias"] as? [[String: Any]])
+        XCTAssertEqual(Set(listedVias.filter { $0["locked"] as? Bool == true }.compactMap { $0["id"] as? String }), [lockedVia])
+
+        func refusal(_ ops: [[String: Any]], _ what: String) throws -> [String: Any] {
+            let error = try XCTUnwrap(try call("apply", ["ops": ops])["error"] as? [String: Any], what)
+            XCTAssertEqual(error["code"] as? Int, -32602, what)
+            XCTAssertTrue((error["message"] as? String ?? "").contains("locked"), what)
+            return error
+        }
+        _ = try refusal([["op": "remove_track", "track": onPad]], "a locked track")
+        _ = try refusal([["op": "remove_via", "via": lockedVia]], "a locked via")
+        _ = try refusal([["op": "remove_via", "via": atLockedEnd]], "the via where a locked track ends")
+        _ = try refusal([["op": "place_component", "component": "R1", "x_mm": 12, "y_mm": 10]], "a move that would stretch a locked track")
+        _ = try refusal([["op": "place_component", "component": "R1", "angle_deg": 90]], "a turn that would")
+        _ = try refusal([["op": "retire_net", "net": "VCC", "remove_routing": true]], "routing with locked copper in it")
+
+        // What the lock doesn't hold goes on as before.
+        _ = try apply([["op": "place_component", "component": "R1", "x_mm": 10, "y_mm": 10]])
+        _ = try apply([["op": "place_component", "component": "R2", "x_mm": 32, "y_mm": 10]])
+        _ = try apply([["op": "remove_track", "track": free]])
+        let left = try XCTUnwrap(try result("list_tracks") as? [String: Any])
+        XCTAssertEqual(left["total"] as? Int, 1)
+        XCTAssertEqual((try result("list_vias") as? [String: Any])?["total"] as? Int, 2)
+
+        // Unlocked, it is the caller's again.
+        try editBoard { json in
+            var tracks = json.dictionaryMap("tracks")
+            tracks[onPad]?["locked"] = false
+            json["tracks"] = tracks
+        }
+        _ = try apply([["op": "place_component", "component": "R1", "x_mm": 12, "y_mm": 10]])
+        _ = try apply([["op": "remove_via", "via": atLockedEnd], ["op": "remove_track", "track": onPad]])
+    }
+
     /// A via needs a padstack. A board with no via rule and no via to copy
     /// one from says so rather than writing a via that references nothing.
     func testViaNeedsAPadstackAndCarriesItsNet() throws {

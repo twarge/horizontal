@@ -17,9 +17,6 @@
 - [ ] Move a track's connection point; move an arc track's centre.
 - [ ] Drag (D) takes one track at a time, where Horizon drags every selected
       track that can; no iPad button for it.
-- [ ] Locked copper: draw it marked; have the automation ops (`remove_track`,
-      `remove_via`, moves) refuse it; a package moved with a locked track on
-      its pad still stretches the track.
 
 ## Board tools
 

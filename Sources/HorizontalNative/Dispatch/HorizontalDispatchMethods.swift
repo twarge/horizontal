@@ -293,7 +293,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "list_tracks",
-            summary: "Copper tracks on the board, with the net, layer, width and what each end lands on. Boards carry thousands, so filter by net, layer or component; the result says whether it was truncated.",
+            summary: "Copper tracks on the board, with the net, layer, width, whether it is locked and what each end lands on. Boards carry thousands, so filter by net, layer or component; the result says whether it was truncated.",
             params: ["handle": "Project handle.", "net": "Only tracks on this net, by name or id (optional).",
                      "layer": "Only tracks on this layer number (optional).", "limit": "Maximum tracks to return; default 200, maximum 5000.",
                      "component": "Only tracks with an end on this component's pads, by refdes or id (optional).",
@@ -303,7 +303,7 @@ enum HorizontalDispatchMethods {
         ),
         .init(
             name: "list_vias",
-            summary: "Vias on the board, with the net, position, the layers each spans and the padstack or via definition it takes its shape from. One taking its shape from the via rules with no parameters to show for it is marked unresolved.",
+            summary: "Vias on the board, with the net, position, the layers each spans, whether it is locked and the padstack or via definition it takes its shape from. One taking its shape from the via rules with no parameters to show for it is marked unresolved.",
             params: ["handle": "Project handle.", "net": "Only vias on this net, by name or id (optional).",
                      "limit": "Maximum vias to return; default 200, maximum 5000.",
                      "component": "Only vias under this component's package — inside its courtyard, else its pads' bounds — by refdes or id (optional)."],
@@ -3320,6 +3320,7 @@ enum HorizontalDispatchMethods {
                 "layer": trackLayer as Any,
                 "layer_name": trackLayer.map { HorizontalBoardLayers.name(for: $0) } as Any,
                 "width_mm": HorizontalDispatchJSON.mm(item.double("width") ?? 0),
+                "locked": item.bool("locked") ?? false,
                 "from": trackEndpoint(item.dictionary("from"), entry: entry),
                 "to": trackEndpoint(item.dictionary("to"), entry: entry)
             ]
@@ -3371,7 +3372,8 @@ enum HorizontalDispatchMethods {
                 "definition": (item.string("definition") ?? via?.definitionID) as Any? as Any,
                 "source": item.string("source") ?? "padstack",
                 "from_rules": item.bool("from_rules") ?? false,
-                "net_pinned": item.string("net_set") != nil
+                "net_pinned": item.string("net_set") != nil,
+                "locked": item.bool("locked") ?? false
             ]
             // Horizon gives a via its rule's padstack and parameters when its
             // rules are applied, not when it opens the board: until then a
