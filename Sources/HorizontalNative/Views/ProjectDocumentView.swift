@@ -817,6 +817,8 @@ struct ProjectWorkspaceView: View {
     /// settle or running; see `scheduleBoardNetlistSync`.
     @State private var boardNetlistSyncTask: Task<Void, Never>?
     @State private var boardNetlistSyncRequested = false
+    /// The board canvas's tool in use, which the reload waits out.
+    @State private var boardToolHold = BoardCanvasToolHold()
     @State private var powerNetsPopoverPresented = false
     /// "Show in Project Pool Manager": the item the Library pane should select.
     @State private var libraryRevealRequest: HorizontalPoolRevealRequest?
@@ -2772,6 +2774,7 @@ struct ProjectWorkspaceView: View {
                                 toolSettings: boardToolSettings,
                                 drawingLayer: boardDrawingLayer,
                                 syncRevision: boardSyncRevision,
+                                toolHold: boardToolHold,
                                 planePourRevision: planePourRevision,
                                 planeFillDelivery: planeFillDelivery,
                                 onSelectDrawingLayer: { selectOrSoloBoardLayer($0) },
@@ -5075,7 +5078,9 @@ struct ProjectWorkspaceView: View {
     /// follow the schematic (Horizon reloads the netlist when the schematic
     /// is saved). One reload at a time; edits that land meanwhile get one
     /// more. A board edited while the reload ran is left alone and the
-    /// reload runs again from the newer archive.
+    /// reload runs again from the newer archive. A tool in use on the board
+    /// canvas (a part being moved straight after it was placed, say) is
+    /// waited out: the reload replaces the board under it, which ends it.
     private func scheduleBoardNetlistSync() {
         guard !isReadOnly, project.board != nil else {
             return
@@ -5089,6 +5094,7 @@ struct ProjectWorkspaceView: View {
             while boardNetlistSyncRequested {
                 boardNetlistSyncRequested = false
                 try? await Task.sleep(for: .milliseconds(500))
+                await boardToolHold.waitUntilFree()
                 guard !Task.isCancelled else {
                     return
                 }
@@ -5112,8 +5118,9 @@ struct ProjectWorkspaceView: View {
             recordDiagnostic("Could not sync board with schematic data: \(error.localizedDescription)")
             return
         }
-        guard !Task.isCancelled, boardEditRevision == revisionAtStart else {
-            // The board moved on while the snapshot loaded: go again from it.
+        guard !Task.isCancelled, boardEditRevision == revisionAtStart, !boardToolHold.isHeld else {
+            // The board moved on while the snapshot loaded, or a tool took
+            // it up: go again from it, once the tool is done.
             boardNetlistSyncRequested = true
             return
         }
