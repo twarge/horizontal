@@ -837,6 +837,9 @@ struct ProjectWorkspaceView: View {
     /// Horizon's info bar for a `.gitignore` missing its recommended lines,
     /// shown once when the document opens.
     @State private var gitignoreNeedsFixing = false
+    /// Dismissed for this window: the board's orphaned packages stay in the
+    /// navigator's diagnostics either way.
+    @State private var orphanedPackagesNoticeDismissed = false
     /// Pours the planes off the main thread: on Q and plane edits, and after
     /// every change when they update automatically.
     @StateObject private var planePourScheduler = HorizontalPlanePourScheduler()
@@ -1455,6 +1458,10 @@ struct ProjectWorkspaceView: View {
                         gitignoreInfoBar
                             .transition(.move(edge: .top).combined(with: .opacity))
                     }
+                    if showsOrphanedPackagesNotice {
+                        orphanedPackagesInfoBar
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                     if partLibrary.showsNotice {
                         HorizontalPartLibraryNotice(library: partLibrary) { showsPartUpdates = true }
                             .transition(.move(edge: .top).combined(with: .opacity))
@@ -1463,6 +1470,7 @@ struct ProjectWorkspaceView: View {
                 .padding(.top, canvasInsets.top + 8)
             }
             .animation(.snappy(duration: 0.18), value: gitignoreNeedsFixing)
+            .animation(.snappy(duration: 0.18), value: showsOrphanedPackagesNotice)
             .animation(.snappy(duration: 0.18), value: partLibrary.showsNotice)
         }
         // Must leave room for the navigator sidebar inside the window minimum
@@ -2103,6 +2111,58 @@ struct ProjectWorkspaceView: View {
         do {
             guard try archive.fixGitignore() else { return }
             try applyLiveArchive(archive, actionName: "Fix .gitignore")
+        } catch {
+            projectEditError = HorizontalCanvasProjectEdit.message(for: error)
+        }
+    }
+
+    /// The notice for packages naming no component. Hidden in a read-only
+    /// window, which cannot remove them; the navigator's diagnostics say why.
+    private var showsOrphanedPackagesNotice: Bool {
+        !isReadOnly && !orphanedPackagesNoticeDismissed && !project.orphanedPackages.packages.isEmpty
+    }
+
+    private var orphanedPackagesInfoBar: some View {
+        let orphans = project.orphanedPackages
+        let count = orphans.packages.count
+        let noun = count == 1 ? "board package names" : "board packages name"
+        return HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.yellow)
+            if orphans.canRemove {
+                Text("\(count) \(noun) a component no block has.")
+                    .font(.callout)
+                Button("Remove \(count)") { removeOrphanedPackages() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+            } else {
+                Text("\(count) \(noun) a component no block has. Not removing \(count == 1 ? "it" : "them"): \(orphans.refusal ?? "").")
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button("Dismiss") { orphanedPackagesNoticeDismissed = true }
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: Capsule())
+        .shadow(radius: 4, y: 1)
+    }
+
+    /// Takes the orphaned packages off the board as one undoable edit, the
+    /// way `remove_placement` does: their tracks keep their copper as junctions.
+    /// Refused unless every block loaded; the model's gate says so too.
+    private func removeOrphanedPackages() {
+        let orphans = project.orphanedPackages
+        guard orphans.canRemove else { return }
+        do {
+            let edited = try HorizontalCanvasProjectEdit.archive(
+                applying: orphans.removalOperations,
+                to: document.archive,
+                in: project
+            )
+            try applyLiveArchive(edited.archive, actionName: "Remove Orphaned Packages")
+            orphanedPackagesNoticeDismissed = false
         } catch {
             projectEditError = HorizontalCanvasProjectEdit.message(for: error)
         }

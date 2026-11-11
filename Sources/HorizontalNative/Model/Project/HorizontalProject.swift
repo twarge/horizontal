@@ -87,6 +87,9 @@ struct HorizontalProject: Identifiable {
     /// The top block with its instances expanded (`Block::flatten`), which
     /// the board was made from; nil when no block uses another.
     var flattenedBlock: HorizontalFlattenedBlock? = nil
+    /// The board's packages whose component no block gives, and whether they
+    /// may be removed: found at load, from the block files as they were read.
+    var orphanedPackages: HorizontalOrphanedPackages = .none
 
     var displayTitle: String {
         if let projectTitle = Self.nonEmpty(projectMeta["project_title"]) ?? Self.nonEmpty(projectMeta["project_name"]) {
@@ -220,6 +223,21 @@ struct HorizontalProject: Identifiable {
             diagnostics.append(HorizontalDiagnostic(message: "Project does not declare board_filename."))
         }
 
+        // Read while the package is still on disk: a snapshot loads from a
+        // temporary copy that is gone once it has loaded.
+        let orphanedPackages = BoardLoadTimer.measure("scan orphaned packages") {
+            HorizontalOrphanedPackages.scan(
+                board: board,
+                blocks: blockInfo.blocks,
+                topBlockFilename: blockInfo.blockFilename,
+                boardFilename: boardFilename,
+                baseURL: baseURL
+            )
+        }
+        if let message = orphanedPackages.diagnosticMessage {
+            diagnostics.append(HorizontalDiagnostic(message: message))
+        }
+
         let schematics = BoardLoadTimer.measure("load schematic models") {
             loadSchematics(
                 for: blockInfo.blocks,
@@ -261,7 +279,8 @@ struct HorizontalProject: Identifiable {
             poolParts: poolParts,
             schematic: schematic,
             board: board,
-            flattenedBlock: flattenedBlock
+            flattenedBlock: flattenedBlock,
+            orphanedPackages: orphanedPackages
         )
     }
 
