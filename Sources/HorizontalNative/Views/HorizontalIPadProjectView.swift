@@ -34,6 +34,8 @@ struct HorizontalIPadProjectView: View {
     @State private var planePourRevision = 0
     @State private var boardNetlistSyncTask: Task<Void, Never>?
     @State private var boardNetlistSyncRequested = false
+    /// The board canvas's tool in use, which the reload waits out.
+    @State private var boardToolHold = BoardCanvasToolHold()
     /// Pours the planes off the main thread, as on macOS.
     @StateObject private var planePourScheduler = HorizontalPlanePourScheduler()
     @AppStorage(HorizontalPlaneFillDefaults.updatesAutomaticallyKey) private var updatesPlanesAutomatically = false
@@ -1840,6 +1842,7 @@ struct HorizontalIPadProjectView: View {
                     toolSettings: boardToolSettings,
                     drawingLayer: boardDrawingLayer,
                     syncRevision: boardSyncRevision,
+                    toolHold: boardToolHold,
                     planePourRevision: planePourRevision,
                     planeFillDelivery: planeFillDelivery,
                     onSelectBoardLayerView: { applyBoardLayerViewPreset($0) },
@@ -2285,6 +2288,7 @@ struct HorizontalIPadProjectView: View {
             while boardNetlistSyncRequested {
                 boardNetlistSyncRequested = false
                 try? await Task.sleep(for: .milliseconds(500))
+                await boardToolHold.waitUntilFree()
                 guard !Task.isCancelled else { return }
                 await performBoardNetlistSync()
             }
@@ -2299,7 +2303,7 @@ struct HorizontalIPadProjectView: View {
             try HorizontalProject.loadSnapshot(of: archive)
         }
         guard let reloaded = try? await reloadTask.value else { return }
-        guard boardEditRevision == revisionAtStart else {
+        guard boardEditRevision == revisionAtStart, !boardToolHold.isHeld else {
             boardNetlistSyncRequested = true
             return
         }

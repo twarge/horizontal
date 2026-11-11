@@ -633,6 +633,9 @@ struct BoardCanvasView: View {
     /// pour, a schematic sync. The canvas adopts the new board in place rather
     /// than being rebuilt, so the view never blanks for work it did not ask for.
     var syncRevision: Int = 0
+    /// Told while a tool is in use with a board of its own, so the pane
+    /// holds back a reload that would end it.
+    var toolHold: BoardCanvasToolHold? = nil
     /// Bumped by the pane each time "Update All Planes" lands. The silkscreen
     /// clip is refreshed alongside the fills rather than on every edit.
     var planePourRevision: Int = 0
@@ -813,6 +816,7 @@ struct BoardCanvasView: View {
         toolSettings: HorizontalBoardToolSettings,
         drawingLayer: Int = HorizontalBoardLayers.topCopper,
         syncRevision: Int = 0,
+        toolHold: BoardCanvasToolHold? = nil,
         planePourRevision: Int = 0,
         planeFillDelivery: HorizontalPlaneFillDelivery? = nil,
         onSelectDrawingLayer: @escaping (Int) -> Void = { _ in },
@@ -868,6 +872,7 @@ struct BoardCanvasView: View {
         self.toolSettings = toolSettings
         self.drawingLayer = drawingLayer
         self.syncRevision = syncRevision
+        self.toolHold = toolHold
         self.planePourRevision = planePourRevision
         self.planeFillDelivery = planeFillDelivery
         self.onSelectDrawingLayer = onSelectDrawingLayer
@@ -1533,6 +1538,7 @@ struct BoardCanvasView: View {
             takePlaneFillDelivery()
         }
         .onChange(of: holdsPlaneFills) { _, holds in
+            toolHold?.set(holds)
             if !holds {
                 takePlaneFillDelivery()
             }
@@ -1619,6 +1625,7 @@ struct BoardCanvasView: View {
             takeUpPlaceDecalRequest()
         }
         .onDisappear {
+            toolHold?.set(false)
             onSelectionDetailsChange(.empty)
             onCanvasCommandActionsChange(nil)
             routeInspector?.endRoute()
