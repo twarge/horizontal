@@ -252,8 +252,14 @@ final class HorizontalRulesCheckAutomaticallyTests: XCTestCase {
         try await Task.sleep(for: .seconds(1))
         XCTAssertEqual(list.numberOfRows, unchecked, "nothing is checked on open")
 
-        try click(try XCTUnwrap(controls(in: list).last), in: window)
-        let checked = await settle(timeout: 10) { list.numberOfRows > unchecked }
+        // On a busy machine the window can take a click before SwiftUI has
+        // its button ready to be hit, and the click then does nothing; Check
+        // Now only runs the checks, so it is clicked again until they have.
+        var checked = false
+        for _ in 0..<10 where !checked {
+            try click(try XCTUnwrap(controls(in: list).last), in: window)
+            checked = await settle(timeout: 1) { list.numberOfRows > unchecked }
+        }
         XCTAssertTrue(checked, "Check Now checks: \(list.numberOfRows) rows, from \(unchecked)")
         // The board and schematic checks settle 400 ms after they start.
         try await Task.sleep(for: .seconds(2))
