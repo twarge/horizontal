@@ -126,7 +126,7 @@ struct HorizontalMetalBackdropView {
 
     @MainActor
     fileprivate func makeBackdropView(coordinator: Renderer) -> MTKView {
-        #if os(iOS)
+        #if os(iOS) || os(visionOS)
         let view = ResizeRedrawingMTKView(frame: .zero, device: coordinator.device)
         #else
         let view = MTKView(frame: .zero, device: coordinator.device)
@@ -197,7 +197,7 @@ struct HorizontalMetalBackdropView {
         }
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(visionOS)
     /// An MTKView (paused, needs-display driven) that requests a draw after
     /// every layout pass. AppKit invalidates a resized NSView on its own, but
     /// UIKit does not — so on iOS a resized canvas kept presenting the old
@@ -514,7 +514,7 @@ extension HorizontalMetalBackdropView: NSViewRepresentable {
         updateBackdropView(view, coordinator: context.coordinator)
     }
 }
-#elseif os(iOS)
+#elseif os(iOS) || os(visionOS)
 extension HorizontalMetalBackdropView: UIViewRepresentable {
     func makeUIView(context: Context) -> MTKView {
         makeBackdropView(coordinator: context.coordinator)
@@ -2120,7 +2120,7 @@ extension HorizontalMetalCanvasLiveLayerFeed: NSViewRepresentable {
         liveLayer.submit(content)
     }
 }
-#elseif os(iOS)
+#elseif os(iOS) || os(visionOS)
 extension HorizontalMetalCanvasLiveLayerFeed: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = UIView(frame: .zero)

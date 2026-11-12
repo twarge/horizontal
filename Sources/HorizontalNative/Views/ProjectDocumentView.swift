@@ -139,11 +139,15 @@ struct ProjectDocumentView: View {
             HorizontalPoolBrowserView(root: .pool(poolURL))
                 .id(poolURL)
                 .navigationTitle(HorizontalPoolRegistryStore.poolInfo(at: poolURL).name)
+                #if !os(visionOS)
                 .navigationSubtitle(poolURL.path)
+                #endif
         case .poolItem(let session):
             HorizontalPoolItemDocumentView(session: session, document: $document)
                 .id(session.itemURL)
+                #if !os(visionOS)
                 .navigationSubtitle(session.subtitle)
+                #endif
         }
     }
 

@@ -27,6 +27,7 @@ make          # Debug build of the macOS app
 make run      # build it, then launch it
 make release  # Release build
 make ios      # build for the iOS Simulator
+make visionos # build for the visionOS Simulator
 make test     # run the test suite
 make help     # list every target
 ```

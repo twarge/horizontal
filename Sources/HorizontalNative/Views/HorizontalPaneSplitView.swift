@@ -276,7 +276,7 @@ private struct SplitHandle: View {
                     .fill(separatorColor.opacity(isHovered ? 0.85 : 0.32))
                     .frame(width: isHovered ? 2 : 1)
             }
-            #if os(iOS)
+            #if os(iOS) || os(visionOS)
             // Touch has no hover to reveal the divider, so the iPad handle carries a
             // visible grabber — the same affordance as a sheet's grabber, rotated.
             .overlay {

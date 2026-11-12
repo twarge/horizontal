@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OCCT_MACOS_INSTALL_DIR="${OCCT_MACOS_INSTALL_DIR:-${OCCT_INSTALL_DIR:-$ROOT_DIR/Vendor/OpenCascadeStatic/macos-arm64}}"
 OCCT_IOS_SIMULATOR_INSTALL_DIR="${OCCT_IOS_SIMULATOR_INSTALL_DIR-$ROOT_DIR/Vendor/OpenCascadeStatic/ios-simulator-arm64}"
 OCCT_IOS_DEVICE_INSTALL_DIR="${OCCT_IOS_DEVICE_INSTALL_DIR-$ROOT_DIR/Vendor/OpenCascadeStatic/ios-arm64}"
+OCCT_VISIONOS_SIMULATOR_INSTALL_DIR="${OCCT_VISIONOS_SIMULATOR_INSTALL_DIR-$ROOT_DIR/Vendor/OpenCascadeStatic/xros-simulator-arm64}"
+OCCT_VISIONOS_DEVICE_INSTALL_DIR="${OCCT_VISIONOS_DEVICE_INSTALL_DIR-$ROOT_DIR/Vendor/OpenCascadeStatic/xros-arm64}"
 OUTPUT_DIR="${OCCT_XCFRAMEWORK_OUTPUT:-$ROOT_DIR/Vendor/OpenCascadeStatic/OpenCascadeStairs.xcframework}"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/private/tmp}/occt-xcframework.XXXXXX")"
 
@@ -103,6 +105,16 @@ fi
 
 if [[ -n "$OCCT_IOS_DEVICE_INSTALL_DIR" ]]; then
   merge_install_dir "ios-arm64" "$OCCT_IOS_DEVICE_INSTALL_DIR"
+fi
+
+# The visionOS slices are optional: built by scripts/build-occt-visionos.sh,
+# and left out of the xcframework when their installs are absent.
+if [[ -n "$OCCT_VISIONOS_SIMULATOR_INSTALL_DIR" && -d "$OCCT_VISIONOS_SIMULATOR_INSTALL_DIR" ]]; then
+  merge_install_dir "xros-simulator-arm64" "$OCCT_VISIONOS_SIMULATOR_INSTALL_DIR"
+fi
+
+if [[ -n "$OCCT_VISIONOS_DEVICE_INSTALL_DIR" && -d "$OCCT_VISIONOS_DEVICE_INSTALL_DIR" ]]; then
+  merge_install_dir "xros-arm64" "$OCCT_VISIONOS_DEVICE_INSTALL_DIR"
 fi
 
 xcodebuild -create-xcframework \

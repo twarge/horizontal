@@ -159,7 +159,7 @@ struct HorizontalPoolSchematicEditorView: View {
                     symbolEditorContext: symbolContext,
                     syncRevision: syncRevision
                 )
-                #if os(iOS)
+                #if os(iOS) || os(visionOS)
                 .overlay(alignment: .bottom) {
                     placementControlBar
                 }
@@ -205,7 +205,7 @@ struct HorizontalPoolSchematicEditorView: View {
         }
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(visionOS)
     @ViewBuilder
     private var placementControlBar: some View {
         if let actions = canvasActions, actions.canCancelInteraction {

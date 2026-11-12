@@ -228,7 +228,7 @@ struct HorizontalBoardRulesWindow: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            #if os(iOS)
+            #if os(iOS) || os(visionOS)
             .navigationTitle(showsSchematicConnectivity ? "Schematic Connectivity" : selectedKind.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -338,7 +338,7 @@ struct HorizontalBoardRulesWindow: View {
             if let appearanceSettings {
                 HorizontalCanvasWarningsToggle(appearanceSettings: appearanceSettings)
                     .padding(.horizontal, 14)
-                    #if os(iOS)
+                    #if os(iOS) || os(visionOS)
                     .padding(.top, 8)
                     #endif
                     .padding(.bottom, 8)
@@ -361,7 +361,7 @@ struct HorizontalBoardRulesWindow: View {
             }
             .listStyle(.sidebar)
         }
-        #if os(iOS)
+        #if os(iOS) || os(visionOS)
         .navigationTitle("Rules")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

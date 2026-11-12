@@ -1,4 +1,4 @@
-#if os(iOS)
+#if os(iOS) || os(visionOS)
 import HorizontalProjectIO
 import SwiftUI
 import UIKit
@@ -324,7 +324,9 @@ struct HorizontalIPadProjectView: View {
                                 .labelStyle(.iconOnly)
                         }
                         .sharedBackgroundVisibility(toolbarBackgroundVisibility)
+                        #if !os(visionOS)
                         ToolbarSpacer(.flexible, placement: .bottomBar)
+                        #endif
                     }
                     if availablePanes(for: project).count > 1 {
                         // A group of image items, one per pane, sharing one
@@ -336,7 +338,9 @@ struct HorizontalIPadProjectView: View {
                                 .labelStyle(.iconOnly)
                         }
                         .sharedBackgroundVisibility(toolbarBackgroundVisibility)
+                        #if !os(visionOS)
                         ToolbarSpacer(.flexible, placement: .bottomBar)
+                        #endif
                     }
                     ToolbarItem(placement: .bottomBar) {
                         compactMoreMenu(for: project)
@@ -356,7 +360,9 @@ struct HorizontalIPadProjectView: View {
                         documentToolbarItems(for: project)
                     }
                     .sharedBackgroundVisibility(toolbarBackgroundVisibility)
+                    #if !os(visionOS)
                     ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                    #endif
                     ToolbarItemGroup(placement: .topBarTrailing) {
                         viewToolbarItems(for: project)
                     }
@@ -3354,4 +3360,15 @@ private struct RouteInspectorSwitch<Selection: View>: View {
         }
     }
 }
+
+#if os(visionOS)
+/// visionOS toolbars have no Liquid Glass capsule to show or hide, and SwiftUI
+/// marks the modifier unavailable there; this stands in for it and does
+/// nothing, so the toolbar above reads the same on both platforms.
+private extension ToolbarContent {
+    func sharedBackgroundVisibility(_ visibility: Visibility) -> some ToolbarContent {
+        self
+    }
+}
+#endif
 #endif

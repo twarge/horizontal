@@ -136,7 +136,7 @@ extension EnvironmentValues {
 
 /// The pane's keyboard-focus mark: a tinted scope, no button behind it.
 struct PaneKeyboardFocusBadge: View {
-    #if os(iOS)
+    #if os(iOS) || os(visionOS)
     private static let iconSize: CGFloat = 20
     #else
     private static let iconSize: CGFloat = 16
@@ -272,7 +272,7 @@ struct PaneToolColumn<
 struct PaneToolButtonStyle: ButtonStyle {
     // Rail buttons are 25% larger on iOS for finger-friendly targets (≈42pt, toward
     // the 44pt HIG minimum); macOS keeps the tighter mouse-sized rail.
-    #if os(iOS)
+    #if os(iOS) || os(visionOS)
     private let buttonSize: CGFloat = 42.5
     private let iconSize: CGFloat = 20
     private let cornerRadius: CGFloat = 10

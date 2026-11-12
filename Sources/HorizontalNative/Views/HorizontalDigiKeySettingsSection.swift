@@ -41,7 +41,7 @@ struct HorizontalDigiKeySettingsSection: View {
             TextField("Client ID", text: $clientID)
                 .disabled(!monitor.isEnabled)
                 .autocorrectionDisabled()
-                #if os(iOS)
+                #if os(iOS) || os(visionOS)
                 .textInputAutocapitalization(.never)
                 #endif
             SecureField(

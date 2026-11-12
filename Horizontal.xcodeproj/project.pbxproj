@@ -403,6 +403,8 @@
 				INFOPLIST_FILE = App/InfoXcode.plist;
 				"INFOPLIST_FILE[sdk=iphoneos*]" = App/iOSInfo.plist;
 				"INFOPLIST_FILE[sdk=iphonesimulator*]" = App/iOSInfo.plist;
+				"INFOPLIST_FILE[sdk=xros*]" = App/iOSInfo.plist;
+				"INFOPLIST_FILE[sdk=xrsimulator*]" = App/iOSInfo.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Horizontal;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Horizontal listens for spoken commands such as “highlight C12” or “show the board” while the microphone button is on.";
@@ -421,17 +423,26 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=xros*]" = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=xrsimulator*]" = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.twarge.app.horizontal;
 				PRODUCT_NAME = Horizontal;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Debug;
 		};
@@ -455,6 +466,8 @@
 				INFOPLIST_FILE = App/InfoXcode.plist;
 				"INFOPLIST_FILE[sdk=iphoneos*]" = App/iOSInfo.plist;
 				"INFOPLIST_FILE[sdk=iphonesimulator*]" = App/iOSInfo.plist;
+				"INFOPLIST_FILE[sdk=xros*]" = App/iOSInfo.plist;
+				"INFOPLIST_FILE[sdk=xrsimulator*]" = App/iOSInfo.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Horizontal;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Horizontal listens for spoken commands such as “highlight C12” or “show the board” while the microphone button is on.";
@@ -473,17 +486,26 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=xros*]" = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=xrsimulator*]" = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.twarge.app.horizontal;
 				PRODUCT_NAME = Horizontal;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Release;
 		};

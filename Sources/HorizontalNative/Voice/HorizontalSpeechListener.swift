@@ -103,7 +103,7 @@ final class HorizontalSpeechListener: HorizontalSpeechEngine {
     }
 
     private func startAudio(format: AVAudioFormat, into continuation: AsyncStream<AnalyzerInput>.Continuation) throws {
-        #if os(iOS)
+        #if os(iOS) || os(visionOS)
         let audioSession = AVAudioSession.sharedInstance()
         try audioSession.setCategory(.record, mode: .measurement, options: [.duckOthers])
         try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
@@ -128,7 +128,7 @@ final class HorizontalSpeechListener: HorizontalSpeechEngine {
         guard audioEngine.isRunning else { return }
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
-        #if os(iOS)
+        #if os(iOS) || os(visionOS)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         #endif
     }

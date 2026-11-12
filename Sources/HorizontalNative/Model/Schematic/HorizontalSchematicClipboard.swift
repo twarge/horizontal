@@ -2,7 +2,7 @@ import Foundation
 import HorizontalProjectIO
 #if os(macOS)
 import AppKit
-#elseif os(iOS)
+#elseif os(iOS) || os(visionOS)
 import UIKit
 #endif
 
@@ -32,7 +32,7 @@ struct HorizontalSchematicClipboard {
         #if os(macOS)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setData(data, forType: .init(Self.pasteboardType))
-        #elseif os(iOS)
+        #elseif os(iOS) || os(visionOS)
         UIPasteboard.general.setData(data, forPasteboardType: Self.pasteboardType)
         #endif
     }
@@ -40,7 +40,7 @@ struct HorizontalSchematicClipboard {
     @MainActor static func readFromPasteboard() throws -> Self? {
         #if os(macOS)
         let data = NSPasteboard.general.data(forType: .init(pasteboardType))
-        #elseif os(iOS)
+        #elseif os(iOS) || os(visionOS)
         let data = UIPasteboard.general.data(forPasteboardType: pasteboardType)
         #else
         let data: Data? = nil

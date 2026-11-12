@@ -119,7 +119,7 @@ struct HorizontalPoolBrowserView: View {
     /// iPad: the default pool's offer, as a sheet (the Mac has a window).
     @State private var isOfferingDefaultPool = false
     @EnvironmentObject private var appearanceSettings: HorizontalAppearanceSettings
-    #if os(iOS)
+    #if os(iOS) || os(visionOS)
     @State private var editingItem: HorizontalPoolLibraryItem?
     #endif
     @State private var category: HorizontalPoolItemCategory = .part
@@ -517,7 +517,7 @@ struct HorizontalPoolBrowserView: View {
         .onChange(of: parametricSortOrder) { _, _ in
             scrollToSelection(centered: false)
         }
-        #if os(iOS)
+        #if os(iOS) || os(visionOS)
         .fullScreenCover(item: $editingItem) { item in
             HorizontalPoolItemEditorCover(item: item) {
                 editingItem = nil

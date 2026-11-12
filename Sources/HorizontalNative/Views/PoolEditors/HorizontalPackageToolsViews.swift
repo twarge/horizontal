@@ -109,7 +109,7 @@ struct HorizontalPackageToolsSection: View {
                 onCancel: { dxfPresented = false }
             )
         }
-        #if os(iOS)
+        #if os(iOS) || os(visionOS)
         .fileImporter(isPresented: $dxfImporterPresented, allowedContentTypes: [UTType(filenameExtension: "dxf") ?? .data]) { result in
             if case .success(let url) = result {
                 importDXF(from: url)
@@ -535,7 +535,7 @@ struct HorizontalPackageModelsSection: View {
     var commit: (HorizontalPoolItemModel, String) -> Void
 
     @State private var addError: String?
-    #if os(iOS)
+    #if os(iOS) || os(visionOS)
     @State private var newModelPath = ""
     #endif
 
@@ -560,7 +560,7 @@ struct HorizontalPackageModelsSection: View {
                 .disabled(isReadOnly)
                 #endif
             }
-            #if os(iOS)
+            #if os(iOS) || os(visionOS)
             HStack {
                 TextField("3d_models/part.step", text: $newModelPath)
                     .textFieldStyle(.roundedBorder)

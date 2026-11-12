@@ -23,7 +23,9 @@ struct HorizontalPoolItemDocumentView: View {
     var body: some View {
         HorizontalPoolItemEditorContent(session: session, isReadOnly: isReadOnly, commit: commit)
             .navigationTitle(session.title)
+            #if !os(visionOS)
             .navigationSubtitle(session.subtitle)
+            #endif
             #if os(macOS)
             // A link opens the item in a window of its own, as the Pools
             // pane's Edit does.
@@ -154,7 +156,7 @@ struct HorizontalPoolItemEditorContent: View {
     }
 }
 
-#if os(iOS)
+#if os(iOS) || os(visionOS)
 /// iPadOS has no way to open a second document scene from inside one, so the
 /// library pane's "Edit…" presents the editor over the project instead. The
 /// session writes straight to the item's file on each commit (the file is
@@ -201,7 +203,9 @@ private struct HorizontalPoolItemEditorCoverPage: View {
                     session.commit(model, actionName: actionName, undoManager: undoManager, isReadOnly: isReadOnly)
                 }
                 .navigationTitle(session.title)
+                #if !os(visionOS)
                 .navigationSubtitle(session.subtitle)
+                #endif
             } else if let loadError {
                 ContentUnavailableView("Could Not Open Item", systemImage: "exclamationmark.triangle", description: Text(loadError))
             } else {

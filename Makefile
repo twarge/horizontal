@@ -16,6 +16,7 @@
 #   make run        build it, then launch it
 #   make release    Release build
 #   make ios        build for the iOS Simulator
+#   make visionos   build for the visionOS Simulator
 #   make test       run the test suite (see the note on `test` below)
 #   make native     release build of the headless dylib and CLI
 #   make python     set up the Python package and MCP server
@@ -39,7 +40,7 @@ XCODEBUILD := xcodebuild -project $(PROJECT) -scheme $(SCHEME) -configuration $(
 OCCT_XCFRAMEWORK := Vendor/OpenCascadeStatic/OpenCascadeStairs.xcframework
 OCCT_LIB         := $(OCCT_XCFRAMEWORK)/macos-arm64/libOpenCascadeStairs-macos-arm64.a
 
-.PHONY: all build run release ios test deps clean help app-path archive upload native python python-test lint python-lint
+.PHONY: all build run release ios visionos test deps clean help app-path archive upload native python python-test lint python-lint
 
 all: build
 
@@ -47,12 +48,14 @@ all: build
 deps: $(OCCT_LIB)
 
 # Order matters: the macOS and iOS static installs are built first, then merged
-# into one xcframework. The iOS slices are what let `make ios` link.
+# into one xcframework. The iOS slices are what let `make ios` link, and the
+# visionOS ones `make visionos`.
 $(OCCT_LIB):
 	@echo "==> Building OpenCascade — one-time and slow (tens of minutes)"
 	git submodule update --init --recursive Vendor/OCCT Vendor/RapidJSON
 	scripts/build-occt.sh
 	scripts/build-occt-ios.sh
+	scripts/build-occt-visionos.sh
 	scripts/build-occt-xcframework.sh
 
 ## build: build the macOS app exactly as Xcode's Build & Run does
@@ -66,6 +69,10 @@ release:
 ## ios: build for the iOS Simulator (unsigned, as Xcode does for a generic destination)
 ios: deps
 	$(XCODEBUILD) -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+
+## visionos: build for the visionOS Simulator (unsigned, as `ios` is)
+visionos: deps
+	$(XCODEBUILD) -destination 'generic/platform=visionOS Simulator' CODE_SIGNING_ALLOWED=NO build
 
 ## app-path: print the path of the built .app (inside Xcode's DerivedData)
 app-path:

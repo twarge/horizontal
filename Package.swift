@@ -10,7 +10,8 @@ let package = Package(
     name: "HorizontalNative",
     platforms: [
         .macOS(.v26),
-        .iOS(.v26)
+        .iOS(.v26),
+        .visionOS(.v26)
     ],
     products: [
         .library(name: "HorizontalProjectIO", targets: ["HorizontalProjectIO"]),

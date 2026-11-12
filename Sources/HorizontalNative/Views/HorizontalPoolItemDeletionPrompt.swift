@@ -51,7 +51,7 @@ struct HorizontalPoolItemDeletionPrompt: ViewModifier {
         if !deletion.keptModels.isEmpty {
             lines.append("Its 3D models outside that folder stay where they are: \(deletion.keptModels.joined(separator: ", ")).")
         }
-        #if os(iOS)
+        #if os(iOS) || os(visionOS)
         lines.append("Where the pool’s volume has no Recently Deleted, the files are deleted for good.")
         #endif
         return lines.joined(separator: "\n\n")

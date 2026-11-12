@@ -156,7 +156,7 @@ struct HorizontalPoolCanvasEditorView: View {
                     modeProfile: modeProfile,
                     poolContext: context
                 )
-                #if os(iOS)
+                #if os(iOS) || os(visionOS)
                 .overlay(alignment: .bottom) {
                     placementControlBar
                 }
@@ -302,7 +302,7 @@ struct HorizontalPoolCanvasEditorView: View {
         }
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(visionOS)
     /// The on-screen stand-in for the keyboard while a pad, shape or hole
     /// follows the finger: finish / cancel, and rotate / mirror for the ghost.
     @ViewBuilder

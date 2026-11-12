@@ -1220,7 +1220,11 @@ final class BoardSceneTouchRenderView: UIView {
     }
 
     private func updateDrawableSize() {
+        #if os(visionOS)
+        surface.setSize(bounds.size, scale: traitCollection.displayScale)
+        #else
         surface.setSize(bounds.size, scale: window?.screen.scale ?? traitCollection.displayScale)
+        #endif
     }
 
     private func updateDisplayLink() {

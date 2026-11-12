@@ -35,13 +35,13 @@ struct HorizontalCanvasPromptSheet: View {
                 switch request.content {
                 case .text:
                     TextField("Text", text: $text)
-                        #if os(iOS)
+                        #if os(iOS) || os(visionOS)
                         .textInputAutocapitalization(.sentences)
                         #endif
                 case .number(_, let unit, _):
                     HStack {
                         TextField("Value", text: $numberText)
-                            #if os(iOS)
+                            #if os(iOS) || os(visionOS)
                             .keyboardType(.decimalPad)
                             #endif
                         Text(unit).foregroundStyle(.secondary)
@@ -57,7 +57,7 @@ struct HorizontalCanvasPromptSheet: View {
                 }
             }
             .navigationTitle(request.title)
-            #if os(iOS)
+            #if os(iOS) || os(visionOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
