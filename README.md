@@ -36,6 +36,13 @@ The first build also compiles the vendored OpenCascade static libraries, which
 takes tens of minutes. `make deps` rebuilds them
 explicitly. 
 
+A signed build uses two iCloud capabilities, which the App ID
+`com.twarge.app.horizontal` must have: iCloud Documents with the container
+`iCloud.com.twarge.app.horizontal`, for the Horizontal folder in iCloud Drive,
+and the key-value store, through which the preferences that describe the
+person (colours, line widths, canvas and router options) follow them between
+devices. Those that describe one device or one document stay on it.
+
 ## Automation
 
 The model, exporters, and checks run without the app through one JSON-RPC

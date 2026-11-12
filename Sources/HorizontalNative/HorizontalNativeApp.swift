@@ -18,6 +18,9 @@ struct HorizontalNativeApp: App {
         // The workspace compiles into the QuickLook extensions too, so it
         // reaches the engine through this hook rather than by name.
         HorizontalVoiceControl.makeEngine = { HorizontalSpeechListener() }
+        // Before the first view reads a preference: what iCloud already holds
+        // is in `UserDefaults` by the time the appearance settings load.
+        SettingsSync.shared.start()
     }
 
     var body: some Scene {

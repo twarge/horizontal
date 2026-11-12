@@ -522,6 +522,92 @@ final class HorizontalAppearanceSettings: ObservableObject {
         for role in HorizontalLineWidthRole.allCases {
             roleLineWidths[role] = Self.loadLineWidth(role: role, defaults: defaults)
         }
+        // Lives as long as the app does, so the observer is never removed.
+        _ = NotificationCenter.default.addObserver(
+            forName: SettingsSync.didPullNotification,
+            object: defaults,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reloadSyncedDefaults() }
+        }
+    }
+
+    /// The keys of `UserDefaults` that iCloud carries between the user's
+    /// devices (`SettingsSync`): the colours, the line widths, the canvas
+    /// and toolbar options and the silkscreen clipping. The theme and the
+    /// cursor's size suit one display and stay with it, as do the read-only
+    /// lock and the live server, which are one device's to decide.
+    static var syncedDefaultsKeys: [String] {
+        var keys = [
+            selectionHandleShapeDefaultsKey,
+            hoverPopoverDefaultsKey,
+            netLabelBackgroundDefaultsKey,
+            wireHopsDefaultsKey,
+            canvasWarningsDefaultsKey,
+            closedSymbolBackgroundDefaultsKey,
+            swapViewControlsAndUnplacedReferencesDefaultsKey,
+            transparentToolbarDefaultsKey,
+            boardSceneBackgroundColorDefaultsKey,
+            boardSceneSubstrateColorDefaultsKey,
+            boardSceneSolderMaskColorDefaultsKey,
+            boardSceneSilkscreenColorDefaultsKey,
+            boardSceneCopperColorDefaultsKey,
+            gridLineWidthDefaultsKey,
+            clipSilkscreenDefaultsKey,
+            silkscreenMaskClearanceDefaultsKey,
+        ]
+        keys += HorizontalLineWidthRole.allCases.map { lineWidthDefaultsKey(role: $0) }
+        for kind in HorizontalCanvasKind.allCases {
+            keys.append(minimumLineWidthDefaultsKey(kind: kind))
+            for mode in HorizontalPaletteMode.allCases {
+                keys += HorizontalColorRole.allCases.map { colorDefaultsKey(kind: kind, mode: mode, role: $0) }
+            }
+        }
+        for mode in HorizontalPaletteMode.allCases {
+            keys += editableLayers.map { layerDefaultsKey(mode: mode, layer: $0) }
+        }
+        return keys
+    }
+
+    /// Copies a colour chosen for the one shared layer set into the light
+    /// set, as the first launch that knows the light set does. `SettingsSync`
+    /// asks for it before it pulls: colours arriving from another device are
+    /// that device's dark set and must not seed this one's light set.
+    static func seedDefaultsBeforeSync(defaults: UserDefaults = .standard) {
+        seedLightLayerColors(defaults: defaults)
+    }
+
+    /// Reads again what `syncedDefaultsKeys` names, after `SettingsSync`
+    /// wrote another device's choices into `UserDefaults`.
+    private func reloadSyncedDefaults() {
+        selectionHandleShape = Self.loadSelectionHandleShape(defaults: defaults)
+        showsHoverPopover = Self.loadShowsHoverPopover(defaults: defaults)
+        fillsNetLabelBackground = Self.loadFillsNetLabelBackground(defaults: defaults)
+        drawsWireHops = defaults.object(forKey: Self.wireHopsDefaultsKey) as? Bool ?? true
+        displaysCanvasWarnings = defaults.object(forKey: Self.canvasWarningsDefaultsKey) as? Bool ?? true
+        fillsClosedSymbolBackground = defaults.bool(forKey: Self.closedSymbolBackgroundDefaultsKey)
+        swapsViewControlsAndUnplacedReferences = Self.loadSwapsViewControlsAndUnplacedReferences(defaults: defaults)
+        transparentToolbar = Self.loadTransparentToolbar(defaults: defaults)
+        boardSceneBackgroundColor = Self.loadBoardSceneBackgroundColor(defaults: defaults)
+        boardSceneSubstrateColor = Self.loadBoardSceneSubstrateColor(defaults: defaults)
+        boardSceneSolderMaskColor = Self.loadBoardSceneSolderMaskColor(defaults: defaults)
+        boardSceneSilkscreenColor = Self.loadBoardSceneSilkscreenColor(defaults: defaults)
+        boardSceneCopperColor = Self.loadBoardSceneCopperColor(defaults: defaults)
+        for mode in HorizontalPaletteMode.allCases {
+            layerColorSets[mode] = Self.loadLayerColors(mode: mode, defaults: defaults)
+        }
+        gridLineWidth = Self.loadGridLineWidth(defaults: defaults)
+        clipsSilkscreenToSolderMask = Self.loadClipsSilkscreenToSolderMask(defaults: defaults)
+        silkscreenMaskClearanceMM = Self.loadSilkscreenMaskClearanceMM(defaults: defaults)
+        for kind in HorizontalCanvasKind.allCases {
+            minimumLineWidths[kind] = loadMinimumLineWidth(kind: kind)
+            for mode in HorizontalPaletteMode.allCases {
+                palettes[HorizontalPaletteKey(kind: kind, mode: mode)] = loadPalette(kind: kind, mode: mode)
+            }
+        }
+        for role in HorizontalLineWidthRole.allCases {
+            roleLineWidths[role] = Self.loadLineWidth(role: role, defaults: defaults)
+        }
     }
 
     var preferredColorScheme: ColorScheme? {
@@ -1272,6 +1358,10 @@ final class HorizontalAppearanceSettings: ObservableObject {
     }
 
     private func colorDefaultsKey(kind: HorizontalCanvasKind, mode: HorizontalPaletteMode, role: HorizontalColorRole) -> String {
+        Self.colorDefaultsKey(kind: kind, mode: mode, role: role)
+    }
+
+    private static func colorDefaultsKey(kind: HorizontalCanvasKind, mode: HorizontalPaletteMode, role: HorizontalColorRole) -> String {
         "appearance.\(kind.rawValue).\(mode.rawValue).color.\(role.rawValue)"
     }
 
@@ -1289,6 +1379,10 @@ final class HorizontalAppearanceSettings: ObservableObject {
     }
 
     private func minimumLineWidthDefaultsKey(kind: HorizontalCanvasKind) -> String {
+        Self.minimumLineWidthDefaultsKey(kind: kind)
+    }
+
+    private static func minimumLineWidthDefaultsKey(kind: HorizontalCanvasKind) -> String {
         "appearance.\(kind.rawValue).minimumLineWidth"
     }
 

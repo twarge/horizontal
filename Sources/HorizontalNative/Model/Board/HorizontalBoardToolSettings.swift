@@ -19,34 +19,34 @@ final class HorizontalBoardToolSettings: ObservableObject {
 
     /// Corner geometry applied to new routes. Cycled by `c`.
     @Published var cornerStyle: BoardTrackCornerStyle {
-        didSet { defaults.set(cornerStyle.rawValue, forKey: Self.cornerStyleKey) }
+        didSet { if !isReloading { defaults.set(cornerStyle.rawValue, forKey: Self.cornerStyleKey) } }
     }
 
     /// Use the interactive push-and-shove autorouter (vendored KiCad PNS) rather
     /// than the manual click-to-route tool. macOS only; ignored where the router
     /// isn't built. Off by default, so the proven manual path stays the default.
     @Published var routerMode: Bool {
-        didSet { defaults.set(routerMode, forKey: Self.routerModeKey) }
+        didSet { if !isReloading { defaults.set(routerMode, forKey: Self.routerModeKey) } }
     }
 
     /// When the autorouter is on, let it shove existing copper aside; otherwise
     /// it only walks around obstacles.
     @Published var routerShove: Bool {
-        didSet { defaults.set(routerShove, forKey: Self.routerShoveKey) }
+        didSet { if !isReloading { defaults.set(routerShove, forKey: Self.routerShoveKey) } }
     }
 
     /// A route that leaves its net's copper and comes back to it replaces the
     /// stretch between, as Horizon's router removes loops
     /// (`BoardTrackLoops`). On unless turned off.
     @Published var removeLoops: Bool {
-        didSet { defaults.set(removeLoops, forKey: Self.removeLoopsKey) }
+        didSet { if !isReloading { defaults.set(removeLoops, forKey: Self.removeLoopsKey) } }
     }
 
     /// A route starts only on copper on its layer: a pad, a track or a via
     /// (`BoardTrackRouting.copperStart`). ⌘-click starts one anywhere. On
     /// unless turned off.
     @Published var startsOnCopper: Bool {
-        didSet { defaults.set(startsOnCopper, forKey: Self.startsOnCopperKey) }
+        didSet { if !isReloading { defaults.set(startsOnCopper, forKey: Self.startsOnCopperKey) } }
     }
 
     /// Via diameter (nm), which makes a route's via its own. When nil, the
@@ -95,6 +95,10 @@ final class HorizontalBoardToolSettings: ObservableObject {
     }
 
     private let defaults: UserDefaults
+    /// Set while `reloadSyncedDefaults` takes values from `UserDefaults`:
+    /// writing them back would turn a key another device reset into a
+    /// choice made here, and send it to the cloud again.
+    private var isReloading = false
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -113,6 +117,35 @@ final class HorizontalBoardToolSettings: ObservableObject {
         meanderCorner = defaults.string(forKey: Self.meanderCornerKey).flatMap(HorizontalMeander.Corner.init(rawValue:)) ?? meander.corner
         meanderStyle = defaults.string(forKey: Self.meanderStyleKey).flatMap(HorizontalMeander.Style.init(rawValue:)) ?? meander.style
         tuneTarget = Self.optionalDouble(defaults, forKey: Self.tuneTargetKey)
+        // One per document window. The block holds the settings weakly, so
+        // an observer left behind by a closed window does nothing.
+        _ = NotificationCenter.default.addObserver(
+            forName: SettingsSync.didPullNotification,
+            object: defaults,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reloadSyncedDefaults() }
+        }
+    }
+
+    /// Reads again the router options iCloud carries between the user's
+    /// devices (`SettingsSync.syncedKeys`), after another device's choices
+    /// were written into `UserDefaults`. The widths and diameters are this
+    /// device's and stay as they are.
+    private func reloadSyncedDefaults() {
+        isReloading = true
+        defer { isReloading = false }
+        let corner = defaults.string(forKey: Self.cornerStyleKey)
+            .flatMap(BoardTrackCornerStyle.init(rawValue:)) ?? .fortyFive
+        if cornerStyle != corner { cornerStyle = corner }
+        let mode = defaults.bool(forKey: Self.routerModeKey)
+        if routerMode != mode { routerMode = mode }
+        let shove = defaults.bool(forKey: Self.routerShoveKey)
+        if routerShove != shove { routerShove = shove }
+        let loops = defaults.object(forKey: Self.removeLoopsKey) as? Bool ?? true
+        if removeLoops != loops { removeLoops = loops }
+        let onCopper = defaults.object(forKey: Self.startsOnCopperKey) as? Bool ?? true
+        if startsOnCopper != onCopper { startsOnCopper = onCopper }
     }
 
     /// Resolved via geometry given a board's via template (template values fill
