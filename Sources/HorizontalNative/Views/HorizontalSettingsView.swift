@@ -92,7 +92,6 @@ struct HorizontalSettingsView: View {
 
             Section("Silkscreen") {
                 Toggle("Clip Silkscreen to Solder Mask", isOn: appearanceSettings.clipSilkscreenToSolderMaskBinding())
-                silkscreenClearanceRow()
                 Text("Silkscreen within the clearance of a solder mask opening is left out — of the board view, the 3D view, and the Gerber, ODB++, PDF and DXF board exports — the way a fab house strips silkscreen off pads.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -329,30 +328,6 @@ struct HorizontalSettingsView: View {
         ) {
             appearanceSettings.resetLineWidth(role: role)
         }
-    }
-
-    private func silkscreenClearanceRow() -> some View {
-        HStack(spacing: 12) {
-            Text("Clearance")
-                .frame(width: 170, alignment: .leading)
-            Slider(
-                value: appearanceSettings.silkscreenMaskClearanceBinding(),
-                in: 0...HorizontalSilkscreenClipping.maximumClearanceMM,
-                step: 0.01
-            )
-            Text(
-                appearanceSettings.silkscreenMaskClearanceMillimetres
-                    .formatted(.number.precision(.fractionLength(2))) + " mm"
-            )
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
-            .frame(width: 64, alignment: .trailing)
-            Button("Reset") {
-                appearanceSettings.resetSilkscreenClipping()
-            }
-            .buttonStyle(.bordered)
-        }
-        .disabled(appearanceSettings.silkscreenClipping == nil)
     }
 
     private func gridLineWidthRow() -> some View {

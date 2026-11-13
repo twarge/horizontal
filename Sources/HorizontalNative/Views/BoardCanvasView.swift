@@ -12201,6 +12201,9 @@ struct BoardCanvasView: View {
         BoardSilkscreenClipTrigger(
             boardID: sourceBoard.uuid,
             clipping: appearanceSettings.silkscreenClipping,
+            rule: appearanceSettings.silkscreenClipping == nil
+                ? nil
+                : (editedBoard ?? sourceBoard).rules.clearanceSilkscreenExposedCopper,
             planePourRevision: planePourRevision
         )
     }

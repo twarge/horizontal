@@ -3,15 +3,24 @@ import Foundation
 import HorizontalPlaneClipper
 #endif
 
-/// The "clip silkscreen to solder mask" mode: silkscreen closer than
-/// `clearance` (nanometres) to a solder mask opening on the same side, or
-/// to the board's edge and cutouts, is left out, the way a fab house strips
+/// The "clip silkscreen to solder mask" mode: silkscreen closer than the
+/// board's own clearance to a solder mask opening on the same side, or to
+/// the board's edge and cutouts, is left out, the way a fab house strips
 /// silkscreen off pads and off the routed edge.
+///
+/// The clearance is the board's silkscreen to exposed copper rule's, top or
+/// bottom. A mask opening is no smaller than the copper it bares, so
+/// silkscreen clipped at that distance from the openings passes the rule's
+/// check. The rule's distance is used whether or not the rule is enabled,
+/// and around every opening whatever its pads-only says: those govern the
+/// check, not what a fab house strips.
 struct HorizontalSilkscreenClipping: Hashable {
-    var clearance: Double
-
-    static let defaultClearanceMM = 0.1
-    static let maximumClearanceMM = 1.0
+    /// How far (nanometres) silkscreen on `layer` of `board` is kept back.
+    func clearance(forSilkscreen layer: Int, of board: HorizontalBoard) -> Double {
+        let rule = board.rules.clearanceSilkscreenExposedCopper
+        let clearance = layer == HorizontalBoardLayers.bottomSilkscreen ? rule.clearanceBottom : rule.clearanceTop
+        return max(clearance, 0)
+    }
 }
 
 /// One silkscreen object after clipping: what is left of it, as fill
@@ -126,16 +135,17 @@ enum HorizontalSilkscreenClipper {
         guard let maskLayer = maskLayer(forSilkscreen: layer) else {
             return nil
         }
+        let clearance = clipping.clearance(forSilkscreen: layer, of: board)
         let key = CacheKey(
             boardID: board.uuid,
             layer: layer,
-            clearance: clipping.clearance,
+            clearance: clearance,
             signature: signature(for: layer, maskLayer: maskLayer, board: board)
         )
         if let cached = cache.value(for: key) {
             return cached
         }
-        let result = computeClippedLayer(layer, maskLayer: maskLayer, board: board, clearance: clipping.clearance)
+        let result = computeClippedLayer(layer, maskLayer: maskLayer, board: board, clearance: clearance)
         cache.setValue(result, for: key)
         return result
     }

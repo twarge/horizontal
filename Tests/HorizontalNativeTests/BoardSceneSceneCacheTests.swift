@@ -89,7 +89,7 @@ final class BoardSceneSceneCacheTests: XCTestCase {
         let cache = BoardSceneSceneCache()
         _ = cache.scene(for: board(polygonCount: 1), revision: 0) { _ in }
         await waitForBuilds(cache)
-        _ = cache.scene(for: board(polygonCount: 1), silkscreenClipping: HorizontalSilkscreenClipping(clearance: 100_000), revision: 0) { _ in XCTFail("cancelled") }
+        _ = cache.scene(for: board(polygonCount: 1), silkscreenClipping: HorizontalSilkscreenClipping(), revision: 0) { _ in XCTFail("cancelled") }
         XCTAssertTrue(cache.isBuilding)
         _ = cache.scene(for: board(polygonCount: 1), revision: 0) { _ in XCTFail("nothing to build") }
         XCTAssertFalse(cache.isBuilding)

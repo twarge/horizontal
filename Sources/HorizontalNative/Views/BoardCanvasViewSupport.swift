@@ -719,11 +719,14 @@ final class BoardMetalElementBuckets {
     }
 }
 
-/// When the board canvas re-clips its silkscreen: a new board, a changed
-/// clearance, or a plane pour (Q). Edits in between leave the clip alone.
+/// When the board canvas re-clips its silkscreen: a new board, the mode
+/// switched, a changed clearance in the board's silkscreen rule, or a plane
+/// pour (Q). Edits in between leave the clip alone.
 struct BoardSilkscreenClipTrigger: Equatable {
     var boardID: String
     var clipping: HorizontalSilkscreenClipping?
+    /// The rule the clearance comes from, nil while the mode is off.
+    var rule: HorizontalRuleClearanceSilkscreenExposedCopper?
     var planePourRevision: Int
 }
 
@@ -1323,8 +1326,9 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
         return turnedMoveTextsValue
     }
 
-    /// The last refreshed clip, if it was made with `clipping`. A clip made
-    /// at another clearance is not served while its replacement is computed.
+    /// The last refreshed clip, if it was made with `clipping`. After the
+    /// board's rule changes its clearance, the clip at the old one is served
+    /// until its replacement is computed.
     func silkscreenClips(for clipping: HorizontalSilkscreenClipping) -> [Int: HorizontalClippedSilkscreenLayer] {
         silkscreenClipsClipping == clipping ? silkscreenClipsValue : [:]
     }

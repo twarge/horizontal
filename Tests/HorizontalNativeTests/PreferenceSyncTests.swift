@@ -28,7 +28,7 @@ final class PreferenceSyncTests: XCTestCase {
         var domain: String
     }
 
-    private let clearanceKey = "fabrication.silkscreenMaskClearanceMM"
+    private let lineWidthKey = "appearance.grid.lineWidth"
     private let hoverKey = "appearance.showsHoverPopover"
 
     private func makeDevice(_ cloud: any SettingsSyncStore, account: Data? = Data([1])) throws -> Device {
@@ -43,24 +43,24 @@ final class PreferenceSyncTests: XCTestCase {
     func testAStoreThatTakesNothingRemovesNothingAtTheNextLaunch() throws {
         let cloud = DeafCloud()
         let mac = try makeDevice(cloud)
-        mac.defaults.set(0.2, forKey: clearanceKey)
+        mac.defaults.set(0.2, forKey: lineWidthKey)
         mac.sync.start()
 
         let relaunched = SettingsSync(defaults: mac.defaults, store: cloud, domain: mac.domain, account: { Data([1]) })
         relaunched.start()
-        XCTAssertEqual(mac.defaults.object(forKey: clearanceKey) as? Double, 0.2)
+        XCTAssertEqual(mac.defaults.object(forKey: lineWidthKey) as? Double, 0.2)
     }
 
     func testAChoiceReachesTheCloudAndAnotherDevice() throws {
         let cloud = Cloud()
         let mac = try makeDevice(cloud)
-        mac.defaults.set(0.2, forKey: clearanceKey)
+        mac.defaults.set(0.2, forKey: lineWidthKey)
         mac.sync.start()
-        XCTAssertEqual(cloud.values[clearanceKey] as? Double, 0.2)
+        XCTAssertEqual(cloud.values[lineWidthKey] as? Double, 0.2)
 
         let pad = try makeDevice(cloud)
         pad.sync.start()
-        XCTAssertEqual(pad.defaults.double(forKey: clearanceKey), 0.2)
+        XCTAssertEqual(pad.defaults.double(forKey: lineWidthKey), 0.2)
     }
 
     func testOnlySyncedKeysTravel() throws {
@@ -91,28 +91,28 @@ final class PreferenceSyncTests: XCTestCase {
         let cloud = Cloud()
         let mac = try makeDevice(cloud)
         let pad = try makeDevice(cloud)
-        mac.defaults.set(0.2, forKey: clearanceKey)
+        mac.defaults.set(0.2, forKey: lineWidthKey)
         mac.sync.start()
         pad.sync.start()
 
-        mac.defaults.removeObject(forKey: clearanceKey)
+        mac.defaults.removeObject(forKey: lineWidthKey)
         mac.sync.push()
-        XCTAssertNil(cloud.values[clearanceKey], "the reset leaves the cloud")
+        XCTAssertNil(cloud.values[lineWidthKey], "the reset leaves the cloud")
 
-        pad.sync.storeChanged(reason: NSUbiquitousKeyValueStoreServerChange, keys: [clearanceKey])
-        XCTAssertNil(pad.defaults.object(forKey: clearanceKey), "and the other device")
-        XCTAssertNil(cloud.values[clearanceKey], "which does not put it back")
+        pad.sync.storeChanged(reason: NSUbiquitousKeyValueStoreServerChange, keys: [lineWidthKey])
+        XCTAssertNil(pad.defaults.object(forKey: lineWidthKey), "and the other device")
+        XCTAssertNil(cloud.values[lineWidthKey], "which does not put it back")
     }
 
     func testAnotherAccountsEmptyStoreRemovesNothing() throws {
         let cloud = Cloud()
         let mac = try makeDevice(cloud)
-        mac.defaults.set(0.2, forKey: clearanceKey)
+        mac.defaults.set(0.2, forKey: lineWidthKey)
         mac.sync.start()
 
         cloud.values = [:]
         mac.sync.storeChanged(reason: NSUbiquitousKeyValueStoreAccountChange, keys: nil)
-        XCTAssertEqual(mac.defaults.double(forKey: clearanceKey), 0.2)
+        XCTAssertEqual(mac.defaults.double(forKey: lineWidthKey), 0.2)
     }
 
     func testOpenSettingsTakeWhatArrives() throws {

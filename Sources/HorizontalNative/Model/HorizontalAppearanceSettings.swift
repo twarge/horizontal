@@ -483,7 +483,6 @@ final class HorizontalAppearanceSettings: ObservableObject {
     @Published private var gridLineWidth: Double
     @Published private var roleLineWidths = [HorizontalLineWidthRole: Double]()
     @Published private var clipsSilkscreenToSolderMask: Bool
-    @Published private var silkscreenMaskClearanceMM: Double
 
     private let defaults: UserDefaults
 
@@ -512,7 +511,6 @@ final class HorizontalAppearanceSettings: ObservableObject {
         })
         gridLineWidth = Self.loadGridLineWidth(defaults: defaults)
         clipsSilkscreenToSolderMask = Self.loadClipsSilkscreenToSolderMask(defaults: defaults)
-        silkscreenMaskClearanceMM = Self.loadSilkscreenMaskClearanceMM(defaults: defaults)
         for kind in HorizontalCanvasKind.allCases {
             minimumLineWidths[kind] = loadMinimumLineWidth(kind: kind)
             for mode in HorizontalPaletteMode.allCases {
@@ -554,7 +552,6 @@ final class HorizontalAppearanceSettings: ObservableObject {
             boardSceneCopperColorDefaultsKey,
             gridLineWidthDefaultsKey,
             clipSilkscreenDefaultsKey,
-            silkscreenMaskClearanceDefaultsKey,
         ]
         keys += HorizontalLineWidthRole.allCases.map { lineWidthDefaultsKey(role: $0) }
         for kind in HorizontalCanvasKind.allCases {
@@ -598,7 +595,6 @@ final class HorizontalAppearanceSettings: ObservableObject {
         }
         gridLineWidth = Self.loadGridLineWidth(defaults: defaults)
         clipsSilkscreenToSolderMask = Self.loadClipsSilkscreenToSolderMask(defaults: defaults)
-        silkscreenMaskClearanceMM = Self.loadSilkscreenMaskClearanceMM(defaults: defaults)
         for kind in HorizontalCanvasKind.allCases {
             minimumLineWidths[kind] = loadMinimumLineWidth(kind: kind)
             for mode in HorizontalPaletteMode.allCases {
@@ -919,16 +915,13 @@ final class HorizontalAppearanceSettings: ObservableObject {
     }
 
     /// The clip-silkscreen-to-solder-mask mode, nil while it is off. The
-    /// board view, the 3D view and the fabrication exports all apply it.
+    /// board view, the 3D view and the fabrication exports all apply it, at
+    /// the clearance of each board's silkscreen to exposed copper rule.
     var silkscreenClipping: HorizontalSilkscreenClipping? {
         guard clipsSilkscreenToSolderMask else {
             return nil
         }
-        return HorizontalSilkscreenClipping(clearance: silkscreenMaskClearanceMM * 1_000_000)
-    }
-
-    var silkscreenMaskClearanceMillimetres: Double {
-        silkscreenMaskClearanceMM
+        return HorizontalSilkscreenClipping()
     }
 
     func clipSilkscreenToSolderMaskBinding() -> Binding<Bool> {
@@ -937,22 +930,6 @@ final class HorizontalAppearanceSettings: ObservableObject {
         } set: { clips in
             self.setClipsSilkscreenToSolderMask(clips)
         }
-    }
-
-    func silkscreenMaskClearanceBinding() -> Binding<Double> {
-        Binding {
-            self.silkscreenMaskClearanceMM
-        } set: { clearance in
-            self.setSilkscreenMaskClearanceMM(clearance)
-        }
-    }
-
-    func resetSilkscreenClipping() {
-        objectWillChange.send()
-        clipsSilkscreenToSolderMask = false
-        silkscreenMaskClearanceMM = HorizontalSilkscreenClipping.defaultClearanceMM
-        defaults.removeObject(forKey: Self.clipSilkscreenDefaultsKey)
-        defaults.removeObject(forKey: Self.silkscreenMaskClearanceDefaultsKey)
     }
 
     func resetMinimumLineWidth(kind: HorizontalCanvasKind) {
@@ -1140,13 +1117,6 @@ final class HorizontalAppearanceSettings: ObservableObject {
         defaults.set(clips, forKey: Self.clipSilkscreenDefaultsKey)
     }
 
-    private func setSilkscreenMaskClearanceMM(_ clearance: Double) {
-        let clamped = min(max(clearance, 0), HorizontalSilkscreenClipping.maximumClearanceMM)
-        objectWillChange.send()
-        silkscreenMaskClearanceMM = clamped
-        defaults.set(clamped, forKey: Self.silkscreenMaskClearanceDefaultsKey)
-    }
-
     private func setGridLineWidth(_ width: Double) {
         let clampedWidth = Self.clampedLineWidth(width)
         objectWillChange.send()
@@ -1181,13 +1151,6 @@ final class HorizontalAppearanceSettings: ObservableObject {
 
     private static func loadClipsSilkscreenToSolderMask(defaults: UserDefaults) -> Bool {
         defaults.bool(forKey: clipSilkscreenDefaultsKey)
-    }
-
-    private static func loadSilkscreenMaskClearanceMM(defaults: UserDefaults) -> Double {
-        guard defaults.object(forKey: silkscreenMaskClearanceDefaultsKey) != nil else {
-            return HorizontalSilkscreenClipping.defaultClearanceMM
-        }
-        return min(max(defaults.double(forKey: silkscreenMaskClearanceDefaultsKey), 0), HorizontalSilkscreenClipping.maximumClearanceMM)
     }
 
     private static func loadGridLineWidth(defaults: UserDefaults) -> Double {
@@ -1340,7 +1303,6 @@ final class HorizontalAppearanceSettings: ObservableObject {
     private static let boardSceneCopperColorDefaultsKey = "appearance.boardScene.copperColor"
     private static let gridLineWidthDefaultsKey = "appearance.grid.lineWidth"
     private static let clipSilkscreenDefaultsKey = "fabrication.clipSilkscreenToSolderMask"
-    private static let silkscreenMaskClearanceDefaultsKey = "fabrication.silkscreenMaskClearanceMM"
     private static let defaultBoardSceneBackgroundColor = HorizontalDefaultTheme.background
     // #BCC486. Only a colour someone picks is stored, so this reaches everyone
     // who never chose one.

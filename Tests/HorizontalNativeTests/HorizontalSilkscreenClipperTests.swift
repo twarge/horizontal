@@ -59,7 +59,7 @@ final class HorizontalSilkscreenClipperTests: XCTestCase {
         board.lines.append(line("across", from: HorizontalPoint(x: -5 * mm, y: 0), to: HorizontalPoint(x: 5 * mm, y: 0)))
         board.lines.append(line("far", from: HorizontalPoint(x: -5 * mm, y: 4 * mm), to: HorizontalPoint(x: 5 * mm, y: 4 * mm)))
 
-        let clipping = HorizontalSilkscreenClipping(clearance: 0.1 * mm)
+        let clipping = HorizontalSilkscreenClipping()
         let layer = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(HorizontalBoardLayers.topSilkscreen, board: board, clipping: clipping))
 
         XCTAssertNil(layer.object("far"), "a line nowhere near an opening is left alone")
@@ -87,7 +87,7 @@ final class HorizontalSilkscreenClipperTests: XCTestCase {
         let layer = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(
             HorizontalBoardLayers.topSilkscreen,
             board: board,
-            clipping: HorizontalSilkscreenClipping(clearance: 0.1 * mm)
+            clipping: HorizontalSilkscreenClipping()
         ))
 
         XCTAssertNotNil(layer.object("across", matching: across))
@@ -100,7 +100,8 @@ final class HorizontalSilkscreenClipperTests: XCTestCase {
     func testALineEntirelyOverAPadVanishes() throws {
         var board = board()
         board.lines.append(line("inside", from: HorizontalPoint(x: -0.5 * mm, y: 0), to: HorizontalPoint(x: 0.5 * mm, y: 0)))
-        let layer = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(HorizontalBoardLayers.topSilkscreen, board: board, clipping: HorizontalSilkscreenClipping(clearance: 0)))
+        board.rules.clearanceSilkscreenExposedCopper.clearanceTop = 0
+        let layer = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(HorizontalBoardLayers.topSilkscreen, board: board, clipping: HorizontalSilkscreenClipping()))
         let inside = try XCTUnwrap(layer.object("inside"))
         XCTAssertTrue(inside.fragments.isEmpty)
     }
@@ -116,7 +117,7 @@ final class HorizontalSilkscreenClipperTests: XCTestCase {
             width: 0.15 * mm
         ))
         board.lines.append(line("bottom", from: HorizontalPoint(x: -5 * mm, y: 0), to: HorizontalPoint(x: 5 * mm, y: 0), layer: HorizontalBoardLayers.bottomSilkscreen))
-        let clipping = HorizontalSilkscreenClipping(clearance: 0.1 * mm)
+        let clipping = HorizontalSilkscreenClipping()
         let top = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(HorizontalBoardLayers.topSilkscreen, board: board, clipping: clipping))
         let label = try XCTUnwrap(top.object("label"), "text over the pad is clipped")
         XCTAssertFalse(covers(label.fragments, HorizontalPoint(x: 0, y: 0)))
@@ -151,7 +152,8 @@ final class HorizontalSilkscreenClipperTests: XCTestCase {
         board.lines.append(line("well inside", from: HorizontalPoint(x: -8 * mm, y: -8 * mm), to: HorizontalPoint(x: -4 * mm, y: -8 * mm)))
         board.lines.append(line("outside", from: HorizontalPoint(x: 15 * mm, y: 0), to: HorizontalPoint(x: 18 * mm, y: 0)))
 
-        let clipping = HorizontalSilkscreenClipping(clearance: 0.2 * mm)
+        board.rules.clearanceSilkscreenExposedCopper.clearanceTop = 0.2 * mm
+        let clipping = HorizontalSilkscreenClipping()
         let layer = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(HorizontalBoardLayers.topSilkscreen, board: board, clipping: clipping))
 
         XCTAssertNil(layer.object("well inside"), "far from every edge, pad and cutout: untouched")
@@ -178,7 +180,7 @@ final class HorizontalSilkscreenClipperTests: XCTestCase {
         let layer = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(
             HorizontalBoardLayers.topSilkscreen,
             board: board,
-            clipping: HorizontalSilkscreenClipping(clearance: 0.1 * mm)
+            clipping: HorizontalSilkscreenClipping()
         ))
         let across = try XCTUnwrap(layer.object("across"))
         XCTAssertEqual(across.centerlines.count, across.fragments.count, "one list per fragment")
@@ -218,7 +220,7 @@ final class HorizontalSilkscreenClipperTests: XCTestCase {
         let layer = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(
             HorizontalBoardLayers.topSilkscreen,
             board: board,
-            clipping: HorizontalSilkscreenClipping(clearance: clearance)
+            clipping: HorizontalSilkscreenClipping()
         ))
         let label = try XCTUnwrap(layer.object("label"))
         let pieces = label.fragments.indices.flatMap { label.centerlines(inFragment: $0) }
@@ -243,7 +245,7 @@ final class HorizontalSilkscreenClipperTests: XCTestCase {
         let layer = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(
             HorizontalBoardLayers.topSilkscreen,
             board: board,
-            clipping: HorizontalSilkscreenClipping(clearance: 0.1 * mm)
+            clipping: HorizontalSilkscreenClipping()
         ))
         let logo = try XCTUnwrap(layer.object("logo"))
         XCTAssertFalse(logo.fragments.isEmpty)
@@ -259,7 +261,7 @@ final class HorizontalSilkscreenClipperTests: XCTestCase {
         let layer = try XCTUnwrap(HorizontalSilkscreenClipper.clippedLayer(
             HorizontalBoardLayers.topSilkscreen,
             board: board,
-            clipping: HorizontalSilkscreenClipping(clearance: 0.1 * mm)
+            clipping: HorizontalSilkscreenClipping()
         ))
         let grazing = try XCTUnwrap(layer.object("grazing"))
         XCTAssertFalse(grazing.fragments.isEmpty, "the stroke's far side is beyond the clearance")
@@ -320,18 +322,23 @@ final class HorizontalSilkscreenClipperTests: XCTestCase {
     }
 
     @MainActor
-    func testPreferenceProducesTheClippingInNanometres() {
+    func testThePreferenceTurnsClippingOnAndIsKept() {
         let defaults = UserDefaults(suiteName: "HorizontalSilkscreenClipperTests-\(UUID().uuidString)")!
         let settings = HorizontalAppearanceSettings(defaults: defaults)
         XCTAssertNil(settings.silkscreenClipping, "off by default")
         settings.clipSilkscreenToSolderMaskBinding().wrappedValue = true
-        settings.silkscreenMaskClearanceBinding().wrappedValue = 0.25
-        XCTAssertEqual(settings.silkscreenClipping?.clearance, 250_000)
+        XCTAssertNotNil(settings.silkscreenClipping)
+        XCTAssertNotNil(HorizontalAppearanceSettings(defaults: defaults).silkscreenClipping)
+    }
 
-        let reloaded = HorizontalAppearanceSettings(defaults: defaults)
-        XCTAssertEqual(reloaded.silkscreenClipping?.clearance, 250_000)
-        reloaded.resetSilkscreenClipping()
-        XCTAssertNil(reloaded.silkscreenClipping)
-        XCTAssertEqual(reloaded.silkscreenMaskClearanceMillimetres, HorizontalSilkscreenClipping.defaultClearanceMM)
+    func testTheClearanceIsTheBoardRulesForEachSide() {
+        var board = board()
+        board.rules.clearanceSilkscreenExposedCopper.clearanceTop = 0.25 * mm
+        board.rules.clearanceSilkscreenExposedCopper.clearanceBottom = 0.4 * mm
+        // The check's switches don't change what is stripped.
+        board.rules.clearanceSilkscreenExposedCopper.enabled = false
+        let clipping = HorizontalSilkscreenClipping()
+        XCTAssertEqual(clipping.clearance(forSilkscreen: HorizontalBoardLayers.topSilkscreen, of: board), 0.25 * mm)
+        XCTAssertEqual(clipping.clearance(forSilkscreen: HorizontalBoardLayers.bottomSilkscreen, of: board), 0.4 * mm)
     }
 }

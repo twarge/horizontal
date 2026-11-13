@@ -62,7 +62,7 @@ final class BoardSceneLayoutTests: XCTestCase {
         }
         let layout = BoardSceneFactory.sceneLayout(for: board)
 
-        for clipping in [nil, HorizontalSilkscreenClipping(clearance: HorizontalSilkscreenClipping.defaultClearanceMM)] {
+        for clipping in [nil, HorizontalSilkscreenClipping()] {
             let meshes = BoardSceneFactory.describeScene(for: board, silkscreenClipping: clipping).meshes
                 .filter { $0.group == .silkscreen && !$0.mesh.isEmpty }
             if clipping != nil {
