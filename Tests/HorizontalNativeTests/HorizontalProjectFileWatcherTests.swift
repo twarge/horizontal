@@ -16,7 +16,7 @@ final class HorizontalProjectFileWatcherTests: XCTestCase {
         let watcher = makeWatcher(project.file, document: { document })
         watcher.start()
         defer { watcher.stop() }
-        try await settle()
+        await watcher.baselineRead()
 
         try Data("{\"name\":\"Checked out\"}".utf8).write(to: project.root.appendingPathComponent("board.json"))
         try await waitForReport()
@@ -30,7 +30,7 @@ final class HorizontalProjectFileWatcherTests: XCTestCase {
         let watcher = makeWatcher(project.file, document: { document })
         watcher.start()
         defer { watcher.stop() }
-        try await settle()
+        await watcher.baselineRead()
 
         // What an autosave does: the document says what it writes, then writes it.
         var edited = document.archive
@@ -49,7 +49,7 @@ final class HorizontalProjectFileWatcherTests: XCTestCase {
         let watcher = makeWatcher(project.file, document: { document })
         watcher.start()
         defer { watcher.stop() }
-        try await settle()
+        await watcher.baselineRead()
 
         let exports = project.root.appendingPathComponent("Fabrication")
         try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
@@ -60,14 +60,18 @@ final class HorizontalProjectFileWatcherTests: XCTestCase {
         XCTAssertTrue(reports.isEmpty)
     }
 
-    /// An edit arriving before the scheduled check looks first.
+    /// An edit arriving before the scheduled check looks first. The schedule
+    /// here is far longer than the test, so Check Now is what reads the
+    /// change however slowly the events or this test arrive: with the usual
+    /// half second, a busy machine could run the scheduled check first, and
+    /// Check Now then found the change again and reported it twice.
     func testCheckNowSeesAChangeTheScheduleHasNotYetRead() async throws {
         let project = try makeProject()
         let document = try openDocument(project.file)
-        let watcher = makeWatcher(project.file, document: { document })
+        let watcher = makeWatcher(project.file, settleDelay: .seconds(600), document: { document })
         watcher.start()
         defer { watcher.stop() }
-        try await settle()
+        await watcher.baselineRead()
 
         try Data("{\"name\":\"Pulled\"}".utf8).write(to: project.root.appendingPathComponent("board.json"))
         let deadline = Date().addingTimeInterval(3)
@@ -78,24 +82,20 @@ final class HorizontalProjectFileWatcherTests: XCTestCase {
 
     // MARK: - Fixture
 
-    private func makeWatcher(_ file: URL, document: @escaping () -> HorizontalProjectDocument) -> HorizontalProjectFileWatcher {
+    private func makeWatcher(_ file: URL, settleDelay: Duration = HorizontalProjectFileWatcher.settleDelay,
+                             document: @escaping () -> HorizontalProjectDocument) -> HorizontalProjectFileWatcher {
         HorizontalProjectFileWatcher(projectURL: file, handlers: .init(
             document: document,
             holdsCompleteArchive: { true },
             hasUnsavedChanges: { false },
             changedOnDisk: { [weak self] _, fingerprint, unsaved in self?.reports.append((fingerprint, unsaved)) }
-        ))
+        ), settleDelay: settleDelay)
     }
 
     private func openDocument(_ file: URL) throws -> HorizontalProjectDocument {
         var document = HorizontalProjectDocument()
         document.archive = try HorizontalProjectArchive.completeProject(from: file)
         return document
-    }
-
-    /// Lets the baseline read finish and the stream start delivering.
-    private func settle() async throws {
-        try await Task.sleep(for: .milliseconds(600))
     }
 
     private func waitForReport() async throws {

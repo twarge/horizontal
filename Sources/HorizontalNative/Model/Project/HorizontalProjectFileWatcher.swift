@@ -131,6 +131,9 @@ final class HorizontalProjectFileWatcher {
     static let settleDelay: Duration = .milliseconds(500)
 
     let projectURL: URL
+    /// `settleDelay`, unless a test needs the scheduled check to wait longer
+    /// than it takes to look for itself.
+    private let settleDelay: Duration
     private let handlers: Handlers
     private var events: HorizontalDirectoryEvents?
     private var writeObserver: NSObjectProtocol?
@@ -144,9 +147,10 @@ final class HorizontalProjectFileWatcher {
     private var generation = 0
     private var failedReads = 0
 
-    init(projectURL: URL, handlers: Handlers) {
+    init(projectURL: URL, handlers: Handlers, settleDelay: Duration = HorizontalProjectFileWatcher.settleDelay) {
         self.projectURL = projectURL
         self.handlers = handlers
+        self.settleDelay = settleDelay
         var isDirectory = ObjCBool(false)
         FileManager.default.fileExists(atPath: projectURL.path, isDirectory: &isDirectory)
         baseURL = (isDirectory.boolValue ? projectURL : projectURL.deletingLastPathComponent())
@@ -189,6 +193,12 @@ final class HorizontalProjectFileWatcher {
         generation += 1
     }
 
+    /// Returns once the project as it was at `start` has been read: what a
+    /// change is measured against.
+    func baselineRead() async {
+        await baselineTask?.value
+    }
+
     /// The document keeps its own version over what the files hold now.
     func accept(_ fingerprint: HorizontalProjectFingerprint) {
         detector.withLock { $0?.accept(fingerprint) }
@@ -211,7 +221,7 @@ final class HorizontalProjectFileWatcher {
         let document = handlers.holdsCompleteArchive() ? HorizontalProjectFingerprint(archive: handlers.document().archive) : nil
         guard let (disk, fingerprint) = settledRead(document: document) else {
             needsCheck = true
-            scheduleCheck(after: Self.settleDelay)
+            scheduleCheck(after: settleDelay)
             return false
         }
         return decide(disk: disk, fingerprint: fingerprint, document: document)
@@ -248,7 +258,7 @@ final class HorizontalProjectFileWatcher {
         let archive = handlers.document().archive
         guard paths.contains(where: { $0.isEmpty || archive.tracks(relativePath: $0) }) else { return }
         needsCheck = true
-        scheduleCheck(after: Self.settleDelay)
+        scheduleCheck(after: settleDelay)
     }
 
     private func scheduleCheck(after delay: Duration) {
@@ -267,7 +277,7 @@ final class HorizontalProjectFileWatcher {
         defer {
             isChecking = false
             // Events that came in while the files were being read.
-            if needsCheck, checkTask == nil { scheduleCheck(after: Self.settleDelay) }
+            if needsCheck, checkTask == nil { scheduleCheck(after: settleDelay) }
         }
         needsCheck = false
         await baselineTask?.value
