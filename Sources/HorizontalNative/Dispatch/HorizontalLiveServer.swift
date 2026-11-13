@@ -9,7 +9,9 @@ import Network
 ///
 /// The port is ephemeral; `~/Library/Application Support/Horizontal/live.json`
 /// (inside the sandbox container when sandboxed) tells clients the port and
-/// the token. The file is 0600 and the listener binds to 127.0.0.1 only.
+/// the token, and so does a copy in the per-user cache folder, which is the
+/// one a client outside the sandbox can read (`sharedDiscoveryURL`). Both
+/// files are 0600 and the listener binds to 127.0.0.1 only.
 @MainActor
 enum HorizontalLiveServer {
     static let enabledDefaultsKey = "HorizontalLiveServerEnabled"
@@ -58,6 +60,44 @@ enum HorizontalLiveServer {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return support.appendingPathComponent("Horizontal", isDirectory: true).appendingPathComponent("live.json")
+    }
+
+    /// What the shared discovery folder is named for. Not `Bundle.main`'s
+    /// identifier: a test run and an unsandboxed build publish for the same
+    /// clients, which look in one place.
+    static let sharedDiscoveryBundleID = "com.twarge.app.horizontal"
+
+    /// The folder a client outside the sandbox can read the endpoint from: the
+    /// per-user cache directory. The sandbox gives the app its own subfolder
+    /// of it and, unlike the container, does not refuse it to other processes;
+    /// it is the user's alone (0700). Publishing here needs no access to
+    /// anything beside a project, which a document opened as a `.horizontal`
+    /// package does not bring.
+    static var sharedDiscoveryDirectory: URL? {
+        #if os(macOS)
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let length = confstr(_CS_DARWIN_USER_CACHE_DIR, &buffer, buffer.count)
+        guard length > 1, length <= buffer.count else {
+            return nil
+        }
+        // `length` counts the terminating NUL.
+        let path = String(decoding: buffer.prefix(length - 1).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        // Sandboxed, the answer is already the app's own subfolder.
+        return directory.lastPathComponent == sharedDiscoveryBundleID
+            ? directory
+            : directory.appendingPathComponent(sharedDiscoveryBundleID, isDirectory: true)
+        #else
+        // The listener is macOS-only, so nothing publishes elsewhere.
+        return nil
+        #endif
+    }
+
+    /// This process's file in that folder. Each process names its own, so a
+    /// second copy of the app, or a test run, neither overwrites this one's
+    /// nor removes it; a client tries each until one has its document.
+    static var sharedDiscoveryURL: URL? {
+        sharedDiscoveryDirectory?.appendingPathComponent("live-\(ProcessInfo.processInfo.processIdentifier).json")
     }
 
     #if canImport(Network) && os(macOS)
@@ -175,6 +215,9 @@ final class HorizontalLiveListener {
         port = nil
         token = nil
         try? FileManager.default.removeItem(at: HorizontalLiveServer.discoveryURL)
+        if let shared = HorizontalLiveServer.sharedDiscoveryURL {
+            try? FileManager.default.removeItem(at: shared)
+        }
         HorizontalLiveServer.endpointDidChange()
     }
 
@@ -217,7 +260,6 @@ final class HorizontalLiveListener {
         guard let port, let token else {
             return
         }
-        let url = HorizontalLiveServer.discoveryURL
         let json: JSONDictionary = [
             "version": HorizontalDispatch.apiVersion,
             "host": "127.0.0.1",
@@ -227,13 +269,25 @@ final class HorizontalLiveListener {
             "bundle": Bundle.main.bundleIdentifier ?? "",
             "started": ISO8601DateFormatter().string(from: Date())
         ]
-        do {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
-            try data.write(to: url, options: [.atomic])
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        } catch {
-            NSLog("Horizontal live channel: could not write \(url.path): \(error.localizedDescription)")
+        // The app's own copy, which a sandboxed build keeps in its container,
+        // and the one in the cache folder for every client outside it. A
+        // cache folder made here is the user's alone, as the sandbox makes it.
+        var targets: [(url: URL, directoryMode: Int?)] = [(HorizontalLiveServer.discoveryURL, nil)]
+        if let shared = HorizontalLiveServer.sharedDiscoveryURL {
+            targets.append((shared, 0o700))
+        }
+        for target in targets {
+            do {
+                try FileManager.default.createDirectory(
+                    at: target.url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                    attributes: target.directoryMode.map { [FileAttributeKey.posixPermissions: $0 as Any] }
+                )
+                let data = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
+                try data.write(to: target.url, options: [.atomic])
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.url.path)
+            } catch {
+                NSLog("Horizontal live channel: could not write \(target.url.path): \(error.localizedDescription)")
+            }
         }
     }
 

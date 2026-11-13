@@ -227,9 +227,35 @@ class SubprocessTransport(Transport):
 LIVE_BUNDLE_ID = "com.twarge.app.horizontal"
 
 
+def shared_discovery_directory() -> Path | None:
+    """Where the app publishes its endpoint for a client outside its sandbox: its own subfolder of the
+    per-user cache directory, which, unlike its container, macOS lets the user's other processes read.
+    None where there is no such directory to ask for."""
+    try:
+        # _CS_DARWIN_USER_CACHE_DIR, which os.confstr_names does not know by name.
+        cache = os.confstr(65538)
+    except (AttributeError, OSError, ValueError):
+        return None
+    return Path(cache) / LIVE_BUNDLE_ID if cache else None
+
+
 def live_discovery_paths() -> list[Path]:
+    """The files that may name a live channel, in the order to believe them: wherever HORIZONTAL_LIVE points,
+    then each process's file in the shared folder, the newest first, then the app's own copy inside its
+    container and outside it."""
     env = os.environ.get("HORIZONTAL_LIVE")
     paths = [Path(env).expanduser()] if env else []
+    shared = shared_discovery_directory()
+    if shared is not None:
+        def written(path: Path) -> float:
+            try:
+                return path.stat().st_mtime
+            except OSError:
+                return 0.0
+        try:
+            paths.extend(sorted(shared.glob("live-*.json"), key=written, reverse=True))
+        except OSError:
+            pass
     home = Path.home()
     paths.append(home / "Library" / "Containers" / LIVE_BUNDLE_ID / "Data" / "Library" / "Application Support" / "Horizontal" / "live.json")
     paths.append(home / "Library" / "Application Support" / "Horizontal" / "live.json")
@@ -292,22 +318,27 @@ def _reachable(info: dict[str, Any], diagnostics: list[dict[str, Any]] | None, p
     except OSError as error:
         if diagnostics is not None: diagnostics.append({"path": path, "status": "unreachable", "reason": str(error)})
         return None
-    return {"host": info.get("host", "127.0.0.1"), "port": port, "token": token, "path": path}
+    found = {"host": info.get("host", "127.0.0.1"), "port": port, "token": token, "path": path}
+    if isinstance(info.get("pid"), int):
+        found["pid"] = info["pid"]
+    return found
 
 
-def find_live_for(project: str | Path, diagnostics: list[dict[str, Any]] | None = None,
-                  discovery: bool = True) -> dict[str, Any] | None:
-    """The live channel serving `project`.
+def _process_exists(pid: Any) -> bool:
+    """Whether `pid` names a running process. One that cannot be asked about is taken to be running."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
 
-    The app's own discovery file is inside its sandbox container, which macOS
-    refuses other processes, so a holder record beside the project carries the
-    endpoint too. That record is the one a client which can read the project
-    can always read. discovery=False skips the discovery files, for a caller
-    that has already tried them.
-    """
-    info = find_live(diagnostics) if discovery else None
-    if info is not None:
-        return info
+
+def _holder_endpoints(project: str | Path, diagnostics: list[dict[str, Any]] | None):
+    """The reachable channels `project`'s holder records name."""
     for holder in project_holders(project):
         endpoint = holder.get("endpoint")
         if not isinstance(endpoint, dict):
@@ -317,13 +348,12 @@ def find_live_for(project: str | Path, diagnostics: list[dict[str, Any]] | None 
             continue
         reachable = _reachable(endpoint, diagnostics, f"{project} (holder pid {holder.get('pid')})")
         if reachable is not None:
-            return reachable
-    return None
+            yield reachable
 
 
-def find_live(diagnostics: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
-    """The running app's live channel (port and token), if it is up."""
-
+def _discovered(diagnostics: list[dict[str, Any]] | None):
+    """The reachable channels the discovery files name, in live_discovery_paths' order."""
+    shared = shared_discovery_directory()
     for path in live_discovery_paths():
         try:
             info = json.loads(path.read_text())
@@ -335,8 +365,53 @@ def find_live(diagnostics: list[dict[str, Any]] | None = None) -> dict[str, Any]
             continue
         reachable = _reachable(info, diagnostics, str(path))
         if reachable is not None:
-            return reachable
-    return None
+            yield reachable
+        elif shared is not None and path.parent == shared and not _process_exists(info.get("pid")):
+            # What a crash left behind: its process is gone, so nothing will listen there again.
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def live_endpoints(project: str | Path | None = None, diagnostics: list[dict[str, Any]] | None = None):
+    """Every live channel that answers: the discovery files', then the ones `project`'s holder records name.
+
+    More than one can answer. A second copy of the app, or a test run, serves its own, and only asking each
+    says which has a document; so a caller looking for a document tries them in turn."""
+    seen: set[tuple[int, str]] = set()
+    for info in _discovered(diagnostics):
+        if (info["port"], info["token"]) not in seen:
+            seen.add((info["port"], info["token"]))
+            yield info
+    if project is None:
+        return
+    for info in _holder_endpoints(project, diagnostics):
+        if (info["port"], info["token"]) not in seen:
+            seen.add((info["port"], info["token"]))
+            yield info
+
+
+def find_live_for(project: str | Path, diagnostics: list[dict[str, Any]] | None = None,
+                  discovery: bool = True) -> dict[str, Any] | None:
+    """The first live channel that may be serving `project`.
+
+    The app publishes its endpoint in its per-user cache folder, which this
+    process can read, and in a holder record beside each open project it can
+    write beside. A version from before the first, sandboxed, is reachable
+    only through the second: its own discovery file is inside its container,
+    which macOS refuses other processes. discovery=False skips the discovery
+    files, for a caller that has already tried them.
+    """
+    info = find_live(diagnostics) if discovery else None
+    if info is not None:
+        return info
+    return next(_holder_endpoints(project, diagnostics), None)
+
+
+def find_live(diagnostics: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+    """The first running app's live channel (port and token), if one is up."""
+    return next(_discovered(diagnostics), None)
 
 
 class LiveTransport(Transport):

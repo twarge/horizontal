@@ -484,7 +484,7 @@ private struct HorizontalMCPSetup: View {
                 Link("Setup Guide", destination: client.guide)
                 Link("Install uv", destination: URL(string: "https://docs.astral.sh/uv/getting-started/installation/")!)
             }
-            Text("2. Keep Enable MCP Server on. Open your project and grant Horizontal access to its containing folder when asked.")
+            Text("2. Keep Enable MCP Server on, and open your project.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text("3. Start a new \(client.rawValue) chat and ask it to connect to your project in Horizontal. The plugin includes setup help and skills for reviews, edits, and exports.")

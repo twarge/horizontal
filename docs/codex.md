@@ -19,9 +19,9 @@ codex plugin add horizontal@twarge
 In Horizontal:
 
 1. Turn on **Settings > MCP Server > Enable MCP Server**.
-2. Open your project and grant Horizontal access to its containing folder when
-   asked. Open a Horizon project from its `.hprj`; the app's Grant Access action
-   grants folder access for a `.horizontal` package too.
+2. Open your project, as a `.horizontal` package or a Horizon project from its
+   `.hprj`. A `.hprj` asks for access to its containing folder, where the rest
+   of the project's files are; connecting needs no folder access of its own.
 3. Start a new Codex chat and ask it to connect to your project in Horizontal.
    Include the project location if it cannot find the document by name.
 
@@ -67,9 +67,10 @@ The App Store app alone supports live mode. See [automation.md](automation.md).
 
 Run the plugin's connection skill. It checks `connection_status`, then
 `live_state` with the project path, and opens the document with `source: "live"`.
-An unreadable discovery file inside the app's private container is expected;
-the holder record beside the project is another discovery route. Check the MCP
-switch and project-folder access before changing macOS privacy settings.
+An unreadable discovery file inside the app's private container is expected:
+the app publishes the same endpoint in its per-user cache folder, and in the
+holder record beside a project it can write beside. Check the MCP switch, and
+that the app is current, before changing macOS privacy settings.
 
 If the server reports that it found neither uv nor Python 3.11, or `codex` is
 not found, install the missing command-line tool. Restart

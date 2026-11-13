@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ._native import (HorizontalError, LiveTransport, Transport, default_transport, find_live, find_live_for,
-                      project_holders, transport_error)
+                      live_endpoints, project_holders, transport_error)
 
 _request_deadline: ContextVar[float | None] = ContextVar("horizontal_deadline", default=None)
 
@@ -49,21 +49,33 @@ class Session:
         # What last closed the connection: a timeout or a lost connection,
         # with the method and when, for connection_status to say.
         self.last_transport_error: dict[str, Any] | None = None
-        # The project a live session was found through. The app's discovery
-        # file is in its sandbox container, so reconnecting has to look beside
-        # the project again rather than only where the app writes.
+        # The project a live session was found through. An app from before it
+        # published in its cache folder is found only by the holder records
+        # beside the project, so reconnecting has to look there again.
         self.project = str(project) if project is not None else None
 
     @classmethod
     def live(cls, project: str | Path | None = None) -> "Session | None":
-        """A session on the running app's live channel, or None when there is none.
+        """A session on the first live channel that answers, or None when there is none.
 
-        With a project, the holder records beside it are consulted too: the
-        app's own discovery file is inside its sandbox container, which macOS
-        refuses other processes, so that is often the only way through.
+        With a project, the holder records beside it are consulted too: an
+        app from before it published in its cache folder keeps its discovery
+        file inside its sandbox container, which macOS refuses other processes.
         """
         info = find_live_for(project) if project is not None else find_live()
         return cls(transport=LiveTransport(info), project=project) if info else None
+
+    @classmethod
+    def live_sessions(cls, project: str | Path | None = None, timeout: float = 30):
+        """A session on each live channel that answers, in turn. More than one can — a second copy of the
+        app, a test run — and only asking each says which has a document. The caller closes the ones it
+        does not keep."""
+        for info in live_endpoints(project):
+            try:
+                transport = LiveTransport(info, timeout=timeout)
+            except OSError:
+                continue  # It answered the probe and has gone since.
+            yield cls(transport=transport, project=project)
 
     @property
     def is_live(self) -> bool:
@@ -95,9 +107,17 @@ class Session:
     def reconnect(self, timeout: float) -> None:
         live = self.is_live
         configured_timeout = self.transport.timeout
+        # The channel this session was on, when it still answers: with more
+        # than one up, the first found need not be the one with its document.
+        previous = getattr(self.transport, "info", None)
         self.transport.close()
         if live:
-            info = find_live_for(self.project) if self.project else find_live()
+            info = None
+            if isinstance(previous, dict) and previous.get("port") and previous.get("token"):
+                info = next((found for found in live_endpoints(self.project)
+                             if (found["port"], found["token"]) == (previous["port"], previous["token"])), None)
+            if info is None:
+                info = find_live_for(self.project) if self.project else find_live()
             if info is None: raise transport_error("LIVE_UNAVAILABLE", "The live endpoint is unavailable; the source remains live.")
             self.transport = LiveTransport(info, timeout=max(0.01, timeout))
         else:
@@ -790,11 +810,36 @@ def _no_live_reason(resolved: str) -> str:
     return "The live channel this project's editor published did not answer."
 
 
+def live_holders(path: str | Path) -> list[dict[str, Any]]:
+    """The apps whose live channel answers and lists `path` as an open document, shaped as holder records are.
+
+    What says a project is open when no holder record can: a sandboxed app with a .horizontal package open has
+    no access to the folder beside it to write one in. An app that does not answer in time is not counted."""
+    resolved = project_file(path)
+    holders = []
+    for live in Session.live_sessions(timeout=3):
+        try:
+            if any(summary.get("live") and Path(summary["path"]).resolve() == resolved
+                   for summary in live.call("list_projects")):
+                info = live.transport.info
+                holders.append({"name": "Horizontal", "project": str(resolved), "pid": info.get("pid"),
+                                "endpoint": {"host": info.get("host", "127.0.0.1"), "port": str(info["port"])}})
+        except (HorizontalError, OSError):
+            pass
+        finally:
+            live.close()
+    return holders
+
+
 def project_file(path: str | Path) -> Path:
     """The project a path names: a .hprj or .horizontal as given, or for a folder holding a Horizon project, the
     .hprj inside it — the one named after the folder, else the first by name, as the engine's disk open picks.
-    A live document is known by its .hprj, so this is what it is looked up by."""
+    A live document is known by its .hprj, so this is what it is looked up by. A .horizontal package is known by
+    the package, so the .hprj inside one names the package: that is the document the app has open, and the path
+    the project's transaction directory is named for, beside the package rather than inside it."""
     resolved = Path(path).expanduser().resolve()
+    if resolved.suffix.lower() == ".hprj" and resolved.parent.suffix.lower() == ".horizontal" and resolved.parent.is_dir():
+        return resolved.parent
     if not resolved.is_dir() or resolved.suffix.lower() == ".horizontal":
         return resolved
     found = sorted((child for child in resolved.iterdir() if child.suffix.lower() == ".hprj" and child.is_file()),
@@ -811,18 +856,21 @@ def open(path: str | Path, isolated: bool = False, prefer_live: bool = True, sou
     source = source or ("auto" if prefer_live else "disk")
     if source not in {"auto", "live", "disk"}: raise ValueError("source must be auto, live, or disk")
     if source != "disk":
-        live = None
-        try:
-            live = Session.live(project=resolved)
-            if live is not None:
+        # Each channel that answers is asked for the document: the first need
+        # not be the app that has it. One that fails is no reason to stop
+        # asking, and is the reason given when none of them has it.
+        failure: Exception | None = None
+        for live in Session.live_sessions(project=resolved):
+            try:
                 for summary in live.call("list_projects"):
                     if summary.get("live") and Path(summary["path"]).resolve() == Path(resolved):
                         return Project(live, summary)
-        except (HorizontalError, OSError):
-            if live is not None: live.close()
-            if source == "live": raise
-        if live is not None: live.close()
+            except (HorizontalError, OSError) as error:
+                failure = failure or error
+            live.close()
         if source == "live":
+            if failure is not None:
+                raise failure
             raise transport_error("LIVE_UNAVAILABLE", _no_live_reason(resolved))
     disk = Session(isolated=isolated)
     try: return disk.open(resolved)

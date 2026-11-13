@@ -42,11 +42,11 @@ Call `connection_status`. It reports discovery, authentication, engine versions 
 
 ## 3. Reach the user's document
 
-1. Use the project path supplied by the user, a matching `.hprj` or `.horizontal` in the working folder, or a document listed by `live_state`. If only a board name is known and discovery lists no matching document, ask for its project location. Call `live_state` with that path. Without a path, "unavailable" proves nothing: the sandboxed app's discovery file is unreadable from outside its container, so the project's own holder records are often the only way in. Do not request access to the private app container to work around that.
+1. Use the project path supplied by the user, a matching `.hprj` or `.horizontal` in the working folder, or a document listed by `live_state`. If only a board name is known and discovery lists no matching document, ask for its project location. Call `live_state` with that path. The app publishes its endpoint in its per-user cache folder, which the server reads without a path; a version of the app from before it did is reachable only through the project's own holder records, because its discovery file is inside its container. An unreadable file there is expected: do not request access to the private app container to work around it.
 2. If it is still unavailable, ask the user to check, in order:
    - a document is open in Horizontal;
    - **Settings > MCP Server > Enable MCP Server** is on (the channel is off until it is turned on; older versions label the section Automation);
-   - the app has access to the project's *containing folder*, so it can publish its endpoint beside the project. Opening only a `.horizontal` package may not grant that; the app's Grant Access action does.
+   - the app is current. `live_state`'s `discovery` lists what was tried: with no `live-*.json` in the app's cache folder, the app is a version from before it published there, and it can only publish beside the project, which needs access to the project's *containing folder*. Opening only a `.horizontal` package does not grant that, so update the app, or open the project from its `.hprj`.
 3. Call `open_project` with `source: "live"` and read `data.source` in the reply. Only `"live"` means you are talking to the open document. `held_by` names whoever holds the project.
 
 Every tool takes `path` (or the `project_ref` that `open_project` returned). Setting `HORIZONTAL_PROJECT` in the server's environment makes `path` optional.

@@ -229,6 +229,36 @@ final class HorizontalLiveServerTests: XCTestCase {
         XCTAssertEqual((version["result"] as? [String: Any])?["api"] as? Int, HorizontalDispatch.apiVersion)
     }
 
+    /// A client outside the sandbox cannot read the container's discovery
+    /// file, and a document opened as a package brings no access to the folder
+    /// beside it for a holder record. So the endpoint is also published in the
+    /// per-user cache folder, in a file of this process's own, which goes when
+    /// the listener does.
+    func testTheEndpointIsPublishedInTheCacheFolderUnderThisProcesssName() throws {
+        _ = try registerTemplateDocument()
+        let (port, token) = try discovery()
+        let pid = Int(ProcessInfo.processInfo.processIdentifier)
+
+        let shared = try XCTUnwrap(HorizontalLiveServer.sharedDiscoveryURL)
+        XCTAssertEqual(shared.lastPathComponent, "live-\(pid).json", "another copy of the app, or another test run, has its own")
+        XCTAssertEqual(shared.deletingLastPathComponent().lastPathComponent, "com.twarge.app.horizontal",
+                       "where the Python client looks, whatever this process's bundle is")
+        XCTAssertNotEqual(shared.path, HorizontalLiveServer.discoveryURL.path)
+
+        let file = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: shared)) as? [String: Any])
+        XCTAssertEqual(file["port"] as? Int, Int(port))
+        XCTAssertEqual(file["token"] as? String, token)
+        XCTAssertEqual(file["pid"] as? Int, pid)
+        let mode = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: shared.path)[.posixPermissions] as? NSNumber)
+        XCTAssertEqual(mode.intValue & 0o777, 0o600, "the token is in it")
+
+        // The last document closing stops the listener, which withdraws the file.
+        HorizontalDispatchSession.shared.unregisterLive(handle: try XCTUnwrap(handle))
+        handle = nil
+        XCTAssertNil(HorizontalLiveServer.port)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: shared.path))
+    }
+
     /// An export or a check that arrives while a pour is asked for or running
     /// is answered once the pour has landed, with the fills it made; other
     /// requests are answered meanwhile.

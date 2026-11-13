@@ -84,8 +84,8 @@ matches the document snapshot, and `wrote` says whether that call wrote
 anything; it does not establish that a canvas frame has been presented.
 Use `source="live"` when an edit must reach the open window; automatic source
 selection can fall back to disk if the live document cannot be discovered.
-The sandboxed app needs access to the containing project folder to publish its
-live connection record (see [live discovery](../docs/automation.md#finding-the-channel-from-outside-the-container)).
+The app publishes its live endpoint in its per-user cache folder, so connecting
+needs no access to the project's folder (see [live discovery](../docs/automation.md#finding-the-channel-from-outside-the-container)).
 
 Every MCP edit tool takes `dry_run`, the single-purpose ones (`set_component_value`,
 `rename_net`, `connect_pin`, `place_component`, `copy_group_layout`) as well as
@@ -110,8 +110,9 @@ editing, loading the staged project, comparing diagnostics, and committing.
 
 Mutations get `HORIZONTAL_MUTATION_TIMEOUT` seconds (default 180) rather than
 the 30 a read gets. When a mutation's reply is lost anyway, the client reopens
-the connection — through the holder record beside the project, as discovery
-does — and asks `transaction_status` for that `operation_id` before
+the connection — to the channel it was on, found again as discovery finds it,
+through the cache folder or the holder record beside the project — and asks
+`transaction_status` for that `operation_id` before
 returning. The engine answers one request at a time, so that question waits for
 the mutation to finish. A committed receipt is returned as the result; a
 failure is raised with `outcome: "not_committed"` and is safe to resend. A

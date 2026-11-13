@@ -31,7 +31,8 @@ from pydantic import BaseModel, Field, StrictInt, ValidationError
 
 from ._native import (HorizontalError, find_live, find_live_for, find_cli, find_dylib, LiveTransport,
                       project_holders, transport_error)
-from .client import Project, Session, open as open_any, project_file, _request_deadline, mutation_timeout
+from .client import (Project, Session, open as open_any, project_file, live_holders, _request_deadline,
+                     mutation_timeout)
 from .schemas import (Result, ProjectInfo, Component, ComponentFields, Net, Sheet, EditResult, Region, RenderedImage, EditOperation,
                       schema_vocabulary, vocabulary_digest, compare_vocabulary,
                       PinnedSnapshot, AnalysisValidation, AnalysisJob)
@@ -385,7 +386,9 @@ def _guard(project: Project, dry_run: bool = False) -> dict[str, Any]:
         # A disk edit under an open editor would be lost either way. The holder
         # records beside the project say who has it, whether or not the app's
         # live channel is reachable; the engine refuses on the same evidence.
-        holders = project_holders(project.path)
+        # A sandboxed app with a package open can write no record beside it,
+        # so a live channel that lists the project says it too.
+        holders = project_holders(project.path) or live_holders(project.path)
         if holders:
             names = ", ".join(h.get("name") or "An editor" for h in holders)
             reachable = any(isinstance(h.get("endpoint"), dict) for h in holders)
@@ -426,12 +429,13 @@ def connection_status() -> dict[str, Any]:
     the app's dispatcher, so the two differ by design."""
     attempts: list[dict[str, Any]] = []
     info = find_live(attempts)
-    # The app's own discovery file is in its sandbox container; the holder
-    # records beside an open or configured project usually are not.
+    # The app publishes in its cache folder, which this process can read. One
+    # from before it did keeps its discovery file in its sandbox container;
+    # the holder records beside an open or configured project usually are not.
     # find_live has tried the discovery files once; each project adds only its
     # holder records, and each project once.
     candidates = [os.environ.get("HORIZONTAL_PROJECT")] + [p.path for p in _projects.values()]
-    for candidate in dict.fromkeys(str(Path(c).expanduser().resolve()) for c in candidates if c):
+    for candidate in dict.fromkeys(str(project_file(c)) for c in candidates if c):
         if info:
             break
         info = find_live_for(candidate, attempts, discovery=False)
@@ -1313,9 +1317,10 @@ def _export_from_files(project: Project, sections: list[str], target_directory: 
 def live_state(path: str | None = None) -> dict[str, Any]:
     """Documents open in Horizontal right now, with their selection and highlight.
 
-    status is "connected" only when the app answers. Pass a project path when you have one: the app's own
-    discovery file lives in its sandbox container, which macOS refuses to other processes, so a project's
-    own holder records are often the only way to reach the channel. "unavailable" without a path does not
+    status is "connected" only when the app answers. The app publishes its endpoint in its per-user cache
+    folder, which this server can read. Pass a project path when you have one all the same: a version of the
+    app from before it did keeps its discovery file in its sandbox container, which macOS refuses to other
+    processes, so a project's own holder records are the only way to reach that one. "unavailable" does not
     mean no document is open — the channel is also off until the user turns it on, and stops when the last
     document closes. held_by in open_project answers whether a project is open regardless of any of this.
     """
@@ -1329,9 +1334,11 @@ def live_state(path: str | None = None) -> dict[str, Any]:
         blocked = any("not permitted" in str(attempt.get("reason", "")).lower() for attempt in attempts)
         reason = ("No reachable live endpoint. Horizontal may not be running, may have no document open, "
                   "or may have its live channel switched off in its settings.")
-        if blocked and not path:
-            reason += (" Its discovery file was found but could not be read — it is inside the app's sandbox "
-                       "container. Pass a project path to look beside the project instead.")
+        if blocked:
+            reason += (" A discovery file exists inside the app's sandbox container, which cannot be read, and "
+                       "none in its cache folder answers, where a current version publishes: if Horizontal is "
+                       "running, it is an older version."
+                       + ("" if path else " Pass a project path to look beside the project as well."))
         if holders:
             reason = (f"{', '.join(h.get('name') or 'An editor' for h in holders)} has this project open but is "
                       "serving no reachable live channel. Turn it on in the app's settings; it starts at once.")

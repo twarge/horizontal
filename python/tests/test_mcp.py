@@ -21,6 +21,12 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.env = patch.dict(os.environ, {"HORIZONTAL_CLI": str(CLI), "HORIZONTAL_ISOLATED": "1"})
         self.env.start()
+        # An app running on this machine publishes in its cache folder, and is
+        # no part of these: without this, every edit here would ask it whether
+        # it has the project open.
+        shared = patch("horizontal._native.shared_discovery_directory", return_value=None)
+        shared.start()
+        self.addCleanup(shared.stop)
         self.path = Path(self.temp.name) / "Test.horizontal"
         session = Session(isolated=True)
         session.new_project(self.path)
@@ -469,6 +475,8 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         from horizontal.client import project_file
         self.assertEqual(project_file(folder), (folder / "Folder.hprj").resolve())
         self.assertEqual(project_file(self.path), self.path.resolve(), "a .horizontal package is itself")
+        self.assertEqual(project_file(next(self.path.glob("*.hprj"))), self.path.resolve(),
+                         "and its .hprj names it: the app has the package open, not the file inside")
         state = (await self.call("live_state", path=str(folder)))["data"]
         self.assertEqual(state["status"], "unavailable")
 

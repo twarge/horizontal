@@ -553,6 +553,13 @@ lock on it for as long as the document is open. `project_info` reports them as
 holder in `blocked_by`. Liveness needs no process table: a record another
 process can lock belonged to one that has exited, and is deleted on sight.
 
+One holder can write no record: the sandboxed app with a document opened as a
+`.horizontal` package, which brings it no access to the folder beside the
+package. For that one the MCP server asks the live channel instead — before a
+disk edit it asks each channel that answers for its documents
+(`live_holders`), and refuses with `DOCUMENT_OPEN` when one lists the project.
+The engine itself, run without the server, has only the records to go by.
+
 The transaction directory sits beside the project and keeps its lock and
 receipts for good, so it writes a `.gitignore` of `*` into itself — a project
 in a git working tree does not have to know it is there.
@@ -599,9 +606,11 @@ autosaving an edit made against what is no longer there.
 While a document is open, Horizontal serves the same dispatcher over a
 loopback socket. `~/Library/Application Support/Horizontal/live.json`
 (inside the sandbox container when the build is sandboxed) names the
-ephemeral port and a per-launch token; the file is mode 0600, the listener
-binds to 127.0.0.1 only, and every request line carries `"auth": <token>`.
-The Python package and the MCP server look for that file first, so opening a
+ephemeral port and a per-launch token, and a copy in the per-user cache folder
+names them for a client outside the sandbox (below); each file is mode 0600,
+the listener binds to 127.0.0.1 only, and every request line carries
+`"auth": <token>`.
+The Python package and the MCP server look for those files first, so opening a
 project the app holds returns the app's document: reads see unsaved edits,
 `select` and `highlight` change what the canvases show, and `apply` lands as
 one undoable step named for the edit. `live_state` reports the channel's status and, when it answers, the open
@@ -626,29 +635,44 @@ every other process — reading it returns `Operation not permitted` regardless
 of file mode. A client that only had that path could never reach a sandboxed
 app.
 
-So the listener also publishes itself in each open project's holder record,
-beside the project: `{"host", "port", "token"}`, rewritten when the channel
-starts and cleared when it stops. A client that can read the project can read
-that, which is the same authority it already needed. `find_live_for(project)`
-tries the discovery files first and falls back to the records; `open_project`
-with `source="live"` uses it, and `live_state` takes an optional project path
-for the same reason.
+So the listener publishes the same record in the per-user cache folder, as
+`$(getconf DARWIN_USER_CACHE_DIR)com.twarge.app.horizontal/live-<pid>.json`.
+The sandbox gives the app that subfolder to write in — `confstr` answers with
+it there — it is the user's alone (0700), and unlike the container it is not
+refused to the user's other processes. Publishing there needs no access to
+anything beside a project, which a document opened as a `.horizontal` package
+does not bring.
 
-The sandboxed app needs access to the project's containing folder to publish
-that record. Opening only a `.horizontal` package may not grant this access.
-Use the app's Grant Access action for the containing project folder when needed.
+Each process names its own file, so a second copy of the app (an installed one
+beside an Xcode build) or a test run neither overwrites another's file nor
+removes it when its own listener stops. A client tries each file's endpoint,
+the newest first, and asks each that answers for its documents: `open_project`
+takes the channel that lists the project, and `live_endpoints` is the list it
+walks. A file whose port refuses and whose process is gone is what a crash
+left, and the client removes it.
+
+The listener also publishes itself in each open project's holder record,
+beside the project: `{"host", "port", "token"}`, rewritten when the channel
+starts and cleared when it stops. That is how a client reaches a version of
+the app from before the cache folder's file, and it needs the app to have
+access to the project's containing folder — which opening a `.hprj` asks for,
+and opening a `.horizontal` package does not. `find_live_for(project)` tries
+the discovery files first and falls back to the records; `open_project` with
+`source="live"` uses both, and `live_state` takes an optional project path for
+the same reason.
+
 For edits that must appear in an existing window, request `source="live"` and
 check the returned source. Automatic discovery can fall back to disk when it
 cannot find a live document; a disk commit does not refresh an open canvas.
 
-The token is therefore at rest beside the project, in a file this process
-writes mode 0600 — the same protection `live.json` has, in a place a client
-can actually read. Anyone who can read that file as the owning user can drive
-automation on whatever documents the app has open, so a project directory
-shared with another user, or synced somewhere with looser permissions, widens
-who can do that. Holder records are named `*.lock` and `*.json` under
-`.horizontal-transactions/<digest>/holders/`, and the directory ignores itself
-in git.
+The token is therefore at rest in two places a client can read, each a file
+this process writes mode 0600: the cache folder, which only the owning user
+can enter, and beside the project. Anyone who can read either as the owning
+user can drive automation on whatever documents the app has open, so a project
+directory shared with another user, or synced somewhere with looser
+permissions, widens who can do that. Holder records are named `*.lock` and
+`*.json` under `.horizontal-transactions/<digest>/holders/`, and the directory
+ignores itself in git.
 
 An edit through the channel runs the same ops over the document's in-memory
 archive, then the workspace reloads its model from that archive, points the

@@ -9,8 +9,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from horizontal._native import (HorizontalError, LiveTransport, SubprocessTransport, Transport,
-                                find_live_for, project_holders, transport_error)
-from horizontal.client import Session, Project, open as open_project
+                                find_live, find_live_for, live_endpoints, project_holders, transport_error)
+from horizontal.client import Session, Project, live_holders, open as open_project, project_file
 
 
 class TransportTests(unittest.TestCase):
@@ -148,6 +148,20 @@ class TransportTests(unittest.TestCase):
         beside.assert_called_once_with("/tmp/p.hprj")
         live.assert_called_once()
 
+    def test_reconnect_returns_to_the_channel_it_was_on(self):
+        # With more than one channel up, the first found need not be the app that has the document.
+        class Was(Transport):
+            info = {"port": 2, "token": "b"}
+        session = Session(transport=Was(), project="/tmp/p.horizontal")
+        endpoints = [{"port": 1, "token": "a"}, {"port": 2, "token": "b"}]
+        with patch.object(Session, "is_live", new=property(lambda self: True)), \
+             patch("horizontal.client.live_endpoints", return_value=iter(endpoints)), \
+             patch("horizontal.client.find_live_for") as first, \
+             patch("horizontal.client.LiveTransport") as live:
+            session.reconnect(1)
+        self.assertEqual(live.call_args.args[0], endpoints[1])
+        first.assert_not_called()
+
     def test_mutations_get_a_longer_budget_than_reads(self):
         seen = {}
         class Clock(Transport):
@@ -216,14 +230,20 @@ class TransportTests(unittest.TestCase):
 
 
 class HolderDiscoveryTests(unittest.TestCase):
-    """The app's discovery file is inside its sandbox container, which macOS
-    refuses other processes. The records beside a project are the way through."""
+    """An app from before it published in its cache folder keeps its discovery
+    file inside its sandbox container, which macOS refuses other processes. The
+    records beside a project are the way through to that one."""
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.project = Path(self.temp.name) / "Test.horizontal"
         self.project.mkdir()
+        # No discovery files: these are about the records, and an app running
+        # on this machine is not part of them.
+        files = patch("horizontal._native.live_discovery_paths", return_value=[])
+        files.start()
+        self.addCleanup(files.stop)
 
     def hold(self, endpoint=None, pid=4242, project=None, locked=True):
         """A record beside the project, with its lock held as the app holds it."""
@@ -282,6 +302,185 @@ class HolderDiscoveryTests(unittest.TestCase):
         message = caught.exception.structured()["message"]
         self.assertIn("Horizontal", message)
         self.assertIn("live channel", message)
+
+
+class FakeApp:
+    """A loopback listener that answers as the app's live channel does, for the documents it is given."""
+
+    def __init__(self, documents=(), token="secret"):
+        self.documents = [Path(d) for d in documents]
+        self.token = token
+        self.asked: list[str] = []
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(8)
+        self.port = self.listener.getsockname()[1]
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    def serve(self):
+        while True:
+            try:
+                connection, _ = self.listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self.answer, args=(connection,), daemon=True).start()
+
+    def answer(self, connection):
+        with connection, connection.makefile("rwb") as stream:
+            for line in stream:
+                request = json.loads(line)
+                self.asked.append(request["method"])
+                if request.get("auth") != self.token:
+                    reply = {"error": {"code": -32008, "message": "Unauthorized"}}
+                elif request["method"] == "version":
+                    reply = {"result": {"api": 2}}
+                elif request["method"] == "list_projects":
+                    reply = {"result": [{"handle": number, "path": str(document), "title": document.stem,
+                                         "revision": "r1", "live": True}
+                                        for number, document in enumerate(self.documents, 1)]}
+                else:
+                    reply = {"result": None}
+                stream.write((json.dumps({"jsonrpc": "2.0", "id": request["id"], **reply}) + "\n").encode())
+                stream.flush()
+
+    def close(self):
+        self.listener.close()
+
+
+class SharedDiscoveryTests(unittest.TestCase):
+    """A sandboxed app with a .horizontal package open can write no holder record beside it, and its container
+    is closed to other processes. Its per-user cache folder is not, and each process publishes a file of its
+    own there."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name).resolve()
+        self.shared = root / "com.twarge.app.horizontal"
+        self.shared.mkdir()
+        self.project = root / "Test.horizontal"
+        self.project.mkdir()
+        (self.project / "Test.hprj").write_text("{}")
+        # Only this folder: not an app running on this machine, nor its container.
+        for started in (patch("horizontal._native.shared_discovery_directory", return_value=self.shared),
+                        patch.object(Path, "home", return_value=root / "home"),
+                        patch.dict("os.environ")):
+            started.start()
+            self.addCleanup(started.stop)
+        import os
+        os.environ.pop("HORIZONTAL_LIVE", None)
+        self.written = time.time() - 100
+
+    def app(self, documents=(), token="secret"):
+        app = FakeApp(documents, token)
+        self.addCleanup(app.close)
+        return app
+
+    def publish(self, port, token="secret", pid=None):
+        """A process's file in the folder, each newer than the one before."""
+        import os
+        pid = os.getpid() if pid is None else pid
+        path = self.shared / f"live-{pid}-{port}.json"
+        path.write_text(json.dumps({"version": 2, "host": "127.0.0.1", "port": port, "token": token, "pid": pid}))
+        self.written += 1
+        os.utime(path, (self.written, self.written))
+        return path
+
+    def test_a_file_in_the_cache_folder_is_found_without_a_project(self):
+        self.assertIsNone(find_live())
+        app = self.app()
+        path = self.publish(app.port)
+        found = find_live()
+        self.assertEqual((found["port"], found["token"], found["path"]), (app.port, "secret", str(path)))
+        self.assertEqual([info["port"] for info in live_endpoints()], [app.port])
+        self.assertEqual(find_live_for(self.project)["port"], app.port, "and with one")
+
+    def test_every_channel_that_answers_is_offered_newest_first_and_once(self):
+        older, newer = self.app(), self.app()
+        self.publish(older.port)
+        self.publish(newer.port)
+        self.publish(newer.port, pid=1)  # The same channel named twice is one channel.
+        self.assertEqual([info["port"] for info in live_endpoints(self.project)], [newer.port, older.port])
+
+    def test_open_takes_the_channel_that_has_the_document(self):
+        # The newest file is another copy of the app, with another document open.
+        mine = self.app([self.project])
+        other = self.app([self.project.parent / "Other.horizontal"], token="theirs")
+        self.publish(mine.port)
+        self.publish(other.port, token="theirs")
+
+        project = open_project(self.project, source="live")
+        self.addCleanup(project.session.close)
+        self.assertTrue(project.is_live)
+        self.assertEqual(project.session.transport.info["port"], mine.port)
+        self.assertIn("list_projects", other.asked, "the first was asked, and did not have it")
+
+        # A package is known by the package, so its .hprj finds the same document.
+        inside = open_project(self.project / "Test.hprj", source="live")
+        self.addCleanup(inside.session.close)
+        self.assertEqual(Path(inside.path), self.project)
+
+    def test_a_channel_without_the_document_is_not_the_document(self):
+        other = self.app([self.project.parent / "Other.horizontal"])
+        self.publish(other.port)
+        with self.assertRaises(HorizontalError) as caught:
+            open_project(self.project, source="live")
+        self.assertEqual(caught.exception.structured()["code"], "LIVE_UNAVAILABLE")
+
+    def test_a_crashed_apps_file_is_cleared_and_a_running_ones_is_kept(self):
+        import subprocess
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        closed = socket.socket()
+        closed.bind(("127.0.0.1", 0))
+        port = closed.getsockname()[1]
+        closed.close()
+
+        crashed = self.publish(port, pid=gone.pid)
+        starting = self.publish(port)  # This process's: it is running, and may yet listen.
+        attempts = []
+        self.assertIsNone(find_live(attempts))
+        self.assertFalse(crashed.exists(), "nothing will listen there again")
+        self.assertTrue(starting.exists())
+        self.assertEqual({attempt["status"] for attempt in attempts if attempt["path"].startswith(str(self.shared))},
+                         {"unreachable"})
+
+    def test_a_package_is_known_by_the_package(self):
+        self.assertEqual(project_file(self.project), self.project)
+        self.assertEqual(project_file(self.project / "Test.hprj"), self.project,
+                         "what the app has open, and what its transaction directory is named for")
+        folder = self.project.parent / "Folder"
+        folder.mkdir()
+        (folder / "Folder.hprj").write_text("{}")
+        self.assertEqual(project_file(folder / "Folder.hprj"), folder / "Folder.hprj", "a Horizon project is its .hprj")
+        self.assertEqual(project_file(folder), folder / "Folder.hprj")
+
+    def test_a_live_channel_that_lists_the_project_holds_it(self):
+        # No record can say so for a sandboxed app's package, so the channel does.
+        self.assertEqual(live_holders(self.project), [])
+        other = self.app([self.project.parent / "Other.horizontal"])
+        self.publish(other.port)
+        self.assertEqual(live_holders(self.project), [])
+
+        mine = self.app([self.project], token="mine")
+        self.publish(mine.port, token="mine")
+        holders = live_holders(self.project / "Test.hprj")
+        self.assertEqual([(holder["name"], holder["project"]) for holder in holders], [("Horizontal", str(self.project))])
+        self.assertNotIn("mine", json.dumps(holders), "the token stays where it was read")
+
+    def test_a_disk_edit_is_refused_while_a_live_channel_lists_the_project(self):
+        from horizontal import mcp_server
+        disk = Project(Session(transport=Transport()),
+                       {"handle": 1, "path": str(self.project), "title": "Test", "revision": "r1", "live": False})
+        self.assertEqual(mcp_server._guard(disk, dry_run=True), {})
+
+        mine = self.app([self.project])
+        self.publish(mine.port)
+        with self.assertRaises(HorizontalError) as caught:
+            mcp_server._guard(disk, dry_run=True)
+        error = caught.exception.structured()
+        self.assertEqual(error["code"], "DOCUMENT_OPEN")
+        self.assertIn('source="live"', error["message"])
 
 
 if __name__ == "__main__": unittest.main()

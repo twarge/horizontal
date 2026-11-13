@@ -31,9 +31,9 @@ In Horizontal:
 1. Turn on **Settings > MCP Server > Enable MCP Server**. Without it, Claude
    can read and write project files on disk, but cannot see or change what is
    open in the app.
-2. Open projects from their `.hprj`, and grant the app access to the
-   project's folder when it asks. The app publishes its endpoint beside the
-   project, and that is how the server finds it.
+2. Open your project, as a `.horizontal` package or from its `.hprj`. The app
+   publishes its endpoint in its per-user cache folder, and that is how the
+   server finds it; connecting needs no access to the project's folder.
 
 If you registered the server by hand before (`claude mcp add … horizontal`),
 remove that entry. A user- or project-scope server with the same name takes
