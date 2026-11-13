@@ -1,49 +1,67 @@
 {
-  "fill" : {
-    "linear-gradient" : [
-      "extended-srgb:0.22353,0.54902,0.94118,1.00000",
-      "extended-srgb:0.02353,0.21961,0.54118,1.00000"
+  "fill": {
+    "linear-gradient": [
+      "extended-srgb:0.07000,0.33000,0.86000,1.00000",
+      "extended-srgb:0.01500,0.06000,0.30000,1.00000"
     ]
   },
-  "groups" : [
+  "groups": [
     {
-      "layers" : [
+      "layers": [
         {
-          "image-name" : "OpAmp.svg",
-          "name" : "OpAmp"
+          "image-name": "OpAmp.svg",
+          "name": "OpAmp",
+          "glass": true
         }
       ],
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.5
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.6
       },
-      "translucency" : {
-        "enabled" : false,
-        "value" : 0.5
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
       }
     },
     {
-      "layers" : [
+      "layers": [
         {
-          "glass" : false,
-          "image-name" : "Reticle.svg",
-          "name" : "Reticle"
+          "image-name": "Nets.svg",
+          "name": "Nets",
+          "glass": true
         }
       ],
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.35
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
       },
-      "translucency" : {
-        "enabled" : false,
-        "value" : 0.5
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
+      }
+    },
+    {
+      "layers": [
+        {
+          "image-name": "Grid.svg",
+          "name": "Grid",
+          "glass": false
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.0
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
       }
     }
   ],
-  "supported-platforms" : {
-    "circles" : [
+  "supported-platforms": {
+    "circles": [
       "watchOS"
     ],
-    "squares" : "shared"
+    "squares": "shared"
   }
 }
