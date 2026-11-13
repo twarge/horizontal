@@ -6,8 +6,8 @@ import SwiftUI
 /// own. SwiftUI's Settings scene keeps its window a fixed size: it takes
 /// `.resizable` out of the style mask on every layout pass, whatever the
 /// scene's resizability says, so the form, much of it colour tables, could
-/// never be made taller. The window here grows and shrinks in height only:
-/// the form is laid out for its one width.
+/// never be made taller. The window here resizes freely in height, and in
+/// width between the narrowest and the widest the form lays out well.
 struct HorizontalSettingsCommands: Commands {
     var appearanceSettings: HorizontalAppearanceSettings
 
@@ -27,7 +27,7 @@ struct HorizontalSettingsCommands: Commands {
 final class HorizontalSettingsWindowController {
     static let shared = HorizontalSettingsWindowController()
 
-    private static let defaultContentSize = NSSize(width: HorizontalSettingsView.minimumSize.width, height: 640)
+    private static let defaultContentSize = NSSize(width: 560, height: 640)
     private static let frameAutosaveName = "Horizontal Settings"
 
     private var window: NSWindow?
@@ -42,16 +42,18 @@ final class HorizontalSettingsWindowController {
             window.title = "Horizontal Settings"
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.contentMinSize = HorizontalSettingsView.minimumSize
-            window.contentMaxSize = NSSize(width: HorizontalSettingsView.minimumSize.width, height: .greatestFiniteMagnitude)
+            window.contentMaxSize = NSSize(width: HorizontalSettingsView.maximumWidth, height: .greatestFiniteMagnitude)
             window.setContentSize(Self.defaultContentSize)
             window.isReleasedWhenClosed = false
             window.tabbingMode = .disallowed
             window.collectionBehavior.insert(.fullScreenNone)
             if window.setFrameUsingName(Self.frameAutosaveName) {
                 // A frame saved while the window could still be made wider
-                // keeps its height and takes the form's width.
-                let height = window.contentRect(forFrameRect: window.frame).height
-                window.setContentSize(NSSize(width: Self.defaultContentSize.width, height: height))
+                // keeps its height and comes in to the form's widest.
+                let size = window.contentRect(forFrameRect: window.frame).size
+                if size.width > HorizontalSettingsView.maximumWidth {
+                    window.setContentSize(NSSize(width: HorizontalSettingsView.maximumWidth, height: size.height))
+                }
             } else {
                 window.center()
             }

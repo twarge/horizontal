@@ -39,7 +39,7 @@ This directory is also the root of the Codex plugin (`plugin.json`, `mcp.json`,
     codex plugin add horizontal@twarge
 
 The plugin's setup action uses the connection skill. Basic instructions are in
-the app's **Settings > MCP Server** section; see [../docs/codex.md](../docs/codex.md)
+the app's **Settings > AI Agent Access** section; see [../docs/codex.md](../docs/codex.md)
 for installation, live discovery and local development.
 
 The same directory is the root of the Claude Code plugin

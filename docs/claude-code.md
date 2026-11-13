@@ -22,13 +22,13 @@ Or, in a Claude Code session:
     /plugin install horizontal --marketplace twarge/horizontal
 
 Start a new session afterwards; MCP servers load when a session starts.
-Settings > MCP Server in Horizontal shows the same commands with a Copy button;
+Settings > AI Agent Access in Horizontal shows the same commands with a Copy button;
 choose Claude Code in the client picker. Codex uses the same server and skills
 with its own plugin packaging; see [codex.md](codex.md).
 
 In Horizontal:
 
-1. Turn on **Settings > MCP Server > Enable MCP Server**. Without it, Claude
+1. Turn on **Settings > AI Agent Access > Enable MCP Server**. Without it, Claude
    can read and write project files on disk, but cannot see or change what is
    open in the app.
 2. Open your project, as a `.horizontal` package or from its `.hprj`. The app

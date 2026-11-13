@@ -620,8 +620,8 @@ unavailable channel without a path means the app is not running, has no
 document open, or has the channel switched off, and it cannot say which.
 `held_by` is the answer that does not depend on the channel at all.
 
-The channel is off until it is turned on: Settings > MCP Server > Enable MCP
-Server, stored as `HorizontalLiveServerEnabled` in the app's defaults. With it
+The channel is off until it is turned on: Settings > AI Agent Access > Enable
+MCP Server, stored as `HorizontalLiveServerEnabled` in the app's defaults. With it
 on the listener starts with the first document and stops with the last, and
 the switch takes effect at once rather than at the next open or close. With it
 off there is no way in: disk writes are refused while the app holds the

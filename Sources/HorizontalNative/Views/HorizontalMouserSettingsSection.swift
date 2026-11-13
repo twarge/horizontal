@@ -23,11 +23,6 @@ struct HorizontalMouserSettingsSection: View {
     var body: some View {
         Section("Mouser") {
             Toggle("Look Up Parts on Mouser", isOn: $monitor.isEnabled)
-            Text(monitor.isEnabled
-                 ? "Shows Mouser's stock in the Parts pane, and Open on Mouser when right-clicking a part on the schematic, on the board, or in the Parts and Pools panes."
-                 : "Off: Horizontal asks Mouser nothing, and shows no Mouser Stock column and no Mouser menu items.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
 
             SecureField(
                 "Search API Key",
@@ -46,9 +41,6 @@ struct HorizontalMouserSettingsSection: View {
                     .disabled(trimmedKey.isEmpty || !monitor.isEnabled)
             }
 
-            Text("The Parts pane's Mouser Stock column asks Mouser's Search API how many of each part's MPN Mouser has in stock, for the rows on screen. As Mouser's API terms require, the answers are kept in memory for half an hour and never saved. Mouser issues each Search API key to the person who enrolls, so use your own: request one from Mouser's API Hub with your My Mouser account, and enter it here, where it is kept in the keychain. Open on Mouser works without it, through Mouser's search for the part's MPN.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             HStack(spacing: 16) {
                 Link("Mouser API Hub", destination: Self.apiHubURL)
                 Link("Search API Terms", destination: Self.termsURL)

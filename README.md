@@ -61,7 +61,7 @@ codex plugin marketplace add twarge/horizontal
 codex plugin add horizontal@twarge
 ```
 
-**Settings > MCP Server** in the app has the basic setup steps and commands.
+**Settings > AI Agent Access** in the app has the basic setup steps and commands.
 
 For Claude Code, install the plugin, which brings the same MCP server and skills
 for reviews, edits and fabrication outputs ([docs/claude-code.md](docs/claude-code.md)):

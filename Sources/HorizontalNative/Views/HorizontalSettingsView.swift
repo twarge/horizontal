@@ -13,12 +13,11 @@ struct HorizontalSettingsView: View {
         Form {
             Section("Operation") {
                 Toggle("Read-only", isOn: appearanceSettings.readOnlyOperationBinding())
-                Text("Prevents project files from being modified. Selection, search, view options, and app preferences still work.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
-            Section("App Theme") {
+            HorizontalPoolsSettingsSection()
+
+            Section("Appearance") {
                 Picker("Theme", selection: appearanceSettings.appThemeBinding()) {
                     ForEach(HorizontalAppTheme.allCases) { theme in
                         Text(theme.title)
@@ -26,52 +25,83 @@ struct HorizontalSettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-            }
 
-            Section("View Layout") {
+                // Off is the standard chrome on both platforms: the system
+                // toolbar background on macOS, the glass island behind the
+                // top-bar buttons on iPad. On, that background goes away. The
+                // canvas runs up underneath the toolbar either way; only the
+                // background changes.
+                Toggle("Transparent Toolbar", isOn: appearanceSettings.transparentToolbarBinding())
+
                 Toggle(
                     "Swap View Controls and Unplaced References",
                     isOn: appearanceSettings.swapViewControlsAndUnplacedReferencesBinding()
                 )
             }
 
-            // The board rail's Update Planes button hides while this is on,
-            // and its context menu was the iPad's only other way back.
-            Section("Board") {
-                Toggle("Update Planes Automatically", isOn: $updatesPlanesAutomatically)
-            }
+            Section("Canvas") {
+                Picker("Cursor Size", selection: appearanceSettings.cursorSizeBinding()) {
+                    ForEach(HorizontalCursorSize.allCases) { cursorSize in
+                        Text(cursorSize.title)
+                            .tag(cursorSize)
+                    }
+                }
+                .pickerStyle(.segmented)
 
-            Section("Spotlight") {
+                Picker("Selection Handles", selection: appearanceSettings.selectionHandleShapeBinding()) {
+                    ForEach(HorizontalSelectionHandleShape.allCases) { shape in
+                        Text(shape.title)
+                            .tag(shape)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Toggle("Show Hover Popover", isOn: appearanceSettings.hoverPopoverBinding())
+
                 Toggle("Show the Spotlight in Every View", isOn: $spotlightFramesEveryView)
-                Text("Spotlight (L) also brings what it spotlights into the other views: the schematic, the board, the 3D view and the Parts list. A view it is already in stays put; one it is out of scrolls to it, or turns to another sheet or the other side of the board, without changing the zoom. The view you pressed L in doesn't move.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
 
-            // As in the rules results sidebar: with the warnings off the
-            // checks pause, and Check Rules Automatically hides.
-            Section("Design Rules") {
+                // As in the rules results sidebar: with the warnings off the
+                // checks pause, and Check Rules Automatically hides.
                 Toggle("Display Warnings on Canvas", isOn: appearanceSettings.canvasWarningsBinding())
-                Text("Marks warnings and rules check findings on the schematic and board, and counts them on the rules results button. Off, the rules are checked only when you click Check Now.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 if appearanceSettings.shouldDisplayCanvasWarnings {
                     Toggle("Check Rules Automatically", isOn: $checksRulesAutomatically)
-                    Text("Checks the schematic and board against their rules again after every change. Off, the rules results sidebar checks when you click Check Now, and says when the design has changed since.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
 
-            // Off is the standard chrome on both platforms: the system toolbar
-            // background on macOS, the glass island behind the top-bar buttons
-            // on iPad. On, that background goes away. The canvas runs up
-            // underneath the toolbar either way; only the background changes.
-            Section("Toolbar") {
-                Toggle("Transparent Toolbar", isOn: appearanceSettings.transparentToolbarBinding())
-                Text(transparentToolbarDescription)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            Section("Schematic") {
+                Toggle("Fill Net Label Background", isOn: appearanceSettings.netLabelBackgroundBinding())
+                Toggle("Fill Closed Symbol Background", isOn: appearanceSettings.closedSymbolBackgroundBinding())
+                Toggle("Show Hops Where Wires Cross", isOn: appearanceSettings.wireHopsBinding())
+            }
+
+            Section("Board") {
+                // The board rail's Update Planes button hides while this is
+                // on, and its context menu was the iPad's only other way back.
+                Toggle("Update Planes Automatically", isOn: $updatesPlanesAutomatically)
+                Toggle("Clip Silkscreen to Solder Mask", isOn: appearanceSettings.clipSilkscreenToSolderMaskBinding())
+            }
+
+            // One section, because a column's Reset puts back that canvas's
+            // whole palette, the selection colours with the rest.
+            Section("Canvas and Selection Colors") {
+                colorMatrixHeader(columns: colorColumns)
+                ForEach(canvasColorRoles) { role in
+                    colorRoleRow(role)
+                }
+                ForEach(selectionColorRoles) { role in
+                    colorRoleRow(role)
+                }
+                paletteResetRow()
+            }
+
+            Section("Layer Colors") {
+                colorMatrixHeader(columns: layerColorColumns)
+                ForEach(editableLayers, id: \.self) { layer in
+                    layerColorRow(layer)
+                }
+                trailingResetRow("Reset Layer Colors") {
+                    appearanceSettings.resetLayerColors()
+                }
             }
 
             Section("3D View Colors") {
@@ -80,74 +110,8 @@ struct HorizontalSettingsView: View {
                 threeDViewColorRow("Solder Mask", selection: appearanceSettings.boardSceneSolderMaskColorBinding())
                 threeDViewColorRow("Silkscreen", selection: appearanceSettings.boardSceneSilkscreenColorBinding())
                 threeDViewColorRow("Copper", selection: appearanceSettings.boardSceneCopperColorBinding())
-
-                HStack {
-                    Spacer()
-                    Button("Reset 3D View Colors") {
-                        appearanceSettings.resetBoardSceneColors()
-                    }
-                }
-                .buttonStyle(.bordered)
-            }
-
-            Section("Silkscreen") {
-                Toggle("Clip Silkscreen to Solder Mask", isOn: appearanceSettings.clipSilkscreenToSolderMaskBinding())
-                Text("Silkscreen within the clearance of a solder mask opening is left out — of the board view, the 3D view, and the Gerber, ODB++, PDF and DXF board exports — the way a fab house strips silkscreen off pads.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Cursor") {
-                Picker("Size", selection: appearanceSettings.cursorSizeBinding()) {
-                    ForEach(HorizontalCursorSize.allCases) { cursorSize in
-                        Text(cursorSize.title)
-                            .tag(cursorSize)
-                    }
-                }
-                .pickerStyle(.segmented)
-            }
-
-            Section("Selection Handles") {
-                Picker("Shape", selection: appearanceSettings.selectionHandleShapeBinding()) {
-                    ForEach(HorizontalSelectionHandleShape.allCases) { shape in
-                        Text(shape.title)
-                            .tag(shape)
-                    }
-                }
-                .pickerStyle(.segmented)
-            }
-
-            Section("Schematic") {
-                Toggle("Fill Net Label Background", isOn: appearanceSettings.netLabelBackgroundBinding())
-                Toggle("Fill Closed Symbol Background", isOn: appearanceSettings.closedSymbolBackgroundBinding())
-                Toggle("Show Hops Where Wires Cross", isOn: appearanceSettings.wireHopsBinding())
-                Text("A wire hops over a wire of another net where the two cross, so the crossing can't be mistaken for a connection.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Hover") {
-                Toggle("Show Hover Popover", isOn: appearanceSettings.hoverPopoverBinding())
-            }
-
-            Section("Canvas Colors") {
-                colorMatrixHeader(columns: colorColumns)
-                ForEach(canvasColorRoles) { role in
-                    colorRoleRow(role)
-                }
-            }
-
-            Section("Selection Colors") {
-                colorMatrixHeader(columns: colorColumns)
-                ForEach(selectionColorRoles) { role in
-                    colorRoleRow(role)
-                }
-            }
-
-            Section("Layer Colors") {
-                colorMatrixHeader(columns: layerColorColumns)
-                ForEach(editableLayers, id: \.self) { layer in
-                    layerColorRow(layer)
+                trailingResetRow("Reset 3D View Colors") {
+                    appearanceSettings.resetBoardSceneColors()
                 }
             }
 
@@ -161,49 +125,69 @@ struct HorizontalSettingsView: View {
                 }
             }
 
-            Section("Reset") {
-                resetControls
-            }
-
             #if os(macOS)
             // The listener is macOS-only, so the switch is too.
-            Section("MCP Server") {
+            Section("AI Agent Access") {
                 Toggle("Enable MCP Server", isOn: appearanceSettings.liveServerEnabledBinding())
-                Text("Lets connected assistants read the documents you have open, including unsaved changes. Edits arrive as undoable steps and are autosaved.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 HorizontalMCPSetup()
             }
             #endif
-
-            HorizontalPoolsSettingsSection()
 
             HorizontalDigiKeySettingsSection()
 
             HorizontalMouserSettingsSection()
         }
         .formStyle(.grouped)
-        // The macOS Settings window (HorizontalSettingsWindow) keeps the width
-        // the colour matrix's four columns fit and resizes only in height,
-        // down to the minimum, where the form scrolls; on iPad the form is
-        // presented in a sheet and should fill whatever size the sheet
-        // provides.
+        // The macOS Settings window (HorizontalSettingsWindow) can be made as
+        // narrow as the colour matrix's four columns and a short label fit,
+        // and no wider than the form has a use for; in height it goes down to
+        // the minimum, where the form scrolls. On iPad the form is presented
+        // in a sheet and should fill whatever size the sheet provides.
         #if os(macOS)
-        .frame(width: Self.minimumSize.width)
+        .frame(minWidth: Self.minimumSize.width, maxWidth: Self.maximumWidth)
         .frame(minHeight: Self.minimumSize.height, maxHeight: .infinity)
         #endif
     }
 
     #if os(macOS)
-    static let minimumSize = CGSize(width: 680, height: 360)
+    static let minimumSize = CGSize(width: 480, height: 360)
+    static let maximumWidth: CGFloat = 680
     #endif
 
-    private var transparentToolbarDescription: String {
-        #if os(macOS)
-        return "Hides the toolbar background and blends the title bar into the window, so the canvas shows through behind the toolbar buttons."
-        #else
-        return "Hides the glass background behind the toolbar buttons so more of the canvas shows through."
-        #endif
+    /// A colour well's column: wide enough for the well, a small Reset button
+    /// and a two-line caption heading.
+    private static let colorColumnWidth: CGFloat = 64
+    /// The title column of the slider rows, which have no room to give it the
+    /// rest of the row as the colour tables do.
+    private static let sliderLabelWidth: CGFloat = 120
+
+    /// A section's own reset, under the rows it puts back.
+    private func trailingResetRow(_ title: String, action: @escaping () -> Void) -> some View {
+        HStack {
+            Spacer()
+            Button(title, action: action)
+                .buttonStyle(.bordered)
+        }
+    }
+
+    /// A Reset under each of the colour table's columns.
+    private func paletteResetRow() -> some View {
+        HStack(spacing: 8) {
+            Text("Reset")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            ForEach(colorColumns) { column in
+                Button("Reset") {
+                    appearanceSettings.reset(kind: column.kind, mode: column.mode)
+                }
+                .controlSize(.small)
+                .fixedSize()
+                .frame(width: Self.colorColumnWidth)
+                .help("Reset the \(column.title) colors")
+                .accessibilityLabel("Reset \(column.title)")
+            }
+        }
+        .buttonStyle(.bordered)
     }
 
     private var canvasColorRoles: [HorizontalColorRole] {
@@ -258,33 +242,19 @@ struct HorizontalSettingsView: View {
     }
 
     private func colorMatrixHeader(columns: [ColorMatrixColumn]) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Text("Color")
-                .frame(width: 170, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
             ForEach(columns) { column in
                 Text(column.title)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
-                    .frame(width: 96)
+                    .frame(width: Self.colorColumnWidth)
             }
         }
         .padding(.vertical, 2)
-    }
-
-    private var resetControls: some View {
-        HStack(spacing: 12) {
-            ForEach(colorColumns) { column in
-                Button("Reset \(column.title)") {
-                    appearanceSettings.reset(kind: column.kind, mode: column.mode)
-                }
-            }
-            Button("Reset Layer Colors") {
-                appearanceSettings.resetLayerColors()
-            }
-        }
-        .buttonStyle(.bordered)
     }
 
     private func colorRoleRow(_ role: HorizontalColorRole) -> some View {
@@ -305,7 +275,7 @@ struct HorizontalSettingsView: View {
     private func threeDViewColorRow(_ title: String, selection: Binding<Color>) -> some View {
         HStack(spacing: 10) {
             Text(title)
-                .frame(width: 170, alignment: .leading)
+                .frame(width: Self.sliderLabelWidth, alignment: .leading)
             ColorPicker(title, selection: selection, supportsOpacity: false)
                 .labelsHidden()
             Spacer(minLength: 0)
@@ -348,7 +318,7 @@ struct HorizontalSettingsView: View {
     ) -> some View {
         HStack(spacing: 12) {
             Text(title)
-                .frame(width: 170, alignment: .leading)
+                .frame(width: Self.sliderLabelWidth, alignment: .leading)
             Slider(
                 value: width,
                 in: HorizontalAppearanceSettings.lineWidthRange,
@@ -368,18 +338,18 @@ struct HorizontalSettingsView: View {
         columns: [ColorMatrixColumn],
         binding: @escaping (ColorMatrixColumn) -> Binding<Color>?
     ) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Text(title)
-                .frame(width: 170, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
             ForEach(columns) { column in
                 if let binding = binding(column) {
                     ColorPicker("\(title), \(column.title)", selection: binding, supportsOpacity: false)
                         .labelsHidden()
-                        .frame(width: 96)
+                        .frame(width: Self.colorColumnWidth)
                         .accessibilityLabel("\(title), \(column.title)")
                 } else {
                     Color.clear
-                        .frame(width: 96)
+                        .frame(width: Self.colorColumnWidth)
                         .accessibilityHidden(true)
                 }
             }
@@ -407,8 +377,8 @@ struct HorizontalSettingsView: View {
 /// The sandboxed app cannot configure another app, so installation is explicit.
 private struct HorizontalMCPSetup: View {
     private enum Client: String, CaseIterable, Identifiable {
-        case codex = "Codex"
         case claudeCode = "Claude Code"
+        case codex = "Codex"
 
         var id: Self { self }
 
@@ -433,7 +403,7 @@ private struct HorizontalMCPSetup: View {
         }
     }
 
-    @State private var client: Client = .codex
+    @State private var client: Client = .claudeCode
     @State private var copied = false
 
     var body: some View {
@@ -444,7 +414,7 @@ private struct HorizontalMCPSetup: View {
                 }
             }
             .pickerStyle(.segmented)
-            Text("1. Install uv (or Python 3.11 or later) and the \(client.rawValue) command-line tool, then run these commands in Terminal.")
+            Text("Use the \(client.rawValue) command line tool in the terminal:")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(client.commands)
@@ -459,12 +429,6 @@ private struct HorizontalMCPSetup: View {
                 Link("Setup Guide", destination: client.guide)
                 Link("Install uv", destination: URL(string: "https://docs.astral.sh/uv/getting-started/installation/")!)
             }
-            Text("2. Keep Enable MCP Server on, and open your project.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text("3. Start a new \(client.rawValue) chat and ask it to connect to your project in Horizontal. The plugin includes setup help and skills for reviews, edits, and exports.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .onChange(of: client) { _, _ in copied = false }
     }

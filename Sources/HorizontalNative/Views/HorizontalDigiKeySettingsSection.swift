@@ -32,11 +32,6 @@ struct HorizontalDigiKeySettingsSection: View {
     var body: some View {
         Section("DigiKey") {
             Toggle("Look Up Parts on DigiKey", isOn: $monitor.isEnabled)
-            Text(monitor.isEnabled
-                 ? "Shows DigiKey's stock in the Parts pane, and Open on DigiKey when right-clicking a part on the schematic, on the board, or in the Parts and Pools panes."
-                 : "Off: Horizontal asks DigiKey nothing, and shows no DigiKey Stock column and no DigiKey menu items.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
 
             TextField("Client ID", text: $clientID)
                 .disabled(!monitor.isEnabled)
@@ -58,9 +53,6 @@ struct HorizontalDigiKeySettingsSection: View {
                 }
             }
             .disabled(!monitor.isEnabled)
-            Text("DigiKey sells a part on cut tape, full reels and Digi-Reels under separate part numbers, each with its own stock. The column counts the packaging chosen here, or the most stocked one for a part that doesn't come in it.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
 
             HStack {
                 status
@@ -71,9 +63,6 @@ struct HorizontalDigiKeySettingsSection: View {
                     .disabled(!canSave || !monitor.isEnabled)
             }
 
-            Text("The Parts pane's DigiKey Stock column asks DigiKey's Product Information API how many of each part's MPN DigiKey has in stock, once every 12 hours. Create an app with the Product Information V4 API on DigiKey's API portal and enter its client ID and secret here; the secret is kept in the keychain. Open on DigiKey works without them, through DigiKey's search for the part's MPN.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             Link("DigiKey API Portal", destination: Self.portalURL)
                 .font(.caption)
         }

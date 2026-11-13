@@ -171,22 +171,18 @@ struct HorizontalPoolsSettingsSection: View {
             ForEach(registry.pools) { pool in
                 row(pool)
             }
-            HStack {
-                Button("Add Pool…", action: addPool)
-                Button("New Pool…") { isCreatingPool = true }
-                if !HorizontalDefaultPool.isRegistered {
-                    Button("Get Horizon Default Pool…", action: offerDefaultPool)
+            // One row where the window is wide enough for it, two where not.
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    addButtons
+                    Spacer()
+                    checkForUpdatesButton
                 }
-                Spacer()
-                Button("Check for Updates") {
-                    updater.reload()
-                    updater.check(gitPools)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack { addButtons }
+                    checkForUpdatesButton
                 }
-                .disabled(gitPools.isEmpty)
             }
-            Text("A pool that is a git checkout updates from the branch it tracks: Horizontal fetches it over HTTPS and moves the pool on to it, and leaves a pool alone when the update would overwrite changes or commits of its own. A pool cloned over SSH is fetched over HTTPS from the same host, which works while it's public; private pools need SSH, which isn't supported yet.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .fileImporter(isPresented: $isImportingPool, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result {
@@ -204,6 +200,23 @@ struct HorizontalPoolsSettingsSection: View {
         } message: {
             Text("“\(addFailure ?? "")” has no pool.json, so it isn't a Horizon pool.")
         }
+    }
+
+    @ViewBuilder
+    private var addButtons: some View {
+        Button("Add Pool…", action: addPool)
+        Button("New Pool…") { isCreatingPool = true }
+        if !HorizontalDefaultPool.isRegistered {
+            Button("Get Horizon Default Pool…", action: offerDefaultPool)
+        }
+    }
+
+    private var checkForUpdatesButton: some View {
+        Button("Check for Updates") {
+            updater.reload()
+            updater.check(gitPools)
+        }
+        .disabled(gitPools.isEmpty)
     }
 
     @ViewBuilder

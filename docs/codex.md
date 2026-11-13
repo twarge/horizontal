@@ -18,7 +18,7 @@ codex plugin add horizontal@twarge
 
 In Horizontal:
 
-1. Turn on **Settings > MCP Server > Enable MCP Server**.
+1. Turn on **Settings > AI Agent Access > Enable MCP Server**.
 2. Open your project, as a `.horizontal` package or a Horizon project from its
    `.hprj`. A `.hprj` asks for access to its containing folder, where the rest
    of the project's files are; connecting needs no folder access of its own.
