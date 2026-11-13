@@ -614,6 +614,9 @@ final class HorizontalMetalCanvasLayer {
     /// a texture whose batch, batch revision, uniforms and size are the same
     /// still holds its group, and isn't rendered again.
     private var renderedCompositeTextures = [Int: HorizontalMetalCompositeTextureState]()
+    /// How many composite batches this layer has made, which numbers each
+    /// one's `id`.
+    private var compositeBatchesMade = 0
     /// How many draws rendered the composite textures rather than reusing
     /// them, for regression checks.
     private(set) var compositeTextureRenders = 0
@@ -1066,7 +1069,7 @@ final class HorizontalMetalCanvasLayer {
 
         let sortedGroups = allGroups.sorted()
         compositeBatchBuffers = sortedGroups.map { group in
-            let batch = compositeBatchStorageByGroup[group] ?? HorizontalMetalCompositeBatchBuffers(group: group)
+            let batch = compositeBatchStorageByGroup[group] ?? makeCompositeBatch(group: group)
             compositeBatchStorageByGroup[group] = batch
             batch.opacity = min(max(opacityByGroup[group] ?? 1, 0), 1)
             batch.replaceBuffers(
@@ -1136,7 +1139,7 @@ final class HorizontalMetalCanvasLayer {
             compositeBatchStorageByGroup.removeValue(forKey: group)
         }
         for group in changed {
-            let batch = compositeBatchStorageByGroup[group] ?? HorizontalMetalCompositeBatchBuffers(group: group)
+            let batch = compositeBatchStorageByGroup[group] ?? makeCompositeBatch(group: group)
             compositeBatchStorageByGroup[group] = batch
             batch.opacity = min(max(opacityByGroup[group] ?? 1, 0), 1)
             batch.replaceBuffers(
@@ -1465,6 +1468,11 @@ final class HorizontalMetalCanvasLayer {
     }
 
     /// Layer-group batches that are visible and contribute color this frame.
+    private func makeCompositeBatch(group: Int) -> HorizontalMetalCompositeBatchBuffers {
+        compositeBatchesMade += 1
+        return HorizontalMetalCompositeBatchBuffers(group: group, id: compositeBatchesMade)
+    }
+
     private func activeCompositeBatches() -> [HorizontalMetalCompositeBatchBuffers] {
         compositeBatchBuffers.filter { batch in
             guard !batch.isEmpty, batch.opacity > 0 else {
@@ -1652,7 +1660,7 @@ final class HorizontalMetalCanvasLayer {
         let signature = HorizontalMetalCompositeSignature(
             uniforms: uniforms,
             contentRevision: compositeContentRevision,
-            batches: activeBatches.map(ObjectIdentifier.init),
+            batches: activeBatches.map(\.id),
             pixelSize: pixelSize
         )
         let rendersAnyTexture = signature != renderedCompositeSignature
@@ -1670,7 +1678,7 @@ final class HorizontalMetalCanvasLayer {
             // Only the groups whose buffers changed are drawn again; the
             // others' textures still hold them.
             let state = HorizontalMetalCompositeTextureState(
-                batch: ObjectIdentifier(batch),
+                batch: batch.id,
                 revision: batch.revision,
                 uniforms: uniforms,
                 pixelSize: pixelSize
@@ -2492,12 +2500,18 @@ private final class HorizontalMetalCompositeBatchBuffers {
     private(set) var triangleCount = 0
     private(set) var lineCount = 0
     private(set) var anchoredRectCount = 0
+    /// Unique among the batches its layer has made, which an
+    /// `ObjectIdentifier` is not: a batch made after another is freed can be
+    /// given the freed one's address. What a composite texture records it
+    /// was drawn from, with `revision`.
+    let id: Int
     /// Bumped whenever the buffers' contents change, so the group's
     /// composite texture is drawn again only then.
     private(set) var revision = 0
 
-    init(group: Int) {
+    init(group: Int, id: Int) {
         self.group = group
+        self.id = id
     }
 
     var triangleBuffer: MTLBuffer? {
@@ -2680,7 +2694,8 @@ private struct HorizontalMetalPlacementStep: Equatable {
 /// zoom and the rest), the layer-group buffers, which groups are active, and
 /// the drawable's size. While it holds, the textures need no rendering.
 private struct HorizontalMetalCompositeTextureState: Equatable {
-    var batch: ObjectIdentifier
+    /// The batch's `id`.
+    var batch: Int
     var revision: Int
     var uniforms: HorizontalMetalBackdropUniforms
     var pixelSize: CGSize
@@ -2689,7 +2704,8 @@ private struct HorizontalMetalCompositeTextureState: Equatable {
 private struct HorizontalMetalCompositeSignature: Equatable {
     var uniforms: HorizontalMetalBackdropUniforms
     var contentRevision: Int
-    var batches: [ObjectIdentifier]
+    /// The batches' `id`s.
+    var batches: [Int]
     var pixelSize: CGSize
 }
 

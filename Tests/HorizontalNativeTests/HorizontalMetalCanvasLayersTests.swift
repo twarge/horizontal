@@ -170,6 +170,62 @@ final class HorizontalMetalCanvasLayersTests: XCTestCase {
         XCTAssertEqual(overlay.compositeTextureRenders, 4, "A new scene draws them again")
     }
 
+    /// A layer group that goes away and comes back is drawn to its texture
+    /// again. Its batch is new when it returns; a texture used to know its
+    /// batch by the batch's address, which a new batch can be given once the
+    /// old one is freed, and by a revision every new batch starts from, so a
+    /// returning group could be taken for the one the texture last held and
+    /// left as it was drawn then.
+    func testALayerGroupThatComesBackIsDrawnAgain() throws {
+        guard HorizontalMetalBackdropView.isSupported else { throw XCTSkip("Metal device required") }
+        _ = NSApplication.shared
+        let renderer = HorizontalMetalBackdropView.Renderer()
+        let view = MTKView(frame: NSRect(x: 0, y: 0, width: 400, height: 300), device: renderer.device)
+        view.delegate = renderer
+        view.isPaused = true
+        view.enableSetNeedsDisplay = true
+        view.colorPixelFormat = .bgra8Unorm
+        view.sampleCount = renderer.sampleCount
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        window.orderFront(nil)
+        defer { window.close() }
+
+        // Group 4 stays as it is, under its one key, and isn't uploaded
+        // again; group 5 is drawn at `y`, keyed by it, or not at all, as the
+        // board's layer groups come and go with the layer mode.
+        func update(groupFiveAt y: Double?) {
+            let lines = [line(y: 0, group: 4)] + (y.map { [line(y: $0, group: 5)] } ?? [])
+            var groupKeys = [0: 0, 4: 1]
+            groupKeys[5] = y.map { Int($0) + 2 }
+            var content = HorizontalMetalCanvasLayerContent(layerOpacity: 0.6, lines: lines, label: "Metal overlay")
+            content.groupKeys = groupKeys
+            _ = renderer.update(contentBounds: frame().bounds, boundsIdentity: nil, viewport: CanvasViewport(), fitInsets: .defaultFit,
+                                backingScale: 1, viewportSize: SIMD2(400, 300), layers: [content])
+        }
+        update(groupFiveAt: 0)
+        view.draw()
+        let overlay = try XCTUnwrap(renderer.layer(labeled: "Metal overlay"))
+        // Each time it returns somewhere new. Whether a new batch is given a
+        // freed one's address is the allocator's to say, so it returns twenty
+        // times: on the old keys, six runs in ten found one. A frame that
+        // gets no drawable draws nothing, so each return has a few frames;
+        // on the old keys none of them drew it.
+        for step in 1...20 {
+            update(groupFiveAt: nil)
+            let renders = overlay.compositeTextureRenders
+            update(groupFiveAt: Double(step) * 100_000)
+            var drawn = false
+            for _ in 0..<3 where !drawn {
+                view.draw()
+                drawn = overlay.compositeTextureRenders > renders
+            }
+            XCTAssertTrue(drawn, "return \(step): group 5 is drawn where it is now")
+        }
+    }
+
     /// The cursor's layer comes through `HorizontalMetalCanvasLiveLayer`: what
     /// was submitted before the view attached reaches it on attaching, and a
     /// submit after that goes straight to the renderer.
