@@ -10530,9 +10530,13 @@ struct BoardCanvasView: View {
                 changedComponentRefdes: &changedComponentRefdes
             )
         // A package a locked track holds stays where it is, and as it is
-        // (`BoardCopperLock`).
-        case ("positionX", _), ("positionY", _), ("angle", _), ("flipped", _)
-            where BoardCopperLock.holdsPackage(ref.id, in: board):
+        // (`BoardCopperLock`). Each pattern carries the condition: a `where`
+        // after the list guards only the last of them, and the rest would
+        // match, and drop the edit, for every package.
+        case ("positionX", _) where BoardCopperLock.holdsPackage(ref.id, in: board),
+             ("positionY", _) where BoardCopperLock.holdsPackage(ref.id, in: board),
+             ("angle", _) where BoardCopperLock.holdsPackage(ref.id, in: board),
+             ("flipped", _) where BoardCopperLock.holdsPackage(ref.id, in: board):
             break
         case ("positionX", .length(let x)):
             let delta = HorizontalPoint(x: x - board.packages[index].position.x, y: 0)
@@ -11710,7 +11714,9 @@ struct BoardCanvasView: View {
             let labelFilter = signature.minimumLabelSize.hashValue
             /// A label bucket culled to the legible zoom, kept while the
             /// bucket's primitives and the zoom step are what they were.
-            func legible(_ name: String, _ bucket: BoardSceneBucket) -> BoardMetalElementBatch {
+            /// Said to be on the main actor, where the cache is: a function
+            /// local to a closure does not take the closure's isolation.
+            @MainActor func legible(_ name: String, _ bucket: BoardSceneBucket) -> BoardMetalElementBatch {
                 guard let stamps = buckets.groupStamps?[bucket] else {
                     return buckets[keyPath: bucket].filtered(minimumLabelSize: signature.minimumLabelSize)
                 }
@@ -13164,8 +13170,10 @@ struct BoardCanvasView: View {
             profile("package geometry") {
                 let packageStyle = BoardContentPair(layerStyle, packageOmitByID)
                 // Filtered only when a package omits something, so an unchanged
-                // layer's array is the one last build had.
-                func shown<Item>(_ items: [Item], _ id: (Item) -> String) -> [Item] {
+                // layer's array is the one last build had. On the main actor,
+                // as `isPackageGeometryHidden` is: a function local to a
+                // closure does not take the closure's isolation.
+                @MainActor func shown<Item>(_ items: [Item], _ id: (Item) -> String) -> [Item] {
                     packageOmitByID.isEmpty ? items : items.filter { !isPackageGeometryHidden(id($0), layer: layer) }
                 }
                 let layerPackagePolygons = shown(packagePolygonsByLayer[layer] ?? []) { $0.id }
