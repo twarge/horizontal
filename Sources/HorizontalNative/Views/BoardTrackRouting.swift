@@ -410,34 +410,26 @@ enum BoardTrackRouting {
 
     /// The point of `track`'s centreline nearest `point`, when `point` is on
     /// its copper (within half its width): one with whole-nanometre
-    /// coordinates, which is what the file holds, exactly on the line, so
-    /// `pointLiesOnSegment` takes it and a cut there stays on the track. Such
-    /// points fall every (dx, dy) / gcd(dx, dy) along a track whose ends are
-    /// whole, every nanometre on a straight or 45° one.
+    /// coordinates exactly on the line (`HorizontalTrackSnap.wholePoint`).
     static func pointOnTrack(near point: HorizontalPoint, _ track: HorizontalSegment) -> HorizontalPoint? {
-        let from = (x: Int64(track.from.x.rounded()), y: Int64(track.from.y.rounded()))
-        let to = (x: Int64(track.to.x.rounded()), y: Int64(track.to.y.rounded()))
-        let dx = to.x - from.x, dy = to.y - from.y
-        let lengthSquared = Double(dx) * Double(dx) + Double(dy) * Double(dy)
-        guard lengthSquared > 0 else {
-            return nil
+        HorizontalTrackSnap.wholePoint(near: point, from: track.from, to: track.to, reach: max(track.width / 2, 1))
+    }
+
+    /// The straight tracks on `layer` the cursor snaps to along their length
+    /// while a route is drawn there (`HorizontalTrackSnapIndex`): every one
+    /// before the route has a net, then those of its net and those of none,
+    /// as a route joins no other.
+    static func snapTracks(on layer: Int, netID: String?, in board: HorizontalBoard) -> [HorizontalSnapTrack] {
+        let netID = netID.map(normalizedID)
+        return board.tracks.compactMap { track in
+            guard isOn(track.layer, layer), track.center == nil, track.width > 0 else {
+                return nil
+            }
+            if let netID, let trackNet = track.netID, normalizedID(trackNet) != netID {
+                return nil
+            }
+            return HorizontalSnapTrack(from: track.from, to: track.to, halfWidth: track.width / 2)
         }
-        let t = ((point.x - Double(from.x)) * Double(dx) + (point.y - Double(from.y)) * Double(dy)) / lengthSquared
-        let nearest = HorizontalPoint(x: Double(from.x) + t * Double(dx), y: Double(from.y) + t * Double(dy))
-        guard (0...1).contains(t), (point - nearest).length <= max(track.width / 2, 1) else {
-            return nil
-        }
-        var a = abs(dx), b = abs(dy)
-        while b != 0 { (a, b) = (b, a % b) }
-        let steps = a
-        let step = Int64((t * Double(steps)).rounded())
-        let onLine = HorizontalPoint(
-            x: Double(from.x + step * (dx / steps)),
-            y: Double(from.y + step * (dy / steps))
-        )
-        // A track at an odd angle can have whole points only far apart, or at
-        // its ends alone: none near the click is no start on it.
-        return (point - onLine).length <= max(track.width / 2, 1) ? onLine : nil
     }
 
     /// Where the cursor snaps while a route is drawn on `layer`: the copper on

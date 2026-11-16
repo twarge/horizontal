@@ -69,6 +69,8 @@ struct CursorReadoutLayer: View {
     var fitInsets: HorizontalCanvasInsets
     var minimumLineWidth: CGFloat
     var snapTargets: [HorizontalPoint]
+    /// Tracks the cursor snaps to along their length (`HorizontalTrackSnapIndex`).
+    var snapTracks: [HorizontalSnapTrack] = []
     var grid: HorizontalGridSettings?
     var gridDivisor: Int
     var cursorSize: HorizontalCursorSize
@@ -84,6 +86,7 @@ struct CursorReadoutLayer: View {
     var metalLayer: HorizontalMetalCanvasLiveLayer
 
     @State private var snapIndexCache = HorizontalSnapIndexCache()
+    @State private var trackSnapIndexCache = HorizontalTrackSnapIndexCache()
 
     private static let coordinateReadoutTrailingMargin: CGFloat = 16
     private static let coordinateReadoutBottomMargin: CGFloat = 14
@@ -486,7 +489,28 @@ struct CursorReadoutLayer: View {
             return HorizontalSnappedCursor(point: nearestTarget, isTarget: true)
         }
 
+        // No end, via or pad near: the middle of a track under the pointer,
+        // which the grid alone reaches only where a grid point lies on it.
+        if !snapTracks.isEmpty {
+            let radius = snapRadius(at: location, transform: transform)
+            if let onTrack = trackSnapIndexCache.index(for: snapTracks).snap(
+                pointer: worldPoint,
+                gridPoint: grid == nil ? nil : gridPoint,
+                reach: radius * 8 / 30,
+                gridReach: radius
+            ) {
+                return HorizontalSnappedCursor(point: onTrack, isTarget: true)
+            }
+        }
+
         return HorizontalSnappedCursor(point: gridPoint, isTarget: false)
+    }
+
+    /// The snap radius, 30 screen points, in world units at `location`.
+    private func snapRadius(at location: CGPoint, transform: HorizontalCanvasTransform) -> Double {
+        let world = transform.worldPoint(location)
+        let edge = transform.worldPoint(CGPoint(x: location.x + 30, y: location.y))
+        return hypot(edge.x - world.x, edge.y - world.y)
     }
 
     private func nearestSnapTarget(index: HorizontalSnapIndex, to location: CGPoint, transform: HorizontalCanvasTransform) -> HorizontalPoint? {

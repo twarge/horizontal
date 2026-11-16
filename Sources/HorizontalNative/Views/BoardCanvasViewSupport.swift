@@ -735,6 +735,11 @@ struct BoardTrackSnapTargetsKey: Hashable {
     var layer: Int
 }
 
+struct BoardTrackSnapTracksKey: Hashable {
+    var targets: BoardTrackSnapTargetsKey
+    var netID: String?
+}
+
 struct BoardMetalElementBucketsCacheKey: Hashable {
     var boardID: String
     var revision: Int
@@ -996,6 +1001,8 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
     private var legibleLabelBatches = [String: (key: Int, batch: BoardMetalElementBatch)]()
     private var trackSnapTargetsKey: BoardTrackSnapTargetsKey?
     private var trackSnapTargetsValue = [HorizontalPoint]()
+    private var trackSnapTracksKey: BoardTrackSnapTracksKey?
+    private var trackSnapTracksValue = [HorizontalSnapTrack]()
     private var visibleRenderLayersKey: BoardSelectableCacheKey?
     private var visibleRenderLayersValue = [Int]()
     private var metalRenderLayersKey: BoardAllSelectableCacheKey?
@@ -1106,6 +1113,19 @@ final class BoardSelectableCache: ObservableObject, @unchecked Sendable {
             trackSnapTargetsKey = key
         }
         return trackSnapTargetsValue
+    }
+
+    /// The tracks a route snaps to along their length
+    /// (`BoardTrackRouting.snapTracks`), built once per board, layer and net.
+    func trackSnapTracks(
+        key: BoardTrackSnapTracksKey,
+        build: () -> [HorizontalSnapTrack]
+    ) -> [HorizontalSnapTrack] {
+        if trackSnapTracksKey != key {
+            trackSnapTracksValue = build()
+            trackSnapTracksKey = key
+        }
+        return trackSnapTracksValue
     }
 
     func metalHighlight(
